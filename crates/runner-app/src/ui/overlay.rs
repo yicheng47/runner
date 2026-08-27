@@ -458,6 +458,7 @@ impl RenderOnce for ConfirmDialog {
                     .px(rems(22. / 16.))
                     .py(rems(20. / 16.))
                     .shadow_2xl()
+                    .debug_selector(|| "CONFIRM_DIALOG_PANEL".into())
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .child(
                         div()
@@ -472,10 +473,17 @@ impl RenderOnce for ConfirmDialog {
                                     .text_color(theme::danger()),
                             )
                             .child(
+                                // Panel width minus its padding, the icon, and
+                                // the gap. Text wraps by default, and the centering
+                                // row above probes this panel at min-content, where
+                                // `w_full().min_w_0()` becomes a known width of 0 and
+                                // the text is shaped one glyph per line — a height
+                                // gpui's layout cache then keeps. Widths are spelled
+                                // out here and on the body for that reason.
                                 div()
-                                    .flex_1()
-                                    .min_w_0()
+                                    .w(rems((420. - 2. * 22. - 15. - 10.) / 16.))
                                     .whitespace_normal()
+                                    .debug_selector(|| "CONFIRM_DIALOG_TITLE".into())
                                     .text_size(rems(15. / 16.))
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(theme::text())
@@ -484,12 +492,12 @@ impl RenderOnce for ConfirmDialog {
                     )
                     .children((!self.body.is_empty()).then(|| {
                         div()
-                            .w_full()
-                            .min_w_0()
+                            .w(rems((420. - 2. * 22.) / 16.))
                             .whitespace_normal()
                             .text_size(rems(13. / 16.))
                             .line_height(rems(20. / 16.))
                             .text_color(theme::muted())
+                            .debug_selector(|| "CONFIRM_DIALOG_BODY".into())
                             .child(self.body)
                     }))
                     .child(
@@ -498,6 +506,7 @@ impl RenderOnce for ConfirmDialog {
                             .items_center()
                             .justify_end()
                             .gap_2()
+                            .debug_selector(|| "CONFIRM_DIALOG_FOOTER".into())
                             .child(confirm_action_button(
                                 "confirm-cancel",
                                 "Cancel".into(),
@@ -600,7 +609,68 @@ fn confirm_action_button(
 
 #[cfg(test)]
 mod confirm_tests {
-    use super::ConfirmDialogState;
+    use super::{ConfirmDialog, ConfirmDialogState};
+    use gpui::{
+        div, px, Context, IntoElement, ParentElement, Render, Styled, TestAppContext,
+        VisualTestContext, Window,
+    };
+    use std::rc::Rc;
+
+    struct CrewDeleteConfirmTest;
+
+    impl Render for CrewDeleteConfirmTest {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            div().size_full().child(ConfirmDialog::new(
+                "Delete crew \"Backorder Unread Cleanup Trae\" permanently?",
+                "This removes all its slots and deletes its archived missions and session history. Crews with non-archived missions cannot be deleted until those missions are archived.",
+                "Delete crew",
+                "Deleting…",
+                false,
+                Rc::new(|_, _| {}),
+                Rc::new(|_, _| {}),
+            ))
+        }
+    }
+
+    #[test]
+    fn confirm_dialog_grows_with_its_wrapped_body_and_keeps_the_footer_inside() {
+        for rem in [16., 20.8] {
+            let mut cx = TestAppContext::single();
+            let window = cx.add_window(|window, _| {
+                window.set_rem_size(px(rem));
+                CrewDeleteConfirmTest
+            });
+            cx.run_until_parked();
+            let mut window = VisualTestContext::from_window(window.into(), &cx);
+            for size in [
+                gpui::size(px(700.), px(500.)),
+                gpui::size(px(1440.), px(900.)),
+                gpui::size(px(2560.), px(1440.)),
+            ] {
+                window.simulate_resize(size);
+                cx.run_until_parked();
+                let panel = window.debug_bounds("CONFIRM_DIALOG_PANEL").expect("panel");
+                let body = window.debug_bounds("CONFIRM_DIALOG_BODY").expect("body");
+                let footer = window
+                    .debug_bounds("CONFIRM_DIALOG_FOOTER")
+                    .expect("footer");
+                let line = px(rem * 20. / 16.);
+                assert!(
+                    body.size.height >= line * 2.,
+                    "rem {rem} {size:?}: body did not wrap: {body:?}"
+                );
+                assert!(
+                    footer.bottom() <= panel.bottom() && footer.top() >= body.bottom(),
+                    "rem {rem} {size:?}: footer outside the panel: panel={panel:?} body={body:?} footer={footer:?}"
+                );
+                assert!(
+                    panel.size.height < size.height
+                        && panel.size.width <= px(rem * 420. / 16.) + px(1.),
+                    "rem {rem} {size:?}: panel does not fit: {panel:?}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn submitting_confirmation_ignores_cancel_and_duplicate_submit() {
