@@ -1653,7 +1653,7 @@ fn runtime_display_name(runtimes: &[RuntimeCatalogEntry], name: &str) -> String 
 }
 
 fn default_title_for_runner(handle: &str) -> String {
-    format!("Chat with @{handle}")
+    format!("@{handle}")
 }
 
 fn default_title_for_runtime(label: &str) -> String {
@@ -1784,12 +1784,8 @@ mod tests {
     #[test]
     fn title_auto_derives_until_the_user_edits_it() {
         assert_eq!(
-            auto_title_after_selection(
-                false,
-                "Chat with @coder",
-                default_title_for_runner("reviewer")
-            ),
-            "Chat with @reviewer"
+            auto_title_after_selection(false, "@coder", default_title_for_runner("reviewer")),
+            "@reviewer"
         );
         assert_eq!(
             auto_title_after_selection(true, "my chat", default_title_for_runtime("Codex")),
