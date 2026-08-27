@@ -1412,6 +1412,9 @@ impl MissionWorkspace {
                         activity.is_some_and(|activity| {
                             activity.first_paint_seq > transition.baseline_seq
                         }),
+                        activity.is_some_and(|activity| {
+                            activity.tui_ready_seq > transition.baseline_seq
+                        }),
                         activity
                             .is_some_and(|activity| activity.last_seq > transition.baseline_seq),
                         activity

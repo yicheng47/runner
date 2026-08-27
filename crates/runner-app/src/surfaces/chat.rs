@@ -207,6 +207,8 @@ impl NativeRoot {
                         .is_some_and(|activity| activity.last_seq > transition.baseline_seq);
                     let first_paint_seen = activity
                         .is_some_and(|activity| activity.first_paint_seq > transition.baseline_seq);
+                    let tui_ready_seen = activity
+                        .is_some_and(|activity| activity.tui_ready_seq > transition.baseline_seq);
                     let output_idle_for = activity
                         .and_then(|activity| activity.last_output_at)
                         .map(|last| now.saturating_duration_since(last));
@@ -214,6 +216,7 @@ impl NativeRoot {
                         transition.kind,
                         now.saturating_duration_since(transition.started_at),
                         first_paint_seen,
+                        tui_ready_seen,
                         output_seen,
                         output_idle_for,
                     );
