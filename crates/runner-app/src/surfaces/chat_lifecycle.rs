@@ -92,16 +92,24 @@ pub(crate) fn shell_exited_subtitle(
     format!("{exit} · {shell} · {cwd}")
 }
 
+/// The pill drops on the first painted frame. The output-idle backstop covers
+/// processes that never paint, but not one that has taken the screen
+/// (`tui_ready_seen`) and is still booting behind it: claude-code's fullscreen
+/// renderer enters the alternate screen at process start and paints its first
+/// frame 1–2 s later, and dropping the pill on the silence between shows a
+/// blank pane.
 pub(crate) fn transition_should_settle(
     kind: TransitionKind,
     elapsed: Duration,
     first_paint_seen: bool,
+    tui_ready_seen: bool,
     output_seen: bool,
     output_idle_for: Option<Duration>,
 ) -> bool {
     first_paint_seen
         || elapsed >= TRANSITION_HARD_TIMEOUT
         || (output_seen
+            && !tui_ready_seen
             && elapsed >= TRANSITION_MIN_VISIBLE
             && output_idle_for.is_some_and(|idle| idle >= TRANSITION_IDLE))
         || (kind == TransitionKind::Starting && !output_seen && elapsed >= TRANSITION_MIN_VISIBLE)
@@ -189,11 +197,13 @@ mod tests {
             Duration::from_millis(20),
             true,
             true,
+            true,
             Some(Duration::ZERO),
         ));
         assert!(!transition_should_settle(
             TransitionKind::Resuming,
             Duration::from_secs(1),
+            false,
             false,
             false,
             None,
@@ -203,11 +213,13 @@ mod tests {
             Duration::from_secs(1),
             false,
             false,
+            false,
             None,
         ));
         assert!(transition_should_settle(
             TransitionKind::Resuming,
             Duration::from_secs(1),
+            false,
             false,
             true,
             Some(Duration::from_millis(400)),
@@ -217,7 +229,40 @@ mod tests {
             Duration::from_secs(10),
             false,
             false,
+            false,
             None,
         ));
+    }
+
+    #[test]
+    fn a_tui_that_took_the_screen_but_has_not_painted_keeps_the_pill() {
+        // claude-code fullscreen: `?1049h` at ~250 ms, then silence while it
+        // boots, first frame at 1–2 s. The idle backstop must not fire.
+        for kind in [TransitionKind::Starting, TransitionKind::Resuming] {
+            assert!(!transition_should_settle(
+                kind,
+                Duration::from_millis(1500),
+                false,
+                true,
+                true,
+                Some(Duration::from_millis(1200)),
+            ));
+            assert!(transition_should_settle(
+                kind,
+                Duration::from_millis(1800),
+                true,
+                true,
+                true,
+                Some(Duration::ZERO),
+            ));
+            assert!(transition_should_settle(
+                kind,
+                TRANSITION_HARD_TIMEOUT,
+                false,
+                true,
+                true,
+                Some(Duration::from_secs(9)),
+            ));
+        }
     }
 }
