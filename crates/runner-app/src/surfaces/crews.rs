@@ -130,16 +130,9 @@ enum SlotMenuAction {
     Remove(SlotWithRunner),
 }
 
-#[derive(Clone, Copy, Eq, PartialEq)]
-enum CrewDeleteStage {
-    Slots,
-    History,
-}
-
 struct CrewDeleteConfirm {
     id: String,
     name: String,
-    stage: CrewDeleteStage,
 }
 
 struct SlotRemoveConfirm {
@@ -618,11 +611,7 @@ impl NativeRoot {
         match action {
             CrewMenuAction::Open(id) => self.open_crew_editor(id, window, cx),
             CrewMenuAction::Delete { id, name } => {
-                self.crew_surfaces.delete_confirm = Some(CrewDeleteConfirm {
-                    id,
-                    name,
-                    stage: CrewDeleteStage::Slots,
-                });
+                self.crew_surfaces.delete_confirm = Some(CrewDeleteConfirm { id, name });
                 cx.notify();
             }
         }
@@ -1715,22 +1704,10 @@ impl NativeRoot {
         let root = cx.entity();
         let confirm_root = root.clone();
         let cancel_root = root;
-        let (title, body, label) = match confirm.stage {
-            CrewDeleteStage::Slots => (
-                format!("Delete crew \"{}\"?", confirm.name),
-                "This removes all its slots.".to_owned(),
-                "Continue",
-            ),
-            CrewDeleteStage::History => (
-                format!("Delete crew \"{}\" permanently?", confirm.name),
-                "This also deletes archived missions and session history for this crew. Crews with non-archived missions cannot be deleted until those missions are archived.".to_owned(),
-                "Delete crew",
-            ),
-        };
         ConfirmDialog::new(
-            title,
-            body,
-            label,
+            format!("Delete crew \"{}\" permanently?", confirm.name),
+            "This removes all its slots and deletes its archived missions and session history. Crews with non-archived missions cannot be deleted until those missions are archived.",
+            "Delete crew",
             "Deleting…",
             self.crew_surfaces.delete_busy,
             Rc::new(move |_, cx| {
@@ -2966,15 +2943,10 @@ impl NativeRoot {
     }
 
     fn advance_crew_delete(&mut self, cx: &mut Context<Self>) {
-        let Some(confirm) = self.crew_surfaces.delete_confirm.as_mut() else {
+        let Some(confirm) = self.crew_surfaces.delete_confirm.as_ref() else {
             return;
         };
         if self.crew_surfaces.delete_busy {
-            return;
-        }
-        if confirm.stage == CrewDeleteStage::Slots {
-            confirm.stage = CrewDeleteStage::History;
-            cx.notify();
             return;
         }
         self.crew_surfaces.delete_busy = true;
