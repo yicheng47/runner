@@ -12,10 +12,7 @@ Since the GPUI rewrite shipped as `v0.6.0` (2026-08-23) there is one line of wor
 
 ## Index
 
-- [05 — Agent-agnostic MCP & skills management](./05-runner-skills.md) —
-  one central catalog of MCP servers and skills, stored in a neutral
-  shape and materialized per agent (claude-code JSON, codex TOML,
-  skill dirs); informed by the skills-manager reference analysis.
+- [05 — Local skills management](./05-runner-skills.md) — a runner declares which skills it wants and Runner hides the rest at spawn via claude-code's `skillOverrides` riding the existing `--settings` (allowlist computed at spawn, nothing written into `~/.claude`); a read-only Settings → Skills catalog (personal / project / bundled, who-uses-it), a Skills picker on the runner form with a listing-budget hint; claude-code first, codex listed only; rewritten 2026-08-28 from the MCP + skills catalog framing, which is deferred ([#73](https://github.com/yicheng47/runner/issues/73)).
 - [52 — Hook-based session status](./52-hook-based-session-status.md) — **record only**: #347 closed won't-do 2026-08-27, and the grid-scraping variant #455 closed 2026-08-28; busy/idle stays on the byte-flow `IdleDetector` (threshold raised to 2 s). As specced: authoritative `working`/`waiting`/`done` status from agent CLI hooks injected per spawn (claude `--settings`, codex hooks.json — never the user's config), with the byte-flow IdleDetector demoted to a universal fallback tier; adds the needs-you attention state.
 - [58 — Runner & crew detail redesign](./58-runner-crew-detail-redesign.md) — Pencil-first redesign of both MVP-draft detail pages: crew detail puts the slot roster above the prose config sections instead of below them, runner detail clamps the system-prompt dump and consolidates redundant cards ([#393](https://github.com/yicheng47/runner/issues/393)).
 - [60 — Fork a chat into a split pane or a new tab](./60-fork-chat-to-pane-or-tab.md) — native-only session fork (claude-code `--resume <key> --fork-session`) with a destination choice: split pane beside the source in the current tab, or a new tab; supersedes 53's native tier after #348's revisit trigger fired ([#398](https://github.com/yicheng47/runner/issues/398)).
