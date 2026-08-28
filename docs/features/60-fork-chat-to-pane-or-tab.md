@@ -1,6 +1,6 @@
 # Fork a chat into a split pane or a new tab
 
-Tracking issue: [#398](https://github.com/yicheng47/runner/issues/398). Status: planned. Supersedes the native tier of [53 — Session fork](./53-session-fork.md) (closed won't-do in [#348](https://github.com/yicheng47/runner/issues/348); its revisit trigger — actually reaching for a fork in real work — has now fired).
+Tracking issue: [#398](https://github.com/yicheng47/runner/issues/398). Status: planned; implementation plan at [`docs/impls/fork-chat.md`](../impls/fork-chat.md) (2026-08-28), which supersedes this spec where they differ — codex is native-tier from the start (`codex fork <uuid>`, codex 0.150.1), trae is excluded, the entry points are a fork icon on the sidebar tab row (hover) and one in the chat header (no menu rows), and the only destination is a new tab (the split-pane destination is dropped). Supersedes the native tier of [53 — Session fork](./53-session-fork.md) (closed won't-do in [#348](https://github.com/yicheng47/runner/issues/348); its revisit trigger — actually reaching for a fork in real work — has now fired).
 
 ## Motivation
 

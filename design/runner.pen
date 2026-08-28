@@ -53318,6 +53318,673 @@
       "width": 560,
       "height": 900,
       "content": "MISSION TABS — WHERE THE DEFERRED DESIGN COSTS ALMOST NOTHING\n\nThe mission workspace already has tabs: MissionTab::Feed | Session(id), one per slot, exactly one visible at a time (crates/runner-app/src/surfaces/mission_workspace.rs:48). What it cannot do is show two slots at once — watching coder and reviewer together means flipping between tabs and losing sight of the other, which is the single thing a crew operator does most.\n\nSo this is the same node → tab → view design deferred from chat, applied where the tab level ALREADY EXISTS. It buys one capability instead of a new hierarchy: let a mission tab hold a SPLIT of slot views instead of a single session.\n\n• NODE = the mission. TAB = feed, or a named arrangement of slot views. VIEW = one slot's session, carrying the same 26 px identity line as a chat pane.\n• feed stays a tab and stays unsplittable — it is one thing.\n• The + creates a new arrangement; the layout picker splits the active tab, exactly as it splits a node today.\n• × on a slot view removes it from THIS arrangement only. A slot belongs to the crew, not to the layout: the session keeps running, the runners rail still lists it, and it can be added back. That is the mission-flavoured reading of “× is a layout action, not a session action”.\n• Once feature 64 lands, a mission tab can also hold a TERMINAL view — a shell in the mission cwd, or in its worktree once spec 61 lands. That is precisely the thing people leave the app for mid-mission.\n\nWHY TRIAL IT HERE FIRST\n\nThe tab level already exists, so there is no vocabulary break and no nodes-table change: MissionTab::Session(id) becomes MissionTab::Split(layout), the strip grows a +, and the Center renders a pane tree instead of one terminal. The blast radius is one surface.\n\nIf splits-inside-tabs prove their worth on missions — where the need is sharpest and the operator is already watching several agents — bringing them to chat later is the same move against a much bigger surface, with the doubts already settled.\n\nDEPENDENCY\n\nThe 26 px identity line comes from feature 64 phase 3. Mission views should consume that component, not grow a second one. Implementation therefore follows 64, not alongside it."
+    },
+    {
+      "type": "frame",
+      "id": "F0ComJ",
+      "x": 14186,
+      "y": 14640,
+      "name": "Spec — Fork chat (60) · side panel button",
+      "clip": true,
+      "width": 1100,
+      "height": 660,
+      "fill": "$bg",
+      "cornerRadius": 12,
+      "layout": "none",
+      "children": [
+        {
+          "type": "text",
+          "id": "p3O7M4",
+          "x": 24,
+          "y": 20,
+          "name": "spec_title",
+          "fill": "$text-hi",
+          "content": "Spec — Fork chat (feature 60, #398) · sidebar row icon + chat header icon",
+          "fontFamily": "$font-ui",
+          "fontSize": 14,
+          "fontWeight": "600"
+        },
+        {
+          "type": "text",
+          "id": "SNiHA",
+          "x": 24,
+          "y": 42,
+          "name": "spec_sub",
+          "fill": "$text-mid",
+          "content": "Two entry points, one destination: a ⑂ icon on the sidebar chat row (hover) and a ⑂ icon in the chat header; a fork always opens as a new tab (new node). claude-code + codex only (native fork); trae/shell never.",
+          "fontFamily": "$font-ui",
+          "fontSize": 11,
+          "fontWeight": "normal"
+        },
+        {
+          "type": "text",
+          "id": "T5pntD",
+          "x": 24,
+          "y": 440,
+          "name": "cap_notes",
+          "fill": "$text-low",
+          "content": "BEHAVIOUR",
+          "fontFamily": "$font-ui",
+          "fontSize": 10,
+          "fontWeight": "600"
+        },
+        {
+          "type": "text",
+          "id": "tt67D",
+          "x": 24,
+          "y": 460,
+          "name": "notes",
+          "fill": "$text-mid",
+          "textGrowth": "fixed-width",
+          "width": 1052,
+          "content": "Both icons call the same fork_chat → runner-backend session_fork: a new session row cloned from the source chat (runner, runtime, cmd, cwd, model/effort), spawned natively — claude-code `--resume <key> --fork-session`, codex `fork <key>` — with no first turn. The source row, key, PTY and transcript are never written. The fork opens as a NEW TAB (a new node) titled \"<source label> (fork)\", active and focused; the source tab is untouched. The fork's side panel then shows its own session_key, distinct from the source's.\n\nEligibility comes from two fields on the session entry: native_fork (the runtime's capability bit on RuntimeDefinition — codex ✓ claude-code ✓ trae ✗) and forkable (native_fork ∧ key present ∧ direct chat ∧ not archived). Sidebar: the ⑂ is a hover affordance, so it has no disabled state — it renders only for a tab with exactly one non-shell pane whose chat is forkable; grouped tabs never show it (which chat? — fork those from the header). Header: the ⑂ acts on the focused pane; hidden for shell/empty panes; disabled with a tooltip when native_fork is false (\"Forking needs claude-code or codex\") or forkable is false (\"No session key captured yet\"); disabled without a tooltip while the fork is in flight.\n\nNot in v1: side-panel button, split-pane destination, ⋯ menu rows, shortcut, MCP tool. Spec: docs/features/60-fork-chat-to-pane-or-tab.md · plan: docs/impls/fork-chat.md",
+          "lineHeight": 1.55,
+          "fontFamily": "$font-ui",
+          "fontSize": 11,
+          "fontWeight": "normal"
+        },
+        {
+          "type": "text",
+          "id": "JJSoc",
+          "x": 24,
+          "y": 78,
+          "name": "cap_sidebar",
+          "fill": "$text-low",
+          "content": "A · SIDEBAR — hovering a single-chat tab row reveals ⑂ beside ⋯ (hidden when not forkable; never on grouped or terminal rows)",
+          "fontFamily": "$font-ui",
+          "fontSize": 10,
+          "fontWeight": "600"
+        },
+        {
+          "type": "frame",
+          "id": "OYMla",
+          "x": 24,
+          "y": 96,
+          "name": "sidebar_mock",
+          "clip": true,
+          "width": 240,
+          "fill": "$sidebar",
+          "cornerRadius": 8,
+          "layout": "vertical",
+          "gap": 2,
+          "padding": [
+            8,
+            12
+          ],
+          "children": [
+            {
+              "type": "frame",
+              "id": "zgtHh",
+              "name": "row_project",
+              "width": "fill_container",
+              "height": 28,
+              "cornerRadius": 4,
+              "gap": 8,
+              "padding": [
+                6,
+                10
+              ],
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "icon",
+                  "id": "ojchy",
+                  "name": "chev",
+                  "width": 10,
+                  "height": 10,
+                  "icon": "chevron-down",
+                  "library": "lucide",
+                  "fill": "$text-mid"
+                },
+                {
+                  "type": "icon",
+                  "id": "nLket",
+                  "name": "folder",
+                  "width": 12,
+                  "height": 12,
+                  "icon": "folder-open",
+                  "library": "lucide",
+                  "fill": "$text-mid"
+                },
+                {
+                  "type": "text",
+                  "id": "Ttb8T",
+                  "name": "txt",
+                  "fill": "$text-hi",
+                  "content": "runner",
+                  "fontFamily": "$font-ui",
+                  "fontSize": 13,
+                  "fontWeight": "500"
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "ztS7J",
+              "name": "row_hovered",
+              "width": "fill_container",
+              "height": 28,
+              "fill": "$sidebar-sel",
+              "cornerRadius": 4,
+              "gap": 8,
+              "padding": [
+                6,
+                10,
+                6,
+                32
+              ],
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "icon",
+                  "id": "wXj1X",
+                  "name": "icon",
+                  "width": 12,
+                  "height": 12,
+                  "icon": "message-square",
+                  "library": "lucide",
+                  "fill": "$text-mid"
+                },
+                {
+                  "type": "text",
+                  "id": "N6z3pi",
+                  "name": "txt",
+                  "fill": "$text-mid",
+                  "content": "@coder",
+                  "fontFamily": "$font-ui",
+                  "fontSize": 13,
+                  "fontWeight": "normal"
+                },
+                {
+                  "type": "frame",
+                  "id": "laPPA",
+                  "name": "sp",
+                  "width": "fill_container",
+                  "height": 1
+                },
+                {
+                  "type": "frame",
+                  "id": "QQdGC",
+                  "name": "trail",
+                  "gap": 8,
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "icon",
+                      "id": "NEIJs",
+                      "name": "fork",
+                      "width": 12,
+                      "height": 12,
+                      "icon": "git-fork",
+                      "library": "lucide",
+                      "fill": "$text-hi"
+                    },
+                    {
+                      "type": "icon",
+                      "id": "AEFxD",
+                      "name": "kebab",
+                      "width": 14,
+                      "height": 14,
+                      "icon": "ellipsis",
+                      "library": "lucide",
+                      "fill": "$text-mid"
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "k3S3OS",
+              "name": "row_fork_result",
+              "width": "fill_container",
+              "height": 28,
+              "fill": "$sidebar-sel",
+              "cornerRadius": 4,
+              "stroke": "$sidebar-sel-border",
+              "strokeWidth": 1,
+              "gap": 8,
+              "padding": [
+                6,
+                10,
+                6,
+                32
+              ],
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "icon",
+                  "id": "C0kfz",
+                  "name": "icon",
+                  "width": 12,
+                  "height": 12,
+                  "icon": "message-square",
+                  "library": "lucide",
+                  "fill": "$text-hi"
+                },
+                {
+                  "type": "text",
+                  "id": "YnOS3",
+                  "name": "txt",
+                  "fill": "$text-hi",
+                  "content": "@coder (fork)",
+                  "fontFamily": "$font-ui",
+                  "fontSize": 13,
+                  "fontWeight": "normal"
+                },
+                {
+                  "type": "frame",
+                  "id": "e8FSK",
+                  "name": "sp",
+                  "width": "fill_container",
+                  "height": 1
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "PsDkC",
+              "name": "row_grouped",
+              "width": "fill_container",
+              "height": 28,
+              "fill": "$sidebar-sel",
+              "cornerRadius": 4,
+              "gap": 8,
+              "padding": [
+                6,
+                10,
+                6,
+                32
+              ],
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "icon",
+                  "id": "TQfRD",
+                  "name": "icon",
+                  "width": 12,
+                  "height": 12,
+                  "icon": "columns-2",
+                  "library": "lucide",
+                  "fill": "$text-mid"
+                },
+                {
+                  "type": "text",
+                  "id": "Wp1Jq",
+                  "name": "txt",
+                  "fill": "$text-mid",
+                  "content": "architect + impl",
+                  "fontFamily": "$font-ui",
+                  "fontSize": 13,
+                  "fontWeight": "normal"
+                },
+                {
+                  "type": "frame",
+                  "id": "IiwN5",
+                  "name": "sp",
+                  "width": "fill_container",
+                  "height": 1
+                },
+                {
+                  "type": "frame",
+                  "id": "cVaJU",
+                  "name": "trail",
+                  "gap": 8,
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "icon",
+                      "id": "G8tSDY",
+                      "name": "kebab",
+                      "width": 14,
+                      "height": 14,
+                      "icon": "ellipsis",
+                      "library": "lucide",
+                      "fill": "$text-mid"
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "s9u4i5",
+              "name": "row_terminal",
+              "width": "fill_container",
+              "height": 28,
+              "cornerRadius": 4,
+              "gap": 8,
+              "padding": [
+                6,
+                10,
+                6,
+                32
+              ],
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "icon",
+                  "id": "R6X9mf",
+                  "name": "icon",
+                  "width": 12,
+                  "height": 12,
+                  "icon": "square-terminal",
+                  "library": "lucide",
+                  "fill": "$text-mid"
+                },
+                {
+                  "type": "text",
+                  "id": "lo0Ru",
+                  "name": "txt",
+                  "fill": "$text-mid",
+                  "content": "zsh",
+                  "fontFamily": "$font-ui",
+                  "fontSize": 13,
+                  "fontWeight": "normal"
+                },
+                {
+                  "type": "frame",
+                  "id": "YrZyI",
+                  "name": "sp",
+                  "width": "fill_container",
+                  "height": 1
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "text",
+          "id": "vzdRg",
+          "x": 24,
+          "y": 290,
+          "name": "cap_sidebar_states",
+          "fill": "$text-low",
+          "textGrowth": "fixed-width",
+          "width": 240,
+          "content": "row 1 hovered: ⑂ + ⋯ · row 2 the result, a new node titled \"<label> (fork)\" (labels are @handle or the runtime name — no timestamp), active · row 3 grouped tab hovered: ⋯ only · row 4 terminal: nothing",
+          "lineHeight": 1.5,
+          "fontFamily": "$font-ui",
+          "fontSize": 10,
+          "fontWeight": "normal"
+        },
+        {
+          "type": "text",
+          "id": "YCI0X",
+          "x": 300,
+          "y": 78,
+          "name": "cap_header",
+          "fill": "$text-low",
+          "content": "B · CHAT HEADER — ⑂ joins the trailing group before split · acts on the focused pane",
+          "fontFamily": "$font-ui",
+          "fontSize": 10,
+          "fontWeight": "600"
+        },
+        {
+          "type": "frame",
+          "id": "q1XVZ0",
+          "x": 300,
+          "y": 96,
+          "name": "header_enabled",
+          "width": 776,
+          "height": 44,
+          "fill": "#15161B",
+          "cornerRadius": 6,
+          "stroke": "$line",
+          "strokeWidth": 1,
+          "strokeAlignment": "inner",
+          "strokeLinejoin": "round",
+          "gap": 8,
+          "padding": [
+            0,
+            16
+          ],
+          "alignItems": "center",
+          "children": [
+            {
+              "type": "icon",
+              "id": "lFnVh",
+              "name": "chatIcon",
+              "width": 13,
+              "height": 13,
+              "icon": "terminal",
+              "library": "lucide",
+              "fill": "#9A9BA5"
+            },
+            {
+              "type": "text",
+              "id": "g8cz0i",
+              "name": "chatTitle",
+              "fill": "#DCDCE0",
+              "content": "@coder",
+              "fontFamily": "Inter",
+              "fontSize": 13,
+              "fontWeight": "500"
+            },
+            {
+              "type": "icon",
+              "id": "SudJY",
+              "name": "chatKebab",
+              "width": 14,
+              "height": 14,
+              "icon": "ellipsis",
+              "library": "lucide",
+              "fill": "#5A5C66"
+            },
+            {
+              "type": "icon",
+              "id": "eQS4w",
+              "name": "chatStopIcon",
+              "width": 13,
+              "height": 13,
+              "icon": "square",
+              "library": "lucide",
+              "fill": "#FF5F57CC"
+            },
+            {
+              "type": "frame",
+              "id": "tjidj",
+              "name": "chatSpacer",
+              "width": "fill_container",
+              "height": 1
+            },
+            {
+              "type": "icon",
+              "id": "fvOQw",
+              "name": "forkIcon",
+              "width": 15,
+              "height": 15,
+              "icon": "git-fork",
+              "library": "lucide",
+              "fill": "#9A9BA5"
+            },
+            {
+              "type": "icon",
+              "id": "xYK5F",
+              "name": "splitIcon",
+              "width": 15,
+              "height": 15,
+              "icon": "square-split-horizontal",
+              "library": "lucide",
+              "fill": "#9A9BA5"
+            },
+            {
+              "type": "icon",
+              "id": "aJAM6",
+              "name": "chatPanelRight",
+              "width": 15,
+              "height": 15,
+              "icon": "panel-right",
+              "library": "lucide",
+              "fill": "#9A9BA5"
+            }
+          ]
+        },
+        {
+          "type": "text",
+          "id": "zVuCo",
+          "x": 300,
+          "y": 146,
+          "name": "cap_header_1",
+          "fill": "$text-low",
+          "content": "focused chat forkable → enabled, tooltip \"Fork chat into a new tab\"",
+          "fontFamily": "$font-ui",
+          "fontSize": 10,
+          "fontWeight": "normal"
+        },
+        {
+          "type": "frame",
+          "id": "k4zayu",
+          "x": 300,
+          "y": 166,
+          "name": "header_disabled",
+          "width": 776,
+          "height": 44,
+          "fill": "#15161B",
+          "cornerRadius": 6,
+          "stroke": "$line",
+          "strokeWidth": 1,
+          "strokeAlignment": "inner",
+          "strokeLinejoin": "round",
+          "gap": 8,
+          "padding": [
+            0,
+            16
+          ],
+          "alignItems": "center",
+          "children": [
+            {
+              "type": "icon",
+              "id": "uEdVb",
+              "name": "chatIcon",
+              "width": 13,
+              "height": 13,
+              "icon": "terminal",
+              "library": "lucide",
+              "fill": "#9A9BA5"
+            },
+            {
+              "type": "text",
+              "id": "UfvUL",
+              "name": "chatTitle",
+              "fill": "#DCDCE0",
+              "content": "TRAE CLI",
+              "fontFamily": "Inter",
+              "fontSize": 13,
+              "fontWeight": "500"
+            },
+            {
+              "type": "icon",
+              "id": "FcnQI",
+              "name": "chatKebab",
+              "width": 14,
+              "height": 14,
+              "icon": "ellipsis",
+              "library": "lucide",
+              "fill": "#5A5C66"
+            },
+            {
+              "type": "icon",
+              "id": "oDD5w",
+              "name": "chatStopIcon",
+              "width": 13,
+              "height": 13,
+              "icon": "square",
+              "library": "lucide",
+              "fill": "#FF5F57CC"
+            },
+            {
+              "type": "frame",
+              "id": "eAEKM",
+              "name": "chatSpacer",
+              "width": "fill_container",
+              "height": 1
+            },
+            {
+              "type": "icon",
+              "id": "bDZtA",
+              "name": "forkIcon",
+              "opacity": 0.5,
+              "width": 15,
+              "height": 15,
+              "icon": "git-fork",
+              "library": "lucide",
+              "fill": "#5A5C66"
+            },
+            {
+              "type": "icon",
+              "id": "jgZ5M",
+              "name": "splitIcon",
+              "width": 15,
+              "height": 15,
+              "icon": "square-split-horizontal",
+              "library": "lucide",
+              "fill": "#9A9BA5"
+            },
+            {
+              "type": "icon",
+              "id": "vBTs1",
+              "name": "chatPanelRight",
+              "width": 15,
+              "height": 15,
+              "icon": "panel-right",
+              "library": "lucide",
+              "fill": "#9A9BA5"
+            }
+          ]
+        },
+        {
+          "type": "text",
+          "id": "QvsnT",
+          "x": 300,
+          "y": 216,
+          "name": "cap_header_2",
+          "fill": "$text-low",
+          "content": "focused chat not forkable → disabled, tooltip \"Forking needs claude-code or codex\" / \"No session key captured yet\" · hidden for shell/empty panes",
+          "fontFamily": "$font-ui",
+          "fontSize": 10,
+          "fontWeight": "normal"
+        },
+        {
+          "type": "text",
+          "id": "gOA9u",
+          "x": 300,
+          "y": 240,
+          "name": "cap_confirm",
+          "fill": "$text-low",
+          "content": "C · CONFIRM — both icons open this dialog first; Fork spawns, Cancel and Esc do nothing",
+          "fontFamily": "$font-ui",
+          "fontSize": 10,
+          "fontWeight": "600"
+        },
+        {
+          "id": "ygQBi",
+          "type": "ref",
+          "ref": "tK5Xb",
+          "name": "confirm_fork",
+          "x": 300,
+          "y": 258,
+          "descendants": {
+            "CucJL": {
+              "icon": "git-fork",
+              "fill": "$text-mid"
+            },
+            "igS7I": {
+              "content": "Fork chat?"
+            },
+            "FbcRk": {
+              "content": "Start a new chat from @coder with its full conversation history. The fork opens in a new tab; the original chat is not changed."
+            },
+            "ecePg": {
+              "fill": "$accent"
+            },
+            "Lw5AS": {
+              "content": "Fork",
+              "fill": "$accent-ink"
+            }
+          }
+        }
+      ]
     }
   ],
   "variables": {
