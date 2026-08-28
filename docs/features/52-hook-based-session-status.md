@@ -1,6 +1,8 @@
 # 52 — Hook-based session status
 
 > Tracking issue: [#347](https://github.com/yicheng47/runner/issues/347)
+>
+> **Record only.** #347 closed won't-do 2026-08-27 (coupling to two CLIs' config schemas); the grid-scraping alternative [#455](https://github.com/yicheng47/runner/issues/455) closed 2026-08-28 — the ask was a better busy/idle detector, not Waiting, and the byte-flow `IdleDetector` with a 2 s threshold covers it. If Waiting is ever wanted, this design is the route: codex 0.150.1 ships a Claude-compatible hook system (`$CODEX_HOME/hooks.json`, `[features] codex_hooks`), so both runtimes now speak the same event names.
 
 ## Motivation
 

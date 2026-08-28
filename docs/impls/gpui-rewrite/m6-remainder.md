@@ -1,37 +1,24 @@
 # M6 — Remainder (post-GA)
 
-Milestone plan for the work that follows UI parity: the verified defects and structural debt from the 2026-08-20 technical audit, plus the reopened hook-based session status (#347). Sits after M4 — M5 was closed 2026-08-21 (plan decision 13) — in the [program plan](plan.md) and runs during the Phase 6 daily-drive clock. Sizes: S < 50 lines, M 50–300, L > 300 or cross-cutting. Line numbers are as of `gpui-nightly` `9a2b218` and will drift.
+Milestone plan for the work that follows UI parity: the verified defects and structural debt from the 2026-08-20 technical audit. Sits after M4 — M5 was closed 2026-08-21 (plan decision 13) — in the [program plan](plan.md) and runs during the Phase 6 daily-drive clock. Sizes: S < 50 lines, M 50–300, L > 300 or cross-cutting. Line numbers are as of `gpui-nightly` `9a2b218` and will drift.
 
 ## Why a milestone, not a backlog
 
 M3–M4 are parity work: the gate is "same as `main`". Everything here is *beyond* `main` — fixes `main` also has, refactors the agentic build never volunteered, and one new capability. Left as a backlog it does not happen: the audit's own finding is that local patches accumulate and global refactors do not, unless someone schedules them. So M6 is a named stage with ordered missions and gates, like M4.
 
-Two items that look like M6 are deliberately placed elsewhere:
-
-- **Terminal selection and copy is M4.7**, not M6. xterm.js has selection and ⌘C natively, so its absence on the GPUI line is a parity gap and a daily-driver blocker, and it belongs under M4's exit gate.
-- **Hook-based session status (#347, feature 52) is M6.2, the first post-GA mission (M6.1 landed first, 2026-08-22)** — not pulled forward onto `main`. `main` is feature-frozen (plan decision 11, 2026-08-20): Jason will not carry two versions; the rewrite finishes, then the switch happens, then the work beyond parity starts. Feature 52 was specced against `src-tauri` paths; the port mapping is `src-tauri/src/*` ↔ `crates/runner-backend/src/*`.
-
 ## Landing rule
 
 Everything lands on `main` (the only line since the 2026-08-23 cutover): a crew implements and reviews on a task branch, Jason smoke-tests, then PR → the one required check `Rust / macOS` → merge → a `docs(gpui-rewrite)` landing commit that moves the item from this file into the program record. Migrations are allocated on `main`. Each item is one mission with its own brief under `../archive/gpui-rewrite/briefs/` once drafted.
 
-## Status (2026-08-27 — M6.16 and M6.19 landed)
+## Status (2026-08-28)
 
-`v0.6.0` shipped 2026-08-23; `v0.6.1` followed the same evening with M6.20 (PR #433 → `d92a046`), M6.15 (PR #435 → `a9cd866`), the Option/Shift/Ctrl key-encoding fix (#434 → `9f0883d`) and the ⌘W fix (#436 → `82a146a`) — each recorded with its commit in the program record ([README.md](README.md) §Timeline); the landed M6 items through GA are in full in the archived M6 document ([../archive/gpui-rewrite/m6-consolidation.md](../archive/gpui-rewrite/m6-consolidation.md)). M6.19 (pin the UI font to Inter, drop the App font picker) landed 2026-08-27 as PR #449 → `233649f`, inline, no mission. M6.16 (6 s SIGHUP grace + descendant sweep on stop) landed 2026-08-27 as PR #450 → `f1f8cac`, inline, no mission; its findings are in full under [Landed](../archive/gpui-rewrite/m6-consolidation.md#landed). This file keeps only what is still open, in the order queued; [#445](https://github.com/yicheng47/runner/issues/445) (which superseded #432) tracked the queued items and was closed 2026-08-27 once they landed; the unscheduled items below are tracked in this file, and each gets its own issue when it is scheduled (M6.2 already has #347). Everything lands on `main` and ships as tagged releases (the post-GA nightly was dropped 2026-08-27; the rolling-draft channel stays available via `/nightly run`). Numbers are identifiers, not sequence.
+`v0.6.0` shipped 2026-08-23 and every landed M6 item since is recorded with its commit in the program record ([README.md](README.md) §Timeline); the items landed through GA are in full in the archived M6 document ([../archive/gpui-rewrite/m6-consolidation.md](../archive/gpui-rewrite/m6-consolidation.md)). [#445](https://github.com/yicheng47/runner/issues/445) tracked the queued items and closed 2026-08-27 once they landed. This file keeps only what is still open, in the order queued; an item gets its own issue when it is scheduled. Everything lands on `main` and ships as tagged releases (the post-GA nightly was dropped 2026-08-27; the rolling-draft channel stays available via `/nightly run`). Numbers are identifiers, not sequence.
 
 ## Pending — post-GA, in order
 
-Nothing queued — M6.16 and M6.19 landed 2026-08-27; the next mission is M6.2 below.
+Nothing queued.
 
 ## Pending — later
-
-### M6.2 — Hook-based session status (#347 reopened 2026-08-20; spec `docs/features/52-hook-based-session-status.md`) — L, backend + status consumers, second M6 mission (was first until 2026-08-21)
-
-The one structural fix on the coordination seam. Jason's 2026-08-01 won't-do is reversed: a reliable status detector needs the agents' own turn signals; the byte-flow `IdleDetector` (`session/pty_runtime.rs:37` 750 ms silence, `:49` 500 ms `RESIZE_GRACE`) cannot distinguish a permission prompt, a question, and an idle prompt — they are the same bytes-then-silence — and stays only as the fallback tier.
-
-Scope as specced: spawn-scoped injection, nothing installed in the user's configs — claude-code via `--settings <file-or-json>` carrying a runner-generated hooks config; codex via its hooks system (managed `CODEX_HOME` mirror or `-c` overrides; re-verify against current codex-cli, the 0.145.0 findings are from July). Loopback receiver with per-session bearer token riding the existing env injection, fail-open handler. Per-runtime normalizers → `working` / `waiting` / `done` (+ `interrupted`); `RunnerStatus` gains Waiting and Done with a confidence tier (`hook` vs `heuristic`); freshness decay degrades to the heuristic instead of freezing. Phases: receiver + model → claude-code adapter → codex adapter → interrupt inference + decay.
-
-What it retires downstream, confirmed per phase as it lands: the silence threshold and resize grace become fallback-only; turn-boundary delivery in the router (`DeliveryGate` / `SessionOutbox`, the 80 ms cooldown thread at `router/mod.rs:1179`, the 30 s reconciliation re-nudge at `:844`) keys off `done` instead of inferred idle. What it does **not** retire: `CLAUDE_LAUNCH_GATE_GRACE` 1500 ms, `SUBMIT_DELAY` 80 ms, the 120 ms paste sleep (`output.rs:449`), `RECENT_LOCAL_INPUT_WINDOW` 2 s — those cover input readiness of the agent's TUI, not status, and the renderer swap did not change them. Consumers ready today: sidebar attention rollups (needs-you tier), mission router nudge gating, blocked-inbox indicator, `mission_status` pending asks.
 
 ### M6.7 — Terminal render and ingestion performance (added 2026-08-21 from a read-only audit of the hot paths) — M, app + backend, after M6.1 unless streaming lag is felt first
 
@@ -68,7 +55,7 @@ All confirmed at file:line on 2026-08-20. The session-lock item landed 2026-08-2
 ## Tier 2 — schedule explicitly, post-cutover
 
 - **Typed PTY event transport** — folded into M6.7 item 6 (2026-08-21). M, backend. `output.rs:890` base64-encodes every 8 KB chunk into a `serde_json::Value` `AppEvent` broadcast to five subscribers (`main.rs:269/306/359`, `app_store.rs:140`, `terminal.rs:473`), four of which string-match the name and drop it; only `TerminalBridge` decodes (`terminal.rs:323`). No coalescing. Byte channel keyed by session, or `Arc<[u8]>` payload with per-name routing. The sustained-throughput ceiling when both agents paint TUI frames.
-- **Router delayed-work queue** — M (L if the two in-flight flags unify). Five hand-rolled sleep-and-check timer threads (`router/mod.rs:844`, `:1000`, `:1118`, `:1151`, `:1179`) and `DeliveryGateState.in_flight` vs `SessionOutbox.submit_in_flight` reconciled via an event plus the cooldown thread. Sequence **after** M6.1 — hook-driven `done` may remove half of it.
+- **Router delayed-work queue** — M (L if the two in-flight flags unify). Five hand-rolled sleep-and-check timer threads (`router/mod.rs:844`, `:1000`, `:1118`, `:1151`, `:1179`) and `DeliveryGateState.in_flight` vs `SessionOutbox.submit_in_flight` reconciled via an event plus the cooldown thread. Stands alone now that hook-driven status is off the table (below).
 - **`Runtime` enum + `Error` enum** — L. Runtime names are bare strings across 24 non-test files, 30+ dispatch sites (`router/runtime.rs` alone has 48 occurrences of `"claude-code"`). Fights decision 2 until `main` is gone; one mechanical commit at or after cutover.
 - **Glyph path pre-parse** — folded into M6.7 item 4 (2026-08-21). M, opportunistic. `terminal/glyphs.rs:434-436` re-tokenizes path strings per cell per frame, twice (validate + paint); 59 of 80 box-drawing codepoints are on that path. Nanoseconds against quad submission; fix when next in the file.
 - **Render-time `.expect()` → early return** — S. Thirteen invariant asserts in render paths (`crews.rs:2047`, `panes.rs:717`, `sidebar.rs:2174`, `mission_workspace.rs:4709`, `glyphs.rs:448/598` on the paint path) are the app's crash surface. The one production `.unwrap()` (`mission_feed.rs:131`) is guarded.
@@ -81,13 +68,13 @@ All confirmed at file:line on 2026-08-20. The session-lock item landed 2026-08-2
 
 - **fsync on the event log.** Page-cache durability is the right trade for a local tool; the cost is a hard power loss mid-append, and the log's tail repair already handles a torn line. Recorded as a decision in `arch.md` under M6.4.
 - **Renderer damage tracking beyond M4.6b.** PTY bursts are already coalesced (`try_recv` drain), non-terminal routes are gated (`route.terminal_visible()`), and gpui's `LineLayoutCache` reuses shaped lines; M4.6b's per-entity notify removes the remaining whole-window re-render. A dirty-row set out of alacritty is L and nothing currently felt justifies it.
-- **A quit path.** The audit listed its absence as a defect; it was refuted — `stop_running_sessions_on_quit` (`bootstrap.rs:194-209`) is wired from ⌘Q, window close, and post-`run()`, kills the process group (SIGHUP → SIGKILL), and joins the forwarder (`lifecycle.rs:96-97`). SIGHUP + the startup orphan sweep is the crash fallback. Only the `OutputStream` doc comment is wrong (M6.2).
+- **A quit path.** The audit listed its absence as a defect; it was refuted — `stop_running_sessions_on_quit` (`bootstrap.rs:194-209`) is wired from ⌘Q, window close, and post-`run()`, kills the process group (SIGHUP → SIGKILL), and joins the forwarder (`lifecycle.rs:96-97`). SIGHUP + the startup orphan sweep is the crash fallback. Only the `OutputStream` doc comment is wrong (M6.3 doc-comment fixes).
+- **M6.2 — hook-based session status (#347, spec 52), dropped 2026-08-27; its grid-scraping variant (#455), dropped 2026-08-28 (Jason).** The ask was a better busy/idle detector, not a Waiting state. Hooks meant a loopback receiver, per-spawn injection (`--settings` for claude-code, a managed `CODEX_HOME` mirror for codex — codex 0.150.1 now ships a Claude-compatible hook system behind `[features] codex_hooks`, so the route exists if Waiting is ever wanted) and coupling to two CLIs' config schemas; reading the TUI's bottom rows instead hard-wires per-runtime strings that had already drifted (claude 2.1.250 no longer prints `esc to interrupt`; its busy line is a spinner glyph + verb + `…`). What actually covers the gap: the agents animate a spinner for the whole turn, so a turn never goes silent except during a tool call that pauses it, and `DEFAULT_IDLE_THRESHOLD` went from 750 ms to 2 s (`session/pty_runtime.rs`) so that pause does not read as a turn boundary. The byte-flow `IdleDetector` is the detector; spec 52 stays in `docs/features/` as the record.
 - **M6.14 — settings as a YAML file under `~/.runner/` (spec 62), dropped 2026-08-22 (Jason).** Settings already are a plain JSON file — `ui-settings.json` in the app data dir, read at launch, written whole on change — and nobody edits it by hand, so a watcher, a new location and a format change bought nothing; the one gap, a hand edit needing a relaunch, is not worth a mission. The spec was deleted; this line and the impl_log are the record, and spec number 62 is the Monokai theme again, as on `main`.
 
 ## Gates
 
 - Each mission: `make verify` green; reviewer clean on the working-tree diff; backend missions verified by their ported test suites plus the two-instance `EventLog` test once it exists; app missions daily-driven.
-- M6.2 specifically: status pills in sidebar and feed switch to hook-sourced for claude-code and codex with the `IdleDetector` demonstrably taking over when a hook is disabled; no nudge regressions in a two-agent mission over a full working day.
 - M6 did not gate the cutover; the remainder ships as post-GA nightlies.
 
 ## Provenance
