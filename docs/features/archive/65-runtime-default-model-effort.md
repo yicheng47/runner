@@ -1,6 +1,6 @@
 # Runtime default model and effort
 
-Tracking issue: [#380](https://github.com/yicheng47/runner/issues/380). Status: in progress (mission on `codex peer`, 2026-08-28). Picked up on the native GPUI line; the issue's `src-tauri/` pointers map to `crates/runner-backend/src/runtime_status.rs`, `crates/runner-backend/src/ops/mcp.rs`, and `crates/runner-backend/src/router/runtime.rs`.
+Tracking issue: [#380](https://github.com/yicheng47/runner/issues/380). Status: shipped on `main` — PR #456 → `491307b`, 2026-08-28, by mission on `codex peer` (`01M136PE1BBGJTBP4DQMNN5N1B`); the smoke test hid the defaults caption on Not-found rows. Ships in the first release after v0.6.6. Picked up on the native GPUI line; the issue's `src-tauri/` pointers map to `crates/runner-backend/src/runtime_status.rs`, `crates/runner-backend/src/ops/mcp.rs`, and `crates/runner-backend/src/router/runtime.rs`.
 
 ## Motivation
 

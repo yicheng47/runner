@@ -1,6 +1,6 @@
 # Mission brief — Feature 65: runtime default model and effort
 
-Drafted 2026-08-28; started as mission `01M136PE1BBGJTBP4DQMNN5N1B` the same day. Start with `mission_start` on crew `codex peer` (`01K000DEFAULT000PEERCODING01`, coder = codex lead, reviewer = claude-code), project `runner` (`01KZWQA969B26J6WSP68RZP4Y9`), no `cwd`, title `Feature 65 — Runtime default model and effort`, the text below as `goal_override`. Lands as a nightly; closes #380.
+Drafted 2026-08-28; started as mission `01M136PE1BBGJTBP4DQMNN5N1B` the same day. Start with `mission_start` on crew `codex peer` (`01K000DEFAULT000PEERCODING01`, coder = codex lead, reviewer = claude-code), project `runner` (`01KZWQA969B26J6WSP68RZP4Y9`), no `cwd`, title `Feature 65 — Runtime default model and effort`, the text below as `goal_override`. Landed as PR #456 → `491307b` on 2026-08-28, closing #380; the smoke test hid the Agents caption on Not-found rows.
 
 ---
 
