@@ -34,7 +34,11 @@ use super::runtime::{
 
 const RUNTIME_LABEL: &str = "native-pty";
 const READ_BUF: usize = 8 * 1024;
-const DEFAULT_IDLE_THRESHOLD: Duration = Duration::from_millis(750);
+/// Silence before a session reads as Idle. The agent TUIs animate a spinner
+/// while a turn runs, so genuine work rarely goes quiet; the 2 s window is
+/// for the moments it does (a tool call that pauses the spinner), because
+/// the router treats Idle as a turn boundary and delivers into it.
+const DEFAULT_IDLE_THRESHOLD: Duration = Duration::from_secs(2);
 const IDLE_MONITOR_POLL: Duration = Duration::from_millis(50);
 /// How long a runtime gets to exit on its own after SIGHUP before its
 /// process group is SIGKILLed. Sized to claude-code's own shutdown failsafe
@@ -1506,12 +1510,12 @@ mod tests {
             .spawn(spec(
                 "test-idle-detector",
                 "/bin/sh",
-                &["-c", "printf first; sleep 1; printf second; sleep 0.1"],
+                &["-c", "printf first; sleep 2.5; printf second; sleep 0.1"],
             ))
             .unwrap();
 
         let mut statuses = Vec::new();
-        let deadline = Instant::now() + Duration::from_secs(4);
+        let deadline = Instant::now() + Duration::from_secs(6);
         while Instant::now() < deadline {
             match stream.recv_timeout(Duration::from_millis(100)) {
                 Ok(RuntimeOutput::StatusTransition { state, source }) => {

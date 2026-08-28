@@ -381,7 +381,7 @@ The reader thread owns the child handle. On EOF it calls `wait()`, emits `sessio
 
 ### 5.10 Busy / idle inference
 
-Per-runner busy/idle is inferred from PTY-byte silence by the session forwarder's `IdleDetector` (750 ms of silence = idle; a 500 ms grace window re-armed on every resize ioctl keeps SIGWINCH repaints from reading as work), not reported by the agent. For mission sessions the forwarder appends a `runner_status` event with `source: "forwarder"` to the mission log and the router maps it into the workspace status projection. Direct chats stay off-bus: SessionManager keeps their latest activity and emits `session/status` transitions to every window; the sidebar aggregates them at the tab level into spinners, `last_completed_at`, and the unread dot.
+Per-runner busy/idle is inferred from PTY-byte silence by the session forwarder's `IdleDetector` (2 s of silence = idle; a 500 ms grace window re-armed on every resize ioctl keeps SIGWINCH repaints from reading as work), not reported by the agent. For mission sessions the forwarder appends a `runner_status` event with `source: "forwarder"` to the mission log and the router maps it into the workspace status projection. Direct chats stay off-bus: SessionManager keeps their latest activity and emits `session/status` transitions to every window; the sidebar aggregates them at the tab level into spinners, `last_completed_at`, and the unread dot.
 
 This is the fallback tier by design. M6.2 adds hook-based status from the agents' own turn signals (`working` / `waiting` / `done`) with the byte-flow detector demoted to heuristic; M6.1 replaces the byte-based "is the human typing" latch with an observed input state from the native seam.
 
