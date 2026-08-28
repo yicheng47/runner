@@ -5,7 +5,7 @@ Dated record for the local-skills program ([README](README.md), [plan](plan.md))
 ## Current state (update with each entry)
 
 - **Landed**: nothing.
-- **Next**: S0 design in `design/runner.pen` (Jason); S1 backend can be briefed and started independently.
+- **Next**: S0 — the Skills pane card and row in `design/runner.pen` (Jason); then the M1 brief (pane: catalog per runtime, global on/off for claude-code via `skillOverrides` in `~/.claude/settings.json`). Order reset 2026-08-28 to see-first-control-later: M1 pane → M2 allowlist backend → M3 allowlist app.
 - **CLI versions verified against**: claude-code 2.1.250 (`skillOverrides` via `--settings` hides skills from the model; leak bugs #54996 / #50631 closed 2026-05-04), codex 0.150.1 (skills present, no per-launch control).
 
 ## 2026-08-28 — program opened
