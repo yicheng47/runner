@@ -676,6 +676,14 @@ impl AgentsPane {
                         })
                     })),
             )
+            .children(runtime_defaults_visible(runtime).then(|| {
+                div()
+                    .font_family("JetBrains Mono")
+                    .text_size(rems(11. / 16.))
+                    .line_height(rems(15.4 / 16.))
+                    .text_color(theme::faint())
+                    .child(runtime_defaults_caption(runtime))
+            }))
             .children(presentation.caption.map(|caption| {
                 div()
                     .font_family("JetBrains Mono")
@@ -859,6 +867,24 @@ fn override_validation_error_message(error: &OverrideValidationError) -> String 
     error.message.clone()
 }
 
+fn runtime_defaults_visible(runtime: &RuntimeExecutableStatus) -> bool {
+    runtime.state != RuntimeRowState::NotFound
+}
+
+fn runtime_defaults_caption(runtime: &RuntimeExecutableStatus) -> String {
+    format!(
+        "Model: {} · Effort: {}",
+        runtime
+            .default_model
+            .as_deref()
+            .unwrap_or("runtime default"),
+        runtime
+            .default_effort
+            .as_deref()
+            .unwrap_or("runtime default")
+    )
+}
+
 fn runtime_presentation(
     runtime: &RuntimeExecutableStatus,
     probe_outcome: Option<DiscoveryOutcome>,
@@ -1029,6 +1055,8 @@ mod tests {
             name: "codex".into(),
             display_name: "Codex".into(),
             command: "codex".into(),
+            default_model: None,
+            default_effort: None,
             detected_path: None,
             override_path: None,
             effective_command: None,
@@ -1085,6 +1113,42 @@ mod tests {
     }
 
     #[test]
+    fn formats_known_partial_and_unknown_runtime_defaults() {
+        let mut runtime = runtime(RuntimeRowState::Detected);
+        runtime.default_model = Some("claude-fable-5[1m]".into());
+        runtime.default_effort = Some("xhigh".into());
+        assert_eq!(
+            runtime_defaults_caption(&runtime),
+            "Model: claude-fable-5[1m] · Effort: xhigh"
+        );
+
+        runtime.default_effort = None;
+        assert_eq!(
+            runtime_defaults_caption(&runtime),
+            "Model: claude-fable-5[1m] · Effort: runtime default"
+        );
+
+        runtime.default_model = None;
+        assert_eq!(
+            runtime_defaults_caption(&runtime),
+            "Model: runtime default · Effort: runtime default"
+        );
+    }
+
+    #[test]
+    fn hides_runtime_defaults_when_the_runtime_is_not_found() {
+        assert!(runtime_defaults_visible(&runtime(
+            RuntimeRowState::Detected
+        )));
+        assert!(runtime_defaults_visible(&runtime(
+            RuntimeRowState::Checking
+        )));
+        assert!(!runtime_defaults_visible(&runtime(
+            RuntimeRowState::NotFound
+        )));
+    }
+
+    #[test]
     fn agent_preferences_persist_explicit_enable_disable_and_clear_default() {
         let mut settings = AppSettings {
             default_runtime: "codex".into(),
@@ -1119,6 +1183,8 @@ mod tests {
             description: String::new(),
             default_enabled: true,
             available: false,
+            default_model: None,
+            default_effort: None,
             models: Vec::new(),
             efforts: Vec::new(),
         }];

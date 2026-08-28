@@ -1769,6 +1769,8 @@ mod tests {
             description: name.into(),
             default_enabled: true,
             available: true,
+            default_model: None,
+            default_effort: None,
             models: Vec::new(),
             efforts: efforts
                 .iter()

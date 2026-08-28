@@ -52,6 +52,8 @@ pub struct RuntimeExecutableStatus {
     pub name: String,
     pub display_name: String,
     pub command: String,
+    pub default_model: Option<String>,
+    pub default_effort: Option<String>,
     pub detected_path: Option<String>,
     pub override_path: Option<String>,
     pub effective_command: Option<String>,
@@ -95,10 +97,15 @@ pub fn status_list(
         .clone();
     let overrides = db::runtime_overrides(pool)?;
     let path = direct_chat_path(&shell_env);
+    let home = std::env::var_os("HOME").map(PathBuf::from);
 
     let runtimes = runtime_definitions()
         .iter()
         .map(|runtime| {
+            let defaults = home
+                .as_deref()
+                .map(|home| crate::runtime_defaults::runtime_defaults(runtime.name, home))
+                .unwrap_or_default();
             let detected_path =
                 find_executable(runtime.command, &path).map(|path| path.display().to_string());
             let override_path = overrides.get(runtime.name).cloned();
@@ -143,6 +150,8 @@ pub fn status_list(
                 name: runtime.name.to_string(),
                 display_name: runtime.display_name.to_string(),
                 command: runtime.command.to_string(),
+                default_model: defaults.model,
+                default_effort: defaults.effort,
                 detected_path,
                 override_path,
                 effective_command,

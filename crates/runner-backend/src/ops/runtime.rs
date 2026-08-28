@@ -29,6 +29,8 @@ pub struct RuntimeCatalogEntry {
     pub description: String,
     pub default_enabled: bool,
     pub available: bool,
+    pub default_model: Option<String>,
+    pub default_effort: Option<String>,
     pub models: Vec<RuntimeCatalogOption>,
     pub efforts: Vec<RuntimeCatalogOption>,
 }
@@ -98,7 +100,7 @@ pub fn runtime_refresh(state: &AppCore) -> Result<RuntimeStatusResponse> {
 
 pub fn runtime_catalog(state: &AppCore) -> Result<Vec<RuntimeCatalogEntry>> {
     let statuses = runtime_status_list(state)?;
-    let availability: HashMap<_, _> = statuses
+    let statuses: HashMap<_, _> = statuses
         .runtimes
         .into_iter()
         .map(|runtime| {
@@ -106,13 +108,20 @@ pub fn runtime_catalog(state: &AppCore) -> Result<Vec<RuntimeCatalogEntry>> {
                 runtime.effective_source,
                 Some(RuntimeCommandSource::Detected | RuntimeCommandSource::Override)
             );
-            (runtime.name, available)
+            (
+                runtime.name,
+                (available, runtime.default_model, runtime.default_effort),
+            )
         })
         .collect();
     Ok(runtime_catalog_options()
         .into_iter()
         .map(|mut runtime| {
-            runtime.available = availability.get(&runtime.name).copied().unwrap_or(false);
+            if let Some((available, default_model, default_effort)) = statuses.get(&runtime.name) {
+                runtime.available = *available;
+                runtime.default_model.clone_from(default_model);
+                runtime.default_effort.clone_from(default_effort);
+            }
             runtime
         })
         .collect())
@@ -222,6 +231,8 @@ fn runtime_catalog_options() -> Vec<RuntimeCatalogEntry> {
             description: "OpenAI Codex CLI".into(),
             default_enabled: true,
             available: false,
+            default_model: None,
+            default_effort: None,
             models: vec![
                 default_model(),
                 option(
@@ -265,6 +276,8 @@ fn runtime_catalog_options() -> Vec<RuntimeCatalogEntry> {
             description: "Anthropic Claude Code CLI".into(),
             default_enabled: true,
             available: false,
+            default_model: None,
+            default_effort: None,
             models: vec![
                 default_model(),
                 option("fable", "fable", "Latest Claude Fable."),
@@ -281,6 +294,8 @@ fn runtime_catalog_options() -> Vec<RuntimeCatalogEntry> {
             description: "Qoder CLI".into(),
             default_enabled: false,
             available: false,
+            default_model: None,
+            default_effort: None,
             models: vec![default_model()],
             efforts: Vec::new(),
         },
@@ -291,6 +306,8 @@ fn runtime_catalog_options() -> Vec<RuntimeCatalogEntry> {
             description: "TRAE CLI".into(),
             default_enabled: false,
             available: false,
+            default_model: None,
+            default_effort: None,
             models: vec![default_model()],
             efforts: common_efforts(),
         },
