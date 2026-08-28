@@ -204,6 +204,11 @@ impl NativeRoot {
                         form.permission_mode = PermissionMode::Default;
                     }
                 }
+                let model_placeholder =
+                    runtime_model_placeholder(&form.runtimes, &next_runtime, false);
+                form.model.update(cx, |input, input_cx| {
+                    input.set_placeholder(model_placeholder, input_cx)
+                });
                 form.runtime_select.update(cx, |select, select_cx| {
                     select.set_options(
                         runner_app::ui::runtime_select_options(&form.runtimes),
@@ -247,6 +252,11 @@ impl NativeRoot {
                     select.set_options(options, select_cx);
                     select.set_value(runtime_value, select_cx);
                     select.set_placeholder(placeholder, select_cx);
+                });
+                let model_placeholder =
+                    runtime_model_placeholder(&form.runtimes, &form.runtime, form.slot.is_some());
+                form.model.update(cx, |input, input_cx| {
+                    input.set_placeholder(model_placeholder, input_cx)
                 });
                 form.model_field.update(cx, |field, field_cx| {
                     field.set_suggestions(runtime_models(&form.runtimes, &form.runtime), field_cx)
@@ -302,6 +312,10 @@ impl NativeRoot {
         });
         let model_field = cx.new(|model_cx| {
             ModelField::new(model.clone(), runtime_models(&runtimes, &runtime), model_cx)
+        });
+        let model_placeholder = runtime_model_placeholder(&runtimes, &runtime, false);
+        model.update(cx, |input, input_cx| {
+            input.set_placeholder(model_placeholder, input_cx)
         });
         model_field.update(cx, |field, field_cx| {
             field.set_disabled(runtime.is_empty(), field_cx)
@@ -483,14 +497,10 @@ impl NativeRoot {
         let args = cx.new(|input_cx| {
             TextField::new(input_cx.focus_handle(), visible_args, "--mcp-debug", true)
         });
-        let model = cx.new(|input_cx| {
-            TextField::new(
-                input_cx.focus_handle(),
-                resolution.model.clone(),
-                "default",
-                true,
-            )
-            .placeholder_as_value(true)
+        let model_value = resolution.model.clone();
+        let model = cx.new(move |input_cx| {
+            TextField::new(input_cx.focus_handle(), model_value, "default", true)
+                .placeholder_as_value(true)
         });
         let model_field = cx.new(|model_cx| {
             ModelField::new(
@@ -498,6 +508,11 @@ impl NativeRoot {
                 runtime_models(&runtimes, &resolution.runtime),
                 model_cx,
             )
+        });
+        let model_placeholder =
+            runtime_model_placeholder(&runtimes, &resolution.runtime, slot.is_some());
+        model.update(cx, |input, input_cx| {
+            input.set_placeholder(model_placeholder, input_cx)
         });
         let working_dir = cx.new(|input_cx| {
             working_dir_text_field(
@@ -686,10 +701,13 @@ impl NativeRoot {
         let command = runtime_entry(&form.runtimes, &runtime)
             .map(|entry| entry.command.clone())
             .unwrap_or_default();
+        let model_placeholder = runtime_model_placeholder(&form.runtimes, &runtime, false);
         form.command
             .update(cx, |input, input_cx| input.reset(command, input_cx));
-        form.model
-            .update(cx, |input, input_cx| input.reset("", input_cx));
+        form.model.update(cx, |input, input_cx| {
+            input.reset("", input_cx);
+            input.set_placeholder(model_placeholder, input_cx);
+        });
         form.model_field.update(cx, |field, field_cx| {
             field.set_suggestions(runtime_models(&form.runtimes, &runtime), field_cx);
             field.set_disabled(runtime.is_empty(), field_cx);
@@ -1048,6 +1066,11 @@ impl NativeRoot {
                 .update(cx, |input, input_cx| input.reset(command, input_cx));
         }
         form.runtime = next_runtime.clone();
+        let model_placeholder =
+            runtime_model_placeholder(&form.runtimes, &next_runtime, form.slot.is_some());
+        form.model.update(cx, |input, input_cx| {
+            input.set_placeholder(model_placeholder, input_cx)
+        });
         form.model_field.update(cx, |field, field_cx| {
             field.set_suggestions(runtime_models(&form.runtimes, &next_runtime), field_cx)
         });
@@ -2706,6 +2729,27 @@ fn runtime_models<'a>(
         .unwrap_or_default()
 }
 
+fn runtime_model_placeholder(
+    runtimes: &[RuntimeCatalogEntry],
+    runtime: &str,
+    edits_slot: bool,
+) -> String {
+    if edits_slot {
+        return "default".into();
+    }
+    runtime_entry(runtimes, runtime)
+        .and_then(|runtime| runtime.default_model.as_deref())
+        .map(|model| format!("default ({model})"))
+        .unwrap_or_else(|| "default".into())
+}
+
+fn runtime_default_effort_label(runtimes: &[RuntimeCatalogEntry], runtime: &str) -> String {
+    runtime_entry(runtimes, runtime)
+        .and_then(|runtime| runtime.default_effort.as_deref())
+        .map(|effort| format!("Runtime default ({effort})"))
+        .unwrap_or_else(|| "Runtime default".into())
+}
+
 fn runtime_efforts<'a>(
     runtimes: &'a [RuntimeCatalogEntry],
     name: &str,
@@ -2753,14 +2797,18 @@ fn effort_options(
     runtime_efforts(runtimes, runtime)
         .iter()
         .map(|option| {
-            let label = if edits_slot && option.value.is_empty() {
-                if runtime == runner.runtime {
-                    format!(
-                        "Runner default ({})",
-                        runner.effort.as_deref().unwrap_or("default")
-                    )
+            let label = if option.value.is_empty() {
+                if edits_slot {
+                    if runtime == runner.runtime {
+                        format!(
+                            "Runner default ({})",
+                            runner.effort.as_deref().unwrap_or("default")
+                        )
+                    } else {
+                        "Runtime default".into()
+                    }
                 } else {
-                    "Runtime default".into()
+                    runtime_default_effort_label(runtimes, runtime)
                 }
             } else {
                 option.label.clone()
@@ -3133,6 +3181,24 @@ fn detail_metadata_row(
 mod tests {
     use super::*;
 
+    fn runtime_with_defaults(
+        default_model: Option<&str>,
+        default_effort: Option<&str>,
+    ) -> RuntimeCatalogEntry {
+        RuntimeCatalogEntry {
+            name: "codex".into(),
+            display_name: "Codex".into(),
+            command: "codex".into(),
+            description: "OpenAI Codex CLI".into(),
+            default_enabled: true,
+            available: true,
+            default_model: default_model.map(str::to_owned),
+            default_effort: default_effort.map(str::to_owned),
+            models: Vec::new(),
+            efforts: Vec::new(),
+        }
+    }
+
     #[test]
     fn runner_handle_validation_matches_the_shipped_contract() {
         for valid in ["", "a", "0", "coder-2", "coder_2", &"a".repeat(32)] {
@@ -3141,6 +3207,33 @@ mod tests {
         for invalid in ["Coder", "-coder", "_coder", "coder!", &"a".repeat(33)] {
             assert!(validate_runner_handle(invalid).is_some(), "{invalid}");
         }
+    }
+
+    #[test]
+    fn runtime_default_labels_include_known_values() {
+        let runtimes = [runtime_with_defaults(Some("gpt-5.6-sol"), Some("xhigh"))];
+        assert_eq!(
+            runtime_model_placeholder(&runtimes, "codex", false),
+            "default (gpt-5.6-sol)"
+        );
+        assert_eq!(
+            runtime_model_placeholder(&runtimes, "codex", true),
+            "default"
+        );
+        assert_eq!(
+            runtime_default_effort_label(&runtimes, "codex"),
+            "Runtime default (xhigh)"
+        );
+
+        let runtimes = [runtime_with_defaults(None, None)];
+        assert_eq!(
+            runtime_model_placeholder(&runtimes, "codex", false),
+            "default"
+        );
+        assert_eq!(
+            runtime_default_effort_label(&runtimes, "codex"),
+            "Runtime default"
+        );
     }
 
     #[test]

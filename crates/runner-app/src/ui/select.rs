@@ -731,6 +731,8 @@ mod tests {
             description: "OpenAI Codex CLI".into(),
             default_enabled: true,
             available: false,
+            default_model: None,
+            default_effort: None,
             models: Vec::new(),
             efforts: Vec::new(),
         }];

@@ -83,22 +83,20 @@ fn home_dir() -> Result<PathBuf> {
         .ok_or_else(|| Error::msg("HOME env var not set"))
 }
 
-const CODEX_CONFIG_RELATIVE_PATH: &str = ".codex/config.toml";
-
 fn claude_code_path() -> Result<PathBuf> {
     Ok(home_dir()?.join(".claude.json"))
 }
 
 pub(crate) fn codex_path() -> Result<PathBuf> {
-    Ok(home_dir()?.join(CODEX_CONFIG_RELATIVE_PATH))
+    Ok(crate::runtime_defaults::codex_config_path(&home_dir()?))
 }
 
 fn qoder_path() -> Result<PathBuf> {
-    Ok(home_dir()?.join(".qoder").join("settings.json"))
+    Ok(crate::runtime_defaults::qoder_settings_path(&home_dir()?))
 }
 
 fn trae_path() -> Result<PathBuf> {
-    Ok(home_dir()?.join(".trae").join("traecli.toml"))
+    Ok(crate::runtime_defaults::trae_config_path(&home_dir()?))
 }
 
 fn mcp_binary_path(state: &AppCore) -> String {
