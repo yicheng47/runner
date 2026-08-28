@@ -949,10 +949,6 @@ mod tests {
             "got: {err}",
         );
         assert!(
-            err.to_string().contains("qoder"),
-            "valid-runtime list must include qoder: {err}",
-        );
-        assert!(
             err.to_string().contains("trae"),
             "valid-runtime list must include trae: {err}",
         );

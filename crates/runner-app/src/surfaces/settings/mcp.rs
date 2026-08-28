@@ -12,18 +12,16 @@ use crate::theme;
 enum McpClient {
     ClaudeCode,
     Codex,
-    Qoder,
     Trae,
 }
 
 impl McpClient {
-    const ALL: [Self; 4] = [Self::ClaudeCode, Self::Codex, Self::Qoder, Self::Trae];
+    const ALL: [Self; 3] = [Self::ClaudeCode, Self::Codex, Self::Trae];
 
     fn key(self) -> &'static str {
         match self {
             Self::ClaudeCode => "claude_code",
             Self::Codex => "codex",
-            Self::Qoder => "qoder",
             Self::Trae => "trae",
         }
     }
@@ -32,7 +30,6 @@ impl McpClient {
         match self {
             Self::ClaudeCode => "Claude Code",
             Self::Codex => "Codex CLI",
-            Self::Qoder => "Qoder CLI",
             Self::Trae => "TRAE CLI",
         }
     }
@@ -41,7 +38,6 @@ impl McpClient {
         match self {
             Self::ClaudeCode => "Writes the runner entry under ~/.claude.json.",
             Self::Codex => "Writes the runner table under ~/.codex/config.toml.",
-            Self::Qoder => "Writes the runner entry under ~/.qoder/settings.json.",
             Self::Trae => "Writes the runner table under ~/.trae/traecli.toml.",
         }
     }
@@ -50,7 +46,6 @@ impl McpClient {
         match self {
             Self::ClaudeCode => "Claude",
             Self::Codex => "Codex",
-            Self::Qoder => "Qoder",
             Self::Trae => "TRAE",
         }
     }
@@ -59,7 +54,6 @@ impl McpClient {
         match self {
             Self::ClaudeCode => &status.claude_code,
             Self::Codex => &status.codex,
-            Self::Qoder => &status.qoder,
             Self::Trae => &status.trae,
         }
     }
@@ -86,7 +80,6 @@ struct McpRowPresentation {
 struct McpSnippets {
     claude_code: String,
     codex: String,
-    qoder: String,
     trae: String,
 }
 
@@ -95,7 +88,6 @@ impl McpSnippets {
         match client {
             McpClient::ClaudeCode => &self.claude_code,
             McpClient::Codex => &self.codex,
-            McpClient::Qoder => &self.qoder,
             McpClient::Trae => &self.trae,
         }
     }
@@ -154,7 +146,6 @@ impl McpPane {
                 McpSnippets {
                     claude_code: snippets.claude_code,
                     codex: snippets.codex,
-                    qoder: snippets.qoder,
                     trae: snippets.trae,
                 },
             ))
@@ -215,7 +206,6 @@ impl McpPane {
                 McpSnippets {
                     claude_code: snippets.claude_code,
                     codex: snippets.codex,
-                    qoder: snippets.qoder,
                     trae: snippets.trae,
                 },
             ))

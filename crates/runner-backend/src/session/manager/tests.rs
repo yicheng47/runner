@@ -5228,7 +5228,7 @@ fn runtime_override_helper_distinguishes_absent_matching_and_differing() {
     assert!(matching.pinned, "explicit matching override must pin");
 
     // Differing: rebuild + pin for every other catalog runtime.
-    for runtime in ["claude-code", "qoder", "trae"] {
+    for runtime in ["claude-code", "trae"] {
         let differing = resolve_runtime_override(&r, Some(runtime), None, None).unwrap();
         assert_eq!(
             differing.effective.as_ref().map(|r| r.runtime.as_str()),

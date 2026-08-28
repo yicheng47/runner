@@ -288,18 +288,6 @@ fn runtime_catalog_options() -> Vec<RuntimeCatalogEntry> {
             efforts: claude_efforts,
         },
         RuntimeCatalogEntry {
-            name: "qoder".into(),
-            display_name: "Qoder".into(),
-            command: "qodercli".into(),
-            description: "Qoder CLI".into(),
-            default_enabled: false,
-            available: false,
-            default_model: None,
-            default_effort: None,
-            models: vec![default_model()],
-            efforts: Vec::new(),
-        },
-        RuntimeCatalogEntry {
             name: "trae".into(),
             display_name: "TRAE CLI".into(),
             command: "traecli".into(),
@@ -333,13 +321,11 @@ mod tests {
                 .iter()
                 .map(|runtime| runtime.name.as_str())
                 .collect::<Vec<_>>(),
-            ["codex", "claude-code", "qoder", "trae"]
+            ["codex", "claude-code", "trae"]
         );
         assert!(catalog[0].default_enabled);
         assert!(catalog[1].default_enabled);
         assert!(!catalog[2].default_enabled);
-        assert!(!catalog[3].default_enabled);
-        assert!(catalog[2].efforts.is_empty());
         assert_eq!(
             catalog[0]
                 .models
@@ -366,7 +352,7 @@ mod tests {
             ["", "low", "medium", "high", "xhigh", "max", "ultra"]
         );
         assert_eq!(
-            catalog[3]
+            catalog[2]
                 .efforts
                 .iter()
                 .map(|effort| effort.value.as_str())
@@ -389,13 +375,13 @@ mod tests {
             ["codex", "claude-code"]
         );
 
-        let enabled = vec!["qoder".to_string()];
+        let enabled = vec!["trae".to_string()];
         assert_eq!(
             filter_selectable_runtime_catalog(catalog, Some(&enabled))
                 .iter()
                 .map(|runtime| runtime.name.as_str())
                 .collect::<Vec<_>>(),
-            ["qoder"]
+            ["trae"]
         );
     }
 }

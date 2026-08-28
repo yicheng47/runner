@@ -2835,7 +2835,6 @@ fn permission_modes(runtime: &str) -> &'static [PermissionMode] {
             PermissionMode::Auto,
             PermissionMode::Bypass,
         ],
-        "qoder" => &[PermissionMode::Default, PermissionMode::Auto],
         _ => &[],
     }
 }
@@ -2892,10 +2891,6 @@ fn permission_mode_description(runtime: &str, mode: PermissionMode) -> &'static 
         }
         ("codex", PermissionMode::Auto) => "Auto-run in the workspace and ask only when the model decides approval is needed (`--ask-for-approval on-request`).",
         ("codex", PermissionMode::Bypass) => "Never ask while keeping Codex's workspace-write sandbox (`--ask-for-approval never`).",
-        ("qoder", PermissionMode::Default) => "Use Qoder's built-in permission mode.",
-        ("qoder", PermissionMode::Auto) => {
-            "Run with Qoder's verified `--permission-mode auto` mode."
-        }
         ("trae", PermissionMode::Default) => "TRAE CLI's built-in approval cadence.",
         ("trae", PermissionMode::Auto) => {
             "Use TRAE CLI's native auto-reviewer (`--permission-mode auto`)."
