@@ -1797,7 +1797,7 @@ mod tests {
 
     #[test]
     fn effort_options_follow_the_selected_runtime_catalog() {
-        let runtimes = [runtime("codex", &["", "low", "max"]), runtime("qoder", &[])];
+        let runtimes = [runtime("codex", &["", "low", "max"]), runtime("trae", &[])];
         assert_eq!(
             effort_options_for_runtime(&runtimes, "codex")
                 .iter()
@@ -1805,7 +1805,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["", "low", "max"]
         );
-        assert!(effort_options_for_runtime(&runtimes, "qoder").is_empty());
+        assert!(effort_options_for_runtime(&runtimes, "trae").is_empty());
         assert!(effort_options_for_runtime(&runtimes, "missing").is_empty());
     }
 

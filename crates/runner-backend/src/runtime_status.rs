@@ -481,7 +481,6 @@ mod tests {
             vec![
                 ("codex", "Codex", "codex"),
                 ("claude-code", "Claude Code", "claude"),
-                ("qoder", "Qoder", "qodercli"),
                 ("trae", "TRAE CLI", "traecli"),
             ],
         );

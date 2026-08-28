@@ -126,7 +126,7 @@ Every pane is a real PTY behind an `alacritty_terminal` grid, drawn by GPUI on t
 
 ### Drive it from your agents (MCP)
 
-Everything above is also an MCP tool. Runner bundles a `runner-mcp` stdio sidecar, and **Settings → MCP** registers it with Claude Code, Codex, Qoder, or TRAE in one click. Connected agents assemble crews, start and steer missions (`mission_start`, `mission_feed`, `mission_post_human_signal`), and spin up chats (`session_start_direct`). The compounding trick: your daily driver agent plans a fix, dispatches a coder/reviewer crew, and keeps working — agents dispatching crews of agents, every session still a real PTY you can open and watch.
+Everything above is also an MCP tool. Runner bundles a `runner-mcp` stdio sidecar, and **Settings → MCP** registers it with Claude Code, Codex, or TRAE in one click. Connected agents assemble crews, start and steer missions (`mission_start`, `mission_feed`, `mission_post_human_signal`), and spin up chats (`session_start_direct`). The compounding trick: your daily driver agent plans a fix, dispatches a coder/reviewer crew, and keeps working — agents dispatching crews of agents, every session still a real PTY you can open and watch.
 
 </td>
 </tr>
@@ -138,7 +138,7 @@ Everything above is also an MCP tool. Runner bundles a `runner-mcp` stdio sideca
 - **Themes** — Auto / Light / Dark chrome with two variants per side (Runner and Catppuccin Mocha dark; Codex Light and Catppuccin Latte light), independent terminal palettes (Runner, Catppuccin Mocha, Monokai), Inter bundled as the UI font, and MesloLGS Nerd Font bundled for terminals.
 - **Auto-update** — Sparkle, with a hint on the sidebar's Settings row when a new build is waiting; nightly and release feeds are signed with the same key.
 - **Bundled `runner` CLI** — spawned agents message each other, check the crew roster, and post signals from inside their own PTYs.
-- **Runtimes** — Claude Code and Codex are first-class: daily-driven, with fixture-tested terminal rendering and tuned launch/nudge timing. Qoder and TRAE run through the same paths but see far less use and may have rough edges — [issues](https://github.com/yicheng47/runner/issues) are welcome. All four are detected on `PATH`, with per-runtime executable overrides in **Settings → Agents**.
+- **Runtimes** — Claude Code and Codex are first-class: daily-driven, with fixture-tested terminal rendering and tuned launch/nudge timing. TRAE CLI runs through the same paths but sees far less use and may have rough edges — [issues](https://github.com/yicheng47/runner/issues) are welcome. All three are detected on `PATH`, with per-runtime executable overrides in **Settings → Agents**.
 
 ## Example crew
 

@@ -35,7 +35,7 @@ Runner is a local macOS desktop app. A user configures a **crew** of CLI coding 
 │          │                                         │ PTY master             │
 │   ┌──────┴───────────┐  ┌──────────────┐  ┌───────┴────────────────────┐     │
 │   │ events.ndjson    │◄─│ MissionMgr   │  │ child: claude-code / codex │     │
-│   │  per mission     │  │ (ops::mission│  │   / qoder / trae / shell   │     │
+│   │  per mission     │  │ (ops::mission│  │   / trae / shell           │     │
 │   └──────▲───────────┘  │  lifecycle)  │  │  env: RUNNER_*, PATH=…     │     │
 │          │ flock append └──────────────┘  └───────┬────────────────────┘     │
 │          └────────────────────────────────────────┘ runs `runner` CLI        │
@@ -122,7 +122,7 @@ A mission is a container. Everything in the runtime column is either the contain
 
 ### 3.2 Runner — *one configured agent*
 
-A reusable template: handle, display name, runtime (`claude-code | codex | qoder | trae` today, plus a bare shell), command + args, working dir, system prompt (persona), env, optional model and effort. **Top-level, not nested under a crew.** The same runner template can be used by many crews simultaneously, and can also be the subject of standalone direct-chat sessions.
+A reusable template: handle, display name, runtime (`claude-code | codex | trae` today, plus a bare shell; `qoder` rows from before v0.6.7 stay readable but cannot spawn), command + args, working dir, system prompt (persona), env, optional model and effort. **Top-level, not nested under a crew.** The same runner template can be used by many crews simultaneously, and can also be the subject of standalone direct-chat sessions.
 
 A runner has two identifying fields:
 
@@ -305,7 +305,7 @@ The whole system runs many of these side-by-side — one per slot per live missi
 
 ### 5.2 Why PTY (not pipes) and why alacritty
 
-Claude Code, Codex, Qoder, and TRAE CLI are TUIs. They check `isatty()`; if false they degrade. Their output is escape sequences that only a terminal emulator can render. The PTY gives the child a real terminal; `alacritty_terminal` gives Runner a correct emulator — grid, VTE parser, alt screen, scrollback reflow, selection, mouse reporting modes — without reinventing one. GPUI paints the grid it maintains.
+Claude Code, Codex, and TRAE CLI are TUIs. They check `isatty()`; if false they degrade. Their output is escape sequences that only a terminal emulator can render. The PTY gives the child a real terminal; `alacritty_terminal` gives Runner a correct emulator — grid, VTE parser, alt screen, scrollback reflow, selection, mouse reporting modes — without reinventing one. GPUI paints the grid it maintains.
 
 ### 5.3 Spawn
 
@@ -359,7 +359,7 @@ Sessions live in the core and belong to the mission, not to any window, tab or p
 
 Since M6.8 the same is true of the screen. `TerminalBridge` holds a strong `Arc<TerminalSession>` per live session: created on `session/spawned` (with a first-output fallback as an ordering safety net), fed from the first byte, released on `session/exit` and `session/archived`, replaced when a resume or reset spawns a new child under the same id. Panes take a *viewer lease* on the terminal they show; a hidden terminal keeps ingesting but does not wake GPUI. Tab switches, route changes and re-opened panes re-render an existing grid instead of rebuilding one. Consequence, recorded as a deviation from `main`: a stopped pane shows the Ended/Resume card over a neutral background, not the final screen; flip the release point from exit to archive if that is ever missed.
 
-**Rows persist across app restart; PTY children do not.** On quit, `stop_running_sessions_on_quit` kills every process group (SIGHUP, then SIGKILL) and joins the forwarders; the startup orphan sweep is the crash fallback and a failing sweep is fatal at boot. On next launch Runner re-mounts router/bus state for `running` missions, replays the logs, demotes stale `running` session rows to `stopped`, and re-spawns sessions flagged `resume_on_launch`. Resume spawns a fresh PTY against the same session row; for claude-code/codex/qoder/trae, `agent_session_key` lets the agent CLI continue its own conversation when supported.
+**Rows persist across app restart; PTY children do not.** On quit, `stop_running_sessions_on_quit` kills every process group (SIGHUP, then SIGKILL) and joins the forwarders; the startup orphan sweep is the crash fallback and a failing sweep is fatal at boot. On next launch Runner re-mounts router/bus state for `running` missions, replays the logs, demotes stale `running` session rows to `stopped`, and re-spawns sessions flagged `resume_on_launch`. Resume spawns a fresh PTY against the same session row; for claude-code/codex/trae, `agent_session_key` lets the agent CLI continue its own conversation when supported.
 
 ### 5.6 Writer serialization
 
@@ -578,7 +578,7 @@ runners (
   id TEXT PRIMARY KEY,
   handle TEXT NOT NULL UNIQUE,        -- globally unique slug; §3.2
   display_name TEXT NOT NULL,
-  runtime TEXT NOT NULL,              -- claude-code | codex | qoder | trae | shell
+  runtime TEXT NOT NULL,              -- claude-code | codex | trae | shell (qoder: legacy rows only)
   command TEXT NOT NULL,
   args_json TEXT,
   working_dir TEXT,                   -- direct-chat working dir; missions use mission.cwd

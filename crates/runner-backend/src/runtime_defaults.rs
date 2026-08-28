@@ -8,14 +8,12 @@ pub struct RuntimeDefaults {
 
 const CODEX_CONFIG_RELATIVE_PATH: &str = ".codex/config.toml";
 const CLAUDE_SETTINGS_RELATIVE_PATH: &str = ".claude/settings.json";
-const QODER_SETTINGS_RELATIVE_PATH: &str = ".qoder/settings.json";
 const TRAE_CONFIG_RELATIVE_PATH: &str = ".trae/traecli.toml";
 
 pub fn runtime_defaults(runtime: &str, home: &Path) -> RuntimeDefaults {
     match runtime {
         "codex" => toml_defaults(&codex_config_path(home)),
         "claude-code" => json_defaults(&claude_settings_path(home)),
-        "qoder" => json_defaults(&qoder_settings_path(home)),
         "trae" => toml_defaults(&trae_config_path(home)),
         _ => RuntimeDefaults::default(),
     }
@@ -27,10 +25,6 @@ pub(crate) fn codex_config_path(home: &Path) -> PathBuf {
 
 fn claude_settings_path(home: &Path) -> PathBuf {
     home.join(CLAUDE_SETTINGS_RELATIVE_PATH)
-}
-
-pub(crate) fn qoder_settings_path(home: &Path) -> PathBuf {
-    home.join(QODER_SETTINGS_RELATIVE_PATH)
 }
 
 pub(crate) fn trae_config_path(home: &Path) -> PathBuf {
@@ -180,23 +174,6 @@ mod tests {
             RuntimeDefaults {
                 model: Some("claude-fable-5[1m]".into()),
                 effort: Some("xhigh".into()),
-            }
-        );
-    }
-
-    #[test]
-    fn reads_qoder_model_without_effort() {
-        let home = tempfile::tempdir().unwrap();
-        write(
-            home.path(),
-            QODER_SETTINGS_RELATIVE_PATH,
-            r#"{"model":"qoder-model"}"#,
-        );
-        assert_eq!(
-            runtime_defaults("qoder", home.path()),
-            RuntimeDefaults {
-                model: Some("qoder-model".into()),
-                effort: None,
             }
         );
     }
