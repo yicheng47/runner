@@ -1,6 +1,6 @@
 # Local skills — plan
 
-Milestones for [feature 05](../../features/05-runner-skills.md). Sizes: S < 50 lines, M 50–300, L > 300 or cross-cutting. Line numbers are as of `main` at `3479624` (2026-08-28) and will drift. Each milestone is one mission; its brief goes under [`docs/impls/archive/gpui-rewrite/briefs/`](../archive/gpui-rewrite/briefs/) when drafted (`local-skills-m1-skills-pane.md`, …) and the landing moves the section into [impl_log.md](impl_log.md).
+Milestones for [feature 73](../../features/73-runner-skills.md). Sizes: S < 50 lines, M 50–300, L > 300 or cross-cutting. Line numbers are as of `main` at `3479624` (2026-08-28) and will drift. Each milestone is one mission; its brief goes under [`docs/impls/archive/gpui-rewrite/briefs/`](../archive/gpui-rewrite/briefs/) when drafted (`local-skills-m1-skills-pane.md`, …) and the landing moves the section into [impl_log.md](impl_log.md).
 
 Order, decided 2026-08-28 (Jason): **see first, control later.** M1 is only a place to view skills by runtime; the allowlist follows in two steps, backend then app.
 

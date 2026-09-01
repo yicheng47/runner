@@ -1,6 +1,6 @@
 # Local skills — program record
 
-Implementation program for [feature 05 — local skills management](../../features/05-runner-skills.md) ([#73](https://github.com/yicheng47/runner/issues/73)). The spec says *what*; this directory says *how, in what order, and what has landed*. Same shape as the [gpui-rewrite](../gpui-rewrite/README.md) record: this file is the condensed state and the decisions that bind, [plan.md](plan.md) is the milestone plan, [impl_log.md](impl_log.md) is the dated log. Mission briefs go where every brief lives, [`docs/impls/archive/gpui-rewrite/briefs/`](../archive/gpui-rewrite/briefs/), named `local-skills-s1-backend.md` and so on.
+Implementation program for [feature 73 — local skills management](../../features/73-runner-skills.md) ([#73](https://github.com/yicheng47/runner/issues/73)). The spec says *what*; this directory says *how, in what order, and what has landed*. Same shape as the [gpui-rewrite](../gpui-rewrite/README.md) record: this file is the condensed state and the decisions that bind, [plan.md](plan.md) is the milestone plan, [impl_log.md](impl_log.md) is the dated log. Mission briefs go where every brief lives, [`docs/impls/archive/gpui-rewrite/briefs/`](../archive/gpui-rewrite/briefs/), named `local-skills-s1-backend.md` and so on.
 
 ## Status (2026-08-28)
 
