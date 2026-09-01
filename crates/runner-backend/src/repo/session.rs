@@ -330,6 +330,27 @@ pub fn capture_agent_session_key(
     .map(|updated| updated > 0)
 }
 
+/// Replace a live agent key after the runtime changes conversation identity.
+/// The running-status and started-at guards reject stopped rows and stale
+/// reports from a prior incarnation; unlike initial capture, an existing key
+/// is expected and may be replaced.
+pub fn rekey_agent_session_key(
+    conn: &Connection,
+    id: &str,
+    agent_session_key: &str,
+    expected_row_started_at: &str,
+) -> rusqlite::Result<bool> {
+    conn.execute(
+        "UPDATE sessions
+            SET agent_session_key = ?2
+          WHERE id = ?1
+            AND started_at = ?3
+            AND status = 'running'",
+        rusqlite::params![id, agent_session_key, expected_row_started_at],
+    )
+    .map(|updated| updated > 0)
+}
+
 /// Startup cleanup: demote rows still marked `running` from a prior app
 /// process to `stopped`, preserving any prior `stopped_at`. Requeue a
 /// launch-resume claim interrupted by an ungraceful exit. This must run
@@ -916,6 +937,35 @@ mod tests {
             )
             .unwrap();
         assert_eq!(stored, "key-a");
+    }
+
+    #[test]
+    fn rekey_agent_session_key_requires_current_running_incarnation() {
+        let pool = db::open_in_memory().unwrap();
+        let conn = pool.get().unwrap();
+        let mut row = minimal_row();
+        let started = Utc::now();
+        row.started_at = Some(started);
+        row.agent_session_key = Some("key-a".into());
+        insert(&conn, &row).unwrap();
+        let started_str = started.to_rfc3339();
+
+        assert!(
+            !rekey_agent_session_key(&conn, "sess-min", "key-b", "1999-01-01T00:00:00+00:00")
+                .unwrap()
+        );
+        assert!(rekey_agent_session_key(&conn, "sess-min", "key-b", &started_str).unwrap());
+
+        set_exit_status(&conn, "sess-min", SessionStatus::Stopped, Utc::now()).unwrap();
+        assert!(!rekey_agent_session_key(&conn, "sess-min", "key-c", &started_str).unwrap());
+        assert_eq!(
+            get_row(&conn, "sess-min")
+                .unwrap()
+                .unwrap()
+                .agent_session_key
+                .as_deref(),
+            Some("key-b")
+        );
     }
 
     #[test]

@@ -4790,7 +4790,14 @@ fn spawn_argv_injects_claude_fullscreen_for_fresh_and_resume_only() {
             shell_path: None,
             initial_size: Some((80, 24)),
         };
-        SessionManager::apply_runtime_args(&mut spec, &runner, &plan, Some("first turn"), None);
+        SessionManager::apply_runtime_args(
+            &mut spec,
+            &runner,
+            &plan,
+            Path::new("/tmp/runner-app-data"),
+            Some("first turn"),
+            None,
+        );
         spec.args
     };
 
@@ -4798,9 +4805,13 @@ fn spawn_argv_injects_claude_fullscreen_for_fresh_and_resume_only() {
         "claude-code",
         router::runtime::resume_plan("claude-code", None),
     );
-    assert!(fresh
+    let settings = fresh
         .windows(2)
-        .any(|pair| { pair[0] == "--settings" && pair[1] == r#"{"tui":"fullscreen"}"# }));
+        .find(|pair| pair[0] == "--settings")
+        .map(|pair| serde_json::from_str::<serde_json::Value>(&pair[1]).unwrap())
+        .expect("Claude spawn should carry --settings");
+    assert_eq!(settings["tui"], "fullscreen");
+    assert!(settings["hooks"]["SessionStart"].is_array());
     assert_eq!(fresh.last().map(String::as_str), Some("first turn"));
 
     let prior = uuid::Uuid::new_v4().to_string();
@@ -6064,7 +6075,7 @@ fn claude_direct_chat_fork_spawns_tui_directly_with_copied_row() {
     let spec = fake.last_spawn_spec().expect("fork should spawn the TUI");
     assert_eq!(spec.command, command);
     assert_eq!(
-        spec.args,
+        &spec.args[..11],
         [
             "--runner-flag",
             "--resume",
@@ -6077,8 +6088,13 @@ fn claude_direct_chat_fork_spawns_tui_directly_with_copied_row() {
             "--effort",
             "max",
             "--settings",
-            r#"{"tui":"fullscreen"}"#,
         ]
+    );
+    let settings: serde_json::Value = serde_json::from_str(&spec.args[11]).unwrap();
+    assert_eq!(settings["tui"], "fullscreen");
+    assert_eq!(
+        settings["hooks"]["SessionStart"][0]["hooks"][0]["type"],
+        "command"
     );
     assert_eq!(spec.cwd.as_deref(), Some(Path::new("/tmp")));
     assert_eq!(

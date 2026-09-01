@@ -473,9 +473,16 @@ impl SessionManager {
         spec: &mut SpawnSpec,
         runner: &Runner,
         plan: &router::runtime::ResumePlan,
+        app_data_dir: &Path,
         first_turn: Option<&str>,
         mission_bus_dir: Option<&Path>,
     ) -> bool {
+        if runner.runtime == "claude-code" {
+            let _ = std::fs::remove_file(crate::session::claude_rekey::drop_path(
+                app_data_dir,
+                &spec.session_id,
+            ));
+        }
         let mut composed: Vec<String> = Vec::new();
         if plan.prepend {
             composed.extend(plan.args.iter().cloned());
@@ -493,6 +500,8 @@ impl SessionManager {
         for extra in router::runtime::trailing_runtime_args(
             &runner.runtime,
             &runner.args,
+            app_data_dir,
+            &spec.session_id,
             plan.resuming,
             runner.model.as_deref(),
             runner.effort.as_deref(),
@@ -637,6 +646,7 @@ impl SessionManager {
             &mut spec,
             &runner,
             &plan,
+            app_data_dir,
             first_turn.as_deref(),
             Some(&mission_bus_dir),
         );
@@ -1123,8 +1133,6 @@ impl SessionManager {
         first_turn: Option<String>,
         emit_activity: bool,
     ) -> Result<SpawnedSession> {
-        let _ = app_data_dir; // direct chats don't get the bundled CLI on PATH
-
         // Chat-level runtime override (feature 41) — same resolution
         // rule as mission spawns.
         let resolution =
@@ -1184,8 +1192,14 @@ impl SessionManager {
             initial_size,
             direct_env,
         );
-        let first_turn_delivered_via_argv =
-            Self::apply_runtime_args(&mut spec, &runner, &plan, first_turn.as_deref(), None);
+        let first_turn_delivered_via_argv = Self::apply_runtime_args(
+            &mut spec,
+            &runner,
+            &plan,
+            app_data_dir,
+            first_turn.as_deref(),
+            None,
+        );
 
         // Insert the row first so a fast-failing spawn doesn't leave
         // a half-row. Runtime-only chats (no persisted runner template)
@@ -1535,7 +1549,8 @@ impl SessionManager {
 
         match plan {
             router::runtime::ForkPlan::Direct(plan) => {
-                let _ = Self::apply_runtime_args(&mut spec, &runner, &plan, None, None);
+                let _ =
+                    Self::apply_runtime_args(&mut spec, &runner, &plan, app_data_dir, None, None);
                 let direct_spawn_started_at = Instant::now();
                 let (rt_session, output) = match self.runtime.spawn(spec) {
                     Ok(spawned) => spawned,
@@ -2076,8 +2091,14 @@ impl SessionManager {
         // prompt through paste-and-verify via the caller in
         // `ops::session::session_resume`. `first_turn = None`
         // here so the argv path stays inert.
-        let _ =
-            Self::apply_runtime_args(&mut spec, &runner, &plan, None, mission_bus_dir.as_deref());
+        let _ = Self::apply_runtime_args(
+            &mut spec,
+            &runner,
+            &plan,
+            app_data_dir,
+            None,
+            mission_bus_dir.as_deref(),
+        );
 
         let started_at_dt = Utc::now();
         let started_at = started_at_dt.to_rfc3339();

@@ -8,6 +8,7 @@
 // has been retired — see docs/impls/archive/0011-pty-host-terminal-runtime.md
 // for the rationale.
 
+pub(crate) mod claude_rekey;
 pub mod codex_capture;
 pub(crate) mod codex_trust;
 pub mod launch;

@@ -157,7 +157,12 @@ pub fn model_effort_args(runtime: &str, model: Option<&str>, effort: Option<&str
     }
 }
 
-pub fn claude_settings_args(runtime: &str, runner_args: &[String]) -> Vec<String> {
+pub fn claude_settings_args(
+    runtime: &str,
+    runner_args: &[String],
+    app_data_dir: &Path,
+    runner_session_id: &str,
+) -> Vec<String> {
     if runtime != "claude-code"
         || runner_args
             .iter()
@@ -165,10 +170,25 @@ pub fn claude_settings_args(runtime: &str, runner_args: &[String]) -> Vec<String
     {
         return Vec::new();
     }
-    let settings = serde_json::json!({ "tui": "fullscreen" });
+    let drop_path = crate::session::claude_rekey::drop_path(app_data_dir, runner_session_id);
+    let temp_path = drop_path.with_extension("json.tmp");
+    let temp_path = crate::session::launch::shell_quote(&temp_path.to_string_lossy());
+    let drop_path = crate::session::launch::shell_quote(&drop_path.to_string_lossy());
+    let hook_command = format!("cat > {temp_path} && mv {temp_path} {drop_path}");
+    let settings = serde_json::json!({
+        "tui": "fullscreen",
+        "hooks": {
+            "SessionStart": [{
+                "hooks": [{
+                    "type": "command",
+                    "command": hook_command,
+                }],
+            }],
+        },
+    });
     vec![
         "--settings".into(),
-        serde_json::to_string(&settings).expect("static Claude settings must serialize"),
+        serde_json::to_string(&settings).expect("Claude settings must serialize"),
     ]
 }
 
@@ -574,9 +594,12 @@ pub fn first_turn_argv(runtime: &str, body: Option<&str>) -> Vec<String> {
 /// Resume paths rely on the agent CLI's own session resume to restore
 /// context; the rare resume-fresh-fallback case is handled by
 /// `Router::fire_lead_launch_prompt` via paste delivery instead.
+#[allow(clippy::too_many_arguments)]
 pub fn trailing_runtime_args(
     runtime: &str,
     runner_args: &[String],
+    app_data_dir: &Path,
+    runner_session_id: &str,
     plan_resuming: bool,
     model: Option<&str>,
     effort: Option<&str>,
@@ -584,7 +607,12 @@ pub fn trailing_runtime_args(
     first_turn: Option<&str>,
 ) -> Vec<String> {
     let mut out = model_effort_args(runtime, model, effort);
-    out.extend(claude_settings_args(runtime, runner_args));
+    out.extend(claude_settings_args(
+        runtime,
+        runner_args,
+        app_data_dir,
+        runner_session_id,
+    ));
     let prompt_for_argv = if plan_resuming { None } else { system_prompt };
     out.extend(system_prompt_args(runtime, prompt_for_argv));
     let first_turn_for_argv = if plan_resuming { None } else { first_turn };
@@ -863,16 +891,37 @@ mod tests {
     }
 
     #[test]
-    fn claude_settings_injects_one_compact_fullscreen_object() {
-        let args = claude_settings_args("claude-code", &[]);
+    fn claude_settings_injects_fullscreen_and_per_spawn_session_start_hook() {
+        let app_data_dir = Path::new("/tmp/runner app-data");
+        let args = claude_settings_args("claude-code", &[], app_data_dir, "runner-session-one");
         assert_eq!(args.len(), 2);
         assert_eq!(args[0], "--settings");
         assert_eq!(args.iter().filter(|arg| *arg == "--settings").count(), 1);
-        assert!(!args[1].chars().any(char::is_whitespace));
+        assert!(!args[1].contains(['\n', '\t']));
+        let settings = serde_json::from_str::<serde_json::Value>(&args[1]).unwrap();
+        assert_eq!(settings["tui"], "fullscreen");
+        let command = settings["hooks"]["SessionStart"][0]["hooks"][0]["command"]
+            .as_str()
+            .unwrap();
+        let drop_path = crate::session::claude_rekey::drop_path(app_data_dir, "runner-session-one");
+        let temp_path = drop_path.with_extension("json.tmp");
         assert_eq!(
-            serde_json::from_str::<serde_json::Value>(&args[1]).unwrap(),
-            serde_json::json!({ "tui": "fullscreen" }),
+            command,
+            format!(
+                "cat > {} && mv {} {}",
+                crate::session::launch::shell_quote(&temp_path.to_string_lossy()),
+                crate::session::launch::shell_quote(&temp_path.to_string_lossy()),
+                crate::session::launch::shell_quote(&drop_path.to_string_lossy()),
+            )
         );
+        assert_eq!(
+            settings["hooks"]["SessionStart"][0]["hooks"][0]["type"],
+            "command"
+        );
+
+        let other = claude_settings_args("claude-code", &[], app_data_dir, "runner-session-two");
+        assert_ne!(args[1], other[1]);
+        assert!(other[1].contains("runner-session-two.json"));
     }
 
     #[test]
@@ -881,14 +930,26 @@ mod tests {
             vec!["--settings".into(), "custom.json".into()],
             vec!["--settings=custom.json".into()],
         ] {
-            assert!(claude_settings_args("claude-code", &runner_args).is_empty());
+            assert!(claude_settings_args(
+                "claude-code",
+                &runner_args,
+                Path::new("/tmp/runner-app-data"),
+                "runner-session"
+            )
+            .is_empty());
         }
     }
 
     #[test]
     fn claude_settings_do_not_leak_to_other_runtimes() {
         for runtime in ["codex", "shell"] {
-            assert!(claude_settings_args(runtime, &[]).is_empty());
+            assert!(claude_settings_args(
+                runtime,
+                &[],
+                Path::new("/tmp/runner-app-data"),
+                "runner-session"
+            )
+            .is_empty());
         }
     }
 
@@ -1156,6 +1217,8 @@ mod tests {
             let args = trailing_runtime_args(
                 "codex",
                 &[],
+                Path::new("/tmp/runner-app-data"),
+                "runner-session",
                 plan_resuming,
                 Some("gpt-5-codex"),
                 Some("high"),
@@ -1642,6 +1705,8 @@ mod tests {
         let fresh = trailing_runtime_args(
             "claude-code",
             &[],
+            Path::new("/tmp/runner-app-data"),
+            "runner-session",
             false,
             Some("claude-opus-4-7"),
             Some("xhigh"),
@@ -1651,6 +1716,8 @@ mod tests {
         let resuming = trailing_runtime_args(
             "claude-code",
             &[],
+            Path::new("/tmp/runner-app-data"),
+            "runner-session",
             true,
             Some("claude-opus-4-7"),
             Some("xhigh"),
@@ -1659,16 +1726,18 @@ mod tests {
         );
         assert_eq!(fresh, resuming);
         assert_eq!(
-            fresh,
-            vec![
-                "--model".to_string(),
-                "claude-opus-4-7".to_string(),
-                "--effort".to_string(),
-                "xhigh".to_string(),
-                "--settings".to_string(),
-                r#"{"tui":"fullscreen"}"#.to_string(),
+            &fresh[..5],
+            [
+                "--model",
+                "claude-opus-4-7",
+                "--effort",
+                "xhigh",
+                "--settings"
             ]
         );
+        let settings: serde_json::Value = serde_json::from_str(&fresh[5]).unwrap();
+        assert_eq!(settings["tui"], "fullscreen");
+        assert!(settings["hooks"]["SessionStart"].is_array());
     }
 
     #[test]
@@ -1678,6 +1747,8 @@ mod tests {
             let args = trailing_runtime_args(
                 runtime,
                 &[],
+                Path::new("/tmp/runner-app-data"),
+                "runner-session",
                 false,
                 Some("model-x"),
                 Some("high"),
@@ -1699,6 +1770,8 @@ mod tests {
             let args = trailing_runtime_args(
                 runtime,
                 &[],
+                Path::new("/tmp/runner-app-data"),
+                "runner-session",
                 true,
                 Some("model-x"),
                 Some("high"),
