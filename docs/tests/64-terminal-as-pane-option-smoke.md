@@ -1,6 +1,6 @@
 # Feature 64 Smoke Test — terminal as a pane option
 
-Human smoke pass for `feat/64-terminal-impl`, covering all four phases of `docs/features/64-native-terminal.md`. Every check below is something the automated suites cannot reach: real PTYs, a real relaunch, real pixels, and real process groups.
+Human smoke pass for `feat/64-terminal-impl`, covering all four phases of `docs/features/archive/64-native-terminal.md`. Every check below is something the automated suites cannot reach: real PTYs, a real relaunch, real pixels, and real process groups.
 
 What landed underneath, in one paragraph each phase. **Phase 1** adds `session_start_shell` (resolves `$SHELL`, falls back to `/bin/zsh`, spawns a plain login shell with no agent injection), `session_close` (kill, then drop the pane slot and the row together), and excludes shells from completion stamping and sidebar attention. **Phase 2** brings terminal panes back live across a relaunch regardless of the resume-on-launch setting, and resolves a vanished cwd to the nearest existing ancestor with a loud in-terminal notice. **Phase 3** replaces the pane header with the 26 px identity line, wires `⋯` / `×` / inline rename, and makes closing a terminal permanent with a foreground-process confirmation. **Phase 4** adds the Recent/project `+`, empty-pane and command-palette entry points, terminal-only sidebar icon/close behavior, and the **Shell exited** card.
 

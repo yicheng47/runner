@@ -1,7 +1,7 @@
 # Runner skills + MCPs — implementation plan
 
 > Tracking issue: [#73](https://github.com/yicheng47/runner/issues/73).
-> Spec: [`docs/features/05-runner-skills.md`](../features/05-runner-skills.md).
+> Spec: [`docs/features/73-runner-skills.md`](../features/73-runner-skills.md).
 >
 > This doc captures the implementation sequencing, risks to validate
 > before committing to the design, and the small spec amendments we

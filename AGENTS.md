@@ -44,7 +44,7 @@ Surface hierarchy (strict — do not blur these in code, docs, or UI copy):
 - `design/`: Pencil source files.
 - `docs/arch/`: architecture references (how it works).
 - `docs/product/`: product vision and direction (why we're building this, what surfaces matter).
-- `docs/features/`: in-progress feature specs; shipped specs live in `docs/features/archive/`.
+- `docs/features/`: in-progress feature specs, named `{tracking-issue}-{slug}.md` since 2026-09-01 (file the issue first); shipped specs live in `docs/features/archive/`.
 - `docs/impls/`: implementation plans; shipped plans live in `docs/impls/archive/`.
 - `docs/tests/`: validation and smoke-test plans.
 

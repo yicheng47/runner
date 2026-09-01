@@ -1,4 +1,4 @@
-# 05 — Local skills management
+# 73 — Local skills management
 
 Tracking: [#73](https://github.com/yicheng47/runner/issues/73). Status: specced 2026-08-28, not scheduled. Implementation program: [`docs/impls/local-skills/`](../impls/local-skills/README.md) (M1 view skills by runtime → M2 allowlist backend → M3 allowlist app → later).
 
