@@ -1,5 +1,277 @@
 use super::*;
 
+use std::io::{BufRead, BufReader, Read};
+use std::process::{Command, Stdio};
+
+const FORK_MATERIALIZE_TIMEOUT: Duration = Duration::from_secs(120);
+const FORK_MATERIALIZE_POLL: Duration = Duration::from_millis(25);
+const CODEX_FORK_ROLLOUT_TIMEOUT: Duration = Duration::from_secs(5);
+
+pub(super) fn run_headless_fork(
+    spec: &SpawnSpec,
+    plan: &router::runtime::ForkPlan,
+    timeout: Duration,
+) -> Result<String> {
+    let router::runtime::ForkPlan::Headless { args, source_key } = plan else {
+        return Err(Error::msg(
+            "direct fork plan cannot run as a headless materializer",
+        ));
+    };
+    let codex_sessions_root = codex_fork_sessions_root(spec)?;
+    let inherited_path = std::env::var("PATH").ok();
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let path = crate::session::launch::compose_path(
+        spec.shim_dir.as_deref(),
+        spec.bundled_bin_dir.as_deref(),
+        spec.shell_path.as_deref(),
+        home.as_deref(),
+        inherited_path.as_deref(),
+    );
+    let mut command = Command::new(&spec.command);
+    command
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .env("PATH", path);
+    if let Some(cwd) = spec.cwd.as_deref() {
+        command.current_dir(cwd);
+    }
+    for (name, value) in &spec.env {
+        if crate::session::launch::is_reserved_env_name(name) {
+            continue;
+        }
+        if !crate::session::launch::is_valid_env_name(name) {
+            return Err(Error::msg(format!(
+                "invalid env var name {name:?}: must match [A-Za-z_][A-Za-z0-9_]*"
+            )));
+        }
+        command.env(name, value);
+    }
+    if let Some((cols, rows)) = spec.initial_size {
+        command.env("COLUMNS", cols.to_string());
+        command.env("LINES", rows.to_string());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+
+    let mut child = command
+        .spawn()
+        .map_err(|error| Error::msg(format!("fork materialization spawn: {error}")))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| Error::msg("fork materialization stdout unavailable"))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| Error::msg("fork materialization stderr unavailable"))?;
+
+    run_thread_started_headless_fork(
+        child,
+        stdout,
+        stderr,
+        codex_sessions_root,
+        source_key,
+        timeout,
+    )
+}
+
+fn run_thread_started_headless_fork(
+    mut child: std::process::Child,
+    stdout: std::process::ChildStdout,
+    stderr: std::process::ChildStderr,
+    sessions_root: PathBuf,
+    source_key: &str,
+    timeout: Duration,
+) -> Result<String> {
+    let (key_tx, key_rx) = std::sync::mpsc::sync_channel(1);
+    let stdout_reader = thread::spawn(move || {
+        let mut stdout = BufReader::new(stdout);
+        let _ = key_tx.send(read_thread_started_event(&mut stdout));
+        let _ = std::io::copy(&mut stdout, &mut std::io::sink());
+    });
+    let stderr_reader = thread::spawn(move || {
+        let mut stderr = stderr;
+        let mut bytes = Vec::new();
+        let _ = stderr.read_to_end(&mut bytes);
+        bytes
+    });
+
+    let deadline = Instant::now() + timeout;
+    let mut key = None;
+    let mut rollout_deadline = None;
+    let mut child_status = None;
+    let mut failed_status = None;
+    let mut terminate = false;
+    let result = loop {
+        if key.is_none() {
+            match key_rx.try_recv() {
+                Ok(Ok(received)) => {
+                    key = Some(received);
+                    rollout_deadline = Some(std::cmp::min(
+                        deadline,
+                        Instant::now() + CODEX_FORK_ROLLOUT_TIMEOUT,
+                    ));
+                }
+                Ok(Err(error)) => {
+                    terminate = child_status.is_none();
+                    break Err(error);
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    terminate = child_status.is_none();
+                    break Err(Error::msg(
+                        "fork materialization stdout reader stopped before thread.started",
+                    ));
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+        }
+
+        if child_status.is_none() {
+            match child.try_wait() {
+                Ok(Some(status)) => child_status = Some(status),
+                Ok(None) => {}
+                Err(error) => {
+                    terminate = true;
+                    break Err(Error::msg(format!(
+                        "fork materialization wait failed: {error}"
+                    )));
+                }
+            }
+        }
+        if child_status
+            .as_ref()
+            .is_some_and(|status| !status.success())
+        {
+            failed_status = child_status.take();
+            break Err(Error::msg("fork materialization exited unsuccessfully"));
+        }
+
+        if let Some(key) = key.as_deref() {
+            if crate::session::codex_capture::fork_rollout_is_ready(&sessions_root, key, source_key)
+            {
+                terminate = child_status.is_none();
+                break Ok(key.to_string());
+            }
+            if rollout_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+                terminate = child_status.is_none();
+                break Err(Error::msg(format!(
+                    "fork materialization rollout for thread {key} did not appear before the deadline"
+                )));
+            }
+        }
+
+        if Instant::now() >= deadline {
+            terminate = child_status.is_none();
+            break Err(Error::msg(format!(
+                "fork materialization timed out after {} seconds",
+                timeout.as_secs()
+            )));
+        }
+
+        thread::sleep(FORK_MATERIALIZE_POLL);
+    };
+
+    if terminate {
+        terminate_headless_fork(&mut child);
+    }
+    stdout_reader
+        .join()
+        .map_err(|_| Error::msg("fork materialization stdout reader panicked"))?;
+    let stderr = stderr_reader
+        .join()
+        .map_err(|_| Error::msg("fork materialization stderr reader panicked"))?;
+    if let Some(status) = failed_status {
+        let stderr = String::from_utf8_lossy(&stderr);
+        return Err(Error::msg(format!(
+            "fork materialization exited with {status}: {}",
+            stderr.trim()
+        )));
+    }
+    result
+}
+
+fn read_thread_started_event(reader: &mut impl BufRead) -> Result<String> {
+    let mut line = String::new();
+    loop {
+        line.clear();
+        let read = reader
+            .read_line(&mut line)
+            .map_err(|error| Error::msg(format!("fork materialization output: {error}")))?;
+        if read == 0 {
+            return Err(Error::msg(
+                "fork materialization missing thread.started event",
+            ));
+        }
+        if !line.trim().is_empty() {
+            break;
+        }
+    }
+    let event: serde_json::Value = serde_json::from_str(line.trim_end()).map_err(|error| {
+        Error::msg(format!(
+            "fork materialization first event is invalid JSON: {error}"
+        ))
+    })?;
+    if event.get("type").and_then(serde_json::Value::as_str) != Some("thread.started") {
+        return Err(Error::msg(
+            "fork materialization first event is not thread.started",
+        ));
+    }
+    let key = event
+        .get("thread_id")
+        .and_then(serde_json::Value::as_str)
+        .filter(|key| uuid::Uuid::parse_str(key).is_ok())
+        .ok_or_else(|| Error::msg("fork materialization thread.started has no valid thread_id"))?;
+    Ok(key.to_string())
+}
+
+fn codex_fork_sessions_root(spec: &SpawnSpec) -> Result<PathBuf> {
+    let codex_home = spec
+        .env
+        .get("CODEX_HOME")
+        .filter(|value| !value.trim().is_empty())
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("CODEX_HOME")
+                .filter(|value| !value.is_empty())
+                .map(PathBuf::from)
+        })
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".codex")))
+        .ok_or_else(|| Error::msg("fork materialization cannot resolve Codex sessions root"))?;
+    let codex_home = if codex_home.is_absolute() {
+        codex_home
+    } else if let Some(cwd) = spec.cwd.as_deref() {
+        cwd.join(codex_home)
+    } else {
+        std::env::current_dir()
+            .map_err(|error| Error::msg(format!("fork materialization cwd: {error}")))?
+            .join(codex_home)
+    };
+    Ok(codex_home.join("sessions"))
+}
+
+fn terminate_headless_fork(child: &mut std::process::Child) {
+    #[cfg(unix)]
+    unsafe {
+        libc::kill(-(child.id() as i32), libc::SIGKILL);
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+fn delete_failed_fork(pool: &DbPool, session_id: &str) -> Result<()> {
+    let mut conn = pool.get()?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    crate::repo::node::remove_session(&tx, session_id)?;
+    crate::repo::session::delete(&tx, session_id)?;
+    tx.commit()?;
+    Ok(())
+}
+
 impl SessionManager {
     fn resolve_runner_executable(&self, runner: &Runner, pool: &DbPool) -> Result<Runner> {
         let Some(definition) = router::runtime::runtime_definition(&runner.runtime) else {
@@ -56,8 +328,8 @@ impl SessionManager {
     /// `runtime.spawn()`. No-op for any other runtime — those
     /// bypass the gate.
     ///
-    /// Only the *fresh-spawn* call sites (`spawn`, `spawn_direct`)
-    /// invoke this. The resume path is intentionally unguarded:
+    /// Fresh and fork spawn call sites invoke this. The ordinary resume
+    /// path is intentionally unguarded:
     /// `claude --resume` / `--session-id` loads the local
     /// conversation file and puts up the TUI without touching the
     /// network until the user's next turn, so concurrent resumes
@@ -1065,6 +1337,395 @@ impl SessionManager {
             pid: None,
             fresh_fallback_lead: false,
         })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn spawn_fork(
+        self: &Arc<Self>,
+        source_session_id: &str,
+        title: Option<String>,
+        cols: Option<u16>,
+        rows: Option<u16>,
+        app_data_dir: &Path,
+        pool: Arc<DbPool>,
+        events: Arc<dyn SessionEvents>,
+    ) -> Result<SpawnedSession> {
+        let fork_started_at = Instant::now();
+        let source = {
+            let conn = pool.get()?;
+            crate::repo::session::get_row(&conn, source_session_id)?
+                .ok_or_else(|| Error::msg(format!("session not found: {source_session_id}")))?
+        };
+        if source.mission_id.is_some() {
+            return Err(Error::msg("only direct chats can be forked"));
+        }
+        if source.archived_at.is_some() {
+            return Err(Error::msg(format!(
+                "session {source_session_id} is archived — un-archive before forking"
+            )));
+        }
+        let source_key = source.agent_session_key.as_deref().ok_or_else(|| {
+            Error::msg(format!(
+                "session {source_session_id} has no captured agent session key"
+            ))
+        })?;
+
+        let runner_template = if let Some(runner_id) = source.runner_id.as_deref() {
+            let conn = pool.get()?;
+            Some(crate::ops::runner::get(&conn, runner_id)?)
+        } else {
+            None
+        };
+        let effective_runtime = source
+            .agent_runtime
+            .clone()
+            .or_else(|| {
+                runner_template
+                    .as_ref()
+                    .map(|runner| runner.runtime.clone())
+            })
+            .ok_or_else(|| {
+                Error::msg(format!(
+                    "runtime-only session {source_session_id} missing agent_runtime"
+                ))
+            })?;
+        if !router::runtime::supports_native_fork(&effective_runtime) {
+            return Err(Error::msg(format!(
+                "runtime {effective_runtime} does not support native fork"
+            )));
+        }
+
+        let runner = if let Some(runner) = runner_template {
+            let runner = match resolve_runtime_override(
+                &runner,
+                source.agent_runtime.as_deref(),
+                source.agent_model.as_deref(),
+                source.agent_effort.as_deref(),
+            )?
+            .effective
+            {
+                Some(effective) => effective,
+                None => runner,
+            };
+            self.resolve_runner_executable(&runner, &pool)?
+        } else {
+            self.resolve_runtime_only_resume_runner(
+                &effective_runtime,
+                source.agent_command.as_deref(),
+                source.agent_model.as_deref(),
+                source.agent_effort.as_deref(),
+                &pool,
+            )?
+        };
+
+        let resolved_cwd = source.cwd.clone().or_else(|| runner.working_dir.clone());
+        let Some(chat_cwd) = resolved_cwd.as_deref().filter(|cwd| !cwd.is_empty()) else {
+            return Err(Error::msg(
+                "select a working directory before forking a chat",
+            ));
+        };
+        if !Path::new(chat_cwd).is_dir() {
+            return Err(Error::msg(format!(
+                "working directory does not exist: {chat_cwd}"
+            )));
+        }
+        let source_label = source
+            .title
+            .as_deref()
+            .map(str::trim)
+            .filter(|title| !title.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| {
+                if source.runner_id.is_some() {
+                    format!("@{}", runner.handle)
+                } else {
+                    runner.display_name.clone()
+                }
+            });
+        let plan = router::runtime::fork_plan(&runner.runtime, source_key, &source_label)
+            .ok_or_else(|| {
+                Error::msg(format!(
+                    "could not build fork plan for runtime {}",
+                    runner.runtime
+                ))
+            })?;
+
+        let mut direct_env = BTreeMap::new();
+        if runner.runtime != "shell" {
+            direct_env.insert("RUNNER_HANDLE".into(), runner.handle.clone());
+        }
+        let initial_size = Some(cols.zip(rows).unwrap_or(DEFAULT_PTY_SIZE));
+        let session_id = ulid::Ulid::new().to_string();
+        let started_at_dt = Utc::now();
+        let started_at = started_at_dt.to_rfc3339();
+        let mut spec = self.base_spawn_spec(
+            session_id.clone(),
+            &runner,
+            resolved_cwd.clone(),
+            false,
+            None,
+            None,
+            initial_size,
+            direct_env,
+        );
+
+        {
+            let conn = pool.get()?;
+            let mut row = crate::repo::session::SessionRowDb::new_running(session_id.clone());
+            row.project_id.clone_from(&source.project_id);
+            row.runner_id.clone_from(&source.runner_id);
+            row.cwd.clone_from(&source.cwd);
+            row.started_at = Some(started_at_dt);
+            row.agent_session_key = match &plan {
+                router::runtime::ForkPlan::Direct(plan) => plan.assigned_key.clone(),
+                router::runtime::ForkPlan::Headless { .. } => None,
+            };
+            row.title = title.and_then(|title| {
+                let title = title.trim();
+                (!title.is_empty()).then(|| title.to_string())
+            });
+            row.agent_runtime.clone_from(&source.agent_runtime);
+            row.agent_command.clone_from(&source.agent_command);
+            row.agent_model.clone_from(&source.agent_model);
+            row.agent_effort.clone_from(&source.agent_effort);
+            row.last_cols = initial_size.map(|(cols, _)| cols);
+            row.last_rows = initial_size.map(|(_, rows)| rows);
+            crate::repo::session::insert(&conn, &row)?;
+        }
+        events.updated(&SessionUpdatedEvent {
+            session_id: session_id.clone(),
+            mission_id: None,
+        });
+        events.fork_started(&super::SessionForkStartedEvent {
+            source_session_id: source_session_id.to_owned(),
+            session_id: session_id.clone(),
+        });
+
+        // Claude forks are direct TUI spawns, so they use the same launch gate
+        // as a fresh chat. This is a no-op for Codex; its visible phase-2
+        // process is an ordinary resume and remains deliberately ungated.
+        let gate_started_at = Instant::now();
+        self.enter_claude_launch_gate(&session_id, &runner.runtime);
+        let gate_elapsed = gate_started_at.elapsed();
+        if !Self::session_row_exists(&pool, &session_id) {
+            return Err(Error::msg(format!(
+                "forked session {session_id} row vanished before spawn — runner deleted?"
+            )));
+        }
+
+        match plan {
+            router::runtime::ForkPlan::Direct(plan) => {
+                let _ = Self::apply_runtime_args(&mut spec, &runner, &plan, None, None);
+                let direct_spawn_started_at = Instant::now();
+                let (rt_session, output) = match self.runtime.spawn(spec) {
+                    Ok(spawned) => spawned,
+                    Err(error) => {
+                        log::info!(
+                            "fork timing: session={session_id} runtime={} gate_ms={} materialize_ms=not-applicable direct_spawn_ms={} total_ms={} outcome=spawn-error",
+                            runner.runtime,
+                            gate_elapsed.as_millis(),
+                            direct_spawn_started_at.elapsed().as_millis(),
+                            fork_started_at.elapsed().as_millis(),
+                        );
+                        if let Err(cleanup_error) = delete_failed_fork(&pool, &session_id) {
+                            return Err(Error::msg(format!(
+                                "spawn {}: {error}; failed to roll back forked session {session_id}: {cleanup_error}",
+                                runner.command,
+                            )));
+                        }
+                        events.updated(&SessionUpdatedEvent {
+                            session_id: session_id.clone(),
+                            mission_id: None,
+                        });
+                        return Err(Error::msg(format!("spawn {}: {error}", runner.command)));
+                    }
+                };
+
+                if !Self::session_row_exists(&pool, &session_id) {
+                    if let Err(error) = self.runtime.stop(&rt_session) {
+                        log::warn!(
+                            "failed to stop just-spawned fork PTY for vanished session {session_id}: {error}"
+                        );
+                    }
+                    let _ = delete_failed_fork(&pool, &session_id);
+                    events.updated(&SessionUpdatedEvent {
+                        session_id: session_id.clone(),
+                        mission_id: None,
+                    });
+                    return Err(Error::msg(format!(
+                        "forked session {session_id} row vanished mid-spawn — runner deleted?"
+                    )));
+                }
+
+                let spawn_pid = self.runtime_pid(&rt_session);
+                if let Ok(conn) = pool.get() {
+                    let _ = crate::repo::session::update_runtime_metadata(
+                        &conn,
+                        &session_id,
+                        &rt_session.runtime,
+                        &rt_session.session_id,
+                        spawn_pid,
+                    );
+                }
+
+                self.install_handle(
+                    &session_id,
+                    SessionHandle {
+                        id: session_id.clone(),
+                        mission_id: None,
+                        runner_id: source.runner_id.clone(),
+                        runtime_session: rt_session.clone(),
+                        codex_capture: None,
+                        forwarder: None,
+                        stop: output.stop_flag(),
+                    },
+                    None,
+                    initial_size,
+                    &pool,
+                    events.as_ref(),
+                );
+                self.publish_direct_activity(
+                    &session_id,
+                    SessionActivityState::Busy,
+                    "fork",
+                    events.as_ref(),
+                );
+                let forwarder = self.start_forwarder_thread(
+                    session_id.clone(),
+                    None,
+                    rt_session,
+                    output,
+                    Arc::clone(&pool),
+                    Arc::clone(&events),
+                    runner.clone(),
+                    plan.resuming,
+                    source.runner_id.is_some(),
+                    None,
+                );
+                self.install_forwarder(&session_id, forwarder);
+                if source.runner_id.is_some() {
+                    emit_runner_activity(&pool, &runner, events.as_ref());
+                }
+                log::info!(
+                    "fork timing: session={session_id} runtime={} gate_ms={} materialize_ms=not-applicable direct_spawn_ms={} total_ms={} outcome=ok",
+                    runner.runtime,
+                    gate_elapsed.as_millis(),
+                    direct_spawn_started_at.elapsed().as_millis(),
+                    fork_started_at.elapsed().as_millis(),
+                );
+                Ok(SpawnedSession {
+                    id: session_id,
+                    mission_id: None,
+                    runner_id: source.runner_id,
+                    handle: runner.handle,
+                    pid: None,
+                    fresh_fallback_lead: false,
+                })
+            }
+            headless @ router::runtime::ForkPlan::Headless { .. } => {
+                self.seed_codex_project_trust(&session_id, &runner.runtime, spec.cwd.as_deref());
+                let materialize_started_at = Instant::now();
+                let fork_key = match run_headless_fork(&spec, &headless, FORK_MATERIALIZE_TIMEOUT) {
+                    Ok(key) => key,
+                    Err(error) => {
+                        log::info!(
+                            "fork timing: session={session_id} runtime={} gate_ms={} materialize_ms={} total_ms={} outcome=materialize-error",
+                            runner.runtime,
+                            gate_elapsed.as_millis(),
+                            materialize_started_at.elapsed().as_millis(),
+                            fork_started_at.elapsed().as_millis(),
+                        );
+                        if let Err(cleanup_error) = delete_failed_fork(&pool, &session_id) {
+                            return Err(Error::msg(format!(
+                                "{error}; failed to roll back forked session {session_id}: {cleanup_error}"
+                            )));
+                        }
+                        events.updated(&SessionUpdatedEvent {
+                            session_id: session_id.clone(),
+                            mission_id: None,
+                        });
+                        return Err(error);
+                    }
+                };
+                let materialize_elapsed = materialize_started_at.elapsed();
+
+                let persist_result = (|| -> Result<bool> {
+                    let conn = pool.get()?;
+                    let captured = crate::repo::session::capture_agent_session_key(
+                        &conn,
+                        &session_id,
+                        &fork_key,
+                        &started_at,
+                    )?;
+                    let stopped = crate::repo::session::set_exit_status(
+                        &conn,
+                        &session_id,
+                        crate::model::SessionStatus::Stopped,
+                        Utc::now(),
+                    )?;
+                    Ok(captured && stopped > 0)
+                })();
+                match persist_result {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        delete_failed_fork(&pool, &session_id)?;
+                        events.updated(&SessionUpdatedEvent {
+                            session_id: session_id.clone(),
+                            mission_id: None,
+                        });
+                        return Err(Error::msg(format!(
+                            "forked session {session_id} row vanished during materialization"
+                        )));
+                    }
+                    Err(error) => {
+                        if let Err(cleanup_error) = delete_failed_fork(&pool, &session_id) {
+                            return Err(Error::msg(format!(
+                                "{error}; failed to roll back forked session {session_id}: {cleanup_error}"
+                            )));
+                        }
+                        events.updated(&SessionUpdatedEvent {
+                            session_id: session_id.clone(),
+                            mission_id: None,
+                        });
+                        return Err(error);
+                    }
+                }
+
+                let resume_started_at = Instant::now();
+                let resume_result = self.resume_on_launch(
+                    &session_id,
+                    cols,
+                    rows,
+                    app_data_dir,
+                    Arc::clone(&pool),
+                    Arc::clone(&events),
+                );
+                log::info!(
+                    "fork timing: session={session_id} runtime={} gate_ms={} materialize_ms={} resume_spawn_ms={} total_ms={} outcome={}",
+                    runner.runtime,
+                    gate_elapsed.as_millis(),
+                    materialize_elapsed.as_millis(),
+                    resume_started_at.elapsed().as_millis(),
+                    fork_started_at.elapsed().as_millis(),
+                    if resume_result.is_ok() { "ok" } else { "resume-error" },
+                );
+                match resume_result {
+                    Ok(spawned) => Ok(spawned),
+                    Err(error) => {
+                        if let Err(cleanup_error) = delete_failed_fork(&pool, &session_id) {
+                            return Err(Error::msg(format!(
+                                "{error}; failed to roll back forked session {session_id}: {cleanup_error}"
+                            )));
+                        }
+                        events.updated(&SessionUpdatedEvent {
+                            session_id: session_id.clone(),
+                            mission_id: None,
+                        });
+                        Err(error)
+                    }
+                }
+            }
+        }
     }
 
     /// Respawn a PTY for an existing direct-chat session row, reusing

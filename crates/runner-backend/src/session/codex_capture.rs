@@ -72,6 +72,39 @@ pub fn sessions_root_for(runtime: &str) -> Option<PathBuf> {
     }
 }
 
+pub(crate) fn fork_rollout_is_ready(sessions_root: &Path, key: &str, source_key: &str) -> bool {
+    let now = Local::now();
+    let candidates = [
+        now - chrono::Duration::days(1),
+        now,
+        now + chrono::Duration::days(1),
+    ];
+    let suffix = format!("-{key}.jsonl");
+    rollout_paths_for_dates(sessions_root, &candidates)
+        .into_iter()
+        .any(|path| {
+            if !is_rollout_file(&path)
+                || !path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.ends_with(&suffix))
+            {
+                return false;
+            }
+            let Ok(parsed) = read_complete_session_meta(&path) else {
+                return false;
+            };
+            let Some(payload) = parsed.get("payload") else {
+                return false;
+            };
+            payload.get("id").and_then(|value| value.as_str()) == Some(key)
+                && payload
+                    .get("forked_from_id")
+                    .and_then(|value| value.as_str())
+                    == Some(source_key)
+        })
+}
+
 /// Spawn a background thread that captures the codex-lineage session id for
 /// `session_id` (a Runner sessions row) and writes it into
 /// `agent_session_key`. Returns immediately; no-op if the runtime's
@@ -509,35 +542,43 @@ enum ParseVerdict {
     NotReady,
 }
 
-fn parse_session_meta(path: &Path, want_cwd: &str, started_after: DateTime<Utc>) -> ParseVerdict {
+fn read_complete_session_meta(path: &Path) -> std::result::Result<serde_json::Value, ParseVerdict> {
     // File opens often race the writer. Treat open errors as
     // transient so a future poll can retry.
     let file = match std::fs::File::open(path) {
         Ok(f) => f,
-        Err(_) => return ParseVerdict::NotReady,
+        Err(_) => return Err(ParseVerdict::NotReady),
     };
     let mut reader = BufReader::new(file);
     let mut line = String::new();
     let read = match reader.read_line(&mut line) {
         Ok(n) => n,
-        Err(_) => return ParseVerdict::NotReady,
+        Err(_) => return Err(ParseVerdict::NotReady),
     };
     if read == 0 || line.trim().is_empty() {
-        return ParseVerdict::NotReady;
+        return Err(ParseVerdict::NotReady);
     }
     // A valid first line in codex's rollout always ends with `\n`.
     // If we read bytes but no newline, the writer is mid-flush —
     // retry.
     if !line.ends_with('\n') {
-        return ParseVerdict::NotReady;
+        return Err(ParseVerdict::NotReady);
     }
     let parsed: serde_json::Value = match serde_json::from_str(line.trim()) {
         Ok(v) => v,
-        Err(_) => return ParseVerdict::NotReady,
+        Err(_) => return Err(ParseVerdict::NotReady),
     };
     if parsed.get("type").and_then(|v| v.as_str()) != Some("session_meta") {
-        return ParseVerdict::NotOurs;
+        return Err(ParseVerdict::NotOurs);
     }
+    Ok(parsed)
+}
+
+fn parse_session_meta(path: &Path, want_cwd: &str, started_after: DateTime<Utc>) -> ParseVerdict {
+    let parsed = match read_complete_session_meta(path) {
+        Ok(parsed) => parsed,
+        Err(verdict) => return verdict,
+    };
     let Some(payload) = parsed.get("payload") else {
         return ParseVerdict::NotOurs;
     };
@@ -635,6 +676,67 @@ mod tests {
             Some(home.join(".trae").join("cli").join("sessions")),
         );
         assert_eq!(sessions_root_for("shell"), None);
+    }
+
+    #[test]
+    fn fork_rollout_is_ready_requires_complete_matching_lineage() {
+        let root = tempfile::tempdir().unwrap();
+        let now = Local::now();
+        let date_dir = root
+            .path()
+            .join(format!("{:04}", now.year()))
+            .join(format!("{:02}", now.month()))
+            .join(format!("{:02}", now.day()));
+        std::fs::create_dir_all(&date_dir).unwrap();
+        let key = "019fa1b9-a133-7841-b4dd-730d376ab1d1";
+        let source_key = "019fa1b9-a133-7841-b4dd-730d376ab1d0";
+        let path = date_dir.join(format!("rollout-2026-09-01T00-00-00-{key}.jsonl"));
+
+        std::fs::write(&path, "").unwrap();
+        assert!(!fork_rollout_is_ready(root.path(), key, source_key));
+
+        std::fs::write(
+            &path,
+            serde_json::json!({
+                "type": "session_meta",
+                "payload": {"id": key, "forked_from_id": source_key},
+            })
+            .to_string(),
+        )
+        .unwrap();
+        assert!(!fork_rollout_is_ready(root.path(), key, source_key));
+
+        std::fs::write(
+            &path,
+            format!(
+                "{}\n",
+                serde_json::json!({
+                    "type": "session_meta",
+                    "payload": {"id": key, "forked_from_id": key},
+                })
+            ),
+        )
+        .unwrap();
+        assert!(!fork_rollout_is_ready(root.path(), key, source_key));
+
+        std::fs::write(
+            &path,
+            format!(
+                "{}\n",
+                serde_json::json!({
+                    "type": "session_meta",
+                    "payload": {"id": key, "forked_from_id": source_key},
+                })
+            ),
+        )
+        .unwrap();
+
+        assert!(fork_rollout_is_ready(root.path(), key, source_key));
+        assert!(!fork_rollout_is_ready(
+            root.path(),
+            "019fa1b9-a133-7841-b4dd-730d376ab1d2",
+            source_key,
+        ));
     }
 
     #[test]

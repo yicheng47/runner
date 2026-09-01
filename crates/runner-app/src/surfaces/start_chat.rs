@@ -1766,6 +1766,7 @@ mod tests {
             name: name.into(),
             display_name: name.into(),
             command: name.into(),
+            native_fork: matches!(name, "codex" | "claude-code"),
             description: name.into(),
             default_enabled: true,
             available: true,

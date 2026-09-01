@@ -1180,6 +1180,7 @@ mod tests {
             name: "codex".into(),
             display_name: "Codex".into(),
             command: "codex".into(),
+            native_fork: true,
             description: String::new(),
             default_enabled: true,
             available: false,

@@ -56,9 +56,17 @@ impl StoreRefreshKind {
             {
                 Some(Self::Missions)
             }
-            "session/exit" | "session/spawned" | "session/archived" | "session/updated"
-            | "runner/activity" | "runner/changed" | "crew/changed" | "slot/changed"
-            | "mission/changed" | "project/changed" => Some(Self::All),
+            "session/exit"
+            | "session/spawned"
+            | "session/fork-started"
+            | "session/archived"
+            | "session/updated"
+            | "runner/activity"
+            | "runner/changed"
+            | "crew/changed"
+            | "slot/changed"
+            | "mission/changed"
+            | "project/changed" => Some(Self::All),
             _ => None,
         }
     }
@@ -617,6 +625,10 @@ mod tests {
         );
         assert_eq!(
             StoreRefreshKind::for_event(&event("mission/changed")),
+            Some(StoreRefreshKind::All)
+        );
+        assert_eq!(
+            StoreRefreshKind::for_event(&event("session/fork-started")),
             Some(StoreRefreshKind::All)
         );
         assert_eq!(StoreRefreshKind::for_event(&event("unrelated")), None);

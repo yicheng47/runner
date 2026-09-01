@@ -254,6 +254,7 @@ enum SidebarMenuAction {
         pinned: bool,
     },
     Rename(SidebarRenameTarget),
+    ForkChat(String),
     ArchiveTab {
         tab_id: String,
         session_ids: Vec<String>,
@@ -1185,11 +1186,22 @@ impl Sidebar {
             .iter()
             .map(|member| member.session_id.clone())
             .collect::<Vec<_>>();
+        let fork_target = sidebar_fork_menu_target(&layout, &members);
+        let fork_pending = fork_target.as_ref().is_some_and(|target| {
+            self.shell.upgrade().is_some_and(|shell| {
+                let shell = shell.read(cx);
+                shell.fork_confirm.as_ref().is_some_and(|confirm| {
+                    confirm.pending && confirm.session_id == target.session_id
+                }) || super::chat::fork_in_progress(&shell.forking_sessions, &target.session_id)
+            })
+        });
         let entries = tab_menu_entries(
             &node.id,
             node.pinned_position.is_some(),
             layout.name.unwrap_or_default(),
             multi_pane,
+            fork_target,
+            fork_pending,
             members
                 .into_iter()
                 .filter(|member| member.agent_runtime != "shell")
@@ -1328,6 +1340,15 @@ impl Sidebar {
                     }
                 };
                 self.begin_sidebar_rename(target, value, placeholder, window, cx);
+            }
+            SidebarMenuAction::ForkChat(session_id) => {
+                if let Some(shell) = self.shell.upgrade() {
+                    window.defer(cx, move |window, cx| {
+                        shell.update(cx, |shell, shell_cx| {
+                            shell.fork_chat(&session_id, window, shell_cx)
+                        });
+                    });
+                }
             }
             SidebarMenuAction::ArchiveTab {
                 tab_id,
@@ -2498,31 +2519,30 @@ impl Sidebar {
                     .children(shortcut_index.map(|index| tab_shortcut_pill(index, active)))
                     .into_any_element()
             } else {
+                let more_button = IconButton::new(
+                    SharedString::from(format!("sidebar-tab-actions-{}", node.id)),
+                    "more-horizontal.svg",
+                )
+                .size(IconButtonSize::Xs)
+                .stop_click_propagation(true)
+                .reveal_on_group_hover("sidebar-row-actions")
+                .tooltip("More actions")
+                .on_press(move |window, cx| {
+                    let position = window.mouse_position();
+                    menu_root.update(cx, |this, cx| {
+                        this.open_tab_menu(
+                            menu_node.clone(),
+                            menu_layout.clone(),
+                            menu_members.clone(),
+                            position,
+                            window,
+                            cx,
+                        )
+                    });
+                });
                 sidebar_row_trailing_slot()
                     .child(attention_indicator(attention))
-                    .child(
-                        IconButton::new(
-                            SharedString::from(format!("sidebar-tab-actions-{}", node.id)),
-                            "more-horizontal.svg",
-                        )
-                        .size(IconButtonSize::Xs)
-                        .stop_click_propagation(true)
-                        .reveal_on_group_hover("sidebar-row-actions")
-                        .tooltip("More actions")
-                        .on_press(move |window, cx| {
-                            let position = window.mouse_position();
-                            menu_root.update(cx, |this, cx| {
-                                this.open_tab_menu(
-                                    menu_node.clone(),
-                                    menu_layout.clone(),
-                                    menu_members.clone(),
-                                    position,
-                                    window,
-                                    cx,
-                                )
-                            });
-                        }),
-                    )
+                    .child(more_button)
                     .into_any_element()
             };
             sidebar_row_shell(
@@ -3350,11 +3370,14 @@ impl NativeRoot {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn tab_menu_entries(
     node_id: &str,
     pinned: bool,
     original: String,
     multi_pane: bool,
+    fork_target: Option<SidebarForkMenuTarget>,
+    fork_pending: bool,
     chat_session_ids: Vec<String>,
     tab_session_ids: Vec<String>,
     terminal_session_id: Option<String>,
@@ -3379,6 +3402,15 @@ fn tab_menu_entries(
             }),
         ),
     ];
+    if let Some(target) = fork_target {
+        let mut item = UiMenuItem::new("Fork chat")
+            .icon("git-fork.svg")
+            .disabled(fork_pending || target.disabled_reason.is_some());
+        if let Some(reason) = target.disabled_reason {
+            item = item.description(reason);
+        }
+        entries.push((item, SidebarMenuAction::ForkChat(target.session_id)));
+    }
     if !chat_session_ids.is_empty() {
         entries.push((
             UiMenuItem::new(if multi_pane { "Archive all" } else { "Archive" })
@@ -3804,6 +3836,35 @@ fn sidebar_tab_target<'a>(
         .unwrap_or(&members[0])
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct SidebarForkMenuTarget {
+    session_id: String,
+    disabled_reason: Option<&'static str>,
+}
+
+fn sidebar_fork_menu_target(
+    layout: &PaneLayout,
+    members: &[DirectSessionEntry],
+) -> Option<SidebarForkMenuTarget> {
+    if layout.root.leaves().len() != 1 {
+        return None;
+    }
+    let entry = members
+        .first()
+        .filter(|entry| entry.agent_runtime != "shell")?;
+    let disabled_reason = if !entry.native_fork {
+        Some("Forking needs claude-code or codex")
+    } else if !entry.forkable {
+        Some("No session key captured yet")
+    } else {
+        None
+    };
+    Some(SidebarForkMenuTarget {
+        session_id: entry.session_id.clone(),
+        disabled_reason,
+    })
+}
+
 fn project_row_label(label: String) -> AnyElement {
     div()
         .min_w(px(0.))
@@ -3980,6 +4041,8 @@ mod tests {
             started_at: None,
             stopped_at: None,
             resumable: false,
+            native_fork: matches!(runtime, "codex" | "claude-code"),
+            forkable: false,
             agent_session_key: None,
             pinned: false,
             archived_at: None,
@@ -4175,6 +4238,8 @@ mod tests {
             false,
             "My tab".into(),
             false,
+            None,
+            false,
             vec!["session-1".into(), "session-2".into()],
             vec!["session-1".into(), "session-2".into()],
             None,
@@ -4207,6 +4272,8 @@ mod tests {
             false,
             "My tab".into(),
             true,
+            None,
+            false,
             vec!["session-1".into(), "session-2".into()],
             vec!["session-1".into(), "session-2".into()],
             None,
@@ -4222,6 +4289,8 @@ mod tests {
             false,
             "Mixed tab".into(),
             true,
+            None,
+            false,
             vec!["chat-1".into()],
             vec!["chat-1".into(), "shell-1".into()],
             None,
@@ -4238,6 +4307,8 @@ mod tests {
             "tab-1",
             false,
             "Terminal".into(),
+            false,
+            None,
             false,
             Vec::new(),
             vec!["shell-1".into()],
@@ -4334,6 +4405,103 @@ mod tests {
             archive_all_confirmation_body(&["active-chat".into(), "idle-chat".into()], &sessions,),
             None,
         );
+    }
+
+    #[test]
+    fn sidebar_fork_menu_target_exposes_enabled_and_disabled_single_chats() {
+        let layout = PaneLayout::fresh(PresetKind::Single, Some("chat"), &["chat".into()]);
+        let mut codex = direct_session("chat", "codex", SessionStatus::Running);
+        codex.forkable = true;
+        codex.agent_session_key = Some("key".into());
+        let members = vec![codex];
+        let target = sidebar_fork_menu_target(&layout, &members).expect("fork target");
+        assert_eq!(target.session_id, "chat");
+        assert_eq!(target.disabled_reason, None);
+
+        let entries = tab_menu_entries(
+            "tab-1",
+            false,
+            "Codex".into(),
+            false,
+            Some(target.clone()),
+            false,
+            vec!["chat".into()],
+            vec!["chat".into()],
+            None,
+        );
+        assert_eq!(
+            menu_labels(&entries),
+            ["Pin", "Rename tab", "Fork chat", "Archive"]
+        );
+        assert!(!entries[2].0.disabled);
+        assert_eq!(entries[2].1, SidebarMenuAction::ForkChat("chat".into()));
+
+        let busy_entries = tab_menu_entries(
+            "tab-1",
+            false,
+            "Codex".into(),
+            false,
+            Some(target),
+            true,
+            vec!["chat".into()],
+            vec!["chat".into()],
+            None,
+        );
+        assert!(busy_entries[2].0.disabled);
+
+        let mut waiting = direct_session("chat", "codex", SessionStatus::Running);
+        waiting.native_fork = true;
+        let waiting_members = vec![waiting];
+        let waiting_target = sidebar_fork_menu_target(&layout, &waiting_members).unwrap();
+        assert_eq!(
+            waiting_target.disabled_reason,
+            Some("No session key captured yet")
+        );
+        let waiting_entries = tab_menu_entries(
+            "tab-1",
+            false,
+            "Waiting".into(),
+            false,
+            Some(waiting_target),
+            false,
+            vec!["chat".into()],
+            vec!["chat".into()],
+            None,
+        );
+        assert!(waiting_entries[2].0.disabled);
+        assert_eq!(
+            waiting_entries[2].0.description.clone(),
+            Some("No session key captured yet".into())
+        );
+
+        let trae_members = vec![direct_session("chat", "trae", SessionStatus::Running)];
+        let trae_target = sidebar_fork_menu_target(&layout, &trae_members).unwrap();
+        assert_eq!(
+            trae_target.disabled_reason,
+            Some("Forking needs claude-code or codex")
+        );
+        let trae_entries = tab_menu_entries(
+            "tab-1",
+            false,
+            "Trae".into(),
+            false,
+            Some(trae_target),
+            false,
+            vec!["chat".into()],
+            vec!["chat".into()],
+            None,
+        );
+        assert!(trae_entries[2].0.disabled);
+        assert_eq!(
+            trae_entries[2].0.description.clone(),
+            Some("Forking needs claude-code or codex".into())
+        );
+
+        let shell_members = vec![direct_session("chat", "shell", SessionStatus::Running)];
+        assert!(sidebar_fork_menu_target(&layout, &shell_members).is_none());
+
+        let grouped = PaneLayout::fresh(PresetKind::Cols2, Some("chat"), &["chat".into()]);
+        assert!(sidebar_fork_menu_target(&grouped, &members).is_none());
     }
 
     #[test]

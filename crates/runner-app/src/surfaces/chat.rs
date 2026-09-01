@@ -21,6 +21,66 @@ fn pane_rename_change(original: &str, value: &str) -> PaneRenameChange {
     }
 }
 
+fn fork_confirmation(entry: Option<&DirectSessionEntry>) -> Option<ForkConfirm> {
+    entry
+        .filter(|entry| entry.agent_runtime != "shell" && entry.forkable)
+        .map(|entry| ForkConfirm {
+            session_id: entry.session_id.clone(),
+            pending: false,
+        })
+}
+
+fn begin_fork_submission(confirm: &mut Option<ForkConfirm>) -> Option<String> {
+    let confirm = confirm.as_mut()?;
+    if confirm.pending {
+        return None;
+    }
+    confirm.pending = true;
+    Some(confirm.session_id.clone())
+}
+
+fn cancel_fork_confirmation(confirm: &mut Option<ForkConfirm>) {
+    if confirm.as_ref().is_some_and(|confirm| !confirm.pending) {
+        *confirm = None;
+    }
+}
+
+pub(crate) fn fork_in_progress(forks: &HashMap<String, String>, session_id: &str) -> bool {
+    forks.contains_key(session_id) || forks.values().any(|fork_id| fork_id == session_id)
+}
+
+pub(crate) fn fork_materializing(forks: &HashMap<String, String>, session_id: &str) -> bool {
+    forks.values().any(|fork_id| fork_id == session_id)
+}
+
+fn accept_fork_started(
+    confirm: &mut Option<ForkConfirm>,
+    forks: &mut HashMap<String, String>,
+    source_session_id: &str,
+    fork_session_id: &str,
+) -> bool {
+    if !confirm
+        .as_ref()
+        .is_some_and(|confirm| confirm.pending && confirm.session_id == source_session_id)
+    {
+        return false;
+    }
+    *confirm = None;
+    forks.insert(source_session_id.to_owned(), fork_session_id.to_owned());
+    true
+}
+
+fn finish_fork_tracking(
+    forks: &mut HashMap<String, String>,
+    fork_session_id: &str,
+) -> Option<String> {
+    let source_session_id = forks
+        .iter()
+        .find_map(|(source_id, fork_id)| (fork_id == fork_session_id).then(|| source_id.clone()))?;
+    forks.remove(&source_session_id);
+    Some(source_session_id)
+}
+
 impl NativeRoot {
     pub(crate) fn open_archived_chat(
         &mut self,
@@ -35,6 +95,110 @@ impl NativeRoot {
             .update(cx, |copy, copy_cx| copy.set_value(session_key, copy_cx));
         self.set_route(AppRoute::ArchivedChat, cx);
         self.chat_focus.focus(window);
+        cx.notify();
+    }
+
+    pub(crate) fn fork_chat(
+        &mut self,
+        session_id: &str,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self
+            .fork_confirm
+            .as_ref()
+            .is_some_and(|confirm| confirm.pending)
+        {
+            return;
+        }
+        if fork_in_progress(&self.forking_sessions, session_id) {
+            return;
+        }
+        self.fork_confirm = fork_confirmation(self.session_entry(session_id, cx));
+        cx.notify();
+    }
+
+    pub(crate) fn confirm_fork_chat(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(source_session_id) = begin_fork_submission(&mut self.fork_confirm) else {
+            return;
+        };
+        let Some(entry) = self.session_entry(&source_session_id, cx).cloned() else {
+            self.fork_confirm = None;
+            cx.notify();
+            return;
+        };
+        let title = Some(format!("{} (fork)", session_label(&entry)));
+        self.chat_error = None;
+        cx.notify();
+
+        let core = self.core(cx).clone();
+        let backend_source_session_id = source_session_id.clone();
+        let fork = cx.background_spawn(async move {
+            runner_backend::ops::session::session_fork(
+                &core,
+                &backend_source_session_id,
+                title,
+                Some(INITIAL_COLS),
+                Some(INITIAL_ROWS),
+            )
+            .map_err(|error| error.to_string())
+        });
+        cx.spawn_in(window, async move |weak, cx| {
+            let result = fork.await;
+            let _ = weak.update_in(cx, |this, window, cx| {
+                this.fork_confirm = None;
+                match result {
+                    Ok(spawned) => {
+                        let session_id = spawned.id;
+                        finish_fork_tracking(&mut this.forking_sessions, &session_id);
+                        let placement = (|| -> Result<()> {
+                            this.refresh_sessions(cx);
+                            this.reload_tabs(cx)?;
+                            this.tabs.activate_session(&session_id);
+                            this.sync_active_project_from_active_tab(cx);
+                            this.set_route(AppRoute::Chat, cx);
+                            this.ensure_active_tab_attached(window, cx)?;
+                            if !this.chat_transitions.contains_key(&session_id) {
+                                this.begin_chat_transition(
+                                    &session_id,
+                                    chat_lifecycle::TransitionKind::Starting,
+                                    Some(0),
+                                    window,
+                                    cx,
+                                );
+                            }
+                            this.remember_active_runner(cx);
+                            this.mark_active_tab_viewed(window, cx);
+                            this.sync_active_chat_detail(cx);
+                            Ok(())
+                        })();
+                        if let Err(error) = placement {
+                            this.chat_error = Some(error.to_string());
+                        }
+                    }
+                    Err(error) => {
+                        let fork_session_id = this.forking_sessions.remove(&source_session_id);
+                        if let Some(fork_session_id) = fork_session_id {
+                            this.chat_transitions.remove(&fork_session_id);
+                            this.attached.remove(&fork_session_id);
+                        }
+                        this.refresh_sessions(cx);
+                        let _ = this.reload_tabs(cx);
+                        this.tabs.activate_session(&source_session_id);
+                        this.sync_active_project_from_active_tab(cx);
+                        let _ = this.ensure_active_tab_attached(window, cx);
+                        this.sync_active_chat_detail(cx);
+                        this.chat_error = Some(error);
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    pub(crate) fn cancel_fork_chat(&mut self, cx: &mut Context<Self>) {
+        cancel_fork_confirmation(&mut self.fork_confirm);
         cx.notify();
     }
 
@@ -86,6 +250,15 @@ impl NativeRoot {
             "session/spawned" => {
                 if let Some(session_id) = session_id {
                     self.attached.remove(&session_id);
+                    if finish_fork_tracking(&mut self.forking_sessions, &session_id).is_some() {
+                        self.begin_chat_transition(
+                            &session_id,
+                            chat_lifecycle::TransitionKind::Starting,
+                            Some(0),
+                            window,
+                            cx,
+                        );
+                    }
                     if let Some(transition) = self.chat_transitions.get_mut(&session_id) {
                         transition.baseline_seq = 0;
                     }
@@ -100,6 +273,37 @@ impl NativeRoot {
                         }
                     }
                     self.sync_active_chat_detail(cx);
+                }
+            }
+            "session/fork-started" => {
+                let source_session_id = event
+                    .payload
+                    .get("source_session_id")
+                    .and_then(serde_json::Value::as_str);
+                if let (Some(source_session_id), Some(session_id)) =
+                    (source_session_id, session_id.as_deref())
+                {
+                    if accept_fork_started(
+                        &mut self.fork_confirm,
+                        &mut self.forking_sessions,
+                        source_session_id,
+                        session_id,
+                    ) {
+                        let placement = (|| -> Result<()> {
+                            self.refresh_sessions(cx);
+                            self.reload_tabs(cx)?;
+                            self.tabs.activate_session(session_id);
+                            self.sync_active_project_from_active_tab(cx);
+                            self.set_route(AppRoute::Chat, cx);
+                            self.remember_active_runner(cx);
+                            self.mark_active_tab_viewed(window, cx);
+                            self.sync_active_chat_detail(cx);
+                            Ok(())
+                        })();
+                        if let Err(error) = placement {
+                            self.chat_error = Some(error.to_string());
+                        }
+                    }
                 }
             }
             "session/warning" => {
@@ -836,6 +1040,7 @@ impl NativeRoot {
     pub(crate) fn session_lifecycle_disabled(&self, session_id: &str, cx: &App) -> bool {
         self.stopping_sessions.contains(session_id)
             || self.sidebar_archiving_session(session_id, cx)
+            || fork_materializing(&self.forking_sessions, session_id)
             || self.chat_transitions.contains_key(session_id)
     }
 
@@ -1601,7 +1806,37 @@ impl NativeRoot {
 
 #[cfg(test)]
 mod tests {
-    use super::{pane_rename_change, PaneRenameChange};
+    use super::{
+        accept_fork_started, begin_fork_submission, cancel_fork_confirmation, finish_fork_tracking,
+        fork_confirmation, fork_in_progress, fork_materializing, pane_rename_change,
+        PaneRenameChange,
+    };
+    use runner_backend::model::SessionStatus;
+    use runner_backend::ops::session::DirectSessionEntry;
+    use std::collections::HashMap;
+
+    fn direct_session(runtime: &str, forkable: bool) -> DirectSessionEntry {
+        DirectSessionEntry {
+            session_id: "chat-1".into(),
+            project_id: None,
+            runner_id: None,
+            handle: Some("coder".into()),
+            agent_runtime: runtime.into(),
+            agent_command: runtime.into(),
+            display_name: runtime.into(),
+            status: SessionStatus::Running,
+            title: None,
+            cwd: None,
+            started_at: None,
+            stopped_at: None,
+            resumable: forkable,
+            native_fork: runtime != "shell",
+            forkable,
+            agent_session_key: forkable.then(|| "key".into()),
+            pinned: false,
+            archived_at: None,
+        }
+    }
 
     #[test]
     fn pane_rename_enter_persists_titles_and_empty_restores_the_default() {
@@ -1617,5 +1852,69 @@ mod tests {
             pane_rename_change("feature 64", " feature 64 "),
             PaneRenameChange::Unchanged
         );
+    }
+
+    #[test]
+    fn fork_confirmation_opens_cancels_and_rejects_ineligible_sessions() {
+        let entry = direct_session("codex", true);
+        let mut confirm = fork_confirmation(Some(&entry));
+        assert_eq!(confirm.as_ref().map(|confirm| confirm.pending), Some(false));
+        cancel_fork_confirmation(&mut confirm);
+        assert!(confirm.is_none());
+
+        assert!(fork_confirmation(Some(&direct_session("codex", false))).is_none());
+        assert!(fork_confirmation(Some(&direct_session("shell", true))).is_none());
+        assert!(fork_confirmation(None).is_none());
+    }
+
+    #[test]
+    fn fork_confirmation_allows_only_one_backend_submission() {
+        let mut confirm = fork_confirmation(Some(&direct_session("claude-code", true)));
+        let mut calls = 0;
+        for _ in 0..2 {
+            if begin_fork_submission(&mut confirm).is_some() {
+                calls += 1;
+            }
+        }
+        assert_eq!(calls, 1);
+        assert!(confirm.as_ref().is_some_and(|confirm| confirm.pending));
+        cancel_fork_confirmation(&mut confirm);
+        assert!(confirm.is_some());
+    }
+
+    #[test]
+    fn fork_started_moves_busy_state_from_confirmation_to_both_sessions() {
+        let mut confirm = fork_confirmation(Some(&direct_session("codex", true)));
+        assert_eq!(
+            begin_fork_submission(&mut confirm).as_deref(),
+            Some("chat-1")
+        );
+        let mut forks = HashMap::new();
+
+        assert!(!accept_fork_started(
+            &mut confirm,
+            &mut forks,
+            "another-chat",
+            "fork-1",
+        ));
+        assert!(confirm.as_ref().is_some_and(|confirm| confirm.pending));
+        assert!(accept_fork_started(
+            &mut confirm,
+            &mut forks,
+            "chat-1",
+            "fork-1",
+        ));
+        assert!(confirm.is_none());
+        assert!(fork_in_progress(&forks, "chat-1"));
+        assert!(fork_in_progress(&forks, "fork-1"));
+        assert!(!fork_in_progress(&forks, "another-chat"));
+        assert!(!fork_materializing(&forks, "chat-1"));
+        assert!(fork_materializing(&forks, "fork-1"));
+
+        assert_eq!(
+            finish_fork_tracking(&mut forks, "fork-1").as_deref(),
+            Some("chat-1")
+        );
+        assert!(forks.is_empty());
     }
 }

@@ -12,6 +12,7 @@ pub struct RuntimeDefinition {
     pub name: String,
     pub display_name: String,
     pub command: String,
+    pub native_fork: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -26,6 +27,7 @@ pub struct RuntimeCatalogEntry {
     pub name: String,
     pub display_name: String,
     pub command: String,
+    pub native_fork: bool,
     pub description: String,
     pub default_enabled: bool,
     pub available: bool,
@@ -42,6 +44,7 @@ pub fn runtime_list() -> Vec<RuntimeDefinition> {
             name: runtime.name.to_string(),
             display_name: runtime.display_name.to_string(),
             command: runtime.command.to_string(),
+            native_fork: runtime.native_fork,
         })
         .collect()
 }
@@ -228,6 +231,7 @@ fn runtime_catalog_options() -> Vec<RuntimeCatalogEntry> {
             name: "codex".into(),
             display_name: "Codex".into(),
             command: "codex".into(),
+            native_fork: crate::router::runtime::supports_native_fork("codex"),
             description: "OpenAI Codex CLI".into(),
             default_enabled: true,
             available: false,
@@ -273,6 +277,7 @@ fn runtime_catalog_options() -> Vec<RuntimeCatalogEntry> {
             name: "claude-code".into(),
             display_name: "Claude Code".into(),
             command: "claude".into(),
+            native_fork: crate::router::runtime::supports_native_fork("claude-code"),
             description: "Anthropic Claude Code CLI".into(),
             default_enabled: true,
             available: false,
@@ -291,6 +296,7 @@ fn runtime_catalog_options() -> Vec<RuntimeCatalogEntry> {
             name: "trae".into(),
             display_name: "TRAE CLI".into(),
             command: "traecli".into(),
+            native_fork: crate::router::runtime::supports_native_fork("trae"),
             description: "TRAE CLI".into(),
             default_enabled: false,
             available: false,
