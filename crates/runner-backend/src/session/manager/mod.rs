@@ -660,6 +660,7 @@ pub struct SessionManager {
     /// iteration so queued slots do not keep firing into a stopped or
     /// archived mission. See `cancel_pending_mission_spawns`.
     pending_mission_cancels: Mutex<HashMap<String, Arc<AtomicBool>>>,
+    claude_session_key_watcher: Mutex<Option<super::claude_rekey::ClaudeSessionKeyWatcher>>,
     /// Underlying terminal runtime. Every spawn / resume / kill /
     /// inject_stdin / resize routes through this trait — the manager
     /// owns DB + event-buffer state but never reads/writes a PTY
@@ -768,10 +769,23 @@ impl SessionManager {
             discovery_state,
             claude_launch_gate: Mutex::new(None),
             pending_mission_cancels: Mutex::new(HashMap::new()),
+            claude_session_key_watcher: Mutex::new(None),
             runtime,
             resize_settle_ms: AtomicU64::new(RESIZE_SETTLE_MS),
             resize_generation: AtomicU64::new(0),
         })
+    }
+
+    pub fn start_claude_session_key_watcher(
+        &self,
+        app_data_dir: &Path,
+        pool: Arc<DbPool>,
+        events: Arc<dyn SessionEvents>,
+    ) -> Result<()> {
+        let watcher =
+            super::claude_rekey::ClaudeSessionKeyWatcher::start(app_data_dir, pool, events)?;
+        *self.claude_session_key_watcher.lock().unwrap() = Some(watcher);
+        Ok(())
     }
 
     #[cfg(test)]
