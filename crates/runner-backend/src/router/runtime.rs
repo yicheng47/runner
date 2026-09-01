@@ -32,6 +32,7 @@ pub struct RuntimeDefinition {
     pub name: &'static str,
     pub display_name: &'static str,
     pub command: &'static str,
+    pub native_fork: bool,
 }
 
 const RUNTIME_DEFINITIONS: &[RuntimeDefinition] = &[
@@ -39,16 +40,19 @@ const RUNTIME_DEFINITIONS: &[RuntimeDefinition] = &[
         name: "codex",
         display_name: "Codex",
         command: "codex",
+        native_fork: true,
     },
     RuntimeDefinition {
         name: "claude-code",
         display_name: "Claude Code",
         command: "claude",
+        native_fork: true,
     },
     RuntimeDefinition {
         name: "trae",
         display_name: "TRAE CLI",
         command: "traecli",
+        native_fork: false,
     },
 ];
 
@@ -67,6 +71,10 @@ pub fn runtime_display_name(name: &str) -> String {
     runtime_definition(name)
         .map(|runtime| runtime.display_name.to_string())
         .unwrap_or_else(|| name.to_string())
+}
+
+pub fn supports_native_fork(runtime: &str) -> bool {
+    runtime_definition(runtime).is_some_and(|definition| definition.native_fork)
 }
 
 /// Compute the extra args (in declaration order) to append after the
@@ -660,12 +668,11 @@ pub fn resume_plan(runtime: &str, prior_key: Option<&str>) -> ResumePlan {
                 // recognises as in use ("Session ID … is already in
                 // use") — it treats `--session-id` as fresh-only. The
                 // edge case `--resume` exposes ("session not found"
-                // when the conversation file was never persisted)
-                // is now masked by spawn-time first-turn delivery, which
-                // always sends a first user turn to claude-code on
-                // fresh spawn so the conversation file lands on disk
-                // before any future resume tries to load it. If a
-                // resume still fails (e.g. the user killed the app
+                // when the conversation file was never persisted) is
+                // normally masked by spawn-time first-turn delivery. An
+                // untouched direct Claude fork intentionally has no first
+                // turn and can still reach this fallback. If a resume fails
+                // (e.g. the user killed the app
                 // within ~1.5s of spawn before the first turn went
                 // through), the reader thread's `resume_failed`
                 // heuristic wipes `agent_session_key` and the next
@@ -702,6 +709,53 @@ pub fn resume_plan(runtime: &str, prior_key: Option<&str>) -> ResumePlan {
         // shell / unknown — no resume concept. Custom wrappers can be wired
         // up later.
         _ => ResumePlan::fresh(),
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum ForkPlan {
+    Direct(ResumePlan),
+    Headless {
+        args: Vec<String>,
+        source_key: String,
+    },
+}
+
+pub fn fork_plan(runtime: &str, source_key: &str, source_label: &str) -> Option<ForkPlan> {
+    if !is_uuid(source_key) {
+        return None;
+    }
+    match runtime {
+        "claude-code" => {
+            let id = uuid::Uuid::new_v4().to_string();
+            Some(ForkPlan::Direct(ResumePlan {
+                args: vec![
+                    "--resume".into(),
+                    source_key.to_string(),
+                    "--fork-session".into(),
+                    "--session-id".into(),
+                    id.clone(),
+                ],
+                prepend: false,
+                assigned_key: Some(id),
+                resuming: true,
+            }))
+        }
+        "codex" => {
+            let note = format!("This chat was forked from '{source_label}'.");
+            Some(ForkPlan::Headless {
+                args: vec![
+                    "exec".into(),
+                    "fork".into(),
+                    source_key.to_string(),
+                    "--json".into(),
+                    "--skip-git-repo-check".into(),
+                    note,
+                ],
+                source_key: source_key.to_string(),
+            })
+        }
+        _ => None,
     }
 }
 
@@ -914,6 +968,79 @@ mod tests {
         assert!(plan.args.is_empty());
         assert!(plan.assigned_key.is_none());
         assert!(!plan.resuming);
+    }
+
+    #[test]
+    fn native_fork_capability_comes_from_runtime_definition() {
+        assert!(supports_native_fork("claude-code"));
+        assert!(supports_native_fork("codex"));
+        assert!(!supports_native_fork("trae"));
+        assert!(!supports_native_fork("aider-future"));
+    }
+
+    #[test]
+    fn native_fork_capability_matches_available_fork_plans() {
+        let source = "019fa1b9-a133-7841-b4dd-730d376ab1d1";
+        for definition in runtime_definitions() {
+            assert_eq!(
+                definition.native_fork,
+                fork_plan(definition.name, source, "Source").is_some(),
+                "runtime {}",
+                definition.name,
+            );
+        }
+    }
+
+    #[test]
+    fn claude_code_fork_assigns_a_new_session_key() {
+        let source = "019fa1b9-a133-7841-b4dd-730d376ab1d1";
+        let plan = fork_plan("claude-code", source, "Source").unwrap();
+        let ForkPlan::Direct(plan) = plan else {
+            panic!("claude-code must spawn its fork directly")
+        };
+        let assigned = plan.assigned_key.as_deref().unwrap();
+        assert_ne!(assigned, source);
+        assert_eq!(
+            plan.args,
+            vec![
+                "--resume",
+                source,
+                "--fork-session",
+                "--session-id",
+                assigned,
+            ]
+        );
+        assert!(!plan.prepend);
+        assert!(plan.resuming);
+    }
+
+    #[test]
+    fn codex_fork_executes_headlessly_and_reads_thread_started() {
+        let source = "019fa1b9-a133-7841-b4dd-730d376ab1d1";
+        let plan = fork_plan("codex", source, "Source").unwrap();
+        let ForkPlan::Headless { args, source_key } = plan else {
+            panic!("codex must materialize its fork headlessly")
+        };
+        assert_eq!(
+            args,
+            vec![
+                "exec",
+                "fork",
+                source,
+                "--json",
+                "--skip-git-repo-check",
+                "This chat was forked from 'Source'.",
+            ]
+        );
+        assert_eq!(source_key, source);
+    }
+
+    #[test]
+    fn unsupported_or_invalid_fork_returns_none() {
+        let source = "019fa1b9-a133-7841-b4dd-730d376ab1d1";
+        assert!(fork_plan("trae", source, "note").is_none());
+        assert!(fork_plan("aider-future", source, "note").is_none());
+        assert!(fork_plan("codex", "not-a-uuid", "note").is_none());
     }
 
     #[test]

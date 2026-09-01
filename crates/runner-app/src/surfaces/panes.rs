@@ -194,12 +194,16 @@ impl NativeRoot {
         let preset = layout.preset;
         let session_ids = layout.session_ids();
         let grouped = pane_identity_visible(layout.root.leaves().len());
-        let focused_shell = layout
-            .focused_session_id()
+        let focused_session_id = layout.focused_session_id().map(str::to_owned);
+        let focused_entry = focused_session_id
+            .as_deref()
             .and_then(|session_id| self.session_entry(session_id, cx))
+            .cloned();
+        let focused_shell = focused_entry
+            .as_ref()
             .is_some_and(|entry| entry.agent_runtime == "shell");
-        let focused_secondary = layout
-            .focused_session_id()
+        let focused_secondary = focused_session_id
+            .as_deref()
             .is_some_and(|session_id| self.cached_chat_secondary_state(session_id).secondary);
         let label = if grouped {
             self.tab_label(&layout, cx)
@@ -228,6 +232,7 @@ impl NativeRoot {
         });
         let sidebar_toggle = self.render_open_sidebar_button(cx);
         let root = cx.entity();
+        let fork_root = root.clone();
         let layout_root = root.clone();
         let panel_root = root.clone();
         let control = (!focused_secondary)
@@ -237,6 +242,31 @@ impl NativeRoot {
             .then(|| self.chat_action_menu.clone().into_any_element())
             .into_iter()
             .chain(control);
+        let fork_pending = focused_session_id.as_deref().is_some_and(|session_id| {
+            self.fork_confirm
+                .as_ref()
+                .is_some_and(|confirm| confirm.pending && confirm.session_id == session_id)
+                || super::chat::fork_in_progress(&self.forking_sessions, session_id)
+        });
+        let fork_action = focused_session_id.clone().and_then(|session_id| {
+            let (disabled, tooltip) =
+                match header_fork_state(focused_entry.as_ref(), focused_secondary) {
+                    HeaderForkState::Enabled if fork_pending => (true, None),
+                    HeaderForkState::Enabled => (false, Some("Fork chat into a new tab")),
+                    HeaderForkState::Disabled(_) if fork_pending => (true, None),
+                    HeaderForkState::Disabled(caption) => (true, Some(caption)),
+                    HeaderForkState::Hidden => return None,
+                };
+            let mut button = IconButton::new("fork-chat", "git-fork.svg")
+                .disabled(disabled)
+                .on_press(move |window, cx| {
+                    fork_root.update(cx, |this, cx| this.fork_chat(&session_id, window, cx));
+                });
+            if let Some(tooltip) = tooltip {
+                button = button.tooltip(tooltip);
+            }
+            Some(button.into_any_element())
+        });
         let split_tooltip = split_panes_tooltip(&self.settings(cx).keymap_overrides);
         let layout_action = IconButton::new("layout-picker-toggle", "square-split-horizontal.svg")
             .focus_handle(self.layout_picker_focus.clone())
@@ -282,7 +312,12 @@ impl NativeRoot {
         )
         .sidebar_toggle(sidebar_toggle)
         .title_actions(title_actions)
-        .trailing_actions(std::iter::once(layout_action).chain(panel_action))
+        .trailing_actions(
+            fork_action
+                .into_iter()
+                .chain(std::iter::once(layout_action))
+                .chain(panel_action),
+        )
         .into_div();
 
         let error_banner = self.chat_error.clone().map(|error| {
@@ -899,6 +934,36 @@ impl NativeRoot {
         .into_any_element()
     }
 
+    pub(crate) fn render_fork_confirm(&self, cx: &mut Context<Self>) -> AnyElement {
+        let confirm = self.fork_confirm.as_ref().expect("fork confirm is open");
+        let label = self
+            .session_entry(&confirm.session_id, cx)
+            .map(session_label)
+            .unwrap_or_else(|| "this chat".into());
+        let body = format!(
+            "Start a new chat from {label} with its full conversation history. The fork opens in a new tab; the original chat is not changed."
+        );
+        let busy = confirm.pending;
+        let root = cx.entity();
+        let confirm_root = root.clone();
+        ConfirmDialog::new(
+            "Fork chat?",
+            body,
+            "Fork",
+            "Forking…",
+            busy,
+            Rc::new(move |window, cx| {
+                confirm_root.update(cx, |this, cx| this.confirm_fork_chat(window, cx));
+            }),
+            Rc::new(move |_, cx| {
+                root.update(cx, |this, cx| this.cancel_fork_chat(cx));
+            }),
+        )
+        .icon("git-fork.svg")
+        .variant(ButtonVariant::Primary)
+        .into_any_element()
+    }
+
     pub(crate) fn render_chat_rename_modal(&self, cx: &mut Context<Self>) -> AnyElement {
         let modal = self.chat_rename_modal.as_ref().expect("chat rename modal");
         let is_group = matches!(modal.target, ChatRenameTarget::Tab { .. });
@@ -1485,7 +1550,13 @@ impl NativeRoot {
         let body: AnyElement = if let Some(entry) = entry.as_ref() {
             let session_id = entry.session_id.clone();
             let secondary_state = secondary.clone().unwrap_or_default();
-            let transition = self.chat_transitions.get(&session_id).map(|item| item.kind);
+            let fork_materializing =
+                super::chat::fork_materializing(&self.forking_sessions, &session_id);
+            let transition = if fork_materializing {
+                Some(TransitionKind::Starting)
+            } else {
+                self.chat_transitions.get(&session_id).map(|item| item.kind)
+            };
             let overlay = resolve_pane_overlay(
                 self.sidebar_archiving_session(&session_id, cx),
                 transition,
@@ -1631,20 +1702,18 @@ impl NativeRoot {
                         )
                         .into_any_element()
                     }),
-                    PaneOverlayState::Starting => Some(if entry.agent_runtime == "shell" {
-                        SessionOverlay::transition(
+                    PaneOverlayState::Starting => {
+                        let overlay = SessionOverlay::transition(
                             format!("starting-{session_id}"),
                             SessionOverlayKind::Starting,
+                        );
+                        Some(
+                            match starting_overlay_label(&entry.agent_runtime, fork_materializing) {
+                                Some(label) => overlay.label(label).into_any_element(),
+                                None => overlay.into_any_element(),
+                            },
                         )
-                        .label("Starting terminal…")
-                        .into_any_element()
-                    } else {
-                        SessionOverlay::transition(
-                            format!("starting-{session_id}"),
-                            SessionOverlayKind::Starting,
-                        )
-                        .into_any_element()
-                    }),
+                    }
                     PaneOverlayState::Ended {
                         status,
                         resumable,
@@ -1865,8 +1934,44 @@ fn pane_identity_shows_status(runtime: &str) -> bool {
     runtime != "shell"
 }
 
+fn starting_overlay_label(runtime: &str, fork_materializing: bool) -> Option<&'static str> {
+    if runtime == "shell" {
+        Some("Starting terminal…")
+    } else if fork_materializing {
+        Some("Forking chat…")
+    } else {
+        None
+    }
+}
+
 fn side_panel_open(setting_open: bool, focused_shell: bool) -> bool {
     setting_open && !focused_shell
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum HeaderForkState {
+    Enabled,
+    Disabled(&'static str),
+    Hidden,
+}
+
+fn header_fork_state(
+    focused: Option<&DirectSessionEntry>,
+    focused_secondary: bool,
+) -> HeaderForkState {
+    let Some(entry) = focused.filter(|entry| entry.agent_runtime != "shell") else {
+        return HeaderForkState::Hidden;
+    };
+    if focused_secondary {
+        return HeaderForkState::Hidden;
+    }
+    if !entry.native_fork {
+        HeaderForkState::Disabled("Forking needs claude-code or codex")
+    } else if !entry.forkable {
+        HeaderForkState::Disabled("No session key captured yet")
+    } else {
+        HeaderForkState::Enabled
+    }
 }
 
 fn pane_close_behavior(runtime: Option<&str>) -> PaneCloseBehavior {
@@ -2093,11 +2198,37 @@ pub(crate) fn adjacent_pane_index(
 #[cfg(test)]
 mod tests {
     use super::{
-        adjacent_pane_index, empty_pane_action_labels, pane_action_items_for, pane_close_behavior,
-        pane_identity_icon, pane_identity_shows_status, pane_identity_visible, pane_rename_key,
-        side_panel_open, split_panes_tooltip, PaneCloseBehavior, PaneRenameKey,
+        adjacent_pane_index, empty_pane_action_labels, header_fork_state, pane_action_items_for,
+        pane_close_behavior, pane_identity_icon, pane_identity_shows_status, pane_identity_visible,
+        pane_rename_key, side_panel_open, split_panes_tooltip, starting_overlay_label,
+        HeaderForkState, PaneCloseBehavior, PaneRenameKey,
     };
     use crate::keymap;
+    use runner_backend::model::SessionStatus;
+    use runner_backend::ops::session::DirectSessionEntry;
+
+    fn direct_session(runtime: &str, native_fork: bool, forkable: bool) -> DirectSessionEntry {
+        DirectSessionEntry {
+            session_id: format!("{runtime}-session"),
+            project_id: None,
+            runner_id: None,
+            handle: None,
+            agent_runtime: runtime.into(),
+            agent_command: runtime.into(),
+            display_name: runtime.into(),
+            status: SessionStatus::Running,
+            title: None,
+            cwd: None,
+            started_at: None,
+            stopped_at: None,
+            resumable: forkable,
+            native_fork,
+            forkable,
+            agent_session_key: forkable.then(|| "key".into()),
+            pinned: false,
+            archived_at: None,
+        }
+    }
 
     #[test]
     fn adjacent_pane_index_wraps_in_both_directions() {
@@ -2106,6 +2237,51 @@ mod tests {
         assert_eq!(adjacent_pane_index(1, 3, 1), Some(2));
         assert_eq!(adjacent_pane_index(0, 1, 1), None);
         assert_eq!(adjacent_pane_index(3, 3, -1), None);
+    }
+
+    #[test]
+    fn header_fork_state_uses_capability_key_and_focused_pane_kind() {
+        for runtime in ["claude-code", "codex"] {
+            let entry = direct_session(runtime, true, true);
+            assert_eq!(
+                header_fork_state(Some(&entry), false),
+                HeaderForkState::Enabled
+            );
+        }
+
+        let trae = direct_session("trae", false, false);
+        assert_eq!(
+            header_fork_state(Some(&trae), false),
+            HeaderForkState::Disabled("Forking needs claude-code or codex")
+        );
+        let waiting = direct_session("codex", true, false);
+        assert_eq!(
+            header_fork_state(Some(&waiting), false),
+            HeaderForkState::Disabled("No session key captured yet")
+        );
+        let shell = direct_session("shell", false, false);
+        assert_eq!(
+            header_fork_state(Some(&shell), false),
+            HeaderForkState::Hidden
+        );
+        assert_eq!(header_fork_state(None, false), HeaderForkState::Hidden);
+        assert_eq!(
+            header_fork_state(Some(&waiting), true),
+            HeaderForkState::Hidden
+        );
+    }
+
+    #[test]
+    fn starting_overlay_names_fork_materialization_before_normal_startup() {
+        assert_eq!(
+            starting_overlay_label("claude-code", true),
+            Some("Forking chat…")
+        );
+        assert_eq!(starting_overlay_label("codex", false), None);
+        assert_eq!(
+            starting_overlay_label("shell", false),
+            Some("Starting terminal…")
+        );
     }
 
     #[test]

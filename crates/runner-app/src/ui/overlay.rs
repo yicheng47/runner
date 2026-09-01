@@ -8,7 +8,7 @@ use gpui::{
 };
 
 use crate::theme;
-use crate::ui::button::PressHandler;
+use crate::ui::button::{ButtonVariant, PressHandler};
 use crate::ui::scrollbar::Scrollbar;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -345,6 +345,8 @@ impl RenderOnce for Drawer {
 pub struct ConfirmDialog {
     title: SharedString,
     body: SharedString,
+    icon: SharedString,
+    variant: ButtonVariant,
     confirm_label: SharedString,
     busy_label: SharedString,
     busy: bool,
@@ -409,12 +411,24 @@ impl ConfirmDialog {
         Self {
             title: title.into(),
             body: body.into(),
+            icon: "trash.svg".into(),
+            variant: ButtonVariant::Danger,
             confirm_label: confirm_label.into(),
             busy_label: busy_label.into(),
             busy,
             on_confirm,
             on_cancel,
         }
+    }
+
+    pub fn icon(mut self, icon: impl Into<SharedString>) -> Self {
+        self.icon = icon.into();
+        self
+    }
+
+    pub fn variant(mut self, variant: ButtonVariant) -> Self {
+        self.variant = variant;
+        self
     }
 }
 
@@ -424,6 +438,12 @@ impl RenderOnce for ConfirmDialog {
         let cancel_key = Rc::clone(&self.on_cancel);
         let confirm = Rc::clone(&self.on_confirm);
         let busy = self.busy;
+        let icon_color = match self.variant {
+            ButtonVariant::Danger => theme::danger(),
+            ButtonVariant::Primary => theme::accent(),
+            ButtonVariant::Warning => theme::warning(),
+            ButtonVariant::Secondary | ButtonVariant::Ghost => theme::text(),
+        };
         div()
             .absolute()
             .inset_0()
@@ -467,10 +487,10 @@ impl RenderOnce for ConfirmDialog {
                             .gap(rems(10. / 16.))
                             .child(
                                 gpui::svg()
-                                    .path("trash.svg")
+                                    .path(self.icon)
                                     .size(rems(15. / 16.))
                                     .flex_none()
-                                    .text_color(theme::danger()),
+                                    .text_color(icon_color),
                             )
                             .child(
                                 // Panel width minus its padding, the icon, and
@@ -510,7 +530,7 @@ impl RenderOnce for ConfirmDialog {
                             .child(confirm_action_button(
                                 "confirm-cancel",
                                 "Cancel".into(),
-                                false,
+                                ButtonVariant::Secondary,
                                 busy,
                                 self.on_cancel,
                             ))
@@ -521,7 +541,7 @@ impl RenderOnce for ConfirmDialog {
                                 } else {
                                     self.confirm_label
                                 },
-                                true,
+                                self.variant,
                                 busy,
                                 confirm,
                             )),
@@ -533,11 +553,27 @@ impl RenderOnce for ConfirmDialog {
 fn confirm_action_button(
     id: &'static str,
     label: SharedString,
-    destructive: bool,
+    variant: ButtonVariant,
     disabled: bool,
     on_press: PressHandler,
 ) -> AnyElement {
     let click = Rc::clone(&on_press);
+    let bordered = matches!(variant, ButtonVariant::Danger);
+    let (background, foreground, border) = match variant {
+        ButtonVariant::Primary => (theme::accent(), theme::accent_ink(), theme::accent()),
+        ButtonVariant::Warning => (theme::warning(), theme::bg(), theme::warning()),
+        ButtonVariant::Secondary => (theme::raised(), theme::text(), theme::border_strong()),
+        ButtonVariant::Ghost => (
+            gpui::transparent_black(),
+            theme::muted(),
+            gpui::transparent_black(),
+        ),
+        ButtonVariant::Danger => (
+            theme::with_alpha(theme::danger(), 0.1),
+            theme::danger(),
+            theme::with_alpha(theme::danger(), 0.4),
+        ),
+    };
     let mut button = div()
         .id(id)
         .tab_index(0)
@@ -546,25 +582,13 @@ fn confirm_action_button(
         .items_center()
         .justify_center()
         .rounded(rems(8. / 16.))
-        .when(destructive, |button| {
-            button
-                .border_1()
-                .border_color(theme::with_alpha(theme::danger(), 0.4))
-        })
-        .bg(if destructive {
-            theme::with_alpha(theme::danger(), 0.1)
-        } else {
-            theme::raised()
-        })
+        .when(bordered, |button| button.border_1().border_color(border))
+        .bg(background)
         .px(rems(14. / 16.))
         .py(rems(6. / 16.))
         .font_weight(FontWeight::MEDIUM)
         .text_size(rems(12. / 16.))
-        .text_color(if destructive {
-            theme::danger()
-        } else {
-            theme::text()
-        })
+        .text_color(foreground)
         .opacity(if disabled { 0.6 } else { 1. })
         .cursor(if disabled {
             CursorStyle::Arrow
@@ -574,10 +598,11 @@ fn confirm_action_button(
         .focus_visible(|style| {
             style.shadow(vec![BoxShadow {
                 color: theme::with_alpha(
-                    if destructive {
-                        theme::danger()
-                    } else {
-                        theme::border_strong()
+                    match variant {
+                        ButtonVariant::Primary => theme::accent(),
+                        ButtonVariant::Warning => theme::warning(),
+                        ButtonVariant::Secondary | ButtonVariant::Ghost => theme::border_strong(),
+                        ButtonVariant::Danger => theme::danger(),
                     },
                     0.65,
                 ),
@@ -590,10 +615,12 @@ fn confirm_action_button(
     if !disabled {
         button = button
             .hover(move |button| {
-                button.bg(if destructive {
-                    theme::with_alpha(theme::danger(), 0.2)
-                } else {
-                    theme::with_alpha(theme::raised(), 0.8)
+                button.bg(match variant {
+                    ButtonVariant::Primary => theme::with_alpha(theme::accent(), 0.8),
+                    ButtonVariant::Warning => theme::with_alpha(theme::warning(), 0.8),
+                    ButtonVariant::Secondary => theme::with_alpha(theme::raised(), 0.8),
+                    ButtonVariant::Ghost => theme::with_alpha(theme::raised(), 0.8),
+                    ButtonVariant::Danger => theme::with_alpha(theme::danger(), 0.2),
                 })
             })
             .on_click(move |_, window, cx| click(window, cx))

@@ -265,6 +265,8 @@ pub struct DirectSessionEntry {
     /// distinguish "stopped but resumable" from "stopped and
     /// forgotten" without shipping the raw key down.
     pub resumable: bool,
+    pub native_fork: bool,
+    pub forkable: bool,
     /// Native agent conversation key for the active direct chat.
     /// `session_list_recent_direct` intentionally returns NULL here;
     /// `session_get` is the full-detail path RunnerChat uses for the
@@ -298,6 +300,9 @@ fn direct_entry_from_repo(
     ship_key: bool,
 ) -> Result<DirectSessionEntry> {
     let handle = d.runner_handle;
+    let has_key = d.row.agent_session_key.is_some();
+    let is_direct = d.row.mission_id.is_none();
+    let is_archived = d.row.archived_at.is_some();
     let agent_runtime = d
         .row
         .agent_runtime
@@ -312,6 +317,7 @@ fn direct_entry_from_repo(
         .runner_display_name
         .filter(|_| handle.is_some())
         .unwrap_or_else(|| crate::router::runtime::runtime_display_name(&agent_runtime));
+    let native_fork = crate::router::runtime::supports_native_fork(&agent_runtime);
     Ok(DirectSessionEntry {
         session_id: d.row.id,
         project_id: d.row.project_id,
@@ -325,7 +331,9 @@ fn direct_entry_from_repo(
         cwd: d.row.cwd,
         started_at: d.row.started_at,
         stopped_at: d.row.stopped_at,
-        resumable: d.row.agent_session_key.is_some(),
+        resumable: has_key,
+        native_fork,
+        forkable: native_fork && has_key && is_direct && !is_archived,
         agent_session_key: if ship_key {
             d.row.agent_session_key
         } else {
@@ -685,6 +693,40 @@ pub fn session_resume(
         &crate::session::manager::SessionUpdatedEvent {
             session_id: session_id.to_string(),
             mission_id: spawned.mission_id.clone(),
+        },
+    );
+    Ok(spawned)
+}
+
+pub fn session_fork(
+    state: &AppCore,
+    source_session_id: &str,
+    title: Option<String>,
+    cols: Option<u16>,
+    rows: Option<u16>,
+) -> Result<SpawnedSession> {
+    let emitter: Arc<dyn SessionEvents> = Arc::new(state.session_events());
+    let spawned = state
+        .sessions
+        .spawn_fork(
+            source_session_id,
+            title,
+            cols,
+            rows,
+            &state.app_data_dir,
+            state.db.clone(),
+            emitter,
+        )
+        .map_err(|error| Error::msg(format!("session_fork: {error}")))?;
+    log::info!(
+        "session_fork: source={source_session_id} new={} cols={cols:?} rows={rows:?}",
+        spawned.id
+    );
+    state.events.emit(
+        "session/updated",
+        &crate::session::manager::SessionUpdatedEvent {
+            session_id: spawned.id.clone(),
+            mission_id: None,
         },
     );
     Ok(spawned)
@@ -1359,6 +1401,43 @@ mod tests {
         let row = get_direct(&conn, &id).unwrap().unwrap();
         assert_eq!(row.agent_session_key.as_deref(), Some(key.as_str()));
         assert!(row.resumable);
+    }
+
+    #[test]
+    fn direct_entry_reports_native_fork_and_row_eligibility() {
+        let entry = |runtime: &str, keyed: bool, mission: bool, archived: bool| {
+            let mut row = repo::session::SessionRowDb::new_running(ulid::Ulid::new().to_string());
+            row.agent_runtime = Some(runtime.into());
+            row.agent_command = Some(runtime.into());
+            row.agent_session_key = keyed.then(|| uuid::Uuid::new_v4().to_string());
+            row.mission_id = mission.then(|| "mission".into());
+            row.archived_at = archived.then(Utc::now);
+            direct_entry_from_repo(
+                repo::session::DirectSessionRow {
+                    row,
+                    runner_handle: None,
+                    runner_display_name: None,
+                    runner_runtime: None,
+                    runner_command: None,
+                },
+                false,
+            )
+            .unwrap()
+        };
+
+        for runtime in ["claude-code", "codex"] {
+            let row = entry(runtime, true, false, false);
+            assert!(row.native_fork);
+            assert!(row.forkable);
+        }
+        let trae = entry("trae", true, false, false);
+        assert!(!trae.native_fork);
+        assert!(!trae.forkable);
+        let unkeyed = entry("codex", false, false, false);
+        assert!(unkeyed.native_fork);
+        assert!(!unkeyed.forkable);
+        assert!(!entry("codex", true, true, false).forkable);
+        assert!(!entry("codex", true, false, true).forkable);
     }
 
     #[test]

@@ -791,6 +791,8 @@ mod tests {
             started_at: Some("2026-08-01T00:00:00Z".parse().unwrap()),
             stopped_at: None,
             resumable: true,
+            native_fork: true,
+            forkable: false,
             agent_session_key: None,
             pinned: false,
             archived_at: Some(archived_at.parse().unwrap()),

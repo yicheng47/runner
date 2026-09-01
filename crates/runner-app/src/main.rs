@@ -260,6 +260,12 @@ struct TerminalCloseConfirm {
     target: TerminalCloseTarget,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ForkConfirm {
+    session_id: String,
+    pending: bool,
+}
+
 #[derive(Clone, Copy)]
 enum ArchiveAllSource {
     Chat,
@@ -355,6 +361,8 @@ struct NativeRoot {
     pane_rename: Option<PaneRename>,
     _pane_rename_focus_subscription: Option<Subscription>,
     terminal_close_confirm: Option<TerminalCloseConfirm>,
+    fork_confirm: Option<ForkConfirm>,
+    forking_sessions: HashMap<String, String>,
     chat_rename_modal: Option<ChatRenameModal>,
     last_focused_runner_id: Option<String>,
     layout_picker_open: bool,
@@ -416,6 +424,7 @@ impl NativeRoot {
                             event.name,
                             "session/exit"
                                 | "session/spawned"
+                                | "session/fork-started"
                                 | "session/updated"
                                 | "session/archived"
                                 | "session/warning"
@@ -652,6 +661,8 @@ impl NativeRoot {
             pane_rename: None,
             _pane_rename_focus_subscription: None,
             terminal_close_confirm: None,
+            fork_confirm: None,
+            forking_sessions: HashMap::new(),
             chat_rename_modal: None,
             last_focused_runner_id,
             layout_picker_open: false,

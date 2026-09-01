@@ -3184,6 +3184,7 @@ mod tests {
             name: "codex".into(),
             display_name: "Codex".into(),
             command: "codex".into(),
+            native_fork: true,
             description: "OpenAI Codex CLI".into(),
             default_enabled: true,
             available: true,

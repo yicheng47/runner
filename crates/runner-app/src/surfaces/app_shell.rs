@@ -91,6 +91,10 @@ impl NativeRoot {
             .then_some(self.terminal_close_confirm.as_ref())
             .flatten()
             .map(|_| self.render_terminal_close_confirm(cx));
+        let fork_confirm = (self.route == AppRoute::Chat)
+            .then_some(self.fork_confirm.as_ref())
+            .flatten()
+            .map(|_| self.render_fork_confirm(cx));
         let sidebar_overlays = if self.route != AppRoute::Settings {
             self.render_sidebar_overlays(cx)
         } else {
@@ -131,6 +135,7 @@ impl NativeRoot {
             .children(preview_trigger)
             .children(chat_rename_modal)
             .children(terminal_close_confirm)
+            .children(fork_confirm)
             .children(sidebar_overlays)
             .children(entity_overlays);
         let settings =

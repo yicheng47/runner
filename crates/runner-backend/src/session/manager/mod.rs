@@ -247,6 +247,7 @@ fn drop_streak_is_loggable(streak: u64) -> bool {
 pub trait SessionEvents: Send + Sync + 'static {
     fn output(&self, ev: &OutputEvent);
     fn spawned(&self, _ev: &SessionSpawnedEvent) {}
+    fn fork_started(&self, _ev: &SessionForkStartedEvent) {}
     fn exit(&self, ev: &ExitEvent);
     fn archived(&self, _ev: &SessionUpdatedEvent) {}
     /// Persisted session metadata changed without a lifecycle event
@@ -372,6 +373,9 @@ impl SessionEvents for CoreSessionEvents {
         }
         self.events.emit("session/spawned", ev);
     }
+    fn fork_started(&self, ev: &SessionForkStartedEvent) {
+        self.events.emit("session/fork-started", ev);
+    }
     fn exit(&self, ev: &ExitEvent) {
         if let Some(observer) = self.observer.observer() {
             observer.exit(ev);
@@ -430,6 +434,12 @@ pub struct SessionSpawnedEvent {
     pub mission_id: Option<String>,
     pub cols: u16,
     pub rows: u16,
+}
+
+#[derive(Debug, Clone, Serialize, Eq, PartialEq)]
+pub struct SessionForkStartedEvent {
+    pub source_session_id: String,
+    pub session_id: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
