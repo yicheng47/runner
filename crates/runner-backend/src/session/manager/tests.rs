@@ -3248,6 +3248,125 @@ fn login_shell_proxy_env_reaches_spawn_with_runner_env_taking_precedence() {
 }
 
 #[test]
+fn utf8_locale_fallback_applies_only_when_no_locale_present() {
+    use super::spawn::ensure_utf8_locale;
+
+    let mut env = std::collections::BTreeMap::new();
+    ensure_utf8_locale(&mut env, false);
+    assert_eq!(
+        env.get("LC_CTYPE").map(String::as_str),
+        Some("UTF-8"),
+        "no locale anywhere must fall back to LC_CTYPE=UTF-8",
+    );
+
+    let mut env = std::collections::BTreeMap::new();
+    ensure_utf8_locale(&mut env, true);
+    assert!(env.is_empty(), "an inherited process locale must win");
+
+    for var in ["LANG", "LC_ALL", "LC_CTYPE"] {
+        let mut env = std::collections::BTreeMap::new();
+        env.insert(var.to_string(), "zh_CN.GB18030".to_string());
+        ensure_utf8_locale(&mut env, false);
+        assert_eq!(env.len(), 1, "a configured locale must not be augmented");
+        assert_eq!(env.get(var).map(String::as_str), Some("zh_CN.GB18030"));
+    }
+}
+
+#[test]
+fn spawn_env_respects_configured_locale_and_falls_back_to_utf8() {
+    let pool = pool_with_schema();
+    let now = Utc::now().to_rfc3339();
+    let localized_id = ulid::Ulid::new().to_string();
+    let bare_id = ulid::Ulid::new().to_string();
+    {
+        let conn = pool.get().unwrap();
+        for (id, handle) in [(&localized_id, "localized"), (&bare_id, "bare")] {
+            conn.execute(
+                "INSERT INTO runners
+                        (id, handle, display_name, runtime, command,
+                         args_json, working_dir, system_prompt, env_json,
+                         created_at, updated_at)
+                     VALUES (?1, ?2, 'L', 'shell', '/bin/sh',
+                             NULL, NULL, NULL, NULL, ?3, ?3)",
+                params![id, handle, now],
+            )
+            .unwrap();
+        }
+    }
+
+    let fake = fake_runtime();
+    let mgr = manager_with_runtime(
+        crate::shell_path::LoginShellEnv::default(),
+        Arc::clone(&fake) as Arc<dyn SessionRuntime>,
+    );
+
+    let mut localized = runner("/bin/sh", &["-c", "true"]);
+    localized.id = localized_id;
+    localized.handle = "localized".into();
+    localized.env.insert("LC_ALL".into(), "zh_CN.UTF-8".into());
+    mgr.spawn_direct(
+        &localized,
+        None,
+        None,
+        None,
+        None,
+        Some("/tmp"),
+        None,
+        None,
+        std::path::Path::new("/tmp"),
+        Arc::clone(&pool),
+        capture(),
+        None,
+    )
+    .unwrap();
+    let spec = fake.last_spawn_spec().expect("spawn was called");
+    assert_eq!(
+        spec.env.get("LC_ALL").map(String::as_str),
+        Some("zh_CN.UTF-8"),
+        "runner.env locale must flow through",
+    );
+    assert!(
+        !spec.env.contains_key("LC_CTYPE"),
+        "a runner-configured locale must suppress the fallback",
+    );
+
+    let mut bare = runner("/bin/sh", &["-c", "true"]);
+    bare.id = bare_id;
+    bare.handle = "bare".into();
+    mgr.spawn_direct(
+        &bare,
+        None,
+        None,
+        None,
+        None,
+        Some("/tmp"),
+        None,
+        None,
+        std::path::Path::new("/tmp"),
+        Arc::clone(&pool),
+        capture(),
+        None,
+    )
+    .unwrap();
+    let spec = fake.last_spawn_spec().expect("spawn was called");
+    let process_has_locale = ["LANG", "LC_ALL", "LC_CTYPE"]
+        .iter()
+        .any(|var| std::env::var_os(var).is_some());
+    if process_has_locale {
+        assert!(
+            !spec.env.contains_key("LC_CTYPE"),
+            "children inherit the process locale — no fallback expected",
+        );
+    } else {
+        assert_eq!(
+            spec.env.get("LC_CTYPE").map(String::as_str),
+            Some("UTF-8"),
+            "locale-free spawn must get the UTF-8 fallback",
+        );
+    }
+}
+
+#[test]
 fn resume_reuses_row_and_preserves_agent_session_key() {
     // Multi-chat-per-runner contract: a direct chat IS a
     // sessions row. spawn_direct creates the row and the

@@ -7,6 +7,22 @@ const FORK_MATERIALIZE_TIMEOUT: Duration = Duration::from_secs(120);
 const FORK_MATERIALIZE_POLL: Duration = Duration::from_millis(25);
 const CODEX_FORK_ROLLOUT_TIMEOUT: Duration = Duration::from_secs(5);
 
+const LOCALE_VARS: [&str; 3] = ["LANG", "LC_ALL", "LC_CTYPE"];
+
+/// Dock-launched GUI apps inherit no locale, so children run in the
+/// POSIX C locale and macOS clipboard tools (claude's `pbpaste`)
+/// decode UTF-8 as Mac Roman — CJK text arrives as mojibake (#461).
+/// Mirror alacritty's minimal macOS fallback: set `LC_CTYPE=UTF-8`
+/// only when no layer supplies a locale (a full `LANG` would also
+/// switch tool message languages). Children inherit the app's own
+/// process env on top of the spec, so a locale there counts too.
+pub(super) fn ensure_utf8_locale(env: &mut BTreeMap<String, String>, process_has_locale: bool) {
+    if process_has_locale || LOCALE_VARS.iter().any(|var| env.contains_key(*var)) {
+        return;
+    }
+    env.insert("LC_CTYPE".into(), "UTF-8".into());
+}
+
 pub(super) fn run_headless_fork(
     spec: &SpawnSpec,
     plan: &router::runtime::ForkPlan,
@@ -422,6 +438,10 @@ impl SessionManager {
         for (k, v) in extra_env {
             env.insert(k, v);
         }
+        let process_has_locale = LOCALE_VARS
+            .iter()
+            .any(|var| std::env::var_os(var).is_some());
+        ensure_utf8_locale(&mut env, process_has_locale);
         SpawnSpec {
             session_id,
             cwd: cwd.map(PathBuf::from),
