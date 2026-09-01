@@ -53985,6 +53985,1661 @@
           }
         }
       ]
+    },
+    {
+      "type": "frame",
+      "id": "s8mYyG",
+      "x": 8000,
+      "y": 10380,
+      "name": "Settings — Skills",
+      "clip": true,
+      "width": 1440,
+      "height": 900,
+      "fill": "$bg",
+      "children": [
+        {
+          "id": "dtNUT",
+          "type": "ref",
+          "ref": "EWVdH",
+          "name": "sidebar"
+        },
+        {
+          "type": "frame",
+          "id": "cUDVr",
+          "name": "content",
+          "width": "fill_container",
+          "height": "fill_container",
+          "layout": "vertical",
+          "padding": [
+            56,
+            160,
+            40,
+            120
+          ],
+          "children": [
+            {
+              "type": "text",
+              "id": "p2e30G",
+              "name": "page_title",
+              "fill": "$text-1",
+              "content": "Skills",
+              "fontFamily": "$font-ui",
+              "fontSize": 30,
+              "fontWeight": "600"
+            },
+            {
+              "type": "frame",
+              "id": "gy7Zd",
+              "name": "sp",
+              "width": "fill_container",
+              "height": 28
+            },
+            {
+              "type": "frame",
+              "id": "CfZ3F",
+              "name": "card_claude",
+              "width": "fill_container",
+              "fill": "$panel",
+              "cornerRadius": 14,
+              "stroke": "$line",
+              "strokeWidth": 1,
+              "strokeAlignment": "inner",
+              "layout": "vertical",
+              "children": [
+                {
+                  "type": "frame",
+                  "id": "HNViI",
+                  "name": "hdr",
+                  "width": "fill_container",
+                  "gap": 10,
+                  "padding": [
+                    16,
+                    20
+                  ],
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "sTQIr",
+                      "name": "name_t",
+                      "fill": "$text-1",
+                      "content": "Claude Code",
+                      "fontFamily": "$font-ui",
+                      "fontSize": 14,
+                      "fontWeight": "500"
+                    },
+                    {
+                      "type": "text",
+                      "id": "stIRI",
+                      "name": "path_t",
+                      "fill": "$text-3",
+                      "content": "~/.claude/skills",
+                      "fontFamily": "$font-mono",
+                      "fontSize": 12,
+                      "fontWeight": "normal"
+                    },
+                    {
+                      "type": "frame",
+                      "id": "Gxt68",
+                      "name": "flex",
+                      "width": "fill_container",
+                      "height": 1
+                    },
+                    {
+                      "type": "text",
+                      "id": "yvfFw",
+                      "name": "count_t",
+                      "fill": "$text-3",
+                      "content": "36 skills",
+                      "fontFamily": "$font-ui",
+                      "fontSize": 12,
+                      "fontWeight": "normal"
+                    },
+                    {
+                      "type": "frame",
+                      "id": "rq0PK",
+                      "name": "btn_Refresh",
+                      "fill": "$raised",
+                      "cornerRadius": 8,
+                      "padding": [
+                        6,
+                        12
+                      ],
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "ogIYE",
+                          "name": "t",
+                          "fill": "$text-1",
+                          "content": "Refresh",
+                          "fontFamily": "$font-ui",
+                          "fontSize": 12,
+                          "fontWeight": "500"
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "fq5zI",
+                  "name": "search_wrap",
+                  "width": "fill_container",
+                  "padding": [
+                    0,
+                    20,
+                    12,
+                    20
+                  ],
+                  "children": [
+                    {
+                      "id": "ZZb4e",
+                      "type": "ref",
+                      "ref": "aNdWb",
+                      "name": "search",
+                      "width": "fill_container",
+                      "descendants": {
+                        "xmXrm": {
+                          "content": "Search skills…"
+                        }
+                      }
+                    }
+                  ]
+                },
+                {
+                  "type": "rectangle",
+                  "id": "R5R64",
+                  "name": "hairline",
+                  "fill": "$line",
+                  "width": "fill_container",
+                  "height": 1
+                },
+                {
+                  "type": "frame",
+                  "id": "cKWrX",
+                  "name": "row_daily-brief",
+                  "width": "fill_container",
+                  "gap": 10,
+                  "padding": [
+                    10,
+                    20
+                  ],
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "QiTHC",
+                      "name": "name_t",
+                      "fill": "$text-1",
+                      "content": "daily-brief",
+                      "fontFamily": "$font-ui",
+                      "fontSize": 13,
+                      "fontWeight": "500"
+                    },
+                    {
+                      "type": "text",
+                      "id": "I9XWTj",
+                      "name": "desc_t",
+                      "fill": "$text-2",
+                      "textGrowth": "fixed-width",
+                      "width": "fill_container",
+                      "content": "Produce the daily trading brief — the fixed 8-section format, delivered in chat and stored…",
+                      "fontFamily": "$font-ui",
+                      "fontSize": 12,
+                      "fontWeight": "normal"
+                    },
+                    {
+                      "type": "frame",
+                      "id": "rcVeb",
+                      "name": "badge_symlink",
+                      "fill": "#9A9BA51A",
+                      "cornerRadius": 10,
+                      "padding": [
+                        2,
+                        8
+                      ],
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "xTTMU",
+                          "name": "t",
+                          "fill": "$text-2",
+                          "content": "symlink",
+                          "fontFamily": "$font-ui",
+                          "fontSize": 11,
+                          "fontWeight": "500"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "yrEI7",
+                      "name": "toggle_on",
+                      "width": 36,
+                      "height": 20,
+                      "fill": "$accent",
+                      "cornerRadius": 10,
+                      "padding": 2,
+                      "justifyContent": "end",
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "ellipse",
+                          "id": "zt2F3",
+                          "name": "knob",
+                          "fill": "#FFFFFF",
+                          "width": 16,
+                          "height": 16
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "type": "rectangle",
+                  "id": "C5a9K",
+                  "name": "hairline",
+                  "fill": "$line",
+                  "width": "fill_container",
+                  "height": 1
+                },
+                {
+                  "type": "frame",
+                  "id": "MMQhL",
+                  "name": "row_music",
+                  "width": "fill_container",
+                  "fill": "$raised",
+                  "gap": 10,
+                  "padding": [
+                    10,
+                    20
+                  ],
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "jyILt",
+                      "name": "name_t",
+                      "fill": "$text-1",
+                      "content": "music",
+                      "fontFamily": "$font-ui",
+                      "fontSize": 13,
+                      "fontWeight": "500"
+                    },
+                    {
+                      "type": "text",
+                      "id": "AOsNB",
+                      "name": "desc_t",
+                      "fill": "$text-2",
+                      "textGrowth": "fixed-width",
+                      "width": "fill_container",
+                      "content": "Download FLAC albums, fetch synced lyrics, clean library garbage, sync NAS music to the DAP",
+                      "fontFamily": "$font-ui",
+                      "fontSize": 12,
+                      "fontWeight": "normal"
+                    },
+                    {
+                      "type": "frame",
+                      "id": "gl6zO",
+                      "name": "badge_symlink",
+                      "fill": "#9A9BA51A",
+                      "cornerRadius": 10,
+                      "padding": [
+                        2,
+                        8
+                      ],
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "Lcpob",
+                          "name": "t",
+                          "fill": "$text-2",
+                          "content": "symlink",
+                          "fontFamily": "$font-ui",
+                          "fontSize": 11,
+                          "fontWeight": "500"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "icon",
+                      "id": "UFfAI",
+                      "name": "reveal",
+                      "width": 14,
+                      "height": 14,
+                      "icon": "folder-open",
+                      "library": "lucide",
+                      "fill": "$text-2"
+                    },
+                    {
+                      "type": "icon",
+                      "id": "KkvJ0",
+                      "name": "copy",
+                      "width": 14,
+                      "height": 14,
+                      "icon": "copy",
+                      "library": "lucide",
+                      "fill": "$text-2"
+                    },
+                    {
+                      "type": "frame",
+                      "id": "KPHX5",
+                      "name": "toggle_on",
+                      "width": 36,
+                      "height": 20,
+                      "fill": "$accent",
+                      "cornerRadius": 10,
+                      "padding": 2,
+                      "justifyContent": "end",
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "ellipse",
+                          "id": "c5vFGk",
+                          "name": "knob",
+                          "fill": "#FFFFFF",
+                          "width": 16,
+                          "height": 16
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "type": "rectangle",
+                  "id": "kIhr3",
+                  "name": "hairline",
+                  "fill": "$line",
+                  "width": "fill_container",
+                  "height": 1
+                },
+                {
+                  "type": "frame",
+                  "id": "A3dLa3",
+                  "name": "row_books",
+                  "opacity": 0.45,
+                  "width": "fill_container",
+                  "gap": 10,
+                  "padding": [
+                    10,
+                    20
+                  ],
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "A0D7au",
+                      "name": "name_t",
+                      "fill": "$text-1",
+                      "content": "books",
+                      "fontFamily": "$font-ui",
+                      "fontSize": 13,
+                      "fontWeight": "500"
+                    },
+                    {
+                      "type": "text",
+                      "id": "xn3Pn",
+                      "name": "desc_t",
+                      "fill": "$text-2",
+                      "textGrowth": "fixed-width",
+                      "width": "fill_container",
+                      "content": "Manage the Quill ebook library and sync it to Kindle/KOReader — import from NAS, search…",
+                      "fontFamily": "$font-ui",
+                      "fontSize": 12,
+                      "fontWeight": "normal"
+                    },
+                    {
+                      "type": "frame",
+                      "id": "jC07O",
+                      "name": "badge_symlink",
+                      "fill": "#9A9BA51A",
+                      "cornerRadius": 10,
+                      "padding": [
+                        2,
+                        8
+                      ],
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "mjW70",
+                          "name": "t",
+                          "fill": "$text-2",
+                          "content": "symlink",
+                          "fontFamily": "$font-ui",
+                          "fontSize": 11,
+                          "fontWeight": "500"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "T7jOoz",
+                      "name": "toggle_off",
+                      "width": 36,
+                      "height": 20,
+                      "fill": "$raised",
+                      "cornerRadius": 10,
+                      "stroke": "$line",
+                      "strokeWidth": 1,
+                      "strokeAlignment": "inner",
+                      "padding": 2,
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "ellipse",
+                          "id": "BKG6y",
+                          "name": "knob",
+                          "fill": "$text-3",
+                          "width": 16,
+                          "height": 16
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "type": "rectangle",
+                  "id": "KA7BD",
+                  "name": "hairline",
+                  "fill": "$line",
+                  "width": "fill_container",
+                  "height": 1
+                },
+                {
+                  "type": "frame",
+                  "id": "td17X",
+                  "name": "row_scan",
+                  "width": "fill_container",
+                  "gap": 10,
+                  "padding": [
+                    10,
+                    20
+                  ],
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "Eoaqu",
+                      "name": "name_t",
+                      "fill": "$text-1",
+                      "content": "scan",
+                      "fontFamily": "$font-ui",
+                      "fontSize": 13,
+                      "fontWeight": "500"
+                    },
+                    {
+                      "type": "text",
+                      "id": "BPlT7",
+                      "name": "desc_t",
+                      "fill": "$text-2",
+                      "textGrowth": "fixed-width",
+                      "width": "fill_container",
+                      "content": "Run the alpha scanner over the synced watchlist and vet every hit against the kill list",
+                      "fontFamily": "$font-ui",
+                      "fontSize": 12,
+                      "fontWeight": "normal"
+                    },
+                    {
+                      "type": "frame",
+                      "id": "sTkaS",
+                      "name": "badge_manual",
+                      "fill": "#FFB0201A",
+                      "cornerRadius": 10,
+                      "padding": [
+                        2,
+                        8
+                      ],
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "Zh7gs",
+                          "name": "t",
+                          "fill": "$warn",
+                          "content": "manual",
+                          "fontFamily": "$font-ui",
+                          "fontSize": 11,
+                          "fontWeight": "500"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "SLKB7",
+                      "name": "badge_hidden",
+                      "fill": "#FFB0201A",
+                      "cornerRadius": 10,
+                      "padding": [
+                        2,
+                        8
+                      ],
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "XlEM6",
+                          "name": "t",
+                          "fill": "$warn",
+                          "content": "hidden",
+                          "fontFamily": "$font-ui",
+                          "fontSize": 11,
+                          "fontWeight": "500"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "mxT2r",
+                      "name": "toggle_on",
+                      "width": 36,
+                      "height": 20,
+                      "fill": "$accent",
+                      "cornerRadius": 10,
+                      "padding": 2,
+                      "justifyContent": "end",
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "ellipse",
+                          "id": "b3WkgX",
+                          "name": "knob",
+                          "fill": "#FFFFFF",
+                          "width": 16,
+                          "height": 16
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "type": "rectangle",
+                  "id": "FnaGa",
+                  "name": "hairline",
+                  "fill": "$line",
+                  "width": "fill_container",
+                  "height": 1
+                },
+                {
+                  "type": "frame",
+                  "id": "Qnhpd",
+                  "name": "row_trading-daily",
+                  "width": "fill_container",
+                  "gap": 10,
+                  "padding": [
+                    10,
+                    20
+                  ],
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "XxRKO",
+                      "name": "name_t",
+                      "fill": "$text-1",
+                      "content": "trading-daily",
+                      "fontFamily": "$font-ui",
+                      "fontSize": 13,
+                      "fontWeight": "500"
+                    },
+                    {
+                      "type": "text",
+                      "id": "l2RYDV",
+                      "name": "desc_t",
+                      "fill": "$text-2",
+                      "textGrowth": "fixed-width",
+                      "width": "fill_container",
+                      "content": "Run the daily trading-counselor session over the Futu US sleeve — pull the book live, audit…",
+                      "fontFamily": "$font-ui",
+                      "fontSize": 12,
+                      "fontWeight": "normal"
+                    },
+                    {
+                      "type": "frame",
+                      "id": "JLMAF",
+                      "name": "badge_name-only",
+                      "fill": "#9A9BA51A",
+                      "cornerRadius": 10,
+                      "padding": [
+                        2,
+                        8
+                      ],
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "kyT7l",
+                          "name": "t",
+                          "fill": "$text-2",
+                          "content": "name-only",
+                          "fontFamily": "$font-ui",
+                          "fontSize": 11,
+                          "fontWeight": "500"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "fWbNd",
+                      "name": "toggle_on",
+                      "width": 36,
+                      "height": 20,
+                      "fill": "$accent",
+                      "cornerRadius": 10,
+                      "padding": 2,
+                      "justifyContent": "end",
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "ellipse",
+                          "id": "xe4lr",
+                          "name": "knob",
+                          "fill": "#FFFFFF",
+                          "width": 16,
+                          "height": 16
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "type": "rectangle",
+                  "id": "CQ0WG",
+                  "name": "hairline",
+                  "fill": "$line",
+                  "width": "fill_container",
+                  "height": 1
+                },
+                {
+                  "type": "frame",
+                  "id": "G7Rws",
+                  "name": "row_old-notes",
+                  "width": "fill_container",
+                  "gap": 10,
+                  "padding": [
+                    10,
+                    20
+                  ],
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "IUQY6",
+                      "name": "name_t",
+                      "fill": "$text-1",
+                      "content": "old-notes",
+                      "fontFamily": "$font-ui",
+                      "fontSize": 13,
+                      "fontWeight": "500"
+                    },
+                    {
+                      "type": "text",
+                      "id": "i0jTh",
+                      "name": "desc_t",
+                      "fill": "$text-2",
+                      "textGrowth": "fixed-width",
+                      "width": "fill_container",
+                      "content": "Legacy skill.md accepted — rename to SKILL.md",
+                      "fontFamily": "$font-ui",
+                      "fontSize": 12,
+                      "fontWeight": "normal"
+                    },
+                    {
+                      "type": "frame",
+                      "id": "e8Dkq",
+                      "name": "badge_problem",
+                      "fill": "#E5484D1A",
+                      "cornerRadius": 10,
+                      "padding": [
+                        2,
+                        8
+                      ],
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "x0f30",
+                          "name": "t",
+                          "fill": "#E5484D",
+                          "content": "problem",
+                          "fontFamily": "$font-ui",
+                          "fontSize": 11,
+                          "fontWeight": "500"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "ZVZ91",
+                      "name": "toggle_on",
+                      "width": 36,
+                      "height": 20,
+                      "fill": "$accent",
+                      "cornerRadius": 10,
+                      "padding": 2,
+                      "justifyContent": "end",
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "ellipse",
+                          "id": "iGeOm",
+                          "name": "knob",
+                          "fill": "#FFFFFF",
+                          "width": 16,
+                          "height": 16
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "type": "rectangle",
+                  "id": "Ijst4",
+                  "name": "hairline",
+                  "fill": "$line",
+                  "width": "fill_container",
+                  "height": 1
+                },
+                {
+                  "type": "frame",
+                  "id": "X9EKP",
+                  "name": "caption_wrap",
+                  "width": "fill_container",
+                  "padding": [
+                    12,
+                    20,
+                    16,
+                    20
+                  ],
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "BLUnG",
+                      "name": "caption",
+                      "fill": "$text-3",
+                      "textGrowth": "fixed-width",
+                      "width": "fill_container",
+                      "content": "Toggles edit skillOverrides in ~/.claude/settings.json and apply to new sessions everywhere. Bundled skills (code-review, loop, …) are not on disk and not listed.",
+                      "lineHeight": 1.4,
+                      "fontFamily": "$font-ui",
+                      "fontSize": 12,
+                      "fontWeight": "normal"
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "PuVCC",
+              "name": "sp",
+              "width": "fill_container",
+              "height": 16
+            },
+            {
+              "type": "frame",
+              "id": "w348PC",
+              "name": "card_codex",
+              "width": "fill_container",
+              "fill": "$panel",
+              "cornerRadius": 14,
+              "stroke": "$line",
+              "strokeWidth": 1,
+              "strokeAlignment": "inner",
+              "layout": "vertical",
+              "children": [
+                {
+                  "type": "frame",
+                  "id": "XlmCq",
+                  "name": "hdr",
+                  "width": "fill_container",
+                  "gap": 10,
+                  "padding": [
+                    16,
+                    20
+                  ],
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "yEfeP",
+                      "name": "name_t",
+                      "fill": "$text-1",
+                      "content": "Codex",
+                      "fontFamily": "$font-ui",
+                      "fontSize": 14,
+                      "fontWeight": "500"
+                    },
+                    {
+                      "type": "text",
+                      "id": "fUhSb",
+                      "name": "path_t",
+                      "fill": "$text-3",
+                      "content": "~/.codex/skills",
+                      "fontFamily": "$font-mono",
+                      "fontSize": 12,
+                      "fontWeight": "normal"
+                    },
+                    {
+                      "type": "frame",
+                      "id": "x5lRde",
+                      "name": "flex",
+                      "width": "fill_container",
+                      "height": 1
+                    },
+                    {
+                      "type": "text",
+                      "id": "Z4A3q",
+                      "name": "count_t",
+                      "fill": "$text-3",
+                      "content": "8 skills",
+                      "fontFamily": "$font-ui",
+                      "fontSize": 12,
+                      "fontWeight": "normal"
+                    },
+                    {
+                      "type": "frame",
+                      "id": "acs7s",
+                      "name": "btn_Refresh",
+                      "fill": "$raised",
+                      "cornerRadius": 8,
+                      "padding": [
+                        6,
+                        12
+                      ],
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "qb50e",
+                          "name": "t",
+                          "fill": "$text-1",
+                          "content": "Refresh",
+                          "fontFamily": "$font-ui",
+                          "fontSize": 12,
+                          "fontWeight": "500"
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "type": "rectangle",
+                  "id": "y6xH36",
+                  "name": "hairline",
+                  "fill": "$line",
+                  "width": "fill_container",
+                  "height": 1
+                },
+                {
+                  "type": "frame",
+                  "id": "i1iEDz",
+                  "name": "row_daily-brief",
+                  "width": "fill_container",
+                  "gap": 10,
+                  "padding": [
+                    10,
+                    20
+                  ],
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "UH0mO",
+                      "name": "name_t",
+                      "fill": "$text-1",
+                      "content": "daily-brief",
+                      "fontFamily": "$font-ui",
+                      "fontSize": 13,
+                      "fontWeight": "500"
+                    },
+                    {
+                      "type": "text",
+                      "id": "w5Sf5h",
+                      "name": "desc_t",
+                      "fill": "$text-2",
+                      "textGrowth": "fixed-width",
+                      "width": "fill_container",
+                      "content": "Produce the daily trading brief — the fixed 8-section format, delivered in chat and stored…",
+                      "fontFamily": "$font-ui",
+                      "fontSize": 12,
+                      "fontWeight": "normal"
+                    },
+                    {
+                      "type": "frame",
+                      "id": "S8DE1v",
+                      "name": "badge_symlink",
+                      "fill": "#9A9BA51A",
+                      "cornerRadius": 10,
+                      "padding": [
+                        2,
+                        8
+                      ],
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "zGQLL",
+                          "name": "t",
+                          "fill": "$text-2",
+                          "content": "symlink",
+                          "fontFamily": "$font-ui",
+                          "fontSize": 11,
+                          "fontWeight": "500"
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "type": "rectangle",
+                  "id": "eQOqH",
+                  "name": "hairline",
+                  "fill": "$line",
+                  "width": "fill_container",
+                  "height": 1
+                },
+                {
+                  "type": "frame",
+                  "id": "OOfpR",
+                  "name": "row_trading",
+                  "width": "fill_container",
+                  "gap": 10,
+                  "padding": [
+                    10,
+                    20
+                  ],
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "iN5zQ",
+                      "name": "name_t",
+                      "fill": "$text-1",
+                      "content": "trading",
+                      "fontFamily": "$font-ui",
+                      "fontSize": 13,
+                      "fontWeight": "500"
+                    },
+                    {
+                      "type": "text",
+                      "id": "Z76jjl",
+                      "name": "desc_t",
+                      "fill": "$text-2",
+                      "textGrowth": "fixed-width",
+                      "width": "fill_container",
+                      "content": "Operate the alpha trading toolkit — FutuOpenD preflight, positions and orders via MCP tools",
+                      "fontFamily": "$font-ui",
+                      "fontSize": 12,
+                      "fontWeight": "normal"
+                    },
+                    {
+                      "type": "frame",
+                      "id": "cJPUA",
+                      "name": "badge_symlink",
+                      "fill": "#9A9BA51A",
+                      "cornerRadius": 10,
+                      "padding": [
+                        2,
+                        8
+                      ],
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "LS0LN",
+                          "name": "t",
+                          "fill": "$text-2",
+                          "content": "symlink",
+                          "fontFamily": "$font-ui",
+                          "fontSize": 11,
+                          "fontWeight": "500"
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "type": "rectangle",
+                  "id": "pyZxN",
+                  "name": "hairline",
+                  "fill": "$line",
+                  "width": "fill_container",
+                  "height": 1
+                },
+                {
+                  "type": "frame",
+                  "id": "v1RUO",
+                  "name": "caption_wrap",
+                  "width": "fill_container",
+                  "padding": [
+                    12,
+                    20,
+                    16,
+                    20
+                  ],
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "JDaLy",
+                      "name": "caption",
+                      "fill": "$text-3",
+                      "textGrowth": "fixed-width",
+                      "width": "fill_container",
+                      "content": "Codex has no skill on/off setting; all of these load in every codex session.",
+                      "lineHeight": 1.4,
+                      "fontFamily": "$font-ui",
+                      "fontSize": 12,
+                      "fontWeight": "normal"
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "Othy1",
+              "name": "sp",
+              "width": "fill_container",
+              "height": 16
+            },
+            {
+              "type": "frame",
+              "id": "fVaIo",
+              "name": "card_states",
+              "width": "fill_container",
+              "fill": "$panel",
+              "cornerRadius": 14,
+              "stroke": "$line",
+              "strokeWidth": 1,
+              "strokeAlignment": "inner",
+              "layout": "vertical",
+              "children": [
+                {
+                  "type": "frame",
+                  "id": "z1vum3",
+                  "name": "hdr",
+                  "width": "fill_container",
+                  "gap": 10,
+                  "padding": [
+                    16,
+                    20,
+                    8,
+                    20
+                  ],
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "gxz7z",
+                      "name": "name_t",
+                      "fill": "$text-3",
+                      "content": "STATES — EMPTY AND MISSING ROOT",
+                      "fontFamily": "$font-ui",
+                      "fontSize": 11,
+                      "fontWeight": "600"
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "RPLce",
+                  "name": "row_empty",
+                  "width": "fill_container",
+                  "padding": [
+                    10,
+                    20
+                  ],
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "KIw9u",
+                      "name": "t",
+                      "fill": "$text-3",
+                      "content": "No skills in ~/.codex/skills.",
+                      "fontFamily": "$font-ui",
+                      "fontSize": 12,
+                      "fontWeight": "normal"
+                    }
+                  ]
+                },
+                {
+                  "type": "rectangle",
+                  "id": "Va328",
+                  "name": "hairline",
+                  "fill": "$line",
+                  "width": "fill_container",
+                  "height": 1
+                },
+                {
+                  "type": "frame",
+                  "id": "NNnpT",
+                  "name": "row_missing",
+                  "width": "fill_container",
+                  "padding": [
+                    10,
+                    20,
+                    16,
+                    20
+                  ],
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "SwrLR",
+                      "name": "t",
+                      "fill": "$text-3",
+                      "content": "No skills in ~/.codex/skills. (directory does not exist)",
+                      "fontFamily": "$font-ui",
+                      "fontSize": 12,
+                      "fontWeight": "normal"
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "kdSFW",
+              "name": "sp",
+              "width": "fill_container",
+              "height": 16
+            },
+            {
+              "type": "frame",
+              "id": "f0zyr",
+              "name": "sp",
+              "width": "fill_container",
+              "height": 12
+            },
+            {
+              "type": "text",
+              "id": "zmoH6",
+              "name": "footnote",
+              "fill": "$text-3",
+              "textGrowth": "fixed-width",
+              "width": "fill_container",
+              "content": "Runner never installs, copies or edits a skill. Toggles are the only write, and they go through Claude Code's own skillOverrides key.",
+              "fontFamily": "$font-ui",
+              "fontSize": 12,
+              "fontWeight": "normal"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "frame",
+      "id": "vpr64",
+      "x": 9600,
+      "y": 10380,
+      "name": "Settings — Skills · skill detail",
+      "clip": true,
+      "width": 720,
+      "height": 900,
+      "fill": "$bg",
+      "cornerRadius": 12,
+      "stroke": "$line-strong",
+      "layout": "vertical",
+      "padding": 24,
+      "children": [
+        {
+          "type": "frame",
+          "id": "onoSt",
+          "name": "sheet",
+          "width": "fill_container",
+          "fill": "$panel",
+          "cornerRadius": 14,
+          "stroke": "$line",
+          "strokeWidth": 1,
+          "strokeAlignment": "inner",
+          "layout": "vertical",
+          "gap": 14,
+          "padding": [
+            20,
+            24
+          ],
+          "children": [
+            {
+              "type": "frame",
+              "id": "jT7vR",
+              "name": "hdr",
+              "width": "fill_container",
+              "gap": 10,
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "text",
+                  "id": "QcwGF",
+                  "name": "title",
+                  "fill": "$text-1",
+                  "content": "daily-brief",
+                  "fontFamily": "$font-ui",
+                  "fontSize": 16,
+                  "fontWeight": "600"
+                },
+                {
+                  "type": "frame",
+                  "id": "CjROt",
+                  "name": "badge_symlink",
+                  "fill": "#9A9BA51A",
+                  "cornerRadius": 10,
+                  "padding": [
+                    2,
+                    8
+                  ],
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "g7OEz",
+                      "name": "t",
+                      "fill": "$text-2",
+                      "content": "symlink",
+                      "fontFamily": "$font-ui",
+                      "fontSize": 11,
+                      "fontWeight": "500"
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "KuLaD",
+                  "name": "flex",
+                  "width": "fill_container",
+                  "height": 1
+                },
+                {
+                  "type": "icon",
+                  "id": "qOk5m",
+                  "name": "close",
+                  "width": 14,
+                  "height": 14,
+                  "icon": "x",
+                  "library": "lucide",
+                  "fill": "$text-3"
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "id": "Kfz12",
+              "name": "desc",
+              "fill": "$text-2",
+              "textGrowth": "fixed-width",
+              "width": "fill_container",
+              "content": "Produce Jason's daily trading brief — the fixed 8-section format (book, management, risk, news, hot tape, earnings map, day-trade candidates, action table), delivered in chat and stored verbatim at the head of the day's trading log.",
+              "lineHeight": 1.5,
+              "fontFamily": "$font-ui",
+              "fontSize": 12,
+              "fontWeight": "normal"
+            },
+            {
+              "type": "frame",
+              "id": "tnlDy",
+              "name": "path_row",
+              "width": "fill_container",
+              "gap": 8,
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "icon",
+                  "id": "RlpII",
+                  "name": "folder",
+                  "width": 13,
+                  "height": 13,
+                  "icon": "folder",
+                  "library": "lucide",
+                  "fill": "$text-3"
+                },
+                {
+                  "type": "text",
+                  "id": "JUbHA",
+                  "name": "path",
+                  "fill": "$text-3",
+                  "content": "~/.claude/skills/daily-brief → ~/repos/yicheng47/memory/skills/daily-brief",
+                  "fontFamily": "$font-mono",
+                  "fontSize": 11,
+                  "fontWeight": "normal"
+                },
+                {
+                  "type": "frame",
+                  "id": "Z4PT0F",
+                  "name": "flex",
+                  "width": "fill_container",
+                  "height": 1
+                },
+                {
+                  "type": "frame",
+                  "id": "VeKix",
+                  "name": "link_skillmd",
+                  "gap": 5,
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "icon",
+                      "id": "ByJAC",
+                      "name": "i",
+                      "width": 12,
+                      "height": 12,
+                      "icon": "file-text",
+                      "library": "lucide",
+                      "fill": "$accent"
+                    },
+                    {
+                      "type": "text",
+                      "id": "qZxdL",
+                      "name": "t",
+                      "fill": "$accent",
+                      "content": "SKILL.md",
+                      "fontFamily": "$font-ui",
+                      "fontSize": 12,
+                      "fontWeight": "500"
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "hM5X5",
+              "name": "files_row",
+              "gap": 6,
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "frame",
+                  "id": "b7w8d",
+                  "name": "file_SKILL.md",
+                  "fill": "$bg",
+                  "cornerRadius": 6,
+                  "stroke": "$line",
+                  "strokeWidth": 1,
+                  "strokeAlignment": "inner",
+                  "padding": [
+                    3,
+                    8
+                  ],
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "l4bdQ8",
+                      "name": "t",
+                      "fill": "$text-2",
+                      "content": "SKILL.md",
+                      "fontFamily": "$font-mono",
+                      "fontSize": 11,
+                      "fontWeight": "normal"
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "GLA1q",
+                  "name": "file_references/",
+                  "fill": "$bg",
+                  "cornerRadius": 6,
+                  "stroke": "$line",
+                  "strokeWidth": 1,
+                  "strokeAlignment": "inner",
+                  "padding": [
+                    3,
+                    8
+                  ],
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "SA9Nf",
+                      "name": "t",
+                      "fill": "$text-2",
+                      "content": "references/",
+                      "fontFamily": "$font-mono",
+                      "fontSize": 11,
+                      "fontWeight": "normal"
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "DRnAz",
+                  "name": "file_scripts/",
+                  "fill": "$bg",
+                  "cornerRadius": 6,
+                  "stroke": "$line",
+                  "strokeWidth": 1,
+                  "strokeAlignment": "inner",
+                  "padding": [
+                    3,
+                    8
+                  ],
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "Kmhro",
+                      "name": "t",
+                      "fill": "$text-2",
+                      "content": "scripts/",
+                      "fontFamily": "$font-mono",
+                      "fontSize": 11,
+                      "fontWeight": "normal"
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "N0hE2",
+                  "name": "file_template.md",
+                  "fill": "$bg",
+                  "cornerRadius": 6,
+                  "stroke": "$line",
+                  "strokeWidth": 1,
+                  "strokeAlignment": "inner",
+                  "padding": [
+                    3,
+                    8
+                  ],
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "SpgkV",
+                      "name": "t",
+                      "fill": "$text-2",
+                      "content": "template.md",
+                      "fontFamily": "$font-mono",
+                      "fontSize": 11,
+                      "fontWeight": "normal"
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "rectangle",
+              "id": "QRzwv",
+              "name": "hairline",
+              "fill": "$line",
+              "width": "fill_container",
+              "height": 1
+            },
+            {
+              "type": "frame",
+              "id": "ZdoJt",
+              "name": "frontmatter",
+              "width": "fill_container",
+              "fill": "$bg",
+              "cornerRadius": 8,
+              "stroke": "$line",
+              "strokeWidth": 1,
+              "strokeAlignment": "inner",
+              "layout": "vertical",
+              "gap": 6,
+              "padding": [
+                10,
+                14
+              ],
+              "children": [
+                {
+                  "type": "frame",
+                  "id": "Wd5Vp",
+                  "name": "fm_name",
+                  "width": "fill_container",
+                  "gap": 12,
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "FTxJB",
+                      "name": "k",
+                      "fill": "$text-3",
+                      "content": "name",
+                      "fontFamily": "$font-mono",
+                      "fontSize": 11,
+                      "fontWeight": "normal"
+                    },
+                    {
+                      "type": "text",
+                      "id": "y2znL",
+                      "name": "v",
+                      "fill": "$text-2",
+                      "content": "daily-brief",
+                      "fontFamily": "$font-mono",
+                      "fontSize": 11,
+                      "fontWeight": "normal"
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "lYGFw",
+                  "name": "fm_description",
+                  "width": "fill_container",
+                  "gap": 12,
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "v6WFj7",
+                      "name": "k",
+                      "fill": "$text-3",
+                      "content": "description",
+                      "fontFamily": "$font-mono",
+                      "fontSize": 11,
+                      "fontWeight": "normal"
+                    },
+                    {
+                      "type": "text",
+                      "id": "ThUyl",
+                      "name": "v",
+                      "fill": "$text-2",
+                      "content": "Produce Jason's daily trading brief — the fixed 8-section format…",
+                      "fontFamily": "$font-mono",
+                      "fontSize": 11,
+                      "fontWeight": "normal"
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "H9bqGo",
+                  "name": "fm_disable-model-invocation",
+                  "width": "fill_container",
+                  "gap": 12,
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "BPv2q",
+                      "name": "k",
+                      "fill": "$text-3",
+                      "content": "disable-model-invocation",
+                      "fontFamily": "$font-mono",
+                      "fontSize": 11,
+                      "fontWeight": "normal"
+                    },
+                    {
+                      "type": "text",
+                      "id": "cM72V",
+                      "name": "v",
+                      "fill": "$text-2",
+                      "content": "false",
+                      "fontFamily": "$font-mono",
+                      "fontSize": 11,
+                      "fontWeight": "normal"
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "D4i1y8",
+              "name": "body",
+              "width": "fill_container",
+              "layout": "vertical",
+              "gap": 8,
+              "children": [
+                {
+                  "type": "text",
+                  "id": "d6adc",
+                  "name": "h1",
+                  "fill": "$text-1",
+                  "content": "Daily brief",
+                  "fontFamily": "$font-ui",
+                  "fontSize": 14,
+                  "fontWeight": "600"
+                },
+                {
+                  "type": "text",
+                  "id": "F6N1Ko",
+                  "name": "p1",
+                  "fill": "$text-2",
+                  "textGrowth": "fixed-width",
+                  "width": "fill_container",
+                  "content": "Deliver the brief in the fixed 8-section order. Pull the book live before writing anything; a stale book invalidates the risk section.",
+                  "lineHeight": 1.5,
+                  "fontFamily": "$font-ui",
+                  "fontSize": 12,
+                  "fontWeight": "normal"
+                },
+                {
+                  "type": "text",
+                  "id": "I6dM5q",
+                  "name": "h2",
+                  "fill": "$text-1",
+                  "content": "Sections",
+                  "fontFamily": "$font-ui",
+                  "fontSize": 13,
+                  "fontWeight": "600"
+                },
+                {
+                  "type": "text",
+                  "id": "DYLZG",
+                  "name": "p2",
+                  "fill": "$text-2",
+                  "textGrowth": "fixed-width",
+                  "width": "fill_container",
+                  "content": "1. Book — positions, cash, weekly P&L\n2. Management — stops moved, orders working\n3. Risk — event calendar against open names",
+                  "lineHeight": 1.6,
+                  "fontFamily": "$font-ui",
+                  "fontSize": 12,
+                  "fontWeight": "normal"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "text",
+          "id": "f1IYx",
+          "name": "note",
+          "fill": "$text-3",
+          "textGrowth": "fixed-width",
+          "width": "fill_container",
+          "content": "Read-only sheet, opened by a row click. Rendered from the file on open — frontmatter as the key/value table above the body (never raw --- lines), body through mission_markdown's subset. Reveal via the SKILL.md link.",
+          "lineHeight": 1.5,
+          "fontFamily": "$font-ui",
+          "fontSize": 11,
+          "fontWeight": "normal"
+        }
+      ]
     }
   ],
   "variables": {
