@@ -14,8 +14,9 @@ use runner_app::ui::{
 
 use super::*;
 use crate::app_settings::{
-    normalize_zoom, nudge_zoom, TerminalCursorStyle, TerminalFontFamily, TerminalTheme,
-    TERMINAL_FONT_SIZE_MAX, TERMINAL_FONT_SIZE_MIN, TERMINAL_SCROLLBACK_LINES, ZOOM_STEPS,
+    normalize_zoom, nudge_zoom, FileLinkEditor, TerminalCursorStyle, TerminalFontFamily,
+    TerminalTheme, TERMINAL_FONT_SIZE_MAX, TERMINAL_FONT_SIZE_MIN, TERMINAL_SCROLLBACK_LINES,
+    ZOOM_STEPS,
 };
 use crate::surfaces::app_shell::TITLEBAR_DRAG_HEIGHT;
 use crate::theme::{DarkTheme, LightTheme, ThemeIntent};
@@ -155,6 +156,7 @@ enum SettingsSelection {
     TerminalTheme,
     TerminalFont,
     TerminalCursor,
+    FileLinkEditor,
 }
 
 pub(crate) struct SettingsState {
@@ -175,6 +177,7 @@ pub(crate) struct SettingsState {
     terminal_theme: Entity<StyledSelect>,
     terminal_font: Entity<StyledSelect>,
     terminal_cursor: Entity<StyledSelect>,
+    file_link_editor: Entity<StyledSelect>,
     agents: Option<Entity<settings::agents::AgentsPane>>,
     mcp: Option<Entity<settings::mcp::McpPane>>,
     updates: Option<Entity<settings::updates::UpdatesPane>>,
@@ -286,6 +289,17 @@ impl SettingsState {
             SettingsSelection::TerminalCursor,
             cx,
         );
+        let file_link_editor = settings_select(
+            &root,
+            "settings-file-link-editor",
+            settings.file_link_editor.key(),
+            FileLinkEditor::ALL
+                .into_iter()
+                .map(|editor| SelectOption::new(editor.key(), editor.label()))
+                .collect(),
+            SettingsSelection::FileLinkEditor,
+            cx,
+        );
         let owner = cx.entity_id();
         let nav_scroll = ScrollHandle::new();
         let nav_scrollbar = cx.new(|_| Scrollbar::app(nav_scroll.clone(), owner));
@@ -334,6 +348,7 @@ impl SettingsState {
             terminal_theme,
             terminal_font,
             terminal_cursor,
+            file_link_editor,
             agents: None,
             mcp: None,
             updates: None,
@@ -617,6 +632,8 @@ impl NativeRoot {
                 .is_some_and(|value| update_if_changed(&mut settings.terminal_font_family, value)),
             SettingsSelection::TerminalCursor => parse_terminal_cursor(value)
                 .is_some_and(|value| update_if_changed(&mut settings.terminal_cursor_style, value)),
+            SettingsSelection::FileLinkEditor => FileLinkEditor::parse(value)
+                .is_some_and(|value| update_if_changed(&mut settings.file_link_editor, value)),
         });
         if !changed {
             return;
@@ -1472,6 +1489,29 @@ impl NativeRoot {
             }),
         )
         .browse_focus(self.settings_page.working_dir_browse_focus.clone());
+        let file_link_editor = self.settings(cx).file_link_editor;
+        let shell_env = self
+            .app_store
+            .read(cx)
+            .core
+            .runtime_shell_env
+            .read()
+            .map(|env| env.clone())
+            .unwrap_or_default();
+        let (file_link_hint, file_link_warns) = file_link_hint(
+            file_link_editor,
+            crate::file_links::cli_found(file_link_editor, &shell_env),
+        );
+        let file_link_row = SettingsRow::new(
+            "Open file links in",
+            self.settings_page.file_link_editor.clone(),
+        )
+        .subtitle(file_link_hint);
+        let file_link_row = if file_link_warns {
+            file_link_row.subtitle_color(theme::warning())
+        } else {
+            file_link_row
+        };
         let toggle_root = cx.entity();
 
         div()
@@ -1489,6 +1529,7 @@ impl NativeRoot {
                 )
                 .subtitle("Cwd new chats inherit unless overridden.")
                 .into_any_element(),
+                file_link_row.into_any_element(),
                 SettingsRow::new("App zoom", zoom)
                     .subtitle(
                         "Whole-app scale. Doesn't apply to the runner terminal canvas — see Terminal pane.",
@@ -1711,6 +1752,31 @@ fn shortcut_chip(label: String, editable: bool) -> gpui::Div {
             })
         })
         .child(label)
+}
+
+/// The row subtitle for the current editor choice, and whether it warns.
+fn file_link_hint(editor: FileLinkEditor, cli_found: Option<bool>) -> (String, bool) {
+    match (editor, cli_found) {
+        (FileLinkEditor::DefaultApp, _) => (
+            "⌘-click opens the file in its default app. The cited line is lost.".into(),
+            false,
+        ),
+        (editor, Some(false)) => (
+            format!(
+                "{} not found on PATH — {}.",
+                editor.cli().unwrap_or_default(),
+                editor.install_hint().unwrap_or_default()
+            ),
+            true,
+        ),
+        (editor, _) => (
+            format!(
+                "⌘-click opens the file at the cited line via {}.",
+                editor.cli().unwrap_or_default()
+            ),
+            false,
+        ),
+    }
 }
 
 fn update_if_changed<T: PartialEq>(target: &mut T, value: T) -> bool {

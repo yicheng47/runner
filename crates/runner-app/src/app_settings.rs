@@ -107,6 +107,63 @@ pub enum TerminalCursorStyle {
     Bar,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum FileLinkEditor {
+    #[default]
+    DefaultApp,
+    Zed,
+    #[serde(rename = "vscode")]
+    VsCode,
+    Cursor,
+}
+
+impl FileLinkEditor {
+    pub const ALL: [Self; 4] = [Self::DefaultApp, Self::Zed, Self::VsCode, Self::Cursor];
+
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::DefaultApp => "default-app",
+            Self::Zed => "zed",
+            Self::VsCode => "vscode",
+            Self::Cursor => "cursor",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|editor| editor.key() == value)
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::DefaultApp => "Default app",
+            Self::Zed => "Zed",
+            Self::VsCode => "VS Code",
+            Self::Cursor => "Cursor",
+        }
+    }
+
+    /// The command-line launcher the editor ships, when it opens through one.
+    pub fn cli(self) -> Option<&'static str> {
+        match self {
+            Self::Zed => Some("zed"),
+            Self::VsCode => Some("code"),
+            Self::Cursor => Some("cursor"),
+            Self::DefaultApp => None,
+        }
+    }
+
+    /// Where the editor's own UI installs that CLI.
+    pub fn install_hint(self) -> Option<&'static str> {
+        match self {
+            Self::Zed => Some("in Zed, run Zed → Install CLI"),
+            Self::VsCode => Some("in VS Code, run “Shell Command: Install 'code' command in PATH”"),
+            Self::Cursor => Some("in Cursor, run “Shell Command: Install 'cursor' command”"),
+            Self::DefaultApp => None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct AppSettings {
@@ -131,6 +188,7 @@ pub struct AppSettings {
     pub last_mission_terminal_ids: BTreeMap<String, String>,
     pub default_crew_id: String,
     pub default_working_dir: String,
+    pub file_link_editor: FileLinkEditor,
     pub resume_on_launch: bool,
     pub automatically_check_for_updates: bool,
     pub default_runtime: String,
@@ -164,6 +222,7 @@ impl Default for AppSettings {
             last_mission_terminal_ids: BTreeMap::new(),
             default_crew_id: String::new(),
             default_working_dir: String::new(),
+            file_link_editor: FileLinkEditor::DefaultApp,
             resume_on_launch: false,
             automatically_check_for_updates: true,
             default_runtime: String::new(),
@@ -311,6 +370,26 @@ pub fn clamp_mission_rail_width(value: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn file_link_editor_defaults_to_the_default_app_for_pre_feature_settings() {
+        let settings: AppSettings = serde_json::from_str(r#"{"appZoom":1.0}"#).unwrap();
+        assert_eq!(settings.file_link_editor, FileLinkEditor::DefaultApp);
+
+        let json = serde_json::to_string(&AppSettings {
+            file_link_editor: FileLinkEditor::VsCode,
+            ..AppSettings::default()
+        })
+        .unwrap();
+        assert!(json.contains(r#""fileLinkEditor":"vscode""#), "{json}");
+        let reloaded: AppSettings = serde_json::from_str(&json).unwrap();
+        assert_eq!(reloaded.file_link_editor, FileLinkEditor::VsCode);
+        assert_eq!(
+            FileLinkEditor::parse("cursor"),
+            Some(FileLinkEditor::Cursor)
+        );
+        assert_eq!(FileLinkEditor::parse("emacs"), None);
+    }
 
     #[test]
     fn zoom_values_snap_and_nudge_within_the_shipped_domain() {

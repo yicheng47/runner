@@ -21234,6 +21234,96 @@
                       ]
                     }
                   ]
+                },
+                {
+                  "type": "frame",
+                  "id": "mCQx0",
+                  "name": "hairline",
+                  "width": "fill_container",
+                  "height": 1,
+                  "fill": "$hairline"
+                },
+                {
+                  "type": "frame",
+                  "id": "ENegB",
+                  "name": "row_Open file links in",
+                  "width": "fill_container",
+                  "gap": 32,
+                  "padding": [
+                    18,
+                    20
+                  ],
+                  "justifyContent": "space_between",
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "ENJQs",
+                      "name": "lbl",
+                      "width": "fill_container",
+                      "layout": "vertical",
+                      "gap": 4,
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "V8CJo",
+                          "name": "t",
+                          "fill": "$text-1",
+                          "content": "Open file links in",
+                          "fontFamily": "$font-ui",
+                          "fontSize": 14,
+                          "fontWeight": "500"
+                        },
+                        {
+                          "type": "text",
+                          "id": "Nonsz",
+                          "name": "d",
+                          "fill": "$text-2",
+                          "textGrowth": "fixed-width",
+                          "width": "fill_container",
+                          "content": "⌘-click opens the file at the cited line via zed.",
+                          "fontFamily": "$font-ui",
+                          "fontSize": 13,
+                          "fontWeight": "normal"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "s2h2xP",
+                      "name": "pill",
+                      "fill": "$raised",
+                      "cornerRadius": 8,
+                      "gap": 8,
+                      "padding": [
+                        8,
+                        14
+                      ],
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "V2Gfd",
+                          "name": "pill_t",
+                          "fill": "$text-1",
+                          "content": "Zed",
+                          "fontFamily": "$font-ui",
+                          "fontSize": 13,
+                          "fontWeight": "normal"
+                        },
+                        {
+                          "type": "icon",
+                          "id": "n4BZm",
+                          "name": "pill_ic",
+                          "width": 14,
+                          "height": 14,
+                          "icon": "chevron-down",
+                          "library": "lucide",
+                          "fill": "$text-2"
+                        }
+                      ]
+                    }
+                  ]
                 }
               ]
             },
@@ -25326,353 +25416,6 @@
                   "fontFamily": "$font-ui",
                   "fontSize": 12,
                   "fontWeight": "500"
-                }
-              ]
-            }
-          ]
-        }
-      ]
-    },
-    {
-      "type": "frame",
-      "id": "WJfWF",
-      "x": 800,
-      "y": 11440,
-      "name": "Spec — In-app update prompt (pill ⇄ hover card)",
-      "clip": true,
-      "width": 480,
-      "height": 440,
-      "fill": "$bg",
-      "cornerRadius": 12,
-      "stroke": "$line",
-      "strokeWidth": 1,
-      "strokeAlignment": "inner",
-      "children": [
-        {
-          "type": "frame",
-          "id": "Oo5bc",
-          "name": "sidebar_resting",
-          "width": 240,
-          "height": "fill_container",
-          "fill": "$sidebar",
-          "stroke": "$line",
-          "strokeWidth": {
-            "right": 1
-          },
-          "strokeAlignment": "inner",
-          "strokeLinejoin": "round",
-          "layout": "vertical",
-          "gap": 8,
-          "padding": 12,
-          "justifyContent": "end",
-          "children": [
-            {
-              "type": "frame",
-              "id": "fywer",
-              "name": "update_pill",
-              "width": "fill_container",
-              "height": 24,
-              "fill": "#33364099",
-              "cornerRadius": 12,
-              "stroke": "$sidebar-selected-border",
-              "strokeWidth": 1,
-              "strokeAlignment": "inner",
-              "justifyContent": "center",
-              "alignItems": "center",
-              "children": [
-                {
-                  "type": "text",
-                  "id": "a4Mqsr",
-                  "name": "pill_t",
-                  "fill": "$text-2",
-                  "content": "New Runner version available",
-                  "fontFamily": "$font-ui",
-                  "fontSize": 11,
-                  "fontWeight": "500"
-                }
-              ]
-            },
-            {
-              "type": "frame",
-              "id": "TmlPg",
-              "name": "sidebar_settings",
-              "width": "fill_container",
-              "cornerRadius": 6,
-              "gap": 10,
-              "padding": 10,
-              "alignItems": "center",
-              "children": [
-                {
-                  "type": "icon",
-                  "id": "wkHVY",
-                  "name": "s_ic",
-                  "width": 14,
-                  "height": 14,
-                  "icon": "settings",
-                  "library": "lucide",
-                  "fill": "$text-2"
-                },
-                {
-                  "type": "text",
-                  "id": "v0VwRO",
-                  "name": "s_t",
-                  "fill": "$text-2",
-                  "content": "Settings",
-                  "fontFamily": "$font-ui",
-                  "fontSize": 13,
-                  "fontWeight": "normal"
-                }
-              ]
-            }
-          ]
-        },
-        {
-          "type": "frame",
-          "id": "DnpW3",
-          "name": "sidebar_bottom",
-          "width": 240,
-          "height": "fill_container",
-          "fill": "$sidebar",
-          "stroke": "$line",
-          "strokeWidth": {
-            "right": 1
-          },
-          "strokeAlignment": "inner",
-          "strokeLinejoin": "round",
-          "layout": "vertical",
-          "gap": 8,
-          "padding": 12,
-          "justifyContent": "end",
-          "children": [
-            {
-              "type": "frame",
-              "id": "DQ1Ej",
-              "name": "update_card",
-              "clip": true,
-              "width": "fill_container",
-              "fill": {
-                "type": "gradient",
-                "gradientType": "radial",
-                "enabled": true,
-                "rotation": 0,
-                "size": {
-                  "width": 1.8,
-                  "height": 1.4
-                },
-                "colors": [
-                  {
-                    "color": "#31333D",
-                    "position": 0
-                  },
-                  {
-                    "color": "#1E1F25",
-                    "position": 1
-                  }
-                ],
-                "center": {
-                  "y": 0
-                }
-              },
-              "cornerRadius": 12,
-              "stroke": "#3A3C46",
-              "strokeWidth": 1,
-              "strokeAlignment": "inner",
-              "effect": {
-                "type": "shadow",
-                "shadowType": "outer",
-                "color": "#00000066",
-                "offset": {
-                  "x": 0,
-                  "y": 6
-                },
-                "blur": 24
-              },
-              "layout": "vertical",
-              "children": [
-                {
-                  "type": "frame",
-                  "id": "EMMYE",
-                  "name": "hdr",
-                  "width": "fill_container",
-                  "fill": "#363845",
-                  "layout": "vertical",
-                  "gap": 3,
-                  "padding": [
-                    9,
-                    14
-                  ],
-                  "justifyContent": "center",
-                  "alignItems": "center",
-                  "children": [
-                    {
-                      "type": "text",
-                      "id": "vhTxi",
-                      "name": "hdr_t",
-                      "fill": "$text-1",
-                      "content": "New Runner version available",
-                      "fontFamily": "$font-ui",
-                      "fontSize": 11,
-                      "fontWeight": "600"
-                    },
-                    {
-                      "type": "icon",
-                      "id": "mblCZ",
-                      "layoutPosition": "absolute",
-                      "x": 186,
-                      "y": 10,
-                      "name": "dismiss_x",
-                      "width": 12,
-                      "height": 12,
-                      "icon": "x",
-                      "library": "lucide",
-                      "fill": "$text-3"
-                    }
-                  ]
-                },
-                {
-                  "type": "frame",
-                  "id": "f5wQn",
-                  "name": "hdr_div",
-                  "width": "fill_container",
-                  "height": 1,
-                  "fill": "#33353E"
-                },
-                {
-                  "type": "frame",
-                  "id": "pTU6j",
-                  "name": "body",
-                  "width": "fill_container",
-                  "layout": "vertical",
-                  "gap": 10,
-                  "padding": [
-                    12,
-                    14,
-                    14,
-                    14
-                  ],
-                  "children": [
-                    {
-                      "type": "frame",
-                      "id": "S5vkP3",
-                      "name": "auto_row",
-                      "width": "fill_container",
-                      "gap": 8,
-                      "justifyContent": "center",
-                      "alignItems": "center",
-                      "children": [
-                        {
-                          "type": "frame",
-                          "id": "ltjBv",
-                          "name": "checkbox",
-                          "width": 13,
-                          "height": 13,
-                          "fill": "#3A3C46",
-                          "cornerRadius": 3,
-                          "stroke": "#4A4C56",
-                          "strokeWidth": 1,
-                          "strokeAlignment": "inner",
-                          "justifyContent": "center",
-                          "alignItems": "center",
-                          "children": [
-                            {
-                              "type": "icon",
-                              "id": "MqFF8",
-                              "name": "cb_check",
-                              "width": 9,
-                              "height": 9,
-                              "icon": "check",
-                              "library": "lucide",
-                              "fill": "$text-1"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "text",
-                          "id": "ucTVk",
-                          "name": "auto_t",
-                          "fill": "$text-1",
-                          "content": "Automatic updates",
-                          "fontFamily": "$font-ui",
-                          "fontSize": 11,
-                          "fontWeight": "normal"
-                        }
-                      ]
-                    },
-                    {
-                      "type": "frame",
-                      "id": "vNrtG",
-                      "name": "btn_restart",
-                      "width": "fill_container",
-                      "height": 26,
-                      "fill": {
-                        "type": "gradient",
-                        "gradientType": "radial",
-                        "enabled": true,
-                        "rotation": 0,
-                        "size": {
-                          "width": 1.1,
-                          "height": 6
-                        },
-                        "colors": [
-                          {
-                            "color": "#00FFA8",
-                            "position": 0
-                          },
-                          {
-                            "color": "#00BD70",
-                            "position": 1
-                          }
-                        ]
-                      },
-                      "cornerRadius": 8,
-                      "justifyContent": "center",
-                      "alignItems": "center",
-                      "children": [
-                        {
-                          "type": "text",
-                          "id": "chckT",
-                          "name": "btn_t",
-                          "fill": "#0F2418",
-                          "content": "Restart and Update",
-                          "fontFamily": "$font-ui",
-                          "fontSize": 12,
-                          "fontWeight": "600"
-                        }
-                      ]
-                    }
-                  ]
-                }
-              ]
-            },
-            {
-              "type": "frame",
-              "id": "v6bRl",
-              "name": "sidebar_settings",
-              "width": "fill_container",
-              "cornerRadius": 6,
-              "gap": 10,
-              "padding": 10,
-              "alignItems": "center",
-              "children": [
-                {
-                  "type": "icon",
-                  "id": "bqB6E",
-                  "name": "s_ic",
-                  "width": 14,
-                  "height": 14,
-                  "icon": "settings",
-                  "library": "lucide",
-                  "fill": "$text-2"
-                },
-                {
-                  "type": "text",
-                  "id": "f53YM",
-                  "name": "s_t",
-                  "fill": "$text-2",
-                  "content": "Settings",
-                  "fontFamily": "$font-ui",
-                  "fontSize": 13,
-                  "fontWeight": "normal"
                 }
               ]
             }
@@ -55638,6 +55381,938 @@
           "fontFamily": "$font-ui",
           "fontSize": 11,
           "fontWeight": "normal"
+        }
+      ]
+    },
+    {
+      "type": "frame",
+      "id": "HMe6a",
+      "x": 4440,
+      "y": 11440,
+      "name": "Spec — Open file links in editor (458)",
+      "width": 900,
+      "fill": "$panel",
+      "cornerRadius": 14,
+      "stroke": "$line",
+      "strokeWidth": 1,
+      "strokeAlignment": "inner",
+      "layout": "vertical",
+      "gap": 18,
+      "padding": [
+        20,
+        24
+      ],
+      "children": [
+        {
+          "type": "text",
+          "id": "YKhrM",
+          "name": "spec_title",
+          "fill": "$text-1",
+          "content": "Open file links in — Settings › General row states (#458)",
+          "fontFamily": "$font-ui",
+          "fontSize": 14,
+          "fontWeight": "600"
+        },
+        {
+          "type": "frame",
+          "id": "nJI6I",
+          "name": "state_DEFAULT APP",
+          "width": "fill_container",
+          "gap": 24,
+          "children": [
+            {
+              "type": "frame",
+              "id": "SBCo7",
+              "name": "meta",
+              "width": 200,
+              "layout": "vertical",
+              "gap": 2,
+              "children": [
+                {
+                  "type": "text",
+                  "id": "lNhN4",
+                  "name": "state_t",
+                  "fill": "$text-3",
+                  "content": "DEFAULT APP",
+                  "fontFamily": "$font-mono",
+                  "fontSize": 11,
+                  "fontWeight": "700"
+                },
+                {
+                  "type": "text",
+                  "id": "kWJnL",
+                  "name": "sub_t",
+                  "fill": "$text-2",
+                  "textGrowth": "fixed-width",
+                  "width": "fill_container",
+                  "content": "The default. Runs `open PATH`, so the first ⌘-click works on every machine with no CLI installed.",
+                  "fontFamily": "$font-ui",
+                  "fontSize": 12,
+                  "fontWeight": "normal"
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "l7Pxwm",
+              "name": "example",
+              "width": "fill_container",
+              "layout": "vertical",
+              "gap": 10,
+              "children": [
+                {
+                  "type": "frame",
+                  "id": "KWKwq",
+                  "name": "card",
+                  "width": "fill_container",
+                  "fill": "$bg",
+                  "cornerRadius": 12,
+                  "stroke": "$line",
+                  "strokeWidth": 1,
+                  "strokeAlignment": "inner",
+                  "layout": "vertical",
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "zUynV",
+                      "name": "row",
+                      "width": "fill_container",
+                      "gap": 32,
+                      "padding": [
+                        16,
+                        20
+                      ],
+                      "justifyContent": "space_between",
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "B81GT",
+                          "name": "lbl",
+                          "width": "fill_container",
+                          "layout": "vertical",
+                          "gap": 4,
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "aCJph",
+                              "name": "t",
+                              "fill": "$text-1",
+                              "content": "Open file links in",
+                              "fontFamily": "$font-ui",
+                              "fontSize": 14,
+                              "fontWeight": "500"
+                            },
+                            {
+                              "type": "text",
+                              "id": "VrrK2",
+                              "name": "d",
+                              "fill": "$text-2",
+                              "textGrowth": "fixed-width",
+                              "width": "fill_container",
+                              "content": "⌘-click opens the file in its default app. The cited line is lost.",
+                              "fontFamily": "$font-ui",
+                              "fontSize": 13,
+                              "fontWeight": "normal"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "ySuLg",
+                          "name": "ctl",
+                          "layout": "vertical",
+                          "gap": 8,
+                          "alignItems": "end",
+                          "children": [
+                            {
+                              "type": "frame",
+                              "id": "QIhgK",
+                              "name": "pill",
+                              "fill": "$raised",
+                              "cornerRadius": 8,
+                              "gap": 8,
+                              "padding": [
+                                8,
+                                14
+                              ],
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "text",
+                                  "id": "jQP4k",
+                                  "name": "pill_t",
+                                  "fill": "$text-1",
+                                  "content": "Default app",
+                                  "fontFamily": "$font-ui",
+                                  "fontSize": 13,
+                                  "fontWeight": "normal"
+                                },
+                                {
+                                  "type": "icon",
+                                  "id": "ChBdN",
+                                  "name": "pill_ic",
+                                  "width": 14,
+                                  "height": 14,
+                                  "icon": "chevron-down",
+                                  "library": "lucide",
+                                  "fill": "$text-2"
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "frame",
+          "id": "yFOwF",
+          "name": "state_CLI FOUND",
+          "width": "fill_container",
+          "gap": 24,
+          "children": [
+            {
+              "type": "frame",
+              "id": "n4Qq6",
+              "name": "meta",
+              "width": 200,
+              "layout": "vertical",
+              "gap": 2,
+              "children": [
+                {
+                  "type": "text",
+                  "id": "rHMm2",
+                  "name": "state_t",
+                  "fill": "$text-3",
+                  "content": "CLI FOUND",
+                  "fontFamily": "$font-mono",
+                  "fontSize": 11,
+                  "fontWeight": "700"
+                },
+                {
+                  "type": "text",
+                  "id": "svsKK",
+                  "name": "sub_t",
+                  "fill": "$text-2",
+                  "textGrowth": "fixed-width",
+                  "width": "fill_container",
+                  "content": "Zed, VS Code or Cursor picked and its CLI is on the login-shell PATH (same lookup agent spawns use).",
+                  "fontFamily": "$font-ui",
+                  "fontSize": 12,
+                  "fontWeight": "normal"
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "v28Z3W",
+              "name": "example",
+              "width": "fill_container",
+              "layout": "vertical",
+              "gap": 10,
+              "children": [
+                {
+                  "type": "frame",
+                  "id": "j0ap9",
+                  "name": "card",
+                  "width": "fill_container",
+                  "fill": "$bg",
+                  "cornerRadius": 12,
+                  "stroke": "$line",
+                  "strokeWidth": 1,
+                  "strokeAlignment": "inner",
+                  "layout": "vertical",
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "g3RAys",
+                      "name": "row",
+                      "width": "fill_container",
+                      "gap": 32,
+                      "padding": [
+                        16,
+                        20
+                      ],
+                      "justifyContent": "space_between",
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "cHrZ6",
+                          "name": "lbl",
+                          "width": "fill_container",
+                          "layout": "vertical",
+                          "gap": 4,
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "raOau",
+                              "name": "t",
+                              "fill": "$text-1",
+                              "content": "Open file links in",
+                              "fontFamily": "$font-ui",
+                              "fontSize": 14,
+                              "fontWeight": "500"
+                            },
+                            {
+                              "type": "text",
+                              "id": "tPQFB",
+                              "name": "d",
+                              "fill": "$text-2",
+                              "textGrowth": "fixed-width",
+                              "width": "fill_container",
+                              "content": "⌘-click opens the file at the cited line via zed.",
+                              "fontFamily": "$font-ui",
+                              "fontSize": 13,
+                              "fontWeight": "normal"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "d4jj34",
+                          "name": "ctl",
+                          "layout": "vertical",
+                          "gap": 8,
+                          "alignItems": "end",
+                          "children": [
+                            {
+                              "type": "frame",
+                              "id": "uVMbN",
+                              "name": "pill",
+                              "fill": "$raised",
+                              "cornerRadius": 8,
+                              "gap": 8,
+                              "padding": [
+                                8,
+                                14
+                              ],
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "text",
+                                  "id": "ZOCET",
+                                  "name": "pill_t",
+                                  "fill": "$text-1",
+                                  "content": "Zed",
+                                  "fontFamily": "$font-ui",
+                                  "fontSize": 13,
+                                  "fontWeight": "normal"
+                                },
+                                {
+                                  "type": "icon",
+                                  "id": "fzHfl",
+                                  "name": "pill_ic",
+                                  "width": 14,
+                                  "height": 14,
+                                  "icon": "chevron-down",
+                                  "library": "lucide",
+                                  "fill": "$text-2"
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "frame",
+          "id": "fr3kP",
+          "name": "state_CLI MISSING",
+          "width": "fill_container",
+          "gap": 24,
+          "children": [
+            {
+              "type": "frame",
+              "id": "X9SLX",
+              "name": "meta",
+              "width": 200,
+              "layout": "vertical",
+              "gap": 2,
+              "children": [
+                {
+                  "type": "text",
+                  "id": "NxGP9",
+                  "name": "state_t",
+                  "fill": "$text-3",
+                  "content": "CLI MISSING",
+                  "fontFamily": "$font-mono",
+                  "fontSize": 11,
+                  "fontWeight": "700"
+                },
+                {
+                  "type": "text",
+                  "id": "NEhG6",
+                  "name": "sub_t",
+                  "fill": "$text-2",
+                  "textGrowth": "fixed-width",
+                  "width": "fill_container",
+                  "content": "Editor picked but its CLI is not on PATH. Still selectable — the hint says where the installer lives. Click falls back to open.",
+                  "fontFamily": "$font-ui",
+                  "fontSize": 12,
+                  "fontWeight": "normal"
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "LVdpw",
+              "name": "example",
+              "width": "fill_container",
+              "layout": "vertical",
+              "gap": 10,
+              "children": [
+                {
+                  "type": "frame",
+                  "id": "k9j1N",
+                  "name": "card",
+                  "width": "fill_container",
+                  "fill": "$bg",
+                  "cornerRadius": 12,
+                  "stroke": "$line",
+                  "strokeWidth": 1,
+                  "strokeAlignment": "inner",
+                  "layout": "vertical",
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "mHl8J",
+                      "name": "row",
+                      "width": "fill_container",
+                      "gap": 32,
+                      "padding": [
+                        16,
+                        20
+                      ],
+                      "justifyContent": "space_between",
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "wkyzj",
+                          "name": "lbl",
+                          "width": "fill_container",
+                          "layout": "vertical",
+                          "gap": 4,
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "qMcmg",
+                              "name": "t",
+                              "fill": "$text-1",
+                              "content": "Open file links in",
+                              "fontFamily": "$font-ui",
+                              "fontSize": 14,
+                              "fontWeight": "500"
+                            },
+                            {
+                              "type": "text",
+                              "id": "uFzpy",
+                              "name": "d",
+                              "fill": "$warn",
+                              "textGrowth": "fixed-width",
+                              "width": "fill_container",
+                              "content": "code not found on PATH — in VS Code, run “Shell Command: Install 'code' command in PATH”.",
+                              "fontFamily": "$font-ui",
+                              "fontSize": 13,
+                              "fontWeight": "normal"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "sgt9P",
+                          "name": "ctl",
+                          "layout": "vertical",
+                          "gap": 8,
+                          "alignItems": "end",
+                          "children": [
+                            {
+                              "type": "frame",
+                              "id": "qyfEF",
+                              "name": "pill",
+                              "fill": "$raised",
+                              "cornerRadius": 8,
+                              "gap": 8,
+                              "padding": [
+                                8,
+                                14
+                              ],
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "text",
+                                  "id": "X9ndJI",
+                                  "name": "pill_t",
+                                  "fill": "$text-1",
+                                  "content": "VS Code",
+                                  "fontFamily": "$font-ui",
+                                  "fontSize": 13,
+                                  "fontWeight": "normal"
+                                },
+                                {
+                                  "type": "icon",
+                                  "id": "z9AYmJ",
+                                  "name": "pill_ic",
+                                  "width": 14,
+                                  "height": 14,
+                                  "icon": "chevron-down",
+                                  "library": "lucide",
+                                  "fill": "$text-2"
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "frame",
+          "id": "N8jo2U",
+          "name": "state_PLAIN HOVER (discovery)",
+          "width": "fill_container",
+          "gap": 24,
+          "children": [
+            {
+              "type": "frame",
+              "id": "SFsYf",
+              "name": "meta",
+              "width": 200,
+              "layout": "vertical",
+              "gap": 2,
+              "children": [
+                {
+                  "type": "text",
+                  "id": "LK8jE",
+                  "name": "state_t",
+                  "fill": "$text-3",
+                  "content": "PLAIN HOVER (DISCOVERY)",
+                  "fontFamily": "$font-mono",
+                  "fontSize": 11,
+                  "fontWeight": "700"
+                },
+                {
+                  "type": "text",
+                  "id": "bi8Ii",
+                  "name": "sub_t",
+                  "fill": "$text-2",
+                  "textGrowth": "fixed-width",
+                  "width": "fill_container",
+                  "content": "No modifier held. Resting the pointer on a path or URL underlines it in the text colour and, after ~500 ms, a tooltip names the gesture and the destination. This is how people learn the feature — today neither kind of link gives any hint. One link is hovered at a time; both are shown here for the two copy variants.",
+                  "fontFamily": "$font-ui",
+                  "fontSize": 12,
+                  "fontWeight": "normal"
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "JovgN",
+              "name": "example",
+              "width": "fill_container",
+              "layout": "vertical",
+              "gap": 10,
+              "children": [
+                {
+                  "type": "frame",
+                  "id": "FadVT",
+                  "name": "terminal",
+                  "width": "fill_container",
+                  "fill": "$bg",
+                  "cornerRadius": 8,
+                  "stroke": "$line",
+                  "strokeWidth": 1,
+                  "strokeAlignment": "inner",
+                  "layout": "vertical",
+                  "gap": 6,
+                  "padding": [
+                    12,
+                    14
+                  ],
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "u5pRxn",
+                      "name": "l1",
+                      "fill": "$text-1",
+                      "content": "● Fixed the reflow bug and tightened the hover test.",
+                      "fontFamily": "$font-mono",
+                      "fontSize": 12,
+                      "fontWeight": "normal"
+                    },
+                    {
+                      "type": "frame",
+                      "id": "ZtMcc",
+                      "name": "l2",
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "flHhG",
+                          "name": "l2a",
+                          "fill": "$text-2",
+                          "content": "  Changed ",
+                          "fontFamily": "$font-mono",
+                          "fontSize": 12,
+                          "fontWeight": "normal"
+                        },
+                        {
+                          "type": "text",
+                          "id": "b80eD1",
+                          "name": "l2_link",
+                          "fill": "$text-1",
+                          "content": "crates/runner-app/src/surfaces/panes.rs:1311",
+                          "fontFamily": "$font-mono",
+                          "fontSize": 12,
+                          "fontWeight": "normal"
+                        },
+                        {
+                          "type": "text",
+                          "id": "N6YVbZ",
+                          "name": "l2b",
+                          "fill": "$text-2",
+                          "content": " — the wrap branch now reflows.",
+                          "fontFamily": "$font-mono",
+                          "fontSize": 12,
+                          "fontWeight": "normal"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "ErBPp",
+                      "name": "tooltip_row",
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "fGG70",
+                          "name": "indent",
+                          "width": 74,
+                          "height": 1
+                        },
+                        {
+                          "type": "frame",
+                          "id": "gasK9",
+                          "name": "tooltip",
+                          "fill": "$raised",
+                          "cornerRadius": 6,
+                          "stroke": "$line",
+                          "strokeWidth": 1,
+                          "strokeAlignment": "inner",
+                          "padding": [
+                            4,
+                            8
+                          ],
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "CITRS",
+                              "name": "tooltip_t",
+                              "fill": "$text-1",
+                              "content": "⌘-click to open in Zed",
+                              "fontFamily": "$font-ui",
+                              "fontSize": 11,
+                              "fontWeight": "normal"
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "type": "text",
+                      "id": "L5uze",
+                      "name": "l3",
+                      "fill": "$text-2",
+                      "content": "  See also crates/runner-terminal/src/terminal.rs:702 and the notes at",
+                      "fontFamily": "$font-mono",
+                      "fontSize": 12,
+                      "fontWeight": "normal"
+                    },
+                    {
+                      "type": "frame",
+                      "id": "dXEtY",
+                      "name": "l4",
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "G94DTu",
+                          "name": "l4a",
+                          "fill": "$text-2",
+                          "content": "  ",
+                          "fontFamily": "$font-mono",
+                          "fontSize": 12,
+                          "fontWeight": "normal"
+                        },
+                        {
+                          "type": "text",
+                          "id": "IgFEW",
+                          "name": "l4_link",
+                          "fill": "$text-1",
+                          "content": "https://github.com/yicheng47/runner/issues/458",
+                          "fontFamily": "$font-mono",
+                          "fontSize": 12,
+                          "fontWeight": "normal"
+                        },
+                        {
+                          "type": "text",
+                          "id": "L4YUuT",
+                          "name": "l4b",
+                          "fill": "$text-2",
+                          "content": " — same gesture.",
+                          "fontFamily": "$font-mono",
+                          "fontSize": 12,
+                          "fontWeight": "normal"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "W6MY2S",
+                      "name": "tooltip_row_url",
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "miMXm",
+                          "name": "indent",
+                          "width": 14,
+                          "height": 1
+                        },
+                        {
+                          "type": "frame",
+                          "id": "btaFc",
+                          "name": "tooltip",
+                          "fill": "$raised",
+                          "cornerRadius": 6,
+                          "stroke": "$line",
+                          "strokeWidth": 1,
+                          "strokeAlignment": "inner",
+                          "padding": [
+                            4,
+                            8
+                          ],
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "vvXE2",
+                              "name": "tooltip_t",
+                              "fill": "$text-1",
+                              "content": "⌘-click to open in browser",
+                              "fontFamily": "$font-ui",
+                              "fontSize": 11,
+                              "fontWeight": "normal"
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "frame",
+          "id": "S1RTDb",
+          "name": "state_⌘-HOVER IN A PANE",
+          "width": "fill_container",
+          "gap": 24,
+          "children": [
+            {
+              "type": "frame",
+              "id": "ZJyq7",
+              "name": "meta",
+              "width": 200,
+              "layout": "vertical",
+              "gap": 2,
+              "children": [
+                {
+                  "type": "text",
+                  "id": "KkE4d",
+                  "name": "state_t",
+                  "fill": "$text-3",
+                  "content": "⌘-HOVER IN A PANE",
+                  "fontFamily": "$font-mono",
+                  "fontSize": 11,
+                  "fontWeight": "700"
+                },
+                {
+                  "type": "text",
+                  "id": "mCryI",
+                  "name": "sub_t",
+                  "fill": "$text-2",
+                  "textGrowth": "fixed-width",
+                  "width": "fill_container",
+                  "content": "⌘ held: the underline switches to the accent, the pointer becomes a hand, and the tooltip flips from gesture to action with the target. Plain click still goes to the TUI.",
+                  "fontFamily": "$font-ui",
+                  "fontSize": 12,
+                  "fontWeight": "normal"
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "TKGcT",
+              "name": "example",
+              "width": "fill_container",
+              "layout": "vertical",
+              "gap": 10,
+              "children": [
+                {
+                  "type": "frame",
+                  "id": "AUZE2",
+                  "name": "terminal",
+                  "width": "fill_container",
+                  "fill": "$bg",
+                  "cornerRadius": 8,
+                  "stroke": "$line",
+                  "strokeWidth": 1,
+                  "strokeAlignment": "inner",
+                  "layout": "vertical",
+                  "gap": 6,
+                  "padding": [
+                    12,
+                    14
+                  ],
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "bS37j",
+                      "name": "l1",
+                      "fill": "$text-1",
+                      "content": "● Fixed the reflow bug and tightened the hover test.",
+                      "fontFamily": "$font-mono",
+                      "fontSize": 12,
+                      "fontWeight": "normal"
+                    },
+                    {
+                      "type": "frame",
+                      "id": "pxBqq",
+                      "name": "l2",
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "w0ULeV",
+                          "name": "l2a",
+                          "fill": "$text-2",
+                          "content": "  Changed ",
+                          "fontFamily": "$font-mono",
+                          "fontSize": 12,
+                          "fontWeight": "normal"
+                        },
+                        {
+                          "type": "text",
+                          "id": "wyBxK",
+                          "name": "l2_link",
+                          "fill": "$accent",
+                          "content": "crates/runner-app/src/surfaces/panes.rs:1311",
+                          "fontFamily": "$font-mono",
+                          "fontSize": 12,
+                          "fontWeight": "normal"
+                        },
+                        {
+                          "type": "text",
+                          "id": "w3rHc",
+                          "name": "l2b",
+                          "fill": "$text-2",
+                          "content": " — the wrap branch now reflows.",
+                          "fontFamily": "$font-mono",
+                          "fontSize": 12,
+                          "fontWeight": "normal"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "bkIRj",
+                      "name": "tooltip_row",
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "e1Zav",
+                          "name": "indent",
+                          "width": 74,
+                          "height": 1
+                        },
+                        {
+                          "type": "frame",
+                          "id": "OcgbA",
+                          "name": "tooltip",
+                          "fill": "$raised",
+                          "cornerRadius": 6,
+                          "stroke": "$line",
+                          "strokeWidth": 1,
+                          "strokeAlignment": "inner",
+                          "padding": [
+                            4,
+                            8
+                          ],
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "c5zQy",
+                              "name": "tooltip_t",
+                              "fill": "$text-1",
+                              "content": "Open in Zed · panes.rs:1311",
+                              "fontFamily": "$font-ui",
+                              "fontSize": 11,
+                              "fontWeight": "normal"
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "type": "text",
+                      "id": "zjIGK",
+                      "name": "l3",
+                      "fill": "$text-2",
+                      "content": "  See also crates/runner-terminal/src/terminal.rs:702 (not hovered — plain text)",
+                      "fontFamily": "$font-mono",
+                      "fontSize": 12,
+                      "fontWeight": "normal"
+                    },
+                    {
+                      "type": "text",
+                      "id": "v93qO",
+                      "name": "l4",
+                      "fill": "$text-3",
+                      "content": "  and/or · 1.2.3 · src/lib.rs (no such file) never underline",
+                      "fontFamily": "$font-mono",
+                      "fontSize": 12,
+                      "fontWeight": "normal"
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
         }
       ]
     }

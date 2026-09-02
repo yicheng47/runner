@@ -8,6 +8,7 @@
 //! font's advance can never skew the grid. gpui caches shaped lines,
 //! so per-cell shaping of repetitive glyphs stays cheap.
 
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -17,9 +18,9 @@ use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::{point_to_viewport, viewport_to_point, TermMode};
 use alacritty_terminal::vte::ansi::{Color, CursorShape, NamedColor, Rgb};
 use gpui::{
-    fill, outline, point, px, relative, size, App, Bounds, ContentMask, Context, CursorStyle,
-    DispatchPhase, Element, ElementInputHandler, Entity, FocusHandle, Font, GlobalElementId,
-    Hitbox, HitboxBehavior, Hsla, InspectorElementId, IntoElement, LayoutId,
+    fill, outline, point, px, relative, size, AnyTooltip, AnyView, App, Bounds, ContentMask,
+    Context, CursorStyle, DispatchPhase, Element, ElementInputHandler, Entity, FocusHandle, Font,
+    GlobalElementId, Hitbox, HitboxBehavior, Hsla, InspectorElementId, IntoElement, LayoutId,
     MouseButton as GpuiMouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point,
     ShapedLine, SharedString, Style, TextRun, UnderlineStyle, Window,
 };
@@ -28,11 +29,13 @@ use runner_app::terminal_ime::TerminalInput;
 use runner_app::terminal_resize::{
     size_push_verdict, terminal_grid_size, SizePushVerdict, TerminalGridSize,
 };
+use runner_app::theme;
+use runner_app::ui::tooltip::tooltip_view;
 use runner_terminal::mappings::{
     encode_mouse_motion, encode_mouse_press, encode_mouse_release, MouseButton, MouseModifiers,
 };
 use runner_terminal::palette::{self, TerminalPalette};
-use runner_terminal::terminal::{TerminalLink, TerminalSession};
+use runner_terminal::terminal::{LinkTarget, TerminalLink, TerminalSession};
 
 use super::glyphs::{snapped_cell_bounds, ProceduralCell};
 
@@ -59,7 +62,7 @@ struct TerminalHit {
 enum DragKind {
     Link {
         initial: GridPoint,
-        uri: String,
+        target: LinkTarget,
         moved: bool,
     },
     Local {
@@ -85,6 +88,18 @@ struct DragState {
     rows: usize,
 }
 
+/// How long the pointer rests on a link before its tooltip appears; matches
+/// gpui's own hover tooltips.
+const LINK_TOOLTIP_DELAY: Duration = Duration::from_millis(500);
+
+#[derive(Clone)]
+struct LinkTooltip {
+    target: LinkTarget,
+    modifier_held: bool,
+    view: AnyView,
+    mouse_position: Point<Pixels>,
+}
+
 pub(crate) struct TerminalInteraction {
     session: Arc<TerminalSession>,
     drag: Option<DragState>,
@@ -92,6 +107,9 @@ pub(crate) struct TerminalInteraction {
     hovered_link: Option<TerminalLink>,
     hover_signature: Option<(GridPoint, u64, usize, (u16, u16))>,
     hover_modifiers: Option<(bool, bool, bool, bool)>,
+    link_modifier_held: bool,
+    hover_since: Option<Instant>,
+    link_tooltip: Option<LinkTooltip>,
 }
 
 impl TerminalInteraction {
@@ -103,7 +121,42 @@ impl TerminalInteraction {
             hovered_link: None,
             hover_signature: None,
             hover_modifiers: None,
+            link_modifier_held: false,
+            hover_since: None,
+            link_tooltip: None,
         }
+    }
+
+    fn link_tooltip_visible(&self) -> bool {
+        self.hovered_link.is_some()
+            && self
+                .hover_since
+                .is_some_and(|since| since.elapsed() >= LINK_TOOLTIP_DELAY)
+    }
+
+    fn link_tooltip(
+        &mut self,
+        target: LinkTarget,
+        modifier_held: bool,
+        mouse_position: Point<Pixels>,
+        cx: &mut App,
+    ) -> LinkTooltip {
+        if let Some(cached) = self
+            .link_tooltip
+            .as_ref()
+            .filter(|cached| cached.target == target && cached.modifier_held == modifier_held)
+        {
+            return cached.clone();
+        }
+        let content = crate::file_links::link_tooltip_content(&target, modifier_held, cx);
+        let tooltip = LinkTooltip {
+            target,
+            modifier_held,
+            view: tooltip_view(content, cx),
+            mouse_position,
+        };
+        self.link_tooltip = Some(tooltip.clone());
+        tooltip
     }
 
     fn refresh_hovered_link(
@@ -117,6 +170,8 @@ impl TerminalInteraction {
         if !hovered {
             self.hover_signature = None;
             self.hover_modifiers = None;
+            self.hover_since = None;
+            self.link_tooltip = None;
             return self.hovered_link.take().is_some();
         }
 
@@ -128,8 +183,10 @@ impl TerminalInteraction {
         );
         let modifiers_changed =
             self.hover_modifiers.replace(modifier_signature) != Some(modifier_signature);
-        if !interactive || !link_modifier(modifiers) {
+        self.link_modifier_held = link_modifier(modifiers);
+        if !interactive {
             self.hover_signature = None;
+            self.hover_since = None;
             return self.hovered_link.take().is_some() || modifiers_changed;
         }
 
@@ -149,6 +206,9 @@ impl TerminalInteraction {
         self.hover_signature = Some(signature);
         let hovered_link = self.session.link_at(point);
         let changed = hovered_link != self.hovered_link;
+        if changed {
+            self.hover_since = hovered_link.is_some().then(Instant::now);
+        }
         self.hovered_link = hovered_link;
         changed || modifiers_changed
     }
@@ -178,7 +238,7 @@ impl TerminalInteraction {
                     button,
                     kind: DragKind::Link {
                         initial: hit.point,
-                        uri: link.uri,
+                        target: link.target,
                         moved: false,
                     },
                     autoscroll: 0,
@@ -337,15 +397,23 @@ impl TerminalInteraction {
         let hit = hit_test(&self.session, geometry, event.position);
         match drag.kind {
             DragKind::Link {
-                uri, moved: false, ..
+                target,
+                moved: false,
+                ..
             } if interactive
                 && link_modifier(event.modifiers)
                 && self
                     .session
                     .link_at(hit.point)
-                    .is_some_and(|link| link.uri == uri) =>
+                    .is_some_and(|link| link.target == target) =>
             {
-                cx.open_url(&uri);
+                match target {
+                    LinkTarget::Url(uri) => cx.open_url(&uri),
+                    LinkTarget::File { path, line, column } => {
+                        let target = crate::file_links::FileLinkTarget { path, line, column };
+                        crate::file_links::open_file_link(target, cx);
+                    }
+                }
             }
             DragKind::Link { .. } => {}
             DragKind::Reported { .. } => {
@@ -619,6 +687,14 @@ impl TerminalElement {
             });
             if changed {
                 cx.notify(current_view);
+                if interaction.read(cx).hovered_link.is_some() {
+                    window
+                        .spawn(cx, async move |cx| {
+                            cx.background_executor().timer(LINK_TOOLTIP_DELAY).await;
+                            cx.update(|window, _| window.refresh()).ok();
+                        })
+                        .detach();
+                }
             }
             if event.pressed_button.is_none() {
                 return;
@@ -679,6 +755,7 @@ pub struct GridPrepaint {
     rows: usize,
     mode: TermMode,
     hovered_link: Option<TerminalLink>,
+    link_modifier_held: bool,
     hitbox: Hitbox,
 }
 
@@ -786,6 +863,7 @@ impl Element for TerminalElement {
                     rows: last_rows as usize,
                     mode: TermMode::NONE,
                     hovered_link: None,
+                    link_modifier_held: false,
                     hitbox,
                 };
             }
@@ -798,7 +876,7 @@ impl Element for TerminalElement {
             cols: cols as usize,
             rows: rows as usize,
         };
-        let hovered_link = self.interaction.update(cx, |interaction, _| {
+        let (hovered_link, link_modifier_held) = self.interaction.update(cx, |interaction, _| {
             interaction.refresh_hovered_link(
                 window.modifiers(),
                 geometry,
@@ -806,8 +884,31 @@ impl Element for TerminalElement {
                 hitbox.is_hovered(window),
                 self.interactive,
             );
-            interaction.hovered_link.clone()
+            (
+                interaction.hovered_link.clone(),
+                interaction.link_modifier_held,
+            )
         });
+        if let Some(link) = hovered_link
+            .as_ref()
+            .filter(|_| self.interaction.read(cx).link_tooltip_visible())
+        {
+            let mouse_position = window.mouse_position();
+            let target = link.target.clone();
+            let tooltip = self.interaction.update(cx, |interaction, cx| {
+                interaction.link_tooltip(target, link_modifier_held, mouse_position, cx)
+            });
+            let interaction = self.interaction.downgrade();
+            window.set_tooltip(AnyTooltip {
+                view: tooltip.view,
+                mouse_position: tooltip.mouse_position,
+                check_visible_and_update: Rc::new(move |_, _, cx| {
+                    interaction
+                        .upgrade()
+                        .is_some_and(|interaction| interaction.read(cx).link_tooltip_visible())
+                }),
+            });
+        }
 
         let terminal_palette = self.style.palette;
         let base = palette::base_palette_for(terminal_palette);
@@ -981,7 +1082,11 @@ impl Element for TerminalElement {
                 }
                 let underline = if link_underlined {
                     Some(gpui::UnderlineStyle {
-                        color: Some(to_hsla(fg, 1.)),
+                        color: Some(if link_modifier_held {
+                            theme::accent()
+                        } else {
+                            to_hsla(fg, 1.)
+                        }),
                         thickness: px(self.style.app_zoom),
                         wavy: false,
                     })
@@ -1167,6 +1272,7 @@ impl Element for TerminalElement {
             rows: rows as usize,
             mode,
             hovered_link,
+            link_modifier_held,
             hitbox,
         }
     }
@@ -1254,7 +1360,7 @@ impl Element for TerminalElement {
             ElementInputHandler::new(input_bounds, self.input.clone()),
             cx,
         );
-        let cursor_style = if prepaint.hovered_link.is_some() {
+        let cursor_style = if prepaint.hovered_link.is_some() && prepaint.link_modifier_held {
             CursorStyle::PointingHand
         } else if window.modifiers().alt
             && !(self.interactive

@@ -1,7 +1,8 @@
 use gpui::prelude::*;
 use gpui::{
-    anchored, deferred, div, point, px, rems, AnchoredPositionMode, AnyElement, App, Corner,
-    ElementId, FocusHandle, FontWeight, IntoElement, Render, RenderOnce, SharedString, Window,
+    anchored, deferred, div, point, px, rems, AnchoredPositionMode, AnyElement, AnyView, App,
+    Corner, ElementId, FocusHandle, FontWeight, IntoElement, Render, RenderOnce, SharedString,
+    Window,
 };
 
 use crate::theme;
@@ -15,6 +16,13 @@ impl Render for TooltipView {
     fn render(&mut self, _window: &mut Window, _cx: &mut gpui::Context<Self>) -> impl IntoElement {
         tooltip_content(self.content.clone())
     }
+}
+
+/// A standalone tooltip view for elements that drive `Window::set_tooltip`
+/// themselves instead of going through `Tooltip`.
+pub fn tooltip_view(content: impl Into<SharedString>, cx: &mut App) -> AnyView {
+    let content = content.into();
+    cx.new(|_| TooltipView { content }).into()
 }
 
 #[derive(IntoElement)]
