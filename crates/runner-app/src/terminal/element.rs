@@ -876,12 +876,16 @@ impl Element for TerminalElement {
             cols: cols as usize,
             rows: rows as usize,
         };
+        // Hitbox ids are fresh every frame and `mouse_hit_test` is only
+        // recomputed after prepaint, so `hitbox.is_hovered` is always false
+        // here; test the bounds directly, as gpui's own hover tooltips do.
+        let hovered = bounds.contains(&window.mouse_position());
         let (hovered_link, link_modifier_held) = self.interaction.update(cx, |interaction, _| {
             interaction.refresh_hovered_link(
                 window.modifiers(),
                 geometry,
                 window.mouse_position(),
-                hitbox.is_hovered(window),
+                hovered,
                 self.interactive,
             );
             (
