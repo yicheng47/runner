@@ -1,6 +1,10 @@
 # 466 — Sessions outlive the app process
 
-Tracking: [#466](https://github.com/yicheng47/runner/issues/466). Status: planned.
+Tracking: [#466](https://github.com/yicheng47/runner/issues/466). Status: declined 2026-09-02 — #466 closed won't-do; kept as a record.
+
+## Decision
+
+Not building this. The contract stays as vision §4.2 and arch decision 12 state it: mission state outlives the app process, PTYs do not. Auto-resume already covers relaunch (quit stamps running sessions, relaunch respawns them under the agent's own session key, the CLI restores the conversation), so the only real loss is the in-flight turn at quit. The update motivation is weak because Sparkle restarts when the user clicks install. herdr's persistence is a byproduct of being tmux-native, not a feature Runner needs to match; headless agents-keep-working belongs to the cloud coordination layer. For missions the feature would be half-true anyway, since router and HITL stay in the app and a worker hitting `ask_human` blocks. Against that, the cost is a daemon, a socket protocol, version-skew handling, and terminal replay over the socket, breaking arch decisions 10 and 12, and orphaned agent processes are the failure mode behind the codex-lag incident. Cheaper follow-up if accidental loss ever bites: confirm-on-quit when sessions are mid-turn.
 
 ## Motivation
 
