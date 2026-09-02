@@ -2,7 +2,7 @@ use std::rc::Rc;
 
 use gpui::prelude::*;
 use gpui::{
-    div, px, rems, svg, AnyElement, App, BoxShadow, CursorStyle, ElementId, FontWeight,
+    div, px, rems, svg, AnyElement, App, BoxShadow, CursorStyle, ElementId, FontWeight, Hsla,
     KeyDownEvent, RenderOnce, SharedString, Window,
 };
 
@@ -99,6 +99,7 @@ impl RenderOnce for SettingsCard {
 pub struct SettingsRow {
     label: SharedString,
     subtitle: Option<SharedString>,
+    subtitle_color: Option<Hsla>,
     control: AnyElement,
 }
 
@@ -107,12 +108,18 @@ impl SettingsRow {
         Self {
             label: label.into(),
             subtitle: None,
+            subtitle_color: None,
             control: control.into_any_element(),
         }
     }
 
     pub fn subtitle(mut self, subtitle: impl Into<SharedString>) -> Self {
         self.subtitle = Some(subtitle.into());
+        self
+    }
+
+    pub fn subtitle_color(mut self, color: Hsla) -> Self {
+        self.subtitle_color = Some(color);
         self
     }
 }
@@ -142,7 +149,7 @@ impl RenderOnce for SettingsRow {
                     .children(self.subtitle.map(|subtitle| {
                         div()
                             .text_size(rems(11. / 16.))
-                            .text_color(theme::muted())
+                            .text_color(self.subtitle_color.unwrap_or_else(theme::muted))
                             .child(subtitle)
                     })),
             )

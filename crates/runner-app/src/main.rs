@@ -1,6 +1,7 @@
 mod app_settings;
 mod app_store;
 mod assets;
+mod file_links;
 mod keymap;
 mod list_controls;
 mod mac_chrome;

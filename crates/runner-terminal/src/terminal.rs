@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
@@ -30,8 +31,18 @@ use crate::{
 pub const XTERM_WORD_SEPARATORS: &str = " ()[]{}',\"`";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub enum LinkTarget {
+    Url(String),
+    File {
+        path: PathBuf,
+        line: Option<u32>,
+        column: Option<u32>,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TerminalLink {
-    pub uri: String,
+    pub target: LinkTarget,
     pub start: Point,
     pub end: Point,
 }
@@ -121,6 +132,7 @@ pub struct TerminalSession {
     user_input: UserInput,
     input_tracker: Mutex<InputTracker>,
     fixture_recorder: Option<FixtureRecorder>,
+    link_cwd: std::sync::OnceLock<Option<PathBuf>>,
 }
 
 pub struct TerminalView {
@@ -246,6 +258,7 @@ impl TerminalSession {
             user_input,
             input_tracker: Mutex::new(input_tracker),
             fixture_recorder,
+            link_cwd: std::sync::OnceLock::new(),
         });
         core.sessions
             .report_input_state(&session_id, initial_observation);
@@ -620,7 +633,10 @@ impl TerminalSession {
     }
 
     pub fn link_at(&self, point: Point) -> Option<TerminalLink> {
-        terminal_link_at(&*self.term.lock_unfair(), point)
+        let cwd = self
+            .link_cwd
+            .get_or_init(|| resolve_link_cwd(&self.core, &self.session_id));
+        terminal_link_at(&*self.term.lock_unfair(), point, cwd.as_deref())
     }
 
     pub fn move_cursor_to_viewport(&self, column: usize, row: usize) {
@@ -699,7 +715,20 @@ struct LinkCell {
     hyperlink: Option<(String, String)>,
 }
 
-fn terminal_link_at<T>(term: &Term<T>, point: Point) -> Option<TerminalLink> {
+/// Relative paths in a session's output resolve against the session row's
+/// cwd, else its project's directory. Resolved once, on the first link
+/// lookup, so a session that is never ⌘-hovered never touches the database.
+fn resolve_link_cwd(core: &AppCore, session_id: &str) -> Option<PathBuf> {
+    let conn = core.db.get().ok()?;
+    let row = runner_backend::repo::session::get_row(&conn, session_id).ok()??;
+    if let Some(cwd) = row.cwd.filter(|cwd| !cwd.trim().is_empty()) {
+        return Some(PathBuf::from(cwd));
+    }
+    let project = runner_backend::repo::project::get(&conn, &row.project_id?).ok()??;
+    Some(PathBuf::from(project.cwd))
+}
+
+fn terminal_link_at<T>(term: &Term<T>, point: Point, cwd: Option<&Path>) -> Option<TerminalLink> {
     let mut point = point.grid_clamp(term, Boundary::Grid);
     if term.grid()[point]
         .flags
@@ -759,23 +788,174 @@ fn terminal_link_at<T>(term: &Term<T>, point: Point) -> Option<TerminalLink> {
             last += 1;
         }
         return Some(TerminalLink {
-            uri: uri.clone(),
+            target: file_target_from_uri(uri).unwrap_or_else(|| LinkTarget::Url(uri.clone())),
             start: cells[first].point,
             end: cells[last].point,
         });
     }
 
     let hit_cell = &cells[hit];
-    let matched = url_regex()
+    let overlaps_hit =
+        |range: &std::ops::Range<usize>| range.start < hit_cell.end && range.end > hit_cell.start;
+    let (range, target) = match url_regex()
         .find_iter(&text)
-        .find(|matched| matched.start() < hit_cell.end && matched.end() > hit_cell.start)?;
-    let first = cells.iter().find(|cell| cell.end > matched.start())?;
-    let last = cells.iter().rev().find(|cell| cell.start < matched.end())?;
+        .find(|matched| overlaps_hit(&matched.range()))
+    {
+        Some(matched) => (
+            matched.range(),
+            LinkTarget::Url(matched.as_str().to_owned()),
+        ),
+        None => {
+            let captures = file_link_regex()
+                .captures_iter(&text)
+                .find(|captures| overlaps_hit(&captures.get(0).map_or(0..0, |m| m.range())))?;
+            (
+                captures.get(0)?.range(),
+                file_target_from_captures(&captures, cwd)?,
+            )
+        }
+    };
+    let first = cells.iter().find(|cell| cell.end > range.start)?;
+    let last = cells.iter().rev().find(|cell| cell.start < range.end)?;
     Some(TerminalLink {
-        uri: matched.as_str().to_owned(),
+        target,
         start: first.point,
         end: last.point,
     })
+}
+
+/// A path-shaped token with an optional `:LINE[:COL]`, `(LINE,COL)`, or
+/// `#LLINE` suffix. Deliberately loose: the filesystem check in
+/// `resolve_file_candidate` is what separates `src/lib.rs` from `and/or`.
+fn file_link_regex() -> &'static Regex {
+    static FILE_REGEX: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    FILE_REGEX.get_or_init(|| {
+        Regex::new(
+            r##"(?x)
+            (?P<path>
+                (?: ~/ | \.\.?/ | / )?
+                [^\s/:()\[\]{}<>'"`|\\,;=*?!\x23]* [^\s/:()\[\]{}<>'"`|\\,;=*?!\x23.]
+                (?: / [^\s/:()\[\]{}<>'"`|\\,;=*?!\x23]* [^\s/:()\[\]{}<>'"`|\\,;=*?!\x23.] )*
+            )
+            (?:
+                : (?P<line>\d+) (?: : (?P<column>\d+) )?
+              | \( (?P<pline>\d+) , \s? (?P<pcolumn>\d+) \)
+              | \x23 L (?P<hline>\d+)
+            )?
+            "##,
+        )
+        .expect("valid terminal file link regex")
+    })
+}
+
+fn file_target_from_captures(
+    captures: &regex::Captures<'_>,
+    cwd: Option<&Path>,
+) -> Option<LinkTarget> {
+    let path = resolve_file_candidate(captures.name("path")?.as_str(), cwd)?;
+    let number = |name: &str| {
+        captures
+            .name(name)
+            .and_then(|matched| matched.as_str().parse::<u32>().ok())
+    };
+    Some(LinkTarget::File {
+        path,
+        line: number("line")
+            .or_else(|| number("pline"))
+            .or_else(|| number("hline")),
+        column: number("column").or_else(|| number("pcolumn")),
+    })
+}
+
+fn resolve_file_candidate(candidate: &str, cwd: Option<&Path>) -> Option<PathBuf> {
+    let path = if let Some(rest) = candidate.strip_prefix("~/") {
+        PathBuf::from(std::env::var_os("HOME")?).join(rest)
+    } else if candidate.starts_with('/') {
+        PathBuf::from(candidate)
+    } else {
+        cwd?.join(candidate)
+    };
+    let path = normalize_path(&path);
+    std::fs::metadata(&path).ok()?.is_file().then_some(path)
+}
+
+fn normalize_path(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            other => normalized.push(other),
+        }
+    }
+    normalized
+}
+
+fn file_target_from_uri(uri: &str) -> Option<LinkTarget> {
+    let rest = uri.strip_prefix("file://")?;
+    let (rest, fragment) = rest
+        .split_once('#')
+        .map_or((rest, None), |(rest, fragment)| (rest, Some(fragment)));
+    let path = percent_decode(&rest[rest.find('/')?..]);
+    let (path, line, column) = split_line_suffix(&path);
+    let line = line.or_else(|| {
+        fragment?
+            .strip_prefix('L')?
+            .split(|c: char| !c.is_ascii_digit())
+            .next()?
+            .parse()
+            .ok()
+    });
+    Some(LinkTarget::File {
+        path: PathBuf::from(path),
+        line,
+        column,
+    })
+}
+
+fn split_line_suffix(path: &str) -> (&str, Option<u32>, Option<u32>) {
+    let mut path = path;
+    let mut numbers = Vec::new();
+    while numbers.len() < 2 {
+        let Some((head, tail)) = path.rsplit_once(':') else {
+            break;
+        };
+        let Ok(number) = tail.parse::<u32>() else {
+            break;
+        };
+        numbers.push(number);
+        path = head;
+    }
+    match numbers.as_slice() {
+        [line] => (path, Some(*line), None),
+        [column, line] => (path, Some(*line), Some(*column)),
+        _ => (path, None, None),
+    }
+}
+
+fn percent_decode(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        let escaped = (bytes[index] == b'%' && index + 2 < bytes.len())
+            .then(|| std::str::from_utf8(&bytes[index + 1..index + 3]).ok())
+            .flatten()
+            .and_then(|hex| u8::from_str_radix(hex, 16).ok());
+        match escaped {
+            Some(byte) => {
+                decoded.push(byte);
+                index += 3;
+            }
+            None => {
+                decoded.push(bytes[index]);
+                index += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&decoded).into_owned()
 }
 
 fn url_regex() -> &'static Regex {
@@ -930,7 +1110,7 @@ mod tests {
         ExitEvent, OutputEvent, SessionEvents, SessionSpawnedEvent, SessionUpdatedEvent,
     };
 
-    use super::{TerminalBridge, TerminalSession, UserInputMode};
+    use super::{LinkTarget, TerminalBridge, TerminalSession, UserInputMode};
     use crate::replay::visible_lines;
     use runner_backend::AppCore;
 
@@ -997,14 +1177,20 @@ mod tests {
         let plain = terminal
             .link_at(Point::new(Line(0), Column(10)))
             .expect("plain URL");
-        assert_eq!(plain.uri, "https://example.com/path");
+        assert_eq!(
+            plain.target,
+            LinkTarget::Url("https://example.com/path".into())
+        );
         assert!(plain.contains(Point::new(Line(0), Column(6))));
         assert!(plain.contains(Point::new(Line(0), Column(29))));
 
         let osc = terminal
             .link_at(Point::new(Line(1), Column(3)))
             .expect("OSC 8 link");
-        assert_eq!(osc.uri, "https://example.com/osc");
+        assert_eq!(
+            osc.target,
+            LinkTarget::Url("https://example.com/osc".into())
+        );
         assert_eq!(osc.start, Point::new(Line(1), Column(0)));
         assert_eq!(osc.end, Point::new(Line(1), Column(11)));
     }
@@ -1022,7 +1208,10 @@ mod tests {
         let wrapped = terminal
             .link_at(Point::new(Line(1), Column(3)))
             .expect("wrapped URL");
-        assert_eq!(wrapped.uri, "https://example.com/path");
+        assert_eq!(
+            wrapped.target,
+            LinkTarget::Url("https://example.com/path".into())
+        );
         assert_eq!(wrapped.start, Point::new(Line(0), Column(2)));
         assert_eq!(wrapped.end, Point::new(Line(1), Column(11)));
 
@@ -1036,10 +1225,183 @@ mod tests {
             terminal
                 .link_at(Point::new(Line(0), Column(3)))
                 .expect("complete URL prefix")
-                .uri,
-            "https://exam"
+                .target,
+            LinkTarget::Url("https://exam".into())
         );
         assert!(terminal.link_at(Point::new(Line(1), Column(3))).is_none());
+    }
+
+    fn insert_session_row(
+        core: &AppCore,
+        id: &str,
+        cwd: Option<&std::path::Path>,
+        project_id: Option<String>,
+    ) {
+        let conn = core.db.get().unwrap();
+        let mut row = runner_backend::repo::session::SessionRowDb::new_running(id.into());
+        row.cwd = cwd.map(|cwd| cwd.to_string_lossy().into_owned());
+        row.project_id = project_id;
+        runner_backend::repo::session::insert(&conn, &row).unwrap();
+    }
+
+    fn file_target(path: std::path::PathBuf, line: Option<u32>, column: Option<u32>) -> LinkTarget {
+        LinkTarget::File { path, line, column }
+    }
+
+    #[test]
+    fn terminal_file_links_resolve_existing_paths_against_the_session_cwd() {
+        let temp = tempfile::tempdir().unwrap();
+        let core = test_core(temp.path());
+        let cwd = temp.path().join("project");
+        std::fs::create_dir_all(cwd.join("src")).unwrap();
+        for file in ["src/lib.rs", "README.md", "Makefile"] {
+            std::fs::write(cwd.join(file), "").unwrap();
+        }
+        insert_session_row(&core, "file-links", Some(&cwd), None);
+        let terminal =
+            TerminalSession::attach(core, "file-links".into(), 120, 6, Arc::new(|| {})).unwrap();
+        terminal
+            .feed_output(&output(
+                1,
+                "see src/lib.rs:12:5, then ./README.md and Makefile\r\nsrc/lib.rs(3,4) src/lib.rs#L9 src/nope.rs:1 a/b and/or 1.2.3 (src/lib.rs:2).",
+            ))
+            .unwrap();
+        let link = |column: usize| terminal.link_at(Point::new(Line(0), Column(column)));
+        let link_1 = |column: usize| terminal.link_at(Point::new(Line(1), Column(column)));
+
+        let with_line = link(6).expect("path with line and column");
+        assert_eq!(
+            with_line.target,
+            file_target(cwd.join("src/lib.rs"), Some(12), Some(5))
+        );
+        assert_eq!(with_line.start, Point::new(Line(0), Column(4)));
+        assert_eq!(with_line.end, Point::new(Line(0), Column(18)));
+        assert!(
+            link(19).is_none(),
+            "the trailing comma is not part of the link"
+        );
+
+        let dot_relative = link(30).expect("./ relative path");
+        assert_eq!(
+            dot_relative.target,
+            file_target(cwd.join("README.md"), None, None)
+        );
+        assert_eq!(dot_relative.start, Point::new(Line(0), Column(26)));
+        assert_eq!(dot_relative.end, Point::new(Line(0), Column(36)));
+
+        let bare_name = link(45).expect("extension-less file that exists");
+        assert_eq!(
+            bare_name.target,
+            file_target(cwd.join("Makefile"), None, None)
+        );
+        assert!(link(39).is_none(), "`and` is not a file");
+
+        let parens = link_1(2).expect("(line,col) suffix");
+        assert_eq!(
+            parens.target,
+            file_target(cwd.join("src/lib.rs"), Some(3), Some(4))
+        );
+        assert_eq!(parens.end, Point::new(Line(1), Column(14)));
+
+        let hash_line = link_1(20).expect("#L suffix");
+        assert_eq!(
+            hash_line.target,
+            file_target(cwd.join("src/lib.rs"), Some(9), None)
+        );
+        assert_eq!(hash_line.end, Point::new(Line(1), Column(28)));
+
+        assert!(
+            link_1(32).is_none(),
+            "a path that does not exist never links"
+        );
+        assert!(link_1(45).is_none(), "a/b never links");
+        assert!(link_1(50).is_none(), "and/or never links");
+        assert!(link_1(57).is_none(), "version strings never link");
+
+        let wrapped_in_parens = link_1(65).expect("path inside parentheses");
+        assert_eq!(
+            wrapped_in_parens.target,
+            file_target(cwd.join("src/lib.rs"), Some(2), None)
+        );
+        assert_eq!(wrapped_in_parens.start, Point::new(Line(1), Column(62)));
+        assert_eq!(wrapped_in_parens.end, Point::new(Line(1), Column(73)));
+    }
+
+    #[test]
+    fn terminal_file_links_fall_back_to_the_project_cwd() {
+        let temp = tempfile::tempdir().unwrap();
+        let core = test_core(temp.path());
+        let project_dir = temp.path().join("proj");
+        std::fs::create_dir_all(&project_dir).unwrap();
+        std::fs::write(project_dir.join("notes.md"), "").unwrap();
+        let project = {
+            let conn = core.db.get().unwrap();
+            runner_backend::repo::project::create(&conn, "Proj", project_dir.to_str().unwrap())
+                .unwrap()
+        };
+        insert_session_row(&core, "project-links", None, Some(project.id));
+        let terminal =
+            TerminalSession::attach(core, "project-links".into(), 80, 4, Arc::new(|| {})).unwrap();
+        terminal.feed_output(&output(1, "edited notes.md")).unwrap();
+
+        let link = terminal
+            .link_at(Point::new(Line(0), Column(9)))
+            .expect("project-relative path");
+        assert_eq!(
+            link.target,
+            file_target(project_dir.join("notes.md"), None, None)
+        );
+    }
+
+    #[test]
+    fn terminal_file_links_without_a_cwd_only_resolve_absolute_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        let core = test_core(temp.path());
+        let file = temp.path().join("abs.rs");
+        std::fs::write(&file, "").unwrap();
+        let terminal =
+            TerminalSession::attach(core, "no-row".into(), 200, 4, Arc::new(|| {})).unwrap();
+        let absolute = file.display().to_string();
+        terminal
+            .feed_output(&output(1, &format!("{absolute} abs.rs")))
+            .unwrap();
+
+        let link = terminal
+            .link_at(Point::new(Line(0), Column(1)))
+            .expect("absolute path");
+        assert_eq!(link.target, file_target(file.clone(), None, None));
+        assert!(terminal
+            .link_at(Point::new(Line(0), Column(absolute.len() + 2)))
+            .is_none());
+    }
+
+    #[test]
+    fn terminal_osc_8_file_uris_map_to_file_targets() {
+        let temp = tempfile::tempdir().unwrap();
+        let core = test_core(temp.path());
+        let terminal =
+            TerminalSession::attach(core, "osc-files".into(), 80, 4, Arc::new(|| {})).unwrap();
+        terminal
+            .feed_output(&output(
+                1,
+                "\x1b]8;;file:///tmp/x.rs:7\x1b\\x.rs\x1b]8;;\x1b\\ \x1b]8;;file://localhost/tmp/y%20z.rs#L12\x1b\\y\x1b]8;;\x1b\\",
+            ))
+            .unwrap();
+
+        let with_suffix = terminal
+            .link_at(Point::new(Line(0), Column(1)))
+            .expect("file URI with :line");
+        assert_eq!(
+            with_suffix.target,
+            file_target("/tmp/x.rs".into(), Some(7), None)
+        );
+        let with_fragment = terminal
+            .link_at(Point::new(Line(0), Column(5)))
+            .expect("file URI with #L fragment");
+        assert_eq!(
+            with_fragment.target,
+            file_target("/tmp/y z.rs".into(), Some(12), None)
+        );
     }
 
     #[test]
