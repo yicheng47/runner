@@ -69,7 +69,7 @@ Runner is a local macOS desktop app. A user configures a **crew** of CLI coding 
 |---|---|---|
 | UI framework | **GPUI** (`gpui-ce` 0.3.3, Metal) | Zed's retained-mode Rust UI: entities + elements, one process with the core, native text shaping and IME. Replaced Tauri + React in the 2026-08 rewrite. |
 | Terminal model | **`alacritty_terminal` 0.26** | Grid, VTE parser, scrollback with reflow, selection, mouse/alt-screen modes. The same model Zed embeds. |
-| Terminal renderer | custom GPUI element (`runner-app/src/terminal/element.rs`) | Walks the `Term` grid per frame, shapes runs through GPUI's text system; bundled MesloLGS Nerd Font is the default face, Menlo the alternative. |
+| Terminal renderer | custom GPUI element (`runner-app/src/terminal/element.rs`) | Walks the `Term` grid per frame, shapes runs through GPUI's text system; bundled JetBrainsMono Nerd Font Mono is the default face, Menlo the alternative. |
 | Application core | **Rust** crate `runner-backend`, UI-agnostic | SQLite, session manager, event bus, router, MCP server. The same crate could host another front end; the app crate is a consumer. |
 | PTY runtime | **`portable-pty`** (in-process) | One blocking OS thread per session reads the master; writes are serialized per session. |
 | Persistence | **SQLite via `rusqlite`** + `r2d2` pool, WAL | Config + session lifecycle only. Migrations in `crates/runner-backend/migrations/` (0001–0020). |

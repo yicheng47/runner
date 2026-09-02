@@ -264,7 +264,7 @@ impl SettingsState {
             &root,
             "settings-terminal-font",
             terminal_font_value(settings.terminal_font_family),
-            ["Meslo Nerd Font", "Menlo"]
+            ["JetBrains Mono", "Menlo"]
                 .into_iter()
                 .map(|value| SelectOption::new(value, value))
                 .collect(),
@@ -1836,7 +1836,7 @@ fn parse_terminal_theme(value: &str) -> Option<TerminalTheme> {
 
 fn terminal_font_value(value: TerminalFontFamily) -> &'static str {
     match value {
-        TerminalFontFamily::MesloNerdFont => "Meslo Nerd Font",
+        TerminalFontFamily::JetBrainsMono => "JetBrains Mono",
         TerminalFontFamily::Menlo => "Menlo",
     }
 }
@@ -1844,7 +1844,7 @@ fn terminal_font_value(value: TerminalFontFamily) -> &'static str {
 fn parse_terminal_font(value: &str) -> Option<TerminalFontFamily> {
     match value {
         "Menlo" => Some(TerminalFontFamily::Menlo),
-        "Meslo Nerd Font" => Some(TerminalFontFamily::MesloNerdFont),
+        "JetBrains Mono" => Some(TerminalFontFamily::JetBrainsMono),
         _ => None,
     }
 }

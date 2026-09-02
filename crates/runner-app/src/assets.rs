@@ -12,12 +12,12 @@ pub const INTER_FONTS: [&[u8]; 8] = [
     include_bytes!("../../../assets/fonts/Inter-Bold.ttf"),
     include_bytes!("../../../assets/fonts/Inter-BoldItalic.ttf"),
 ];
-pub const MESLO_FONT_REGULAR: &[u8] =
-    include_bytes!("../../../assets/fonts/MesloLGS-NF-Regular.ttf");
-pub const MESLO_FONT_BOLD: &[u8] = include_bytes!("../../../assets/fonts/MesloLGS-NF-Bold.ttf");
-pub const MESLO_FONT_ITALIC: &[u8] = include_bytes!("../../../assets/fonts/MesloLGS-NF-Italic.ttf");
-pub const MESLO_FONT_BOLD_ITALIC: &[u8] =
-    include_bytes!("../../../assets/fonts/MesloLGS-NF-Bold-Italic.ttf");
+pub const JETBRAINS_MONO_FONTS: [&[u8]; 4] = [
+    include_bytes!("../../../assets/fonts/JetBrainsMonoNerdFontMono-Regular.ttf"),
+    include_bytes!("../../../assets/fonts/JetBrainsMonoNerdFontMono-Italic.ttf"),
+    include_bytes!("../../../assets/fonts/JetBrainsMonoNerdFontMono-Bold.ttf"),
+    include_bytes!("../../../assets/fonts/JetBrainsMonoNerdFontMono-BoldItalic.ttf"),
+];
 const APP_ICON: &[u8] = include_bytes!("../../../assets/icon.png");
 
 const BRAND_MARK: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32"><svg x="3" y="3" width="9" height="9" viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" opacity=".4"/></svg><svg x="9" y="9" width="14" height="14" viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg><svg x="3" y="20" width="9" height="9" viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" opacity=".4"/></svg></svg>"#;
@@ -167,7 +167,37 @@ mod static_font_tests {
         properties::{Properties, Style, Weight},
     };
 
-    use super::INTER_FONTS;
+    use super::{INTER_FONTS, JETBRAINS_MONO_FONTS};
+    use crate::app_settings::TerminalFontFamily;
+
+    #[test]
+    fn jetbrains_mono_static_faces_resolve_under_the_settings_family_name() {
+        let faces = JETBRAINS_MONO_FONTS
+            .iter()
+            .map(|bytes| {
+                Font::from_bytes(Arc::new(bytes.to_vec()), 0).expect("valid JetBrains Mono face")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            faces.iter().map(Font::family_name).collect::<Vec<_>>(),
+            vec![TerminalFontFamily::JetBrainsMono.family(); 4]
+        );
+        assert_eq!(
+            faces
+                .iter()
+                .map(|face| {
+                    let properties = face.properties();
+                    (properties.weight, properties.style)
+                })
+                .collect::<Vec<_>>(),
+            vec![
+                (Weight::NORMAL, Style::Normal),
+                (Weight::NORMAL, Style::Italic),
+                (Weight::BOLD, Style::Normal),
+                (Weight::BOLD, Style::Italic),
+            ]
+        );
+    }
 
     #[test]
     fn inter_static_faces_resolve_regular_and_semibold_separately() {

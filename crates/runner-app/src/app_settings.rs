@@ -64,26 +64,29 @@ pub fn app_font() -> Font {
     font
 }
 
+/// The bundled terminal face is the Nerd Font *Mono* build of JetBrains Mono
+/// (`assets/fonts/JetBrainsMonoNerdFontMono-*.ttf`): it keeps every icon one
+/// cell wide, which the grid renderer assumes. Settings saved under the retired
+/// "Meslo Nerd Font" default load as this face.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TerminalFontFamily {
     #[serde(
         alias = "System default",
         alias = "Monaco",
         alias = "SF Mono",
-        alias = "JetBrains Mono",
         alias = "Fira Code"
     )]
     Menlo,
     #[default]
-    #[serde(rename = "Meslo Nerd Font")]
-    MesloNerdFont,
+    #[serde(rename = "JetBrains Mono", alias = "Meslo Nerd Font")]
+    JetBrainsMono,
 }
 
 impl TerminalFontFamily {
     pub fn family(self) -> &'static str {
         match self {
             Self::Menlo => "Menlo",
-            Self::MesloNerdFont => "MesloLGS NF",
+            Self::JetBrainsMono => "JetBrainsMono Nerd Font Mono",
         }
     }
 
@@ -206,7 +209,7 @@ impl Default for AppSettings {
             dark_app_theme: DarkTheme::Runner,
             app_zoom: 1.,
             terminal_theme: TerminalTheme::Runner,
-            terminal_font_family: TerminalFontFamily::MesloNerdFont,
+            terminal_font_family: TerminalFontFamily::JetBrainsMono,
             terminal_font_size: TERMINAL_FONT_SIZE_DEFAULT,
             terminal_cursor_style: TerminalCursorStyle::Block,
             sidebar_width: SIDEBAR_DEFAULT,
@@ -495,7 +498,7 @@ mod tests {
         assert_eq!(value["lightAppTheme"], "codex");
         assert_eq!(value["darkAppTheme"], "carbon");
         assert_eq!(value["terminalTheme"], "runner");
-        assert_eq!(value["terminalFontFamily"], "Meslo Nerd Font");
+        assert_eq!(value["terminalFontFamily"], "JetBrains Mono");
         assert_eq!(value["defaultCrewId"], "");
         assert_eq!(value["defaultWorkingDir"], "");
         assert_eq!(value["resumeOnLaunch"], false);
@@ -586,28 +589,26 @@ mod tests {
     }
 
     #[test]
-    fn terminal_fonts_default_to_meslo_and_normalize_legacy_choices_to_menlo() {
+    fn terminal_fonts_default_to_jetbrains_mono_and_normalize_legacy_choices() {
         assert_eq!(
             AppSettings::default().terminal_font_family,
-            TerminalFontFamily::MesloNerdFont
+            TerminalFontFamily::JetBrainsMono
         );
-        for legacy in [
-            "System default",
-            "Menlo",
-            "Monaco",
-            "SF Mono",
-            "JetBrains Mono",
-            "Fira Code",
-        ] {
+        for legacy in ["System default", "Menlo", "Monaco", "SF Mono", "Fira Code"] {
             let parsed: TerminalFontFamily =
                 serde_json::from_str(&format!("\"{legacy}\"")).unwrap();
-            assert_eq!(parsed, TerminalFontFamily::Menlo);
+            assert_eq!(parsed, TerminalFontFamily::Menlo, "{legacy}");
+        }
+        for bundled in ["JetBrains Mono", "Meslo Nerd Font"] {
+            let parsed: TerminalFontFamily =
+                serde_json::from_str(&format!("\"{bundled}\"")).unwrap();
+            assert_eq!(parsed, TerminalFontFamily::JetBrainsMono, "{bundled}");
         }
     }
 
     #[test]
     fn terminal_fonts_use_an_explicit_cjk_fallback_chain() {
-        for family in [TerminalFontFamily::MesloNerdFont, TerminalFontFamily::Menlo] {
+        for family in [TerminalFontFamily::JetBrainsMono, TerminalFontFamily::Menlo] {
             let font = family.font();
             assert_eq!(font.family.as_ref(), family.family());
             assert_eq!(

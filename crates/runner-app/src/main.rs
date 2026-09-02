@@ -47,10 +47,7 @@ use runner_terminal::terminal::{TerminalSession, TerminalView};
 
 use app_settings::{settings_path, AppSettings};
 use app_store::{global_app_store, AppStore, GlobalAppStore, StoreRefreshKind, StoreRevisions};
-use assets::{
-    Assets, INTER_FONTS, MESLO_FONT_BOLD, MESLO_FONT_BOLD_ITALIC, MESLO_FONT_ITALIC,
-    MESLO_FONT_REGULAR,
-};
+use assets::{Assets, INTER_FONTS, JETBRAINS_MONO_FONTS};
 use runner_app::updater::{global_updater, GlobalUpdater, Updater};
 use terminal::{TerminalElement, TerminalInteraction};
 use toast::ToastHost;
@@ -1043,13 +1040,8 @@ fn run() -> Result<()> {
             .add_fonts(
                 INTER_FONTS
                     .into_iter()
+                    .chain(JETBRAINS_MONO_FONTS)
                     .map(Cow::Borrowed)
-                    .chain([
-                        Cow::Borrowed(MESLO_FONT_REGULAR),
-                        Cow::Borrowed(MESLO_FONT_BOLD),
-                        Cow::Borrowed(MESLO_FONT_ITALIC),
-                        Cow::Borrowed(MESLO_FONT_BOLD_ITALIC),
-                    ])
                     .collect(),
             )
             .expect("bundled fonts must be valid");

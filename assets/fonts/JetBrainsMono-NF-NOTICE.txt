@@ -1,0 +1,13 @@
+JetBrainsMono Nerd Font Mono
+
+Source: https://github.com/ryanoasis/nerd-fonts (release v3.5.1)
+Upstream: https://github.com/JetBrains/JetBrainsMono (JetBrains Mono 2.304)
+
+Bundled faces:
+- JetBrainsMonoNerdFontMono-Regular.ttf
+- JetBrainsMonoNerdFontMono-Bold.ttf
+- JetBrainsMonoNerdFontMono-Italic.ttf
+- JetBrainsMonoNerdFontMono-BoldItalic.ttf
+
+JetBrains Mono is licensed under the SIL Open Font License, Version 1.1. See JetBrainsMono-NF-LICENSE.txt.
+The patched-in icon sets keep their own licenses (MIT, Apache 2.0, CC BY 4.0, OFL 1.1); the Nerd Fonts release README lists them per set.
