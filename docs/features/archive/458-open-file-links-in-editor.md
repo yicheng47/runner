@@ -1,6 +1,6 @@
 # Open file links from the terminal in your editor
 
-Tracking issue: [#458](https://github.com/yicheng47/runner/issues/458). Status: planned. Priority P2.
+Tracking issue: [#458](https://github.com/yicheng47/runner/issues/458). Status: shipped 2026-09-02 in [#467](https://github.com/yicheng47/runner/pull/467). Priority P2.
 
 ## Motivation
 
