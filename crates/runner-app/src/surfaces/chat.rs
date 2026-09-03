@@ -1065,7 +1065,8 @@ impl NativeRoot {
             0.
         };
         let width = (f32::from(bounds.width) - sidebar_width - chat_panel_width).max(200.);
-        let height = (layout.drawer_height() - 32.).max(80.) * self.settings(cx).app_zoom;
+        let height =
+            (layout.drawer_height() - (32. + 5. + 24.)).max(80.) * self.settings(cx).app_zoom;
         let font_size = self.settings(cx).terminal_font_size as f32 * self.settings(cx).app_zoom;
         let cell_width = font_size * 0.6;
         let line_height = (font_size * crate::terminal::element::LINE_HEIGHT_FACTOR).round();

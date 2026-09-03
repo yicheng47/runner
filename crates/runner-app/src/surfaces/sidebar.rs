@@ -86,6 +86,26 @@ fn archive_session_plan(
     plan
 }
 
+fn archive_targets_for_chats(mut session_ids: Vec<String>, layouts: &[PaneLayout]) -> Vec<String> {
+    let requested = session_ids.iter().cloned().collect::<HashSet<_>>();
+    for layout in layouts {
+        let pane_sessions = layout.session_ids();
+        if pane_sessions.is_empty()
+            || !pane_sessions
+                .iter()
+                .all(|session_id| requested.contains(session_id))
+        {
+            continue;
+        }
+        for shell_id in layout.drawer_shells() {
+            if !session_ids.contains(shell_id) {
+                session_ids.push(shell_id.clone());
+            }
+        }
+    }
+    session_ids
+}
+
 pub(crate) fn archive_all_confirmation_body(
     session_ids: &[String],
     sessions: &[DirectSessionEntry],
@@ -624,7 +644,13 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.archive_all_sessions(session_ids, ArchiveAllSource::Chat, window, cx);
+        let chat_count = session_ids.len();
+        let session_ids = archive_targets_for_chats(session_ids, self.tabs.tabs());
+        if session_ids.len() > chat_count {
+            self.request_archive_all(None, session_ids, ArchiveAllSource::Chat, window, cx);
+        } else {
+            self.archive_all_sessions(session_ids, ArchiveAllSource::Chat, window, cx);
+        }
     }
 
     pub(crate) fn archive_all_sessions(
@@ -2297,7 +2323,12 @@ impl Sidebar {
                     workspace_new_chat_row(move |window, cx| {
                         if let Some(shell) = shell.upgrade() {
                             shell.update(cx, |shell, shell_cx| {
-                                shell.open_new_tab_modal(&NewTab, window, shell_cx)
+                                let project_id = shell.active_project_id(shell_cx);
+                                shell.open_sidebar_chat_modal(
+                                    project_id.as_deref(),
+                                    window,
+                                    shell_cx,
+                                )
                             });
                         }
                     })
@@ -4432,6 +4463,32 @@ mod tests {
         assert_eq!(
             archive_all_confirmation_body(&["active-chat".into(), "idle-chat".into()], &sessions,),
             None,
+        );
+    }
+
+    #[test]
+    fn archiving_every_chat_in_a_tab_also_closes_its_drawer_shells() {
+        let mut single = PaneLayout::fresh(PresetKind::Single, Some("chat"), &["chat".into()]);
+        single.add_drawer_shell("shell-1".into());
+        single.add_drawer_shell("shell-2".into());
+        assert_eq!(
+            archive_targets_for_chats(vec!["chat".into()], &[single]),
+            ["chat", "shell-1", "shell-2"]
+        );
+
+        let mut split = PaneLayout::fresh(
+            PresetKind::Cols2,
+            Some("chat-1"),
+            &["chat-1".into(), "chat-2".into()],
+        );
+        split.add_drawer_shell("shell".into());
+        assert_eq!(
+            archive_targets_for_chats(vec!["chat-1".into()], &[split.clone()]),
+            ["chat-1"]
+        );
+        assert_eq!(
+            archive_targets_for_chats(vec!["chat-1".into(), "chat-2".into()], &[split],),
+            ["chat-1", "chat-2", "shell"]
         );
     }
 

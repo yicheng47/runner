@@ -157,6 +157,17 @@ fn drawer_height_clamps_and_removing_the_active_shell_prefers_its_left_neighbour
 }
 
 #[test]
+fn generic_session_removal_also_clears_drawer_membership() {
+    let mut layout = PaneLayout::fresh(PresetKind::Single, Some("chat"), &["chat".into()]);
+    layout.add_drawer_shell("shell".into());
+
+    layout.remove_session("shell");
+
+    assert!(layout.drawer_shells().is_empty());
+    assert!(!layout.drawer_open());
+}
+
+#[test]
 fn close_pane_collapses_the_tree_and_keeps_sessions_in_the_surviving_order() {
     let mut focused = PaneLayout::fresh(PresetKind::Cols2, Some("A"), &["A".into(), "B".into()]);
     let focused_pane = focused.focused_pane_id.clone();

@@ -453,6 +453,7 @@ impl PaneLayout {
 
     pub fn remove_session(&mut self, session_id: &str) {
         self.root.remove_session(session_id);
+        self.remove_drawer_shell(session_id);
     }
 
     pub fn apply_preset(&mut self, preset: PresetKind) {

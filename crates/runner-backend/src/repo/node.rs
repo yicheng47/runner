@@ -793,41 +793,40 @@ fn remove_session_except(
             } else {
                 true
             };
-        let drawer_empty = if let Some(drawer) =
-            layout.get_mut("drawer").and_then(|v| v.as_object_mut())
-        {
-            let active = drawer
-                .get("active")
-                .and_then(serde_json::Value::as_u64)
-                .unwrap_or_default() as usize;
-            let (drawer_empty, next_active) = {
-                let Some(shells) = drawer.get_mut("shells").and_then(|v| v.as_array_mut()) else {
-                    continue;
-                };
-                let removed = shells
-                    .iter()
-                    .position(|shell| shell.as_str() == Some(session_id));
-                if let Some(index) = removed {
-                    shells.remove(index);
-                    changed = true;
+        let drawer_empty =
+            if let Some(drawer) = layout.get_mut("drawer").and_then(|v| v.as_object_mut()) {
+                let active = drawer
+                    .get("active")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or_default() as usize;
+                let (drawer_empty, next_active) =
+                    if let Some(shells) = drawer.get_mut("shells").and_then(|v| v.as_array_mut()) {
+                        let removed = shells
+                            .iter()
+                            .position(|shell| shell.as_str() == Some(session_id));
+                        if let Some(index) = removed {
+                            shells.remove(index);
+                            changed = true;
+                        }
+                        let next_active = if shells.is_empty() {
+                            0
+                        } else if removed.is_some_and(|index| index <= active) {
+                            active.saturating_sub(1)
+                        } else {
+                            active.min(shells.len() - 1)
+                        };
+                        (shells.is_empty(), next_active)
+                    } else {
+                        (true, 0)
+                    };
+                if drawer_empty {
+                    drawer.insert("open".into(), serde_json::Value::Bool(false));
                 }
-                let next_active = if shells.is_empty() {
-                    0
-                } else if removed.is_some_and(|index| index <= active) {
-                    active.saturating_sub(1)
-                } else {
-                    active.min(shells.len() - 1)
-                };
-                (shells.is_empty(), next_active)
+                drawer.insert("active".into(), serde_json::json!(next_active));
+                drawer_empty
+            } else {
+                true
             };
-            if drawer_empty {
-                drawer.insert("open".into(), serde_json::Value::Bool(false));
-            }
-            drawer.insert("active".into(), serde_json::json!(next_active));
-            drawer_empty
-        } else {
-            true
-        };
         if !changed {
             continue;
         }
@@ -1255,6 +1254,25 @@ mod tests {
         assert_eq!(layout["drawer"]["shells"], serde_json::json!([]));
         assert_eq!(layout["drawer"]["open"], false);
         assert_eq!(super::session_ids(&stored), ["chat"]);
+    }
+
+    #[test]
+    fn remove_session_keeps_slot_changes_when_a_drawer_has_no_shell_list() {
+        let pool = db::open_in_memory().unwrap();
+        let conn = pool.get().unwrap();
+        insert_session(&conn, "chat", None);
+        let tab = super::create_tab(
+            &conn,
+            None,
+            "chat",
+            0,
+            r#"{"preset":"single","slots":["chat"],"sizes":{},"drawer":{"open":false,"height":280,"active":0}}"#,
+        )
+        .unwrap();
+
+        super::remove_session(&conn, "chat").unwrap();
+
+        assert!(super::get(&conn, &tab.id).unwrap().is_none());
     }
 
     #[test]

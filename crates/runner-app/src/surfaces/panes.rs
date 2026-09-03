@@ -270,7 +270,8 @@ impl NativeRoot {
             .into_iter()
             .chain(control)
             .chain(fork_action);
-        let split_tooltip = split_panes_tooltip(&self.settings(cx).keymap_overrides);
+        let keymap_overrides = self.settings(cx).keymap_overrides.clone();
+        let split_tooltip = split_panes_tooltip(&keymap_overrides);
         let layout_action = IconButton::new("layout-picker-toggle", "square-split-horizontal.svg")
             .focus_handle(self.layout_picker_focus.clone())
             .variant(if self.layout_picker_open {
@@ -288,6 +289,7 @@ impl NativeRoot {
             .into_any_element();
         let drawer_action = (!terminal_only).then(|| {
             let open = layout.drawer_open();
+            let tooltip = terminal_drawer_tooltip(open, &keymap_overrides);
             IconButton::new(
                 "terminal-drawer-toggle",
                 if open {
@@ -301,11 +303,7 @@ impl NativeRoot {
             } else {
                 ButtonVariant::Ghost
             })
-            .tooltip(if open {
-                "Hide terminal drawer · ⌥F12"
-            } else {
-                "Show terminal drawer · ⌥F12"
-            })
+            .tooltip(tooltip)
             .on_press(move |window, cx| {
                 drawer_root.update(cx, |this, cx| this.toggle_terminal_drawer(window, cx));
             })
@@ -509,11 +507,17 @@ impl NativeRoot {
             )
             .on_mouse_up(
                 MouseButton::Left,
-                cx.listener(|this, _, _, cx| this.finish_split_resize(cx)),
+                cx.listener(|this, _, _, cx| {
+                    this.finish_split_resize(cx);
+                    this.finish_terminal_drawer_resize(cx);
+                }),
             )
             .on_mouse_up_out(
                 MouseButton::Left,
-                cx.listener(|this, _, _, cx| this.finish_split_resize(cx)),
+                cx.listener(|this, _, _, cx| {
+                    this.finish_split_resize(cx);
+                    this.finish_terminal_drawer_resize(cx);
+                }),
             )
             .on_drag_move::<ChatPanelResizeDrag>(cx.listener(
                 |this, event: &DragMoveEvent<ChatPanelResizeDrag>, _, cx| {
@@ -554,18 +558,16 @@ impl NativeRoot {
         let grouped = pane_identity_visible(layout.root.leaves().len());
         let mut actions = Vec::new();
         let mut items = Vec::new();
-        if (grouped || !layout.drawer_shells().is_empty()) && !session_ids.is_empty() {
-            if grouped {
-                items.push(
-                    UiMenuItem::new("Rename group")
-                        .icon("square-pen.svg")
-                        .disabled(lifecycle_busy),
-                );
-                actions.push(ChatMenuAction::RenameTab {
-                    tab_id: layout.id.clone(),
-                    current: layout.name.clone().unwrap_or_default(),
-                });
-            }
+        if grouped && !session_ids.is_empty() {
+            items.push(
+                UiMenuItem::new("Rename group")
+                    .icon("square-pen.svg")
+                    .disabled(lifecycle_busy),
+            );
+            actions.push(ChatMenuAction::RenameTab {
+                tab_id: layout.id.clone(),
+                current: layout.name.clone().unwrap_or_default(),
+            });
             if !chat_session_ids.is_empty() {
                 items.push(
                     UiMenuItem::new("Archive all")
@@ -601,13 +603,22 @@ impl NativeRoot {
                     current,
                 });
                 if entry.agent_runtime != "shell" {
+                    let archive_all = !layout.drawer_shells().is_empty();
                     items.push(
-                        UiMenuItem::new("Archive")
-                            .icon("archive.svg")
-                            .destructive(true)
-                            .disabled(lifecycle_busy),
+                        UiMenuItem::new(if archive_all {
+                            "Archive all"
+                        } else {
+                            "Archive"
+                        })
+                        .icon("archive.svg")
+                        .destructive(true)
+                        .disabled(lifecycle_busy),
                     );
-                    actions.push(ChatMenuAction::Archive(vec![session_id.clone()]));
+                    actions.push(if archive_all {
+                        ChatMenuAction::ArchiveAll(all_session_ids)
+                    } else {
+                        ChatMenuAction::Archive(vec![session_id.clone()])
+                    });
                 }
             }
         }
@@ -1608,6 +1619,7 @@ impl NativeRoot {
             let terminal_scrollbar = chat.terminal_scrollbar.clone();
             let terminal_input = chat.terminal_input.clone();
             let terminal_focus = chat.terminal_focus.clone();
+            let resize_owner = scrollable;
             let key_session_id = session_id.clone();
             let copy_session_id = session_id.clone();
             let scroll_session_id = session_id.clone();
@@ -1657,7 +1669,7 @@ impl NativeRoot {
                             terminal_input,
                             terminal_focus,
                             interactive,
-                            scrollable,
+                            resize_owner,
                             terminal_style,
                         ))
                         .child(terminal_scrollbar),
@@ -2184,7 +2196,7 @@ impl NativeRoot {
         } else {
             let new_chat_pane_id = pane_id.clone();
             let new_chat_root = cx.entity();
-            let new_chat_label = empty_pane_action_label();
+            let new_chat_label = empty_pane_action_label(&self.settings(cx).keymap_overrides);
             div()
                 .flex_1()
                 .flex()
@@ -2272,8 +2284,23 @@ fn pane_identity_visible(pane_count: usize) -> bool {
     pane_count > 1
 }
 
-fn empty_pane_action_label() -> &'static str {
-    "⌘N  New chat"
+fn empty_pane_action_label(overrides: &keymap::KeymapOverrides) -> String {
+    keymap::effective_binding("new-chat", overrides).map_or_else(
+        || "New chat".to_owned(),
+        |combo| format!("{}  New chat", keymap::format_combo(&combo)),
+    )
+}
+
+fn terminal_drawer_tooltip(open: bool, overrides: &keymap::KeymapOverrides) -> String {
+    let label = if open {
+        "Hide terminal drawer"
+    } else {
+        "Show terminal drawer"
+    };
+    keymap::effective_binding("toggle-terminal-drawer", overrides).map_or_else(
+        || label.to_owned(),
+        |combo| format!("{label} · {}", keymap::format_combo(&combo)),
+    )
 }
 
 fn split_panes_tooltip(overrides: &keymap::KeymapOverrides) -> String {
@@ -2568,7 +2595,7 @@ mod tests {
         adjacent_pane_index, empty_pane_action_label, header_fork_state, pane_action_items_for,
         pane_close_behavior, pane_identity_icon, pane_identity_shows_status, pane_identity_visible,
         pane_rename_key, side_panel_open, split_panes_tooltip, starting_overlay_label,
-        HeaderForkState, PaneCloseBehavior, PaneRenameKey,
+        terminal_drawer_tooltip, HeaderForkState, PaneCloseBehavior, PaneRenameKey,
     };
     use crate::keymap;
     use runner_backend::model::SessionStatus;
@@ -2707,7 +2734,49 @@ mod tests {
 
     #[test]
     fn empty_pane_offers_only_the_chat_entry_point() {
-        assert_eq!(empty_pane_action_label(), "⌘N  New chat");
+        let mut overrides = keymap::KeymapOverrides::new();
+        assert_eq!(empty_pane_action_label(&overrides), "⌘N  New chat");
+
+        let mut rebound = keymap::entry("new-chat").unwrap().default.clone();
+        rebound.meta = false;
+        rebound.ctrl = true;
+        overrides.insert("new-chat".into(), Some(rebound));
+        assert_eq!(empty_pane_action_label(&overrides), "⌃N  New chat");
+
+        overrides.insert("new-chat".into(), None);
+        assert_eq!(empty_pane_action_label(&overrides), "New chat");
+    }
+
+    #[test]
+    fn terminal_drawer_tooltip_tracks_rebound_and_unbound_shortcuts() {
+        let mut overrides = keymap::KeymapOverrides::new();
+        assert_eq!(
+            terminal_drawer_tooltip(false, &overrides),
+            "Show terminal drawer · ⌥F12"
+        );
+        assert_eq!(
+            terminal_drawer_tooltip(true, &overrides),
+            "Hide terminal drawer · ⌥F12"
+        );
+
+        let mut rebound = keymap::entry("toggle-terminal-drawer")
+            .unwrap()
+            .default
+            .clone();
+        rebound.alt = false;
+        rebound.ctrl = true;
+        rebound.code = "Backquote".into();
+        overrides.insert("toggle-terminal-drawer".into(), Some(rebound));
+        assert_eq!(
+            terminal_drawer_tooltip(false, &overrides),
+            "Show terminal drawer · ⌃`"
+        );
+
+        overrides.insert("toggle-terminal-drawer".into(), None);
+        assert_eq!(
+            terminal_drawer_tooltip(false, &overrides),
+            "Show terminal drawer"
+        );
     }
 
     #[test]

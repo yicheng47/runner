@@ -1063,38 +1063,77 @@ mod tests {
 
     #[test]
     fn registry_defaults_compile_to_gpui_runtime_keystrokes() {
-        type ExpectedBinding<'a> = (&'a str, &'a str, bool);
+        type ExpectedBinding<'a> = (&'a str, &'a str, bool, bool, bool, bool);
         type ExpectedEntry<'a> = (&'a str, &'a [ExpectedBinding<'a>]);
         let expected: [ExpectedEntry<'_>; 29] = [
-            ("new-window", &[("shift-cmd-n", "n", true)]),
-            ("new-chat", &[("cmd-n", "n", false)]),
-            ("command-palette", &[("cmd-k", "k", false)]),
-            ("toggle-sidebar", &[("cmd-s", "s", false)]),
-            ("toggle-terminal-drawer", &[("alt-f12", "f12", false)]),
-            ("open-settings", &[("cmd-,", ",", false)]),
-            ("page-previous", &[("cmd-{", "{", false)]),
-            ("page-next", &[("cmd-}", "}", false)]),
-            ("zoom-in", &[("cmd-=", "=", false), ("cmd-+", "+", false)]),
-            ("zoom-out", &[("cmd--", "-", false)]),
-            ("zoom-reset", &[("cmd-0", "0", false)]),
-            ("select-tab-1", &[("cmd-1", "1", false)]),
-            ("select-tab-2", &[("cmd-2", "2", false)]),
-            ("select-tab-3", &[("cmd-3", "3", false)]),
-            ("select-tab-4", &[("cmd-4", "4", false)]),
-            ("select-tab-5", &[("cmd-5", "5", false)]),
-            ("select-tab-6", &[("cmd-6", "6", false)]),
-            ("select-tab-7", &[("cmd-7", "7", false)]),
-            ("select-tab-8", &[("cmd-8", "8", false)]),
-            ("select-tab-9", &[("cmd-9", "9", false)]),
-            ("pane-previous", &[("cmd-[", "[", false)]),
-            ("pane-next", &[("cmd-]", "]", false)]),
-            ("split-pane-right", &[("cmd-d", "d", false)]),
-            ("split-pane-down", &[("shift-cmd-d", "d", true)]),
-            ("close-pane", &[("cmd-w", "w", false)]),
-            ("stop-session", &[("cmd-.", ".", false)]),
-            ("copy", &[("cmd-c", "c", false)]),
-            ("mission-tab-previous", &[("cmd-[", "[", false)]),
-            ("mission-tab-next", &[("cmd-]", "]", false)]),
+            (
+                "new-window",
+                &[("shift-cmd-n", "n", true, false, false, true)],
+            ),
+            ("new-chat", &[("cmd-n", "n", true, false, false, false)]),
+            (
+                "command-palette",
+                &[("cmd-k", "k", true, false, false, false)],
+            ),
+            (
+                "toggle-sidebar",
+                &[("cmd-s", "s", true, false, false, false)],
+            ),
+            (
+                "toggle-terminal-drawer",
+                &[("alt-f12", "f12", false, false, true, false)],
+            ),
+            (
+                "open-settings",
+                &[("cmd-,", ",", true, false, false, false)],
+            ),
+            (
+                "page-previous",
+                &[("cmd-{", "{", true, false, false, false)],
+            ),
+            ("page-next", &[("cmd-}", "}", true, false, false, false)]),
+            (
+                "zoom-in",
+                &[
+                    ("cmd-=", "=", true, false, false, false),
+                    ("cmd-+", "+", true, false, false, false),
+                ],
+            ),
+            ("zoom-out", &[("cmd--", "-", true, false, false, false)]),
+            ("zoom-reset", &[("cmd-0", "0", true, false, false, false)]),
+            ("select-tab-1", &[("cmd-1", "1", true, false, false, false)]),
+            ("select-tab-2", &[("cmd-2", "2", true, false, false, false)]),
+            ("select-tab-3", &[("cmd-3", "3", true, false, false, false)]),
+            ("select-tab-4", &[("cmd-4", "4", true, false, false, false)]),
+            ("select-tab-5", &[("cmd-5", "5", true, false, false, false)]),
+            ("select-tab-6", &[("cmd-6", "6", true, false, false, false)]),
+            ("select-tab-7", &[("cmd-7", "7", true, false, false, false)]),
+            ("select-tab-8", &[("cmd-8", "8", true, false, false, false)]),
+            ("select-tab-9", &[("cmd-9", "9", true, false, false, false)]),
+            (
+                "pane-previous",
+                &[("cmd-[", "[", true, false, false, false)],
+            ),
+            ("pane-next", &[("cmd-]", "]", true, false, false, false)]),
+            (
+                "split-pane-right",
+                &[("cmd-d", "d", true, false, false, false)],
+            ),
+            (
+                "split-pane-down",
+                &[("shift-cmd-d", "d", true, false, false, true)],
+            ),
+            ("close-pane", &[("cmd-w", "w", true, false, false, false)]),
+            ("stop-session", &[("cmd-.", ".", true, false, false, false)]),
+            ("copy", &[("cmd-c", "c", true, false, false, false)]),
+            (
+                "mission-tab-previous",
+                &[("cmd-[", "[", true, false, false, false)],
+            ),
+            (
+                "mission-tab-next",
+                &[("cmd-]", "]", true, false, false, false)],
+            ),
         ];
 
         for (id, bindings) in expected {
@@ -1102,27 +1141,21 @@ mod tests {
                 binding_strings(&entry(id).unwrap().default),
                 bindings
                     .iter()
-                    .map(|(binding, _, _)| (*binding).to_owned())
+                    .map(|(binding, ..)| (*binding).to_owned())
                     .collect::<Vec<_>>(),
                 "{id}"
             );
-            for (binding, key, shift) in bindings {
-                let modifiers = if id == "toggle-terminal-drawer" {
-                    gpui::Modifiers {
-                        alt: true,
-                        ..Default::default()
-                    }
-                } else {
-                    gpui::Modifiers {
-                        platform: true,
-                        shift: *shift,
-                        ..Default::default()
-                    }
-                };
+            for (binding, key, platform, ctrl, alt, shift) in bindings {
                 assert_eq!(
                     Keystroke::parse(binding).unwrap(),
                     Keystroke {
-                        modifiers,
+                        modifiers: gpui::Modifiers {
+                            platform: *platform,
+                            control: *ctrl,
+                            alt: *alt,
+                            shift: *shift,
+                            ..Default::default()
+                        },
                         key: (*key).to_owned(),
                         key_char: None,
                     },
