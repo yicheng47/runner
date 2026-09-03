@@ -8,7 +8,8 @@ use crate::{
     Minimize, MissionTabNext, MissionTabPrevious, NavigateNextPage, NavigatePreviousPage, NewTab,
     NewWindow, OpenSettings, Paste, Quit, SelectTab1, SelectTab2, SelectTab3, SelectTab4,
     SelectTab5, SelectTab6, SelectTab7, SelectTab8, SelectTab9, SplitPaneDown, SplitPaneRight,
-    StopFocusedSession, ToggleFullscreen, ToggleSidebar, ZoomIn, ZoomOut, ZoomReset,
+    StopFocusedSession, ToggleFullscreen, ToggleSidebar, ToggleTerminalDrawer, ZoomIn, ZoomOut,
+    ZoomReset,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -97,7 +98,7 @@ pub(crate) fn entries() -> &'static [KeymapEntry] {
             KeymapEntry {
                 id: "new-chat",
                 title: "New chat",
-                description: "Start a chat in a new tab.",
+                description: "Fill the focused empty pane or start a chat in a new tab.",
                 scope: KeymapScope::Global,
                 default: key_combo("KeyN", true, false, false, false, None, false),
                 fixed: false,
@@ -116,6 +117,14 @@ pub(crate) fn entries() -> &'static [KeymapEntry] {
                 description: "Collapse or expand the app sidebar.",
                 scope: KeymapScope::Global,
                 default: key_combo("KeyS", true, false, false, false, None, false),
+                fixed: false,
+            },
+            KeymapEntry {
+                id: "toggle-terminal-drawer",
+                title: "Toggle terminal drawer",
+                description: "Show or hide the active chat tab's terminal drawer.",
+                scope: KeymapScope::Global,
+                default: key_combo("F12", false, false, true, false, None, false),
                 fixed: false,
             },
             KeymapEntry {
@@ -829,6 +838,9 @@ pub(crate) fn install_bindings(
                 "new-chat" => KeyBinding::new(&binding, NewTab, context),
                 "command-palette" => KeyBinding::new(&binding, CommandPalette, context),
                 "toggle-sidebar" => KeyBinding::new(&binding, ToggleSidebar, context),
+                "toggle-terminal-drawer" => {
+                    KeyBinding::new(&binding, ToggleTerminalDrawer, context)
+                }
                 "open-settings" => KeyBinding::new(&binding, OpenSettings, context),
                 "page-previous" => KeyBinding::new(&binding, NavigatePreviousPage, context),
                 "page-next" => KeyBinding::new(&binding, NavigateNextPage, context),
@@ -868,7 +880,7 @@ mod tests {
 
     #[test]
     fn registry_matches_the_shipped_defaults_and_fixed_entry() {
-        assert_eq!(entries().len(), 28);
+        assert_eq!(entries().len(), 29);
         assert_eq!(entries().iter().filter(|entry| entry.fixed).count(), 3);
         assert!(entry("new-window").unwrap().fixed);
         assert!(entry("close-pane").unwrap().fixed);
@@ -1053,11 +1065,12 @@ mod tests {
     fn registry_defaults_compile_to_gpui_runtime_keystrokes() {
         type ExpectedBinding<'a> = (&'a str, &'a str, bool);
         type ExpectedEntry<'a> = (&'a str, &'a [ExpectedBinding<'a>]);
-        let expected: [ExpectedEntry<'_>; 28] = [
+        let expected: [ExpectedEntry<'_>; 29] = [
             ("new-window", &[("shift-cmd-n", "n", true)]),
             ("new-chat", &[("cmd-n", "n", false)]),
             ("command-palette", &[("cmd-k", "k", false)]),
             ("toggle-sidebar", &[("cmd-s", "s", false)]),
+            ("toggle-terminal-drawer", &[("alt-f12", "f12", false)]),
             ("open-settings", &[("cmd-,", ",", false)]),
             ("page-previous", &[("cmd-{", "{", false)]),
             ("page-next", &[("cmd-}", "}", false)]),
@@ -1094,14 +1107,22 @@ mod tests {
                 "{id}"
             );
             for (binding, key, shift) in bindings {
+                let modifiers = if id == "toggle-terminal-drawer" {
+                    gpui::Modifiers {
+                        alt: true,
+                        ..Default::default()
+                    }
+                } else {
+                    gpui::Modifiers {
+                        platform: true,
+                        shift: *shift,
+                        ..Default::default()
+                    }
+                };
                 assert_eq!(
                     Keystroke::parse(binding).unwrap(),
                     Keystroke {
-                        modifiers: gpui::Modifiers {
-                            platform: true,
-                            shift: *shift,
-                            ..Default::default()
-                        },
+                        modifiers,
                         key: (*key).to_owned(),
                         key_char: None,
                     },

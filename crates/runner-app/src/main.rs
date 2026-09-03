@@ -29,7 +29,8 @@ use runner_app::bootstrap::{
     boot_core, native_paths, stop_running_sessions_on_quit, NativeMcpServer, NativePaths,
 };
 use runner_app::pane_layout::{
-    PaneLayout, PaneLeaf, PaneNode, PresetKind, SplitOrientation, TabSet,
+    PaneLayout, PaneLeaf, PaneNode, PresetKind, SplitOrientation, TabSet, MAX_DRAWER_HEIGHT,
+    MIN_DRAWER_HEIGHT,
 };
 use runner_app::terminal_ime::TerminalInput;
 use runner_app::ui::{
@@ -86,6 +87,7 @@ actions!(
         SplitPaneRight,
         StopFocusedSession,
         ToggleFullscreen,
+        ToggleTerminalDrawer,
         ToggleSidebar,
         ZoomIn,
         ZoomOut,
@@ -126,6 +128,15 @@ struct AttachedChat {
 struct SplitResizeDrag {
     split_id: String,
     orientation: SplitOrientation,
+}
+
+#[derive(Clone)]
+struct DrawerResizeDrag;
+
+impl Render for DrawerResizeDrag {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div().w(px(1.)).h(px(1.))
+    }
 }
 
 impl Render for SplitResizeDrag {
@@ -184,6 +195,13 @@ fn close_target(route: &AppRoute, leaves: usize) -> CloseTarget {
 }
 
 fn close_window_or_pane(this: &mut NativeRoot, window: &mut Window, cx: &mut Context<NativeRoot>) {
+    let drawer_focused = this.route == AppRoute::Chat
+        && this.tabs.active().is_some_and(PaneLayout::drawer_open)
+        && this.drawer_focus.contains_focused(window, cx);
+    if drawer_focused {
+        this.hide_terminal_drawer(window, cx);
+        return;
+    }
     let leaves = (this.route == AppRoute::Chat)
         .then(|| this.tabs.active())
         .flatten()
@@ -245,6 +263,9 @@ enum TerminalCloseTarget {
         session_id: String,
     },
     Tab {
+        session_id: String,
+    },
+    Drawer {
         session_id: String,
     },
     ArchiveAll {
@@ -336,6 +357,7 @@ struct NativeRoot {
     attached: HashMap<String, AttachedChat>,
     root_focus: FocusHandle,
     chat_focus: FocusHandle,
+    drawer_focus: FocusHandle,
     layout_picker_focus: FocusHandle,
     sidebar: Entity<Sidebar>,
     start_chat_modal: Option<StartChatModal>,
@@ -365,6 +387,7 @@ struct NativeRoot {
     last_focused_runner_id: Option<String>,
     layout_picker_open: bool,
     split_sizes_dirty: bool,
+    drawer_resizing: bool,
     chat_secondaries: HashMap<String, String>,
     dismissed_duplicate_chats: HashSet<String>,
     error: Option<String>,
@@ -532,6 +555,7 @@ impl NativeRoot {
 
         let root_focus = cx.focus_handle();
         let chat_focus = cx.focus_handle();
+        let drawer_focus = cx.focus_handle();
         let layout_picker_focus = cx.focus_handle();
         let active_chat_detail = tabs
             .active()
@@ -636,6 +660,7 @@ impl NativeRoot {
             attached: HashMap::new(),
             root_focus,
             chat_focus,
+            drawer_focus,
             layout_picker_focus,
             sidebar,
             start_chat_modal: None,
@@ -665,6 +690,7 @@ impl NativeRoot {
             last_focused_runner_id,
             layout_picker_open: false,
             split_sizes_dirty: false,
+            drawer_resizing: false,
             chat_secondaries: HashMap::new(),
             dismissed_duplicate_chats: HashSet::new(),
             error: startup_error,

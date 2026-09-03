@@ -114,7 +114,7 @@ fn palette_items(
         id: "new-terminal".into(),
         label: "New terminal".into(),
         destination: PaletteDestination::NewTerminal,
-        search_text: "new terminal shell pane".into(),
+        search_text: "new terminal shell drawer".into(),
         order: 0,
     });
     items.extend(

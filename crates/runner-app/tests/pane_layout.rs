@@ -1,4 +1,7 @@
-use runner_app::pane_layout::{PaneLayout, PaneNode, PresetKind, SplitOrientation, TabSet};
+use runner_app::pane_layout::{
+    PaneLayout, PaneNode, PresetKind, SplitOrientation, TabSet, DEFAULT_DRAWER_HEIGHT,
+    MAX_DRAWER_HEIGHT, MIN_DRAWER_HEIGHT,
+};
 use runner_backend::repo::node::{NodeRow, NodeType};
 
 fn row(id: &str, position: i64, layout: &PaneLayout) -> NodeRow {
@@ -102,6 +105,55 @@ fn persisted_layout_round_trips_slots_and_per_split_sizes() {
         panic!("main-2 must have an outer split");
     };
     assert_eq!(outer.sizes, [70., 30.]);
+}
+
+#[test]
+fn persisted_layout_round_trips_drawer_state_and_old_rows_use_defaults() {
+    let mut layout = PaneLayout::fresh(PresetKind::Single, Some("chat"), &["chat".into()]);
+    layout.add_drawer_shell("shell-a".into());
+    layout.add_drawer_shell("shell-b".into());
+    assert!(layout.activate_drawer_shell("shell-a"));
+    layout.set_drawer_height(412.);
+    let restored =
+        PaneLayout::from_node_row(&row("01K00000000000000000000000", 0, &layout)).unwrap();
+
+    assert!(restored.drawer_open());
+    assert_eq!(restored.drawer_height(), 412.);
+    assert_eq!(restored.drawer_shells(), ["shell-a", "shell-b"]);
+    assert_eq!(restored.active_drawer_shell(), Some("shell-a"));
+    assert_eq!(restored.session_ids(), ["chat"]);
+    assert_eq!(restored.all_session_ids(), ["chat", "shell-a", "shell-b"]);
+
+    let old = PaneLayout::from_node_row(&raw_row(
+        "01K00000000000000000000001",
+        r#"{"preset":"single","slots":["chat"],"sizes":{}}"#,
+    ))
+    .unwrap();
+    assert!(!old.drawer_open());
+    assert_eq!(old.drawer_height(), DEFAULT_DRAWER_HEIGHT);
+    assert!(old.drawer_shells().is_empty());
+    assert_eq!(old.active_drawer_shell(), None);
+}
+
+#[test]
+fn drawer_height_clamps_and_removing_the_active_shell_prefers_its_left_neighbour() {
+    let mut layout = PaneLayout::fresh(PresetKind::Single, Some("chat"), &["chat".into()]);
+    layout.set_drawer_height(10.);
+    assert_eq!(layout.drawer_height(), MIN_DRAWER_HEIGHT);
+    layout.set_drawer_height(900.);
+    assert_eq!(layout.drawer_height(), MAX_DRAWER_HEIGHT);
+
+    layout.add_drawer_shell("one".into());
+    layout.add_drawer_shell("two".into());
+    layout.add_drawer_shell("three".into());
+    assert_eq!(layout.active_drawer_shell(), Some("three"));
+    assert!(layout.remove_drawer_shell("three"));
+    assert_eq!(layout.active_drawer_shell(), Some("two"));
+    assert!(layout.remove_drawer_shell("two"));
+    assert_eq!(layout.active_drawer_shell(), Some("one"));
+    assert!(layout.remove_drawer_shell("one"));
+    assert!(!layout.drawer_open());
+    assert_eq!(layout.active_drawer_shell(), None);
 }
 
 #[test]

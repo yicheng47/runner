@@ -353,8 +353,9 @@ pub fn rekey_agent_session_key(
 
 /// Startup cleanup: demote rows still marked `running` from a prior app
 /// process to `stopped`, preserving any prior `stopped_at`. Requeue a
-/// launch-resume claim interrupted by an ungraceful exit. This must run
-/// before the frontend can call `take_resume_on_launch`.
+/// launch-resume claim interrupted by an ungraceful exit, and queue live
+/// shells so terminal surfaces recover from an abrupt app exit. This must
+/// run before the frontend can call `take_resume_on_launch`.
 pub fn cleanup_stale_running(conn: &Connection, now: Timestamp) -> rusqlite::Result<usize> {
     let tx = conn.unchecked_transaction()?;
     tx.execute(
@@ -362,6 +363,20 @@ pub fn cleanup_stale_running(conn: &Connection, now: Timestamp) -> rusqlite::Res
             SET resume_on_launch = ?1
           WHERE resume_on_launch = ?2",
         rusqlite::params![RESUME_ON_LAUNCH_PENDING, RESUME_ON_LAUNCH_CLAIMED],
+    )?;
+    tx.execute(
+        "UPDATE sessions
+            SET resume_on_launch = ?1
+          WHERE status = 'running'
+            AND mission_id IS NULL
+            AND slot_id IS NULL
+            AND archived_at IS NULL
+            AND COALESCE(
+                    agent_runtime,
+                    (SELECT runtime FROM runners WHERE runners.id = sessions.runner_id),
+                    ''
+                ) = 'shell'",
+        [RESUME_ON_LAUNCH_PENDING],
     )?;
     let updated = tx.execute(
         "UPDATE sessions
@@ -1108,6 +1123,36 @@ mod tests {
             })
         );
         assert!(finish_resume_on_launch(&conn, "shell").unwrap());
+        assert_eq!(take_resume_id(&mut conn), None);
+    }
+
+    #[test]
+    fn startup_queues_a_live_shell_after_an_abrupt_exit() {
+        let pool = db::open_in_memory().unwrap();
+        let mut conn = pool.get().unwrap();
+        seed_runner(&conn, "r1", "alpha");
+        let now = "2026-07-25T00:00:00Z";
+        conn.execute(
+            "INSERT INTO sessions
+                (id, runner_id, status, started_at, agent_session_key,
+                 agent_runtime, agent_command, resume_on_launch)
+             VALUES
+                ('chat-live', 'r1', 'running', ?1, 'key', 'alpha', NULL, 0),
+                ('shell-live', NULL, 'running', ?1, NULL, 'shell', '/bin/zsh', 0),
+                ('shell-ended', NULL, 'stopped', ?1, NULL, 'shell', '/bin/zsh', 0)",
+            [now],
+        )
+        .unwrap();
+
+        assert_eq!(cleanup_stale_running(&conn, Utc::now()).unwrap(), 2);
+        assert_eq!(
+            take_resume_on_launch(&mut conn).unwrap(),
+            Some(ResumeOnLaunchClaim {
+                session_id: "shell-live".into(),
+                shell: true,
+            })
+        );
+        assert!(finish_resume_on_launch(&conn, "shell-live").unwrap());
         assert_eq!(take_resume_id(&mut conn), None);
     }
 

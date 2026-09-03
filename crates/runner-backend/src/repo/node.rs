@@ -51,6 +51,14 @@ pub struct NodeRow {
 struct StoredLayout {
     #[serde(default)]
     slots: Vec<Option<String>>,
+    #[serde(default)]
+    drawer: StoredDrawer,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct StoredDrawer {
+    #[serde(default)]
+    shells: Vec<String>,
 }
 
 const COLUMNS: &[&str] = &[
@@ -539,7 +547,14 @@ pub fn session_ids(row: &NodeRow) -> Vec<String> {
 
 pub fn session_ids_from_layout(layout: &str) -> Vec<String> {
     serde_json::from_str::<StoredLayout>(layout)
-        .map(|layout| layout.slots.into_iter().flatten().collect())
+        .map(|layout| {
+            layout
+                .slots
+                .into_iter()
+                .flatten()
+                .chain(layout.drawer.shells)
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -765,20 +780,58 @@ fn remove_session_except(
         let Ok(mut layout) = serde_json::from_str::<serde_json::Value>(layout_text) else {
             continue;
         };
-        let Some(slots) = layout.get_mut("slots").and_then(|v| v.as_array_mut()) else {
-            continue;
-        };
         let mut changed = false;
-        for slot in slots.iter_mut() {
-            if slot.as_str() == Some(session_id) {
-                *slot = serde_json::Value::Null;
-                changed = true;
+        let slots_empty =
+            if let Some(slots) = layout.get_mut("slots").and_then(|v| v.as_array_mut()) {
+                for slot in slots.iter_mut() {
+                    if slot.as_str() == Some(session_id) {
+                        *slot = serde_json::Value::Null;
+                        changed = true;
+                    }
+                }
+                slots.iter().all(serde_json::Value::is_null)
+            } else {
+                true
+            };
+        let drawer_empty = if let Some(drawer) =
+            layout.get_mut("drawer").and_then(|v| v.as_object_mut())
+        {
+            let active = drawer
+                .get("active")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or_default() as usize;
+            let (drawer_empty, next_active) = {
+                let Some(shells) = drawer.get_mut("shells").and_then(|v| v.as_array_mut()) else {
+                    continue;
+                };
+                let removed = shells
+                    .iter()
+                    .position(|shell| shell.as_str() == Some(session_id));
+                if let Some(index) = removed {
+                    shells.remove(index);
+                    changed = true;
+                }
+                let next_active = if shells.is_empty() {
+                    0
+                } else if removed.is_some_and(|index| index <= active) {
+                    active.saturating_sub(1)
+                } else {
+                    active.min(shells.len() - 1)
+                };
+                (shells.is_empty(), next_active)
+            };
+            if drawer_empty {
+                drawer.insert("open".into(), serde_json::Value::Bool(false));
             }
-        }
+            drawer.insert("active".into(), serde_json::json!(next_active));
+            drawer_empty
+        } else {
+            true
+        };
         if !changed {
             continue;
         }
-        if slots.iter().all(serde_json::Value::is_null) {
+        if slots_empty && drawer_empty {
             delete(conn, &row.id)?;
         } else {
             conn.execute(
@@ -1168,6 +1221,71 @@ mod tests {
         );
         super::remove_session(&conn, "b").unwrap();
         assert!(super::get(&conn, &row.id).unwrap().is_none());
+    }
+
+    #[test]
+    fn drawer_shells_are_members_for_coverage_and_removal() {
+        let pool = db::open_in_memory().unwrap();
+        let conn = pool.get().unwrap();
+        insert_session(&conn, "chat", None);
+        insert_session(&conn, "drawer-shell", None);
+        let tab = super::create_tab(
+            &conn,
+            None,
+            "chat",
+            0,
+            r#"{"preset":"single","slots":["chat"],"sizes":{},"drawer":{"open":true,"height":280,"shells":["drawer-shell"],"active":0}}"#,
+        )
+        .unwrap();
+
+        super::ensure_active_sessions(&conn).unwrap();
+        let rows = super::list(&conn).unwrap();
+        assert_eq!(
+            rows.iter()
+                .filter(|row| row.node_type == NodeType::Tab)
+                .count(),
+            1
+        );
+        assert_eq!(super::session_ids(&tab), ["chat", "drawer-shell"]);
+
+        super::remove_session(&conn, "drawer-shell").unwrap();
+        let stored = super::get(&conn, &tab.id).unwrap().unwrap();
+        let layout: serde_json::Value =
+            serde_json::from_str(stored.layout.as_deref().unwrap()).unwrap();
+        assert_eq!(layout["drawer"]["shells"], serde_json::json!([]));
+        assert_eq!(layout["drawer"]["open"], false);
+        assert_eq!(super::session_ids(&stored), ["chat"]);
+    }
+
+    #[test]
+    fn project_tab_delete_includes_drawer_shells() {
+        let pool = db::open_in_memory().unwrap();
+        let mut conn = pool.get().unwrap();
+        insert_session(&conn, "chat", None);
+        conn.execute(
+            "INSERT INTO sessions (id, status, agent_runtime, agent_command)
+             VALUES ('drawer-terminal', 'stopped', 'shell', '/bin/zsh')",
+            [],
+        )
+        .unwrap();
+        let project = crate::repo::project::create(&conn, "Project", "/tmp/project").unwrap();
+        let project_node = super::ensure_project_node(&conn, &project.id).unwrap();
+        super::create_tab(
+            &conn,
+            Some(&project_node.id),
+            "",
+            0,
+            r#"{"preset":"single","slots":["chat"],"sizes":{},"drawer":{"open":true,"height":280,"shells":["drawer-terminal"],"active":0}}"#,
+        )
+        .unwrap();
+
+        let tx = conn.transaction().unwrap();
+        let (archived_ids, deleted_ids) =
+            super::delete_container_tabs_and_archive(&tx, &project_node.id).unwrap();
+        tx.commit().unwrap();
+
+        assert_eq!(archived_ids, ["chat"]);
+        assert_eq!(deleted_ids, ["drawer-terminal"]);
     }
 
     #[test]
