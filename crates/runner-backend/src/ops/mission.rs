@@ -1198,12 +1198,32 @@ pub fn mission_set_project(
 /// before the lifecycle split — preserved as a separate command so
 /// the workspace UI can guard it behind an explicit confirm.
 pub async fn mission_archive_impl(state: &AppCore, id: String) -> Result<Mission> {
+    close_mission_drawer_shells(state, &id)?;
     state.sessions.kill_all_for_mission(&id)?;
     let mut conn = state.db.get()?;
     let mission = stop(&mut conn, &state.app_data_dir, &id)?;
     state.buses.unmount(&id);
     state.routers.unregister(&id);
     Ok(mission)
+}
+
+fn close_mission_drawer_shells(state: &AppCore, mission_id: &str) -> Result<()> {
+    let shell_ids = {
+        let conn = state.db.get()?;
+        repo::node::find_by_ref(&conn, repo::node::NodeType::Mission, mission_id)?
+            .as_ref()
+            .map(repo::node::session_ids)
+            .unwrap_or_default()
+    };
+    for session_id in shell_ids {
+        if let Err(error) = crate::ops::session::session_close(state, &session_id) {
+            let conn = state.db.get()?;
+            if repo::session::get_row(&conn, &session_id)?.is_some() {
+                return Err(error);
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Clear a mission's archive marker so it reappears in active lists.
@@ -1277,6 +1297,7 @@ pub(crate) fn delete_archived(
 /// missions have no live PTYs, bus, or router — `mission_archive`
 /// dropped them — so `delete_archived` covers everything.
 pub fn mission_delete(state: &AppCore, id: &str) -> Result<()> {
+    close_mission_drawer_shells(state, id)?;
     let mut conn = state.db.get()?;
     delete_archived(&mut conn, &state.app_data_dir, id)?;
     Ok(())

@@ -769,6 +769,11 @@ pub fn session_resume_on_launch(
     Ok(spawned)
 }
 
+pub fn session_take_resume_on_launch(state: &AppCore, session_id: &str) -> Result<bool> {
+    let mut conn = state.db.get()?;
+    Ok(repo::session::take_resume_on_launch_for_session(&mut conn, session_id)?.is_some())
+}
+
 /// Spawn a "direct chat" session for a runner — a PTY with no parent
 /// mission, no orchestrator, no event log (C8.5). Used by the Runner
 /// Detail page's "Chat now" button: the user picks a working directory

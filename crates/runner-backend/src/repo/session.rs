@@ -9,6 +9,8 @@
 // PTY hot path where statement shape and timing are load-bearing. Do not
 // consolidate them.
 
+use std::collections::HashSet;
+
 use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_rusqlite::{from_row, to_params_named};
@@ -418,10 +420,19 @@ pub fn mark_running_for_resume_on_launch(conn: &mut Connection) -> rusqlite::Res
 pub fn take_resume_on_launch(
     conn: &mut Connection,
 ) -> rusqlite::Result<Option<ResumeOnLaunchClaim>> {
+    take_resume_on_launch_excluding(conn, &HashSet::new())
+}
+
+/// Atomically claim the next quit-time stamp outside `excluded`. Excluded
+/// claims stay pending so a surface can resume them when it becomes visible.
+pub fn take_resume_on_launch_excluding(
+    conn: &mut Connection,
+    excluded: &HashSet<String>,
+) -> rusqlite::Result<Option<ResumeOnLaunchClaim>> {
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     let next = loop {
-        let row = tx
-            .query_row(
+        let row = {
+            let mut stmt = tx.prepare(
                 "SELECT id,
                         status IN ('stopped', 'crashed'),
                         agent_session_key IS NOT NULL
@@ -434,20 +445,26 @@ pub fn take_resume_on_launch(
                         ) = 'shell'
                    FROM sessions
                   WHERE resume_on_launch = ?1
-                  ORDER BY started_at, id
-                  LIMIT 1",
-                [RESUME_ON_LAUNCH_PENDING],
-                |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, bool>(1)?,
-                        row.get::<_, bool>(2)?,
-                        row.get::<_, bool>(3)?,
-                        row.get::<_, bool>(4)?,
-                    ))
-                },
-            )
-            .optional()?;
+                  ORDER BY started_at, id",
+            )?;
+            let mut rows = stmt.query([RESUME_ON_LAUNCH_PENDING])?;
+            let mut next = None;
+            while let Some(row) = rows.next()? {
+                let id = row.get::<_, String>(0)?;
+                if excluded.contains(&id) {
+                    continue;
+                }
+                next = Some((
+                    id,
+                    row.get::<_, bool>(1)?,
+                    row.get::<_, bool>(2)?,
+                    row.get::<_, bool>(3)?,
+                    row.get::<_, bool>(4)?,
+                ));
+                break;
+            }
+            next
+        };
         let Some((id, stopped, has_key, active, shell)) = row else {
             break None;
         };
@@ -471,6 +488,81 @@ pub fn take_resume_on_launch(
     };
     tx.commit()?;
     Ok(next)
+}
+
+/// Atomically claim one specific quit-time stamp. Invalid pending work is
+/// cleared with the same rules as the startup claim consumer.
+pub fn take_resume_on_launch_for_session(
+    conn: &mut Connection,
+    session_id: &str,
+) -> rusqlite::Result<Option<ResumeOnLaunchClaim>> {
+    let pending = conn
+        .query_row(
+            "SELECT 1
+               FROM sessions
+              WHERE id = ?1
+                AND resume_on_launch = ?2",
+            rusqlite::params![session_id, RESUME_ON_LAUNCH_PENDING],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some();
+    if !pending {
+        return Ok(None);
+    }
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let row = tx
+        .query_row(
+            "SELECT id,
+                    status IN ('stopped', 'crashed'),
+                    agent_session_key IS NOT NULL
+                        AND TRIM(agent_session_key) != '',
+                    archived_at IS NULL,
+                    COALESCE(
+                        agent_runtime,
+                        (SELECT runtime FROM runners WHERE runners.id = sessions.runner_id),
+                        ''
+                    ) = 'shell'
+               FROM sessions
+              WHERE id = ?1
+                AND resume_on_launch = ?2",
+            rusqlite::params![session_id, RESUME_ON_LAUNCH_PENDING],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, bool>(1)?,
+                    row.get::<_, bool>(2)?,
+                    row.get::<_, bool>(3)?,
+                    row.get::<_, bool>(4)?,
+                ))
+            },
+        )
+        .optional()?;
+    let claim = match row {
+        Some((id, stopped, has_key, active, shell)) if stopped && (has_key || shell) && active => {
+            tx.execute(
+                "UPDATE sessions
+                    SET resume_on_launch = ?2
+                  WHERE id = ?1
+                    AND resume_on_launch = ?3",
+                rusqlite::params![id, RESUME_ON_LAUNCH_CLAIMED, RESUME_ON_LAUNCH_PENDING],
+            )?;
+            Some(ResumeOnLaunchClaim {
+                session_id: id,
+                shell,
+            })
+        }
+        Some((id, ..)) => {
+            tx.execute(
+                "UPDATE sessions SET resume_on_launch = 0 WHERE id = ?1",
+                [&id],
+            )?;
+            None
+        }
+        None => None,
+    };
+    tx.commit()?;
+    Ok(claim)
 }
 
 /// Clear a completed launch-resume claim. If quit already requeued the claim,
@@ -1080,6 +1172,82 @@ mod tests {
         .unwrap();
         assert_eq!(clear_resume_on_launch(&conn).unwrap(), 2);
         assert_eq!(take_resume_id(&mut conn), None);
+    }
+
+    #[test]
+    fn launch_consumer_leaves_excluded_claims_pending_and_targets_them_later() {
+        let pool = db::open_in_memory().unwrap();
+        let mut conn = pool.get().unwrap();
+        let now = "2026-07-25T00:00:00Z";
+        conn.execute(
+            "INSERT INTO sessions
+                (id, status, started_at, agent_runtime, agent_command, resume_on_launch)
+             VALUES
+                ('drawer-shell', 'stopped', ?1, 'shell', '/bin/zsh', 1),
+                ('pane-shell', 'stopped', ?1, 'shell', '/bin/zsh', 1)",
+            [now],
+        )
+        .unwrap();
+        let excluded = HashSet::from(["drawer-shell".to_owned()]);
+
+        assert_eq!(
+            take_resume_on_launch_excluding(&mut conn, &excluded).unwrap(),
+            Some(ResumeOnLaunchClaim {
+                session_id: "pane-shell".into(),
+                shell: true,
+            })
+        );
+        assert!(finish_resume_on_launch(&conn, "pane-shell").unwrap());
+        assert_eq!(
+            take_resume_on_launch_excluding(&mut conn, &excluded).unwrap(),
+            None
+        );
+        let drawer_stamp: i64 = conn
+            .query_row(
+                "SELECT resume_on_launch FROM sessions WHERE id = 'drawer-shell'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(drawer_stamp, RESUME_ON_LAUNCH_PENDING);
+
+        assert_eq!(
+            take_resume_on_launch_for_session(&mut conn, "drawer-shell").unwrap(),
+            Some(ResumeOnLaunchClaim {
+                session_id: "drawer-shell".into(),
+                shell: true,
+            })
+        );
+        assert_eq!(
+            take_resume_on_launch_for_session(&mut conn, "drawer-shell").unwrap(),
+            None
+        );
+        assert!(finish_resume_on_launch(&conn, "drawer-shell").unwrap());
+    }
+
+    #[test]
+    fn targeted_launch_claim_does_not_disturb_pop_any_order() {
+        let pool = db::open_in_memory().unwrap();
+        let mut conn = pool.get().unwrap();
+        let now = "2026-07-25T00:00:00Z";
+        conn.execute(
+            "INSERT INTO sessions
+                (id, status, started_at, agent_runtime, agent_command, resume_on_launch)
+             VALUES
+                ('first', 'stopped', ?1, 'shell', '/bin/zsh', 1),
+                ('target', 'stopped', ?1, 'shell', '/bin/zsh', 1)",
+            [now],
+        )
+        .unwrap();
+
+        assert_eq!(
+            take_resume_on_launch_for_session(&mut conn, "target")
+                .unwrap()
+                .map(|claim| claim.session_id)
+                .as_deref(),
+            Some("target")
+        );
+        assert_eq!(take_resume_id(&mut conn).as_deref(), Some("first"));
     }
 
     #[test]

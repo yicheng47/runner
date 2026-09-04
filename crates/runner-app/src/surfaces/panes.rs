@@ -14,6 +14,121 @@ use crate::surfaces::sidebar::{direct_chat_display_status, DirectChatDisplayStat
 
 const CHAT_PANEL_TRANSITION_MS: u64 = 200;
 
+pub(crate) type TerminalDrawerSessionCallback = Rc<dyn Fn(String, &mut Window, &mut App)>;
+pub(crate) type TerminalDrawerActionCallback = Rc<dyn Fn(&mut Window, &mut App)>;
+
+pub(crate) struct TerminalDrawerCallbacks {
+    pub activate: TerminalDrawerSessionCallback,
+    pub close: TerminalDrawerSessionCallback,
+    pub add: TerminalDrawerActionCallback,
+    pub hide: TerminalDrawerActionCallback,
+}
+
+pub(crate) fn render_terminal_drawer_strip(
+    id_prefix: &str,
+    shells: &[String],
+    active_id: Option<&str>,
+    labels: &[String],
+    callbacks: TerminalDrawerCallbacks,
+) -> AnyElement {
+    let TerminalDrawerCallbacks {
+        activate,
+        close,
+        add,
+        hide,
+    } = callbacks;
+    let chips = shells
+        .iter()
+        .enumerate()
+        .map(|(index, session_id)| {
+            let active = active_id == Some(session_id.as_str());
+            let label = labels.get(index).cloned().unwrap_or_else(|| "shell".into());
+            let activate = Rc::clone(&activate);
+            let close = Rc::clone(&close);
+            let activate_id = session_id.clone();
+            let close_id = session_id.clone();
+            div()
+                .id(SharedString::from(format!(
+                    "{id_prefix}-drawer-chip-{session_id}"
+                )))
+                .flex_none()
+                .h(rems(24. / 16.))
+                .max_w(rems(180. / 16.))
+                .px_2()
+                .flex()
+                .items_center()
+                .gap(rems(6. / 16.))
+                .rounded(rems(5. / 16.))
+                .bg(if active {
+                    theme::raised()
+                } else {
+                    gpui::transparent_black()
+                })
+                .text_color(if active {
+                    theme::text()
+                } else {
+                    theme::muted()
+                })
+                .cursor_pointer()
+                .hover(|chip| chip.bg(theme::raised()))
+                .child(
+                    svg()
+                        .path("terminal.svg")
+                        .size(rems(12. / 16.))
+                        .flex_none()
+                        .text_color(theme::muted()),
+                )
+                .child(
+                    div()
+                        .min_w(px(0.))
+                        .truncate()
+                        .text_size(rems(12. / 16.))
+                        .child(label),
+                )
+                .child(
+                    IconButton::new(
+                        SharedString::from(format!("{id_prefix}-close-drawer-shell-{session_id}")),
+                        "close.svg",
+                    )
+                    .size(IconButtonSize::Xs)
+                    .stop_click_propagation(true)
+                    .tooltip("Close terminal")
+                    .on_press(move |window, cx| close(close_id.clone(), window, cx)),
+                )
+                .on_click(move |_, window, cx| activate(activate_id.clone(), window, cx))
+        })
+        .collect::<Vec<_>>();
+    let add_id = SharedString::from(format!("{id_prefix}-add-drawer-shell"));
+    let hide_id = SharedString::from(format!("{id_prefix}-hide-terminal-drawer"));
+    div()
+        .flex_none()
+        .h(rems(32. / 16.))
+        .w_full()
+        .pl(rems(10. / 16.))
+        .pr(rems(8. / 16.))
+        .flex()
+        .items_center()
+        .gap(rems(6. / 16.))
+        .border_b_1()
+        .border_color(theme::border())
+        .bg(theme::panel())
+        .children(chips)
+        .child(
+            IconButton::new(add_id, "plus.svg")
+                .size(IconButtonSize::Sm)
+                .tooltip("New terminal")
+                .on_press(move |window, cx| add(window, cx)),
+        )
+        .child(div().flex_1())
+        .child(
+            IconButton::new(hide_id, "chevron-down.svg")
+                .size(IconButtonSize::Sm)
+                .tooltip("Hide terminal drawer")
+                .on_press(move |window, cx| hide(window, cx)),
+        )
+        .into_any_element()
+}
+
 impl NativeRoot {
     pub(crate) fn render_archived_chat(
         &mut self,
@@ -984,7 +1099,11 @@ impl NativeRoot {
             .as_ref()
             .map(|confirm| &confirm.target)
         {
-            Some(TerminalCloseTarget::Tab { .. } | TerminalCloseTarget::Drawer { .. }) => (
+            Some(
+                TerminalCloseTarget::Tab { .. }
+                | TerminalCloseTarget::Drawer { .. }
+                | TerminalCloseTarget::MissionDrawer { .. },
+            ) => (
                 "Close terminal?",
                 "A foreground process is still running. Closing this terminal will stop it."
                     .to_owned(),
@@ -1456,108 +1575,43 @@ impl NativeRoot {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let active_id = layout.active_drawer_shell().map(str::to_owned);
-        let chips = layout
+        let labels = layout
             .drawer_shells()
             .iter()
             .map(|session_id| {
-                let active = active_id.as_deref() == Some(session_id.as_str());
-                let label = self
-                    .session_entry(session_id, cx)
+                self.session_entry(session_id, cx)
                     .map(default_session_label)
-                    .unwrap_or_else(|| "shell".into());
-                let activate_root = cx.entity();
-                let close_root = activate_root.clone();
-                let activate_id = session_id.clone();
-                let close_id = session_id.clone();
-                div()
-                    .id(SharedString::from(format!("drawer-chip-{session_id}")))
-                    .flex_none()
-                    .h(rems(24. / 16.))
-                    .max_w(rems(180. / 16.))
-                    .px_2()
-                    .flex()
-                    .items_center()
-                    .gap(rems(6. / 16.))
-                    .rounded(rems(5. / 16.))
-                    .bg(if active {
-                        theme::raised()
-                    } else {
-                        gpui::transparent_black()
-                    })
-                    .text_color(if active {
-                        theme::text()
-                    } else {
-                        theme::muted()
-                    })
-                    .cursor_pointer()
-                    .hover(|chip| chip.bg(theme::raised()))
-                    .child(
-                        svg()
-                            .path("terminal.svg")
-                            .size(rems(12. / 16.))
-                            .flex_none()
-                            .text_color(theme::muted()),
-                    )
-                    .child(
-                        div()
-                            .min_w(px(0.))
-                            .truncate()
-                            .text_size(rems(12. / 16.))
-                            .child(label),
-                    )
-                    .child(
-                        IconButton::new(
-                            SharedString::from(format!("close-drawer-shell-{session_id}")),
-                            "close.svg",
-                        )
-                        .size(IconButtonSize::Xs)
-                        .stop_click_propagation(true)
-                        .tooltip("Close terminal")
-                        .on_press(move |window, cx| {
-                            close_root.update(cx, |this, cx| {
-                                this.request_close_drawer_shell(&close_id, window, cx)
-                            });
-                        }),
-                    )
-                    .on_click(move |_, window, cx| {
-                        activate_root.update(cx, |this, cx| {
-                            this.activate_terminal_drawer_shell(&activate_id, window, cx)
-                        });
-                    })
+                    .unwrap_or_else(|| "shell".into())
             })
             .collect::<Vec<_>>();
-        let add_root = cx.entity();
-        let hide_root = add_root.clone();
-        let strip = div()
-            .flex_none()
-            .h(rems(32. / 16.))
-            .w_full()
-            .pl(rems(10. / 16.))
-            .pr(rems(8. / 16.))
-            .flex()
-            .items_center()
-            .gap(rems(6. / 16.))
-            .border_b_1()
-            .border_color(theme::border())
-            .bg(theme::panel())
-            .children(chips)
-            .child(
-                IconButton::new("add-drawer-shell", "plus.svg")
-                    .size(IconButtonSize::Sm)
-                    .tooltip("New terminal")
-                    .on_press(move |window, cx| {
-                        add_root.update(cx, |this, cx| this.add_terminal_drawer_shell(window, cx));
-                    }),
-            )
-            .child(div().flex_1())
-            .child(
-                IconButton::new("hide-terminal-drawer", "chevron-down.svg")
-                    .size(IconButtonSize::Sm)
-                    .tooltip("Hide terminal drawer")
-                    .on_press(move |window, cx| {
-                        hide_root.update(cx, |this, cx| this.hide_terminal_drawer(window, cx));
-                    }),
-            );
+        let activate_root = cx.entity();
+        let close_root = activate_root.clone();
+        let add_root = activate_root.clone();
+        let hide_root = activate_root.clone();
+        let strip = render_terminal_drawer_strip(
+            "chat",
+            layout.drawer_shells(),
+            active_id.as_deref(),
+            &labels,
+            TerminalDrawerCallbacks {
+                activate: Rc::new(move |session_id, window, cx| {
+                    activate_root.update(cx, |this, cx| {
+                        this.activate_terminal_drawer_shell(&session_id, window, cx)
+                    });
+                }),
+                close: Rc::new(move |session_id, window, cx| {
+                    close_root.update(cx, |this, cx| {
+                        this.request_close_drawer_shell(&session_id, window, cx)
+                    });
+                }),
+                add: Rc::new(move |window, cx| {
+                    add_root.update(cx, |this, cx| this.add_terminal_drawer_shell(window, cx));
+                }),
+                hide: Rc::new(move |window, cx| {
+                    hide_root.update(cx, |this, cx| this.hide_terminal_drawer(window, cx));
+                }),
+            },
+        );
 
         let body = active_id
             .as_deref()
@@ -2286,7 +2340,7 @@ fn empty_pane_action_label(overrides: &keymap::KeymapOverrides) -> String {
     )
 }
 
-fn terminal_drawer_tooltip(open: bool, overrides: &keymap::KeymapOverrides) -> String {
+pub(crate) fn terminal_drawer_tooltip(open: bool, overrides: &keymap::KeymapOverrides) -> String {
     let label = if open {
         "Hide terminal drawer"
     } else {

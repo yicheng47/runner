@@ -56,6 +56,27 @@ enum ChatTarget {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum NewTerminalTarget {
+    MissionDrawer,
+    ChatDrawer,
+    Tab,
+}
+
+fn new_terminal_target(
+    route: &AppRoute,
+    mission_drawer_available: bool,
+    active_tab_is_terminal_only: bool,
+) -> NewTerminalTarget {
+    if matches!(route, AppRoute::Mission(_)) && mission_drawer_available {
+        NewTerminalTarget::MissionDrawer
+    } else if *route == AppRoute::Chat && !active_tab_is_terminal_only {
+        NewTerminalTarget::ChatDrawer
+    } else {
+        NewTerminalTarget::Tab
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum StartChatSelection {
     Runner,
     RunnerRuntime,
@@ -221,9 +242,25 @@ impl NativeRoot {
     }
 
     pub(crate) fn new_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.active_tab_is_terminal_only(cx) && self.route == AppRoute::Chat {
-            self.add_terminal_drawer_shell(window, cx);
-            return;
+        let mission_drawer_available = matches!(self.route, AppRoute::Mission(_))
+            && self.mission_workspace.read(cx).drawer_available(cx);
+        match new_terminal_target(
+            &self.route,
+            mission_drawer_available,
+            self.active_tab_is_terminal_only(cx),
+        ) {
+            NewTerminalTarget::MissionDrawer => {
+                self.mission_workspace
+                    .update(cx, |workspace, workspace_cx| {
+                        workspace.add_terminal_drawer_shell(window, workspace_cx)
+                    });
+                return;
+            }
+            NewTerminalTarget::ChatDrawer => {
+                self.add_terminal_drawer_shell(window, cx);
+                return;
+            }
+            NewTerminalTarget::Tab => {}
         }
         let Some(original) = self.tabs.active().cloned() else {
             self.chat_error = Some("Open a tab before creating a terminal".into());
@@ -248,6 +285,13 @@ impl NativeRoot {
     }
 
     pub(crate) fn toggle_terminal_drawer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if matches!(self.route, AppRoute::Mission(_)) {
+            self.mission_workspace
+                .update(cx, |workspace, workspace_cx| {
+                    workspace.toggle_terminal_drawer(window, workspace_cx)
+                });
+            return;
+        }
         if self.route != AppRoute::Chat || self.active_tab_is_terminal_only(cx) {
             return;
         }
@@ -289,6 +333,13 @@ impl NativeRoot {
         match self.persist_active_tab(cx) {
             Ok(()) => {
                 self.chat_error = None;
+                if let Some(layout) = self.tabs.active().cloned() {
+                    if let Err(error) =
+                        self.resume_visible_drawer_shell_on_launch(&layout, window, cx)
+                    {
+                        self.chat_error = Some(error.to_string());
+                    }
+                }
                 self.focus_drawer_terminal(session_id, window, cx);
             }
             Err(error) => self.chat_error = Some(error.to_string()),
@@ -1556,7 +1607,7 @@ impl NativeRoot {
     }
 }
 
-fn terminal_working_dir(
+pub(crate) fn terminal_working_dir(
     sibling_cwd: Option<&str>,
     project_cwd: Option<&str>,
     default_cwd: &str,
@@ -1895,6 +1946,27 @@ fn write_start_chat_mode(app_data_dir: &Path, mode: ChatMode) -> std::io::Result
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn new_terminal_targets_only_an_available_mission_drawer() {
+        let mission = AppRoute::Mission("mission".into());
+        assert_eq!(
+            new_terminal_target(&mission, true, false),
+            NewTerminalTarget::MissionDrawer
+        );
+        assert_eq!(
+            new_terminal_target(&mission, false, false),
+            NewTerminalTarget::Tab
+        );
+        assert_eq!(
+            new_terminal_target(&AppRoute::Chat, false, false),
+            NewTerminalTarget::ChatDrawer
+        );
+        assert_eq!(
+            new_terminal_target(&AppRoute::Chat, false, true),
+            NewTerminalTarget::Tab
+        );
+    }
 
     fn runtime(name: &str, efforts: &[&str]) -> RuntimeCatalogEntry {
         RuntimeCatalogEntry {

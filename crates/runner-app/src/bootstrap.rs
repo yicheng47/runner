@@ -175,6 +175,20 @@ pub fn consume_resume_on_launch(
     enabled: bool,
     dims_for: impl Fn(&str) -> Option<(u16, u16)>,
 ) -> Result<AutoResumeReport> {
+    let drawer_session_ids = {
+        let conn = core.db.get().context("get launch-resume connection")?;
+        repo::node::list(&conn)
+            .context("list launch-resume node layouts")?
+            .into_iter()
+            .filter(|row| {
+                matches!(
+                    row.node_type,
+                    repo::node::NodeType::Tab | repo::node::NodeType::Mission
+                )
+            })
+            .flat_map(|row| repo::node::drawer_session_ids(&row))
+            .collect()
+    };
     consume_launch_claims(
         enabled,
         || {
@@ -185,7 +199,8 @@ pub fn consume_resume_on_launch(
         },
         || {
             let mut conn = core.db.get().context("get launch-resume connection")?;
-            repo::session::take_resume_on_launch(&mut conn).context("take launch-resume claim")
+            repo::session::take_resume_on_launch_excluding(&mut conn, &drawer_session_ids)
+                .context("take launch-resume claim")
         },
         |session_id| {
             let dims = dims_for(session_id);
@@ -250,6 +265,7 @@ pub fn stop_running_sessions_on_quit(core: &AppCore) -> Result<()> {
 mod tests {
     use super::*;
     use std::cell::{Cell, RefCell};
+    use std::collections::HashSet;
 
     fn launch_claim(session_id: &str, shell: bool) -> repo::session::ResumeOnLaunchClaim {
         repo::session::ResumeOnLaunchClaim {
@@ -386,6 +402,78 @@ mod tests {
         assert!(report.errors.is_empty());
         assert!(cleared.get());
         assert_eq!(&*resumed.borrow(), &["shell-session"]);
+    }
+
+    #[test]
+    fn launch_claim_consumer_defers_drawer_shell_but_drains_pane_shell() {
+        let temp = tempfile::tempdir().unwrap();
+        let pool = db::open_pool(&temp.path().join("runner.db")).unwrap();
+        {
+            let conn = pool.get().unwrap();
+            conn.execute(
+                "INSERT INTO sessions
+                    (id, status, started_at, agent_runtime, agent_command, resume_on_launch)
+                 VALUES
+                    ('drawer-shell', 'stopped', '2026-09-04T00:00:00Z',
+                     'shell', '/bin/zsh', 1),
+                    ('pane-shell', 'stopped', '2026-09-04T00:00:00Z',
+                     'shell', '/bin/zsh', 1)",
+                [],
+            )
+            .unwrap();
+            repo::node::create_tab(
+                &conn,
+                None,
+                "terminal",
+                0,
+                r#"{"preset":"single","slots":["pane-shell"],"sizes":{},"drawer":{"open":false,"height":280,"shells":["drawer-shell"],"active":0}}"#,
+            )
+            .unwrap();
+        }
+        let drawer_session_ids = {
+            let conn = pool.get().unwrap();
+            repo::node::list(&conn)
+                .unwrap()
+                .iter()
+                .flat_map(repo::node::drawer_session_ids)
+                .collect::<HashSet<_>>()
+        };
+
+        let report = consume_launch_claims(
+            true,
+            || panic!("enabled launch must not clear claims"),
+            || {
+                let mut conn = pool.get().unwrap();
+                Ok(repo::session::take_resume_on_launch_excluding(
+                    &mut conn,
+                    &drawer_session_ids,
+                )?)
+            },
+            |session_id| {
+                let conn = pool.get().unwrap();
+                repo::session::finish_resume_on_launch(&conn, session_id)
+                    .map(drop)
+                    .map_err(|error| error.to_string())
+            },
+            || {},
+        )
+        .unwrap();
+
+        assert_eq!(report.resumed, ["pane-shell"]);
+        let conn = pool.get().unwrap();
+        let stamps = conn
+            .prepare("SELECT id, resume_on_launch FROM sessions ORDER BY id")
+            .unwrap()
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+            })
+            .unwrap()
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(
+            stamps,
+            [("drawer-shell".into(), 1), ("pane-shell".into(), 0)]
+        );
     }
 
     #[test]

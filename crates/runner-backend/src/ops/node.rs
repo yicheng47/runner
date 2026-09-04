@@ -115,6 +115,28 @@ pub fn node_tab_upsert(state: &AppCore, input: NodeTabUpsertInput) -> Result<Nod
     Ok(row)
 }
 
+pub fn node_mission_layout_set(state: &AppCore, node_id: &str, layout: String) -> Result<NodeRow> {
+    validate_layout(&layout)?;
+    let mut conn = state.db.get()?;
+    let node = repo::node::get(&conn, node_id)?
+        .ok_or_else(|| Error::msg(format!("node not found: {node_id}")))?;
+    if node.node_type != NodeType::Mission {
+        return Err(Error::msg(format!("node {node_id} is not a mission")));
+    }
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    for session_id in repo::node::session_ids_from_layout(&layout) {
+        repo::node::remove_session_except(&tx, &session_id, Some(node_id))?;
+    }
+    tx.execute(
+        "UPDATE nodes SET layout = ?2 WHERE id = ?1",
+        rusqlite::params![node_id, layout],
+    )?;
+    let row = repo::node::get(&tx, node_id)?.ok_or_else(|| Error::msg("node disappeared"))?;
+    tx.commit()?;
+    emit_layout_changed(state);
+    Ok(row)
+}
+
 /// Delete a tab node (closing a chat tab). Mission nodes leave via
 /// mission archive.
 pub fn node_delete(state: &AppCore, id: String) -> Result<()> {
@@ -647,6 +669,133 @@ mod tests {
 
     fn seed_mission(state: &AppCore, id: &str, project_id: Option<&str>) {
         seed_mission_with_status(state, id, project_id, "aborted");
+    }
+
+    #[test]
+    fn mission_layout_set_requires_a_mission_and_moves_shells_out_of_tabs() {
+        let state = test_core();
+        seed_mission(&state, "m1", None);
+        let (mission_node, tab) = {
+            let conn = state.db.get().unwrap();
+            conn.execute(
+                "INSERT INTO sessions (id, status, agent_runtime, agent_command)
+                 VALUES ('drawer-shell', 'stopped', 'shell', '/bin/zsh')",
+                [],
+            )
+            .unwrap();
+            let mission_node = repo::node::ensure_mission_node(&conn, "m1", None).unwrap();
+            let tab = repo::node::create_tab(
+                &conn,
+                None,
+                "terminal",
+                0,
+                r#"{"preset":"single","slots":["drawer-shell"],"sizes":{}}"#,
+            )
+            .unwrap();
+            (mission_node, tab)
+        };
+        let mut events = state.events.subscribe();
+        let layout =
+            r#"{"drawer":{"open":true,"height":280,"shells":["drawer-shell"],"active":0}}"#;
+
+        let row = node_mission_layout_set(&state, &mission_node.id, layout.into()).unwrap();
+
+        assert_eq!(row.layout.as_deref(), Some(layout));
+        let conn = state.db.get().unwrap();
+        assert!(repo::node::get(&conn, &tab.id).unwrap().is_none());
+        assert_eq!(repo::node::session_ids(&row), ["drawer-shell"]);
+        assert_eq!(events.try_recv().unwrap().name, LAYOUT_CHANGED_EVENT);
+
+        let tab = repo::node::create_tab(
+            &conn,
+            None,
+            "chat",
+            0,
+            r#"{"preset":"single","slots":[],"sizes":{}}"#,
+        )
+        .unwrap();
+        drop(conn);
+        let error = node_mission_layout_set(&state, &tab.id, "{}".into()).unwrap_err();
+        assert!(error.to_string().contains("is not a mission"));
+    }
+
+    #[test]
+    fn mission_archive_closes_drawer_shells_and_tolerates_stale_ids() {
+        let archive_state = test_core();
+        seed_mission(&archive_state, "archive-me", None);
+        {
+            let conn = archive_state.db.get().unwrap();
+            conn.execute(
+                "INSERT INTO sessions (id, status, agent_runtime, agent_command)
+                 VALUES ('archive-shell', 'stopped', 'shell', '/bin/zsh')",
+                [],
+            )
+            .unwrap();
+            let node = repo::node::ensure_mission_node(&conn, "archive-me", None).unwrap();
+            conn.execute(
+                "UPDATE nodes SET layout = ?2 WHERE id = ?1",
+                rusqlite::params![
+                    node.id,
+                    r#"{"drawer":{"open":true,"height":280,"shells":["archive-shell","missing-shell"],"active":0}}"#
+                ],
+            )
+            .unwrap();
+        }
+
+        block_on(crate::ops::mission::mission_archive_impl(
+            &archive_state,
+            "archive-me".into(),
+        ))
+        .unwrap();
+
+        let conn = archive_state.db.get().unwrap();
+        assert!(repo::session::get_row(&conn, "archive-shell")
+            .unwrap()
+            .is_none());
+        assert!(
+            repo::node::find_by_ref(&conn, NodeType::Mission, "archive-me")
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn mission_delete_closes_shells_if_an_archived_row_retains_a_drawer_node() {
+        // Normal archive deletes the node; this covers interrupted or legacy persisted state.
+        let delete_state = test_core();
+        seed_mission(&delete_state, "delete-me", None);
+        {
+            let conn = delete_state.db.get().unwrap();
+            conn.execute(
+                "UPDATE missions SET archived_at = '2026-09-04T00:00:00Z'
+                 WHERE id = 'delete-me'",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO sessions (id, status, agent_runtime, agent_command)
+                 VALUES ('delete-shell', 'stopped', 'shell', '/bin/zsh')",
+                [],
+            )
+            .unwrap();
+            let node = repo::node::ensure_mission_node(&conn, "delete-me", None).unwrap();
+            conn.execute(
+                "UPDATE nodes SET layout = ?2 WHERE id = ?1",
+                rusqlite::params![
+                    node.id,
+                    r#"{"drawer":{"open":true,"height":280,"shells":["delete-shell"],"active":0}}"#
+                ],
+            )
+            .unwrap();
+        }
+
+        crate::ops::mission::mission_delete(&delete_state, "delete-me").unwrap();
+
+        let conn = delete_state.db.get().unwrap();
+        assert!(repo::session::get_row(&conn, "delete-shell")
+            .unwrap()
+            .is_none());
+        assert!(repo::mission::get(&conn, "delete-me").unwrap().is_none());
     }
 
     #[test]

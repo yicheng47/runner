@@ -479,14 +479,6 @@ impl NativeRoot {
                     .unwrap_or_else(|| self.estimated_terminal_size(layout, &leaf.id, window, cx));
                 direct_sizes.insert(session_id.to_owned(), size);
             }
-            for session_id in layout.drawer_shells() {
-                let size = self
-                    .attached
-                    .get(session_id)
-                    .map(|chat| chat.terminal.size())
-                    .unwrap_or_else(|| self.estimated_drawer_terminal_size(layout, window, cx));
-                direct_sizes.insert(session_id.clone(), size);
-            }
         }
         let mission_size = self.estimated_mission_terminal_size(window, cx);
         let core = self.core(cx).clone();

@@ -172,19 +172,19 @@ pub struct PaneLayout {
     pub preset: PresetKind,
     pub root: PaneNode,
     pub focused_pane_id: String,
-    drawer: DrawerLayout,
+    drawer: TerminalDrawer,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
-struct DrawerLayout {
+pub struct TerminalDrawer {
     open: bool,
     height: f32,
     shells: Vec<String>,
     active: usize,
 }
 
-impl Default for DrawerLayout {
+impl Default for TerminalDrawer {
     fn default() -> Self {
         Self {
             open: false,
@@ -192,6 +192,107 @@ impl Default for DrawerLayout {
             shells: Vec::new(),
             active: 0,
         }
+    }
+}
+
+impl TerminalDrawer {
+    fn normalized(mut self) -> Self {
+        self.height = clamp_drawer_height(self.height);
+        self.active = self.active.min(self.shells.len().saturating_sub(1));
+        self
+    }
+
+    pub fn open(&self) -> bool {
+        self.open
+    }
+
+    pub fn set_open(&mut self, open: bool) {
+        self.open = open;
+    }
+
+    pub fn height(&self) -> f32 {
+        self.height
+    }
+
+    pub fn set_height(&mut self, height: f32) {
+        self.height = clamp_drawer_height(height);
+    }
+
+    pub fn shells(&self) -> &[String] {
+        &self.shells
+    }
+
+    pub fn active_shell(&self) -> Option<&str> {
+        self.shells.get(self.active).map(String::as_str)
+    }
+
+    pub fn add(&mut self, session_id: String) {
+        if let Some(index) = self
+            .shells
+            .iter()
+            .position(|existing| existing == &session_id)
+        {
+            self.active = index;
+        } else {
+            self.shells.push(session_id);
+            self.active = self.shells.len() - 1;
+        }
+        self.open = true;
+    }
+
+    pub fn remove(&mut self, session_id: &str) -> bool {
+        let Some(index) = self
+            .shells
+            .iter()
+            .position(|existing| existing == session_id)
+        else {
+            return false;
+        };
+        self.shells.remove(index);
+        if self.shells.is_empty() {
+            self.active = 0;
+            self.open = false;
+        } else if index <= self.active {
+            self.active = self.active.saturating_sub(1);
+        }
+        true
+    }
+
+    pub fn activate(&mut self, session_id: &str) -> bool {
+        let Some(index) = self
+            .shells
+            .iter()
+            .position(|existing| existing == session_id)
+        else {
+            return false;
+        };
+        self.active = index;
+        self.open = true;
+        true
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MissionLayout {
+    pub drawer: TerminalDrawer,
+}
+
+impl MissionLayout {
+    pub fn from_node_row(row: &NodeRow) -> Result<Self> {
+        let mut layout: Self = row
+            .layout
+            .as_deref()
+            .map(serde_json::from_str)
+            .transpose()
+            .with_context(|| format!("parse mission {} layout", row.id))?
+            .unwrap_or_default();
+        layout.drawer = layout.drawer.normalized();
+        Ok(layout)
+    }
+
+    pub fn serialize(&self) -> Result<String> {
+        Ok(serde_json::to_string(self)?)
     }
 }
 
@@ -203,7 +304,7 @@ struct PersistedLayout {
     #[serde(default, deserialize_with = "lenient_sizes")]
     sizes: BTreeMap<String, [f32; 2]>,
     #[serde(default)]
-    drawer: DrawerLayout,
+    drawer: TerminalDrawer,
 }
 
 // The Tauri-era writer could persist `[null,null]` sizes (NaN from the panel
@@ -256,14 +357,7 @@ impl PaneLayout {
             preset: persisted.preset,
             root,
             focused_pane_id,
-            drawer: DrawerLayout {
-                height: clamp_drawer_height(persisted.drawer.height),
-                active: persisted
-                    .drawer
-                    .active
-                    .min(persisted.drawer.shells.len().saturating_sub(1)),
-                ..persisted.drawer
-            },
+            drawer: persisted.drawer.normalized(),
         })
     }
 
@@ -303,7 +397,7 @@ impl PaneLayout {
             preset,
             root,
             focused_pane_id,
-            drawer: DrawerLayout::default(),
+            drawer: TerminalDrawer::default(),
         }
     }
 
@@ -330,78 +424,39 @@ impl PaneLayout {
     }
 
     pub fn drawer_open(&self) -> bool {
-        self.drawer.open
+        self.drawer.open()
     }
 
     pub fn set_drawer_open(&mut self, open: bool) {
-        self.drawer.open = open;
+        self.drawer.set_open(open);
     }
 
     pub fn drawer_height(&self) -> f32 {
-        self.drawer.height
+        self.drawer.height()
     }
 
     pub fn set_drawer_height(&mut self, height: f32) {
-        self.drawer.height = clamp_drawer_height(height);
+        self.drawer.set_height(height);
     }
 
     pub fn drawer_shells(&self) -> &[String] {
-        &self.drawer.shells
+        self.drawer.shells()
     }
 
     pub fn active_drawer_shell(&self) -> Option<&str> {
-        self.drawer
-            .shells
-            .get(self.drawer.active)
-            .map(String::as_str)
+        self.drawer.active_shell()
     }
 
     pub fn add_drawer_shell(&mut self, session_id: String) {
-        if let Some(index) = self
-            .drawer
-            .shells
-            .iter()
-            .position(|existing| existing == &session_id)
-        {
-            self.drawer.active = index;
-        } else {
-            self.drawer.shells.push(session_id);
-            self.drawer.active = self.drawer.shells.len() - 1;
-        }
-        self.drawer.open = true;
+        self.drawer.add(session_id);
     }
 
     pub fn remove_drawer_shell(&mut self, session_id: &str) -> bool {
-        let Some(index) = self
-            .drawer
-            .shells
-            .iter()
-            .position(|existing| existing == session_id)
-        else {
-            return false;
-        };
-        self.drawer.shells.remove(index);
-        if self.drawer.shells.is_empty() {
-            self.drawer.active = 0;
-            self.drawer.open = false;
-        } else if index <= self.drawer.active {
-            self.drawer.active = self.drawer.active.saturating_sub(1);
-        }
-        true
+        self.drawer.remove(session_id)
     }
 
     pub fn activate_drawer_shell(&mut self, session_id: &str) -> bool {
-        let Some(index) = self
-            .drawer
-            .shells
-            .iter()
-            .position(|existing| existing == session_id)
-        else {
-            return false;
-        };
-        self.drawer.active = index;
-        self.drawer.open = true;
-        true
+        self.drawer.activate(session_id)
     }
 
     pub fn is_resize_owner(&self, pane_id: &str, session_id: &str) -> bool {

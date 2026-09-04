@@ -132,6 +132,14 @@ fn is_concurrent_resume_error(error: &str) -> bool {
     .any(|fragment| error.contains(fragment))
 }
 
+fn mission_drawer_available(archived: bool, secondary: bool) -> bool {
+    !archived && !secondary
+}
+
+fn drawer_session_should_take_focus(layout: &MissionLayout, session_id: &str) -> bool {
+    layout.drawer.open() && layout.drawer.active_shell() == Some(session_id)
+}
+
 #[derive(Clone)]
 enum MissionMenuAction {
     Pin,
@@ -161,6 +169,12 @@ pub(crate) struct MissionWorkspace {
     app_store: Entity<AppStore>,
     store_revisions: StoreRevisions,
     attached: HashMap<String, AttachedChat>,
+    mission_node_id: Option<String>,
+    layout: MissionLayout,
+    drawer_focus: FocusHandle,
+    drawer_resizing: bool,
+    closing_drawer_shells: HashSet<String>,
+    drawer_exit_codes: HashMap<String, Option<i32>>,
     active: bool,
     sidebar_collapsed: bool,
     rail_visibility: SidebarVisibilityTransition,
@@ -230,6 +244,7 @@ impl MissionWorkspace {
         let sidebar_collapsed = settings.sidebar_collapsed;
         let rail_visibility = SidebarVisibilityTransition::new(settings.mission_rail_open);
         let root_focus = cx.focus_handle();
+        let drawer_focus = cx.focus_handle();
         let workspace = cx.entity();
         let menu_root = workspace.clone();
         let action_menu = cx.new(move |menu_cx| {
@@ -354,6 +369,12 @@ impl MissionWorkspace {
             app_store: app_store.clone(),
             store_revisions,
             attached: HashMap::new(),
+            mission_node_id: None,
+            layout: MissionLayout::default(),
+            drawer_focus,
+            drawer_resizing: false,
+            closing_drawer_shells: HashSet::new(),
+            drawer_exit_codes: HashMap::new(),
             active: false,
             sidebar_collapsed,
             rail_visibility,
@@ -419,6 +440,11 @@ impl MissionWorkspace {
         self.event_resync_generation += 1;
         self.mission_id = Some(mission_id);
         self.attached.clear();
+        self.mission_node_id = None;
+        self.layout = MissionLayout::default();
+        self.drawer_resizing = false;
+        self.closing_drawer_shells.clear();
+        self.drawer_exit_codes.clear();
         self.mission = None;
         self.crew = None;
         self.sessions.clear();
@@ -632,6 +658,53 @@ impl MissionWorkspace {
             .update(cx, |store, store_cx| store.refresh(refresh, store_cx));
     }
 
+    fn load_mission_layout(&mut self, cx: &App) -> Result<()> {
+        let Some(mission_id) = self.mission_id.as_deref() else {
+            return Ok(());
+        };
+        let Some(row) = self
+            .app_store
+            .read(cx)
+            .nodes
+            .iter()
+            .find(|row| {
+                row.node_type == runner_backend::repo::node::NodeType::Mission
+                    && row.ref_id.as_deref() == Some(mission_id)
+            })
+            .cloned()
+        else {
+            return Ok(());
+        };
+        self.mission_node_id = Some(row.id.clone());
+        self.layout = MissionLayout::from_node_row(&row)?;
+        Ok(())
+    }
+
+    fn persist_mission_layout(&self, cx: &App) -> Result<()> {
+        let node_id = self
+            .mission_node_id
+            .as_deref()
+            .context("mission node is missing")?;
+        runner_backend::ops::node::node_mission_layout_set(
+            self.core(cx),
+            node_id,
+            self.layout.serialize()?,
+        )?;
+        Ok(())
+    }
+
+    fn drawer_session_entry<'a>(
+        &self,
+        session_id: &str,
+        cx: &'a App,
+    ) -> Option<&'a DirectSessionEntry> {
+        self.app_store
+            .read(cx)
+            .sessions
+            .iter()
+            .find(|entry| entry.session_id == session_id)
+    }
+
     fn is_active(&self, _: &App) -> bool {
         self.active
     }
@@ -673,6 +746,11 @@ impl MissionWorkspace {
         if reactions.apply_terminal_settings {
             self.apply_terminal_settings(cx);
         }
+        if reactions.reload_tabs && self.mission.is_some() && !self.archived() {
+            if let Err(error) = self.load_mission_layout(cx) {
+                self.error = Some(error.to_string());
+            }
+        }
         if revisions.settings != previous.settings
             || (reactions.terminal_wake && self.is_active(cx))
         {
@@ -707,8 +785,8 @@ impl MissionWorkspace {
                 .child(
                     svg()
                         .path("panel-left-hidden.svg")
-                        .w(px(15.4 * self.settings(cx).app_zoom))
-                        .h(px(12. * self.settings(cx).app_zoom))
+                        .w(px(14. * self.settings(cx).app_zoom))
+                        .h(px(14. * self.settings(cx).app_zoom))
                         .flex_none()
                         .text_color(theme::muted())
                         .group_hover("open-sidebar", |icon| icon.text_color(theme::text())),
@@ -1116,6 +1194,8 @@ impl MissionWorkspace {
                         this.loading = false;
                         this.error = None;
                         if archived {
+                            this.mission_node_id = None;
+                            this.layout = MissionLayout::default();
                             this.active_tab = MissionTab::Feed;
                             this.open_tabs.clear();
                             let removed_mission_id = mission_id.clone();
@@ -1126,6 +1206,17 @@ impl MissionWorkspace {
                                 true
                             });
                         } else {
+                            match this
+                                .app_store
+                                .update(cx, |store, store_cx| store.refresh_nodes(store_cx))
+                            {
+                                Ok(()) => {
+                                    if let Err(error) = this.load_mission_layout(cx) {
+                                        this.error = Some(error.to_string());
+                                    }
+                                }
+                                Err(error) => this.error = Some(error.to_string()),
+                            }
                             this.open_tabs = this
                                 .sessions
                                 .iter()
@@ -1213,6 +1304,55 @@ impl MissionWorkspace {
         )
     }
 
+    pub(crate) fn estimated_mission_drawer_terminal_size(
+        &self,
+        window: &Window,
+        cx: &App,
+    ) -> (u16, u16) {
+        self.estimated_mission_drawer_terminal_size_for_height(
+            self.layout.drawer.height(),
+            window,
+            cx,
+        )
+    }
+
+    pub(crate) fn estimated_mission_drawer_terminal_size_for_height(
+        &self,
+        drawer_height: f32,
+        window: &Window,
+        cx: &App,
+    ) -> (u16, u16) {
+        let bounds = window.bounds().size;
+        let sidebar_width = if self.sidebar_collapsed {
+            0.
+        } else {
+            self.settings(cx).sidebar_width * self.settings(cx).app_zoom
+        };
+        let rail_width = if self.settings(cx).mission_rail_open {
+            self.settings(cx).mission_rail_width * self.settings(cx).app_zoom
+        } else {
+            0.
+        };
+        let width = (f32::from(bounds.width) - sidebar_width - rail_width - 16.).max(200.);
+        let height = (drawer_height - (32. + 5. + 24.)).max(80.) * self.settings(cx).app_zoom;
+        let font_size = self.settings(cx).terminal_font_size as f32 * self.settings(cx).app_zoom;
+        let cell_width = font_size * 0.6;
+        let line_height = (font_size * crate::terminal::element::LINE_HEIGHT_FACTOR).round();
+        (
+            (width / cell_width).floor().max(2.) as u16,
+            (height / line_height).floor().max(2.) as u16,
+        )
+    }
+
+    pub(crate) fn drawer_focused(&self, window: &Window, cx: &App) -> bool {
+        self.layout.drawer.open() && self.drawer_focus.contains_focused(window, cx)
+    }
+
+    pub(crate) fn drawer_available(&self, cx: &App) -> bool {
+        self.mission.is_some()
+            && mission_drawer_available(self.archived(), self.secondary_state(cx).secondary)
+    }
+
     pub(crate) fn current_mission_terminal_size(&self, window: &Window, cx: &App) -> (u16, u16) {
         let measured = match &self.active_tab {
             MissionTab::Session(session_id) => self
@@ -1261,11 +1401,33 @@ impl MissionWorkspace {
             return Ok(());
         }
         let mut errors = Vec::new();
+        let layout = self.layout.clone();
+        if let Err(error) = self.resume_visible_drawer_shell_on_launch(&layout, window, cx) {
+            errors.push(error.to_string());
+        }
         for session in self.sessions.clone() {
             if !self.open_tabs.contains(&session.session.id) {
                 continue;
             }
-            if let Err(error) = self.ensure_mission_terminal_attached(&session, window, cx) {
+            if let Err(error) = self.ensure_mission_terminal_attached(
+                &session.session.id,
+                session.session.status,
+                window,
+                cx,
+            ) {
+                errors.push(error.to_string());
+            }
+        }
+        for session_id in self.layout.drawer.shells().to_vec() {
+            let Some(status) = self
+                .drawer_session_entry(&session_id, cx)
+                .map(|entry| entry.status)
+            else {
+                continue;
+            };
+            if let Err(error) =
+                self.ensure_mission_terminal_attached(&session_id, status, window, cx)
+            {
                 errors.push(error.to_string());
             }
         }
@@ -1276,24 +1438,52 @@ impl MissionWorkspace {
         }
     }
 
-    fn ensure_mission_terminal_attached(
+    fn resume_visible_drawer_shell_on_launch(
         &mut self,
-        session: &SessionRow,
+        layout: &MissionLayout,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<()> {
-        let session_id = session.session.id.clone();
+        let Some(session_id) = layout.drawer.active_shell() else {
+            return Ok(());
+        };
+        let Some(status) = self
+            .drawer_session_entry(session_id, cx)
+            .map(|entry| entry.status)
+        else {
+            return Ok(());
+        };
+        let visible = self.is_active(cx)
+            && layout.drawer.open()
+            && !self.secondary_state(cx).secondary
+            && !self.transitions.contains_key(session_id);
+        let core = self.core(cx);
+        if chat_lifecycle::take_visible_drawer_launch_claim(visible, status, || {
+            runner_backend::ops::session::session_take_resume_on_launch(core, session_id)
+        })? {
+            self.resume_terminal_drawer_shell_on_launch(session_id, window, cx);
+        }
+        Ok(())
+    }
+
+    fn ensure_mission_terminal_attached(
+        &mut self,
+        session_id: &str,
+        status: SessionStatus,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<()> {
         if self.secondary_state(cx).secondary {
             return Ok(());
         }
-        if session.session.status != SessionStatus::Running {
-            self.attached.remove(&session_id);
+        if status != SessionStatus::Running {
+            self.attached.remove(session_id);
             return Ok(());
         }
-        if self.attached.contains_key(&session_id) {
+        if self.attached.contains_key(session_id) {
             return Ok(());
         }
-        let Some(terminal) = self.app_store.read(cx).bridge.session(&session_id) else {
+        let Some(terminal) = self.app_store.read(cx).bridge.session(session_id) else {
             return Ok(());
         };
         terminal.set_palette(self.settings(cx).terminal_theme.palette());
@@ -1315,14 +1505,15 @@ impl MissionWorkspace {
         let terminal_interaction = cx.new(|_| TerminalInteraction::new(Arc::clone(&terminal)));
         let terminal_focus = cx.focus_handle();
         let terminal_input = cx.new(|_| TerminalInput::new(Arc::clone(&terminal)));
-        let input_session_id = session_id.clone();
+        let input_session_id = session_id.to_owned();
         let terminal_input_subscription = cx.observe(&terminal_input, move |this, input, cx| {
             if let Some(Err(error)) = input.update(cx, |input, _| input.take_write_result()) {
                 let visible = this.is_active(cx)
-                    && this
+                    && (this
                         .sessions
                         .iter()
-                        .any(|session| session.session.id == input_session_id);
+                        .any(|session| session.session.id == input_session_id)
+                        || this.layout.drawer.shells().contains(&input_session_id));
                 if visible {
                     this.error = Some(error);
                 }
@@ -1340,7 +1531,7 @@ impl MissionWorkspace {
                 });
             });
         self.attached.insert(
-            session_id.clone(),
+            session_id.to_owned(),
             AttachedChat {
                 _terminal_view: terminal.view(),
                 terminal,
@@ -1361,7 +1552,7 @@ impl MissionWorkspace {
         session_id: &str,
         kind: MissionTransitionKind,
         baseline_seq: Option<u64>,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.next_transition_generation += 1;
@@ -1382,12 +1573,12 @@ impl MissionWorkspace {
             },
         );
         let tracked_id = session_id.to_owned();
-        cx.spawn(async move |weak, cx| loop {
+        cx.spawn_in(window, async move |weak, cx| loop {
             cx.background_executor()
                 .timer(Duration::from_millis(100))
                 .await;
             let done = weak
-                .update(cx, |this, cx| {
+                .update_in(cx, |this, window, cx| {
                     let Some(transition) = this.transitions.get(&tracked_id).copied() else {
                         return true;
                     };
@@ -1423,6 +1614,9 @@ impl MissionWorkspace {
                     );
                     if settled {
                         this.transitions.remove(&tracked_id);
+                        if drawer_session_should_take_focus(&this.layout, &tracked_id) {
+                            this.focus_mission_drawer_terminal(&tracked_id, window, cx);
+                        }
                         cx.notify();
                     }
                     settled
@@ -1488,32 +1682,398 @@ impl MissionWorkspace {
         window.focus(&self.root_focus);
     }
 
+    fn focus_mission_drawer_terminal(&self, session_id: &str, window: &mut Window, cx: &App) {
+        if self.mission_terminal_interactive(session_id, cx) {
+            if let Some(chat) = self.attached.get(session_id) {
+                chat.terminal_focus.focus(window);
+                return;
+            }
+        }
+        self.drawer_focus.focus(window);
+    }
+
+    pub(crate) fn toggle_terminal_drawer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !mission_drawer_available(self.archived(), self.secondary_state(cx).secondary)
+            || self.mission.is_none()
+        {
+            return;
+        }
+        if self.layout.drawer.open() {
+            self.hide_terminal_drawer(window, cx);
+        } else if self.layout.drawer.shells().is_empty() {
+            self.add_terminal_drawer_shell(window, cx);
+        } else {
+            let original = self.layout.clone();
+            self.layout.drawer.set_open(true);
+            self.finish_terminal_drawer_update(original, window, cx);
+        }
+    }
+
+    pub(crate) fn hide_terminal_drawer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let original = self.layout.clone();
+        self.layout.drawer.set_open(false);
+        self.finish_terminal_drawer_update(original, window, cx);
+    }
+
+    fn finish_terminal_drawer_update(
+        &mut self,
+        original: MissionLayout,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match self.persist_mission_layout(cx) {
+            Ok(()) => {
+                self.error = None;
+                let layout = self.layout.clone();
+                if let Err(error) = self.resume_visible_drawer_shell_on_launch(&layout, window, cx)
+                {
+                    self.error = Some(error.to_string());
+                }
+                if self.layout.drawer.open() {
+                    if let Some(session_id) = self.layout.drawer.active_shell() {
+                        self.focus_mission_drawer_terminal(session_id, window, cx);
+                    }
+                } else {
+                    self.focus_active_mission_terminal(window, cx);
+                }
+            }
+            Err(error) => {
+                self.layout = original;
+                self.error = Some(error.to_string());
+            }
+        }
+        cx.notify();
+    }
+
+    fn activate_terminal_drawer_shell(
+        &mut self,
+        session_id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let original = self.layout.clone();
+        if !self.layout.drawer.activate(session_id) {
+            return;
+        }
+        match self.persist_mission_layout(cx) {
+            Ok(()) => {
+                self.error = None;
+                let layout = self.layout.clone();
+                if let Err(error) = self.resume_visible_drawer_shell_on_launch(&layout, window, cx)
+                {
+                    self.error = Some(error.to_string());
+                }
+                self.focus_mission_drawer_terminal(session_id, window, cx);
+            }
+            Err(error) => {
+                self.layout = original;
+                self.error = Some(error.to_string());
+            }
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn add_terminal_drawer_shell(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !mission_drawer_available(self.archived(), self.secondary_state(cx).secondary) {
+            return;
+        }
+        let Some(mission) = self.mission.clone() else {
+            return;
+        };
+        let original = self.layout.clone();
+        let project_cwd = mission.project_id.as_deref().and_then(|project_id| {
+            self.app_store
+                .read(cx)
+                .projects
+                .iter()
+                .find(|project| project.id == project_id)
+                .map(|project| project.cwd.as_str())
+        });
+        let cwd = super::start_chat::terminal_working_dir(
+            mission.cwd.as_deref(),
+            project_cwd,
+            &self.settings(cx).default_working_dir,
+            std::env::var("HOME").ok().as_deref(),
+        );
+        let size = self.estimated_mission_drawer_terminal_size(window, cx);
+        let mut spawned_id = None;
+        let result = (|| -> Result<String> {
+            let spawned = runner_backend::ops::session::session_start_shell(
+                self.core(cx),
+                mission.project_id,
+                cwd,
+                Some(size.0),
+                Some(size.1),
+            )?;
+            spawned_id = Some(spawned.id.clone());
+            self.app_store
+                .update(cx, |store, store_cx| store.refresh_sessions(store_cx));
+            self.layout.drawer.add(spawned.id.clone());
+            self.persist_mission_layout(cx)?;
+            self.app_store
+                .update(cx, |store, store_cx| store.refresh_nodes(store_cx))?;
+            self.ensure_mission_terminal_attached(&spawned.id, SessionStatus::Running, window, cx)?;
+            Ok(spawned.id)
+        })();
+
+        match result {
+            Ok(session_id) => {
+                self.error = None;
+                self.drawer_exit_codes.remove(&session_id);
+                self.begin_mission_transition(
+                    &session_id,
+                    MissionTransitionKind::Starting,
+                    Some(0),
+                    window,
+                    cx,
+                );
+                self.focus_mission_drawer_terminal(&session_id, window, cx);
+            }
+            Err(error) => {
+                if let Some(session_id) = spawned_id {
+                    let _ = runner_backend::ops::session::session_close(self.core(cx), &session_id);
+                }
+                self.layout = original;
+                let _ = self.persist_mission_layout(cx);
+                self.refresh_store(StoreRefreshKind::All, cx);
+                self.error = Some(error.to_string());
+            }
+        }
+        cx.notify();
+    }
+
+    fn resume_terminal_drawer_shell(
+        &mut self,
+        session_id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.resume_terminal_drawer_shell_impl(session_id, false, window, cx);
+    }
+
+    fn resume_terminal_drawer_shell_on_launch(
+        &mut self,
+        session_id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.resume_terminal_drawer_shell_impl(session_id, true, window, cx);
+    }
+
+    fn resume_terminal_drawer_shell_impl(
+        &mut self,
+        session_id: &str,
+        launch_claim: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.transitions.contains_key(session_id) {
+            return;
+        }
+        let size = self
+            .attached
+            .get(session_id)
+            .map(|chat| chat.terminal.size())
+            .unwrap_or_else(|| self.estimated_mission_drawer_terminal_size(window, cx));
+        self.begin_mission_transition(
+            session_id,
+            MissionTransitionKind::Resuming,
+            None,
+            window,
+            cx,
+        );
+        self.error = None;
+        self.drawer_exit_codes.remove(session_id);
+        let core = self.core(cx).clone();
+        let target = session_id.to_owned();
+        let resume_target = target.clone();
+        let resume = cx.background_spawn(async move {
+            if launch_claim {
+                runner_backend::ops::session::session_resume_on_launch(
+                    &core,
+                    &resume_target,
+                    Some(size.0),
+                    Some(size.1),
+                )
+            } else {
+                runner_backend::ops::session::session_resume(
+                    &core,
+                    &resume_target,
+                    Some(size.0),
+                    Some(size.1),
+                )
+            }
+            .map(drop)
+            .map_err(|error| error.to_string())
+        });
+        cx.spawn_in(window, async move |weak, cx| {
+            let result = resume.await;
+            let _ = weak.update_in(cx, |this, window, cx| {
+                match result {
+                    Ok(()) => {
+                        this.refresh_store(StoreRefreshKind::All, cx);
+                        if let Err(error) = this.ensure_mission_terminal_attached(
+                            &target,
+                            SessionStatus::Running,
+                            window,
+                            cx,
+                        ) {
+                            this.transitions.remove(&target);
+                            this.error = Some(error.to_string());
+                        }
+                        this.focus_mission_drawer_terminal(&target, window, cx);
+                    }
+                    Err(error) => {
+                        this.transitions.remove(&target);
+                        this.error = Some(error);
+                        this.refresh_store(StoreRefreshKind::All, cx);
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    pub(crate) fn close_terminal_drawer_shell(
+        &mut self,
+        session_id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.closing_drawer_shells.insert(session_id.to_owned()) {
+            return;
+        }
+        self.error = None;
+        let core = self.core(cx).clone();
+        let target = session_id.to_owned();
+        let close_target = target.clone();
+        let close = cx.background_spawn(async move {
+            runner_backend::ops::session::session_close(&core, &close_target)
+                .map_err(|error| error.to_string())
+        });
+        cx.spawn_in(window, async move |weak, cx| {
+            let result = close.await;
+            let _ = weak.update_in(cx, |this, window, cx| {
+                this.closing_drawer_shells.remove(&target);
+                match result {
+                    Ok(()) => {
+                        this.attached.remove(&target);
+                        this.drawer_exit_codes.remove(&target);
+                        this.transitions.remove(&target);
+                        this.layout.drawer.remove(&target);
+                        this.refresh_store(StoreRefreshKind::All, cx);
+                        let layout = this.layout.clone();
+                        if let Err(error) =
+                            this.resume_visible_drawer_shell_on_launch(&layout, window, cx)
+                        {
+                            this.error = Some(error.to_string());
+                        }
+                        if let Some(active) = this.layout.drawer.active_shell().map(str::to_owned) {
+                            this.focus_mission_drawer_terminal(&active, window, cx);
+                        } else {
+                            this.focus_active_mission_terminal(window, cx);
+                        }
+                    }
+                    Err(error) => this.error = Some(error),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    fn request_close_terminal_drawer_shell(
+        &mut self,
+        session_id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match runner_backend::ops::session::session_shell_has_foreground_process(
+            self.core(cx),
+            session_id,
+        ) {
+            Ok(true) => {
+                if let Some(shell) = self.shell.upgrade() {
+                    let session_id = session_id.to_owned();
+                    shell.update(cx, |shell, shell_cx| {
+                        shell.terminal_close_confirm = Some(TerminalCloseConfirm {
+                            target: TerminalCloseTarget::MissionDrawer { session_id },
+                        });
+                        shell_cx.notify();
+                    });
+                }
+            }
+            Ok(false) => self.close_terminal_drawer_shell(session_id, window, cx),
+            Err(error) => {
+                self.error = Some(error.to_string());
+                cx.notify();
+            }
+        }
+    }
+
+    fn resize_terminal_drawer(
+        &mut self,
+        event: &DragMoveEvent<DrawerResizeDrag>,
+        cx: &mut Context<Self>,
+    ) {
+        let height =
+            f32::from(event.bounds.bottom() - event.event.position.y) / self.settings(cx).app_zoom;
+        self.layout.drawer.set_height(height);
+        self.drawer_resizing = true;
+        cx.notify();
+    }
+
+    fn finish_terminal_drawer_resize(&mut self, cx: &mut Context<Self>) {
+        if !self.drawer_resizing {
+            return;
+        }
+        self.drawer_resizing = false;
+        if let Err(error) = self.persist_mission_layout(cx) {
+            self.error = Some(error.to_string());
+        }
+        cx.notify();
+    }
+
     fn mission_terminal_interactive(&self, session_id: &str, cx: &App) -> bool {
         self.is_active(cx)
             && !self.secondary_state(cx).secondary
             && !self.archiving
-            && self
-                .sessions
-                .iter()
-                .find(|session| session.session.id == session_id)
-                .is_some_and(|session| {
-                    session.session.status == SessionStatus::Running
-                        && self.transition_kind(session_id).is_none()
-                })
+            && self.terminal_status(session_id, cx) == Some(SessionStatus::Running)
+            && self.transition_kind(session_id).is_none()
     }
 
     fn cached_mission_terminal_interactive(&self, session_id: &str, cx: &App) -> bool {
         self.is_active(cx)
             && !self.secondary
             && !self.archiving
-            && self
-                .sessions
-                .iter()
-                .find(|session| session.session.id == session_id)
-                .is_some_and(|session| {
-                    session.session.status == SessionStatus::Running
-                        && self.transition_kind(session_id).is_none()
-                })
+            && self.terminal_status(session_id, cx) == Some(SessionStatus::Running)
+            && self.transition_kind(session_id).is_none()
+    }
+
+    fn terminal_status(&self, session_id: &str, cx: &App) -> Option<SessionStatus> {
+        self.sessions
+            .iter()
+            .find(|session| session.session.id == session_id)
+            .map(|session| session.session.status)
+            .or_else(|| {
+                self.layout
+                    .drawer
+                    .shells()
+                    .iter()
+                    .any(|shell_id| shell_id == session_id)
+                    .then(|| {
+                        self.drawer_session_entry(session_id, cx)
+                            .map(|entry| entry.status)
+                    })
+                    .flatten()
+            })
     }
 
     pub(crate) fn handle_mission_workspace_event(
@@ -1615,6 +2175,12 @@ impl MissionWorkspace {
                         self.sessions
                             .iter()
                             .any(|session| session.session.id == session_id)
+                            || self
+                                .layout
+                                .drawer
+                                .shells()
+                                .iter()
+                                .any(|shell_id| shell_id == session_id)
                     });
                 if relevant {
                     self.error = event
@@ -1644,30 +2210,44 @@ impl MissionWorkspace {
                 }
             }
             "session/exit" | "session/spawned" | "session/updated" => {
-                if event
+                let session_id = event
+                    .payload
+                    .get("session_id")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned);
+                let mission_event = event
                     .payload
                     .get("mission_id")
                     .and_then(serde_json::Value::as_str)
-                    == Some(mission_id.as_str())
-                {
+                    == Some(mission_id.as_str());
+                let drawer_event = session_id
+                    .as_ref()
+                    .is_some_and(|session_id| self.layout.drawer.shells().contains(session_id));
+                if mission_event || drawer_event {
                     if event.name == "session/exit" {
-                        if let Some(session_id) = event
-                            .payload
-                            .get("session_id")
-                            .and_then(serde_json::Value::as_str)
-                        {
+                        if let Some(session_id) = session_id.as_deref() {
                             self.attached.remove(session_id);
                             self.delivery_blocked.remove(session_id);
                             self.transitions.remove(session_id);
+                            self.closing_drawer_shells.remove(session_id);
+                            if drawer_event {
+                                let exit_code = event
+                                    .payload
+                                    .get("exit_code")
+                                    .and_then(serde_json::Value::as_i64)
+                                    .and_then(|code| i32::try_from(code).ok());
+                                self.drawer_exit_codes
+                                    .insert(session_id.to_owned(), exit_code);
+                                if drawer_session_should_take_focus(&self.layout, session_id) {
+                                    self.drawer_focus.focus(window);
+                                }
+                            }
                         }
                     } else if event.name == "session/spawned" {
-                        if let Some(session_id) = event
-                            .payload
-                            .get("session_id")
-                            .and_then(serde_json::Value::as_str)
-                        {
+                        if let Some(session_id) = session_id.as_deref() {
                             self.attached.remove(session_id);
                             self.delivery_blocked.remove(session_id);
+                            self.drawer_exit_codes.remove(session_id);
                             let existing = self.transitions.get_mut(session_id).map(|transition| {
                                 transition.baseline_seq = 0;
                                 transition.kind
@@ -1683,7 +2263,25 @@ impl MissionWorkspace {
                             }
                         }
                     }
-                    self.refresh_open_mission(window, cx);
+                    if mission_event {
+                        self.refresh_open_mission(window, cx);
+                    } else {
+                        self.refresh_store(StoreRefreshKind::All, cx);
+                        if event.name != "session/exit" {
+                            if let Some(session_id) = session_id.as_deref() {
+                                if let Some(status) = self
+                                    .drawer_session_entry(session_id, cx)
+                                    .map(|entry| entry.status)
+                                {
+                                    if let Err(error) = self.ensure_mission_terminal_attached(
+                                        session_id, status, window, cx,
+                                    ) {
+                                        self.error = Some(error.to_string());
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
             "mission/changed" => {
@@ -1794,8 +2392,16 @@ impl MissionWorkspace {
                         this.sessions = sessions;
                         this.delivery_blocked
                             .retain(|session_id, _| valid_ids.contains(session_id));
-                        this.transitions
-                            .retain(|session_id, _| valid_ids.contains(session_id));
+                        let drawer_ids = this
+                            .layout
+                            .drawer
+                            .shells()
+                            .iter()
+                            .cloned()
+                            .collect::<HashSet<_>>();
+                        this.transitions.retain(|session_id, _| {
+                            valid_ids.contains(session_id) || drawer_ids.contains(session_id)
+                        });
                         this.open_tabs
                             .retain(|session_id| valid_ids.contains(session_id));
                         if archived {
@@ -1954,7 +2560,15 @@ impl MissionWorkspace {
                     Ok((mission, sessions)) => {
                         this.mission = Some(mission);
                         this.sessions = sessions;
-                        this.transitions.clear();
+                        let drawer_ids = this
+                            .layout
+                            .drawer
+                            .shells()
+                            .iter()
+                            .cloned()
+                            .collect::<HashSet<_>>();
+                        this.transitions
+                            .retain(|session_id, _| drawer_ids.contains(session_id));
                         this.sync_mission_copy_entities(cx);
                         this.refresh_store(StoreRefreshKind::All, cx);
                     }
@@ -2601,7 +3215,15 @@ impl MissionWorkspace {
             .flex_col()
             .child(header)
             .children(notices)
-            .child(body);
+            .child(body)
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| this.finish_terminal_drawer_resize(cx)),
+            )
+            .on_mouse_up_out(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| this.finish_terminal_drawer_resize(cx)),
+            );
         let rail_open = self.settings(cx).mission_rail_open;
         let (rail_visibility, rail_animating) = self.rail_visibility.animate_to(
             if rail_open { 1. } else { 0. },
@@ -2693,6 +3315,7 @@ impl MissionWorkspace {
         let root = cx.entity();
         let resume_root = root.clone();
         let stop_root = root.clone();
+        let drawer_root = root.clone();
         let open_rail_root = root;
         let controls = mission.as_ref().and_then(|mission| {
             (mission.status == MissionStatus::Running && !secondary).then(|| {
@@ -2713,7 +3336,7 @@ impl MissionWorkspace {
                     .children((all_live && !busy).then(|| {
                         SessionControl::new("mission-stop", SessionControlKind::Stop)
                             .variant(SessionControlVariant::Header)
-                            .title("Kill all PTYs; mission stays running so you can Resume")
+                            .title("Kill every slot PTY; mission stays running so you can Resume")
                             .on_press(move |window, cx| {
                                 stop_root.update(cx, |this, cx| this.stop_open_mission(window, cx));
                             })
@@ -2724,6 +3347,25 @@ impl MissionWorkspace {
             .as_ref()
             .map(|mission| mission.title.clone())
             .unwrap_or_else(|| "…".into());
+        let drawer_action = mission_drawer_available(self.archived(), secondary).then(|| {
+            let open = self.layout.drawer.open();
+            IconButton::new(
+                "mission-terminal-drawer-toggle",
+                if open {
+                    "panel-bottom-open.svg"
+                } else {
+                    "panel-bottom-hidden.svg"
+                },
+            )
+            .tooltip(super::panes::terminal_drawer_tooltip(
+                open,
+                &self.settings(cx).keymap_overrides,
+            ))
+            .on_press(move |window, cx| {
+                drawer_root.update(cx, |this, cx| this.toggle_terminal_drawer(window, cx));
+            })
+            .into_any_element()
+        });
         let rail_action = (!self.settings(cx).mission_rail_open).then(|| {
             IconButton::new("open-mission-rail", "panel-right-hidden.svg")
                 .tooltip("Open runners panel")
@@ -2745,7 +3387,7 @@ impl MissionWorkspace {
         )
         .sidebar_toggle(self.render_open_sidebar_button(cx))
         .title_actions(controls.into_iter().map(IntoElement::into_any_element))
-        .trailing_actions(rail_action)
+        .trailing_actions(drawer_action.into_iter().chain(rail_action))
         .into_div();
         self.render_titlebar_drag_area("mission-titlebar-drag", row, cx)
             .into_any_element()
@@ -2828,6 +3470,264 @@ impl MissionWorkspace {
             .into_any_element()
     }
 
+    fn render_mission_terminal_drawer(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let active_id = self.layout.drawer.active_shell().map(str::to_owned);
+        let labels = self
+            .layout
+            .drawer
+            .shells()
+            .iter()
+            .map(|session_id| {
+                self.drawer_session_entry(session_id, cx)
+                    .map(default_session_label)
+                    .unwrap_or_else(|| "shell".into())
+            })
+            .collect::<Vec<_>>();
+        let root = cx.entity();
+        let activate_root = root.clone();
+        let close_root = root.clone();
+        let add_root = root.clone();
+        let hide_root = root;
+        let strip = super::panes::render_terminal_drawer_strip(
+            "mission",
+            self.layout.drawer.shells(),
+            active_id.as_deref(),
+            &labels,
+            super::panes::TerminalDrawerCallbacks {
+                activate: Rc::new(move |session_id, window, cx| {
+                    activate_root.update(cx, |this, cx| {
+                        this.activate_terminal_drawer_shell(&session_id, window, cx)
+                    });
+                }),
+                close: Rc::new(move |session_id, window, cx| {
+                    close_root.update(cx, |this, cx| {
+                        this.request_close_terminal_drawer_shell(&session_id, window, cx)
+                    });
+                }),
+                add: Rc::new(move |window, cx| {
+                    add_root.update(cx, |this, cx| this.add_terminal_drawer_shell(window, cx));
+                }),
+                hide: Rc::new(move |window, cx| {
+                    hide_root.update(cx, |this, cx| this.hide_terminal_drawer(window, cx));
+                }),
+            },
+        );
+        let body = active_id
+            .as_deref()
+            .and_then(|session_id| self.render_mission_drawer_terminal(session_id, cx))
+            .unwrap_or_else(|| {
+                div()
+                    .relative()
+                    .flex_1()
+                    .min_h(px(0.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_size(rems(12. / 16.))
+                    .text_color(theme::faint())
+                    .child("Terminal unavailable")
+                    .into_any_element()
+            });
+        div()
+            .id("mission-terminal-drawer")
+            .track_focus(&self.drawer_focus)
+            .flex_1()
+            .min_h(px(0.))
+            .flex()
+            .flex_col()
+            .overflow_hidden()
+            .child(strip)
+            .child(body)
+            .into_any_element()
+    }
+
+    fn render_mission_drawer_terminal(
+        &mut self,
+        session_id: &str,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let entry = self.drawer_session_entry(session_id, cx)?.clone();
+        let session_id = entry.session_id.clone();
+        let transition = self.transition_kind(&session_id).map(|kind| match kind {
+            MissionTransitionKind::Starting => chat_lifecycle::TransitionKind::Starting,
+            MissionTransitionKind::Resuming => chat_lifecycle::TransitionKind::Resuming,
+        });
+        let overlay = chat_lifecycle::resolve_pane_overlay(
+            false,
+            transition,
+            entry.status,
+            entry.resumable,
+            self.drawer_exit_codes.get(&session_id).copied().flatten(),
+        );
+        let interactive = self.cached_mission_terminal_interactive(&session_id, cx);
+        let scrollable = self.is_active(cx) && transition.is_none();
+        let terminal_style = self.terminal_style(cx);
+        let terminal_background =
+            crate::terminal::element::to_hsla(terminal_style.palette.background, 1.);
+        let terminal_surface = if let Some(chat) = self.attached.get(&session_id) {
+            let terminal = Arc::clone(&chat.terminal);
+            let terminal_interaction = chat.terminal_interaction.clone();
+            let terminal_scrollbar = chat.terminal_scrollbar.clone();
+            let terminal_input = chat.terminal_input.clone();
+            let terminal_focus = chat.terminal_focus.clone();
+            let key_id = session_id.clone();
+            let copy_id = session_id.clone();
+            let scroll_id = session_id.clone();
+            let paste_id = session_id.clone();
+            let root = cx.entity();
+            let copy_root = root.clone();
+            let mut surface = div()
+                .id(SharedString::from(format!(
+                    "mission-drawer-terminal-{session_id}"
+                )))
+                .absolute()
+                .inset_0()
+                .key_context("Terminal")
+                .track_focus(&terminal_focus)
+                .flex()
+                .py_3()
+                .pl_3()
+                .pr_1()
+                .bg(terminal_background)
+                .opacity(match overlay {
+                    chat_lifecycle::PaneOverlayState::Starting
+                    | chat_lifecycle::PaneOverlayState::Resuming => 0.,
+                    chat_lifecycle::PaneOverlayState::Ended { .. } => 0.45,
+                    chat_lifecycle::PaneOverlayState::Archiving
+                    | chat_lifecycle::PaneOverlayState::None => 1.,
+                })
+                .on_action(move |action: &Copy, window, cx| {
+                    copy_root.update(cx, |this, cx| {
+                        this.on_mission_terminal_copy(&copy_id, action, window, cx)
+                    });
+                })
+                .child(
+                    div()
+                        .relative()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .min_h(px(0.))
+                        .child(TerminalElement::new(
+                            terminal,
+                            terminal_interaction,
+                            terminal_input,
+                            terminal_focus,
+                            interactive,
+                            scrollable,
+                            terminal_style,
+                        ))
+                        .child(terminal_scrollbar),
+                );
+            if interactive {
+                let key_root = root.clone();
+                let paste_root = root.clone();
+                surface = surface
+                    .on_key_down(move |event, window, cx| {
+                        key_root.update(cx, |this, cx| {
+                            this.on_mission_key_down(&key_id, event, window, cx)
+                        });
+                    })
+                    .on_action(move |action: &Paste, window, cx| {
+                        paste_root.update(cx, |this, cx| {
+                            this.on_mission_paste(&paste_id, action, window, cx)
+                        });
+                    });
+            }
+            if scrollable {
+                surface = surface.on_scroll_wheel(move |event, window, cx| {
+                    root.update(cx, |this, cx| {
+                        this.on_mission_scroll(&scroll_id, event, window, cx)
+                    });
+                });
+            }
+            surface.into_any_element()
+        } else {
+            div()
+                .absolute()
+                .inset_0()
+                .bg(terminal_background)
+                .text_size(rems(12. / 16.))
+                .text_color(theme::faint())
+                .when(
+                    matches!(overlay, chat_lifecycle::PaneOverlayState::None),
+                    |surface| {
+                        surface
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child("Attaching terminal…")
+                    },
+                )
+                .into_any_element()
+        };
+        let overlay_element = match overlay {
+            chat_lifecycle::PaneOverlayState::Resuming => Some(
+                SessionOverlay::transition(
+                    format!("mission-drawer-resuming-{session_id}"),
+                    SessionOverlayKind::Resuming,
+                )
+                .label("Restarting terminal…")
+                .into_any_element(),
+            ),
+            chat_lifecycle::PaneOverlayState::Starting => Some(
+                SessionOverlay::transition(
+                    format!("mission-drawer-starting-{session_id}"),
+                    SessionOverlayKind::Starting,
+                )
+                .label("Starting terminal…")
+                .into_any_element(),
+            ),
+            chat_lifecycle::PaneOverlayState::Ended { exit_code, .. } => {
+                let restart_root = cx.entity();
+                let close_root = restart_root.clone();
+                let restart_id = session_id.clone();
+                let close_id = session_id.clone();
+                Some(
+                    SessionOverlay::shell_exited(
+                        format!("mission-drawer-ended-{session_id}"),
+                        chat_lifecycle::shell_exited_subtitle(
+                            exit_code,
+                            &default_session_label(&entry),
+                            entry.cwd.as_deref(),
+                            std::env::var("HOME").ok().as_deref(),
+                        ),
+                        move |window, cx| {
+                            restart_root.update(cx, |this, cx| {
+                                this.resume_terminal_drawer_shell(&restart_id, window, cx)
+                            });
+                        },
+                        move |window, cx| {
+                            close_root.update(cx, |this, cx| {
+                                this.close_terminal_drawer_shell(&close_id, window, cx)
+                            });
+                        },
+                    )
+                    .into_any_element(),
+                )
+            }
+            chat_lifecycle::PaneOverlayState::Archiving
+            | chat_lifecycle::PaneOverlayState::None => None,
+        };
+        let focus_id = session_id.clone();
+        Some(
+            div()
+                .relative()
+                .flex_1()
+                .min_h(px(0.))
+                .overflow_hidden()
+                .bg(terminal_background)
+                .child(terminal_surface)
+                .children(overlay_element)
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, _, window, cx| {
+                        this.focus_mission_drawer_terminal(&focus_id, window, cx);
+                    }),
+                )
+                .into_any_element(),
+        )
+    }
+
     fn render_loaded_mission(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let feed_active = self.secondary || self.active_tab == MissionTab::Feed;
         let tabs = self.render_mission_tabs(feed_active, cx);
@@ -2863,13 +3763,66 @@ impl MissionWorkspace {
         if self.secondary && !self.duplicate_dismissed {
             panes = panes.child(self.render_duplicate_mission_overlay(cx));
         }
+        let drawer = (mission_drawer_available(self.archived(), self.secondary)
+            && self.layout.drawer.open())
+        .then(|| self.render_mission_terminal_drawer(cx));
+        let drawer_height = self.layout.drawer.height();
+        let drawer_resizing = self.drawer_resizing;
         div()
             .min_h(px(0.))
             .flex_1()
             .flex()
             .flex_col()
-            .child(tabs)
-            .child(panes)
+            .child(
+                div()
+                    .relative()
+                    .min_h(px(0.))
+                    .flex_1()
+                    .flex()
+                    .flex_col()
+                    .child(tabs)
+                    .child(panes),
+            )
+            .children(drawer.map(|drawer| {
+                div()
+                    .flex_none()
+                    .h(rems(drawer_height / 16.))
+                    .min_h(rems(MIN_DRAWER_HEIGHT / 16.))
+                    .max_h(rems(MAX_DRAWER_HEIGHT / 16.))
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .id("mission-terminal-drawer-resize")
+                            .flex_none()
+                            .h(rems(5. / 16.))
+                            .w_full()
+                            .flex()
+                            .items_center()
+                            .cursor(CursorStyle::ResizeUpDown)
+                            .child(
+                                div()
+                                    .h(rems(if drawer_resizing { 2. / 16. } else { 1. / 16. }))
+                                    .w_full()
+                                    .bg(theme::border_strong()),
+                            )
+                            .on_drag(
+                                DrawerResizeDrag,
+                                |drag: &DrawerResizeDrag, _, _, cx: &mut App| {
+                                    cx.new(|_| drag.clone())
+                                },
+                            ),
+                    )
+                    .child(drawer)
+            }))
+            .on_drag_move::<DrawerResizeDrag>(cx.listener(
+                |this, event: &DragMoveEvent<DrawerResizeDrag>, _, cx| {
+                    this.resize_terminal_drawer(event, cx);
+                },
+            ))
+            .on_drop(cx.listener(|this, _: &DrawerResizeDrag, _, cx| {
+                this.finish_terminal_drawer_resize(cx);
+            }))
             .into_any_element()
     }
 
@@ -5349,6 +6302,27 @@ mod tests {
             (90, 28)
         );
         assert_eq!(preferred_terminal_size(None, None, (80, 24)), (80, 24));
+    }
+
+    #[test]
+    fn mission_drawer_is_only_available_on_primary_active_rows() {
+        assert!(mission_drawer_available(false, false));
+        assert!(!mission_drawer_available(true, false));
+        assert!(!mission_drawer_available(false, true));
+        assert!(!mission_drawer_available(true, true));
+    }
+
+    #[test]
+    fn only_the_visible_active_drawer_shell_takes_focus_after_lifecycle_changes() {
+        let mut layout = MissionLayout::default();
+        layout.drawer.add("one".into());
+        layout.drawer.add("two".into());
+
+        assert!(!drawer_session_should_take_focus(&layout, "one"));
+        assert!(drawer_session_should_take_focus(&layout, "two"));
+
+        layout.drawer.set_open(false);
+        assert!(!drawer_session_should_take_focus(&layout, "two"));
     }
 
     #[test]

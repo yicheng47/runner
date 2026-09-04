@@ -50,6 +50,17 @@ pub(crate) fn resolve_pane_overlay(
     }
 }
 
+pub(crate) fn take_visible_drawer_launch_claim<E>(
+    visible: bool,
+    status: SessionStatus,
+    take: impl FnOnce() -> Result<bool, E>,
+) -> Result<bool, E> {
+    if !visible || status == SessionStatus::Running {
+        return Ok(false);
+    }
+    take()
+}
+
 pub(crate) fn ended_subtitle(
     status: SessionStatus,
     resumable: bool,
@@ -157,6 +168,54 @@ mod tests {
                 status: SessionStatus::Stopped,
                 resumable: false,
                 exit_code: None,
+            }
+        );
+    }
+
+    #[test]
+    fn drawer_shells_resume_only_when_visible_and_claimed() {
+        let mut takes = 0;
+        assert!(
+            take_visible_drawer_launch_claim(true, SessionStatus::Stopped, || {
+                takes += 1;
+                Ok::<_, ()>(true)
+            })
+            .unwrap()
+        );
+        assert_eq!(takes, 1);
+
+        assert!(!take_visible_drawer_launch_claim(
+            false,
+            SessionStatus::Stopped,
+            || -> Result<bool, ()> {
+                panic!("a hidden drawer must leave its launch claim pending")
+            }
+        )
+        .unwrap());
+        assert!(!take_visible_drawer_launch_claim(
+            true,
+            SessionStatus::Running,
+            || -> Result<bool, ()> {
+                panic!("a running drawer shell must not take a launch claim")
+            }
+        )
+        .unwrap());
+    }
+
+    #[test]
+    fn stopped_drawer_shell_without_a_claim_keeps_the_exited_state() {
+        assert!(
+            !take_visible_drawer_launch_claim(true, SessionStatus::Stopped, || {
+                Ok::<_, ()>(false)
+            })
+            .unwrap()
+        );
+        assert_eq!(
+            resolve_pane_overlay(false, None, SessionStatus::Stopped, false, Some(0)),
+            PaneOverlayState::Ended {
+                status: SessionStatus::Stopped,
+                resumable: false,
+                exit_code: Some(0),
             }
         );
     }
