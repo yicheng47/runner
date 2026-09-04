@@ -2225,7 +2225,7 @@ impl Sidebar {
                                         .min_w(px(0.))
                                         .text_size(rems(10. / 16.))
                                         .font_weight(FontWeight::SEMIBOLD)
-                                        .child("RECENT"),
+                                        .child("RECENTS"),
                                 )
                                 .child(
                                     svg()

@@ -512,7 +512,7 @@ impl Render for CommandPaletteState {
                         .text_size(rems(10. / 16.))
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(theme::faint())
-                        .child("RECENT")
+                        .child("RECENTS")
                 }))
                 .children(rows)
                 .into_any_element()
