@@ -2,7 +2,7 @@
 
 Tracking issue: [#356](https://github.com/yicheng47/runner/issues/356). Status: planned, design settled in `design/runner.pen`.
 
-**Direction change (2026-09-03):** the "no drawer" decision below is superseded by [469 — Terminal drawer](../469-terminal-drawer.md) ([#469](https://github.com/yicheng47/runner/issues/469)): inside a chat tab the terminal is now a drawer under the pane split, not a pane. The sidebar decisions stand — **New terminal** from the Recent / project `+` menus still creates a terminal-only tab with the shell in its pane — and the `"shell"` runtime, spawn path, close confirmation, Shell exited card, and relaunch rule this spec introduced are what the drawer reuses.
+**Direction change (2026-09-03):** the "no drawer" decision below is superseded by [469 — Terminal drawer](./469-terminal-drawer.md) ([#469](https://github.com/yicheng47/runner/issues/469)): inside a chat tab the terminal is now a drawer under the pane split, not a pane. The sidebar decisions stand — **New terminal** from the Recent / project `+` menus still creates a terminal-only tab with the shell in its pane — and the `"shell"` runtime, spawn path, close confirmation, Shell exited card, and relaunch rule this spec introduced are what the drawer reuses.
 
 ## Motivation
 

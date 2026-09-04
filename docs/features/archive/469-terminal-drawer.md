@@ -1,10 +1,10 @@
 # Terminal drawer — a shell beneath the panes
 
-Tracking issue: [#469](https://github.com/yicheng47/runner/issues/469). Status: designed 2026-09-03 in `design/runner.pen`, in implementation. Priority P2.
+Tracking issue: [#469](https://github.com/yicheng47/runner/issues/469). Status: shipped 2026-09-04 in [#471](https://github.com/yicheng47/runner/pull/471). Priority P2.
 
 ## Motivation
 
-[64](./archive/64-native-terminal.md) made a terminal a pane: **New terminal** from an empty pane or the command palette fills or splits the focused pane, and the shell then competes with the chats for the tab's two or three cells. In practice the terminal is a companion to the chat beside it — a quick `git status`, a `pnpm dev` you glance at — and giving it a full pane slot spends the tab's scarcest resource on it, forces a layout decision before the first command, and leaves a pane in the split after the command is done. The pane-as-terminal shape was the smallest one at the time; it is not the right one now.
+[64](./64-native-terminal.md) made a terminal a pane: **New terminal** from an empty pane or the command palette fills or splits the focused pane, and the shell then competes with the chats for the tab's two or three cells. In practice the terminal is a companion to the chat beside it — a quick `git status`, a `pnpm dev` you glance at — and giving it a full pane slot spends the tab's scarcest resource on it, forces a layout decision before the first command, and leaves a pane in the split after the command is done. The pane-as-terminal shape was the smallest one at the time; it is not the right one now.
 
 The shape that fits is the one editors converged on: **a terminal drawer that slides up from the bottom of the tab**, toggled with a key, sized by a drag handle, hidden when it is not needed. The chats keep the whole split; the shell appears beneath them at the focused chat's cwd and goes away without re-flowing anything. Codex's desktop app is the reference: a panel-bottom toggle beside the side-panel toggle, and a strip of terminal chips with a `+`.
 
@@ -25,7 +25,7 @@ A drawer shell is never a pane, never a sidebar row, and never part of a tab's c
 
 The chat header's two clusters get a rule: **the left cluster acts on the session, the right cluster toggles a surface.**
 
-- Left (`title_actions`, `crates/runner-app/src/surfaces/panes.rs:241`): icon · title · ⋯ · Stop · **⑂ Fork**. Fork moves here from the trailing group where [60](./60-fork-chat-to-pane-or-tab.md) placed it (`trailing_actions`, `panes.rs:315`); its enabled / disabled / pending states and the confirm dialog are unchanged.
+- Left (`title_actions`, `crates/runner-app/src/surfaces/panes.rs:241`): icon · title · ⋯ · Stop · **⑂ Fork**. Fork moves here from the trailing group where [60](../60-fork-chat-to-pane-or-tab.md) placed it (`trailing_actions`, `panes.rs:315`); its enabled / disabled / pending states and the confirm dialog are unchanged.
 - Right (`trailing_actions`): **split** (the layout picker, `panes.rs:271`) · **drawer** · **side panel** (`panes.rs:286`). Codex's order.
 
 The drawer toggle is a lucide `panel-bottom` glyph in the same hollow / filled pair the sidebar and side panel already use (`assets.rs` `PANEL_LEFT_*` / `PANEL_RIGHT_*`). Hidden: hollow, ghost variant, tooltip "Show terminal drawer · ⌥F12". Open: filled, `ButtonVariant::Secondary` — the raised pill the layout picker gets while it is open (`panes.rs:273`) — tooltip "Hide terminal drawer · ⌥F12". The shortcut hint follows the configured binding and disappears when the action is unbound. The toggle renders on every chat tab, including a single-pane one; it does not render on a terminal-only tab (`focused_shell`, a single shell pane and nothing else) or in the mission workspace.

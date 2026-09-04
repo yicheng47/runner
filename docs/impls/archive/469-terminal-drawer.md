@@ -1,6 +1,6 @@
 # 469 — Terminal drawer: a shell beneath the panes
 
-Tracking issue: [#469](https://github.com/yicheng47/runner/issues/469). Feature, P2. Spec: [`docs/features/469-terminal-drawer.md`](../features/469-terminal-drawer.md) — the spec wins on any detail this plan leaves out. Design: `design/runner.pen`, the `(469)` frames and `Spec — Terminal drawer (469) · v1`.
+Tracking issue: [#469](https://github.com/yicheng47/runner/issues/469). Feature, P2. Spec: [`docs/features/469-terminal-drawer.md`](../../features/archive/469-terminal-drawer.md) — the spec wins on any detail this plan leaves out. Design: `design/runner.pen`, the `(469)` frames and `Spec — Terminal drawer (469) · v1`.
 
 ## What ships
 
