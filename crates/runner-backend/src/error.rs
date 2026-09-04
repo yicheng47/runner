@@ -1,5 +1,3 @@
-#![allow(dead_code)] // Variants land in C1 for consumption across C2+.
-
 use thiserror::Error;
 
 #[derive(Debug, Error)]

@@ -1164,34 +1164,6 @@ pub async fn mission_rename_impl(state: &AppCore, id: String, title: String) -> 
     get(&conn, &id)
 }
 
-pub fn mission_set_project(
-    state: &AppCore,
-    id: &str,
-    project_id: Option<String>,
-) -> Result<Mission> {
-    let mut conn = state.db.get()?;
-    if repo::mission::set_project(&mut conn, id, project_id.as_deref())? == 0 {
-        return Err(Error::msg(format!("mission not found: {id}")));
-    }
-    // Keep the tree in step with the pointer: reparent the mission's
-    // node under the new project's node (or root), appended at the end.
-    if let Some(node) = repo::node::find_by_ref(&conn, repo::node::NodeType::Mission, id)? {
-        let parent = match project_id.as_deref() {
-            Some(project_id) => Some(repo::node::ensure_project_node(&conn, project_id)?.id),
-            None => None,
-        };
-        repo::node::reparent_append(&conn, &node.id, parent.as_deref())?;
-    }
-    let mission = get(&conn, id)?;
-    state
-        .events
-        .emit("mission/changed", &serde_json::json!({ "mission_id": id }));
-    state
-        .events
-        .emit("chat/layout-changed", &serde_json::json!({}));
-    Ok(mission)
-}
-
 /// Terminal end-of-mission. Kills every live PTY, writes the
 /// `mission_stopped` event, flips the mission row to `completed`, and
 /// drops the router + bus. Mirrors what `mission_stop` used to do

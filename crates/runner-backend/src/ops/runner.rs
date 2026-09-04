@@ -178,14 +178,10 @@ pub(super) fn validate_handle(handle: &str) -> Result<()> {
     Ok(())
 }
 
-/// Reject env var names that aren't POSIX shell identifiers. The
-/// session launch script (`session::launch::render_launch_script`)
-/// emits `export <name>=<value>` for every env entry, and bash
-/// errors out under `set -e` if `<name>` isn't `[A-Za-z_][A-Za-z0-9_]*`.
-/// Validating at persist time keeps bad names from ever entering
-/// the DB; the launch-script renderer also re-checks defensively
-/// so legacy rows that pre-date this validation surface a clear
-/// error rather than crashing the spawn.
+/// Reject env var names that aren't POSIX shell identifiers. The native PTY
+/// spawn path forwards every env entry to the child process. Validating at
+/// persist time keeps bad names from entering the DB; the runtime re-checks
+/// defensively so legacy rows surface a clear error instead of failing spawn.
 pub(super) fn validate_env_keys<S: std::hash::BuildHasher>(
     env: &HashMap<String, String, S>,
 ) -> Result<()> {

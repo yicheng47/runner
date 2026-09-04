@@ -1275,15 +1275,6 @@ impl SessionManager {
         }
         self.prune_empty_session_state(session_id);
     }
-
-    /// Borrow the underlying session runtime. Held on the manager
-    /// itself rather than passed through every method so the
-    /// Step 9 cutovers can land one entry point at a time without
-    /// rewiring every frontend operation's signature in the same change.
-    #[allow(dead_code)] // Wired into spawn paths in subsequent commits.
-    pub(crate) fn runtime(&self) -> &Arc<dyn SessionRuntime> {
-        &self.runtime
-    }
 }
 
 /// Compute current activity counters for `runner` and emit a

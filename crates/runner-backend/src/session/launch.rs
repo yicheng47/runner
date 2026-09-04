@@ -1,28 +1,9 @@
-#![allow(dead_code)] // Script renderer retained for tests/future launcher reuse.
-
 //! Per-session launch/path helpers.
 //!
 //! The current PTY runtime uses the PATH/env composition helpers
-//! directly before spawning the agent with `portable-pty`. The script
-//! renderer is retained as a small, tested utility for any caller that
-//! needs a shell wrapper. The rendered script:
-//!
-//!   1. Exports the composed PATH so the agent CLI can resolve
-//!      regardless of launchd's stripped GUI PATH.
-//!   2. Exports mission / direct-chat env vars (event-log path,
-//!      slot handle, etc. for missions; nothing extra for direct
-//!      chats).
-//!   3. cds to the working directory.
-//!   4. execs the agent command + argv.
-//!
-//! Why a script helper at all: if a caller crosses a shell boundary,
-//! owning the script with controlled quoting in Rust is safer than
-//! building one shell string out of user-supplied env values and argv.
+//! directly before spawning the agent with `portable-pty`.
 
-use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
-
-use super::runtime::{RuntimeError, RuntimeResult};
+use std::path::Path;
 
 /// Tool dirs we always include on the spawned process's PATH, even
 /// when the shell-PATH resolver failed/timed out. Covers the most
@@ -43,26 +24,6 @@ const FALLBACK_CLI_DIRS: &[&str] = &[
 ];
 
 const FALLBACK_SYSTEM_DIRS: &[&str] = &["/opt/homebrew/bin", "/usr/local/bin"];
-
-/// Inputs `render_launch_script` needs that aren't already on
-/// `SpawnSpec`. Kept separate from `SpawnSpec` because the runtime
-/// computes some of these (composed PATH) on its own.
-#[derive(Debug, Clone)]
-pub struct LaunchScript {
-    /// Agent CLI command name (`claude`, `codex`, …).
-    pub command: String,
-    /// Argv tail. Each element is single-quoted independently when
-    /// rendered.
-    pub args: Vec<String>,
-    /// Working directory. None ⇒ omit the `cd` line entirely; the
-    /// agent inherits the caller's cwd.
-    pub cwd: Option<PathBuf>,
-    /// Per-session env vars. PATH must NOT be in here — pass it via
-    /// `path` so we can be explicit that PATH is not user-supplied.
-    pub env: BTreeMap<String, String>,
-    /// The composed PATH value. See `compose_path`.
-    pub path: String,
-}
 
 /// Compose the launched agent's PATH. Order:
 ///
@@ -122,14 +83,10 @@ pub fn compose_path(
 fn fallback_cli_dirs(home: Option<&Path>) -> Vec<String> {
     let mut dirs = FALLBACK_CLI_DIRS
         .iter()
-        .map(|path| expand_home(path, home))
+        .map(|p| expand_home(p, home))
         .collect::<Vec<_>>();
     dirs.extend(nvm_node_bin_dirs(home));
-    dirs.extend(
-        FALLBACK_SYSTEM_DIRS
-            .iter()
-            .map(|path| expand_home(path, home)),
-    );
+    dirs.extend(FALLBACK_SYSTEM_DIRS.iter().map(|p| expand_home(p, home)));
     dirs
 }
 
@@ -200,14 +157,12 @@ pub fn is_reserved_env_name(s: &str) -> bool {
 /// True if `s` is a POSIX shell identifier suitable for `export
 /// <name>=…`. Rules: first char is `[A-Za-z_]`, every subsequent
 /// char is `[A-Za-z0-9_]`, length ≥ 1. Bash and zsh agree on this
-/// shape; an invalid name (`FOO-BAR`, `FOO BAR`, or worse `FOO=x;
-/// rm -rf /`) makes the launch script fail under `set -e` before
-/// the agent starts, or — if rendered without escaping — runs
-/// arbitrary shell. Validate at every layer that touches user-
-/// supplied env: the runner-edit form on persist (rejects the row)
-/// and `render_launch_script` on read (refuses to render a bad
-/// legacy row), so a single missed validation can't turn into a
-/// silent spawn-time crash.
+/// shape. Platform process APIs can reject malformed names, while
+/// names outside this shape cannot be referenced as ordinary variables
+/// by shells the agent launches. Validate at every layer that touches
+/// user-supplied env: the runner-edit form on persist and the runtime
+/// spawn path both reject a bad name, so legacy or directly constructed
+/// rows fail clearly before the child process is spawned.
 pub fn is_valid_env_name(s: &str) -> bool {
     let mut chars = s.chars();
     let first = match chars.next() {
@@ -238,89 +193,10 @@ pub fn shell_quote(s: &str) -> String {
     out
 }
 
-/// Render the bash launcher to a string. Errors out (rather than
-/// emitting a script that's guaranteed to fail under `set -e`) if
-/// any env key isn't a valid POSIX shell identifier. This is the
-/// last line of defence — the runner-edit form should also
-/// validate at persist time so bad rows never reach the DB — but
-/// rendering enforces the invariant for legacy rows that pre-date
-/// the validation.
-pub fn render_launch_script(script: &LaunchScript) -> RuntimeResult<String> {
-    for k in script.env.keys() {
-        if !is_valid_env_name(k) {
-            return Err(RuntimeError::Msg(format!(
-                "invalid env var name {k:?}: must match [A-Za-z_][A-Za-z0-9_]*"
-            )));
-        }
-    }
-
-    let mut out = String::new();
-    out.push_str("#!/usr/bin/env bash\n");
-    out.push_str("# Runner-generated session launcher.\n");
-    out.push_str("# Do not hand-edit; regenerated on every session spawn.\n");
-    out.push_str("set -e\n");
-    out.push_str(&format!("export PATH={}\n", shell_quote(&script.path)));
-    // BTreeMap iter is alphabetical, so the rendered script is
-    // stable across runs — useful for diffing one launcher against
-    // another in a debugging context.
-    //
-    // Skip RESERVED_ENV_NAMES (PATH today). Persist-time
-    // validation in `ops::runner` should already keep them
-    // out of the DB, but legacy rows from before that validation
-    // — or anything an integration test happens to construct
-    // directly — must not be allowed to shadow the deterministic
-    // PATH the launcher exports above. A user-supplied PATH is
-    // exactly the failure mode that brings back the GUI-launch
-    // CLI-resolution bug from issue #65.
-    for (k, v) in &script.env {
-        if is_reserved_env_name(k) {
-            continue;
-        }
-        out.push_str(&format!("export {}={}\n", k, shell_quote(v)));
-    }
-    if let Some(cwd) = &script.cwd {
-        let quoted = shell_quote(&cwd.display().to_string());
-        out.push_str(&format!(
-            "cd {quoted} || {{ echo \"runner: working directory not found:\" {quoted} >&2; exit 1; }}\n"
-        ));
-    }
-    let cmd = shell_quote(&script.command);
-    let args = script
-        .args
-        .iter()
-        .map(|a| shell_quote(a))
-        .collect::<Vec<_>>()
-        .join(" ");
-    if args.is_empty() {
-        out.push_str(&format!("exec {cmd}\n"));
-    } else {
-        out.push_str(&format!("exec {cmd} {args}\n"));
-    }
-    Ok(out)
-}
-
-/// Write the rendered launcher to `dir/launch.sh` and chmod 700.
-/// Returns the absolute path so a caller can execute it. Idempotent:
-/// rewrites every spawn so a stale script from a crashed prior
-/// session doesn't get reused with the wrong env.
-pub fn write_launch_script(dir: &Path, script: &LaunchScript) -> RuntimeResult<PathBuf> {
-    let body = render_launch_script(script)?;
-    std::fs::create_dir_all(dir)?;
-    let path = dir.join("launch.sh");
-    std::fs::write(&path, body)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = std::fs::metadata(&path)?.permissions();
-        perms.set_mode(0o700);
-        std::fs::set_permissions(&path, perms)?;
-    }
-    Ok(path)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     #[test]
     fn shell_quote_round_trips_through_bash() {
@@ -424,6 +300,20 @@ mod tests {
     }
 
     #[test]
+    fn expand_home_handles_tilde_and_passthrough() {
+        let h = Path::new("/Users/jason");
+        assert_eq!(
+            expand_home("~/.cargo/bin", Some(h)),
+            "/Users/jason/.cargo/bin"
+        );
+        assert_eq!(expand_home("~", Some(h)), "/Users/jason");
+        assert_eq!(expand_home("/abs/path", Some(h)), "/abs/path");
+        // No HOME → tilde stays literal (compose_path will treat
+        // it as just another absolute-ish entry; harmless).
+        assert_eq!(expand_home("~/.cargo/bin", None), "~/.cargo/bin");
+    }
+
+    #[test]
     fn compose_path_keeps_shell_entries_before_seed_and_orders_nvm_newest_first() {
         let home = tempfile::tempdir().unwrap();
         for version in ["v9.9.9", "v20.12.1", "v18.20.0"] {
@@ -491,111 +381,6 @@ mod tests {
     }
 
     #[test]
-    fn render_launch_script_has_set_e_and_exec() {
-        let script = LaunchScript {
-            command: "claude".into(),
-            args: vec!["--permission-mode".into(), "acceptEdits".into()],
-            cwd: Some(PathBuf::from("/work/proj")),
-            env: BTreeMap::from([
-                ("FOO".to_string(), "bar".to_string()),
-                ("BAZ".to_string(), "with space".to_string()),
-            ]),
-            path: "/usr/bin:/bin".to_string(),
-        };
-        let body = render_launch_script(&script).unwrap();
-        assert!(body.starts_with("#!/usr/bin/env bash\n"));
-        assert!(body.contains("set -e\n"));
-        assert!(body.contains("export PATH='/usr/bin:/bin'\n"));
-        // BTreeMap order: BAZ before FOO.
-        let baz_idx = body.find("export BAZ=").unwrap();
-        let foo_idx = body.find("export FOO=").unwrap();
-        assert!(baz_idx < foo_idx, "envs should be alphabetical: {body}");
-        assert!(body.contains("export BAZ='with space'\n"));
-        assert!(body.contains(
-            "cd '/work/proj' || { echo \"runner: working directory not found:\" '/work/proj' >&2; exit 1; }\n"
-        ));
-        assert!(body.contains("exec 'claude' '--permission-mode' 'acceptEdits'\n"));
-    }
-
-    #[test]
-    fn render_launch_script_handles_no_args_and_no_cwd() {
-        let script = LaunchScript {
-            command: "claude".into(),
-            args: vec![],
-            cwd: None,
-            env: BTreeMap::new(),
-            path: "/usr/bin".into(),
-        };
-        let body = render_launch_script(&script).unwrap();
-        assert!(!body.contains("\ncd "), "no cd line expected: {body}");
-        assert!(body.contains("exec 'claude'\n"));
-    }
-
-    #[test]
-    fn render_launch_script_quotes_command_path_with_spaces() {
-        let script = LaunchScript {
-            command: "/Applications/Agent Tools/codex".into(),
-            args: vec!["resume".into()],
-            cwd: None,
-            env: BTreeMap::new(),
-            path: "/usr/bin".into(),
-        };
-        let body = render_launch_script(&script).unwrap();
-        assert!(body.contains("exec '/Applications/Agent Tools/codex' 'resume'\n"));
-    }
-
-    #[test]
-    fn render_launch_script_quotes_command_with_spaces() {
-        // Defensive: if a caller executes through a shell wrapper, an
-        // unquoted command path with spaces would break.
-        let script = LaunchScript {
-            command: "/Applications/Weird App/bin/agent".into(),
-            args: vec![],
-            cwd: None,
-            env: BTreeMap::new(),
-            path: "/usr/bin".into(),
-        };
-        let body = render_launch_script(&script).unwrap();
-        assert!(body.contains("exec '/Applications/Weird App/bin/agent'\n"));
-    }
-
-    #[test]
-    fn write_launch_script_creates_executable_file() {
-        let dir = tempfile::tempdir().unwrap();
-        let script = LaunchScript {
-            command: "echo".into(),
-            args: vec!["hi".into()],
-            cwd: None,
-            env: BTreeMap::new(),
-            path: "/usr/bin".into(),
-        };
-        let path = write_launch_script(dir.path(), &script).unwrap();
-        assert!(path.is_file());
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mode = std::fs::metadata(&path).unwrap().permissions().mode();
-            assert_eq!(mode & 0o777, 0o700, "mode = {mode:o}");
-        }
-        let body = std::fs::read_to_string(&path).unwrap();
-        assert!(body.contains("exec 'echo' 'hi'\n"));
-    }
-
-    #[test]
-    fn expand_home_handles_tilde_and_passthrough() {
-        let h = Path::new("/Users/jason");
-        assert_eq!(
-            expand_home("~/.cargo/bin", Some(h)),
-            "/Users/jason/.cargo/bin"
-        );
-        assert_eq!(expand_home("~", Some(h)), "/Users/jason");
-        assert_eq!(expand_home("/abs/path", Some(h)), "/abs/path");
-        // No HOME → tilde stays literal (compose_path will treat
-        // it as just another absolute-ish entry; harmless).
-        assert_eq!(expand_home("~/.cargo/bin", None), "~/.cargo/bin");
-    }
-
-    #[test]
     fn is_valid_env_name_accepts_posix_identifiers() {
         for ok in ["FOO", "foo", "_under", "FOO_BAR", "X1", "_1", "F00"] {
             assert!(is_valid_env_name(ok), "{ok:?} should be valid");
@@ -618,77 +403,6 @@ mod tests {
         ] {
             assert!(!is_valid_env_name(bad), "{bad:?} should be invalid");
         }
-    }
-
-    #[test]
-    fn render_launch_script_rejects_invalid_env_name() {
-        let script = LaunchScript {
-            command: "claude".into(),
-            args: vec![],
-            cwd: None,
-            env: BTreeMap::from([("FOO-BAR".to_string(), "value".to_string())]),
-            path: "/usr/bin".into(),
-        };
-        let err = render_launch_script(&script).unwrap_err();
-        let msg = err.to_string();
-        assert!(
-            msg.contains("FOO-BAR"),
-            "error should name the bad var: {msg}"
-        );
-        assert!(
-            msg.contains("[A-Za-z_]"),
-            "error should explain the rule: {msg}"
-        );
-    }
-
-    #[test]
-    fn write_launch_script_propagates_invalid_env_error() {
-        let dir = tempfile::tempdir().unwrap();
-        let script = LaunchScript {
-            command: "claude".into(),
-            args: vec![],
-            cwd: None,
-            env: BTreeMap::from([("FOO BAR".to_string(), "value".to_string())]),
-            path: "/usr/bin".into(),
-        };
-        let err = write_launch_script(dir.path(), &script).unwrap_err();
-        assert!(err.to_string().contains("FOO BAR"));
-        // No file should be left behind on validation failure.
-        assert!(!dir.path().join("launch.sh").exists());
-    }
-
-    #[test]
-    fn render_launch_script_filters_reserved_path() {
-        // Defensive layer: even if a legacy row sneaks PATH into
-        // the env map, the launcher must not let it shadow the
-        // composed PATH on the line above.
-        let script = LaunchScript {
-            command: "claude".into(),
-            args: vec![],
-            cwd: None,
-            env: BTreeMap::from([
-                ("FOO".to_string(), "bar".to_string()),
-                ("PATH".to_string(), "/evil/bin".to_string()),
-            ]),
-            path: "/usr/bin:/bin".into(),
-        };
-        let body = render_launch_script(&script).unwrap();
-        // Composed PATH must be the only export PATH= line.
-        let path_lines: Vec<&str> = body
-            .lines()
-            .filter(|l| l.starts_with("export PATH="))
-            .collect();
-        assert_eq!(path_lines.len(), 1, "body =\n{body}");
-        assert!(
-            path_lines[0].contains("/usr/bin:/bin"),
-            "wrong PATH preserved: {body}"
-        );
-        assert!(
-            !body.contains("/evil/bin"),
-            "user PATH leaked into launcher: {body}"
-        );
-        // Non-reserved entries still emit.
-        assert!(body.contains("export FOO='bar'"), "FOO missing: {body}");
     }
 
     #[test]

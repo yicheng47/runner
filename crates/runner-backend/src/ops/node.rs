@@ -40,13 +40,6 @@ pub struct NodeTabUpsertInput {
     pub layout: String,
 }
 
-#[derive(Debug, Deserialize)]
-pub struct NodeTabImportInput {
-    pub name: String,
-    pub position: i64,
-    pub layout: String,
-}
-
 pub fn node_list(state: &AppCore) -> Result<Vec<NodeRow>> {
     let mut conn = state.db.get()?;
     Ok(repo::node::list_with_repair(&mut conn)?)
@@ -135,20 +128,6 @@ pub fn node_mission_layout_set(state: &AppCore, node_id: &str, layout: String) -
     tx.commit()?;
     emit_layout_changed(state);
     Ok(row)
-}
-
-/// Delete a tab node (closing a chat tab). Mission nodes leave via
-/// mission archive.
-pub fn node_delete(state: &AppCore, id: String) -> Result<()> {
-    let conn = state.db.get()?;
-    if let Some(node) = repo::node::get(&conn, &id)? {
-        if node.node_type != NodeType::Tab {
-            return Err(Error::msg(format!("node {id} is not a tab")));
-        }
-        repo::node::delete(&conn, &id)?;
-    }
-    emit_layout_changed(state);
-    Ok(())
 }
 
 /// The unified reparent/reposition op behind every sidebar drag.
@@ -511,30 +490,6 @@ pub fn mark_direct_sessions_viewed(state: &AppCore, session_ids: &[String]) -> R
         );
     }
     Ok(())
-}
-
-/// One-time cold-start import of localStorage-era tabs, kept from the
-/// 0009 cutover: only applies when the tree has no tab nodes yet.
-pub fn node_import_once(state: &AppCore, tabs: Vec<NodeTabImportInput>) -> Result<Vec<NodeRow>> {
-    let mut conn = state.db.get()?;
-    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-    let existing: i64 =
-        tx.query_row("SELECT COUNT(*) FROM nodes WHERE type = 'tab'", [], |row| {
-            row.get(0)
-        })?;
-    if existing == 0 {
-        for tab in tabs {
-            validate_layout(&tab.layout)?;
-            let row =
-                repo::node::create_tab(&tx, None, tab.name.trim(), tab.position, &tab.layout)?;
-            repo::node::upsert_move_not_copy(&tx, &row)?;
-        }
-    }
-    repo::node::ensure_active_sessions(&tx)?;
-    tx.commit()?;
-    let rows = repo::node::list(&conn)?;
-    emit_layout_changed(state);
-    Ok(rows)
 }
 
 #[cfg(test)]

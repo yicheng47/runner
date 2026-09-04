@@ -102,7 +102,6 @@ impl McpHandle {
         }
     }
 
-    #[allow(dead_code)] // used by Phase 3/4 settings UI
     pub fn socket_path(&self) -> Option<PathBuf> {
         let guard = self.inner.lock().unwrap();
         guard.as_ref().map(|r| r.socket_path.clone())

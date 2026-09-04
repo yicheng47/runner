@@ -73,12 +73,6 @@ pub fn session_list(state: &AppCore, mission_id: &str) -> Result<Vec<SessionRow>
     list_for_mission(&conn, mission_id)
 }
 
-pub fn session_inject_stdin(state: &AppCore, session_id: &str, text: &str) -> Result<()> {
-    state
-        .sessions
-        .inject_direct_stdin(session_id, text.as_bytes(), &state.session_events())
-}
-
 pub fn session_kill(state: &AppCore, session_id: &str) -> Result<()> {
     state.sessions.kill(session_id)
 }
@@ -913,57 +907,6 @@ pub fn session_start_shell(
         &serde_json::json!({ "session_id": spawned.id }),
     );
     Ok(spawned)
-}
-
-/// Rewrite the project pointer for a set of direct sessions and
-/// reconcile each affected tab node's placement in the same
-/// transaction, so the tree never disagrees with the domain pointers.
-pub(crate) fn set_project_and_reconcile(
-    conn: &mut rusqlite::Connection,
-    session_ids: &[String],
-    project_id: Option<&str>,
-) -> Result<()> {
-    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-    repo::session::set_project_for_direct_sessions(&tx, session_ids, project_id).map_err(
-        |error| match error {
-            rusqlite::Error::QueryReturnedNoRows => {
-                Error::msg("one or more direct sessions were not found or are archived")
-            }
-            error => error.into(),
-        },
-    )?;
-    let mut reconciled: Vec<String> = Vec::new();
-    for session_id in session_ids {
-        let Some(tab) = repo::node::find_for_session(&tx, session_id)? else {
-            continue;
-        };
-        if reconciled.contains(&tab.id) {
-            continue;
-        }
-        repo::node::reconcile_tab_placement(&tx, &tab.id)?;
-        reconciled.push(tab.id);
-    }
-    tx.commit()?;
-    Ok(())
-}
-
-pub fn session_set_project(
-    state: &AppCore,
-    session_ids: Vec<String>,
-    project_id: Option<String>,
-) -> Result<()> {
-    let mut conn = state.db.get()?;
-    set_project_and_reconcile(&mut conn, &session_ids, project_id.as_deref())?;
-    if let Some(session_id) = session_ids.first() {
-        state.events.emit(
-            "session/updated",
-            &serde_json::json!({ "session_id": session_id }),
-        );
-    }
-    state
-        .events
-        .emit("chat/layout-changed", &serde_json::json!({}));
-    Ok(())
 }
 
 #[cfg(test)]
