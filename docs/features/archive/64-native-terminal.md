@@ -2,6 +2,8 @@
 
 Tracking issue: [#356](https://github.com/yicheng47/runner/issues/356). Status: planned, design settled in `design/runner.pen`.
 
+**Direction change (2026-09-03):** the "no drawer" decision below is superseded by [469 — Terminal drawer](../469-terminal-drawer.md) ([#469](https://github.com/yicheng47/runner/issues/469)): inside a chat tab the terminal is now a drawer under the pane split, not a pane. The sidebar decisions stand — **New terminal** from the Recent / project `+` menus still creates a terminal-only tab with the shell in its pane — and the `"shell"` runtime, spawn path, close confirmation, Shell exited card, and relaunch rule this spec introduced are what the drawer reuses.
+
 ## Motivation
 
 Runner's premise is that you stop scattering agent work across terminal windows — but there is still no way to run `git status`, `git diff --stat`, or a long `pnpm dev` without leaving the app or burning a chat on it. Today the options are bouncing out to Ghostty or starting a chat with an agent you do not want, and neither fits a ten-second command or a process you want to watch next to the agent editing the code it serves.
