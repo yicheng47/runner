@@ -1,4 +1,4 @@
-// Runner shared core — types and event-log primitives used by both the Tauri
+// Runner shared core — types and event-log primitives used by both the GPUI
 // app binary and the `runner` CLI.
 
 pub mod error;

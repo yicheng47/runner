@@ -247,7 +247,7 @@ impl SessionManager {
     }
 
     /// Write raw bytes to the session's stdin. Used for keystroke
-    /// passthrough from xterm.js — small chunks, no embedded
+    /// passthrough from the GPUI terminal — small chunks, no embedded
     /// newlines. Routed through `runtime.send_bytes` so each byte
     /// lands without bracketed-paste markers.
     ///
@@ -525,17 +525,8 @@ impl SessionManager {
         result
     }
 
-    /// Paste a first-turn body and submit it once we've verified the
-    /// pane actually rendered the paste — covers the agent-readiness
-    /// race that the bare `inject_paste` path leaves open
-    /// (FIRST_PROMPT_DELAY blind wait isn't enough under contention).
-    ///
-    /// Loop shape: sleep `initial_wait`, take a baseline capture, then
-    /// up to `max_attempts` rounds of paste → sleep `render_wait` →
-    /// capture → if any of head/tail-marker delta or (body ≥
-    /// `PLACEHOLDER_MIN_BODY_LEN`) placeholder delta ≥ 1 vs the
-    /// Resize the session's pane. The frontend calls this after
-    /// xterm fits its container — without it, claude-code stays at
+    /// Resize the session's pane. The frontend calls this after the GPUI
+    /// terminal fits its container — without it, claude-code stays at
     /// the spawn-time grid regardless of how big the visible grid
     /// is.
     pub fn resize(&self, session_id: &str, cols: u16, rows: u16, pool: &Arc<DbPool>) -> Result<()> {

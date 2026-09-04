@@ -3,9 +3,8 @@
 // Arch §10.2 pins the tree as:
 //   $APPDATA/runner/crews/{crew_id}/missions/{mission_id}/events.ndjson
 //
-// Callers pass the resolved `app_data` dir (whatever `tauri::Manager::path()`
-// returned at startup, or a tempdir in tests) so this module stays platform-
-// agnostic.
+// Callers pass the resolved `app_data` dir (the GPUI bootstrap's platform
+// data path, or a tempdir in tests) so this module stays platform-agnostic.
 
 use std::path::{Path, PathBuf};
 

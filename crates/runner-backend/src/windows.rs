@@ -1,7 +1,7 @@
 // Cross-window coordination registry (impl 0018, spec 12).
 //
-// Runner is a single backend process that can drive several Tauri webview
-// windows at once. The backend stays the single source of truth: one
+// Runner is a single backend process that can drive several GPUI windows at
+// once. The backend stays the single source of truth: one
 // `SessionManager`, one `RouterRegistry`, one `BusRegistry`. The only thing
 // the windows need to *coordinate* is which subject (mission / direct chat)
 // each is looking at, so two windows never write to the same PTY stdin.
@@ -60,8 +60,8 @@ impl WindowRegistry {
     }
 
     /// Insert a freshly-created window with no subject. Called the moment a
-    /// window is built (Rust-side) so the snapshot reflects it before the
-    /// webview's frontend has reported anything.
+    /// GPUI window is built so the snapshot reflects it before the window
+    /// surface has reported anything.
     pub fn register(&self, label: &str) {
         self.register_at(label, Utc::now());
     }

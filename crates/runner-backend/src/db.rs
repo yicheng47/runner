@@ -1,8 +1,8 @@
 // SQLite persistence for crews, runners, missions, and sessions.
 //
 // Schema lives in migrations/0001_init.sql and mirrors arch §7.1 verbatim.
-// The pool is opened once at app start with WAL mode + foreign keys; later
-// chunks pull connections from it via Tauri state.
+// The pool is opened once at app start with WAL mode + foreign keys; the
+// backend shares it through `AppCore`.
 
 use std::collections::BTreeMap;
 use std::path::Path;

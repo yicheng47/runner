@@ -2,18 +2,15 @@
 // Child PTYs get `runner` on PATH for mission coordination, while MCP
 // clients launch `runner-mcp` directly from their config files.
 //
-// Naming. The Tauri app crate also produces a binary called `runner`,
-// which would collide if the CLI used the same name in the same
-// `target/` dir. The source-side agent binary is therefore
-// `runner-agent-cli`; this installer renames it to `runner` in app data
-// so spawned PTYs get the intended user-facing command. The MCP proxy is
-// a separate `runner-mcp` binary and is installed without renaming.
+// Naming. The source-side agent binary remains `runner-agent-cli`; this
+// installer renames it to `runner` in app data so spawned PTYs get the
+// intended user-facing command without colliding with another `runner`
+// artifact in a shared target directory. The GPUI binary is `Runner`. The
+// MCP proxy is a separate `runner-mcp` binary and is installed as-is.
 //
-// Source resolution. In dev (`tauri dev`), the staging script builds
-// both source binaries and stages them for Tauri's externalBin copy. In
-// production, the same script cross-builds the release binaries for the
-// active triple. Either path leaves `runner-agent-cli` and `runner-mcp`
-// next to `current_exe`, which `locate_source` resolves by name.
+// Source resolution. Development builds and release packaging leave
+// `runner-agent-cli` and `runner-mcp` next to the `Runner` executable;
+// `locate_source` resolves them from that directory by name.
 //
 // Skip-if-current optimization. Compare (size, mtime) — if the source
 // file's mtime is `<=` the destination's AND sizes match, skip the
@@ -178,9 +175,9 @@ fn locate_source(source_name: &str) -> Result<Option<PathBuf>> {
         .parent()
         .ok_or_else(|| Error::msg("current_exe has no parent"))?;
     let candidate = dir.join(source_name);
-    // The Tauri exe itself is `runner` (different basename from the
-    // source names), so the equality guard is belt-and-suspenders for
-    // future renames; it still gates on existence.
+    // The app executable is `Runner`, so the equality guard only protects
+    // future renames from copying the running executable over itself; the
+    // candidate must also exist.
     if candidate.exists() && candidate != exe {
         return Ok(Some(candidate));
     }

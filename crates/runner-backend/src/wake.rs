@@ -1,10 +1,6 @@
 //! macOS system-wake bridge (impl 0037).
 //!
-//! The app has no sleep/wake signal of its own. Tauri's `RunEvent::Resumed`
-//! looked like one and was not: tauri-runtime-wry mapped it from
-//! `Event::NewEvents(StartCause::Poll)`, while tao's macOS event loop only
-//! produced `StartCause::Poll` under `ControlFlow::Poll`. tao's own
-//! `Event::Resumed` is emitted from the iOS and Android backends only.
+//! The GPUI event loop has no macOS sleep/wake signal of its own.
 //!
 //! `NSWorkspace.didWakeNotification` is the real thing: posted by the
 //! window server when the machine comes back from sleep. The backend keeps
@@ -25,9 +21,8 @@ pub const WOKE_EVENT: &str = "app/woke";
 
 /// Broadcast `app/woke` each time the machine wakes.
 ///
-/// Main's Tauri implementation retained an `AppHandle` and emitted directly
-/// to webviews. The GPUI seam retains the core's `EventChannel` instead; the
-/// observer and its process-lifetime ownership are otherwise unchanged.
+/// The GPUI app delivers the notification through the core's `EventChannel`;
+/// the observer itself remains owned for the life of the process.
 pub fn install(events: &EventChannel) {
     let events = events.clone();
     observe_wake(move || {

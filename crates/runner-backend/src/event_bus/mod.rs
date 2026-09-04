@@ -24,8 +24,8 @@
 //     consumer thread that owns mutable bus state. We do NOT process inside
 //     notify's callback, both to keep that thread fast and to serialize all
 //     state updates through one channel. The consumer calls back into the
-//     emitter (Tauri or test fake) so the bus is unit-testable without a
-//     running app.
+//     emitter (the app event channel or a test fake) so the bus is
+//     unit-testable without a running app.
 //
 //   - Per-runner inbox projection is incoming messages where `to == null OR
 //     to == handle`. We track every matching event id per handle so

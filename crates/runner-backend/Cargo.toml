@@ -44,10 +44,9 @@ tokio-util = { version = "0.7", features = ["rt"] }
 toml_edit = "0.25"
 
 # Unix-only deps:
-#  - libc: FIFO mkfifo + poll() inside session::tmux_runtime.
-#  - portable-pty: backing crate for session::pty_runtime, the
-#    in-process replacement for tmux (impl 0011). Windows keeps the
-#    tmux fallback until a named-pipe equivalent lands.
+#  - libc: process-group signals, descendant discovery, and process-argv reads
+#    in the native PTY runtime.
+#  - portable-pty: the in-process PTY implementation used for agent sessions.
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 portable-pty = "0.9"

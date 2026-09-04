@@ -156,7 +156,7 @@ pub fn read(since: Option<&str>, from: Option<&str>) -> i32 {
     //      whose ids fall below the printed `up_to` get silently
     //      cleared without ever being shown — exactly the corruption
     //      the reviewer caught. See the bus's `handle_inbox_read` in
-    //      `src-tauri/src/event_bus/mod.rs`.
+    //      `crates/runner-backend/src/event_bus/mod.rs`.
     //
     // `--since` is safe: it's a forward filter on the already-watermark-
     // ordered projection, so a printed last id is still a sound

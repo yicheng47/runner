@@ -114,27 +114,14 @@ fn paste_image_format(mime_type: &str) -> Result<PasteImageFormat> {
     }
 }
 
-/// Restore NSPasteboard for an image paste that came in through the
-/// webview, so the agent CLI's NSPasteboard read returns the real
-/// bytes and renders its native `[Image x]` placeholder in the prompt.
+/// Restore NSPasteboard from the image bytes the GPUI clipboard API returned,
+/// so the agent CLI reads the original image and renders its native
+/// `[Image x]` placeholder in the prompt.
 ///
-/// Why: when the user presses Cmd+V over the WKWebView, WebKit
-/// materializes the image clipboard item into a `File` object (a temp
-/// file under the hood). As a side effect NSPasteboard's image
-/// representation can become the OS-rendered icon of that temp file
-/// rather than the original image bytes. The agent CLI's subsequent
-/// clipboard read then returns the icon, not the copied image (#79).
-///
-/// Fix: the frontend grabs the original bytes off the `ClipboardEvent`
-/// File before they reach the child process, ships them here with the
-/// image MIME type, we write them to a `NamedTempFile`, and use
-/// `osascript` to repopulate NSPasteboard with the matching image
-/// flavor. The frontend then injects Ctrl-V (`\x16`); the agent's
-/// existing paste-attach flow runs unchanged.
-///
-/// macOS-only; on other platforms this is a no-op (the embedded
-/// webview's paste behavior on Linux/Windows hasn't been audited and
-/// the runner doesn't ship there yet).
+/// The frontend sends the bytes and MIME type here before injecting Ctrl-V
+/// (`\x16`). We write them to a `NamedTempFile` and use `osascript` to set the
+/// matching NSPasteboard image flavor; the agent's paste-attach flow then runs
+/// unchanged. This restoration is macOS-only; other platforms are a no-op.
 pub fn session_paste_image(bytes: Vec<u8>, mime_type: &str) -> Result<()> {
     let format = paste_image_format(mime_type)?;
 
@@ -405,7 +392,7 @@ fn ensure_archivable_session(conn: &rusqlite::Connection, session_id: &str) -> R
 /// Terminal sessions are rejected because closing their pane permanently
 /// closes the shell instead of preserving a conversation.
 ///
-/// Emits a `session/archived` Tauri event after the row flips so the
+/// Emits a `session/archived` app event after the row flips so the
 /// sidebar's CHAT list can refresh — without it, archiving from the
 /// chat page (RunnerChat's SessionEnded overlay) would archive the
 /// row but leave the sidebar stale until something else triggered a
@@ -438,7 +425,7 @@ pub fn session_archive(state: &AppCore, session_id: &str) -> Result<()> {
 /// Archived pane only lists direct chats, and restoring a mission-bound
 /// row would leak it back into `session_list` for its mission.
 ///
-/// Emits a `session/updated` Tauri event after the flip — the same
+/// Emits a `session/updated` app event after the flip — the same
 /// channel `session_rename` / `session_pin` use — so the sidebar's
 /// CHAT list picks the restored row back up without a refresh.
 pub fn session_unarchive(state: &AppCore, session_id: &str) -> Result<()> {
@@ -576,7 +563,7 @@ pub fn session_list_archived(state: &AppCore) -> Result<Vec<DirectSessionEntry>>
 /// the auto-derived label (`@handle · <time>`). Trims surrounding
 /// whitespace before persisting.
 ///
-/// Emits a `session/updated` Tauri event after the row flips so the
+/// Emits a `session/updated` app event after the row flips so the
 /// sidebar's CHAT list can refresh — without it, renaming from the
 /// chat-page kebab would update the row but leave the sidebar's
 /// title stale until some other refresh trigger fires.
@@ -1125,7 +1112,7 @@ mod tests {
     }
 
     /// Mirrors the SELECT in `session_list_recent_direct` so we can
-    /// exercise the ORDER BY without a Tauri State. Returns
+    /// exercise the ORDER BY without constructing `AppCore`. Returns
     /// (session_id, status, pinned) in the order the tray will render.
     fn list_recent_direct(conn: &rusqlite::Connection) -> Vec<(String, String, bool)> {
         let mut stmt = conn

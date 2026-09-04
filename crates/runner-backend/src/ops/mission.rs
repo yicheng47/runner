@@ -795,7 +795,7 @@ pub async fn mission_start_impl_with_size(
 
     // Now mount the bus. Initial replay from offset 0 picks up the opening
     // events (durable since `start()` committed them under the DB tx),
-    // fans them to the Tauri emitter (UI) and the RouterSubscriber (which
+    // fans them to the GPUI event channel and the RouterSubscriber (which
     // dispatches `mission_goal` → launch prompt to the lead). Fresh
     // mission: NO `reconstruct_from_log()` call — setting a watermark
     // over the just-written `mission_goal` would suppress the bootstrap

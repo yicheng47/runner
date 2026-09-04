@@ -26,8 +26,8 @@ pub struct SpawnSpec {
     /// inherit the runtime's process cwd (rare in practice).
     pub cwd: Option<PathBuf>,
     /// The agent CLI command name (`claude`, `codex`, etc.) and its
-    /// argv. PATH resolution happens inside the launch-script wrapper
-    /// (Step 4), not here.
+    /// argv. PATH resolution happens when `PtyRuntime` builds the child
+    /// command, not here.
     pub command: String,
     pub args: Vec<String>,
     /// Composed environment for the agent process. The runtime layer
@@ -50,12 +50,11 @@ pub struct SpawnSpec {
     /// Best-effort login-shell PATH from
     /// `shell_path::resolve_login_shell_env`, captured once by the
     /// manager at app start. `None` if the resolver
-    /// failed/timed out — the launch script's fallback CLI dirs
-    /// (`~/.local/bin`, `/opt/homebrew/bin`, etc.) cover the common
-    /// cases regardless.
+    /// failed/timed out — runtime fallback CLI dirs (`~/.local/bin`,
+    /// `/opt/homebrew/bin`, etc.) cover the common cases regardless.
     pub shell_path: Option<String>,
-    /// Initial pane size (cols, rows) — `xterm.js` reports its
-    /// foreground grid on direct-chat spawn so the pane lays out at
+    /// Initial pane size (cols, rows) — the GPUI terminal reports its
+    /// foreground grid on direct-chat spawn so the PTY lays out at
     /// the right size before the first paint. `None` falls back to
     /// the runner config's `default-size`.
     pub initial_size: Option<(u16, u16)>,
@@ -108,14 +107,14 @@ pub enum RunnerStatus {
     Idle,
 }
 
-/// One unit of output produced by a runtime session. Raw stream bytes
-/// are appended to xterm.js; `StatusTransition` is the forwarder's
-/// busy/idle signal (issue #124) and never reaches xterm.js; the
-/// SessionManager consumer routes it to the event log.
+/// One unit of output produced by a runtime session. Raw stream bytes are
+/// appended to the GPUI terminal; `StatusTransition` is the forwarder's
+/// busy/idle signal (issue #124) and never reaches the terminal; the
+/// `SessionManager` consumer routes it to the event log.
 #[derive(Debug, Clone)]
 pub enum RuntimeOutput {
-    /// Live PTY bytes the agent wrote since the last `Stream` chunk.
-    /// xterm.js **appends**.
+    /// Live PTY bytes the agent wrote since the last `Stream` chunk. The
+    /// frontend terminal **appends** them.
     Stream(Vec<u8>),
     /// Forwarder-inferred busy/idle transition. `source` is
     /// `"forwarder"` for these synthetic events (the CLI's
@@ -177,8 +176,8 @@ impl OutputStream {
     /// disconnected. Used by `SessionManager::kill` so kill
     /// doesn't hang waiting on the reader thread to observe EOF and
     /// drop its sender. That path is normally fast but can stall
-    /// under load, and `kill` must not block the calling Tauri
-    /// command indefinitely.
+    /// under load, and `kill` must not block the calling UI task
+    /// indefinitely.
     pub fn stop_flag(&self) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
         std::sync::Arc::clone(&self.stop)
     }
@@ -221,8 +220,8 @@ impl From<RuntimeError> for crate::error::Error {
 
 pub type RuntimeResult<T> = std::result::Result<T, RuntimeError>;
 
-/// The session runtime trait. Frontend / Tauri commands never touch
-/// this — they go through `SessionManager`, which in turn delegates
+/// The session runtime trait. Frontend operations never touch this — they
+/// go through `SessionManager`, which in turn delegates
 /// to a `dyn SessionRuntime` for the per-session PTY work.
 pub trait SessionRuntime: Send + Sync {
     /// Start a fresh session. Returns the runtime-side ids to
@@ -235,8 +234,8 @@ pub trait SessionRuntime: Send + Sync {
     /// this method only signals.
     fn stop(&self, session: &RuntimeSession) -> RuntimeResult<()>;
 
-    /// Literal byte stream from xterm.js passthrough — the user is
-    /// typing directly into the foreground terminal, or the manager
+    /// Literal byte stream from the GPUI terminal — the user is typing
+    /// directly into the foreground PTY, or the manager
     /// is preserving the old paste path by writing prompt bytes
     /// unchanged before sending Enter.
     fn send_bytes(&self, session: &RuntimeSession, bytes: &[u8]) -> RuntimeResult<()>;
