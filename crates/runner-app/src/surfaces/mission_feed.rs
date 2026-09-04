@@ -128,7 +128,12 @@ fn can_join_group(author: &str, grouped: &[Event], event: &Event) -> bool {
     {
         return false;
     }
-    let gap = event.ts.signed_duration_since(grouped.last().unwrap().ts);
+    let gap = event.ts.signed_duration_since(
+        grouped
+            .last()
+            .expect("non-empty message group checked above")
+            .ts,
+    );
     gap >= Duration::zero() && gap <= Duration::minutes(5)
 }
 

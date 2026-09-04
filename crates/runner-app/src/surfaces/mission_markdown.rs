@@ -748,7 +748,11 @@ fn add_selection_highlight(
             previous.end == range.start && *previous_style == style
         });
         if extend_previous {
-            merged.last_mut().unwrap().0.end = range.end;
+            merged
+                .last_mut()
+                .expect("extend_previous requires an existing segment")
+                .0
+                .end = range.end;
         } else {
             merged.push((range, style));
         }

@@ -877,7 +877,10 @@ fn translate_key(key: &str) -> RuntimeResult<Vec<u8>> {
     // C-<letter> chord: Ctrl + letter → control byte.
     if let Some(rest) = key.strip_prefix("C-") {
         if rest.len() == 1 {
-            let ch = rest.chars().next().unwrap();
+            let ch = rest
+                .chars()
+                .next()
+                .expect("single-byte control chord has one character");
             if ch.is_ascii_alphabetic() {
                 let upper = ch.to_ascii_uppercase() as u8;
                 let ctrl = upper - b'A' + 1;

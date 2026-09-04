@@ -884,7 +884,8 @@ fn install_app_icon() {
 
     let main_thread = MainThreadMarker::new().expect("Runner must start on the main thread");
     let data = NSData::with_bytes(include_bytes!("../../../assets/icon.png"));
-    let image = NSImage::initWithData(NSImage::alloc(), &data).expect("invalid app icon");
+    let image = NSImage::initWithData(NSImage::alloc(), &data)
+        .expect("bundled Runner app icon must be valid");
     unsafe {
         NSApplication::sharedApplication(main_thread).setApplicationIconImage(Some(&image));
     }
@@ -1253,7 +1254,7 @@ fn run() -> Result<()> {
         if restored_labels.is_empty() {
             restored_labels.push(
                 open_runner_window("main".into(), None, None, cx)
-                    .expect("open fallback Runner window"),
+                    .expect("fallback Runner window must open after restore failures"),
             );
         }
         if let Some(label) = restored_labels.last() {

@@ -891,8 +891,16 @@ impl Router {
                     };
                     router.reconcile_inbox_at(Instant::now(), backoff);
                 }
-            })
-            .expect("spawn inbox reconciliation clock");
+            });
+        let handle = match handle {
+            Ok(handle) => handle,
+            Err(error) => {
+                log::warn!(
+                    "spawn inbox reconciliation clock for mission {mission_id} failed: {error}"
+                );
+                return;
+            }
+        };
         *clock = Some(ReconciliationClock {
             shutdown,
             handle: Some(handle),
