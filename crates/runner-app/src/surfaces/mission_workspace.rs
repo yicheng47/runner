@@ -785,8 +785,8 @@ impl MissionWorkspace {
                 .child(
                     svg()
                         .path("panel-left-hidden.svg")
-                        .w(px(15.4 * self.settings(cx).app_zoom))
-                        .h(px(12. * self.settings(cx).app_zoom))
+                        .w(px(14. * self.settings(cx).app_zoom))
+                        .h(px(14. * self.settings(cx).app_zoom))
                         .flex_none()
                         .text_color(theme::muted())
                         .group_hover("open-sidebar", |icon| icon.text_color(theme::text())),
