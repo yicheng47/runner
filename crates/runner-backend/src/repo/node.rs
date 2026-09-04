@@ -558,6 +558,19 @@ pub fn session_ids_from_layout(layout: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
+pub fn drawer_session_ids(row: &NodeRow) -> Vec<String> {
+    row.layout
+        .as_deref()
+        .map(drawer_session_ids_from_layout)
+        .unwrap_or_default()
+}
+
+pub fn drawer_session_ids_from_layout(layout: &str) -> Vec<String> {
+    serde_json::from_str::<StoredLayout>(layout)
+        .map(|layout| layout.drawer.shells)
+        .unwrap_or_default()
+}
+
 pub fn find_for_session(conn: &Connection, session_id: &str) -> rusqlite::Result<Option<NodeRow>> {
     Ok(list(conn)?
         .into_iter()
@@ -1248,6 +1261,7 @@ mod tests {
             1
         );
         assert_eq!(super::session_ids(&tab), ["chat", "drawer-shell"]);
+        assert_eq!(super::drawer_session_ids(&tab), ["drawer-shell"]);
 
         super::remove_session(&conn, "drawer-shell").unwrap();
         let stored = super::get(&conn, &tab.id).unwrap().unwrap();
@@ -1285,6 +1299,7 @@ mod tests {
         );
         let stored = super::get(&conn, &mission.id).unwrap().unwrap();
         assert_eq!(super::session_ids(&stored), ["drawer-shell"]);
+        assert_eq!(super::drawer_session_ids(&stored), ["drawer-shell"]);
 
         super::remove_session(&conn, "drawer-shell").unwrap();
         let stored = super::get(&conn, &mission.id).unwrap().unwrap();

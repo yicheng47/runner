@@ -905,6 +905,10 @@ impl NativeRoot {
             self.attached.clear();
             return Ok(());
         };
+        let mut errors = Vec::new();
+        if let Err(error) = self.resume_visible_drawer_shell_on_launch(&layout, window, cx) {
+            errors.push(error.to_string());
+        }
         let active_ids = layout.all_session_ids();
         let owned_ids = active_ids
             .iter()
@@ -913,7 +917,6 @@ impl NativeRoot {
             .collect::<HashSet<_>>();
         self.attached
             .retain(|session_id, _| owned_ids.contains(session_id));
-        let mut errors = Vec::new();
         for session_id in active_ids {
             if let Err(error) = self.ensure_attached(&layout, &session_id, window, cx) {
                 errors.push(error.to_string());
@@ -924,6 +927,31 @@ impl NativeRoot {
         } else {
             anyhow::bail!(errors.join("\n"))
         }
+    }
+
+    pub(crate) fn resume_visible_drawer_shell_on_launch(
+        &mut self,
+        layout: &PaneLayout,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<()> {
+        let Some(session_id) = layout.active_drawer_shell() else {
+            return Ok(());
+        };
+        let Some(status) = self.session_entry(session_id, cx).map(|entry| entry.status) else {
+            return Ok(());
+        };
+        let visible = self.route == AppRoute::Chat
+            && layout.drawer_open()
+            && !self.chat_secondary_state(session_id, cx).secondary
+            && !self.chat_transitions.contains_key(session_id);
+        let core = self.core(cx);
+        if chat_lifecycle::take_visible_drawer_launch_claim(visible, status, || {
+            runner_backend::ops::session::session_take_resume_on_launch(core, session_id)
+        })? {
+            self.resume_drawer_shell_on_launch(session_id, window, cx);
+        }
+        Ok(())
     }
 
     pub(crate) fn ensure_attached(
@@ -1513,6 +1541,25 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.resume_drawer_shell_impl(session_id, false, window, cx);
+    }
+
+    fn resume_drawer_shell_on_launch(
+        &mut self,
+        session_id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.resume_drawer_shell_impl(session_id, true, window, cx);
+    }
+
+    fn resume_drawer_shell_impl(
+        &mut self,
+        session_id: &str,
+        launch_claim: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.chat_transitions.contains_key(session_id) {
             return;
         }
@@ -1537,12 +1584,21 @@ impl NativeRoot {
         let target = session_id.to_owned();
         let resume_target = target.clone();
         let resume = cx.background_spawn(async move {
-            runner_backend::ops::session::session_resume(
-                &core,
-                &resume_target,
-                Some(size.0),
-                Some(size.1),
-            )
+            if launch_claim {
+                runner_backend::ops::session::session_resume_on_launch(
+                    &core,
+                    &resume_target,
+                    Some(size.0),
+                    Some(size.1),
+                )
+            } else {
+                runner_backend::ops::session::session_resume(
+                    &core,
+                    &resume_target,
+                    Some(size.0),
+                    Some(size.1),
+                )
+            }
             .map(drop)
             .map_err(|error| error.to_string())
         });

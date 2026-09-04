@@ -1401,6 +1401,10 @@ impl MissionWorkspace {
             return Ok(());
         }
         let mut errors = Vec::new();
+        let layout = self.layout.clone();
+        if let Err(error) = self.resume_visible_drawer_shell_on_launch(&layout, window, cx) {
+            errors.push(error.to_string());
+        }
         for session in self.sessions.clone() {
             if !self.open_tabs.contains(&session.session.id) {
                 continue;
@@ -1432,6 +1436,34 @@ impl MissionWorkspace {
         } else {
             anyhow::bail!(errors.join("\n"))
         }
+    }
+
+    fn resume_visible_drawer_shell_on_launch(
+        &mut self,
+        layout: &MissionLayout,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<()> {
+        let Some(session_id) = layout.drawer.active_shell() else {
+            return Ok(());
+        };
+        let Some(status) = self
+            .drawer_session_entry(session_id, cx)
+            .map(|entry| entry.status)
+        else {
+            return Ok(());
+        };
+        let visible = self.is_active(cx)
+            && layout.drawer.open()
+            && !self.secondary_state(cx).secondary
+            && !self.transitions.contains_key(session_id);
+        let core = self.core(cx);
+        if chat_lifecycle::take_visible_drawer_launch_claim(visible, status, || {
+            runner_backend::ops::session::session_take_resume_on_launch(core, session_id)
+        })? {
+            self.resume_terminal_drawer_shell_on_launch(session_id, window, cx);
+        }
+        Ok(())
     }
 
     fn ensure_mission_terminal_attached(
@@ -1692,6 +1724,11 @@ impl MissionWorkspace {
         match self.persist_mission_layout(cx) {
             Ok(()) => {
                 self.error = None;
+                let layout = self.layout.clone();
+                if let Err(error) = self.resume_visible_drawer_shell_on_launch(&layout, window, cx)
+                {
+                    self.error = Some(error.to_string());
+                }
                 if self.layout.drawer.open() {
                     if let Some(session_id) = self.layout.drawer.active_shell() {
                         self.focus_mission_drawer_terminal(session_id, window, cx);
@@ -1721,6 +1758,11 @@ impl MissionWorkspace {
         match self.persist_mission_layout(cx) {
             Ok(()) => {
                 self.error = None;
+                let layout = self.layout.clone();
+                if let Err(error) = self.resume_visible_drawer_shell_on_launch(&layout, window, cx)
+                {
+                    self.error = Some(error.to_string());
+                }
                 self.focus_mission_drawer_terminal(session_id, window, cx);
             }
             Err(error) => {
@@ -1810,6 +1852,25 @@ impl MissionWorkspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.resume_terminal_drawer_shell_impl(session_id, false, window, cx);
+    }
+
+    fn resume_terminal_drawer_shell_on_launch(
+        &mut self,
+        session_id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.resume_terminal_drawer_shell_impl(session_id, true, window, cx);
+    }
+
+    fn resume_terminal_drawer_shell_impl(
+        &mut self,
+        session_id: &str,
+        launch_claim: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.transitions.contains_key(session_id) {
             return;
         }
@@ -1831,12 +1892,21 @@ impl MissionWorkspace {
         let target = session_id.to_owned();
         let resume_target = target.clone();
         let resume = cx.background_spawn(async move {
-            runner_backend::ops::session::session_resume(
-                &core,
-                &resume_target,
-                Some(size.0),
-                Some(size.1),
-            )
+            if launch_claim {
+                runner_backend::ops::session::session_resume_on_launch(
+                    &core,
+                    &resume_target,
+                    Some(size.0),
+                    Some(size.1),
+                )
+            } else {
+                runner_backend::ops::session::session_resume(
+                    &core,
+                    &resume_target,
+                    Some(size.0),
+                    Some(size.1),
+                )
+            }
             .map(drop)
             .map_err(|error| error.to_string())
         });
@@ -1898,6 +1968,12 @@ impl MissionWorkspace {
                         this.transitions.remove(&target);
                         this.layout.drawer.remove(&target);
                         this.refresh_store(StoreRefreshKind::All, cx);
+                        let layout = this.layout.clone();
+                        if let Err(error) =
+                            this.resume_visible_drawer_shell_on_launch(&layout, window, cx)
+                        {
+                            this.error = Some(error.to_string());
+                        }
                         if let Some(active) = this.layout.drawer.active_shell().map(str::to_owned) {
                             this.focus_mission_drawer_terminal(&active, window, cx);
                         } else {

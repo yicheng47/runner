@@ -333,6 +333,13 @@ impl NativeRoot {
         match self.persist_active_tab(cx) {
             Ok(()) => {
                 self.chat_error = None;
+                if let Some(layout) = self.tabs.active().cloned() {
+                    if let Err(error) =
+                        self.resume_visible_drawer_shell_on_launch(&layout, window, cx)
+                    {
+                        self.chat_error = Some(error.to_string());
+                    }
+                }
                 self.focus_drawer_terminal(session_id, window, cx);
             }
             Err(error) => self.chat_error = Some(error.to_string()),
