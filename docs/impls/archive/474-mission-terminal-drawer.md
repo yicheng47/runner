@@ -1,6 +1,6 @@
 # 474 — Mission terminal drawer: a shell beneath the mission
 
-Tracking issue: [#474](https://github.com/yicheng47/runner/issues/474). Feature, P2. Spec: [`docs/features/474-mission-terminal-drawer.md`](../features/474-mission-terminal-drawer.md) — the spec wins on any detail this plan leaves out. Design: `design/runner.pen`, the `(474)` frames and `Spec — Mission terminal drawer (474) · v1`. Predecessor: [469](../features/archive/469-terminal-drawer.md) (#471) — reuse its model, element, and lifecycle code.
+Tracking issue: [#474](https://github.com/yicheng47/runner/issues/474). Feature, P2. Spec: [`docs/features/474-mission-terminal-drawer.md`](../../features/archive/474-mission-terminal-drawer.md) — the spec wins on any detail this plan leaves out. Design: `design/runner.pen`, the `(474)` frames and `Spec — Mission terminal drawer (474) · v1`. Predecessor: [469](../../features/archive/469-terminal-drawer.md) (#471) — reuse its model, element, and lifecycle code.
 
 ## What ships
 

@@ -1,10 +1,10 @@
 # Mission terminal drawer — a shell beneath the mission
 
-Tracking issue: [#474](https://github.com/yicheng47/runner/issues/474). Status: planned. Priority P2.
+Tracking issue: [#474](https://github.com/yicheng47/runner/issues/474). Status: shipped 2026-09-04 in [#477](https://github.com/yicheng47/runner/pull/477). Priority P2.
 
 ## Motivation
 
-[469](./archive/469-terminal-drawer.md) gives a direct-chat tab a terminal drawer so a companion shell no longer consumes one of the tab's pane slots. The mission workspace still has no equivalent: running a mission-wide command means leaving the mission for a terminal-only tab or using another app, even though the Feed and every runner tab share one mission working directory.
+[469](./469-terminal-drawer.md) gives a direct-chat tab a terminal drawer so a companion shell no longer consumes one of the tab's pane slots. The mission workspace still has no equivalent: running a mission-wide command means leaving the mission for a terminal-only tab or using another app, even though the Feed and every runner tab share one mission working directory.
 
 The mission should have the same bottom-shell affordance, owned by the mission rather than by whichever runner tab happens to be selected. A build, test watcher, or quick repository command should remain available while the user moves between Feed and runner terminals, without becoming a crew slot or entering the mission's coordination traffic.
 
