@@ -273,9 +273,9 @@ impl NativeRoot {
             SIDEBAR_TOGGLE_GLYPH_X - SIDEBAR_TOGGLE_GLYPH_INSET * self.settings(cx).app_zoom
         };
         let panel_path = if self.sidebar_collapsed {
-            "panel-left-hollow.svg"
+            "panel-left-hidden.svg"
         } else {
-            "panel-left-filled.svg"
+            "panel-left-open.svg"
         };
         let titlebar = self.render_titlebar_drag_area(
             "sidebar-titlebar-drag",
@@ -587,7 +587,7 @@ impl NativeRoot {
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .child(
                     svg()
-                        .path("panel-left-hollow.svg")
+                        .path("panel-left-hidden.svg")
                         .w(px(15.4 * self.settings(cx).app_zoom))
                         .h(px(12. * self.settings(cx).app_zoom))
                         .flex_none()

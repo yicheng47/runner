@@ -88,7 +88,7 @@ impl NativeRoot {
             .child(div().min_w(px(0.)).flex_1())
             .when(!self.settings(cx).chat_panel_open, |header| {
                 header.child(
-                    IconButton::new("open-archived-chat-panel", "panel-right-hollow.svg")
+                    IconButton::new("open-archived-chat-panel", "panel-right-hidden.svg")
                         .tooltip("Open side panel")
                         .on_press(move |_, cx| {
                             panel_root.update(cx, |this, cx| {
@@ -293,16 +293,11 @@ impl NativeRoot {
             IconButton::new(
                 "terminal-drawer-toggle",
                 if open {
-                    "panel-bottom-filled.svg"
+                    "panel-bottom-open.svg"
                 } else {
-                    "panel-bottom-hollow.svg"
+                    "panel-bottom-hidden.svg"
                 },
             )
-            .variant(if open {
-                ButtonVariant::Secondary
-            } else {
-                ButtonVariant::Ghost
-            })
             .tooltip(tooltip)
             .on_press(move |window, cx| {
                 drawer_root.update(cx, |this, cx| this.toggle_terminal_drawer(window, cx));
@@ -312,7 +307,7 @@ impl NativeRoot {
         let panel_action = (!side_panel_open(self.settings(cx).chat_panel_open, focused_shell)
             && !focused_shell)
             .then(|| {
-                IconButton::new("open-chat-panel", "panel-right-hollow.svg")
+                IconButton::new("open-chat-panel", "panel-right-hidden.svg")
                     .tooltip("Open side panel")
                     .on_press(move |_, cx| {
                         panel_root.update(cx, |this, cx| {
@@ -781,7 +776,7 @@ impl NativeRoot {
                 .border_b_1()
                 .border_color(theme::border())
                 .child(
-                    IconButton::new("collapse-chat-panel", "panel-right-filled.svg")
+                    IconButton::new("collapse-chat-panel", "panel-right-open.svg")
                         .tooltip("Collapse side panel")
                         .on_press(move |_, cx| {
                             collapse_root.update(cx, |this, cx| {

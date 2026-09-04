@@ -706,7 +706,7 @@ impl MissionWorkspace {
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .child(
                     svg()
-                        .path("panel-left-hollow.svg")
+                        .path("panel-left-hidden.svg")
                         .w(px(15.4 * self.settings(cx).app_zoom))
                         .h(px(12. * self.settings(cx).app_zoom))
                         .flex_none()
@@ -2725,7 +2725,7 @@ impl MissionWorkspace {
             .map(|mission| mission.title.clone())
             .unwrap_or_else(|| "…".into());
         let rail_action = (!self.settings(cx).mission_rail_open).then(|| {
-            IconButton::new("open-mission-rail", "panel-right-hollow.svg")
+            IconButton::new("open-mission-rail", "panel-right-hidden.svg")
                 .tooltip("Open runners panel")
                 .on_press(move |_, cx| {
                     open_rail_root.update(cx, |this, cx| {
@@ -4458,7 +4458,7 @@ impl MissionWorkspace {
             )
             .child(
                 div().ml_auto().child(
-                    IconButton::new("collapse-mission-rail", "panel-right-filled.svg")
+                    IconButton::new("collapse-mission-rail", "panel-right-open.svg")
                         .tooltip("Collapse runners panel")
                         .on_press(move |_, cx| {
                             collapse_root.update(cx, |this, cx| {
