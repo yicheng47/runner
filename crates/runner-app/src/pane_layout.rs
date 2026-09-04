@@ -5,6 +5,10 @@ use runner_backend::ops::node::NodeTabUpsertInput;
 use runner_backend::repo::node::{NodeRow, NodeType};
 use serde::{Deserialize, Deserializer, Serialize};
 
+pub const DEFAULT_DRAWER_HEIGHT: f32 = 280.;
+pub const MIN_DRAWER_HEIGHT: f32 = 120.;
+pub const MAX_DRAWER_HEIGHT: f32 = 600.;
+
 // Wire names are the Tauri-era spellings (`cols-2`, not serde's kebab-case
 // `cols2`); the aliases keep rows written by 0.6.0/0.6.1 readable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -168,6 +172,27 @@ pub struct PaneLayout {
     pub preset: PresetKind,
     pub root: PaneNode,
     pub focused_pane_id: String,
+    drawer: DrawerLayout,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+struct DrawerLayout {
+    open: bool,
+    height: f32,
+    shells: Vec<String>,
+    active: usize,
+}
+
+impl Default for DrawerLayout {
+    fn default() -> Self {
+        Self {
+            open: false,
+            height: DEFAULT_DRAWER_HEIGHT,
+            shells: Vec::new(),
+            active: 0,
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -177,6 +202,8 @@ struct PersistedLayout {
     slots: Vec<Option<String>>,
     #[serde(default, deserialize_with = "lenient_sizes")]
     sizes: BTreeMap<String, [f32; 2]>,
+    #[serde(default)]
+    drawer: DrawerLayout,
 }
 
 // The Tauri-era writer could persist `[null,null]` sizes (NaN from the panel
@@ -229,6 +256,14 @@ impl PaneLayout {
             preset: persisted.preset,
             root,
             focused_pane_id,
+            drawer: DrawerLayout {
+                height: clamp_drawer_height(persisted.drawer.height),
+                active: persisted
+                    .drawer
+                    .active
+                    .min(persisted.drawer.shells.len().saturating_sub(1)),
+                ..persisted.drawer
+            },
         })
     }
 
@@ -268,6 +303,7 @@ impl PaneLayout {
             preset,
             root,
             focused_pane_id,
+            drawer: DrawerLayout::default(),
         }
     }
 
@@ -284,6 +320,88 @@ impl PaneLayout {
             .leaves()
             .into_iter()
             .any(|leaf| leaf.session_id.as_deref() == Some(session_id))
+    }
+
+    pub fn all_session_ids(&self) -> Vec<String> {
+        self.session_ids()
+            .into_iter()
+            .chain(self.drawer.shells.iter().cloned())
+            .collect()
+    }
+
+    pub fn drawer_open(&self) -> bool {
+        self.drawer.open
+    }
+
+    pub fn set_drawer_open(&mut self, open: bool) {
+        self.drawer.open = open;
+    }
+
+    pub fn drawer_height(&self) -> f32 {
+        self.drawer.height
+    }
+
+    pub fn set_drawer_height(&mut self, height: f32) {
+        self.drawer.height = clamp_drawer_height(height);
+    }
+
+    pub fn drawer_shells(&self) -> &[String] {
+        &self.drawer.shells
+    }
+
+    pub fn active_drawer_shell(&self) -> Option<&str> {
+        self.drawer
+            .shells
+            .get(self.drawer.active)
+            .map(String::as_str)
+    }
+
+    pub fn add_drawer_shell(&mut self, session_id: String) {
+        if let Some(index) = self
+            .drawer
+            .shells
+            .iter()
+            .position(|existing| existing == &session_id)
+        {
+            self.drawer.active = index;
+        } else {
+            self.drawer.shells.push(session_id);
+            self.drawer.active = self.drawer.shells.len() - 1;
+        }
+        self.drawer.open = true;
+    }
+
+    pub fn remove_drawer_shell(&mut self, session_id: &str) -> bool {
+        let Some(index) = self
+            .drawer
+            .shells
+            .iter()
+            .position(|existing| existing == session_id)
+        else {
+            return false;
+        };
+        self.drawer.shells.remove(index);
+        if self.drawer.shells.is_empty() {
+            self.drawer.active = 0;
+            self.drawer.open = false;
+        } else if index <= self.drawer.active {
+            self.drawer.active = self.drawer.active.saturating_sub(1);
+        }
+        true
+    }
+
+    pub fn activate_drawer_shell(&mut self, session_id: &str) -> bool {
+        let Some(index) = self
+            .drawer
+            .shells
+            .iter()
+            .position(|existing| existing == session_id)
+        else {
+            return false;
+        };
+        self.drawer.active = index;
+        self.drawer.open = true;
+        true
     }
 
     pub fn is_resize_owner(&self, pane_id: &str, session_id: &str) -> bool {
@@ -335,6 +453,7 @@ impl PaneLayout {
 
     pub fn remove_session(&mut self, session_id: &str) {
         self.root.remove_session(session_id);
+        self.remove_drawer_shell(session_id);
     }
 
     pub fn apply_preset(&mut self, preset: PresetKind) {
@@ -464,6 +583,7 @@ impl PaneLayout {
                 .map(|leaf| leaf.session_id.clone())
                 .collect(),
             sizes,
+            drawer: self.drawer.clone(),
         })?)
     }
 
@@ -474,6 +594,14 @@ impl PaneLayout {
             name: self.name.clone().unwrap_or_default(),
             layout: self.serialize()?,
         })
+    }
+}
+
+fn clamp_drawer_height(height: f32) -> f32 {
+    if height.is_finite() {
+        height.clamp(MIN_DRAWER_HEIGHT, MAX_DRAWER_HEIGHT)
+    } else {
+        DEFAULT_DRAWER_HEIGHT
     }
 }
 

@@ -86,6 +86,26 @@ fn archive_session_plan(
     plan
 }
 
+fn archive_targets_for_chats(mut session_ids: Vec<String>, layouts: &[PaneLayout]) -> Vec<String> {
+    let requested = session_ids.iter().cloned().collect::<HashSet<_>>();
+    for layout in layouts {
+        let pane_sessions = layout.session_ids();
+        if pane_sessions.is_empty()
+            || !pane_sessions
+                .iter()
+                .all(|session_id| requested.contains(session_id))
+        {
+            continue;
+        }
+        for shell_id in layout.drawer_shells() {
+            if !session_ids.contains(shell_id) {
+                session_ids.push(shell_id.clone());
+            }
+        }
+    }
+    session_ids
+}
+
 pub(crate) fn archive_all_confirmation_body(
     session_ids: &[String],
     sessions: &[DirectSessionEntry],
@@ -624,7 +644,13 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.archive_all_sessions(session_ids, ArchiveAllSource::Chat, window, cx);
+        let chat_count = session_ids.len();
+        let session_ids = archive_targets_for_chats(session_ids, self.tabs.tabs());
+        if session_ids.len() > chat_count {
+            self.request_archive_all(None, session_ids, ArchiveAllSource::Chat, window, cx);
+        } else {
+            self.archive_all_sessions(session_ids, ArchiveAllSource::Chat, window, cx);
+        }
     }
 
     pub(crate) fn archive_all_sessions(
@@ -674,7 +700,33 @@ impl NativeRoot {
             .find(|layout| layout.session_ids().iter().any(|id| id == session_id))
             .map(|layout| layout.id.clone());
         let Some(tab_id) = tab_id else {
-            return false;
+            let drawer_tab_id = self
+                .tabs
+                .tabs()
+                .iter()
+                .find(|layout| layout.drawer_shells().iter().any(|id| id == session_id))
+                .map(|layout| layout.id.clone());
+            let Some(tab_id) = drawer_tab_id else {
+                return false;
+            };
+            if !self.tabs.activate(&tab_id) {
+                return false;
+            }
+            if let Some(layout) = self.tabs.active_mut() {
+                layout.activate_drawer_shell(session_id);
+            }
+            self.sync_active_project_from_active_tab(cx);
+            self.set_route(AppRoute::Chat, cx);
+            if let Err(error) = self
+                .persist_active_tab(cx)
+                .and_then(|_| self.ensure_active_tab_attached(window, cx))
+            {
+                self.chat_error = Some(error.to_string());
+            } else {
+                self.focus_drawer_terminal(session_id, window, cx);
+            }
+            cx.notify();
+            return true;
         };
         self.activate_sidebar_session(&tab_id, session_id, window, cx);
         true
@@ -1174,6 +1226,7 @@ impl Sidebar {
         cx: &mut Context<Self>,
     ) {
         let multi_pane = layout.root.leaves().len() > 1;
+        let archive_all = multi_pane || !layout.drawer_shells().is_empty();
         let terminal_session_id = (!multi_pane)
             .then(|| {
                 members
@@ -1182,10 +1235,7 @@ impl Sidebar {
                     .map(|member| member.session_id.clone())
             })
             .flatten();
-        let tab_session_ids = members
-            .iter()
-            .map(|member| member.session_id.clone())
-            .collect::<Vec<_>>();
+        let tab_session_ids = layout.all_session_ids();
         let fork_target = sidebar_fork_menu_target(&layout, &members);
         let fork_pending = fork_target.as_ref().is_some_and(|target| {
             self.shell.upgrade().is_some_and(|shell| {
@@ -1199,7 +1249,7 @@ impl Sidebar {
             &node.id,
             node.pinned_position.is_some(),
             layout.name.unwrap_or_default(),
-            multi_pane,
+            archive_all,
             fork_target,
             fork_pending,
             members
@@ -2273,7 +2323,12 @@ impl Sidebar {
                     workspace_new_chat_row(move |window, cx| {
                         if let Some(shell) = shell.upgrade() {
                             shell.update(cx, |shell, shell_cx| {
-                                shell.open_new_tab_modal(&NewTab, window, shell_cx)
+                                let project_id = shell.active_project_id(shell_cx);
+                                shell.open_sidebar_chat_modal(
+                                    project_id.as_deref(),
+                                    window,
+                                    shell_cx,
+                                )
                             });
                         }
                     })
@@ -3375,7 +3430,7 @@ fn tab_menu_entries(
     node_id: &str,
     pinned: bool,
     original: String,
-    multi_pane: bool,
+    archive_all: bool,
     fork_target: Option<SidebarForkMenuTarget>,
     fork_pending: bool,
     chat_session_ids: Vec<String>,
@@ -3413,12 +3468,16 @@ fn tab_menu_entries(
     }
     if !chat_session_ids.is_empty() {
         entries.push((
-            UiMenuItem::new(if multi_pane { "Archive all" } else { "Archive" })
-                .icon("archive.svg")
-                .destructive(true),
+            UiMenuItem::new(if archive_all {
+                "Archive all"
+            } else {
+                "Archive"
+            })
+            .icon("archive.svg")
+            .destructive(true),
             SidebarMenuAction::ArchiveTab {
                 tab_id: node_id.to_owned(),
-                session_ids: if multi_pane {
+                session_ids: if archive_all {
                     tab_session_ids
                 } else {
                     chat_session_ids
@@ -4404,6 +4463,32 @@ mod tests {
         assert_eq!(
             archive_all_confirmation_body(&["active-chat".into(), "idle-chat".into()], &sessions,),
             None,
+        );
+    }
+
+    #[test]
+    fn archiving_every_chat_in_a_tab_also_closes_its_drawer_shells() {
+        let mut single = PaneLayout::fresh(PresetKind::Single, Some("chat"), &["chat".into()]);
+        single.add_drawer_shell("shell-1".into());
+        single.add_drawer_shell("shell-2".into());
+        assert_eq!(
+            archive_targets_for_chats(vec!["chat".into()], &[single]),
+            ["chat", "shell-1", "shell-2"]
+        );
+
+        let mut split = PaneLayout::fresh(
+            PresetKind::Cols2,
+            Some("chat-1"),
+            &["chat-1".into(), "chat-2".into()],
+        );
+        split.add_drawer_shell("shell".into());
+        assert_eq!(
+            archive_targets_for_chats(vec!["chat-1".into()], &[split.clone()]),
+            ["chat-1"]
+        );
+        assert_eq!(
+            archive_targets_for_chats(vec!["chat-1".into(), "chat-2".into()], &[split],),
+            ["chat-1", "chat-2", "shell"]
         );
     }
 

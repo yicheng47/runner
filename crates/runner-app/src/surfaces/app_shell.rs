@@ -212,6 +212,7 @@ impl NativeRoot {
             .on_action(cx.listener(Self::focus_previous_chat_pane))
             .on_action(cx.listener(Self::focus_next_chat_pane))
             .on_action(cx.listener(Self::stop_focused_session))
+            .on_action(cx.listener(Self::toggle_terminal_drawer_action))
             .on_action(cx.listener(Self::toggle_sidebar))
             .on_action(cx.listener(Self::open_command_palette))
             .on_action(cx.listener(Self::open_settings))
@@ -912,6 +913,15 @@ impl NativeRoot {
         }
         self.sidebar_preview_peeking = false;
         cx.notify();
+    }
+
+    fn toggle_terminal_drawer_action(
+        &mut self,
+        _: &ToggleTerminalDrawer,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.toggle_terminal_drawer(window, cx);
     }
 
     fn select_sidebar_shortcut(&mut self, index: u8, window: &mut Window, cx: &mut Context<Self>) {

@@ -230,10 +230,20 @@ impl NativeRoot {
                     self.stopping_sessions.remove(&session_id);
                     self.refresh_sessions(cx);
                     self.sync_active_chat_detail(cx);
-                    if self.route == AppRoute::Chat
-                        && self.active_focused_session_id().as_deref() == Some(session_id.as_str())
-                    {
-                        self.chat_focus.focus(window);
+                    if self.route == AppRoute::Chat {
+                        if self
+                            .tabs
+                            .active()
+                            .filter(|layout| layout.drawer_open())
+                            .and_then(PaneLayout::active_drawer_shell)
+                            == Some(session_id.as_str())
+                        {
+                            self.drawer_focus.focus(window);
+                        } else if self.active_focused_session_id().as_deref()
+                            == Some(session_id.as_str())
+                        {
+                            self.chat_focus.focus(window);
+                        }
                     }
                 }
             }
@@ -263,11 +273,9 @@ impl NativeRoot {
                         transition.baseline_seq = 0;
                     }
                     self.refresh_sessions(cx);
-                    if let Some(layout) =
-                        self.tabs.active().cloned().filter(|layout| {
-                            layout.session_ids().iter().any(|id| id == &session_id)
-                        })
-                    {
+                    if let Some(layout) = self.tabs.active().cloned().filter(|layout| {
+                        layout.all_session_ids().iter().any(|id| id == &session_id)
+                    }) {
                         if let Err(error) = self.ensure_attached(&layout, &session_id, window, cx) {
                             self.chat_error = Some(error.to_string());
                         }
@@ -426,11 +434,20 @@ impl NativeRoot {
                     );
                     if settled {
                         this.chat_transitions.remove(&tracked_id);
-                        if this.route == AppRoute::Chat
-                            && this.active_focused_session_id().as_deref()
+                        if this.route == AppRoute::Chat {
+                            let active_drawer = this
+                                .tabs
+                                .active()
+                                .filter(|layout| layout.drawer_open())
+                                .and_then(PaneLayout::active_drawer_shell)
+                                == Some(tracked_id.as_str());
+                            if active_drawer {
+                                this.focus_drawer_terminal(&tracked_id, window, cx);
+                            } else if this.active_focused_session_id().as_deref()
                                 == Some(tracked_id.as_str())
-                        {
-                            this.focus_active_terminal(window, cx);
+                            {
+                                this.focus_active_terminal(window, cx);
+                            }
                         }
                         cx.notify();
                     }
@@ -888,7 +905,7 @@ impl NativeRoot {
             self.attached.clear();
             return Ok(());
         };
-        let active_ids = layout.session_ids();
+        let active_ids = layout.all_session_ids();
         let owned_ids = active_ids
             .iter()
             .filter(|session_id| !self.chat_secondaries.contains_key(*session_id))
@@ -1028,6 +1045,46 @@ impl NativeRoot {
             (pane_width / cell_width).floor().max(2.) as u16,
             (pane_height / line_height).floor().max(2.) as u16,
         )
+    }
+
+    pub(crate) fn estimated_drawer_terminal_size(
+        &self,
+        layout: &PaneLayout,
+        window: &Window,
+        cx: &App,
+    ) -> (u16, u16) {
+        let bounds = window.bounds().size;
+        let sidebar_width = if self.sidebar_collapsed {
+            0.
+        } else {
+            self.settings(cx).sidebar_width * self.settings(cx).app_zoom
+        };
+        let chat_panel_width = if self.settings(cx).chat_panel_open {
+            self.settings(cx).chat_panel_width * self.settings(cx).app_zoom
+        } else {
+            0.
+        };
+        let width = (f32::from(bounds.width) - sidebar_width - chat_panel_width).max(200.);
+        let height =
+            (layout.drawer_height() - (32. + 5. + 24.)).max(80.) * self.settings(cx).app_zoom;
+        let font_size = self.settings(cx).terminal_font_size as f32 * self.settings(cx).app_zoom;
+        let cell_width = font_size * 0.6;
+        let line_height = (font_size * crate::terminal::element::LINE_HEIGHT_FACTOR).round();
+        (
+            (width / cell_width).floor().max(2.) as u16,
+            (height / line_height).floor().max(2.) as u16,
+        )
+    }
+
+    pub(crate) fn active_tab_is_terminal_only(&self, cx: &App) -> bool {
+        self.tabs.active().is_some_and(|layout| {
+            layout.root.leaves().len() == 1
+                && layout.session_ids().len() == 1
+                && layout.session_ids().first().is_some_and(|session_id| {
+                    self.session_entry(session_id, cx)
+                        .is_some_and(|entry| entry.agent_runtime == "shell")
+                })
+        })
     }
 
     pub(crate) fn active_focused_session_id(&self) -> Option<String> {
@@ -1198,6 +1255,23 @@ impl NativeRoot {
         }
         self.mark_active_tab_viewed(window, cx);
         self.record_current_runtime_location();
+    }
+
+    pub(crate) fn focus_drawer_terminal(
+        &mut self,
+        session_id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.session_is_interactive(session_id, cx) {
+            if let Some(chat) = self.attached.get(session_id) {
+                chat.terminal_focus.focus(window);
+            } else {
+                self.drawer_focus.focus(window);
+            }
+        } else {
+            self.drawer_focus.focus(window);
+        }
     }
 
     pub(crate) fn on_key_down(
@@ -1433,6 +1507,70 @@ impl NativeRoot {
         cx.notify();
     }
 
+    pub(crate) fn resume_drawer_shell(
+        &mut self,
+        session_id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.chat_transitions.contains_key(session_id) {
+            return;
+        }
+        let Some(layout) = self.tabs.active().cloned() else {
+            return;
+        };
+        let size = self
+            .attached
+            .get(session_id)
+            .map(|chat| chat.terminal.size())
+            .unwrap_or_else(|| self.estimated_drawer_terminal_size(&layout, window, cx));
+        self.begin_chat_transition(
+            session_id,
+            chat_lifecycle::TransitionKind::Resuming,
+            None,
+            window,
+            cx,
+        );
+        self.chat_error = None;
+        self.session_exit_codes.remove(session_id);
+        let core = self.core(cx).clone();
+        let target = session_id.to_owned();
+        let resume_target = target.clone();
+        let resume = cx.background_spawn(async move {
+            runner_backend::ops::session::session_resume(
+                &core,
+                &resume_target,
+                Some(size.0),
+                Some(size.1),
+            )
+            .map(drop)
+            .map_err(|error| error.to_string())
+        });
+        cx.spawn_in(window, async move |weak, cx| {
+            let result = resume.await;
+            let _ = weak.update_in(cx, |this, window, cx| {
+                match result {
+                    Ok(()) => {
+                        this.refresh_sessions(cx);
+                        if let Err(error) = this.ensure_attached(&layout, &target, window, cx) {
+                            this.chat_transitions.remove(&target);
+                            this.chat_error = Some(error.to_string());
+                        }
+                        this.focus_drawer_terminal(&target, window, cx);
+                    }
+                    Err(error) => {
+                        this.chat_transitions.remove(&target);
+                        this.chat_error = Some(error);
+                        this.refresh_sessions(cx);
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
     pub(crate) fn pick_preset(
         &mut self,
         preset: PresetKind,
@@ -1599,6 +1737,88 @@ impl NativeRoot {
         cx.notify();
     }
 
+    pub(crate) fn close_drawer_shell(
+        &mut self,
+        session_id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.terminal_close_confirm = None;
+        if !self.stopping_sessions.insert(session_id.to_owned()) {
+            return;
+        }
+        self.chat_error = None;
+        let core = self.core(cx).clone();
+        let target = session_id.to_owned();
+        let close_target = target.clone();
+        let close = cx.background_spawn(async move {
+            runner_backend::ops::session::session_close(&core, &close_target)
+                .map_err(|error| error.to_string())
+        });
+        cx.spawn_in(window, async move |weak, cx| {
+            let result = close.await;
+            let _ = weak.update_in(cx, |this, window, cx| {
+                this.stopping_sessions.remove(&target);
+                match result {
+                    Ok(()) => {
+                        this.attached.remove(&target);
+                        this.session_exit_codes.remove(&target);
+                        this.refresh_sessions(cx);
+                        let refresh = this
+                            .reload_tabs(cx)
+                            .and_then(|_| this.ensure_active_tab_attached(window, cx));
+                        if let Err(error) = refresh {
+                            this.chat_error = Some(error.to_string());
+                        } else if let Some(active) = this
+                            .tabs
+                            .active()
+                            .filter(|layout| layout.drawer_open())
+                            .and_then(PaneLayout::active_drawer_shell)
+                            .map(str::to_owned)
+                        {
+                            this.focus_drawer_terminal(&active, window, cx);
+                        } else {
+                            this.focus_active_terminal(window, cx);
+                        }
+                    }
+                    Err(error) => this.chat_error = Some(error),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    pub(crate) fn request_close_drawer_shell(
+        &mut self,
+        session_id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.tabs.active_tab_id().is_none() {
+            return;
+        }
+        match runner_backend::ops::session::session_shell_has_foreground_process(
+            self.core(cx),
+            session_id,
+        ) {
+            Ok(true) => {
+                self.terminal_close_confirm = Some(TerminalCloseConfirm {
+                    target: TerminalCloseTarget::Drawer {
+                        session_id: session_id.to_owned(),
+                    },
+                });
+                cx.notify();
+            }
+            Ok(false) => self.close_drawer_shell(session_id, window, cx),
+            Err(error) => {
+                self.chat_error = Some(error.to_string());
+                cx.notify();
+            }
+        }
+    }
+
     pub(crate) fn request_close_terminal_pane(
         &mut self,
         pane_id: &str,
@@ -1751,6 +1971,9 @@ impl NativeRoot {
             TerminalCloseTarget::Tab { session_id } => {
                 self.close_terminal_tab(&session_id, window, cx)
             }
+            TerminalCloseTarget::Drawer { session_id } => {
+                self.close_drawer_shell(&session_id, window, cx)
+            }
             TerminalCloseTarget::ArchiveAll {
                 session_ids,
                 source,
@@ -1801,6 +2024,31 @@ impl NativeRoot {
         if let Err(error) = self.persist_active_tab(cx) {
             self.chat_error = Some(error.to_string());
         }
+    }
+
+    pub(crate) fn resize_terminal_drawer(
+        &mut self,
+        event: &DragMoveEvent<DrawerResizeDrag>,
+        cx: &mut Context<Self>,
+    ) {
+        let height =
+            f32::from(event.bounds.bottom() - event.event.position.y) / self.settings(cx).app_zoom;
+        if let Some(layout) = self.tabs.active_mut() {
+            layout.set_drawer_height(height);
+            self.drawer_resizing = true;
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn finish_terminal_drawer_resize(&mut self, cx: &mut Context<Self>) {
+        if !self.drawer_resizing {
+            return;
+        }
+        self.drawer_resizing = false;
+        if let Err(error) = self.persist_active_tab(cx) {
+            self.chat_error = Some(error.to_string());
+        }
+        cx.notify();
     }
 }
 

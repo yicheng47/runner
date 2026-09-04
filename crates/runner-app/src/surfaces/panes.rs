@@ -202,6 +202,7 @@ impl NativeRoot {
         let focused_shell = focused_entry
             .as_ref()
             .is_some_and(|entry| entry.agent_runtime == "shell");
+        let terminal_only = self.active_tab_is_terminal_only(cx);
         let focused_secondary = focused_session_id
             .as_deref()
             .is_some_and(|session_id| self.cached_chat_secondary_state(session_id).secondary);
@@ -234,14 +235,11 @@ impl NativeRoot {
         let root = cx.entity();
         let fork_root = root.clone();
         let layout_root = root.clone();
+        let drawer_root = root.clone();
         let panel_root = root.clone();
         let control = (!focused_secondary)
             .then(|| self.render_topbar_session_control(&layout, window, cx))
             .flatten();
-        let title_actions = (!session_ids.is_empty() && !focused_secondary)
-            .then(|| self.chat_action_menu.clone().into_any_element())
-            .into_iter()
-            .chain(control);
         let fork_pending = focused_session_id.as_deref().is_some_and(|session_id| {
             self.fork_confirm
                 .as_ref()
@@ -267,7 +265,13 @@ impl NativeRoot {
             }
             Some(button.into_any_element())
         });
-        let split_tooltip = split_panes_tooltip(&self.settings(cx).keymap_overrides);
+        let title_actions = (!session_ids.is_empty() && !focused_secondary)
+            .then(|| self.chat_action_menu.clone().into_any_element())
+            .into_iter()
+            .chain(control)
+            .chain(fork_action);
+        let keymap_overrides = self.settings(cx).keymap_overrides.clone();
+        let split_tooltip = split_panes_tooltip(&keymap_overrides);
         let layout_action = IconButton::new("layout-picker-toggle", "square-split-horizontal.svg")
             .focus_handle(self.layout_picker_focus.clone())
             .variant(if self.layout_picker_open {
@@ -283,6 +287,28 @@ impl NativeRoot {
                 });
             })
             .into_any_element();
+        let drawer_action = (!terminal_only).then(|| {
+            let open = layout.drawer_open();
+            let tooltip = terminal_drawer_tooltip(open, &keymap_overrides);
+            IconButton::new(
+                "terminal-drawer-toggle",
+                if open {
+                    "panel-bottom-filled.svg"
+                } else {
+                    "panel-bottom-hollow.svg"
+                },
+            )
+            .variant(if open {
+                ButtonVariant::Secondary
+            } else {
+                ButtonVariant::Ghost
+            })
+            .tooltip(tooltip)
+            .on_press(move |window, cx| {
+                drawer_root.update(cx, |this, cx| this.toggle_terminal_drawer(window, cx));
+            })
+            .into_any_element()
+        });
         let panel_action = (!side_panel_open(self.settings(cx).chat_panel_open, focused_shell)
             && !focused_shell)
             .then(|| {
@@ -313,9 +339,8 @@ impl NativeRoot {
         .sidebar_toggle(sidebar_toggle)
         .title_actions(title_actions)
         .trailing_actions(
-            fork_action
-                .into_iter()
-                .chain(std::iter::once(layout_action))
+            std::iter::once(layout_action)
+                .chain(drawer_action)
                 .chain(panel_action),
         )
         .into_div();
@@ -369,6 +394,60 @@ impl NativeRoot {
                 )
         });
 
+        let drawer = layout
+            .drawer_open()
+            .then(|| self.render_terminal_drawer(&layout, window, cx));
+        let drawer_height = layout.drawer_height();
+        let drawer_drag = DrawerResizeDrag;
+        let drawer_resizing = self.drawer_resizing;
+        let tab_body = div()
+            .id("chat-tab-body")
+            .relative()
+            .flex_1()
+            .min_h(px(0.))
+            .flex()
+            .flex_col()
+            .child(div().relative().flex_1().min_h(px(0.)).child(pane_tree))
+            .children(drawer.map(|drawer| {
+                div()
+                    .flex_none()
+                    .h(rems(drawer_height / 16.))
+                    .min_h(rems(MIN_DRAWER_HEIGHT / 16.))
+                    .max_h(rems(MAX_DRAWER_HEIGHT / 16.))
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .id("terminal-drawer-resize")
+                            .flex_none()
+                            .h(rems(5. / 16.))
+                            .w_full()
+                            .flex()
+                            .items_center()
+                            .cursor(CursorStyle::ResizeUpDown)
+                            .child(
+                                div()
+                                    .h(rems(if drawer_resizing { 2. / 16. } else { 1. / 16. }))
+                                    .w_full()
+                                    .bg(theme::border_strong()),
+                            )
+                            .on_drag(
+                                drawer_drag,
+                                |drag: &DrawerResizeDrag, _, _, cx: &mut App| {
+                                    cx.new(|_| drag.clone())
+                                },
+                            ),
+                    )
+                    .child(drawer)
+            }))
+            .on_drag_move::<DrawerResizeDrag>(cx.listener(
+                |this, event: &DragMoveEvent<DrawerResizeDrag>, _, cx| {
+                    this.resize_terminal_drawer(event, cx);
+                },
+            ))
+            .on_drop(cx.listener(|this, _: &DrawerResizeDrag, _, cx| {
+                this.finish_terminal_drawer_resize(cx);
+            }));
         let chat_column = div()
             .relative()
             .flex_1()
@@ -387,7 +466,7 @@ impl NativeRoot {
             .child(self.render_titlebar_drag_area("chat-titlebar-drag", header, cx))
             .children(error_banner)
             .children(warning_banner)
-            .child(div().relative().flex_1().min_h(px(0.)).child(pane_tree))
+            .child(tab_body)
             .children(picker);
         let panel_open = side_panel_open(self.settings(cx).chat_panel_open, focused_shell);
         let (panel_visibility, panel_animating) = self.chat_panel_visibility.animate_to(
@@ -428,11 +507,17 @@ impl NativeRoot {
             )
             .on_mouse_up(
                 MouseButton::Left,
-                cx.listener(|this, _, _, cx| this.finish_split_resize(cx)),
+                cx.listener(|this, _, _, cx| {
+                    this.finish_split_resize(cx);
+                    this.finish_terminal_drawer_resize(cx);
+                }),
             )
             .on_mouse_up_out(
                 MouseButton::Left,
-                cx.listener(|this, _, _, cx| this.finish_split_resize(cx)),
+                cx.listener(|this, _, _, cx| {
+                    this.finish_split_resize(cx);
+                    this.finish_terminal_drawer_resize(cx);
+                }),
             )
             .on_drag_move::<ChatPanelResizeDrag>(cx.listener(
                 |this, event: &DragMoveEvent<ChatPanelResizeDrag>, _, cx| {
@@ -461,6 +546,7 @@ impl NativeRoot {
         cx: &mut Context<Self>,
     ) {
         let session_ids = layout.session_ids();
+        let all_session_ids = layout.all_session_ids();
         let chat_session_ids = session_ids
             .iter()
             .filter(|session_id| {
@@ -489,7 +575,7 @@ impl NativeRoot {
                         .destructive(true)
                         .disabled(lifecycle_busy),
                 );
-                actions.push(ChatMenuAction::ArchiveAll(session_ids));
+                actions.push(ChatMenuAction::ArchiveAll(all_session_ids));
             }
         } else if let Some(session_id) = session_ids.first() {
             if let Some(entry) = self.session_entry(session_id, cx) {
@@ -517,13 +603,22 @@ impl NativeRoot {
                     current,
                 });
                 if entry.agent_runtime != "shell" {
+                    let archive_all = !layout.drawer_shells().is_empty();
                     items.push(
-                        UiMenuItem::new("Archive")
-                            .icon("archive.svg")
-                            .destructive(true)
-                            .disabled(lifecycle_busy),
+                        UiMenuItem::new(if archive_all {
+                            "Archive all"
+                        } else {
+                            "Archive"
+                        })
+                        .icon("archive.svg")
+                        .destructive(true)
+                        .disabled(lifecycle_busy),
                     );
-                    actions.push(ChatMenuAction::Archive(vec![session_id.clone()]));
+                    actions.push(if archive_all {
+                        ChatMenuAction::ArchiveAll(all_session_ids)
+                    } else {
+                        ChatMenuAction::Archive(vec![session_id.clone()])
+                    });
                 }
             }
         }
@@ -894,7 +989,7 @@ impl NativeRoot {
             .as_ref()
             .map(|confirm| &confirm.target)
         {
-            Some(TerminalCloseTarget::Tab { .. }) => (
+            Some(TerminalCloseTarget::Tab { .. } | TerminalCloseTarget::Drawer { .. }) => (
                 "Close terminal?",
                 "A foreground process is still running. Closing this terminal will stop it."
                     .to_owned(),
@@ -1359,6 +1454,310 @@ impl NativeRoot {
         menu
     }
 
+    pub(crate) fn render_terminal_drawer(
+        &mut self,
+        layout: &PaneLayout,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let active_id = layout.active_drawer_shell().map(str::to_owned);
+        let chips = layout
+            .drawer_shells()
+            .iter()
+            .map(|session_id| {
+                let active = active_id.as_deref() == Some(session_id.as_str());
+                let label = self
+                    .session_entry(session_id, cx)
+                    .map(default_session_label)
+                    .unwrap_or_else(|| "shell".into());
+                let activate_root = cx.entity();
+                let close_root = activate_root.clone();
+                let activate_id = session_id.clone();
+                let close_id = session_id.clone();
+                div()
+                    .id(SharedString::from(format!("drawer-chip-{session_id}")))
+                    .flex_none()
+                    .h(rems(24. / 16.))
+                    .max_w(rems(180. / 16.))
+                    .px_2()
+                    .flex()
+                    .items_center()
+                    .gap(rems(6. / 16.))
+                    .rounded(rems(5. / 16.))
+                    .bg(if active {
+                        theme::raised()
+                    } else {
+                        gpui::transparent_black()
+                    })
+                    .text_color(if active {
+                        theme::text()
+                    } else {
+                        theme::muted()
+                    })
+                    .cursor_pointer()
+                    .hover(|chip| chip.bg(theme::raised()))
+                    .child(
+                        svg()
+                            .path("terminal.svg")
+                            .size(rems(12. / 16.))
+                            .flex_none()
+                            .text_color(theme::muted()),
+                    )
+                    .child(
+                        div()
+                            .min_w(px(0.))
+                            .truncate()
+                            .text_size(rems(12. / 16.))
+                            .child(label),
+                    )
+                    .child(
+                        IconButton::new(
+                            SharedString::from(format!("close-drawer-shell-{session_id}")),
+                            "close.svg",
+                        )
+                        .size(IconButtonSize::Xs)
+                        .stop_click_propagation(true)
+                        .tooltip("Close terminal")
+                        .on_press(move |window, cx| {
+                            close_root.update(cx, |this, cx| {
+                                this.request_close_drawer_shell(&close_id, window, cx)
+                            });
+                        }),
+                    )
+                    .on_click(move |_, window, cx| {
+                        activate_root.update(cx, |this, cx| {
+                            this.activate_terminal_drawer_shell(&activate_id, window, cx)
+                        });
+                    })
+            })
+            .collect::<Vec<_>>();
+        let add_root = cx.entity();
+        let hide_root = add_root.clone();
+        let strip = div()
+            .flex_none()
+            .h(rems(32. / 16.))
+            .w_full()
+            .pl(rems(10. / 16.))
+            .pr(rems(8. / 16.))
+            .flex()
+            .items_center()
+            .gap(rems(6. / 16.))
+            .border_b_1()
+            .border_color(theme::border())
+            .bg(theme::panel())
+            .children(chips)
+            .child(
+                IconButton::new("add-drawer-shell", "plus.svg")
+                    .size(IconButtonSize::Sm)
+                    .tooltip("New terminal")
+                    .on_press(move |window, cx| {
+                        add_root.update(cx, |this, cx| this.add_terminal_drawer_shell(window, cx));
+                    }),
+            )
+            .child(div().flex_1())
+            .child(
+                IconButton::new("hide-terminal-drawer", "chevron-down.svg")
+                    .size(IconButtonSize::Sm)
+                    .tooltip("Hide terminal drawer")
+                    .on_press(move |window, cx| {
+                        hide_root.update(cx, |this, cx| this.hide_terminal_drawer(window, cx));
+                    }),
+            );
+
+        let body = active_id
+            .as_deref()
+            .and_then(|session_id| self.render_drawer_terminal(session_id, cx))
+            .unwrap_or_else(|| {
+                div()
+                    .relative()
+                    .flex_1()
+                    .min_h(px(0.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_size(rems(12. / 16.))
+                    .text_color(theme::faint())
+                    .child("Terminal unavailable")
+                    .into_any_element()
+            });
+        div()
+            .id("terminal-drawer")
+            .track_focus(&self.drawer_focus)
+            .flex_1()
+            .min_h(px(0.))
+            .flex()
+            .flex_col()
+            .overflow_hidden()
+            .child(strip)
+            .child(body)
+            .into_any_element()
+    }
+
+    fn render_drawer_terminal(
+        &mut self,
+        session_id: &str,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let entry = self.session_entry(session_id, cx)?.clone();
+        let session_id = entry.session_id.clone();
+        let transition = self.chat_transitions.get(&session_id).map(|item| item.kind);
+        let overlay = resolve_pane_overlay(
+            false,
+            transition,
+            entry.status,
+            entry.resumable,
+            self.session_exit_codes.get(&session_id).copied().flatten(),
+        );
+        let interactive = self.cached_session_is_interactive(&session_id, cx);
+        let scrollable = self.route == AppRoute::Chat && transition.is_none();
+        let terminal_style = self.terminal_style(cx);
+        let terminal_background =
+            crate::terminal::element::to_hsla(terminal_style.palette.background, 1.);
+        let terminal_surface = if let Some(chat) = self.attached.get(&session_id) {
+            let terminal = Arc::clone(&chat.terminal);
+            let terminal_interaction = chat.terminal_interaction.clone();
+            let terminal_scrollbar = chat.terminal_scrollbar.clone();
+            let terminal_input = chat.terminal_input.clone();
+            let terminal_focus = chat.terminal_focus.clone();
+            let resize_owner = scrollable;
+            let key_session_id = session_id.clone();
+            let copy_session_id = session_id.clone();
+            let scroll_session_id = session_id.clone();
+            let paste_session_id = session_id.clone();
+            div()
+                .id(SharedString::from(format!("drawer-terminal-{session_id}")))
+                .absolute()
+                .inset_0()
+                .key_context("Terminal")
+                .track_focus(&terminal_focus)
+                .flex()
+                .py_3()
+                .pl_3()
+                .pr_1()
+                .bg(terminal_background)
+                .opacity(match overlay {
+                    PaneOverlayState::Starting | PaneOverlayState::Resuming => 0.,
+                    PaneOverlayState::Ended { .. } => 0.45,
+                    PaneOverlayState::Archiving | PaneOverlayState::None => 1.,
+                })
+                .on_action(cx.listener(move |this, action: &Copy, window, cx| {
+                    this.on_terminal_copy(&copy_session_id, action, window, cx);
+                }))
+                .when(interactive, |surface| {
+                    surface
+                        .on_key_down(cx.listener(move |this, event, window, cx| {
+                            this.on_key_down(&key_session_id, event, window, cx);
+                        }))
+                        .on_action(cx.listener(move |this, action, window, cx| {
+                            this.on_paste(&paste_session_id, action, window, cx);
+                        }))
+                })
+                .when(scrollable, |surface| {
+                    surface.on_scroll_wheel(cx.listener(move |this, event, window, cx| {
+                        this.on_scroll(&scroll_session_id, event, window, cx);
+                    }))
+                })
+                .child(
+                    div()
+                        .relative()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .min_h(px(0.))
+                        .child(TerminalElement::new(
+                            terminal,
+                            terminal_interaction,
+                            terminal_input,
+                            terminal_focus,
+                            interactive,
+                            resize_owner,
+                            terminal_style,
+                        ))
+                        .child(terminal_scrollbar),
+                )
+                .into_any_element()
+        } else {
+            div()
+                .absolute()
+                .inset_0()
+                .bg(terminal_background)
+                .text_size(rems(12. / 16.))
+                .text_color(theme::faint())
+                .when(matches!(overlay, PaneOverlayState::None), |surface| {
+                    surface
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child("Attaching terminal…")
+                })
+                .into_any_element()
+        };
+        let overlay_element = match overlay {
+            PaneOverlayState::Resuming => Some(
+                SessionOverlay::transition(
+                    format!("drawer-resuming-{session_id}"),
+                    SessionOverlayKind::Resuming,
+                )
+                .label("Restarting terminal…")
+                .into_any_element(),
+            ),
+            PaneOverlayState::Starting => Some(
+                SessionOverlay::transition(
+                    format!("drawer-starting-{session_id}"),
+                    SessionOverlayKind::Starting,
+                )
+                .label("Starting terminal…")
+                .into_any_element(),
+            ),
+            PaneOverlayState::Ended { exit_code, .. } => {
+                let restart_root = cx.entity();
+                let close_root = restart_root.clone();
+                let restart_id = session_id.clone();
+                let close_id = session_id.clone();
+                Some(
+                    SessionOverlay::shell_exited(
+                        format!("drawer-ended-{session_id}"),
+                        shell_exited_subtitle(
+                            exit_code,
+                            &default_session_label(&entry),
+                            entry.cwd.as_deref(),
+                            std::env::var("HOME").ok().as_deref(),
+                        ),
+                        move |window, cx| {
+                            restart_root.update(cx, |this, cx| {
+                                this.resume_drawer_shell(&restart_id, window, cx)
+                            });
+                        },
+                        move |window, cx| {
+                            close_root.update(cx, |this, cx| {
+                                this.close_drawer_shell(&close_id, window, cx)
+                            });
+                        },
+                    )
+                    .into_any_element(),
+                )
+            }
+            PaneOverlayState::Archiving | PaneOverlayState::None => None,
+        };
+        let focus_id = session_id.clone();
+        Some(
+            div()
+                .relative()
+                .flex_1()
+                .min_h(px(0.))
+                .overflow_hidden()
+                .bg(terminal_background)
+                .child(terminal_surface)
+                .children(overlay_element)
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, _, window, cx| {
+                        this.focus_drawer_terminal(&focus_id, window, cx);
+                    }),
+                )
+                .into_any_element(),
+        )
+    }
+
     pub(crate) fn render_pane(
         &mut self,
         leaf: &PaneLeaf,
@@ -1796,10 +2195,8 @@ impl NativeRoot {
                 .into_any_element()
         } else {
             let new_chat_pane_id = pane_id.clone();
-            let new_terminal_pane_id = pane_id.clone();
             let new_chat_root = cx.entity();
-            let new_terminal_root = new_chat_root.clone();
-            let [new_chat_label, new_terminal_label] = empty_pane_action_labels();
+            let new_chat_label = empty_pane_action_label(&self.settings(cx).keymap_overrides);
             div()
                 .flex_1()
                 .flex()
@@ -1816,35 +2213,17 @@ impl NativeRoot {
                         .child("No session in this pane"),
                 )
                 .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .child(
-                            Button::new(
-                                SharedString::from(format!("new-chat-{pane_id}")),
-                                new_chat_label,
-                            )
-                            .size(ButtonSize::Sm)
-                            .variant(ButtonVariant::Primary)
-                            .on_press(move |window, cx| {
-                                new_chat_root.update(cx, |this, cx| {
-                                    this.open_pane_chat_modal(&new_chat_pane_id, window, cx)
-                                });
-                            }),
-                        )
-                        .child(
-                            Button::new(
-                                SharedString::from(format!("new-terminal-{pane_id}")),
-                                new_terminal_label,
-                            )
-                            .size(ButtonSize::Sm)
-                            .on_press(move |window, cx| {
-                                new_terminal_root.update(cx, |this, cx| {
-                                    this.start_terminal_in_pane(&new_terminal_pane_id, window, cx)
-                                });
-                            }),
-                        ),
+                    Button::new(
+                        SharedString::from(format!("new-chat-{pane_id}")),
+                        new_chat_label,
+                    )
+                    .size(ButtonSize::Sm)
+                    .variant(ButtonVariant::Primary)
+                    .on_press(move |window, cx| {
+                        new_chat_root.update(cx, |this, cx| {
+                            this.open_pane_chat_modal(&new_chat_pane_id, window, cx)
+                        });
+                    }),
                 )
                 .into_any_element()
         };
@@ -1905,8 +2284,23 @@ fn pane_identity_visible(pane_count: usize) -> bool {
     pane_count > 1
 }
 
-fn empty_pane_action_labels() -> [&'static str; 2] {
-    ["New chat", "New terminal"]
+fn empty_pane_action_label(overrides: &keymap::KeymapOverrides) -> String {
+    keymap::effective_binding("new-chat", overrides).map_or_else(
+        || "New chat".to_owned(),
+        |combo| format!("{}  New chat", keymap::format_combo(&combo)),
+    )
+}
+
+fn terminal_drawer_tooltip(open: bool, overrides: &keymap::KeymapOverrides) -> String {
+    let label = if open {
+        "Hide terminal drawer"
+    } else {
+        "Show terminal drawer"
+    };
+    keymap::effective_binding("toggle-terminal-drawer", overrides).map_or_else(
+        || label.to_owned(),
+        |combo| format!("{label} · {}", keymap::format_combo(&combo)),
+    )
 }
 
 fn split_panes_tooltip(overrides: &keymap::KeymapOverrides) -> String {
@@ -2198,10 +2592,10 @@ pub(crate) fn adjacent_pane_index(
 #[cfg(test)]
 mod tests {
     use super::{
-        adjacent_pane_index, empty_pane_action_labels, header_fork_state, pane_action_items_for,
+        adjacent_pane_index, empty_pane_action_label, header_fork_state, pane_action_items_for,
         pane_close_behavior, pane_identity_icon, pane_identity_shows_status, pane_identity_visible,
         pane_rename_key, side_panel_open, split_panes_tooltip, starting_overlay_label,
-        HeaderForkState, PaneCloseBehavior, PaneRenameKey,
+        terminal_drawer_tooltip, HeaderForkState, PaneCloseBehavior, PaneRenameKey,
     };
     use crate::keymap;
     use runner_backend::model::SessionStatus;
@@ -2339,8 +2733,50 @@ mod tests {
     }
 
     #[test]
-    fn empty_pane_offers_chat_and_terminal_entry_points() {
-        assert_eq!(empty_pane_action_labels(), ["New chat", "New terminal"]);
+    fn empty_pane_offers_only_the_chat_entry_point() {
+        let mut overrides = keymap::KeymapOverrides::new();
+        assert_eq!(empty_pane_action_label(&overrides), "⌘N  New chat");
+
+        let mut rebound = keymap::entry("new-chat").unwrap().default.clone();
+        rebound.meta = false;
+        rebound.ctrl = true;
+        overrides.insert("new-chat".into(), Some(rebound));
+        assert_eq!(empty_pane_action_label(&overrides), "⌃N  New chat");
+
+        overrides.insert("new-chat".into(), None);
+        assert_eq!(empty_pane_action_label(&overrides), "New chat");
+    }
+
+    #[test]
+    fn terminal_drawer_tooltip_tracks_rebound_and_unbound_shortcuts() {
+        let mut overrides = keymap::KeymapOverrides::new();
+        assert_eq!(
+            terminal_drawer_tooltip(false, &overrides),
+            "Show terminal drawer · ⌥F12"
+        );
+        assert_eq!(
+            terminal_drawer_tooltip(true, &overrides),
+            "Hide terminal drawer · ⌥F12"
+        );
+
+        let mut rebound = keymap::entry("toggle-terminal-drawer")
+            .unwrap()
+            .default
+            .clone();
+        rebound.alt = false;
+        rebound.ctrl = true;
+        rebound.code = "Backquote".into();
+        overrides.insert("toggle-terminal-drawer".into(), Some(rebound));
+        assert_eq!(
+            terminal_drawer_tooltip(false, &overrides),
+            "Show terminal drawer · ⌃`"
+        );
+
+        overrides.insert("toggle-terminal-drawer".into(), None);
+        assert_eq!(
+            terminal_drawer_tooltip(false, &overrides),
+            "Show terminal drawer"
+        );
     }
 
     #[test]

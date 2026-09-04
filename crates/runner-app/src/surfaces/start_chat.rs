@@ -221,6 +221,10 @@ impl NativeRoot {
     }
 
     pub(crate) fn new_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.active_tab_is_terminal_only(cx) && self.route == AppRoute::Chat {
+            self.add_terminal_drawer_shell(window, cx);
+            return;
+        }
         let Some(original) = self.tabs.active().cloned() else {
             self.chat_error = Some("Open a tab before creating a terminal".into());
             cx.notify();
@@ -243,25 +247,142 @@ impl NativeRoot {
         self.spawn_terminal_in_pane(target, original, project_id, cwd, window, cx);
     }
 
-    pub(crate) fn start_terminal_in_pane(
+    pub(crate) fn toggle_terminal_drawer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.route != AppRoute::Chat || self.active_tab_is_terminal_only(cx) {
+            return;
+        }
+        let Some(layout) = self.tabs.active() else {
+            return;
+        };
+        if layout.drawer_open() {
+            self.hide_terminal_drawer(window, cx);
+        } else if layout.drawer_shells().is_empty() {
+            self.add_terminal_drawer_shell(window, cx);
+        } else {
+            if let Some(layout) = self.tabs.active_mut() {
+                layout.set_drawer_open(true);
+            }
+            self.finish_terminal_drawer_update(window, cx);
+        }
+    }
+
+    pub(crate) fn hide_terminal_drawer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(layout) = self.tabs.active_mut() {
+            layout.set_drawer_open(false);
+        }
+        self.finish_terminal_drawer_update(window, cx);
+    }
+
+    pub(crate) fn activate_terminal_drawer_shell(
         &mut self,
-        pane_id: &str,
+        session_id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self
+            .tabs
+            .active_mut()
+            .is_some_and(|layout| layout.activate_drawer_shell(session_id))
+        {
+            return;
+        }
+        match self.persist_active_tab(cx) {
+            Ok(()) => {
+                self.chat_error = None;
+                self.focus_drawer_terminal(session_id, window, cx);
+            }
+            Err(error) => self.chat_error = Some(error.to_string()),
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn add_terminal_drawer_shell(
+        &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let Some(original) = self.tabs.active().cloned() else {
+            self.chat_error = Some("Open a chat tab before creating a terminal".into());
+            cx.notify();
             return;
         };
-        let target_is_empty = original
-            .root
-            .leaves()
-            .into_iter()
-            .any(|leaf| leaf.id == pane_id && leaf.session_id.is_none());
-        if !target_is_empty {
+        if self.active_tab_is_terminal_only(cx) {
             return;
         }
         let (project_id, cwd) = self.terminal_start_location(cx);
-        self.spawn_terminal_in_pane(pane_id.to_owned(), original, project_id, cwd, window, cx);
+        let size = self.estimated_drawer_terminal_size(&original, window, cx);
+        let mut spawned_id = None;
+        let result = (|| -> Result<String> {
+            let spawned = runner_backend::ops::session::session_start_shell(
+                self.core(cx),
+                project_id,
+                cwd,
+                Some(size.0),
+                Some(size.1),
+            )?;
+            spawned_id = Some(spawned.id.clone());
+            self.refresh_sessions(cx);
+            self.tabs
+                .active_mut()
+                .context("active tab disappeared")?
+                .add_drawer_shell(spawned.id.clone());
+            self.persist_active_tab(cx)?;
+            self.reload_tabs(cx)?;
+            self.ensure_active_tab_attached(window, cx)?;
+            Ok(spawned.id)
+        })();
+
+        match result {
+            Ok(session_id) => {
+                self.chat_error = None;
+                self.begin_chat_transition(
+                    &session_id,
+                    chat_lifecycle::TransitionKind::Starting,
+                    Some(0),
+                    window,
+                    cx,
+                );
+                self.focus_drawer_terminal(&session_id, window, cx);
+            }
+            Err(error) => {
+                if let Some(session_id) = spawned_id {
+                    let _ = runner_backend::ops::session::session_close(self.core(cx), &session_id);
+                }
+                if let Ok(input) = original.upsert_input() {
+                    let _ = runner_backend::ops::node::node_tab_upsert(self.core(cx), input);
+                }
+                self.refresh_sessions(cx);
+                let _ = self.reload_tabs(cx);
+                self.chat_error = Some(error.to_string());
+            }
+        }
+        cx.notify();
+    }
+
+    fn finish_terminal_drawer_update(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let result = self
+            .persist_active_tab(cx)
+            .and_then(|_| self.reload_tabs(cx))
+            .and_then(|_| self.ensure_active_tab_attached(window, cx));
+        match result {
+            Ok(()) => {
+                self.chat_error = None;
+                if self.tabs.active().is_some_and(PaneLayout::drawer_open) {
+                    if let Some(session_id) = self
+                        .tabs
+                        .active()
+                        .and_then(PaneLayout::active_drawer_shell)
+                        .map(str::to_owned)
+                    {
+                        self.focus_drawer_terminal(&session_id, window, cx);
+                    }
+                } else {
+                    self.focus_active_terminal(window, cx);
+                }
+            }
+            Err(error) => self.chat_error = Some(error.to_string()),
+        }
+        cx.notify();
     }
 
     fn terminal_start_location(&self, cx: &App) -> (Option<String>, Option<String>) {
@@ -269,7 +390,6 @@ impl NativeRoot {
             layout
                 .focused_session_id()
                 .map(str::to_owned)
-                .or_else(|| layout.session_ids().into_iter().next())
                 .and_then(|session_id| {
                     self.session_entry(&session_id, cx)
                         .and_then(|entry| entry.cwd.as_deref())
@@ -364,6 +484,21 @@ impl NativeRoot {
         cx: &mut Context<Self>,
     ) {
         if self.start_chat_modal.is_some() {
+            return;
+        }
+        let focused_empty_pane = (self.route == AppRoute::Chat)
+            .then(|| self.tabs.active())
+            .flatten()
+            .and_then(|layout| {
+                layout
+                    .root
+                    .leaves()
+                    .into_iter()
+                    .find(|leaf| leaf.id == layout.focused_pane_id && leaf.session_id.is_none())
+                    .map(|leaf| leaf.id.clone())
+            });
+        if let Some(pane_id) = focused_empty_pane {
+            self.open_pane_chat_modal(&pane_id, window, cx);
             return;
         }
         let active_project_id = self.active_project_id(cx);
