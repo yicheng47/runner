@@ -488,6 +488,28 @@ impl NativeRoot {
                 direct_sizes.insert(session_id.clone(), size);
             }
         }
+        for row in self
+            .app_store
+            .read(cx)
+            .nodes
+            .iter()
+            .filter(|row| row.node_type == runner_backend::repo::node::NodeType::Mission)
+        {
+            let Ok(layout) = MissionLayout::from_node_row(row) else {
+                continue;
+            };
+            let size = self
+                .mission_workspace
+                .read(cx)
+                .estimated_mission_drawer_terminal_size_for_height(
+                    layout.drawer.height(),
+                    window,
+                    cx,
+                );
+            for session_id in layout.drawer.shells() {
+                direct_sizes.insert(session_id.clone(), size);
+            }
+        }
         let mission_size = self.estimated_mission_terminal_size(window, cx);
         let core = self.core(cx).clone();
         let task = cx.background_spawn(async move {

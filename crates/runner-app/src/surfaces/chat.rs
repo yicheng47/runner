@@ -1974,6 +1974,12 @@ impl NativeRoot {
             TerminalCloseTarget::Drawer { session_id } => {
                 self.close_drawer_shell(&session_id, window, cx)
             }
+            TerminalCloseTarget::MissionDrawer { session_id } => {
+                self.mission_workspace
+                    .update(cx, |workspace, workspace_cx| {
+                        workspace.close_terminal_drawer_shell(&session_id, window, workspace_cx)
+                    });
+            }
             TerminalCloseTarget::ArchiveAll {
                 session_ids,
                 source,

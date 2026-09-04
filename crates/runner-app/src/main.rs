@@ -29,8 +29,8 @@ use runner_app::bootstrap::{
     boot_core, native_paths, stop_running_sessions_on_quit, NativeMcpServer, NativePaths,
 };
 use runner_app::pane_layout::{
-    PaneLayout, PaneLeaf, PaneNode, PresetKind, SplitOrientation, TabSet, MAX_DRAWER_HEIGHT,
-    MIN_DRAWER_HEIGHT,
+    MissionLayout, PaneLayout, PaneLeaf, PaneNode, PresetKind, SplitOrientation, TabSet,
+    MAX_DRAWER_HEIGHT, MIN_DRAWER_HEIGHT,
 };
 use runner_app::terminal_ime::TerminalInput;
 use runner_app::ui::{
@@ -182,12 +182,23 @@ enum ChatRenameTarget {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum CloseTarget {
+    ChatDrawer,
+    MissionDrawer,
     Pane,
     Window,
 }
 
-fn close_target(route: &AppRoute, leaves: usize) -> CloseTarget {
-    if *route == AppRoute::Chat && leaves > 1 {
+fn close_target(
+    route: &AppRoute,
+    leaves: usize,
+    chat_drawer_focused: bool,
+    mission_drawer_focused: bool,
+) -> CloseTarget {
+    if *route == AppRoute::Chat && chat_drawer_focused {
+        CloseTarget::ChatDrawer
+    } else if matches!(route, AppRoute::Mission(_)) && mission_drawer_focused {
+        CloseTarget::MissionDrawer
+    } else if *route == AppRoute::Chat && leaves > 1 {
         CloseTarget::Pane
     } else {
         CloseTarget::Window
@@ -198,16 +209,21 @@ fn close_window_or_pane(this: &mut NativeRoot, window: &mut Window, cx: &mut Con
     let drawer_focused = this.route == AppRoute::Chat
         && this.tabs.active().is_some_and(PaneLayout::drawer_open)
         && this.drawer_focus.contains_focused(window, cx);
-    if drawer_focused {
-        this.hide_terminal_drawer(window, cx);
-        return;
-    }
+    let mission_drawer_focused = matches!(this.route, AppRoute::Mission(_))
+        && this.mission_workspace.read(cx).drawer_focused(window, cx);
     let leaves = (this.route == AppRoute::Chat)
         .then(|| this.tabs.active())
         .flatten()
         .map(|layout| layout.root.leaves().len())
         .unwrap_or_default();
-    match close_target(&this.route, leaves) {
+    match close_target(&this.route, leaves, drawer_focused, mission_drawer_focused) {
+        CloseTarget::ChatDrawer => this.hide_terminal_drawer(window, cx),
+        CloseTarget::MissionDrawer => {
+            this.mission_workspace
+                .update(cx, |workspace, workspace_cx| {
+                    workspace.hide_terminal_drawer(window, workspace_cx)
+                });
+        }
         CloseTarget::Pane => {
             if let Some(pane_id) = this
                 .tabs
@@ -266,6 +282,9 @@ enum TerminalCloseTarget {
         session_id: String,
     },
     Drawer {
+        session_id: String,
+    },
+    MissionDrawer {
         session_id: String,
     },
     ArchiveAll {
@@ -1421,12 +1440,39 @@ mod native_root_tests {
     use super::*;
 
     #[test]
-    fn cmd_w_closes_only_a_split_chat_pane() {
-        assert_eq!(close_target(&AppRoute::Chat, 2), CloseTarget::Pane);
-        assert_eq!(close_target(&AppRoute::Chat, 1), CloseTarget::Window);
-        assert_eq!(close_target(&AppRoute::Runners, 0), CloseTarget::Window);
-        assert_eq!(close_target(&AppRoute::Crews, 0), CloseTarget::Window);
-        assert_eq!(close_target(&AppRoute::Settings, 0), CloseTarget::Window);
+    fn cmd_w_hides_focused_drawers_and_only_closes_a_split_chat_pane() {
+        assert_eq!(
+            close_target(&AppRoute::Chat, 2, true, false),
+            CloseTarget::ChatDrawer
+        );
+        assert_eq!(
+            close_target(&AppRoute::Mission("mission".into()), 0, false, true),
+            CloseTarget::MissionDrawer
+        );
+        assert_eq!(
+            close_target(&AppRoute::Mission("mission".into()), 0, false, false),
+            CloseTarget::Window
+        );
+        assert_eq!(
+            close_target(&AppRoute::Chat, 2, false, false),
+            CloseTarget::Pane
+        );
+        assert_eq!(
+            close_target(&AppRoute::Chat, 1, false, false),
+            CloseTarget::Window
+        );
+        assert_eq!(
+            close_target(&AppRoute::Runners, 0, false, false),
+            CloseTarget::Window
+        );
+        assert_eq!(
+            close_target(&AppRoute::Crews, 0, false, false),
+            CloseTarget::Window
+        );
+        assert_eq!(
+            close_target(&AppRoute::Settings, 0, false, false),
+            CloseTarget::Window
+        );
     }
 
     #[test]

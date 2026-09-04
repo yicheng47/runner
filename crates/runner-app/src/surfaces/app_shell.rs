@@ -87,7 +87,7 @@ impl NativeRoot {
             .then_some(self.chat_rename_modal.as_ref())
             .flatten()
             .map(|_| self.render_chat_rename_modal(cx));
-        let terminal_close_confirm = (self.route == AppRoute::Chat)
+        let terminal_close_confirm = matches!(self.route, AppRoute::Chat | AppRoute::Mission(_))
             .then_some(self.terminal_close_confirm.as_ref())
             .flatten()
             .map(|_| self.render_terminal_close_confirm(cx));

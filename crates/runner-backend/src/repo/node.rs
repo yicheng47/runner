@@ -683,8 +683,8 @@ pub fn clear_unread_on_startup(
 ///     project node when bound); mission nodes whose mission is
 ///     archived or deleted are removed — this is what re-creates a
 ///     node on unarchive without special-case handling;
-///   - every active direct session is covered by exactly the tab
-///     layouts; uncovered sessions get a fresh single-slot tab node,
+///   - every active direct session is covered by a tab or mission drawer
+///     layout; uncovered sessions get a fresh single-slot tab node,
 ///     parented under their project's node when `project_id` is set,
 ///     appended at the parent's end (original position not
 ///     remembered, matching pre-node archive/restore behavior).
@@ -732,7 +732,7 @@ pub fn ensure_active_sessions(conn: &Connection) -> rusqlite::Result<()> {
     // Direct sessions -> tab nodes.
     let covered: HashSet<String> = list(conn)?
         .iter()
-        .filter(|row| row.node_type == NodeType::Tab)
+        .filter(|row| matches!(row.node_type, NodeType::Tab | NodeType::Mission))
         .flat_map(session_ids)
         .collect();
     let mut stmt = conn.prepare(
@@ -765,13 +765,15 @@ pub fn remove_session(conn: &Connection, session_id: &str) -> rusqlite::Result<(
     remove_session_except(conn, session_id, None)
 }
 
-fn remove_session_except(
+pub(crate) fn remove_session_except(
     conn: &Connection,
     session_id: &str,
     preserved_node_id: Option<&str>,
 ) -> rusqlite::Result<()> {
     for row in list(conn)? {
-        if row.node_type != NodeType::Tab || preserved_node_id == Some(row.id.as_str()) {
+        if !matches!(row.node_type, NodeType::Tab | NodeType::Mission)
+            || preserved_node_id == Some(row.id.as_str())
+        {
             continue;
         }
         let Some(layout_text) = row.layout.as_deref() else {
@@ -830,7 +832,7 @@ fn remove_session_except(
         if !changed {
             continue;
         }
-        if slots_empty && drawer_empty {
+        if row.node_type == NodeType::Tab && slots_empty && drawer_empty {
             delete(conn, &row.id)?;
         } else {
             conn.execute(
@@ -1254,6 +1256,42 @@ mod tests {
         assert_eq!(layout["drawer"]["shells"], serde_json::json!([]));
         assert_eq!(layout["drawer"]["open"], false);
         assert_eq!(super::session_ids(&stored), ["chat"]);
+    }
+
+    #[test]
+    fn mission_drawer_shells_are_covered_without_becoming_tabs() {
+        let pool = db::open_in_memory().unwrap();
+        let conn = pool.get().unwrap();
+        insert_mission(&conn, "mission-1", None, false);
+        insert_session(&conn, "drawer-shell", None);
+        let mission = super::ensure_mission_node(&conn, "mission-1", None).unwrap();
+        conn.execute(
+            "UPDATE nodes SET layout = ?2 WHERE id = ?1",
+            rusqlite::params![
+                mission.id,
+                r#"{"drawer":{"open":true,"height":280,"shells":["drawer-shell"],"active":0}}"#
+            ],
+        )
+        .unwrap();
+
+        super::ensure_active_sessions(&conn).unwrap();
+
+        let rows = super::list(&conn).unwrap();
+        assert_eq!(
+            rows.iter()
+                .filter(|row| row.node_type == NodeType::Tab)
+                .count(),
+            0
+        );
+        let stored = super::get(&conn, &mission.id).unwrap().unwrap();
+        assert_eq!(super::session_ids(&stored), ["drawer-shell"]);
+
+        super::remove_session(&conn, "drawer-shell").unwrap();
+        let stored = super::get(&conn, &mission.id).unwrap().unwrap();
+        let layout: serde_json::Value =
+            serde_json::from_str(stored.layout.as_deref().unwrap()).unwrap();
+        assert_eq!(layout["drawer"]["shells"], serde_json::json!([]));
+        assert_eq!(layout["drawer"]["open"], false);
     }
 
     #[test]

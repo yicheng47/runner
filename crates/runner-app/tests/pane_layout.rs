@@ -1,6 +1,6 @@
 use runner_app::pane_layout::{
-    PaneLayout, PaneNode, PresetKind, SplitOrientation, TabSet, DEFAULT_DRAWER_HEIGHT,
-    MAX_DRAWER_HEIGHT, MIN_DRAWER_HEIGHT,
+    MissionLayout, PaneLayout, PaneNode, PresetKind, SplitOrientation, TabSet,
+    DEFAULT_DRAWER_HEIGHT, MAX_DRAWER_HEIGHT, MIN_DRAWER_HEIGHT,
 };
 use runner_backend::repo::node::{NodeRow, NodeType};
 
@@ -13,6 +13,22 @@ fn row(id: &str, position: i64, layout: &PaneLayout) -> NodeRow {
         name: None,
         ref_id: None,
         layout: Some(layout.serialize().unwrap()),
+        pinned_position: None,
+        last_completed_at: None,
+        last_viewed_at: None,
+        created_at: "2026-07-19T00:00:00Z".into(),
+    }
+}
+
+fn mission_row(id: &str, layout: Option<&str>) -> NodeRow {
+    NodeRow {
+        id: id.to_owned(),
+        parent_id: None,
+        position: 0,
+        node_type: NodeType::Mission,
+        name: None,
+        ref_id: Some("mission-1".into()),
+        layout: layout.map(str::to_owned),
         pinned_position: None,
         last_completed_at: None,
         last_viewed_at: None,
@@ -133,6 +149,37 @@ fn persisted_layout_round_trips_drawer_state_and_old_rows_use_defaults() {
     assert_eq!(old.drawer_height(), DEFAULT_DRAWER_HEIGHT);
     assert!(old.drawer_shells().is_empty());
     assert_eq!(old.active_drawer_shell(), None);
+}
+
+#[test]
+fn mission_layout_round_trips_and_old_rows_use_drawer_defaults() {
+    let mut layout = MissionLayout::default();
+    layout.drawer.add("shell-a".into());
+    layout.drawer.add("shell-b".into());
+    assert!(layout.drawer.activate("shell-a"));
+    layout.drawer.set_height(412.);
+    let serialized = layout.serialize().unwrap();
+    let restored = MissionLayout::from_node_row(&mission_row(
+        "01K00000000000000000000000",
+        Some(&serialized),
+    ))
+    .unwrap();
+
+    assert!(restored.drawer.open());
+    assert_eq!(restored.drawer.height(), 412.);
+    assert_eq!(restored.drawer.shells(), ["shell-a", "shell-b"]);
+    assert_eq!(restored.drawer.active_shell(), Some("shell-a"));
+
+    let old = MissionLayout::from_node_row(&mission_row("01K00000000000000000000001", Some("{}")))
+        .unwrap();
+    assert!(!old.drawer.open());
+    assert_eq!(old.drawer.height(), DEFAULT_DRAWER_HEIGHT);
+    assert!(old.drawer.shells().is_empty());
+    assert_eq!(old.drawer.active_shell(), None);
+
+    let absent =
+        MissionLayout::from_node_row(&mission_row("01K00000000000000000000002", None)).unwrap();
+    assert_eq!(absent, MissionLayout::default());
 }
 
 #[test]
