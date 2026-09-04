@@ -19,7 +19,7 @@ The mission should have the same bottom-shell affordance, owned by the mission r
 
 - A non-archived mission's primary workspace gains one drawer beneath the currently selected Feed or runner tab. Switching mission tabs changes the surface above it, not the drawer; the same active shell remains visible.
 - The drawer occupies only the mission center column. The window sidebar and mission rail keep their current height and width behavior.
-- The mission header's trailing surface controls gain a `panel-bottom` toggle before the mission-rail control. It uses the same hollow / filled icons, hidden / raised states, effective configured shortcut text, and Show / Hide wording as the chat-tab drawer from 469.
+- The mission header's trailing surface controls gain a `panel-bottom` toggle before the mission-rail control. It uses the same hidden / open glyph pair as every panel toggle — a short centred tick while the drawer is hidden, a full divider while it is open, stroke-only, no raised pill — with the effective configured shortcut text and Show / Hide wording of the chat-tab drawer from 469.
 - The control is absent from archived missions and secondary duplicate mission workspaces. The primary workspace owns shell interaction and persisted state.
 
 ### Drawer behavior
