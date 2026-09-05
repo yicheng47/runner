@@ -1,4 +1,5 @@
 use std::io::Write;
+#[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
@@ -18,7 +19,7 @@ pub struct McpConfigSnippet {
 pub struct McpIntegrationStatus {
     pub environment: String,
     pub binary_path: String,
-    pub socket_path: String,
+    pub endpoint: String,
     pub claude_code: McpClientStatus,
     pub codex: McpClientStatus,
     pub trae: McpClientStatus,
@@ -98,12 +99,8 @@ fn mcp_binary_path(state: &AppCore) -> String {
         .to_string()
 }
 
-fn socket_path(state: &AppCore) -> String {
-    state
-        .app_data_dir
-        .join("mcp.sock")
-        .to_string_lossy()
-        .to_string()
+fn endpoint(state: &AppCore) -> String {
+    runner_core::app_paths::mcp_endpoint(&state.app_data_dir, cfg!(debug_assertions)).to_string()
 }
 
 fn environment_label() -> String {
@@ -296,11 +293,11 @@ pub(crate) fn codex_write_at(path: &Path, enabled: bool, binary_path: &str) -> R
         servers.remove("runner");
     }
 
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    let mut file = options
         .open(path)
         .map_err(|e| Error::msg(format!("write {}: {e}", path.display())))?;
     file.write_all(doc.to_string().as_bytes())
@@ -321,7 +318,7 @@ pub fn mcp_integration_status(state: &AppCore) -> Result<McpIntegrationStatus> {
         .unwrap_or_else(|e| McpClientStatus::error(&trae_path, e.to_string()));
     Ok(McpIntegrationStatus {
         environment: environment_label(),
-        socket_path: socket_path(state),
+        endpoint: endpoint(state),
         binary_path,
         claude_code,
         codex,
@@ -510,6 +507,7 @@ mod tests {
 
     #[test]
     fn trae_write_creates_dir_and_runner_entry() {
+        #[cfg(unix)]
         use std::os::unix::fs::PermissionsExt;
 
         let dir = TempDir::new().unwrap();
@@ -517,6 +515,7 @@ mod tests {
 
         codex_write_at(&path, true, "/test/runner-mcp").unwrap();
 
+        #[cfg(unix)]
         assert_eq!(
             std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
             0o600,
@@ -533,6 +532,7 @@ mod tests {
 
     #[test]
     fn trae_write_preserves_auth_hooks_and_other_servers() {
+        #[cfg(unix)]
         use std::os::unix::fs::PermissionsExt;
 
         let dir = TempDir::new().unwrap();
@@ -542,9 +542,11 @@ mod tests {
             "auth_token = \"secret\"\n\n[hooks.state]\nstop = \"trusted\"\n\n[mcp_servers.github]\ncommand = \"gh-mcp\"\nargs = []\n",
         )
         .unwrap();
+        #[cfg(unix)]
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
 
         codex_write_at(&path, true, "/test/runner-mcp").unwrap();
+        #[cfg(unix)]
         assert_eq!(
             std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
             0o640,
@@ -563,6 +565,7 @@ mod tests {
         );
 
         codex_write_at(&path, false, "/test/runner-mcp").unwrap();
+        #[cfg(unix)]
         assert_eq!(
             std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
             0o640,

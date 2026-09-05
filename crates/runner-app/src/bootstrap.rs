@@ -36,7 +36,10 @@ impl NativeMcpServer {
             .context("create native MCP runtime")?;
         core.mcp
             .start(
-                &core.app_data_dir.join("mcp.sock"),
+                &runner_backend::app_paths::mcp_endpoint(
+                    &core.app_data_dir,
+                    cfg!(debug_assertions),
+                ),
                 core.clone(),
                 runtime.handle(),
             )
@@ -332,6 +335,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn native_mcp_server_binds_and_removes_the_app_data_socket() {
         let temp = tempfile::tempdir().unwrap();
@@ -341,8 +345,8 @@ mod tests {
 
         let server = NativeMcpServer::start(&core).unwrap();
         assert_eq!(
-            core.mcp.socket_path().as_deref(),
-            Some(socket_path.as_path())
+            core.mcp.endpoint(),
+            Some(runner_backend::app_paths::IpcEndpoint(socket_path.clone()))
         );
         assert!(socket_path.exists());
         server._runtime.block_on(async {
