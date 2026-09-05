@@ -111,9 +111,17 @@ impl SessionManager {
             let mut drop_streak: u64 = 0;
             let mut drop_total: u64 = 0;
             let mut pending = None;
+            #[cfg(windows)]
+            let mut first_turn_pending = true;
             loop {
                 if stop.load(std::sync::atomic::Ordering::Relaxed) {
                     break;
+                }
+                #[cfg(windows)]
+                // recv_timeout also drives the first-turn deadline when output is silent.
+                if first_turn_pending {
+                    first_turn_pending =
+                        manager_t.deliver_windows_batch_first_turn(&session_id, &[]);
                 }
                 let next = pending
                     .take()
@@ -141,6 +149,11 @@ impl SessionManager {
                             &bytes,
                             events.as_ref(),
                         );
+                        #[cfg(windows)]
+                        if first_turn_pending {
+                            first_turn_pending =
+                                manager_t.deliver_windows_batch_first_turn(&session_id, &bytes);
+                        }
                     }
                     Ok(RuntimeOutput::StatusTransition { state, source }) => {
                         if let Some(ctx) = emit_ctx.as_ref() {
@@ -266,6 +279,68 @@ impl SessionManager {
                 }
             }
         })
+    }
+
+    #[cfg(windows)]
+    fn deliver_windows_batch_first_turn(self: &Arc<Self>, session_id: &str, bytes: &[u8]) -> bool {
+        let Some(state) = self.session_state(session_id) else {
+            return false;
+        };
+        let (pending, bracketed, timed_out, stop) = {
+            let mut state = state.lock().unwrap();
+            if state.killed {
+                return false;
+            }
+            let Some(handle) = state.handle.as_mut() else {
+                return false;
+            };
+            let Some(pending) = handle.pending_first_turn.as_mut() else {
+                return false;
+            };
+            pending.output_tail.extend_from_slice(bytes);
+            let signals = [b"\x1b[?2004h".as_slice(), b"\x1b[?1049h", b"\x1b[?47h"];
+            let seen = signals.map(|signal| {
+                pending
+                    .output_tail
+                    .windows(signal.len())
+                    .any(|window| window == signal)
+            });
+            let ready = seen.into_iter().any(|seen| seen);
+            let timed_out = Instant::now() >= pending.deadline;
+            if !ready && !timed_out {
+                let keep_from = pending.output_tail.len().saturating_sub(7);
+                pending.output_tail.drain(..keep_from);
+                return true;
+            }
+            (
+                handle.pending_first_turn.take().unwrap(),
+                seen[0],
+                !ready && timed_out,
+                Arc::clone(&handle.stop),
+            )
+        };
+        if timed_out {
+            log::warn!(
+                "no TUI readiness signal for {session_id}; delivering first turn after timeout"
+            );
+        }
+        let payload = if bracketed {
+            format!("\x1b[200~{}\x1b[201~", pending.body)
+        } else {
+            pending.body
+        };
+        let manager = Arc::clone(self);
+        let session_id = session_id.to_owned();
+        // The Enter delay must not stall terminal output or hold the session lock.
+        thread::spawn(move || {
+            if stop.load(Ordering::Relaxed) {
+                return;
+            }
+            if let Err(error) = manager.inject_paste(&session_id, payload.as_bytes()) {
+                log::warn!("first-turn delivery failed for {session_id}: {error}");
+            }
+        });
+        false
     }
 
     /// Write raw bytes to the session's stdin. Used for keystroke

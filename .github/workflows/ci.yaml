@@ -65,5 +65,8 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+      - name: Test
+        run: cargo test --workspace --no-fail-fast
+
       - name: Verify lockfile is committed
         run: git diff --exit-code -- Cargo.lock

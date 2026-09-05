@@ -51,7 +51,7 @@ portable-pty = "0.9"
 libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_JobObjects", "Win32_System_Threading"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSPasteboard", "NSPasteboardItem", "NSWorkspace"] }
@@ -65,3 +65,6 @@ block2 = "0.6"
 # event-log flock from a second fd; matches the version `runner-core`
 # pulls in transitively so the trait impl resolves identically.
 fs2 = "0.4"
+
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { version = "0.61", features = ["Win32_System_Console"] }

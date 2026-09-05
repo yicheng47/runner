@@ -496,6 +496,8 @@ pub struct SpawnedSession {
 }
 
 struct SessionHandle {
+    #[cfg(windows)]
+    pending_first_turn: Option<PendingFirstTurn>,
     // Kept for debugging and future kill-by-pid / identity checks.
     #[allow(dead_code)]
     id: String,
@@ -530,6 +532,18 @@ struct SessionHandle {
     /// on the chat page.
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
+
+#[cfg(windows)]
+struct PendingFirstTurn {
+    body: String,
+    deadline: Instant,
+    output_tail: Vec<u8>,
+}
+
+#[cfg(all(windows, not(test)))]
+const WINDOWS_FIRST_TURN_TIMEOUT: Duration = Duration::from_secs(10);
+#[cfg(all(windows, test))]
+const WINDOWS_FIRST_TURN_TIMEOUT: Duration = Duration::from_secs(3);
 
 #[derive(Clone)]
 struct CodexCaptureContext {
@@ -727,6 +741,8 @@ pub struct PendingMissionSpawn {
     size_source: &'static str,
     plan: router::runtime::ResumePlan,
     first_turn_delivered_via_argv: bool,
+    #[cfg(windows)]
+    first_turn: Option<String>,
     resolved_cwd: Option<String>,
     row_started_at: String,
     codex_prompt_marker: Option<String>,

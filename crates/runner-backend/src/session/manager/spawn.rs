@@ -73,6 +73,13 @@ pub(super) fn run_headless_fork(
     let mut child = command
         .spawn()
         .map_err(|error| Error::msg(format!("fork materialization spawn: {error}")))?;
+    #[cfg(windows)]
+    let process_tree =
+        crate::session::process::ProcessTree::adopt(child.id()).map_err(|error| {
+            let _ = child.kill();
+            let _ = child.wait();
+            Error::msg(format!("fork materialization adopt process tree: {error}"))
+        })?;
     let stdout = child
         .stdout
         .take()
@@ -89,6 +96,8 @@ pub(super) fn run_headless_fork(
         codex_sessions_root,
         source_key,
         timeout,
+        #[cfg(windows)]
+        process_tree,
     )
 }
 
@@ -99,6 +108,7 @@ fn run_thread_started_headless_fork(
     sessions_root: PathBuf,
     source_key: &str,
     timeout: Duration,
+    #[cfg(windows)] process_tree: crate::session::process::ProcessTree,
 ) -> Result<String> {
     let (key_tx, key_rx) = std::sync::mpsc::sync_channel(1);
     let stdout_reader = thread::spawn(move || {
@@ -189,8 +199,14 @@ fn run_thread_started_headless_fork(
     };
 
     if terminate {
+        #[cfg(unix)]
         crate::session::process::kill_headless_fork(&mut child);
+        #[cfg(windows)]
+        crate::session::process::kill_headless_fork(&mut child, &process_tree);
     }
+    // Close descendant pipe writers before joining readers, even if the launcher already exited.
+    #[cfg(windows)]
+    drop(process_tree);
     stdout_reader
         .join()
         .map_err(|_| Error::msg("fork materialization stdout reader panicked"))?;
@@ -464,6 +480,12 @@ impl SessionManager {
         first_turn: Option<&str>,
         mission_bus_dir: Option<&Path>,
     ) -> bool {
+        #[cfg(windows)]
+        let first_turn = if crate::session::launch::is_windows_batch(&runner.command) {
+            None
+        } else {
+            first_turn
+        };
         if runner.runtime == "claude-code" {
             let _ = std::fs::remove_file(crate::session::claude_rekey::drop_path(
                 app_data_dir,
@@ -597,6 +619,7 @@ impl SessionManager {
             &events_log_path,
             mission.cwd.as_deref(),
         )
+        .inspect_err(|error| log::warn!("install session runner shim: {error}"))
         .ok();
         let bundled_bin_dir = Some(app_data_dir.join("bin"));
 
@@ -680,6 +703,8 @@ impl SessionManager {
             size_source,
             plan,
             first_turn_delivered_via_argv,
+            #[cfg(windows)]
+            first_turn,
             resolved_cwd,
             row_started_at: started_at,
             codex_prompt_marker,
@@ -724,6 +749,8 @@ impl SessionManager {
             mut size_source,
             plan,
             first_turn_delivered_via_argv,
+            #[cfg(windows)]
+            first_turn,
             resolved_cwd,
             row_started_at,
             codex_prompt_marker,
@@ -770,6 +797,8 @@ impl SessionManager {
         }
 
         let spawn_started_at_dt = Utc::now();
+        #[cfg(windows)]
+        let first_turn_deadline = Instant::now() + WINDOWS_FIRST_TURN_TIMEOUT;
         // The row has been visible since registration. A measurement can
         // arrive before its trailing persistence settle, so manager memory
         // wins over the row and the registration hint.
@@ -872,6 +901,8 @@ impl SessionManager {
         self.install_handle(
             &session_id,
             SessionHandle {
+                #[cfg(windows)]
+                pending_first_turn: None,
                 id: session_id.clone(),
                 mission_id: Some(mission.id.clone()),
                 runner_id: Some(runner.id.clone()),
@@ -888,6 +919,15 @@ impl SessionManager {
         if first_turn_delivered_via_argv {
             self.arm_completion(&session_id);
         }
+
+        #[cfg(windows)]
+        self.queue_windows_batch_first_turn(
+            &session_id,
+            &runner,
+            &plan,
+            first_turn.as_deref(),
+            first_turn_deadline,
+        );
 
         let forwarder = self.start_forwarder_thread(
             session_id.clone(),
@@ -908,10 +948,14 @@ impl SessionManager {
         }
 
         emit_runner_activity(&pool, &runner, events.as_ref());
-        if matches!(runner.runtime.as_str(), "claude-code" | "codex" | "trae")
-            && !plan.resuming
-            && !first_turn_delivered_via_argv
-        {
+        let missing_first_turn =
+            matches!(runner.runtime.as_str(), "claude-code" | "codex" | "trae")
+                && !plan.resuming
+                && !first_turn_delivered_via_argv;
+        #[cfg(windows)]
+        let missing_first_turn =
+            missing_first_turn && !crate::session::launch::is_windows_batch(&runner.command);
+        if missing_first_turn {
             log::warn!(
                 "first-turn argv not delivered for {session_id} (runtime {}); skipping post-spawn injection",
                 runner.runtime,
@@ -1233,6 +1277,8 @@ impl SessionManager {
         }
 
         let spawn_started_at_dt = Utc::now();
+        #[cfg(windows)]
+        let first_turn_deadline = Instant::now() + WINDOWS_FIRST_TURN_TIMEOUT;
         self.seed_codex_project_trust(&session_id, &runner.runtime, spec.cwd.as_deref());
         let (rt_session, output) = match self.runtime.spawn(spec) {
             Ok(p) => p,
@@ -1296,6 +1342,8 @@ impl SessionManager {
         self.install_handle(
             &session_id,
             SessionHandle {
+                #[cfg(windows)]
+                pending_first_turn: None,
                 id: session_id.clone(),
                 mission_id: None,
                 runner_id: persisted_runner_id.map(str::to_string),
@@ -1319,6 +1367,15 @@ impl SessionManager {
             events.as_ref(),
         );
 
+        #[cfg(windows)]
+        self.queue_windows_batch_first_turn(
+            &session_id,
+            &runner,
+            &plan,
+            first_turn.as_deref(),
+            first_turn_deadline,
+        );
+
         let forwarder = self.start_forwarder_thread(
             session_id.clone(),
             None,
@@ -1340,10 +1397,14 @@ impl SessionManager {
         if emit_activity {
             emit_runner_activity(&pool, &runner, events.as_ref());
         }
-        if matches!(runner.runtime.as_str(), "claude-code" | "codex" | "trae")
-            && !plan.resuming
-            && !first_turn_delivered_via_argv
-        {
+        let missing_first_turn =
+            matches!(runner.runtime.as_str(), "claude-code" | "codex" | "trae")
+                && !plan.resuming
+                && !first_turn_delivered_via_argv;
+        #[cfg(windows)]
+        let missing_first_turn =
+            missing_first_turn && !crate::session::launch::is_windows_batch(&runner.command);
+        if missing_first_turn {
             log::warn!(
                 "first-turn argv not delivered for direct chat {session_id} (runtime {}); skipping post-spawn injection",
                 runner.runtime,
@@ -1358,6 +1419,37 @@ impl SessionManager {
             pid: None,
             fresh_fallback_lead: false,
         })
+    }
+
+    #[cfg(windows)]
+    fn queue_windows_batch_first_turn(
+        &self,
+        session_id: &str,
+        runner: &Runner,
+        plan: &router::runtime::ResumePlan,
+        first_turn: Option<&str>,
+        deadline: Instant,
+    ) {
+        if matches!(runner.runtime.as_str(), "claude-code" | "codex" | "trae")
+            && !plan.resuming
+            && crate::session::launch::is_windows_batch(&runner.command)
+        {
+            if let Some(body) = first_turn.filter(|body| !body.trim().is_empty()) {
+                let state = self.session_state_or_insert(session_id);
+                let mut state = state.lock().unwrap();
+                if let Some(handle) = state.handle.as_mut() {
+                    handle.pending_first_turn = Some(PendingFirstTurn {
+                        body: body.to_owned(),
+                        deadline,
+                        output_tail: Vec::new(),
+                    });
+                } else {
+                    log::warn!(
+                        "cannot queue first turn for {session_id}: session handle is missing"
+                    );
+                }
+            }
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1593,6 +1685,8 @@ impl SessionManager {
                 self.install_handle(
                     &session_id,
                     SessionHandle {
+                        #[cfg(windows)]
+                        pending_first_turn: None,
                         id: session_id.clone(),
                         mission_id: None,
                         runner_id: source.runner_id.clone(),
@@ -2190,6 +2284,8 @@ impl SessionManager {
         self.install_handle(
             session_id,
             SessionHandle {
+                #[cfg(windows)]
+                pending_first_turn: None,
                 id: session_id.to_string(),
                 mission_id: snap.mission_id.clone(),
                 runner_id: snap.runner_id.clone(),

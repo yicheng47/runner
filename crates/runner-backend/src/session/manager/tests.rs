@@ -16,6 +16,18 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+/// Use this for paths consumed by spawn/resume, including stored cwd fields.
+#[cfg(unix)]
+fn fixture_tmp_dir() -> &'static Path {
+    Path::new("/tmp")
+}
+
+#[cfg(windows)]
+fn fixture_tmp_dir() -> &'static Path {
+    static FIXTURE_TMP_DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    FIXTURE_TMP_DIR.get_or_init(|| std::env::temp_dir().components().collect())
+}
+
 // Deviation from main (CI accommodation): GitHub's shared macOS runners
 // oversleep millisecond ticks several-fold, so tight elapsed budgets flunk
 // there while proving the same boundedness property.
@@ -823,7 +835,7 @@ fn concurrent_missions_on_same_crew_keep_session_state_isolated() {
             &mission_row_a,
             &runner,
             &slot,
-            std::path::Path::new("/tmp"),
+            fixture_tmp_dir(),
             PathBuf::from("/dev/null"),
             Arc::clone(&pool),
             capture(),
@@ -835,7 +847,7 @@ fn concurrent_missions_on_same_crew_keep_session_state_isolated() {
             &mission_row_b,
             &runner,
             &slot,
-            std::path::Path::new("/tmp"),
+            fixture_tmp_dir(),
             PathBuf::from("/dev/null"),
             Arc::clone(&pool),
             capture(),
@@ -946,7 +958,7 @@ fn mission_slot_exit_reaps_live_siblings_and_keeps_mission_running() {
             &mission,
             &runner,
             &slot,
-            std::path::Path::new("/tmp"),
+            fixture_tmp_dir(),
             PathBuf::from("/dev/null"),
             Arc::clone(&pool),
             capture(),
@@ -958,7 +970,7 @@ fn mission_slot_exit_reaps_live_siblings_and_keeps_mission_running() {
             &mission,
             &runner,
             &slot,
-            std::path::Path::new("/tmp"),
+            fixture_tmp_dir(),
             PathBuf::from("/dev/null"),
             Arc::clone(&pool),
             capture(),
@@ -1037,7 +1049,7 @@ fn mission_slot_exit_cancels_pending_sibling_spawns() {
         &mission,
         &runner,
         &slot,
-        std::path::Path::new("/tmp"),
+        fixture_tmp_dir(),
         PathBuf::from("/dev/null"),
         Arc::clone(&pool),
         capture(),
@@ -1082,7 +1094,7 @@ fn intentional_mission_kill_does_not_reap_siblings_from_exit_epilogue() {
             &mission,
             &runner,
             &slot,
-            std::path::Path::new("/tmp"),
+            fixture_tmp_dir(),
             PathBuf::from("/dev/null"),
             Arc::clone(&pool),
             capture(),
@@ -1094,7 +1106,7 @@ fn intentional_mission_kill_does_not_reap_siblings_from_exit_epilogue() {
             &mission,
             &runner,
             &slot,
-            std::path::Path::new("/tmp"),
+            fixture_tmp_dir(),
             PathBuf::from("/dev/null"),
             Arc::clone(&pool),
             capture(),
@@ -1183,7 +1195,7 @@ fn spawn_marks_session_stopped_after_runtime_channel_closes() {
             &mission,
             &runner,
             &slot,
-            std::path::Path::new("/tmp"),
+            fixture_tmp_dir(),
             PathBuf::from("/dev/null"),
             Arc::clone(&pool),
             Arc::clone(&cap) as Arc<dyn SessionEvents>,
@@ -1290,7 +1302,7 @@ fn inject_stdin_roundtrip_routes_through_runtime() {
             &mission,
             &runner,
             &slot,
-            std::path::Path::new("/tmp"),
+            fixture_tmp_dir(),
             PathBuf::from("/dev/null"),
             Arc::clone(&pool),
             capture(),
@@ -1425,6 +1437,8 @@ fn install_test_session_handle(manager: &SessionManager, session_id: &str) {
         .lock()
         .unwrap()
         .handle = Some(SessionHandle {
+        #[cfg(windows)]
+        pending_first_turn: None,
         id: session_id.into(),
         mission_id: Some("mission-observed-input".into()),
         runner_id: None,
@@ -1590,6 +1604,7 @@ fn observed_drafting_to_idle_emits_input_cleared() {
 // below, and `compose_direct_first_turn` is unit-tested in
 // `router::prompt`.
 
+#[cfg(unix)]
 #[test]
 fn direct_chat_persona_lands_as_trailing_positional_argv_without_worker_preamble() {
     // Plan 0007: when `spawn_direct` receives a non-empty
@@ -1738,7 +1753,7 @@ fn mission_spawn_worker_preamble_lands_as_trailing_positional_argv_with_brief() 
             &mission,
             &runner,
             &slot,
-            std::path::Path::new("/tmp"),
+            fixture_tmp_dir(),
             PathBuf::from("/dev/null"),
             Arc::clone(&pool),
             capture(),
@@ -1896,7 +1911,7 @@ fn mission_registration_preserves_initial_terminal_size() {
             &mission,
             &runner,
             &slot,
-            std::path::Path::new("/tmp"),
+            fixture_tmp_dir(),
             PathBuf::from("/dev/null"),
             Arc::clone(&pool),
             None,
@@ -1942,7 +1957,7 @@ fn hinted_mission_start_forks_slots_at_the_hint() {
             &mission,
             &runner,
             &slot,
-            std::path::Path::new("/tmp"),
+            fixture_tmp_dir(),
             PathBuf::from("/dev/null"),
             Arc::clone(&pool),
             None,
@@ -2008,7 +2023,7 @@ fn mission_fork_uses_a_size_pushed_before_the_pty_existed() {
             &mission,
             &runner,
             &slot,
-            std::path::Path::new("/tmp"),
+            fixture_tmp_dir(),
             PathBuf::from("/dev/null"),
             Arc::clone(&pool),
             None,
@@ -2055,7 +2070,7 @@ fn mission_fork_applies_a_size_pushed_mid_fork() {
             &mission,
             &runner,
             &slot,
-            std::path::Path::new("/tmp"),
+            fixture_tmp_dir(),
             PathBuf::from("/dev/null"),
             Arc::clone(&pool),
             None,
@@ -2127,7 +2142,7 @@ fn unhinted_mission_start_still_forks_at_default() {
             &mission,
             &runner,
             &slot,
-            std::path::Path::new("/tmp"),
+            fixture_tmp_dir(),
             PathBuf::from("/dev/null"),
             Arc::clone(&pool),
             None,
@@ -2181,7 +2196,7 @@ fn mission_registration_defaults_to_80x24_when_unsized() {
             &mission,
             &runner,
             &slot,
-            std::path::Path::new("/tmp"),
+            fixture_tmp_dir(),
             PathBuf::from("/dev/null"),
             Arc::clone(&pool),
             None,
@@ -2225,7 +2240,7 @@ fn mission_spawn_cwd_prefers_mission_over_runner_working_dir() {
                 &mission,
                 &runner,
                 &slot,
-                std::path::Path::new("/tmp"),
+                fixture_tmp_dir(),
                 PathBuf::from("/dev/null"),
                 Arc::clone(&pool),
                 capture(),
@@ -2265,6 +2280,7 @@ fn mission_spawn_cwd_prefers_mission_over_runner_working_dir() {
 // (`MAX_SYSTEM_PROMPT_BYTES` / `MAX_MISSION_GOAL_BYTES`)
 // prevents the body from exceeding the runtime's argv slot.
 
+#[cfg(unix)]
 #[test]
 fn codex_resume_skips_first_prompt_injection() {
     // On a codex resume the agent already has its system context
@@ -2405,7 +2421,7 @@ fn spawn_failure_after_spawn_command_reaps_the_child() {
             &mission,
             &runner,
             &slot,
-            std::path::Path::new("/tmp"),
+            fixture_tmp_dir(),
             PathBuf::from("/dev/null"),
             Arc::clone(&pool),
             capture(),
@@ -2459,7 +2475,7 @@ fn kill_blocks_until_session_row_is_terminal() {
             &mission,
             &runner,
             &slot,
-            std::path::Path::new("/tmp"),
+            fixture_tmp_dir(),
             PathBuf::from("/dev/null"),
             Arc::clone(&pool),
             capture(),
@@ -2515,7 +2531,7 @@ fn kill_all_for_mission_attempts_every_session_and_aggregates_failures() {
             &mission,
             &runner,
             &slot,
-            std::path::Path::new("/tmp"),
+            fixture_tmp_dir(),
             PathBuf::from("/dev/null"),
             Arc::clone(&pool),
             capture(),
@@ -2527,7 +2543,7 @@ fn kill_all_for_mission_attempts_every_session_and_aggregates_failures() {
             &mission,
             &runner,
             &slot,
-            std::path::Path::new("/tmp"),
+            fixture_tmp_dir(),
             PathBuf::from("/dev/null"),
             Arc::clone(&pool),
             capture(),
@@ -2587,7 +2603,7 @@ fn spawn_direct_writes_session_with_null_mission_id_and_emits_activity() {
     runner.handle = "directrunner".into();
     let project = {
         let conn = pool.get().unwrap();
-        crate::repo::project::create(&conn, "Runner", "/tmp").unwrap()
+        crate::repo::project::create(&conn, "Runner", fixture_tmp_dir().to_str().unwrap()).unwrap()
     };
 
     let cap = capture();
@@ -2603,7 +2619,7 @@ fn spawn_direct_writes_session_with_null_mission_id_and_emits_activity() {
             Some(&project.cwd),
             None,
             None,
-            std::path::Path::new("/tmp"),
+            fixture_tmp_dir(),
             Arc::clone(&pool),
             cap.clone(),
             None,
@@ -2756,10 +2772,10 @@ fn direct_chat_status_transition_emits_session_status_busy() {
             None,
             None,
             None,
-            Some("/tmp"),
+            Some(fixture_tmp_dir().to_str().unwrap()),
             None,
             None,
-            std::path::Path::new("/tmp"),
+            fixture_tmp_dir(),
             Arc::clone(&pool),
             Arc::clone(&cap) as Arc<dyn SessionEvents>,
             None,
@@ -2821,10 +2837,10 @@ fn direct_chat_status_transition_emits_session_status_idle() {
             None,
             None,
             None,
-            Some("/tmp"),
+            Some(fixture_tmp_dir().to_str().unwrap()),
             None,
             None,
-            std::path::Path::new("/tmp"),
+            fixture_tmp_dir(),
             Arc::clone(&pool),
             Arc::clone(&cap) as Arc<dyn SessionEvents>,
             None,
@@ -2883,10 +2899,10 @@ fn direct_chat_typing_stays_idle_until_submit() {
             None,
             None,
             None,
-            Some("/tmp"),
+            Some(fixture_tmp_dir().to_str().unwrap()),
             None,
             None,
-            std::path::Path::new("/tmp"),
+            fixture_tmp_dir(),
             Arc::clone(&pool),
             Arc::clone(&cap) as Arc<dyn SessionEvents>,
             None,
@@ -3011,6 +3027,8 @@ fn direct_input_gate_timeout_is_bounded_and_does_not_pin_the_queue() {
     let state = mgr.session_state_or_insert(session_id);
     let gate = state.lock().unwrap().delivery_gate.clone();
     state.lock().unwrap().handle = Some(SessionHandle {
+        #[cfg(windows)]
+        pending_first_turn: None,
         id: session_id.into(),
         mission_id: None,
         runner_id: None,
@@ -3345,10 +3363,10 @@ fn login_shell_proxy_env_reaches_spawn_with_runner_env_taking_precedence() {
         None,
         None,
         None,
-        Some("/tmp"),
+        Some(fixture_tmp_dir().to_str().unwrap()),
         None,
         None,
-        std::path::Path::new("/tmp"),
+        fixture_tmp_dir(),
         Arc::clone(&pool),
         capture(),
         None,
@@ -3436,10 +3454,10 @@ fn spawn_env_respects_configured_locale_and_falls_back_to_utf8() {
         None,
         None,
         None,
-        Some("/tmp"),
+        Some(fixture_tmp_dir().to_str().unwrap()),
         None,
         None,
-        std::path::Path::new("/tmp"),
+        fixture_tmp_dir(),
         Arc::clone(&pool),
         capture(),
         None,
@@ -3465,10 +3483,10 @@ fn spawn_env_respects_configured_locale_and_falls_back_to_utf8() {
         None,
         None,
         None,
-        Some("/tmp"),
+        Some(fixture_tmp_dir().to_str().unwrap()),
         None,
         None,
-        std::path::Path::new("/tmp"),
+        fixture_tmp_dir(),
         Arc::clone(&pool),
         capture(),
         None,
@@ -3532,10 +3550,10 @@ fn resume_reuses_row_and_preserves_agent_session_key() {
             None,
             None,
             None,
-            Some("/tmp"),
+            Some(fixture_tmp_dir().to_str().unwrap()),
             None,
             None,
-            std::path::Path::new("/tmp"),
+            fixture_tmp_dir(),
             Arc::clone(&pool),
             Arc::clone(&cap) as Arc<dyn SessionEvents>,
             None,
@@ -3590,7 +3608,7 @@ fn resume_reuses_row_and_preserves_agent_session_key() {
             &session_id,
             None,
             None,
-            std::path::Path::new("/tmp"),
+            fixture_tmp_dir(),
             Arc::clone(&pool),
             Arc::clone(&cap) as Arc<dyn SessionEvents>,
         )
@@ -3701,10 +3719,10 @@ fn resume_applies_a_size_pushed_mid_fork() {
             None,
             None,
             None,
-            Some("/tmp"),
+            Some(fixture_tmp_dir().to_str().unwrap()),
             None,
             None,
-            std::path::Path::new("/tmp"),
+            fixture_tmp_dir(),
             Arc::clone(&pool),
             events.clone(),
             None,
@@ -3726,7 +3744,7 @@ fn resume_applies_a_size_pushed_mid_fork() {
         &session_id,
         Some(113),
         Some(38),
-        std::path::Path::new("/tmp"),
+        fixture_tmp_dir(),
         Arc::clone(&pool),
         events.clone(),
     )
@@ -3774,10 +3792,10 @@ fn first_spawn_without_dims_uses_and_persists_default_size() {
             None,
             None,
             None,
-            Some("/tmp"),
+            Some(fixture_tmp_dir().to_str().unwrap()),
             None,
             None,
-            std::path::Path::new("/tmp"),
+            fixture_tmp_dir(),
             Arc::clone(&pool),
             capture(),
             None,
@@ -3831,10 +3849,10 @@ fn resume_size_resolution_prefers_explicit_then_persisted_after_manager_restart(
             None,
             None,
             None,
-            Some("/tmp"),
+            Some(fixture_tmp_dir().to_str().unwrap()),
             Some(120),
             Some(30),
-            std::path::Path::new("/tmp"),
+            fixture_tmp_dir(),
             Arc::clone(&pool),
             capture(),
             None,
@@ -3872,7 +3890,7 @@ fn resume_size_resolution_prefers_explicit_then_persisted_after_manager_restart(
             &spawned.id,
             None,
             None,
-            std::path::Path::new("/tmp"),
+            fixture_tmp_dir(),
             Arc::clone(&pool),
             capture(),
         )
@@ -3891,7 +3909,7 @@ fn resume_size_resolution_prefers_explicit_then_persisted_after_manager_restart(
             &spawned.id,
             Some(144),
             Some(50),
-            std::path::Path::new("/tmp"),
+            fixture_tmp_dir(),
             Arc::clone(&pool),
             capture(),
         )
@@ -3964,7 +3982,7 @@ fn resume_refuses_running_and_archived_rows() {
                 sid,
                 None,
                 None,
-                std::path::Path::new("/tmp"),
+                fixture_tmp_dir(),
                 Arc::clone(&pool),
                 capture(),
             )
@@ -4007,7 +4025,7 @@ fn launch_resume_never_falls_back_to_a_fresh_chat_spawn() {
             "launch-sid",
             None,
             None,
-            std::path::Path::new("/tmp"),
+            fixture_tmp_dir(),
             Arc::clone(&pool),
             capture(),
         )
@@ -4060,7 +4078,7 @@ fn launch_resume_keeps_missing_cwd_as_a_chat_error() {
             "chat-missing-cwd",
             None,
             None,
-            std::path::Path::new("/tmp"),
+            fixture_tmp_dir(),
             Arc::clone(&pool),
             capture(),
         )
@@ -4136,7 +4154,7 @@ fn resume_mission_session_stamps_slot_handle_env() {
             "mr-sid",
             None,
             None,
-            std::path::Path::new("/tmp"),
+            fixture_tmp_dir(),
             Arc::clone(&pool),
             capture(),
         )
@@ -4920,7 +4938,7 @@ fn spawn_argv_injects_claude_fullscreen_for_fresh_and_resume_only() {
             &mut spec,
             &runner,
             &plan,
-            Path::new("/tmp/runner-app-data"),
+            &fixture_tmp_dir().join("runner-app-data"),
             Some("first turn"),
             None,
         );
@@ -4989,10 +5007,10 @@ fn spawn_claude_for_resize(
             None,
             None,
             None,
-            Some("/tmp"),
+            Some(fixture_tmp_dir().to_str().unwrap()),
             Some(120),
             Some(30),
-            std::path::Path::new("/tmp"),
+            fixture_tmp_dir(),
             Arc::clone(&pool),
             capture(),
             None,
@@ -5100,7 +5118,7 @@ fn stale_resize_settle_does_not_persist_after_respawn() {
         &id,
         None,
         None,
-        std::path::Path::new("/tmp"),
+        fixture_tmp_dir(),
         Arc::clone(&pool),
         capture(),
     )
@@ -5239,6 +5257,7 @@ fn runtime_direct_runner_applies_model_and_effort() {
     assert_eq!(defaults.effort, None);
 }
 
+#[cfg(unix)]
 #[test]
 fn shell_runtime_spawns_and_resumes_as_plain_login_shell() {
     let pool = pool_with_schema();
@@ -5352,7 +5371,7 @@ fn shell_resume_uses_nearest_existing_cwd_and_feeds_notice_first() {
         "shell-missing-cwd",
         None,
         None,
-        std::path::Path::new("/tmp"),
+        fixture_tmp_dir(),
         Arc::clone(&pool),
         events.clone(),
     )
@@ -5398,10 +5417,10 @@ fn runtime_direct_spawn_persists_model_and_effort() {
         .spawn_runtime_direct(
             &configured,
             None,
-            Some("/tmp"),
+            Some(fixture_tmp_dir().to_str().unwrap()),
             None,
             None,
-            std::path::Path::new("/tmp"),
+            fixture_tmp_dir(),
             Arc::clone(&pool),
             capture(),
         )
@@ -5461,10 +5480,10 @@ fn pinned_direct_spawn_records_override_model_and_effort() {
             Some("gpt-5.6-sol"),
             Some("ultra"),
             None,
-            Some("/tmp"),
+            Some(fixture_tmp_dir().to_str().unwrap()),
             None,
             None,
-            std::path::Path::new("/tmp"),
+            fixture_tmp_dir(),
             Arc::clone(&pool),
             capture(),
             None,
@@ -5517,10 +5536,10 @@ fn unpinned_direct_spawn_persists_options_without_pinning_runtime() {
             Some("gpt-5.6-sol"),
             Some("ultra"),
             None,
-            Some("/tmp"),
+            Some(fixture_tmp_dir().to_str().unwrap()),
             None,
             None,
-            std::path::Path::new("/tmp"),
+            fixture_tmp_dir(),
             Arc::clone(&pool),
             capture(),
             None,
@@ -5546,7 +5565,7 @@ fn unpinned_direct_spawn_persists_options_without_pinning_runtime() {
         &spawned.id,
         None,
         None,
-        std::path::Path::new("/tmp"),
+        fixture_tmp_dir(),
         Arc::clone(&pool),
         capture(),
     )
@@ -5740,7 +5759,7 @@ fn mission_spawn_with_slot_override_uses_registry_engine_and_records_runtime() {
             &mission_row,
             &runner,
             &slot,
-            std::path::Path::new("/tmp"),
+            fixture_tmp_dir(),
             PathBuf::from("/dev/null"),
             Arc::clone(&pool),
             capture(),
@@ -5839,7 +5858,7 @@ fn mission_spawn_with_model_only_slot_override_uses_runner_runtime_without_pinni
             &mission_row,
             &runner,
             &slot,
-            std::path::Path::new("/tmp"),
+            fixture_tmp_dir(),
             PathBuf::from("/dev/null"),
             Arc::clone(&pool),
             capture(),
@@ -5882,7 +5901,7 @@ fn mission_spawn_with_model_only_slot_override_uses_runner_runtime_without_pinni
         &spawned.id,
         None,
         None,
-        std::path::Path::new("/tmp"),
+        fixture_tmp_dir(),
         Arc::clone(&pool),
         capture(),
     )
@@ -5930,7 +5949,7 @@ fn mission_spawn_with_matching_override_keeps_args_and_pins_runtime() {
             &mission_row,
             &runner,
             &slot,
-            std::path::Path::new("/tmp"),
+            fixture_tmp_dir(),
             PathBuf::from("/dev/null"),
             Arc::clone(&pool),
             capture(),
@@ -5946,7 +5965,7 @@ fn mission_spawn_with_matching_override_keeps_args_and_pins_runtime() {
             &mission_row,
             &runner,
             &slot,
-            std::path::Path::new("/tmp"),
+            fixture_tmp_dir(),
             PathBuf::from("/dev/null"),
             Arc::clone(&pool),
             capture(),
@@ -6013,9 +6032,9 @@ fn resume_keeps_pinned_runtime_after_runner_template_edit() {
             "INSERT INTO sessions
                     (id, mission_id, runner_id, cwd, status, started_at,
                      agent_runtime, agent_command)
-                 VALUES ('pin-sid', NULL, ?1, '/tmp', 'stopped', ?2,
+                 VALUES ('pin-sid', NULL, ?1, ?3, 'stopped', ?2,
                          'codex', 'codex-custom')",
-            params![runner_id, now],
+            params![runner_id, now, fixture_tmp_dir().to_str().unwrap()],
         )
         .unwrap();
         // The runner template moves on to a different engine.
@@ -6033,7 +6052,7 @@ fn resume_keeps_pinned_runtime_after_runner_template_edit() {
         "pin-sid",
         None,
         None,
-        std::path::Path::new("/tmp"),
+        fixture_tmp_dir(),
         Arc::clone(&pool),
         capture(),
     )
@@ -6076,10 +6095,10 @@ fn direct_spawn_with_override_uses_registry_engine_and_records_runtime() {
             None,
             None,
             None,
-            Some("/tmp"),
+            Some(fixture_tmp_dir().to_str().unwrap()),
             None,
             None,
-            std::path::Path::new("/tmp"),
+            fixture_tmp_dir(),
             Arc::clone(&pool),
             capture(),
             None,
@@ -6114,6 +6133,7 @@ fn direct_spawn_with_override_uses_registry_engine_and_records_runtime() {
     mgr.kill(&spawned.id).unwrap();
 }
 
+#[cfg(unix)]
 #[test]
 fn claude_direct_chat_fork_spawns_tui_directly_with_copied_row() {
     let pool = pool_with_schema();
@@ -6522,7 +6542,7 @@ fn fork_refuses_ineligible_source_rows() {
                 None,
                 None,
                 None,
-                Path::new("/tmp"),
+                fixture_tmp_dir(),
                 Arc::clone(&pool),
                 capture(),
             )
@@ -6559,9 +6579,9 @@ fn resume_respawns_recorded_override_runtime() {
             "INSERT INTO sessions
                     (id, mission_id, runner_id, cwd, status, started_at,
                      agent_session_key, agent_runtime, agent_command)
-                 VALUES ('ovr-sid', NULL, ?1, '/tmp', 'stopped', ?2,
+                 VALUES ('ovr-sid', NULL, ?1, ?4, 'stopped', ?2,
                          ?3, 'claude-code', 'claude')",
-            params![runner_id, now, key],
+            params![runner_id, now, key, fixture_tmp_dir().to_str().unwrap()],
         )
         .unwrap();
     }
@@ -6572,7 +6592,7 @@ fn resume_respawns_recorded_override_runtime() {
         "ovr-sid",
         None,
         None,
-        std::path::Path::new("/tmp"),
+        fixture_tmp_dir(),
         Arc::clone(&pool),
         capture(),
     )
@@ -6789,4 +6809,190 @@ fn runtime_only_resume_keeps_live_recorded_path_and_reresolves_dead_path() {
 
     mgr.kill("runtime-live-path").unwrap();
     mgr.kill("runtime-dead-path").unwrap();
+}
+
+#[cfg(windows)]
+#[test]
+fn headless_fork_timeout_kills_batch_descendant_and_closes_pipes() {
+    if std::env::var_os("RUNNER_FORK_TEST_PID").is_some() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let descendant_pid = dir.path().join("descendant.pid");
+    let command = dir.path().join("materializer.cmd");
+    std::fs::write(
+        &command,
+        "@echo off\r\n\"%RUNNER_FORK_TEST_EXE%\" --exact session::manager::tests::headless_fork_descendant --nocapture >nul\r\n",
+    ).unwrap();
+    let spec = SpawnSpec {
+        session_id: ulid::Ulid::new().to_string(),
+        command: command.to_string_lossy().into_owned(),
+        args: Vec::new(),
+        env: BTreeMap::from([
+            (
+                "CODEX_HOME".into(),
+                dir.path().to_string_lossy().into_owned(),
+            ),
+            (
+                "RUNNER_FORK_TEST_PID".into(),
+                descendant_pid.to_string_lossy().into_owned(),
+            ),
+            (
+                "RUNNER_FORK_TEST_EXE".into(),
+                std::env::current_exe()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned(),
+            ),
+        ]),
+        cwd: Some(dir.path().to_path_buf()),
+        mission: false,
+        shim_dir: None,
+        bundled_bin_dir: None,
+        shell_path: None,
+        initial_size: None,
+    };
+    let plan = router::runtime::ForkPlan::Headless {
+        args: Vec::new(),
+        source_key: uuid::Uuid::new_v4().to_string(),
+    };
+    let started = Instant::now();
+    let error = super::spawn::run_headless_fork(&spec, &plan, Duration::from_secs(5)).unwrap_err();
+    assert!(error.to_string().contains("timed out"), "{error}");
+    assert!(started.elapsed() < Duration::from_secs(15));
+    let pid: i32 = std::fs::read_to_string(descendant_pid)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    assert!(
+        crate::session::process::wait_for_process_exit_until(
+            pid,
+            Instant::now() + Duration::from_secs(2),
+        ),
+        "headless descendant {pid} survived the kill grace"
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn headless_fork_descendant() {
+    let Some(pid_file) = std::env::var_os("RUNNER_FORK_TEST_PID") else {
+        return;
+    };
+    std::fs::write(pid_file, std::process::id().to_string()).unwrap();
+    // The inherited stderr pipe stays open without emitting libtest progress as Codex JSON.
+    thread::sleep(Duration::from_secs(30));
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_batch_first_turn_waits_for_split_tui_readiness() {
+    assert_windows_batch_first_turn("ready");
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_batch_first_turn_falls_back_without_tui_output() {
+    assert_windows_batch_first_turn("fallback");
+}
+
+#[cfg(windows)]
+fn assert_windows_batch_first_turn(mode: &str) {
+    let dir = tempfile::tempdir().unwrap();
+    let batch = dir.path().join("prompt reader.cmd");
+    std::fs::write(&batch,
+        "@echo off\r\n\"%RUNNER_BATCH_PROMPT_EXE%\" --exact session::manager::tests::windows_batch_prompt_probe --nocapture\r\n").unwrap();
+    let mut runner = runner(batch.to_str().unwrap(), &[]);
+    runner.runtime = "claude-code".into();
+    runner.env.insert(
+        "RUNNER_BATCH_PROMPT_EXE".into(),
+        std::env::current_exe()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned(),
+    );
+    runner
+        .env
+        .insert("RUNNER_BATCH_PROMPT_MODE".into(), mode.into());
+    let pool = pool_with_schema();
+    insert_crew_runner(&pool, "batch-prompt", &runner.id);
+    let events = capture();
+    let mgr = manager_with_runtime(
+        Default::default(),
+        Arc::new(crate::session::pty_runtime::PtyRuntime::new()),
+    );
+    let spawned = mgr
+        .spawn_direct(
+            &runner,
+            None,
+            None,
+            None,
+            None,
+            Some(dir.path().to_str().unwrap()),
+            None,
+            None,
+            dir.path(),
+            Arc::clone(&pool),
+            events.clone(),
+            Some("first line\nsecond line".into()),
+        )
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let output = loop {
+        let bytes = events
+            .output
+            .lock()
+            .unwrap()
+            .iter()
+            .flat_map(|event| event.bytes.iter().copied())
+            .collect::<Vec<_>>();
+        let output = String::from_utf8_lossy(&bytes).into_owned();
+        if output.contains("BATCH_INPUT_FIRST=first line")
+            && output.contains("BATCH_INPUT_SECOND=second line")
+            || Instant::now() >= deadline
+        {
+            break output;
+        }
+        thread::sleep(Duration::from_millis(20));
+    };
+    mgr.kill(&spawned.id).unwrap();
+    assert!(output.contains("BATCH_INPUT_FIRST=first line"), "{output}");
+    assert!(
+        output.contains("BATCH_INPUT_SECOND=second line"),
+        "{output}"
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_batch_prompt_probe() {
+    if std::env::var_os("RUNNER_BATCH_PROMPT_EXE").is_none() {
+        return;
+    }
+    use std::io::Write;
+    let input = crate::session::process::RawConsoleInput::open().unwrap();
+    let early = input.read_for(Duration::from_millis(200)).unwrap();
+    assert!(early.is_empty(), "input before readiness: {early:?}");
+    let ready = std::env::var("RUNNER_BATCH_PROMPT_MODE").unwrap() == "ready";
+    if ready {
+        print!("\x1b[?20");
+        std::io::stdout().flush().unwrap();
+        let early = input.read_for(Duration::from_millis(100)).unwrap();
+        assert!(
+            early.is_empty(),
+            "input before complete readiness signal: {early:?}"
+        );
+        print!("04h");
+        std::io::stdout().flush().unwrap();
+    }
+    let bytes = input.read_for(Duration::from_secs(5)).unwrap();
+    let expected = if ready {
+        b"\x1b[200~first line\nsecond line\x1b[201~\r".as_slice()
+    } else {
+        b"first line\nsecond line\r".as_slice()
+    };
+    assert_eq!(bytes, expected, "PTY first-turn bytes: {bytes:?}");
+    println!("BATCH_INPUT_FIRST=first line");
+    println!("BATCH_INPUT_SECOND=second line");
 }
