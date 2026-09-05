@@ -4,11 +4,11 @@ on:
   pull_request:
     branches:
       - main
-      - gpui-nightly
+      - nightly-windows
   push:
     branches:
       - main
-      - gpui-nightly
+      - nightly-windows
 
 permissions:
   contents: read
