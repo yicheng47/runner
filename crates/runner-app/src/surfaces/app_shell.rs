@@ -1171,6 +1171,29 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg(not(windows))]
+    fn caption_inset_is_zero_off_windows() {
+        for zoom in [0.75, 1., 1.25, 2.] {
+            for fullscreen in [false, true] {
+                assert_eq!(caption_inset_for(zoom, fullscreen), 0.);
+            }
+        }
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn caption_inset_tracks_zoom_and_fullscreen() {
+        assert_eq!(CAPTION_BUTTON_WIDTH, 46.);
+        for zoom in [0.75, 1., 1.25, 2.] {
+            assert_eq!(
+                caption_inset_for(zoom, false),
+                3. * CAPTION_BUTTON_WIDTH * zoom
+            );
+            assert_eq!(caption_inset_for(zoom, true), 0.);
+        }
+    }
+
+    #[test]
     fn archived_mission_only_leaves_its_open_route() {
         assert_eq!(
             route_after_mission_archived(
