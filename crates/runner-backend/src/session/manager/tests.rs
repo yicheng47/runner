@@ -16,7 +16,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-/// Use this for filesystem paths; literal paths are fine for DB-only fixture values.
+/// Use this for paths consumed by spawn/resume, including stored cwd fields.
 #[cfg(unix)]
 fn fixture_tmp_dir() -> &'static Path {
     Path::new("/tmp")
@@ -2603,7 +2603,7 @@ fn spawn_direct_writes_session_with_null_mission_id_and_emits_activity() {
     runner.handle = "directrunner".into();
     let project = {
         let conn = pool.get().unwrap();
-        crate::repo::project::create(&conn, "Runner", "/tmp").unwrap()
+        crate::repo::project::create(&conn, "Runner", fixture_tmp_dir().to_str().unwrap()).unwrap()
     };
 
     let cap = capture();
@@ -6032,9 +6032,9 @@ fn resume_keeps_pinned_runtime_after_runner_template_edit() {
             "INSERT INTO sessions
                     (id, mission_id, runner_id, cwd, status, started_at,
                      agent_runtime, agent_command)
-                 VALUES ('pin-sid', NULL, ?1, '/tmp', 'stopped', ?2,
+                 VALUES ('pin-sid', NULL, ?1, ?3, 'stopped', ?2,
                          'codex', 'codex-custom')",
-            params![runner_id, now],
+            params![runner_id, now, fixture_tmp_dir().to_str().unwrap()],
         )
         .unwrap();
         // The runner template moves on to a different engine.
@@ -6579,9 +6579,9 @@ fn resume_respawns_recorded_override_runtime() {
             "INSERT INTO sessions
                     (id, mission_id, runner_id, cwd, status, started_at,
                      agent_session_key, agent_runtime, agent_command)
-                 VALUES ('ovr-sid', NULL, ?1, '/tmp', 'stopped', ?2,
+                 VALUES ('ovr-sid', NULL, ?1, ?4, 'stopped', ?2,
                          ?3, 'claude-code', 'claude')",
-            params![runner_id, now, key],
+            params![runner_id, now, key, fixture_tmp_dir().to_str().unwrap()],
         )
         .unwrap();
     }
