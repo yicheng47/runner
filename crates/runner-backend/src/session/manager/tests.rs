@@ -1425,6 +1425,8 @@ fn install_test_session_handle(manager: &SessionManager, session_id: &str) {
         .lock()
         .unwrap()
         .handle = Some(SessionHandle {
+        #[cfg(windows)]
+        pending_first_turn: None,
         id: session_id.into(),
         mission_id: Some("mission-observed-input".into()),
         runner_id: None,
@@ -3013,6 +3015,8 @@ fn direct_input_gate_timeout_is_bounded_and_does_not_pin_the_queue() {
     let state = mgr.session_state_or_insert(session_id);
     let gate = state.lock().unwrap().delivery_gate.clone();
     state.lock().unwrap().handle = Some(SessionHandle {
+        #[cfg(windows)]
+        pending_first_turn: None,
         id: session_id.into(),
         mission_id: None,
         runner_id: None,
@@ -6865,7 +6869,18 @@ fn headless_fork_descendant() {
 
 #[cfg(windows)]
 #[test]
-fn windows_batch_first_turn_is_pasted_after_spawn() {
+fn windows_batch_first_turn_waits_for_split_tui_readiness() {
+    assert_windows_batch_first_turn("ready");
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_batch_first_turn_falls_back_without_tui_output() {
+    assert_windows_batch_first_turn("fallback");
+}
+
+#[cfg(windows)]
+fn assert_windows_batch_first_turn(mode: &str) {
     let dir = tempfile::tempdir().unwrap();
     let batch = dir.path().join("prompt reader.cmd");
     std::fs::write(&batch,
@@ -6879,6 +6894,9 @@ fn windows_batch_first_turn_is_pasted_after_spawn() {
             .to_string_lossy()
             .into_owned(),
     );
+    runner
+        .env
+        .insert("RUNNER_BATCH_PROMPT_MODE".into(), mode.into());
     let pool = pool_with_schema();
     insert_crew_runner(&pool, "batch-prompt", &runner.id);
     let events = capture();
@@ -6934,17 +6952,29 @@ fn windows_batch_prompt_probe() {
     if std::env::var_os("RUNNER_BATCH_PROMPT_EXE").is_none() {
         return;
     }
-    // Cooked console reads consume LF; agent TUIs read raw input instead.
-    let expected = b"first line\nsecond line\r";
-    let bytes = crate::session::process::read_raw_console_input(expected.len()).unwrap();
-    assert_eq!(bytes, expected);
-    let (first, second) = std::str::from_utf8(&bytes)
-        .unwrap()
-        .split_once('\n')
-        .unwrap();
-    println!("BATCH_INPUT_FIRST={first}");
-    println!(
-        "BATCH_INPUT_SECOND={}",
-        second.trim_end_matches(['\r', '\n'])
-    );
+    use std::io::Write;
+    let input = crate::session::process::RawConsoleInput::open().unwrap();
+    let early = input.read_for(Duration::from_millis(200)).unwrap();
+    assert!(early.is_empty(), "input before readiness: {early:?}");
+    let ready = std::env::var("RUNNER_BATCH_PROMPT_MODE").unwrap() == "ready";
+    if ready {
+        print!("\x1b[?20");
+        std::io::stdout().flush().unwrap();
+        let early = input.read_for(Duration::from_millis(100)).unwrap();
+        assert!(
+            early.is_empty(),
+            "input before complete readiness signal: {early:?}"
+        );
+        print!("04h");
+        std::io::stdout().flush().unwrap();
+    }
+    let bytes = input.read_for(Duration::from_secs(5)).unwrap();
+    let expected = if ready {
+        b"\x1b[200~first line\nsecond line\x1b[201~\r".as_slice()
+    } else {
+        b"first line\nsecond line\r".as_slice()
+    };
+    assert_eq!(bytes, expected, "PTY first-turn bytes: {bytes:?}");
+    println!("BATCH_INPUT_FIRST=first line");
+    println!("BATCH_INPUT_SECOND=second line");
 }

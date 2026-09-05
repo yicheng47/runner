@@ -35,7 +35,7 @@ pub(super) fn adapt_windows_batch_command(
         .to_owned();
     // The space/quote-free variable reference bypasses portable-pty's C argv quoting. The Windows
     // probe proved substitution preserves literal % and needs no outer quote pair; argument quotes
-    // and backslashes follow Rust 1.97.1 append_bat_arg. Multiline first turns use post-spawn paste.
+    // and backslashes follow Rust 1.97.1 append_bat_arg. Multiline first turns wait for TUI readiness before post-spawn paste.
     command.env(
         "RUNNER_BATCH_COMMAND_LINE",
         format!("set \"RUNNER_BATCH_COMMAND_LINE=\" & {line}"),

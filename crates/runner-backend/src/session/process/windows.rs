@@ -186,39 +186,93 @@ pub(crate) fn kill_headless_fork(child: &mut std::process::Child, process_tree: 
 }
 
 #[cfg(test)]
-pub(crate) fn read_raw_console_input(len: usize) -> io::Result<Vec<u8>> {
-    use std::io::Read;
-    use windows_sys::Win32::System::Console::{
-        ENABLE_ECHO_INPUT, ENABLE_LINE_INPUT, ENABLE_PROCESSED_INPUT, ENABLE_VIRTUAL_TERMINAL_INPUT,
-    };
-    let mut input = std::io::stdin();
-    let mode = console_input_mode(&input)?;
-    set_console_input_mode(
-        &input,
-        (mode & !(ENABLE_ECHO_INPUT | ENABLE_LINE_INPUT | ENABLE_PROCESSED_INPUT))
-            | ENABLE_VIRTUAL_TERMINAL_INPUT,
-    )?;
-    let mut bytes = vec![0; len];
-    let read = input.read_exact(&mut bytes);
-    let restore = set_console_input_mode(&input, mode);
-    read?;
-    restore?;
-    Ok(bytes)
+pub(crate) struct RawConsoleInput {
+    received: std::sync::mpsc::Receiver<io::Result<Vec<u8>>>,
+    mode: u32,
+    output_mode: u32,
 }
 
 #[cfg(test)]
-fn console_input_mode(input: &std::io::Stdin) -> io::Result<u32> {
+impl RawConsoleInput {
+    pub(crate) fn open() -> io::Result<Self> {
+        use std::io::Read;
+        use windows_sys::Win32::System::Console::{
+            ENABLE_ECHO_INPUT, ENABLE_LINE_INPUT, ENABLE_PROCESSED_INPUT,
+            ENABLE_VIRTUAL_TERMINAL_INPUT, ENABLE_VIRTUAL_TERMINAL_PROCESSING,
+        };
+        let mut input = std::io::stdin();
+        let mode = console_mode(&input)?;
+        let output = std::io::stdout();
+        let output_mode = console_mode(&output)?;
+        set_console_mode(&output, output_mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING)?;
+        set_console_mode(
+            &input,
+            (mode & !(ENABLE_ECHO_INPUT | ENABLE_LINE_INPUT | ENABLE_PROCESSED_INPUT))
+                | ENABLE_VIRTUAL_TERMINAL_INPUT,
+        )?;
+        let (sent, received) = std::sync::mpsc::channel();
+        // Only isolated probe children use this reader; process exit ends a pending console read.
+        std::thread::spawn(move || {
+            let mut buffer = [0; 64];
+            loop {
+                match input.read(&mut buffer) {
+                    Ok(0) => break,
+                    Ok(len) => {
+                        if sent.send(Ok(buffer[..len].to_vec())).is_err() {
+                            break;
+                        }
+                    }
+                    Err(error) => {
+                        let _ = sent.send(Err(error));
+                        break;
+                    }
+                }
+            }
+        });
+        Ok(Self {
+            received,
+            mode,
+            output_mode,
+        })
+    }
+
+    pub(crate) fn read_for(&self, timeout: std::time::Duration) -> io::Result<Vec<u8>> {
+        let deadline = Instant::now() + timeout;
+        let mut bytes = Vec::new();
+        while Instant::now() < deadline {
+            match self
+                .received
+                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            {
+                Ok(chunk) => bytes.extend(chunk?),
+                Err(_) => break,
+            }
+        }
+        Ok(bytes)
+    }
+}
+
+#[cfg(test)]
+impl Drop for RawConsoleInput {
+    fn drop(&mut self) {
+        let _ = set_console_mode(&std::io::stdin(), self.mode);
+        let _ = set_console_mode(&std::io::stdout(), self.output_mode);
+    }
+}
+
+#[cfg(test)]
+fn console_mode(handle: &impl AsRawHandle) -> io::Result<u32> {
     let mut mode = 0;
     check_bool(unsafe {
-        windows_sys::Win32::System::Console::GetConsoleMode(input.as_raw_handle(), &mut mode)
+        windows_sys::Win32::System::Console::GetConsoleMode(handle.as_raw_handle(), &mut mode)
     })?;
     Ok(mode)
 }
 
 #[cfg(test)]
-fn set_console_input_mode(input: &std::io::Stdin, mode: u32) -> io::Result<()> {
+fn set_console_mode(handle: &impl AsRawHandle, mode: u32) -> io::Result<()> {
     check_bool(unsafe {
-        windows_sys::Win32::System::Console::SetConsoleMode(input.as_raw_handle(), mode)
+        windows_sys::Win32::System::Console::SetConsoleMode(handle.as_raw_handle(), mode)
     })
 }
 
