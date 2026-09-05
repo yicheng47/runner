@@ -51,8 +51,9 @@ pub const MCP_DEST_BIN_NAME: &str = if cfg!(windows) {
     "runner-mcp"
 };
 
-// These installers are an unwired GPUI bootstrap integration point. Mission
-// shims, spawned PATHs, and MCP configs already consume their destinations.
+// Called from the app's `boot_core` on every launch, before any session can
+// spawn or MCP config is written. Mission shims, spawned PATHs, and MCP
+// configs all consume the destinations.
 pub fn install_runner_cli(app_data_dir: &Path) -> Result<()> {
     install_binary(app_data_dir, AGENT_SOURCE_BIN_NAME, AGENT_DEST_BIN_NAME)
 }

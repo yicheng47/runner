@@ -4,7 +4,8 @@ use std::time::Duration;
 
 use anyhow::{bail, Context as _, Result};
 use runner_backend::{
-    db, event_bus, events, mcp, ops, repo, runtime_status, session, shell_path, windows, AppCore,
+    cli_install, db, event_bus, events, mcp, ops, repo, runtime_status, session, shell_path,
+    windows, AppCore,
 };
 
 pub const APP_IDENTIFIER: &str = "com.wycstudios.runner";
@@ -86,6 +87,16 @@ fn paths_for_home(home: &Path, debug: bool) -> NativePaths {
 pub fn boot_core(paths: &NativePaths) -> Result<AppCore> {
     std::fs::create_dir_all(&paths.app_data_dir)
         .with_context(|| format!("create {}", paths.app_data_dir.display()))?;
+    // Mission shims exec `$APPDATA/bin/runner` and the MCP configs point at
+    // `$APPDATA/bin/runner-mcp`, so both sidecars must be in place before any
+    // session spawns or config is written. Best-effort: a copy failure is
+    // reported and the app keeps running (#480).
+    if let Err(error) = cli_install::install_runner_cli(&paths.app_data_dir) {
+        eprintln!("Runner bundled agent CLI install failed: {error}");
+    }
+    if let Err(error) = cli_install::install_mcp_cli(&paths.app_data_dir) {
+        eprintln!("Runner bundled MCP CLI install failed: {error}");
+    }
     let pool = Arc::new(
         db::open_pool(&paths.app_data_dir.join("runner.db")).context("open Runner database")?,
     );

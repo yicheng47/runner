@@ -26,6 +26,7 @@ test:
 verify: check test clippy fmt-check
 
 run:
+	cargo build -p runner-cli
 	cargo run -p runner-app
 
 clean:
