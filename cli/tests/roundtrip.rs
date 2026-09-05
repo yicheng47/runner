@@ -174,7 +174,10 @@ fn msg_post_rejects_over_cap_for_broadcast_and_directed() {
 
     let f = Fixture::new("C", "M");
     f.write_roster(&[("lead", true), ("impl", false)]);
+    #[cfg(unix)]
     let oversized = "x".repeat(MESSAGE_LIMIT_BYTES + 1);
+    #[cfg(windows)]
+    let oversized = "€".repeat((MESSAGE_LIMIT_BYTES + 1) / 3);
 
     for recipient in [None, Some("impl")] {
         let mut args = vec!["msg", "post", oversized.as_str()];
@@ -202,7 +205,10 @@ fn msg_post_accepts_messages_at_and_under_cap() {
     let f = Fixture::new("C", "M");
     f.write_roster(&[("lead", true), ("impl", false)]);
     let at_limit = "é".repeat(MESSAGE_LIMIT_BYTES / "é".len());
+    #[cfg(unix)]
     let under_limit = "x".repeat(MESSAGE_LIMIT_BYTES - 1);
+    #[cfg(windows)]
+    let under_limit = format!("{}x", "é".repeat(MESSAGE_LIMIT_BYTES / 2 - 1));
     assert_eq!(at_limit.len(), MESSAGE_LIMIT_BYTES);
 
     let broadcast = f

@@ -1353,6 +1353,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn terminal_file_links_without_a_cwd_only_resolve_absolute_paths() {
         let temp = tempfile::tempdir().unwrap();

@@ -23,7 +23,9 @@ use portable_pty::{native_pty_system, Child, CommandBuilder, ExitStatus, MasterP
 use portable_pty::ChildKiller;
 
 use super::launch;
-use super::process::{kill_process, process_exists, ProcessTree};
+#[cfg(any(unix, test))]
+use super::process::process_exists;
+use super::process::{kill_process, ProcessTree};
 #[cfg(unix)]
 use super::process::{process_command_line, reap_descendants, wait_for_process_exit_until};
 use super::runtime::{
@@ -94,7 +96,10 @@ impl Default for PtyRuntime {
 }
 
 struct SessionHandle {
+    #[cfg(unix)]
     master: Mutex<Box<dyn MasterPty + Send>>,
+    #[cfg(windows)]
+    master: Mutex<Option<Box<dyn MasterPty + Send>>>,
     writer: Mutex<Box<dyn Write + Send>>,
     #[cfg(unix)]
     killer: Mutex<Box<dyn ChildKiller + Send + Sync>>,
@@ -228,7 +233,10 @@ impl SessionRuntime for PtyRuntime {
             Arc::new(Mutex::new(Some(child)));
 
         let handle = Arc::new(SessionHandle {
+            #[cfg(unix)]
             master: Mutex::new(pair.master),
+            #[cfg(windows)]
+            master: Mutex::new(Some(pair.master)),
             writer: Mutex::new(writer),
             #[cfg(unix)]
             killer: Mutex::new(killer),
@@ -366,6 +374,10 @@ impl SessionRuntime for PtyRuntime {
         let handle = lookup(self, &session.session_id)?;
         {
             let master = handle.master.lock().expect("master poisoned");
+            #[cfg(windows)]
+            let Some(master) = master.as_ref() else {
+                return Ok(());
+            };
             master
                 .resize(PtySize {
                     rows,
@@ -558,14 +570,15 @@ fn stop_child_owned_by_reader(
 }
 
 #[cfg(windows)]
-fn terminate_session_job(
+fn terminate_session_job<'a>(
     session_id: &str,
-    process_tree: Option<&ProcessTree>,
-) -> RuntimeResult<()> {
-    process_tree
-        .ok_or_else(|| RuntimeError::Msg(format!("session {session_id} has no process job")))?
-        .terminate()
-        .map_err(|e| RuntimeError::Msg(format!("terminate job {session_id}: {e}")))
+    process_tree: Option<&'a ProcessTree>,
+) -> RuntimeResult<&'a ProcessTree> {
+    let tree = process_tree
+        .ok_or_else(|| RuntimeError::Msg(format!("session {session_id} has no process job")))?;
+    tree.terminate()
+        .map_err(|e| RuntimeError::Msg(format!("terminate job {session_id}: {e}")))?;
+    Ok(tree)
 }
 
 #[cfg(windows)]
@@ -574,8 +587,14 @@ fn stop_and_reap_child(
     process_tree: Option<&ProcessTree>,
     child: &mut dyn Child,
 ) -> RuntimeResult<ExitStatus> {
-    terminate_session_job(session_id, process_tree)?;
+    let tree = terminate_session_job(session_id, process_tree)?;
     poll_until(STOP_POLL, WINDOWS_KILL_GRACE, || {
+        if !tree
+            .root_has_exited()
+            .map_err(|e| RuntimeError::Msg(format!("wait {session_id}: {e}")))?
+        {
+            return Ok(None);
+        }
         child
             .try_wait()
             .map_err(|e| RuntimeError::Msg(format!("try_wait {session_id}: {e}")))
@@ -585,9 +604,11 @@ fn stop_and_reap_child(
 
 #[cfg(windows)]
 fn stop_child_owned_by_reader(session_id: &str, handle: &SessionHandle) -> RuntimeResult<()> {
-    terminate_session_job(session_id, handle.process_tree.as_ref())?;
+    let tree = terminate_session_job(session_id, handle.process_tree.as_ref())?;
     poll_until(STOP_POLL, WINDOWS_KILL_GRACE, || {
-        Ok(reader_reaped_child(handle, handle.pid).then_some(()))
+        tree.root_has_exited()
+            .map(|exited| exited.then_some(()))
+            .map_err(|e| RuntimeError::Msg(format!("wait {session_id}: {e}")))
     })?
     .ok_or_else(|| {
         RuntimeError::Msg(format!(
@@ -614,6 +635,7 @@ pub(super) fn poll_until<T>(
     }
 }
 
+#[cfg(unix)]
 fn reaped_exit_status(handle: &SessionHandle) -> Option<i32> {
     match handle.exit_code.load(Ordering::Acquire) {
         EXIT_UNSET => None,
@@ -621,6 +643,7 @@ fn reaped_exit_status(handle: &SessionHandle) -> Option<i32> {
     }
 }
 
+#[cfg(unix)]
 fn reader_reaped_child(handle: &SessionHandle, pid: Option<i32>) -> bool {
     reaped_exit_status(handle).is_some() || pid.is_some_and(|pid| !process_exists(pid))
 }
@@ -704,9 +727,21 @@ fn idle_monitor_thread(
     tx: mpsc::Sender<RuntimeOutput>,
     stop: Arc<AtomicBool>,
     done: Arc<AtomicBool>,
+    #[cfg(windows)] handle: Arc<SessionHandle>,
 ) {
     loop {
         if stop.load(Ordering::Acquire) || done.load(Ordering::Acquire) {
+            break;
+        }
+        #[cfg(windows)]
+        if handle
+            .process_tree
+            .as_ref()
+            .is_some_and(|tree| tree.root_has_exited().unwrap_or(false))
+        {
+            // ConPTY retains its output pipe until the master closes; the reader must keep draining.
+            let master = handle.master.lock().expect("master poisoned").take();
+            drop(master);
             break;
         }
         let transition = {
@@ -745,7 +780,18 @@ fn reader_thread(
             let tx = tx.clone();
             let stop = Arc::clone(&stop);
             let done = Arc::clone(&monitor_done);
-            move || idle_monitor_thread(detector, tx, stop, done)
+            #[cfg(windows)]
+            let handle = Arc::clone(&handle);
+            move || {
+                idle_monitor_thread(
+                    detector,
+                    tx,
+                    stop,
+                    done,
+                    #[cfg(windows)]
+                    handle,
+                )
+            }
         });
     let monitor = match monitor {
         Ok(handle) => Some(handle),

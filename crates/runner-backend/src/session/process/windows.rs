@@ -19,15 +19,19 @@ use windows_sys::Win32::System::Threading::{
 
 pub(crate) struct ProcessTree {
     job: OwnedHandle,
+    process: OwnedHandle,
 }
 
 impl ProcessTree {
     pub(crate) fn adopt(pid: u32) -> io::Result<Self> {
         let job = create_job()?;
         set_job_limits(&job)?;
-        let process = open_process(pid, PROCESS_SET_QUOTA | PROCESS_TERMINATE)?;
+        let process = open_process(
+            pid,
+            PROCESS_SET_QUOTA | PROCESS_TERMINATE | PROCESS_SYNCHRONIZE,
+        )?;
         assign_process(&job, &process)?;
-        Ok(Self { job })
+        Ok(Self { job, process })
     }
 
     pub(crate) fn attach_pty(&mut self, _master: &dyn MasterPty) {}
@@ -39,6 +43,10 @@ impl ProcessTree {
 
     pub(crate) fn terminate(&self) -> io::Result<()> {
         check_bool(unsafe { TerminateJobObject(self.job.as_raw_handle(), 1) })
+    }
+
+    pub(crate) fn root_has_exited(&self) -> io::Result<bool> {
+        process_has_exited(&self.process)
     }
 
     // Job membership includes background helpers, unlike a Unix foreground process group.
@@ -103,15 +111,21 @@ pub(crate) fn kill_process(pid: i32) -> io::Result<()> {
     check_bool(unsafe { TerminateProcess(process.as_raw_handle(), 1) })
 }
 
+#[allow(dead_code)]
 fn process_is_active(pid: i32) -> io::Result<bool> {
     let process = open_process(pid as u32, PROCESS_SYNCHRONIZE)?;
+    Ok(!process_has_exited(&process)?)
+}
+
+fn process_has_exited(process: &OwnedHandle) -> io::Result<bool> {
     match unsafe { WaitForSingleObject(process.as_raw_handle(), 0) } {
-        WAIT_TIMEOUT => Ok(true),
-        WAIT_OBJECT_0 => Ok(false),
+        WAIT_TIMEOUT => Ok(false),
+        WAIT_OBJECT_0 => Ok(true),
         _ => Err(io::Error::last_os_error()),
     }
 }
 
+#[allow(dead_code)]
 pub(crate) fn process_exists(pid: i32) -> bool {
     process_is_active(pid).unwrap_or(false)
 }

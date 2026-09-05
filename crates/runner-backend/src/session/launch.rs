@@ -316,16 +316,28 @@ mod tests {
             "/opt/homebrew/bin",
             "/usr/local/bin",
         ] {
+            #[cfg(unix)]
             assert!(path.contains(d), "fallback {d} missing from {path}");
+            #[cfg(windows)]
+            assert!(
+                std::env::split_paths(&path).any(|entry| entry == Path::new(d)),
+                "fallback {d} missing from {path}"
+            );
         }
     }
 
     #[test]
     fn expand_home_handles_tilde_and_passthrough() {
         let h = Path::new("/Users/jason");
+        #[cfg(unix)]
         assert_eq!(
             expand_home("~/.cargo/bin", Some(h)),
             "/Users/jason/.cargo/bin"
+        );
+        #[cfg(windows)]
+        assert_eq!(
+            expand_home("~/.cargo/bin", Some(h)),
+            h.join(".cargo/bin").to_string_lossy()
         );
         assert_eq!(expand_home("~", Some(h)), "/Users/jason");
         assert_eq!(expand_home("/abs/path", Some(h)), "/abs/path");

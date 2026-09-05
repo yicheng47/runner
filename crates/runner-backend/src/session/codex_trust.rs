@@ -223,10 +223,19 @@ mod tests {
         seed_project_trust_at(&cwd, &config_path).unwrap();
 
         let cwd = fs::canonicalize(cwd).unwrap();
+        #[cfg(unix)]
         assert_eq!(
             fs::read_to_string(config_path).unwrap(),
             format!(
                 "[projects.\"{}\"]\ntrust_level = \"trusted\"\n",
+                cwd.display()
+            )
+        );
+        #[cfg(windows)]
+        assert_eq!(
+            fs::read_to_string(config_path).unwrap(),
+            format!(
+                "[projects.'{}']\ntrust_level = \"trusted\"\n",
                 cwd.display()
             )
         );
@@ -337,10 +346,19 @@ mod tests {
         seed_project_trust_at(&cwd, &config_path).unwrap();
 
         let cwd = fs::canonicalize(cwd).unwrap();
+        #[cfg(unix)]
         assert_eq!(
             fs::read_to_string(config_path).unwrap(),
             format!(
                 "{existing}\n[projects.\"{}\"]\ntrust_level = \"trusted\"\n",
+                cwd.display()
+            )
+        );
+        #[cfg(windows)]
+        assert_eq!(
+            fs::read_to_string(config_path).unwrap(),
+            format!(
+                "{existing}\n[projects.'{}']\ntrust_level = \"trusted\"\n",
                 cwd.display()
             )
         );
@@ -362,8 +380,14 @@ mod tests {
         let config_path = temp.path().join("config.toml");
         fs::create_dir_all(&cwd).unwrap();
         let cwd = fs::canonicalize(cwd).unwrap();
+        #[cfg(unix)]
         let existing = format!(
             "# unchanged\n[projects.\"{}\"]\ntrust_level = \"{level}\" # operator choice\n",
+            cwd.display()
+        );
+        #[cfg(windows)]
+        let existing = format!(
+            "# unchanged\n[projects.'{}']\ntrust_level = \"{level}\" # operator choice\n",
             cwd.display()
         );
         fs::write(&config_path, &existing).unwrap();

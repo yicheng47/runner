@@ -1590,6 +1590,7 @@ fn observed_drafting_to_idle_emits_input_cleared() {
 // below, and `compose_direct_first_turn` is unit-tested in
 // `router::prompt`.
 
+#[cfg(unix)]
 #[test]
 fn direct_chat_persona_lands_as_trailing_positional_argv_without_worker_preamble() {
     // Plan 0007: when `spawn_direct` receives a non-empty
@@ -2265,6 +2266,7 @@ fn mission_spawn_cwd_prefers_mission_over_runner_working_dir() {
 // (`MAX_SYSTEM_PROMPT_BYTES` / `MAX_MISSION_GOAL_BYTES`)
 // prevents the body from exceeding the runtime's argv slot.
 
+#[cfg(unix)]
 #[test]
 fn codex_resume_skips_first_prompt_injection() {
     // On a codex resume the agent already has its system context
@@ -5239,6 +5241,7 @@ fn runtime_direct_runner_applies_model_and_effort() {
     assert_eq!(defaults.effort, None);
 }
 
+#[cfg(unix)]
 #[test]
 fn shell_runtime_spawns_and_resumes_as_plain_login_shell() {
     let pool = pool_with_schema();
@@ -6114,6 +6117,7 @@ fn direct_spawn_with_override_uses_registry_engine_and_records_runtime() {
     mgr.kill(&spawned.id).unwrap();
 }
 
+#[cfg(unix)]
 #[test]
 fn claude_direct_chat_fork_spawns_tui_directly_with_copied_row() {
     let pool = pool_with_schema();
@@ -6794,12 +6798,15 @@ fn runtime_only_resume_keeps_live_recorded_path_and_reresolves_dead_path() {
 #[cfg(windows)]
 #[test]
 fn headless_fork_timeout_kills_batch_descendant_and_closes_pipes() {
+    if std::env::var_os("RUNNER_FORK_TEST_PID").is_some() {
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     let descendant_pid = dir.path().join("descendant.pid");
     let command = dir.path().join("materializer.cmd");
     std::fs::write(
         &command,
-        "@echo off\r\npowershell.exe -NoProfile -NonInteractive -Command \"$PID | Set-Content -LiteralPath $env:RUNNER_FORK_TEST_PID; Start-Sleep -Seconds 30\"\r\n",
+        "@echo off\r\n\"%RUNNER_FORK_TEST_EXE%\" --exact session::manager::tests::headless_fork_descendant --nocapture >nul\r\n",
     ).unwrap();
     let spec = SpawnSpec {
         session_id: ulid::Ulid::new().to_string(),
@@ -6813,6 +6820,13 @@ fn headless_fork_timeout_kills_batch_descendant_and_closes_pipes() {
             (
                 "RUNNER_FORK_TEST_PID".into(),
                 descendant_pid.to_string_lossy().into_owned(),
+            ),
+            (
+                "RUNNER_FORK_TEST_EXE".into(),
+                std::env::current_exe()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned(),
             ),
         ]),
         cwd: Some(dir.path().to_path_buf()),
@@ -6836,4 +6850,15 @@ fn headless_fork_timeout_kills_batch_descendant_and_closes_pipes() {
         .parse()
         .unwrap();
     assert!(!crate::session::process::process_exists(pid));
+}
+
+#[cfg(windows)]
+#[test]
+fn headless_fork_descendant() {
+    let Some(pid_file) = std::env::var_os("RUNNER_FORK_TEST_PID") else {
+        return;
+    };
+    std::fs::write(pid_file, std::process::id().to_string()).unwrap();
+    // The inherited stderr pipe stays open without emitting libtest progress as Codex JSON.
+    thread::sleep(Duration::from_secs(30));
 }

@@ -6,6 +6,8 @@
 //     processes (the app, multiple `runner` CLI invocations) interleave at
 //     whole-line granularity and produce strictly monotonic ULIDs.
 //   - Append-only semantics so the watcher can stream new lines by byte offset.
+//     Windows uses read/write access for tail repair; append_locked seeks to EOF
+//     under the exclusive lock immediately before its write.
 //
 // Failure modes and what we do about them:
 //
@@ -77,7 +79,10 @@ impl EventLog {
         let file = OpenOptions::new()
             .create(true)
             .read(true)
-            .append(true)
+            // Windows needs write access for tail repair; append_locked seeks to EOF under the lock.
+            .write(cfg!(windows))
+            .append(!cfg!(windows))
+            .truncate(false)
             .open(&path)?;
 
         file.lock_exclusive()?;
@@ -121,7 +126,9 @@ impl EventLog {
         let file = OpenOptions::new()
             .create(true)
             .read(true)
-            .append(true)
+            .write(cfg!(windows))
+            .append(!cfg!(windows))
+            .truncate(false)
             .open(&self.path)?;
 
         file.lock_exclusive()?;
@@ -148,7 +155,9 @@ impl EventLog {
         let file = OpenOptions::new()
             .create(true)
             .read(true)
-            .append(true)
+            .write(cfg!(windows))
+            .append(!cfg!(windows))
+            .truncate(false)
             .open(&self.path)
             .map_err(TryAppendError::from_io)?;
 
@@ -203,6 +212,8 @@ impl EventLog {
         line.push(b'\n');
 
         let pre_len = file.metadata()?.len();
+        #[cfg(windows)]
+        (&*file).seek(SeekFrom::End(0))?;
         let write_res = (&*file).write_all(&line);
         if let Err(e) = write_res {
             // Partial-write rollback: truncate back to what we saw before the
@@ -702,6 +713,32 @@ mod tests {
         let entries = log.read_from(0).unwrap();
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[1].event.id, next.id);
+    }
+
+    #[test]
+    fn append_repairs_a_tail_written_after_open() {
+        for nonblocking in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let log = EventLog::open(dir.path()).unwrap();
+            let first = log.append(draft_signal("ask_lead")).unwrap();
+            OpenOptions::new()
+                .append(true)
+                .open(log.path())
+                .unwrap()
+                .write_all(b"{\"id\":\"crashed")
+                .unwrap();
+
+            let next = if nonblocking {
+                log.try_append(draft_signal("runner_status")).unwrap()
+            } else {
+                log.append(draft_signal("runner_status")).unwrap()
+            };
+            let entries = log.read_from(0).unwrap();
+            assert_eq!(entries.len(), 2);
+            assert_eq!(entries[0].event.id, first.id);
+            assert_eq!(entries[1].event.id, next.id);
+            assert!(next.id > first.id);
+        }
     }
 
     #[test]
