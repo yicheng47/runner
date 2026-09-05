@@ -6790,3 +6790,50 @@ fn runtime_only_resume_keeps_live_recorded_path_and_reresolves_dead_path() {
     mgr.kill("runtime-live-path").unwrap();
     mgr.kill("runtime-dead-path").unwrap();
 }
+
+#[cfg(windows)]
+#[test]
+fn headless_fork_timeout_kills_batch_descendant_and_closes_pipes() {
+    let dir = tempfile::tempdir().unwrap();
+    let descendant_pid = dir.path().join("descendant.pid");
+    let command = dir.path().join("materializer.cmd");
+    std::fs::write(
+        &command,
+        "@echo off\r\npowershell.exe -NoProfile -NonInteractive -Command \"$PID | Set-Content -LiteralPath $env:RUNNER_FORK_TEST_PID; Start-Sleep -Seconds 30\"\r\n",
+    ).unwrap();
+    let spec = SpawnSpec {
+        session_id: ulid::Ulid::new().to_string(),
+        command: command.to_string_lossy().into_owned(),
+        args: Vec::new(),
+        env: BTreeMap::from([
+            (
+                "CODEX_HOME".into(),
+                dir.path().to_string_lossy().into_owned(),
+            ),
+            (
+                "RUNNER_FORK_TEST_PID".into(),
+                descendant_pid.to_string_lossy().into_owned(),
+            ),
+        ]),
+        cwd: Some(dir.path().to_path_buf()),
+        mission: false,
+        shim_dir: None,
+        bundled_bin_dir: None,
+        shell_path: None,
+        initial_size: None,
+    };
+    let plan = router::runtime::ForkPlan::Headless {
+        args: Vec::new(),
+        source_key: uuid::Uuid::new_v4().to_string(),
+    };
+    let started = Instant::now();
+    let error = super::spawn::run_headless_fork(&spec, &plan, Duration::from_secs(5)).unwrap_err();
+    assert!(error.to_string().contains("timed out"), "{error}");
+    assert!(started.elapsed() < Duration::from_secs(15));
+    let pid: i32 = std::fs::read_to_string(descendant_pid)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    assert!(!crate::session::process::process_exists(pid));
+}

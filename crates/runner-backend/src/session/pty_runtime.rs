@@ -1169,7 +1169,6 @@ mod tests {
     #[cfg(unix)]
     use super::super::process::distinct_foreground_process;
     use super::*;
-    #[cfg(unix)]
     use std::collections::BTreeMap;
 
     #[cfg(unix)]
@@ -1180,7 +1179,6 @@ mod tests {
         assert_eq!(distinct_foreground_process(Some(41), None), None);
     }
 
-    #[cfg(unix)]
     fn spec(session_id: &str, command: &str, args: &[&str]) -> SpawnSpec {
         let env: BTreeMap<String, String> = BTreeMap::new();
         SpawnSpec {
@@ -1794,5 +1792,123 @@ mod tests {
         assert!(process_exists(mismatched_pid));
         mismatched.kill().unwrap();
         mismatched.wait().unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn spawn_exit_seven_records_exit_code_windows() {
+        let rt = PtyRuntime::new();
+        let (session, stream) = rt
+            .spawn(spec("exit-seven", "cmd", &["/c", "exit 7"]))
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            if let Err(mpsc::RecvTimeoutError::Disconnected) =
+                stream.recv_timeout(Duration::from_millis(100))
+            {
+                break;
+            }
+        }
+        let status = rt.status(&session).unwrap().unwrap();
+        assert!(!status.alive);
+        assert_eq!(status.exit_code, Some(7));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn spawn_emits_idle_after_silence_and_busy_on_more_output_windows() {
+        let rt = PtyRuntime::new();
+        let (session, stream) = rt.spawn(spec(
+            "idle-windows", "cmd", &["/d", "/c", "echo first & timeout /t 2 /nobreak >nul & timeout /t 2 /nobreak >nul & echo second"],
+        )).unwrap();
+        let mut statuses = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(12);
+        while Instant::now() < deadline {
+            match stream.recv_timeout(Duration::from_millis(100)) {
+                Ok(RuntimeOutput::StatusTransition { state, source }) => {
+                    assert_eq!(source, "forwarder");
+                    statuses.push(state);
+                    if statuses
+                        .windows(2)
+                        .any(|w| w == [RunnerStatus::Idle, RunnerStatus::Busy])
+                    {
+                        break;
+                    }
+                }
+                Ok(RuntimeOutput::Stream(_)) | Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+        }
+        rt.stop(&session).unwrap();
+        assert!(
+            statuses
+                .windows(2)
+                .any(|w| w == [RunnerStatus::Idle, RunnerStatus::Busy]),
+            "got {statuses:?}"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn foreground_process_tracks_job_and_stop_reaps_child_windows() {
+        let rt = PtyRuntime::new();
+        let (session, _stream) = rt.spawn(spec("job-stop", "cmd", &["/d", "/q"])).unwrap();
+        assert_eq!(rt.has_foreground_process(&session).unwrap(), Some(false));
+        rt.send_bytes(&session, b"ping -n 30 127.0.0.1 >nul\r")
+            .unwrap();
+        assert!(poll_until(STOP_POLL, Duration::from_secs(5), || {
+            Ok((rt.has_foreground_process(&session)? == Some(true)).then_some(()))
+        })
+        .unwrap()
+        .is_some());
+        let pid = rt.status(&session).unwrap().unwrap().pid.unwrap();
+        rt.stop(&session).unwrap();
+        assert!(!process_exists(pid));
+        assert!(!rt.status(&session).unwrap().unwrap().alive);
+        assert!(poll_until(STOP_POLL, Duration::from_secs(5), || {
+            Ok((rt.has_foreground_process(&session)? == Some(false)).then_some(()))
+        })
+        .unwrap()
+        .is_some());
+        rt.stop(&session).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn stop_child_owned_by_reader_terminates_job_windows() {
+        let rt = PtyRuntime::new();
+        let (session, _stream) = rt.spawn(spec("reader-stop", "cmd", &["/d", "/q"])).unwrap();
+        let handle = lookup(&rt, &session.session_id).unwrap();
+        let mut child = handle.child.lock().unwrap().take().unwrap();
+        rt.stop(&session).unwrap();
+        assert!(child.try_wait().unwrap().is_some());
+        assert!(!process_exists(handle.pid.unwrap()));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn startup_demotes_rows_and_clears_pids_without_killing_windows() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = crate::db::open_pool(&dir.path().join("runner.db")).unwrap();
+        let pid = std::process::id();
+        pool.get().unwrap().execute(
+            "INSERT INTO sessions (id, status, pid, agent_runtime, agent_command) VALUES ('stale', 'running', ?1, 'test', 'runner-backend.exe')",
+            [pid],
+        ).unwrap();
+        assert_eq!(cleanup_stale_running_rows_on_startup(&pool).unwrap(), 1);
+        assert_eq!(cleanup_orphan_processes_on_startup(&pool).unwrap(), 0);
+        let (status, recorded_pid, stopped_at): (String, Option<i64>, Option<String>) = pool
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT status, pid, stopped_at FROM sessions WHERE id = 'stale'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(status, "stopped");
+        assert_eq!(recorded_pid, None);
+        assert!(stopped_at.is_some());
+        assert!(process_exists(pid as i32));
     }
 }
