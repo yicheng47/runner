@@ -17,15 +17,15 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use portable_pty::{
-    native_pty_system, Child, ChildKiller, CommandBuilder, ExitStatus, MasterPty, PtySize,
-};
+use portable_pty::{native_pty_system, Child, CommandBuilder, ExitStatus, MasterPty, PtySize};
+
+#[cfg(unix)]
+use portable_pty::ChildKiller;
 
 use super::launch;
-use super::process::{
-    kill_process, process_command_line, process_exists, reap_descendants,
-    wait_for_process_exit_until, ProcessTree,
-};
+use super::process::{kill_process, process_exists, ProcessTree};
+#[cfg(unix)]
+use super::process::{process_command_line, reap_descendants, wait_for_process_exit_until};
 use super::runtime::{
     OutputStream, RunnerStatus, RuntimeError, RuntimeOutput, RuntimeResult, RuntimeSession,
     SessionRuntime, SessionStatus, SpawnSpec,
@@ -45,12 +45,16 @@ const IDLE_MONITOR_POLL: Duration = Duration::from_millis(50);
 /// (SIGTERM to each tool shell, SIGKILL backstop at 1.5 s, SessionEnd hooks,
 /// force-exit at 5 s) so a stop never cuts that cleanup short; codex has no
 /// SIGHUP handler and exits at once, so the window costs nothing there.
-#[cfg(not(test))]
+#[cfg(all(unix, not(test)))]
 const HUP_GRACE: Duration = Duration::from_secs(6);
-#[cfg(test)]
+#[cfg(all(unix, test))]
 const HUP_GRACE: Duration = Duration::from_millis(250);
+#[cfg(unix)]
 const KILL_GRACE: Duration = Duration::from_millis(250);
+#[cfg(windows)]
+const WINDOWS_KILL_GRACE: Duration = Duration::from_secs(2);
 pub(super) const STOP_POLL: Duration = Duration::from_millis(10);
+#[cfg(unix)]
 const ORPHAN_SWEEP_CONFIRM: Duration = Duration::from_secs(1);
 /// Window right after a `resize` (SIGWINCH) during which repaint bytes
 /// from the child's TUI are not treated as fresh activity. Without this,
@@ -92,6 +96,7 @@ impl Default for PtyRuntime {
 struct SessionHandle {
     master: Mutex<Box<dyn MasterPty + Send>>,
     writer: Mutex<Box<dyn Write + Send>>,
+    #[cfg(unix)]
     killer: Mutex<Box<dyn ChildKiller + Send + Sync>>,
     /// `Arc<Mutex<Option<Box<dyn Child + Send + Sync>>>>` — the reader
     /// thread `try_wait`s on this once it observes EOF so the manager
@@ -188,7 +193,16 @@ impl SessionRuntime for PtyRuntime {
         let mut process_tree = match child.process_id().map(ProcessTree::adopt).transpose() {
             Ok(tree) => tree,
             Err(error) => {
+                #[cfg(unix)]
                 let _ = child.kill();
+                #[cfg(windows)]
+                if let Some(pid) = pid {
+                    kill_process(pid).map_err(|kill_error| {
+                        RuntimeError::Msg(format!(
+                            "adopt process tree: {error}; terminate child: {kill_error}"
+                        ))
+                    })?;
+                }
                 let _ = child.wait();
                 return Err(RuntimeError::Msg(format!("adopt process tree: {error}")));
             }
@@ -204,6 +218,7 @@ impl SessionRuntime for PtyRuntime {
             .master
             .take_writer()
             .map_err(|e| RuntimeError::Msg(format!("take_writer: {e}")))?;
+        #[cfg(unix)]
         let killer = child.clone_killer();
 
         let (tx, rx) = mpsc::channel::<RuntimeOutput>();
@@ -215,6 +230,7 @@ impl SessionRuntime for PtyRuntime {
         let handle = Arc::new(SessionHandle {
             master: Mutex::new(pair.master),
             writer: Mutex::new(writer),
+            #[cfg(unix)]
             killer: Mutex::new(killer),
             child: Arc::clone(&child_slot),
             exit_code: AtomicI32::new(EXIT_UNSET),
@@ -256,6 +272,7 @@ impl SessionRuntime for PtyRuntime {
         Ok((rt_session, stream))
     }
 
+    #[cfg(unix)]
     fn stop(&self, session: &RuntimeSession) -> RuntimeResult<()> {
         let handle = lookup(self, &session.session_id)?;
         let mut killer = handle.killer.lock().expect("killer poisoned");
@@ -305,6 +322,35 @@ impl SessionRuntime for PtyRuntime {
             reap_descendants(&session.session_id, &descendants);
         }
         result
+    }
+
+    #[cfg(windows)]
+    fn stop(&self, session: &RuntimeSession) -> RuntimeResult<()> {
+        let handle = lookup(self, &session.session_id)?;
+        let child = handle.child.lock().expect("child slot poisoned").take();
+        match child {
+            Some(mut child) => {
+                match stop_and_reap_child(
+                    &session.session_id,
+                    handle.process_tree.as_ref(),
+                    child.as_mut(),
+                ) {
+                    Ok(status) => {
+                        record_exit_status(&handle, status);
+                        Ok(())
+                    }
+                    Err(error) => {
+                        handle
+                            .child
+                            .lock()
+                            .expect("child slot poisoned")
+                            .replace(child);
+                        Err(error)
+                    }
+                }
+            }
+            None => stop_child_owned_by_reader(&session.session_id, &handle),
+        }
     }
 
     fn send_bytes(&self, session: &RuntimeSession, bytes: &[u8]) -> RuntimeResult<()> {
@@ -376,6 +422,7 @@ impl SessionRuntime for PtyRuntime {
     }
 }
 
+#[cfg(unix)]
 fn stop_and_reap_child(
     session_id: &str,
     process_tree: Option<&ProcessTree>,
@@ -444,6 +491,7 @@ fn stop_and_reap_child(
     )))
 }
 
+#[cfg(unix)]
 fn stop_child_owned_by_reader(
     session_id: &str,
     pid: Option<i32>,
@@ -507,6 +555,45 @@ fn stop_child_owned_by_reader(
             .map(|e| format!("; SIGKILL error: {e}"))
             .unwrap_or_default(),
     )))
+}
+
+#[cfg(windows)]
+fn terminate_session_job(
+    session_id: &str,
+    process_tree: Option<&ProcessTree>,
+) -> RuntimeResult<()> {
+    process_tree
+        .ok_or_else(|| RuntimeError::Msg(format!("session {session_id} has no process job")))?
+        .terminate()
+        .map_err(|e| RuntimeError::Msg(format!("terminate job {session_id}: {e}")))
+}
+
+#[cfg(windows)]
+fn stop_and_reap_child(
+    session_id: &str,
+    process_tree: Option<&ProcessTree>,
+    child: &mut dyn Child,
+) -> RuntimeResult<ExitStatus> {
+    terminate_session_job(session_id, process_tree)?;
+    poll_until(STOP_POLL, WINDOWS_KILL_GRACE, || {
+        child
+            .try_wait()
+            .map_err(|e| RuntimeError::Msg(format!("try_wait {session_id}: {e}")))
+    })?
+    .ok_or_else(|| RuntimeError::Msg(format!("session {session_id} survived job termination")))
+}
+
+#[cfg(windows)]
+fn stop_child_owned_by_reader(session_id: &str, handle: &SessionHandle) -> RuntimeResult<()> {
+    terminate_session_job(session_id, handle.process_tree.as_ref())?;
+    poll_until(STOP_POLL, WINDOWS_KILL_GRACE, || {
+        Ok(reader_reaped_child(handle, handle.pid).then_some(()))
+    })?
+    .ok_or_else(|| {
+        RuntimeError::Msg(format!(
+            "session {session_id} was not reaped after job termination"
+        ))
+    })
 }
 
 pub(super) fn poll_until<T>(
@@ -927,6 +1014,7 @@ pub fn cleanup_stale_running_rows_on_startup(
     Ok(updated)
 }
 
+#[cfg(unix)]
 pub fn cleanup_orphan_processes_on_startup(
     pool: &r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>,
 ) -> crate::error::Result<usize> {
@@ -1014,6 +1102,19 @@ pub fn cleanup_orphan_processes_on_startup(
     Ok(reaped)
 }
 
+// Job handles closed with the previous app; only stale database pids need clearing.
+#[cfg(windows)]
+pub fn cleanup_orphan_processes_on_startup(
+    pool: &r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>,
+) -> crate::error::Result<usize> {
+    pool.get()?.execute(
+        "UPDATE sessions SET pid = NULL WHERE status != 'running' AND pid IS NOT NULL",
+        [],
+    )?;
+    Ok(0)
+}
+
+#[cfg(unix)]
 fn clear_recorded_pid(conn: &rusqlite::Connection, session_id: &str, expected_pid: i64) {
     if let Err(error) = conn.execute(
         "UPDATE sessions
@@ -1029,6 +1130,7 @@ fn clear_recorded_pid(conn: &rusqlite::Connection, session_id: &str, expected_pi
     }
 }
 
+#[cfg(unix)]
 fn command_line_matches_recorded_agent(
     command_line: &str,
     runtime: Option<&str>,
@@ -1529,6 +1631,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn recorded_agent_identity_matches_command_path_or_runtime_default() {
         assert!(command_line_matches_recorded_agent(
             "claude --resume abc",
