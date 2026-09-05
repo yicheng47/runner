@@ -1066,6 +1066,7 @@ mod tests {
     #[cfg(unix)]
     use super::super::process::distinct_foreground_process;
     use super::*;
+    #[cfg(unix)]
     use std::collections::BTreeMap;
 
     #[cfg(unix)]
@@ -1076,6 +1077,7 @@ mod tests {
         assert_eq!(distinct_foreground_process(Some(41), None), None);
     }
 
+    #[cfg(unix)]
     fn spec(session_id: &str, command: &str, args: &[&str]) -> SpawnSpec {
         let env: BTreeMap<String, String> = BTreeMap::new();
         SpawnSpec {
@@ -1092,6 +1094,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     fn wait_for_command_identity(pid: i32, command: &str) {
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
@@ -1113,6 +1116,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     fn recorded_pid(
         pool: &r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>,
         session_id: &str,
@@ -1265,6 +1269,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn spawn_cat_pipes_bytes_back() {
         let rt = PtyRuntime::new();
         let (sess, stream) = rt.spawn(spec("test-cat", "/bin/cat", &[])).unwrap();
@@ -1294,6 +1299,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn spawn_emits_idle_after_silence_and_busy_on_more_output() {
         let rt = PtyRuntime::new();
         let (sess, stream) = rt
@@ -1334,6 +1340,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn spawn_exit_seven_records_exit_code() {
         let rt = PtyRuntime::new();
         let (sess, stream) = rt
@@ -1374,6 +1381,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn resize_succeeds_on_live_session() {
         let rt = PtyRuntime::new();
         let (sess, _stream) = rt
@@ -1396,7 +1404,34 @@ mod tests {
         assert_eq!(attempts, 3);
     }
 
+    #[cfg(unix)]
     #[test]
+    fn foreground_process_tracks_shell_jobs() {
+        let rt = PtyRuntime::new();
+        let (session, _stream) = rt
+            .spawn(spec("test-foreground", "/bin/sh", &["-i"]))
+            .unwrap();
+        let result = (|| -> RuntimeResult<()> {
+            for expected in [false, true, false] {
+                if expected {
+                    rt.send_bytes(&session, b"/bin/sleep 1\n")?;
+                }
+                poll_until(STOP_POLL, Duration::from_secs(5), || {
+                    Ok((rt.has_foreground_process(&session)? == Some(expected)).then_some(()))
+                })?
+                .ok_or_else(|| {
+                    RuntimeError::Msg(format!("foreground state never became {expected}"))
+                })?;
+            }
+            Ok(())
+        })();
+        let stopped = rt.stop(&session);
+        result.unwrap();
+        stopped.unwrap();
+    }
+
+    #[test]
+    #[cfg(unix)]
     fn stop_reaps_descendants_the_agent_left_behind() {
         // Models codex: the agent dies on SIGHUP at once, forwarding nothing
         // (zsh execs into `sleep`), and its child sits in its own process
@@ -1445,6 +1480,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn stop_sigkills_and_reaps_child_that_ignores_hup_and_term() {
         let rt = PtyRuntime::new();
         let (sess, stream) = rt
@@ -1571,6 +1607,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn startup_orphan_sweep_kills_only_matching_processes() {
         let dir = tempfile::tempdir().unwrap();
         let pool = crate::db::open_pool(&dir.path().join("runner.db")).unwrap();

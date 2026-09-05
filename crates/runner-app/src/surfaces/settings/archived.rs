@@ -729,6 +729,7 @@ fn format_timestamp(timestamp: DateTime<Utc>, now: DateTime<Local>) -> String {
     localized_timestamp(timestamp, same_day)
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn localized_timestamp_template(time_only: bool) -> &'static str {
     if time_only {
         "jm"

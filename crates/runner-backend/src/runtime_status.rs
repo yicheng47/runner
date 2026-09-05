@@ -467,8 +467,10 @@ fn log_runtime_paths(pool: &DbPool, shell_env: &SharedShellEnv) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
+    #[cfg(unix)]
     fn executable(dir: &Path, name: &str) -> PathBuf {
         let path = dir.join(name);
         std::fs::write(&path, "#!/bin/sh\n").unwrap();
@@ -548,6 +550,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn resolver_requires_regular_executable_file() {
         let dir = tempfile::tempdir().unwrap();
         let executable = executable(dir.path(), "codex");
@@ -565,6 +568,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn override_validation_rejects_relative_missing_directory_and_non_executable_paths() {
         let dir = tempfile::tempdir().unwrap();
         assert_eq!(
@@ -594,6 +598,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn effective_command_precedence_and_stale_override_fallthrough() {
         let pool = crate::db::open_in_memory().unwrap();
         let detected_dir = tempfile::tempdir().unwrap();
