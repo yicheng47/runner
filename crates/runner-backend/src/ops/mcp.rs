@@ -610,4 +610,33 @@ mod tests {
             "mcp_servers = \"bad\"\n"
         );
     }
+
+    #[cfg(windows)]
+    #[test]
+    fn agent_configs_preserve_windows_mcp_image_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let binary = PathBuf::from(r"C:\Users\Agent User\AppData\Roaming\com.wycstudios.runner")
+            .join("bin")
+            .join(crate::cli_install::MCP_DEST_BIN_NAME);
+        let binary = binary.to_str().unwrap();
+        assert_eq!(
+            binary,
+            r"C:\Users\Agent User\AppData\Roaming\com.wycstudios.runner\bin\runner-mcp.exe"
+        );
+        let claude_path = dir.path().join(".claude.json");
+        claude_code_write_at(&claude_path, true, binary).unwrap();
+        let json: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&claude_path).unwrap()).unwrap();
+        assert_eq!(json["mcpServers"]["runner"]["command"], binary);
+        let codex_path = dir.path().join(".codex").join("config.toml");
+        codex_write_at(&codex_path, true, binary).unwrap();
+        let toml: toml_edit::DocumentMut = std::fs::read_to_string(&codex_path)
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert_eq!(
+            toml["mcp_servers"]["runner"]["command"].as_str(),
+            Some(binary)
+        );
+    }
 }
