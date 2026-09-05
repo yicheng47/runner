@@ -73,6 +73,13 @@ pub(super) fn run_headless_fork(
     let mut child = command
         .spawn()
         .map_err(|error| Error::msg(format!("fork materialization spawn: {error}")))?;
+    #[cfg(windows)]
+    let process_tree =
+        crate::session::process::ProcessTree::adopt(child.id()).map_err(|error| {
+            let _ = child.kill();
+            let _ = child.wait();
+            Error::msg(format!("fork materialization adopt process tree: {error}"))
+        })?;
     let stdout = child
         .stdout
         .take()
@@ -89,6 +96,8 @@ pub(super) fn run_headless_fork(
         codex_sessions_root,
         source_key,
         timeout,
+        #[cfg(windows)]
+        process_tree,
     )
 }
 
@@ -99,6 +108,7 @@ fn run_thread_started_headless_fork(
     sessions_root: PathBuf,
     source_key: &str,
     timeout: Duration,
+    #[cfg(windows)] process_tree: crate::session::process::ProcessTree,
 ) -> Result<String> {
     let (key_tx, key_rx) = std::sync::mpsc::sync_channel(1);
     let stdout_reader = thread::spawn(move || {
@@ -189,8 +199,14 @@ fn run_thread_started_headless_fork(
     };
 
     if terminate {
+        #[cfg(unix)]
         crate::session::process::kill_headless_fork(&mut child);
+        #[cfg(windows)]
+        crate::session::process::kill_headless_fork(&mut child, &process_tree);
     }
+    // Close descendant pipe writers before joining readers, even if the launcher already exited.
+    #[cfg(windows)]
+    drop(process_tree);
     stdout_reader
         .join()
         .map_err(|_| Error::msg("fork materialization stdout reader panicked"))?;
