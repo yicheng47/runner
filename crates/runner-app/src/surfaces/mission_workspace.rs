@@ -830,7 +830,8 @@ impl MissionWorkspace {
         area: gpui::Div,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        area.id(id)
+        let area = area
+            .id(id)
             .window_control_area(WindowControlArea::Drag)
             .on_mouse_down_out(cx.listener(|this, _, _, _| {
                 this.titlebar_drag_armed = false;
@@ -846,7 +847,9 @@ impl MissionWorkspace {
                 cx.listener(|this, _, _, _| {
                     this.titlebar_drag_armed = true;
                 }),
-            )
+            );
+        #[cfg(target_os = "macos")]
+        let area = area
             .on_mouse_move(cx.listener(|this, _, window, _| {
                 if this.titlebar_drag_armed {
                     this.titlebar_drag_armed = false;
@@ -858,7 +861,8 @@ impl MissionWorkspace {
                     cx.stop_propagation();
                     window.titlebar_double_click();
                 }
-            })
+            });
+        area
     }
 
     fn leave_archived_mission(
@@ -5494,6 +5498,11 @@ impl MissionWorkspace {
             .child(
                 div()
                     .id("mission-rail-resize")
+                    .map(|handle| {
+                        #[cfg(windows)]
+                        let handle = handle.occlude();
+                        handle
+                    })
                     .absolute()
                     .left_0()
                     .top_0()
@@ -6124,6 +6133,11 @@ fn rail_view_button(
 ) -> gpui::Stateful<gpui::Div> {
     div()
         .id(id)
+        .map(|button| {
+            #[cfg(windows)]
+            let button = button.on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation());
+            button
+        })
         .group("mission-rail-view-button")
         .size(rems(28. / 16.))
         .flex()

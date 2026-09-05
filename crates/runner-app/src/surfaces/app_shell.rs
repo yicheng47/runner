@@ -567,6 +567,11 @@ impl NativeRoot {
     pub(crate) fn render_sidebar_resize_handle(&self, cx: &App) -> AnyElement {
         div()
             .id("sidebar-resize")
+            .map(|handle| {
+                #[cfg(windows)]
+                let handle = handle.occlude();
+                handle
+            })
             .absolute()
             .right_0()
             .top_0()
@@ -717,7 +722,8 @@ impl NativeRoot {
         area: gpui::Div,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        area.id(id)
+        let area = area
+            .id(id)
             .window_control_area(WindowControlArea::Drag)
             .on_mouse_down_out(cx.listener(|this, _, _, _| {
                 this.titlebar_drag_armed = false;
@@ -733,7 +739,9 @@ impl NativeRoot {
                 cx.listener(|this, _, _, _| {
                     this.titlebar_drag_armed = true;
                 }),
-            )
+            );
+        #[cfg(target_os = "macos")]
+        let area = area
             .on_mouse_move(cx.listener(|this, _, window, _| {
                 if this.titlebar_drag_armed {
                     this.titlebar_drag_armed = false;
@@ -745,7 +753,8 @@ impl NativeRoot {
                     cx.stop_propagation();
                     window.titlebar_double_click();
                 }
-            })
+            });
+        area
     }
 
     fn render_toast(&self, cx: &mut Context<Self>) -> Option<AnyElement> {

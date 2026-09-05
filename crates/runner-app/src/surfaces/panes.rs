@@ -1102,6 +1102,11 @@ impl NativeRoot {
             .child(
                 div()
                     .id("chat-panel-resize")
+                    .map(|handle| {
+                        #[cfg(windows)]
+                        let handle = handle.occlude();
+                        handle
+                    })
                     .absolute()
                     .left_0()
                     .top_0()

@@ -234,6 +234,12 @@ impl RenderOnce for SessionControl {
             .children(icon_element)
             .when(!header, |control| control.child(label));
         if !disabled {
+            #[cfg(windows)]
+            {
+                control = control.on_mouse_down(gpui::MouseButton::Left, |_, _, cx| {
+                    cx.stop_propagation();
+                });
+            }
             control = control.hover(move |control| match self.kind {
                 SessionControlKind::Resume if header => control
                     .bg(theme::with_alpha(theme::accent(), 0.1))
