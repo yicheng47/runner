@@ -98,6 +98,14 @@ pub fn status_list(
     let overrides = db::runtime_overrides(pool)?;
     let path = direct_chat_path(&shell_env);
     let home = runner_core::app_paths::home_dir();
+    let result = discovery.result.as_ref();
+    let failed = result.is_some_and(|result| {
+        #[cfg(windows)]
+        if result.outcome == DiscoveryOutcome::NoShell {
+            return false;
+        }
+        result.outcome != DiscoveryOutcome::Ok
+    });
 
     let runtimes = runtime_definitions()
         .iter()
@@ -135,11 +143,7 @@ pub fn status_list(
                 RuntimeRowState::Override
             } else if discovery.checking {
                 RuntimeRowState::Checking
-            } else if discovery
-                .result
-                .as_ref()
-                .is_some_and(|result| result.outcome != DiscoveryOutcome::Ok)
-            {
+            } else if failed {
                 RuntimeRowState::ProbeTimedOut
             } else if detected_path.is_some() {
                 RuntimeRowState::Detected
@@ -162,8 +166,6 @@ pub fn status_list(
         })
         .collect();
 
-    let result = discovery.result.as_ref();
-    let failed = result.is_some_and(|result| result.outcome != DiscoveryOutcome::Ok);
     Ok(RuntimeStatusResponse {
         shell: ShellDiscoveryStatus {
             shell: result
@@ -515,6 +517,26 @@ mod tests {
                 ("trae", "TRAE CLI", "traecli"),
             ],
         );
+    }
+
+    #[test]
+    fn no_shell_classification_preserves_inherited_windows_environment() {
+        let pool = crate::db::open_in_memory().unwrap();
+        let shell_env = Arc::new(RwLock::new(LoginShellEnv::default()));
+        let discovery = completed_discovery();
+        discovery.write().unwrap().last_known_good_captured_at = Some("saved".into());
+        let success = status_list(&pool, &shell_env, &discovery).unwrap();
+        discovery.write().unwrap().result.as_mut().unwrap().outcome = DiscoveryOutcome::NoShell;
+        let no_shell = status_list(&pool, &shell_env, &discovery).unwrap();
+        assert_eq!(no_shell.shell.using_last_known_good, !cfg!(windows));
+        for (expected, actual) in success.runtimes.iter().zip(&no_shell.runtimes) {
+            #[cfg(windows)]
+            assert_eq!(actual.state, expected.state);
+            #[cfg(not(windows))]
+            assert_eq!(actual.state, RuntimeRowState::ProbeTimedOut);
+            assert_eq!(actual.detected_path, expected.detected_path);
+            assert_eq!(actual.effective_command, expected.effective_command);
+        }
     }
 
     #[cfg(windows)]

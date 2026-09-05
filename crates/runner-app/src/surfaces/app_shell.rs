@@ -6,7 +6,9 @@ use crate::*;
 
 const TITLEBAR_HEIGHT: f32 = 44.;
 pub(crate) const TITLEBAR_DRAG_HEIGHT: f32 = 28.;
+#[cfg(target_os = "macos")]
 pub(crate) const SIDEBAR_TOGGLE_GLYPH_X: f32 = 94.3;
+#[cfg(target_os = "macos")]
 pub(crate) const SIDEBAR_TOGGLE_GLYPH_INSET: f32 = 6.3;
 const SIDEBAR_TRANSITION_MS: u64 = 200;
 // Deliberately differs from main's inherited 19.5px line box to align both footer dividers.
@@ -266,12 +268,16 @@ impl NativeRoot {
         }
         let preview =
             self.sidebar_collapsed && (self.sidebar_preview_open || self.sidebar_preview_peeking);
+        #[cfg(target_os = "macos")]
         let fullscreen = window.is_fullscreen();
+        #[cfg(target_os = "macos")]
         let titlebar_padding = if fullscreen {
             8. * self.settings(cx).app_zoom
         } else {
             SIDEBAR_TOGGLE_GLYPH_X - SIDEBAR_TOGGLE_GLYPH_INSET * self.settings(cx).app_zoom
         };
+        #[cfg(not(target_os = "macos"))]
+        let titlebar_padding = 8. * self.settings(cx).app_zoom;
         let panel_path = if self.sidebar_collapsed {
             "panel-left-hidden.svg"
         } else {
@@ -753,9 +759,17 @@ impl NativeRoot {
     }
 
     pub(crate) fn workspace_titlebar_padding(&self, window: &Window, cx: &App) -> f32 {
-        if self.sidebar_collapsed && !window.is_fullscreen() {
-            SIDEBAR_TOGGLE_GLYPH_X - SIDEBAR_TOGGLE_GLYPH_INSET * self.settings(cx).app_zoom
-        } else {
+        #[cfg(target_os = "macos")]
+        {
+            if self.sidebar_collapsed && !window.is_fullscreen() {
+                SIDEBAR_TOGGLE_GLYPH_X - SIDEBAR_TOGGLE_GLYPH_INSET * self.settings(cx).app_zoom
+            } else {
+                16. * self.settings(cx).app_zoom
+            }
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = window;
             16. * self.settings(cx).app_zoom
         }
     }

@@ -64,11 +64,11 @@ Three places assume a Unix domain socket: the app listener in `mcp/mod.rs` and `
 
 ### 5. Pipeline — what "a friend can download directly" needs
 
-The current `nightly` release is a **draft**: invisible on the releases page and fetchable only with `gh release download` by someone with repo access. A friend cannot download it. The Windows nightly must be a **published pre-release** on its own rolling tag, `nightly-windows`, so the macOS draft policy is untouched.
+The current `nightly` release is a **draft**: invisible on the releases page and fetchable only with `gh release download` by someone with repo access. A friend cannot download it. The Windows nightly must be a **published pre-release** on its own rolling tag, `nightly-win`, so the macOS draft policy is untouched.
 
 - `nightly.yml` gains a `windows-latest` job behind a `platform` dispatch input: `cargo build --release -p runner-app -p runner-cli` for `x86_64-pc-windows-msvc`, stage `Runner.exe`, `runner-agent-cli.exe`, and `runner-mcp.exe` side by side (`cli_install` looks next to the running exe), zip as `Runner-Nightly-<version>.<stamp>-x64.zip`, keep the last ten.
-- The release step mirrors the macOS one with the draft flag inverted: `gh release create nightly-windows --target nightly-windows --prerelease` on first run, `gh release edit nightly-windows --prerelease --draft=false` after, `gh release upload … --clobber`. Because the tag is public, its verify step asserts the opposite of the macOS check: `isPrerelease` is true, `isDraft` is false, and an unauthenticated `curl --head` of `https://github.com/yicheng47/runner/releases/download/nightly-windows/<zip>` succeeds. The friend's download link is that URL, or the releases page where pre-releases are listed with the badge.
-- The `nightly` skill's check and stamp steps get a `windows` variant that reads `nightly-windows` instead.
+- The release step mirrors the macOS one with the draft flag inverted: `gh release create nightly-win --target nightly-windows --prerelease` on first run, `gh release edit nightly-win --prerelease --draft=false` after, `gh release upload … --clobber`. Because the tag is public, its verify step asserts the opposite of the macOS check: `isPrerelease` is true, `isDraft` is false, and an unauthenticated `curl --head` of `https://github.com/yicheng47/runner/releases/download/nightly-win/<zip>` succeeds. The friend's download link is that URL, or the releases page where pre-releases are listed with the badge.
+- The `nightly` skill's check and stamp steps get a `windows` variant that reads `nightly-win` instead.
 - The build identity step calls `script/bundle-mac --print-version`; factor the version read into something the Windows job can run (`cargo metadata` is enough).
 - Unsigned. SmartScreen will show "Windows protected your PC"; the release notes say "More info → Run anyway". Signing (Azure Trusted Signing or an OV certificate) is a production decision, not a nightly blocker.
 - `ci.yaml` gains a `windows-latest` job running `cargo check` and `cargo clippy` for the workspace, **not** a required check at first. Fourteen test files spawn `/bin/sh`-style commands; they get `cfg(unix)` gates rather than Windows equivalents, and `cargo test` on Windows runs whatever is left.
@@ -81,7 +81,7 @@ The current `nightly` release is a **draft**: invisible on the releases page and
 - **Named pipe, not TCP.** It is the platform's equivalent of the Unix socket, per-user by default, and needs no port or token file. rmcp does not care which.
 - **Windows Terminal keymap conventions.** Ctrl for app chords, Ctrl+Shift for terminal copy and paste, Ctrl+C untouched. Anything else surprises the target user.
 - **Portable zip, standard title bar, no icon.** Every item that is cosmetic or an installer concern stays out until someone other than Jason has run the nightly.
-- **Separate public pre-release tag.** `nightly-windows` is a published pre-release, never a draft — confirmed by Jason 2026-09-04. `nightly` stays a draft; changing the macOS nightly's visibility is a different decision and not needed for this one.
+- **Separate public pre-release tag.** `nightly-win` is a published pre-release, never a draft — confirmed by Jason 2026-09-04; renamed from the planned `nightly-windows` tag on 2026-09-05 to avoid colliding with the long-lived branch of that name. `nightly` stays a draft; changing the macOS nightly's visibility is a different decision and not needed for this one.
 
 ## Phases
 

@@ -2,17 +2,26 @@ name: Nightly
 
 on:
   workflow_dispatch:
+    inputs:
+      platform:
+        description: Platform to build
+        type: choice
+        default: macos
+        options:
+          - macos
+          - windows
 
 permissions:
   actions: read
   contents: write
 
 concurrency:
-  group: nightly
+  group: ${{ inputs.platform == 'windows' && 'nightly-windows' || 'nightly' }}
   cancel-in-progress: true
 
 jobs:
   build-macos:
+    if: inputs.platform == 'macos'
     runs-on: macos-15
     timeout-minutes: 90
     env:
@@ -24,10 +33,10 @@ jobs:
 
       - name: Compute build identity once
         id: build
-        run: |
+        run: &build-identity |
           stamp=$(date -u +%Y%m%d.%H%M)
           sha=$(git rev-parse --short=7 HEAD)
-          version=$(./script/bundle-mac --print-version)
+          version=$(cargo metadata --format-version 1 --no-deps | jq -r '.packages[] | select(.name == "runner-app") | .version')
           echo "stamp=$stamp" >> "$GITHUB_OUTPUT"
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
           echo "short_version=$version.$stamp" >> "$GITHUB_OUTPUT"
@@ -121,3 +130,90 @@ jobs:
             echo "error: nightly assets are publicly reachable without authentication" >&2
             exit 1
           fi
+
+  nightly-windows:
+    if: inputs.platform == 'windows'
+    runs-on: windows-latest
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Compute build identity once
+        id: build
+        run: *build-identity
+
+      - name: Install Rust toolchain
+        run: |
+          rustup show active-toolchain
+          rustup target add x86_64-pc-windows-msvc
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Build Windows nightly
+        env:
+          RUNNER_BUILD_STAMP: ${{ steps.build.outputs.stamp }}
+          RUNNER_BUILD_SHA: ${{ steps.build.outputs.sha }}
+        run: cargo build --release -p runner-app -p runner-cli --target x86_64-pc-windows-msvc
+
+      - name: Stage and zip Windows nightly
+        shell: pwsh
+        run: |
+          $release = "target/x86_64-pc-windows-msvc/release"
+          $name = "Runner-Nightly-${{ steps.build.outputs.short_version }}-x64"
+          $stage = New-Item -ItemType Directory -Path "$release/$name"
+          Copy-Item "$release/Runner.exe", "$release/runner-agent-cli.exe", "$release/runner-mcp.exe" -Destination $stage
+          Compress-Archive -Path $stage -DestinationPath "$release/$name.zip"
+
+      - name: Require CI green for this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ci_run_id=""
+          for _ in {1..60}; do
+            ci_run_id=$(gh run list --commit "$GITHUB_SHA" --workflow ci.yaml --limit 1 --json databaseId --jq '.[0].databaseId // empty')
+            if [[ -n "$ci_run_id" ]]; then
+              break
+            fi
+            sleep 10
+          done
+          test -n "$ci_run_id" || { echo "error: no CI run found for $GITHUB_SHA" >&2; exit 1; }
+          gh run watch "$ci_run_id" --exit-status
+
+      - name: Publish the rolling Windows prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          new_zip="target/x86_64-pc-windows-msvc/release/Runner-Nightly-${{ steps.build.outputs.short_version }}-x64.zip"
+          notes="Extract the zip before running Runner.exe so Runner.exe, runner-agent-cli.exe, and runner-mcp.exe stay together. This build is unsigned. If SmartScreen shows Windows protected your PC, choose More info → Run anyway."
+          if gh release view nightly-win >/dev/null 2>&1; then
+            gh release edit nightly-win --title "Runner Nightly (Windows)" --notes "$notes" --prerelease --draft=false
+          else
+            gh release create nightly-win --target nightly-windows --prerelease --title "Runner Nightly (Windows)" --notes "$notes"
+          fi
+          gh release upload nightly-win "$new_zip" --clobber
+          gh release view nightly-win --json assets --jq '.assets[].name' | while IFS= read -r name; do
+            if [[ "$name" =~ ([0-9]{8})\.([0-9]{4})-x64\.zip$ ]]; then
+              printf '%s.%s\t%s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "$name"
+            fi
+          done | sort -r | sed -n '11,$p' | cut -f2- | while IFS= read -r stale; do
+            gh release delete-asset nightly-win "$stale" --yes
+          done
+          echo "NEW_ZIP_NAME=${new_zip##*/}" >> "$GITHUB_ENV"
+
+      - name: Verify the Windows prerelease is public
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          is_prerelease=$(gh release view nightly-win --json isPrerelease --jq .isPrerelease)
+          is_draft=$(gh release view nightly-win --json isDraft --jq .isDraft)
+          test "$is_prerelease" = "true" || { echo "error: Windows nightly must be a prerelease" >&2; exit 1; }
+          test "$is_draft" = "false" || { echo "error: Windows nightly must be published" >&2; exit 1; }
+          curl --silent --fail --head --location "https://github.com/yicheng47/runner/releases/download/nightly-win/$NEW_ZIP_NAME" >/dev/null
