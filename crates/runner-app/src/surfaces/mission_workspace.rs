@@ -5790,15 +5790,26 @@ impl MissionWorkspace {
 
     fn reveal_mission_cwd(&mut self, cwd: String, cx: &mut Context<Self>) {
         let task = cx.background_spawn(async move {
-            let status = Command::new("open")
-                .arg("-R")
-                .arg(cwd)
-                .status()
-                .map_err(|error| error.to_string())?;
-            if status.success() {
-                Ok(())
-            } else {
-                Err(format!("Finder exited with status {status}"))
+            #[cfg(target_os = "macos")]
+            {
+                let status = Command::new("open")
+                    .arg("-R")
+                    .arg(cwd)
+                    .status()
+                    .map_err(|error| error.to_string())?;
+                if status.success() {
+                    Ok(())
+                } else {
+                    Err(format!("Finder exited with status {status}"))
+                }
+            }
+            #[cfg(windows)]
+            {
+                Command::new("explorer.exe")
+                    .arg(format!("/select,{cwd}"))
+                    .spawn()
+                    .map(|_| ())
+                    .map_err(|error| error.to_string())
             }
         });
         cx.spawn(async move |weak, cx| {
@@ -5885,9 +5896,13 @@ impl MissionWorkspace {
                 },
                 |cwd| {
                     let reveal = cwd.clone();
+                    #[cfg(target_os = "macos")]
+                    let reveal_label = "Reveal in Finder";
+                    #[cfg(windows)]
+                    let reveal_label = "Reveal in Explorer";
                     Tooltip::new(
                         "reveal-mission-cwd-tooltip",
-                        "Reveal in Finder",
+                        reveal_label,
                         div()
                             .id("reveal-mission-cwd")
                             .w_full()
