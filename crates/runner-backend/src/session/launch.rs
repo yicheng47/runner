@@ -64,20 +64,26 @@ pub fn compose_path(
         push(bin.display().to_string());
     }
     if let Some(sp) = shell_path {
-        for entry in sp.split(':') {
-            push(entry.to_string());
+        for entry in std::env::split_paths(sp) {
+            push(entry.to_string_lossy().into_owned());
         }
     }
     for fallback in fallback_cli_dirs(home) {
         push(fallback);
     }
     if let Some(pp) = process_path {
-        for entry in pp.split(':') {
-            push(entry.to_string());
+        for entry in std::env::split_paths(pp) {
+            push(entry.to_string_lossy().into_owned());
         }
     }
 
-    parts.join(":")
+    // The old Unix join treated literal colons in supplied directories as PATH separators.
+    #[cfg(unix)]
+    let parts = parts.iter().flat_map(std::env::split_paths);
+    std::env::join_paths(parts)
+        .expect("PATH entries must not contain the platform separator")
+        .to_string_lossy()
+        .into_owned()
 }
 
 fn fallback_cli_dirs(home: Option<&Path>) -> Vec<String> {
@@ -233,9 +239,17 @@ mod tests {
         let path = compose_path(
             None,
             None,
-            Some("/opt/homebrew/bin:/usr/local/bin"),
+            Some(
+                &std::env::join_paths(["/opt/homebrew/bin", "/usr/local/bin"])
+                    .unwrap()
+                    .to_string_lossy(),
+            ),
             Some(Path::new("/Users/test")),
-            Some("/usr/bin:/bin"),
+            Some(
+                &std::env::join_paths(["/usr/bin", "/bin"])
+                    .unwrap()
+                    .to_string_lossy(),
+            ),
         );
         // Doesn't contain the per-mission shim or "/runner/bin"
         // bundled-bin path shapes — neither was passed in. Version
@@ -254,17 +268,24 @@ mod tests {
             Some(&bundled),
             Some("/opt/homebrew/bin"),
             Some(Path::new("/Users/test")),
-            Some("/usr/bin:/bin"),
+            Some(
+                &std::env::join_paths(["/usr/bin", "/bin"])
+                    .unwrap()
+                    .to_string_lossy(),
+            ),
         );
-        let parts: Vec<&str> = path.split(':').collect();
+        let parts: Vec<_> = std::env::split_paths(&path).collect();
         let shim_idx = parts
             .iter()
-            .position(|p| p == &"/data/shims/build/bin")
+            .position(|p| p == Path::new("/data/shims/build/bin"))
             .unwrap();
-        let bundled_idx = parts.iter().position(|p| p == &"/data/runner/bin").unwrap();
+        let bundled_idx = parts
+            .iter()
+            .position(|p| p == Path::new("/data/runner/bin"))
+            .unwrap();
         let homebrew_idx = parts
             .iter()
-            .position(|p| p == &"/opt/homebrew/bin")
+            .position(|p| p == Path::new("/opt/homebrew/bin"))
             .unwrap();
         assert!(
             shim_idx < bundled_idx,
@@ -328,23 +349,32 @@ mod tests {
         let path = compose_path(
             None,
             None,
-            Some("/shell/bin:/opt/homebrew/bin"),
+            Some(
+                &std::env::join_paths(["/shell/bin", "/opt/homebrew/bin"])
+                    .unwrap()
+                    .to_string_lossy(),
+            ),
             Some(home.path()),
             Some("/usr/bin"),
         );
-        let parts = path.split(':').collect::<Vec<_>>();
-        assert_eq!(parts[0], "/shell/bin");
+        let parts = std::env::split_paths(&path).collect::<Vec<_>>();
+        assert_eq!(parts[0], Path::new("/shell/bin"));
         assert_eq!(
             parts
                 .iter()
-                .filter(|entry| **entry == "/opt/homebrew/bin")
+                .filter(|entry| entry.as_path() == Path::new("/opt/homebrew/bin"))
                 .count(),
             1
         );
         let nvm = parts
             .iter()
-            .filter(|entry| entry.contains(".nvm/versions/node"))
-            .copied()
+            .filter(|entry| {
+                entry
+                    .to_string_lossy()
+                    .replace('\\', "/")
+                    .contains(".nvm/versions/node")
+            })
+            .map(|entry| entry.to_string_lossy())
             .collect::<Vec<_>>();
         assert!(nvm[0].contains("v20.12.1"), "{nvm:?}");
         assert!(nvm[1].contains("v18.20.0"), "{nvm:?}");
@@ -359,15 +389,54 @@ mod tests {
         let path = compose_path(
             None,
             None,
-            Some("/opt/homebrew/bin:/usr/local/bin"),
+            Some(
+                &std::env::join_paths(["/opt/homebrew/bin", "/usr/local/bin"])
+                    .unwrap()
+                    .to_string_lossy(),
+            ),
             Some(Path::new("/h")),
             Some("/usr/bin"),
         );
-        let parts: Vec<&str> = path.split(':').collect();
-        let homebrew_count = parts.iter().filter(|p| **p == "/opt/homebrew/bin").count();
-        let local_count = parts.iter().filter(|p| **p == "/usr/local/bin").count();
+        let parts: Vec<_> = std::env::split_paths(&path).collect();
+        let homebrew_count = parts
+            .iter()
+            .filter(|p| p.as_path() == Path::new("/opt/homebrew/bin"))
+            .count();
+        let local_count = parts
+            .iter()
+            .filter(|p| p.as_path() == Path::new("/usr/local/bin"))
+            .count();
         assert_eq!(homebrew_count, 1, "homebrew bin should appear once: {path}");
         assert_eq!(local_count, 1, "local bin should appear once: {path}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn compose_path_keeps_literal_colons_as_unix_path_separators() {
+        let path = compose_path(Some(Path::new("/shim:directory")), None, None, None, None);
+        assert!(path.starts_with("/shim:directory:"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn compose_path_keeps_drive_letters_and_quoted_directories() {
+        let shell_path = std::env::join_paths([r"C:\Tools", r"D:\Tools;extra"]).unwrap();
+        let path = compose_path(
+            Some(Path::new(r"C:\Runner\shim")),
+            None,
+            Some(shell_path.to_str().unwrap()),
+            None,
+            None,
+        );
+        let parts = std::env::split_paths(&path).take(3).collect::<Vec<_>>();
+        assert_eq!(
+            parts,
+            [
+                Path::new(r"C:\Runner\shim"),
+                Path::new(r"C:\Tools"),
+                Path::new(r"D:\Tools;extra")
+            ]
+        );
     }
 
     #[test]
@@ -375,9 +444,10 @@ mod tests {
         // Empty shell_path / process_path values shouldn't produce
         // a `::` segment.
         let path = compose_path(None, None, Some(""), Some(Path::new("/h")), Some(""));
-        assert!(!path.contains("::"), "path = {path}");
-        assert!(!path.starts_with(':'), "path = {path}");
-        assert!(!path.ends_with(':'), "path = {path}");
+        assert!(
+            std::env::split_paths(&path).all(|part| !part.as_os_str().is_empty()),
+            "path = {path}"
+        );
     }
 
     #[test]
