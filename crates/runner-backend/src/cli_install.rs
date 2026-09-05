@@ -130,6 +130,8 @@ pub fn install_session_runner_shim(
     let real_runner = app_data_dir.join("bin").join(AGENT_DEST_BIN_NAME);
 
     let event_log_str = event_log.to_string_lossy();
+    #[cfg(windows)]
+    let real_runner = PathBuf::from(real_runner.to_string_lossy().replace('\\', "/"));
     let mut script = String::new();
     script.push_str("#!/bin/sh\n");
     script
@@ -162,7 +164,56 @@ pub fn install_session_runner_shim(
         perms.set_mode(0o755);
         std::fs::set_permissions(&shim_path, perms)?;
     }
+    #[cfg(windows)]
+    {
+        let cmd_script = windows_cmd_shim(
+            &app_data_dir.join("bin").join(AGENT_DEST_BIN_NAME),
+            crew_id,
+            mission_id,
+            handle,
+            &event_log_str,
+            mission_cwd,
+        )?;
+        let tmp = tempfile::NamedTempFile::new_in(&shim_dir)?;
+        std::fs::write(tmp.path(), cmd_script.as_bytes())?;
+        tmp.persist(shim_dir.join("runner.cmd"))
+            .map_err(|e| Error::Io(e.error))?;
+    }
     Ok(shim_dir)
+}
+
+#[cfg(windows)]
+fn windows_cmd_shim(
+    real_runner: &Path,
+    crew_id: &str,
+    mission_id: &str,
+    handle: &str,
+    event_log: &str,
+    mission_cwd: Option<&str>,
+) -> Result<String> {
+    let real_runner = real_runner.to_string_lossy();
+    let mut script = String::from("@echo off\r\nsetlocal\r\n");
+    for (name, value) in [
+        ("RUNNER_CREW_ID", Some(crew_id)),
+        ("RUNNER_MISSION_ID", Some(mission_id)),
+        ("RUNNER_HANDLE", Some(handle)),
+        ("RUNNER_EVENT_LOG", Some(event_log)),
+        ("MISSION_CWD", mission_cwd),
+    ] {
+        if let Some(value) = value {
+            if value.contains('"') {
+                return Err(Error::msg(format!("{name} contains a quote")));
+            }
+            let value = value.replace('%', "%%");
+            script.push_str(&format!("set \"{name}={value}\"\r\n"));
+        }
+    }
+    if real_runner.contains('"') {
+        return Err(Error::msg("runner path contains a quote"));
+    }
+    let real_runner = real_runner.replace('%', "%%");
+    script.push_str(&format!("\"{real_runner}\" %*\r\n"));
+    Ok(script)
 }
 
 /// Escape a string for inside single-quoted POSIX shell. Single
@@ -296,12 +347,24 @@ mod tests {
             dir_a, dir_b,
             "shim dirs for two missions on the same crew + slot must differ",
         );
+        #[cfg(unix)]
         assert!(
             dir_a.to_string_lossy().contains("/m-a/"),
             "dir_a must include mission_id m-a: {dir_a:?}",
         );
+        #[cfg(windows)]
+        assert!(
+            dir_a.components().any(|part| part.as_os_str() == "m-a"),
+            "dir_a must include mission_id m-a: {dir_a:?}",
+        );
+        #[cfg(unix)]
         assert!(
             dir_b.to_string_lossy().contains("/m-b/"),
+            "dir_b must include mission_id m-b: {dir_b:?}",
+        );
+        #[cfg(windows)]
+        assert!(
+            dir_b.components().any(|part| part.as_os_str() == "m-b"),
             "dir_b must include mission_id m-b: {dir_b:?}",
         );
 
@@ -318,5 +381,149 @@ mod tests {
             script_b.contains("export RUNNER_MISSION_ID='m-b'"),
             "shim_b must export the m-b mission id: {script_b}",
         );
+    }
+
+    #[test]
+    fn session_shim_has_exact_shell_contents() {
+        let app_data = tempfile::tempdir().unwrap();
+        let event_log = app_data.path().join("events.ndjson");
+        let shim_dir = install_session_runner_shim(
+            app_data.path(),
+            "crew-1",
+            "mission-1",
+            "coder",
+            &event_log,
+            Some("a'b"),
+        )
+        .unwrap();
+        let runner_path = app_data.path().join("bin").join(AGENT_DEST_BIN_NAME);
+        let runner_path = runner_path.to_string_lossy();
+        #[cfg(windows)]
+        let runner_path = runner_path.replace('\\', "/");
+        assert_eq!(
+            fs::read_to_string(shim_dir.join("runner")).unwrap(),
+            format!(
+                "#!/bin/sh\n# Auto-generated session shim. See cli_install::install_session_runner_shim.\nexport RUNNER_CREW_ID='crew-1'\nexport RUNNER_MISSION_ID='mission-1'\nexport RUNNER_HANDLE='coder'\nexport RUNNER_EVENT_LOG='{}'\nexport MISSION_CWD='a'\\''b'\nexec '{}' \"$@\"\n",
+                event_log.display(), runner_path,
+            ),
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(shim_dir.join("runner"))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o755
+            );
+            assert!(!shim_dir.join("runner.cmd").exists());
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn session_shim_has_exact_cmd_contents_and_refreshes_both_files() {
+        let app_data = tempfile::tempdir().unwrap();
+        let event_log = app_data.path().join("events.ndjson");
+        for cwd in [Some(r"C:\Agent Tools\repo"), None] {
+            let shim_dir = install_session_runner_shim(
+                app_data.path(),
+                "crew-1",
+                "mission-1",
+                "coder",
+                &event_log,
+                cwd,
+            )
+            .unwrap();
+            let cwd_line = cwd
+                .map(|cwd| format!("set \"MISSION_CWD={cwd}\"\r\n"))
+                .unwrap_or_default();
+            assert_eq!(
+                fs::read_to_string(shim_dir.join("runner.cmd")).unwrap(),
+                format!(
+                    "@echo off\r\nsetlocal\r\nset \"RUNNER_CREW_ID=crew-1\"\r\nset \"RUNNER_MISSION_ID=mission-1\"\r\nset \"RUNNER_HANDLE=coder\"\r\nset \"RUNNER_EVENT_LOG={}\"\r\n{cwd_line}\"{}\" %*\r\n",
+                    event_log.display(), app_data.path().join("bin").join(AGENT_DEST_BIN_NAME).display(),
+                ),
+            );
+            let shell = fs::read_to_string(shim_dir.join("runner")).unwrap();
+            assert_eq!(shell.contains("export MISSION_CWD="), cwd.is_some());
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn cmd_shim_rejects_quotes_in_every_value() {
+        let bad = "bad\"value";
+        for index in 0..6 {
+            let mut values = ["runner.exe", "crew", "mission", "coder", "events", "cwd"];
+            values[index] = bad;
+            assert!(
+                windows_cmd_shim(
+                    Path::new(values[0]),
+                    values[1],
+                    values[2],
+                    values[3],
+                    values[4],
+                    Some(values[5]),
+                )
+                .is_err(),
+                "accepted {bad:?} at index {index}"
+            );
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn cmd_shim_escapes_percent_in_every_value_and_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        let runner = dir.path().join("agent%helper.cmd");
+        fs::write(&runner, "@echo off\r\necho %RUNNER_CREW_ID%\r\necho %RUNNER_MISSION_ID%\r\necho %RUNNER_HANDLE%\r\necho %RUNNER_EVENT_LOG%\r\necho %MISSION_CWD%\r\n").unwrap();
+        let value = r"C:\a%b\repo";
+        let script = windows_cmd_shim(&runner, value, value, value, value, Some(value)).unwrap();
+        for name in [
+            "RUNNER_CREW_ID",
+            "RUNNER_MISSION_ID",
+            "RUNNER_HANDLE",
+            "RUNNER_EVENT_LOG",
+            "MISSION_CWD",
+        ] {
+            assert!(script.contains(&format!("set \"{name}=C:\\a%%b\\repo\"\r\n")));
+        }
+        assert!(script.contains("agent%%helper.cmd\" %*"));
+        let shim = dir.path().join("runner.cmd");
+        fs::write(&shim, script).unwrap();
+        let output = std::process::Command::new(&shim).output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap(),
+            format!("{value}\r\n").repeat(5)
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn cmd_shim_error_preserves_the_shell_shim() {
+        let app_data = tempfile::tempdir().unwrap();
+        let event_log = app_data.path().join("events.ndjson");
+        let error = install_session_runner_shim(
+            app_data.path(),
+            "crew",
+            "mission",
+            "coder",
+            &event_log,
+            Some("bad\"cwd"),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("quote"));
+        let shim_dir = app_data.path().join("missions/mission/shims/coder/bin");
+        let script = fs::read_to_string(shim_dir.join("runner")).unwrap();
+        assert!(script.contains("export MISSION_CWD='bad\"cwd'\n"));
+        assert!(!shim_dir.join("runner.cmd").exists());
     }
 }

@@ -613,6 +613,7 @@ impl SessionManager {
             &events_log_path,
             mission.cwd.as_deref(),
         )
+        .inspect_err(|error| log::warn!("install session runner shim: {error}"))
         .ok();
         let bundled_bin_dir = Some(app_data_dir.join("bin"));
 
