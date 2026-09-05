@@ -2828,13 +2828,26 @@ mod tests {
     #[test]
     fn empty_pane_offers_only_the_chat_entry_point() {
         let mut overrides = keymap::KeymapOverrides::new();
+        #[cfg(unix)]
         assert_eq!(empty_pane_action_label(&overrides), "⌘N  New chat");
+        #[cfg(windows)]
+        assert_eq!(
+            empty_pane_action_label(&overrides),
+            "Ctrl+Shift+N  New chat"
+        );
 
         let mut rebound = keymap::entry("new-chat").unwrap().default.clone();
         rebound.meta = false;
         rebound.ctrl = true;
+        #[cfg(windows)]
+        {
+            rebound.shift = false;
+        }
         overrides.insert("new-chat".into(), Some(rebound));
+        #[cfg(unix)]
         assert_eq!(empty_pane_action_label(&overrides), "⌃N  New chat");
+        #[cfg(windows)]
+        assert_eq!(empty_pane_action_label(&overrides), "Ctrl+N  New chat");
 
         overrides.insert("new-chat".into(), None);
         assert_eq!(empty_pane_action_label(&overrides), "New chat");
@@ -2843,13 +2856,25 @@ mod tests {
     #[test]
     fn terminal_drawer_tooltip_tracks_rebound_and_unbound_shortcuts() {
         let mut overrides = keymap::KeymapOverrides::new();
+        #[cfg(unix)]
         assert_eq!(
             terminal_drawer_tooltip(false, &overrides),
             "Show terminal drawer · ⌥F12"
         );
+        #[cfg(windows)]
+        assert_eq!(
+            terminal_drawer_tooltip(false, &overrides),
+            "Show terminal drawer · Alt+F12"
+        );
+        #[cfg(unix)]
         assert_eq!(
             terminal_drawer_tooltip(true, &overrides),
             "Hide terminal drawer · ⌥F12"
+        );
+        #[cfg(windows)]
+        assert_eq!(
+            terminal_drawer_tooltip(true, &overrides),
+            "Hide terminal drawer · Alt+F12"
         );
 
         let mut rebound = keymap::entry("toggle-terminal-drawer")
@@ -2860,9 +2885,15 @@ mod tests {
         rebound.ctrl = true;
         rebound.code = "Backquote".into();
         overrides.insert("toggle-terminal-drawer".into(), Some(rebound));
+        #[cfg(unix)]
         assert_eq!(
             terminal_drawer_tooltip(false, &overrides),
             "Show terminal drawer · ⌃`"
+        );
+        #[cfg(windows)]
+        assert_eq!(
+            terminal_drawer_tooltip(false, &overrides),
+            "Show terminal drawer · Ctrl+`"
         );
 
         overrides.insert("toggle-terminal-drawer".into(), None);
@@ -2875,14 +2906,27 @@ mod tests {
     #[test]
     fn split_panes_tooltip_tracks_rebound_and_unbound_shortcuts() {
         let mut overrides = keymap::KeymapOverrides::new();
+        #[cfg(unix)]
         assert_eq!(split_panes_tooltip(&overrides), "Split panes · ⌘D / ⇧⌘D");
+        #[cfg(windows)]
+        assert_eq!(
+            split_panes_tooltip(&overrides),
+            "Split panes · Ctrl+Shift+D / Ctrl+Shift+Alt+D"
+        );
 
         let mut rebound = keymap::entry("split-pane-right").unwrap().default.clone();
         rebound.meta = false;
         rebound.ctrl = true;
+        #[cfg(windows)]
+        {
+            rebound.shift = false;
+        }
         overrides.insert("split-pane-right".into(), Some(rebound));
         overrides.insert("split-pane-down".into(), None);
+        #[cfg(unix)]
         assert_eq!(split_panes_tooltip(&overrides), "Split panes · ⌃D");
+        #[cfg(windows)]
+        assert_eq!(split_panes_tooltip(&overrides), "Split panes · Ctrl+D");
 
         overrides.insert("split-pane-right".into(), None);
         assert_eq!(split_panes_tooltip(&overrides), "Split panes");
