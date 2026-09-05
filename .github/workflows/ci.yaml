@@ -18,19 +18,6 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  windows-batch-probe:
-    name: Windows batch probe
-    runs-on: windows-latest
-    timeout-minutes: 10
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v6
-      - name: Install Rust toolchain
-        run: rustup show active-toolchain
-      - name: Probe cmd expansion and batch quoting
-        shell: pwsh
-        run: ./script/windows-batch-probe.ps1
-
   rust:
     name: Rust / macOS
     runs-on: macos-15
