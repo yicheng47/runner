@@ -52,3 +52,26 @@ After a production release, move the crates to the next nightly version (`0.6.0`
 - Nightlies are dispatch-only (decision 12, amended 2026-08-21): a push to `main` runs CI alone, so a landing never restarts the user's app by accident.
 - The nightly and production apps share one data directory (`~/Library/Application Support/com.wycstudios.runner/`). One instance at a time.
 - Production releases are a different path: tag `vX.Y.Z` on a commit whose crate version is exactly `X.Y.Z` → `release.yml` builds a draft; publishing is the human's switch. Do not tag from this skill.
+
+## Windows variant
+
+`/nightly windows [cut | check | stamp]` — no action means `cut`. This variant uses the existing `runner-windows` checkout and the long-lived `nightly-windows` branch. Its rolling `nightly-win` release is a public prerelease; the macOS commands and draft policy above stay as is. Never run the app or install anything on the PC from this skill.
+
+### `windows cut`
+
+1. **Preflight — stop on any failure, say which.** Run `git fetch origin`; require branch `nightly-windows`, a clean tree, and `git rev-parse nightly-windows origin/nightly-windows` equal. Read the version with `cargo metadata --format-version 1 --no-deps | jq -r '.packages[] | select(.name == "runner-app") | .version'`. No version bump is required for this separate prerelease channel.
+2. Check that no Windows nightly run is in progress with `gh run list --workflow nightly.yml --branch nightly-windows --status in_progress --json databaseId`; another Windows dispatch would cancel it. Windows and macOS use separate concurrency groups. Check CI for the selected sha with `gh run list --commit <sha> --workflow ci.yaml --limit 1 --json status,conclusion`. Missing or failed → stop; in progress is fine, the workflow waits for it. Both `Rust / macOS` and `Rust / Windows` must pass.
+3. **Dispatch:** `gh workflow run nightly.yml --ref nightly-windows -f platform=windows`. Find the new run with `gh run list --workflow nightly.yml --branch nightly-windows --limit 1 --json databaseId,status,headSha`; confirm its `headSha` matches preflight.
+4. **Watch:** `gh run watch <id> --exit-status`. On failure, inspect `gh run view <id> --log-failed`, report the failing step, and stop. A failure in the public-release verification means the friend cannot use the download link; do not report the build as ready.
+5. Run `windows check`, then `windows stamp`. Report the version, UTC stamp, run id, sha, and public x64 zip URL. Jason extracts the zip and runs the Phase 1 PC checklist in `docs/impls/437-windows-nightly.md`.
+
+### `windows check`
+
+- Read `gh release view nightly-win --json isPrerelease,isDraft,assets --jq '{prerelease:.isPrerelease, draft:.isDraft, assets:[.assets[].name]}'`; require `prerelease` true and `draft` false.
+- Confirm the expected `Runner-Nightly-<version>.<stamp>-x64.zip` is present and there are at most ten timestamped x64 zips. The stamp is `YYYYMMDD.HHMM` UTC from the run's build-identity step.
+- Require an anonymous download check to succeed: `curl --silent --fail --head --location "https://github.com/yicheng47/runner/releases/download/nightly-win/<zip>"`. The release page is `https://github.com/yicheng47/runner/releases/tag/nightly-win`.
+- Inspect recent runs with `gh run list --workflow nightly.yml --branch nightly-windows --limit 3 --json databaseId,status,conclusion,headSha,createdAt`; use `git log <nightly sha>..origin/nightly-windows --oneline` to show what a new cut would pick up.
+
+### `windows stamp`
+
+After a successful cut and public-download check, record the x64 zip filename and URL, UTC stamp, run id, source sha, and a short description of what it carries under `## Windows nightlies` in `docs/impls/437-windows-nightly.md` (create the section on the first cut). Keep the current entry first and the last three previous entries. Record PC results only after Jason supplies them. Commit only that document as `docs: Windows nightly <stamp>` on `nightly-windows`, then push that branch. This uses the skill's existing docs-commit authorization; it does not authorize code pushes, merging, or a macOS dispatch.
