@@ -68,5 +68,41 @@ jobs:
       - name: Test
         run: cargo test --workspace --no-fail-fast
 
+      - name: Build Runner for resource verification
+        run: cargo build -p runner-app
+
+      - name: Verify Runner manifest and icon
+        shell: pwsh
+        run: |
+          Add-Type @'
+          using System;
+          using System.Runtime.InteropServices;
+          public static class Resources {
+            [DllImport("kernel32", CharSet = CharSet.Unicode)] public static extern IntPtr LoadLibraryEx(string path, IntPtr file, uint flags);
+            [DllImport("kernel32")] public static extern bool FreeLibrary(IntPtr module);
+            [DllImport("kernel32", CharSet = CharSet.Unicode)] static extern IntPtr FindResource(IntPtr module, IntPtr id, IntPtr type);
+            [DllImport("kernel32")] static extern IntPtr LoadResource(IntPtr module, IntPtr resource);
+            [DllImport("kernel32")] static extern IntPtr LockResource(IntPtr resource);
+            [DllImport("kernel32")] static extern uint SizeofResource(IntPtr module, IntPtr resource);
+            public static byte[] Read(IntPtr module, int type, int id) {
+              var resource = FindResource(module, (IntPtr)id, (IntPtr)type);
+              if (resource == IntPtr.Zero) throw new Exception($"Missing resource {type}/{id}");
+              var bytes = new byte[SizeofResource(module, resource)];
+              Marshal.Copy(LockResource(LoadResource(module, resource)), bytes, 0, bytes.Length); return bytes;
+            }
+          }
+          '@
+          $module = [Resources]::LoadLibraryEx((Resolve-Path target/debug/Runner.exe), [IntPtr]::Zero, 2)
+          if ($module -eq [IntPtr]::Zero) { throw 'Cannot load Runner.exe resources' }
+          try {
+            $manifest = [Text.Encoding]::UTF8.GetString([Resources]::Read($module, 24, 1))
+            if ($manifest -notmatch '>PerMonitorV2<' -or $manifest -notmatch '<longPathAware[^>]*>true</longPathAware>') { throw 'Runner manifest lacks DPI or long-path awareness' }
+            Write-Host 'Runner.exe RT_MANIFEST #1: PerMonitorV2; longPathAware=true'
+            $group = [Resources]::Read($module, 14, 1); $ico = [IO.File]::ReadAllBytes("$pwd/assets/icon.ico")
+            if ([BitConverter]::ToUInt16($group, 4) -ne 4 -or [BitConverter]::ToUInt16($ico, 4) -ne 4) { throw 'Expected four Runner icon images' }
+            for ($i = 0; $i -lt 4; $i++) { $size = [BitConverter]::ToUInt32($ico, 6 + 16 * $i + 8); $offset = [BitConverter]::ToUInt32($ico, 6 + 16 * $i + 12); $png = [Resources]::Read($module, 3, [BitConverter]::ToUInt16($group, 6 + 14 * $i + 12)); if ([Convert]::ToBase64String($png) -cne [Convert]::ToBase64String($ico, $offset, $size)) { throw "Runner icon image $i differs" } }
+            Write-Host 'Runner.exe RT_GROUP_ICON #1: all 4 PNG images match assets/icon.ico (16, 32, 48, 256 px)'
+          } finally { [void][Resources]::FreeLibrary($module) }
+
       - name: Verify lockfile is committed
         run: git diff --exit-code -- Cargo.lock
