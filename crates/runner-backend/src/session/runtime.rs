@@ -138,7 +138,7 @@ pub enum RuntimeOutput {
 /// polls — without that, dropping the receiver while no bytes are
 /// arriving leaves the forwarder blocked forever in `read()`,
 /// which leaks one OS thread per detach. The wrapper trades the
-/// `Receiver` API for explicit `recv_timeout`.
+/// `Receiver` API for explicit `recv_timeout` and `try_recv`.
 pub struct OutputStream {
     inner: std::sync::mpsc::Receiver<RuntimeOutput>,
     /// Set to true when this `OutputStream` is dropped. The
@@ -168,6 +168,10 @@ impl OutputStream {
         dur: std::time::Duration,
     ) -> Result<RuntimeOutput, std::sync::mpsc::RecvTimeoutError> {
         self.inner.recv_timeout(dur)
+    }
+
+    pub fn try_recv(&self) -> Result<RuntimeOutput, std::sync::mpsc::TryRecvError> {
+        self.inner.try_recv()
     }
 
     /// Clone of the cancellation flag. Set this from outside the
