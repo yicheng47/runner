@@ -1,6 +1,6 @@
 # 478 — Consolidation pass 1: stale comments, dead code, unwrap audit
 
-Tracking issue: [#478](https://github.com/yicheng47/runner/issues/478). Chore, P2. Baseline `main` at `e127646` (2026-09-04). This is the first of four passes; the file splits (passes 2–4) are **not** in scope here and get their own briefs.
+Tracking issue: [#478](https://github.com/yicheng47/runner/issues/478). Chore, P2. Baseline `main` at `e127646` (2026-09-04). Shipped 2026-09-05 in [#479](https://github.com/yicheng47/runner/pull/479); the review surfaced the unwired sidecar installers, fixed separately as [#480](https://github.com/yicheng47/runner/issues/480). This is the first of four passes; the file splits (passes 2–4) are **not** in scope here and get their own briefs.
 
 ## What ships
 

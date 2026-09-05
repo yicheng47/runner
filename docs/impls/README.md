@@ -6,7 +6,6 @@ A plan stays here while its work is in flight and moves to [`archive/`](./archiv
 
 ## Active
 
-- [`478-consolidation-pass-1.md`](./478-consolidation-pass-1.md) — consolidation pass 1 ([#478](https://github.com/yicheng47/runner/issues/478)): rewrite the 91 Tauri-era comments, delete code with only test callers (the launch-script renderer first), and audit every non-test `unwrap`/`expect` on IO, parse, env, and user-data paths. No behavior change; file splits are passes 2–4. Launched 2026-09-04.
 - [`fork-chat.md`](./fork-chat.md) — feature [60](../features/60-fork-chat-to-pane-or-tab.md) build plan ([#398](https://github.com/yicheng47/runner/issues/398)): native fork of a chat into a new tab behind two fork surfaces. In flight 2026-09-01; predates the naming rule and archives as-is.
 - [`local-skills/`](./local-skills/README.md) — feature [73](../features/73-runner-skills.md) implementation program: condensed state and binding decisions, milestone plan, dated impl log.
 - [`gpui-rewrite/`](./gpui-rewrite/) — the GPUI rewrite record; shipped as `v0.6.0` 2026-08-23. What remains is the M6 consolidation queue in [`m6-remainder.md`](./gpui-rewrite/m6-remainder.md), tracked in [#445](https://github.com/yicheng47/runner/issues/445).
