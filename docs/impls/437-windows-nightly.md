@@ -73,12 +73,12 @@ Organized by phase so each mission takes one slice. Line numbers are on the base
 
 ## The PC loop
 
-`ssh pc` from the Mac lands in a PowerShell session on Jason's Windows PC. That is the test loop the spec said was missing, and it moves most verification off CI: a mission can push its branch, `ssh pc "cd $env:USERPROFILE\repos\runner; git pull; cargo check --workspace --all-targets"`, and read the errors in the same turn instead of waiting ten minutes for `windows-latest`. Rules for it:
+`ssh pc` from the Mac lands in a PowerShell 5.1 session on Jason's Windows PC (`JASONPC`, user `ROG`, Windows 11; separate commands with `;`, there is no `&&`). The PC is a **run box, not a build box**: it gets what a friend would have, and nothing else. Decided 2026-09-05 when the first inventory started reaching for a full toolchain.
 
-- The PC holds a normal clone at `%USERPROFILE%\repos\runner`, kept in sync by `git pull` of the pushed branch. Never copy a working tree over; if it is not committed and pushed, the PC does not see it.
-- Over ssh a mission may run `cargo check`, `cargo clippy`, `cargo test`, `cargo build --release`, and read files. It may not launch `Runner.exe`: a GUI started from an SSH session runs in a hidden session and proves nothing, and the crews-never-run-the-app rule holds on both machines. Smoke tests are Jason at the PC.
-- First use verifies the toolchain and records it here: `rustup` with the `1.97.1` msvc toolchain, Visual Studio Build Tools with the C++ workload (`cl.exe` on `PATH` in the ssh shell, which is what `rusqlite`'s bundled build needs), `git`, and `claude`, `codex`, `node`, `pwsh` resolvable. As of 2026-09-05 the PC was unreachable from the Mac (`192.168.2.137`, no route), so this is unchecked.
-- `cargo test --workspace` on the PC is the Phase 2 gate before the CI job is asked to run tests; a red PC run is not worth a CI minute.
+- Builds and tests come from CI. `Rust / Windows` on `windows-latest` is the compile and test gate; `nightly.yml` with `platform=windows` produces the zip. A mission never needs the PC to prove its code compiles.
+- The PC runs the zip. Over ssh a mission may download a release asset, unzip it, inspect files, read `%APPDATA%\com.wycstudios.runner\logs`, and list processes (`Get-Process`, `tasklist`) to check for orphans after Jason's smoke test. It may not launch `Runner.exe`: a GUI started from an SSH session runs in a hidden session and proves nothing, and the crews-never-run-the-app rule holds on both machines.
+- Nothing is installed on the PC unprompted. The baseline list is what the nightly's own release notes will ask a user for: Git for Windows (Claude Code's Bash tool runs through Git Bash, which is also what makes the `sh` shim resolve), Node.js LTS, `@anthropic-ai/claude-code`, `@openai/codex`. PowerShell 7 is not required; the shell pane falls back to `powershell.exe`. Rust and MSVC Build Tools stay off the PC unless the Phase 2 CI round trip becomes the bottleneck, and that is Jason's call.
+- As of 2026-09-05 the PC is a clean slate: `winget` only, no git, Node, or agent CLIs, no `%USERPROFILE%\repos`.
 
 ## Plan
 
@@ -101,7 +101,7 @@ Each phase is its own PR off `main`; nothing in the branch may change macOS beha
 ## Rules of the road
 
 - No macOS behavior change in any phase. A reviewer diffs with `--color-moved` and rejects a phase whose unix code changed in anything but location.
-- Crews never run the app on either machine. Over `ssh pc` they run cargo and read output, nothing more; every "works on the PC" claim about the GUI is Jason's. A mission's handoff says what it verified (PC cargo runs, CI jobs) and what it hands to the PC checklist.
+- Crews never run the app on either machine. Over `ssh pc` they read logs and process lists, nothing more; every "works on the PC" claim about the GUI is Jason's. A mission's handoff says what it verified (CI jobs) and what it hands to the PC checklist.
 - Mission authorization is PR mode per phase: commit, push, open the PR, drive CI green including the Windows job. Merge is Jason's. `nightly.yml` dispatch is Jason's (it restarts his Mac app on the macOS path).
 - Follow existing patterns: `Error::msg` in the backend, `anyhow::Context` in the app, `eprintln!` for boot-time reports, `log::warn!` in the backend. No new error types; `windows-sys` calls wrapped in small `io::Result` functions in `process/windows.rs` and `ipc.rs` only.
 - Do not touch `release.yml`, signing, or the macOS nightly's draft policy.
@@ -112,7 +112,7 @@ Everything the spec lists: production Windows release, installer, signing, updat
 
 ## Verification
 
-- Every phase: `make verify` on macOS; the same commands green on the PC over ssh; `Rust / Windows` green at the level the phase adds (0: check + clippy; 2: tests). PR description lists the PC checklist items the phase expects Jason to run.
+- Every phase: `make verify` on macOS; `Rust / Windows` green at the level the phase adds (0: check + clippy; 2: tests). PR description lists the PC checklist items the phase expects Jason to run.
 - Phase 0 handoff lists every `HOME` site replaced, the `process` signature set with unix line ranges each body came from, and the test functions gated.
 - Phase 1 handoff includes the `nightly-windows` release URL and the zip name; Jason's PC run is recorded as a comment on #437 with what passed and what was filed.
 - Phase 2 handoff records the acceptance sequence result per item, including Task Manager evidence for the two no-orphans checks.
