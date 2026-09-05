@@ -138,7 +138,7 @@ pub enum RuntimeOutput {
 /// polls — without that, dropping the receiver while no bytes are
 /// arriving leaves the forwarder blocked forever in `read()`,
 /// which leaks one OS thread per detach. The wrapper trades the
-/// `Receiver` API for explicit `recv_timeout`.
+/// `Receiver` API for explicit `recv_timeout` and `try_recv`.
 pub struct OutputStream {
     inner: std::sync::mpsc::Receiver<RuntimeOutput>,
     /// Set to true when this `OutputStream` is dropped. The
@@ -168,6 +168,10 @@ impl OutputStream {
         dur: std::time::Duration,
     ) -> Result<RuntimeOutput, std::sync::mpsc::RecvTimeoutError> {
         self.inner.recv_timeout(dur)
+    }
+
+    pub fn try_recv(&self) -> Result<RuntimeOutput, std::sync::mpsc::TryRecvError> {
+        self.inner.try_recv()
     }
 
     /// Clone of the cancellation flag. Set this from outside the
@@ -261,5 +265,44 @@ pub trait SessionRuntime: Send + Sync {
     /// shell. Runtimes without a local PTY can leave this unknown.
     fn has_foreground_process(&self, _session: &RuntimeSession) -> RuntimeResult<Option<bool>> {
         Ok(None)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{mpsc, Arc};
+
+    #[test]
+    fn output_stream_try_recv_preserves_receiver_semantics() {
+        let (tx, rx) = mpsc::channel();
+        let stop = Arc::new(AtomicBool::new(false));
+        let output = OutputStream::new(rx, Arc::clone(&stop));
+        assert_eq!(output.try_recv().unwrap_err(), mpsc::TryRecvError::Empty);
+        tx.send(RuntimeOutput::Stream(b"hello".to_vec())).unwrap();
+        tx.send(RuntimeOutput::StatusTransition {
+            state: RunnerStatus::Idle,
+            source: "forwarder",
+        })
+        .unwrap();
+        drop(tx);
+        assert!(
+            matches!(output.try_recv().unwrap(), RuntimeOutput::Stream(bytes) if bytes == b"hello")
+        );
+        assert!(matches!(
+            output.try_recv().unwrap(),
+            RuntimeOutput::StatusTransition {
+                state: RunnerStatus::Idle,
+                source: "forwarder",
+            }
+        ));
+        assert_eq!(
+            output.try_recv().unwrap_err(),
+            mpsc::TryRecvError::Disconnected
+        );
+        assert!(!stop.load(Ordering::SeqCst));
+        drop(output);
+        assert!(stop.load(Ordering::SeqCst));
     }
 }

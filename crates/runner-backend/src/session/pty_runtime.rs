@@ -32,7 +32,8 @@ use super::runtime::{
 };
 
 const RUNTIME_LABEL: &str = "native-pty";
-const READ_BUF: usize = 8 * 1024;
+// Typical ConPTY redraws can fit in one read; the forwarder coalesces larger bursts.
+const READ_BUF: usize = 64 * 1024;
 /// Silence before a session reads as Idle. The agent TUIs animate a spinner
 /// while a turn runs, so genuine work rarely goes quiet; the 2 s window is
 /// for the moments it does (a tool call that pauses the spinner), because

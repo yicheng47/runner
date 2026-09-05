@@ -2,8 +2,9 @@ use std::collections::BTreeMap;
 use std::hash::{Hash as _, Hasher as _};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
-use futures::StreamExt as _;
+use futures::{FutureExt as _, StreamExt as _};
 use gpui::{App, AppContext as _, Context, Entity, Global};
 use runner_backend::events::AppEvent;
 use runner_backend::model::Runner;
@@ -250,7 +251,21 @@ impl AppStore {
 
         cx.spawn(async move |weak, cx| {
             while wake_rx.next().await.is_some() {
-                while wake_rx.try_recv().is_ok() {}
+                let delay = cx
+                    .background_executor()
+                    .timer(Duration::from_millis(4))
+                    .fuse();
+                futures::pin_mut!(delay);
+                loop {
+                    futures::select_biased! {
+                        _ = delay => break,
+                        wake = wake_rx.next().fuse() => {
+                            if wake.is_none() {
+                                break;
+                            }
+                        }
+                    }
+                }
                 if weak
                     .update(cx, |this, cx| {
                         this.revisions.terminal_wake = this.revisions.terminal_wake.wrapping_add(1);

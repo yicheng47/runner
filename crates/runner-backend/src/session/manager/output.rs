@@ -1,5 +1,8 @@
 use super::*;
 
+// Match alacritty's read budget while bounding a single terminal-lock hold.
+const MAX_OUTPUT_BURST: usize = 1024 * 1024;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum LocalInputClass {
     SetPending,
@@ -107,12 +110,31 @@ impl SessionManager {
             // recovery.
             let mut drop_streak: u64 = 0;
             let mut drop_total: u64 = 0;
+            let mut pending = None;
             loop {
                 if stop.load(std::sync::atomic::Ordering::Relaxed) {
                     break;
                 }
-                match output.recv_timeout(Duration::from_millis(500)) {
-                    Ok(RuntimeOutput::Stream(bytes)) => {
+                let next = pending
+                    .take()
+                    .map(Ok)
+                    .unwrap_or_else(|| output.recv_timeout(Duration::from_millis(500)));
+                match next {
+                    Ok(RuntimeOutput::Stream(mut bytes)) => {
+                        while bytes.len() < MAX_OUTPUT_BURST {
+                            match output.try_recv() {
+                                Ok(RuntimeOutput::Stream(next))
+                                    if bytes.len() + next.len() <= MAX_OUTPUT_BURST =>
+                                {
+                                    bytes.extend(next);
+                                }
+                                Ok(next) => {
+                                    pending = Some(next);
+                                    break;
+                                }
+                                Err(_) => break,
+                            }
+                        }
                         manager_t.ingest_output_chunk(
                             &session_id,
                             mission_id.as_deref(),
