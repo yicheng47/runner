@@ -2,10 +2,9 @@
 //
 // Everything a frontend needs to run Runner lives here: the SQLite layer,
 // the PTY session manager, the per-mission event bus + signal router, the
-// MCP server, and the command bodies (`ops`). Frontends — the Tauri app
-// today, the native GPUI binary in Phase 3 — are thin adapters: they build
-// an `AppCore`, subscribe to its event channel, and delegate their command
-// surface to `ops::*`.
+// MCP server, and the command bodies (`ops`). The GPUI frontend is a thin
+// adapter: it builds an `AppCore`, subscribes to its event channel, and
+// delegates its command surface to `ops::*`.
 
 pub mod cli_install;
 pub mod db;
@@ -32,8 +31,8 @@ use events::EventChannel;
 use session::manager::{CoreSessionEvents, SessionEventObserverRegistry};
 
 /// Shared application state. One instance per process, cheap to clone
-/// (every field is an `Arc` or small value) — the Tauri layer stores it in
-/// `app.manage`, the MCP handler clones it per connection.
+/// (every field is an `Arc` or small value) — the GPUI app owns it and the
+/// MCP handler clones it per connection.
 #[derive(Clone)]
 pub struct AppCore {
     pub db: Arc<db::DbPool>,
@@ -70,11 +69,10 @@ pub struct AppCore {
     /// PTY.
     pub windows: Arc<windows::WindowRegistry>,
     /// Broadcast channel every app-observable event flows through. The
-    /// frontend subscribes and forwards to its own event surface (the
-    /// Tauri layer re-emits to the webview verbatim).
+    /// GPUI frontend subscribes and applies each event to its native state.
     pub events: EventChannel,
     pub session_event_observer: SessionEventObserverRegistry,
-    /// The application's user-facing version (the Tauri crate's
+    /// The application's user-facing version (the GPUI app crate's
     /// `CARGO_PKG_VERSION`, which the release bump updates). Advertised by
     /// the MCP server's `ServerInfo`.
     pub app_version: String,

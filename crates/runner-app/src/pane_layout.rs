@@ -9,7 +9,7 @@ pub const DEFAULT_DRAWER_HEIGHT: f32 = 280.;
 pub const MIN_DRAWER_HEIGHT: f32 = 120.;
 pub const MAX_DRAWER_HEIGHT: f32 = 600.;
 
-// Wire names are the Tauri-era spellings (`cols-2`, not serde's kebab-case
+// Wire names keep the Tauri-era spellings (`cols-2`, not serde's kebab-case
 // `cols2`); the aliases keep rows written by 0.6.0/0.6.1 readable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PresetKind {
@@ -307,8 +307,8 @@ struct PersistedLayout {
     drawer: TerminalDrawer,
 }
 
-// The Tauri-era writer could persist `[null,null]` sizes (NaN from the panel
-// library stringified) and its reader tolerated any malformed size entry;
+// The legacy writer could persist `[null,null]` sizes (NaN from the panel
+// library stringified) and tolerated any malformed size entry;
 // rejecting the whole layout for a cosmetic gutter value strands the tab.
 fn lenient_sizes<'de, D: Deserializer<'de>>(
     deserializer: D,

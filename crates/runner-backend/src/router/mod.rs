@@ -52,9 +52,8 @@ pub trait StdinInjector: Send + Sync + 'static {
     /// submits with Enter. Earlier versions verified the paste
     /// landed by capturing the pane post-paste — that verification
     /// path was tmux-shaped and went away with the runtime
-    /// migration (docs/impls/archive/0011); under the in-process PtyRuntime
-    /// xterm.js owns the terminal model and the host has nothing
-    /// to capture against. Callers MUST NOT sleep before calling.
+    /// migration (docs/impls/archive/0011); `PtyRuntime` does not expose the
+    /// GPUI terminal model for capture. Callers MUST NOT sleep before calling.
     fn inject_paste_with_verify(&self, session_id: &str, body: &[u8]) -> Result<()>;
 
     /// Snapshot used by diagnostics/tests. Delivery uses the atomic
@@ -892,8 +891,16 @@ impl Router {
                     };
                     router.reconcile_inbox_at(Instant::now(), backoff);
                 }
-            })
-            .expect("spawn inbox reconciliation clock");
+            });
+        let handle = match handle {
+            Ok(handle) => handle,
+            Err(error) => {
+                log::warn!(
+                    "spawn inbox reconciliation clock for mission {mission_id} failed: {error}"
+                );
+                return;
+            }
+        };
         *clock = Some(ReconciliationClock {
             shutdown,
             handle: Some(handle),

@@ -1,6 +1,6 @@
 use super::*;
 
-// These tests don't touch Tauri — they hit the PTY layer directly. We
+// These tests don't touch the GPUI frontend — they hit the PTY layer directly. We
 // build a minimal `Runner` row, skip the DB (the SessionManager writes
 // to DB on spawn), and cover: spawn-echo-readback, inject-stdin-roundtrip,
 // and exit-emits-correct-status. For DB coverage we use the app's
@@ -320,8 +320,8 @@ fn mgr_with_fake(shell: Option<String>, fake: Arc<FakeRuntime>) -> Arc<SessionMa
     )
 }
 
-/// Test emitter that just records every event. Replaces the Tauri
-/// `AppHandle` in unit tests — no runtime dependency.
+/// Test emitter that just records every event. Replaces the app event channel
+/// in unit tests — no frontend dependency.
 #[derive(Default)]
 struct Capture {
     output: Mutex<Vec<OutputEvent>>,

@@ -1,8 +1,8 @@
 // Per-runner session manager.
 //
 // One `Session` = one child process attached to an in-process PTY via
-// `SessionRuntime`. The SessionManager holds the map of live sessions
-// so Tauri commands can look them up by id (for stdin injection,
+// `SessionRuntime`. The SessionManager holds the map of live sessions so
+// frontend and MCP operations can look them up by id (for stdin injection,
 // resume, kill). Each session owns:
 //
 //   - A `RuntimeSession` that the manager hands back to the runtime
@@ -118,8 +118,8 @@ const CLAUDE_LAUNCH_GATE_GRACE: Duration = Duration::from_millis(0);
 /// `docs/features/archive/13-pty-silence-idle-detection.md` §Scope for why
 /// direct chats are skipped.
 ///
-/// The `EventLog` handle is opened once at construction (on the
-/// Tauri command thread, where a brief blocking flock during tail
+/// The `EventLog` handle is opened once at construction (on the caller's
+/// thread, where a brief blocking flock during tail
 /// repair is fine) and cached so the forwarder consumer thread's
 /// hot path never calls `EventLog::open` — that path takes a
 /// blocking flock to repair any dangling tail, and the forwarder
@@ -285,9 +285,8 @@ impl SessionEventObserverRegistry {
     }
 }
 
-/// Payload for `runner/activity`. Derived from the same query
-/// `RunnerActivity` (`runner_activity` Tauri command) returns, so a fresh
-/// page load and a live update agree.
+/// Payload for `runner/activity`. Derived from the same query as the runner
+/// activity operation, so a fresh page load and a live update agree.
 #[derive(Debug, Clone, Serialize)]
 pub struct RunnerActivityEvent {
     pub runner_id: String,
@@ -709,7 +708,7 @@ pub enum CompleteSpawnOutcome {
 /// Inputs `complete_mission_session_spawn` needs that
 /// `register_mission_session` already computed. The two-phase split
 /// lets `ops::mission::mission_start` finish row inserts +
-/// router/bus mount synchronously and return its Tauri command in
+/// router/bus mount synchronously and return to the GPUI task in
 /// ~milliseconds, then drive the slow PTY-spawn phase in a
 /// background task. Without the split, the modal Start button
 /// blocks ~1500ms per claude-code worker (gate cost) before the
@@ -1275,15 +1274,6 @@ impl SessionManager {
             state.lock().unwrap().killed = false;
         }
         self.prune_empty_session_state(session_id);
-    }
-
-    /// Borrow the underlying session runtime. Held on the manager
-    /// itself rather than passed through every method so the
-    /// Step 9 cutovers can land one entry point at a time without
-    /// rewiring every Tauri command's signature in the same change.
-    #[allow(dead_code)] // Wired into spawn paths in subsequent commits.
-    pub(crate) fn runtime(&self) -> &Arc<dyn SessionRuntime> {
-        &self.runtime
     }
 }
 

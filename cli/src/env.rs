@@ -41,36 +41,34 @@ pub fn resolve() -> BusContext {
 /// Test-friendly variant. Production goes through `resolve()`; tests
 /// inject their own lookup so they don't have to mutate the live env.
 pub fn resolve_from<F: Fn(&str) -> Option<String>>(get: F) -> BusContext {
-    let crew = get(VAR_CREW);
-    let mission = get(VAR_MISSION);
-    let handle = get(VAR_HANDLE);
-    let log = get(VAR_LOG);
-
-    let present = [
-        (VAR_CREW, crew.is_some()),
-        (VAR_MISSION, mission.is_some()),
-        (VAR_HANDLE, handle.is_some()),
-        (VAR_LOG, log.is_some()),
-    ];
-    let count = present.iter().filter(|(_, p)| *p).count();
-    if count == 0 {
-        return BusContext::OffBus;
-    }
-    if count < 4 {
-        let missing: Vec<&'static str> = present
-            .iter()
-            .filter(|(_, p)| !*p)
-            .map(|(n, _)| *n)
+    match (
+        get(VAR_CREW),
+        get(VAR_MISSION),
+        get(VAR_HANDLE),
+        get(VAR_LOG),
+    ) {
+        (None, None, None, None) => BusContext::OffBus,
+        (Some(crew_id), Some(mission_id), Some(handle), Some(event_log)) => {
+            BusContext::Mission(MissionEnv {
+                crew_id,
+                mission_id,
+                handle,
+                event_log: PathBuf::from(event_log),
+            })
+        }
+        (crew, mission, handle, log) => {
+            let missing = [
+                (VAR_CREW, crew.is_none()),
+                (VAR_MISSION, mission.is_none()),
+                (VAR_HANDLE, handle.is_none()),
+                (VAR_LOG, log.is_none()),
+            ]
+            .into_iter()
+            .filter_map(|(name, missing)| missing.then_some(name))
             .collect();
-        return BusContext::Partial { missing };
+            BusContext::Partial { missing }
+        }
     }
-
-    BusContext::Mission(MissionEnv {
-        crew_id: crew.unwrap(),
-        mission_id: mission.unwrap(),
-        handle: handle.unwrap(),
-        event_log: PathBuf::from(log.unwrap()),
-    })
 }
 
 /// Top-level helper used by every verb except `help`. Encapsulates the

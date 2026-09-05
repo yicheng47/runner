@@ -541,7 +541,7 @@ impl SessionManager {
     ///
     /// Split out of the original monolithic `spawn` so
     /// `ops::mission::mission_start` can finish row inserts +
-    /// router/bus mount synchronously and return its Tauri command
+    /// router/bus mount synchronously and return to the GPUI task
     /// in ~milliseconds, then drive the slow PTY-spawn phase in a
     /// background task. Without the split, the modal Start button
     /// blocks ~1500ms per claude-code worker (gate cost) before the

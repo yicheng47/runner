@@ -192,31 +192,6 @@ pub fn delete_all_for_mission(conn: &Connection, mission_id: &str) -> rusqlite::
     )
 }
 
-/// Pointer updates only, inside the caller's transaction — the command
-/// layer pairs this with the sidebar-tree reparent so a failure rolls
-/// both back together (`ops::session::set_project_and_reconcile`).
-pub fn set_project_for_direct_sessions(
-    conn: &Connection,
-    ids: &[String],
-    project_id: Option<&str>,
-) -> rusqlite::Result<()> {
-    for id in ids {
-        let updated = conn.execute(
-            "UPDATE sessions
-                SET project_id = ?2
-              WHERE id = ?1
-                AND mission_id IS NULL
-                AND slot_id IS NULL
-                AND archived_at IS NULL",
-            rusqlite::params![id, project_id],
-        )?;
-        if updated == 0 {
-            return Err(rusqlite::Error::QueryReturnedNoRows);
-        }
-    }
-    Ok(())
-}
-
 /// Persist the runtime-side identity after the PTY forks.
 pub fn update_runtime_metadata(
     conn: &Connection,
@@ -356,7 +331,7 @@ pub fn rekey_agent_session_key(
 /// Startup cleanup: demote rows still marked `running` from a prior app
 /// process to `stopped`, preserving any prior `stopped_at`. Requeue a
 /// launch-resume claim interrupted by an ungraceful exit. This must run
-/// before the frontend can call `take_resume_on_launch`.
+/// before the frontend consumes queued launch-resume work.
 pub fn cleanup_stale_running(conn: &Connection, now: Timestamp) -> rusqlite::Result<usize> {
     let tx = conn.unchecked_transaction()?;
     tx.execute(
@@ -413,18 +388,10 @@ pub fn mark_running_for_resume_on_launch(conn: &mut Connection) -> rusqlite::Res
     Ok(ids)
 }
 
-/// Atomically claim the next quit-time stamp. Startup cleanup must first
-/// requeue any claim interrupted by a prior process. Shells need no prior
-/// conversation key because relaunching one always starts a fresh process;
-/// chat rows that can no longer resume are cleared and skipped.
-pub fn take_resume_on_launch(
-    conn: &mut Connection,
-) -> rusqlite::Result<Option<ResumeOnLaunchClaim>> {
-    take_resume_on_launch_excluding(conn, &HashSet::new())
-}
-
 /// Atomically claim the next quit-time stamp outside `excluded`. Excluded
 /// claims stay pending so a surface can resume them when it becomes visible.
+/// Shells need no prior conversation key because relaunching one always starts
+/// a fresh process; chat rows that can no longer resume are cleared and skipped.
 pub fn take_resume_on_launch_excluding(
     conn: &mut Connection,
     excluded: &HashSet<String>,
@@ -576,13 +543,6 @@ pub fn finish_resume_on_launch(conn: &Connection, id: &str) -> rusqlite::Result<
         rusqlite::params![id, RESUME_ON_LAUNCH_CLAIMED],
     )
     .map(|updated| updated > 0)
-}
-
-pub fn clear_resume_on_launch(conn: &Connection) -> rusqlite::Result<usize> {
-    conn.execute(
-        "UPDATE sessions SET resume_on_launch = 0 WHERE resume_on_launch != 0",
-        [],
-    )
 }
 
 /// Clear launch-resume work gated by the user's chat setting while leaving
@@ -846,7 +806,7 @@ mod tests {
     }
 
     fn take_resume_id(conn: &mut Connection) -> Option<String> {
-        take_resume_on_launch(conn)
+        take_resume_on_launch_excluding(conn, &HashSet::new())
             .unwrap()
             .map(|claim| claim.session_id)
     }
@@ -896,52 +856,6 @@ mod tests {
         for row in [full_row(), minimal_row()] {
             insert(&conn, &row).unwrap();
             assert_eq!(get_row(&conn, &row.id).unwrap().unwrap(), row);
-        }
-    }
-
-    #[test]
-    fn direct_session_projects_move_atomically() {
-        let pool = db::open_in_memory().unwrap();
-        let mut conn = pool.get().unwrap();
-        seed_runner(&conn, "r1", "alpha");
-        let project_a = crate::repo::project::create(&conn, "A", "/tmp/a").unwrap();
-        let project_b = crate::repo::project::create(&conn, "B", "/tmp/b").unwrap();
-        let ids = ["sess-a".to_string(), "sess-b".to_string()];
-        for id in &ids {
-            let mut row = SessionRowDb::new_running(id.clone());
-            row.runner_id = Some("r1".into());
-            row.project_id = Some(project_a.id.clone());
-            insert(&conn, &row).unwrap();
-        }
-
-        let tx = conn.transaction().unwrap();
-        set_project_for_direct_sessions(&tx, &ids, Some(&project_b.id)).unwrap();
-        tx.commit().unwrap();
-        for id in &ids {
-            assert_eq!(
-                get_row(&conn, id).unwrap().unwrap().project_id,
-                Some(project_b.id.clone())
-            );
-        }
-
-        // A missing member errors and the caller's transaction rolls
-        // every pointer back.
-        let missing_member = [ids[0].clone(), "missing".to_string()];
-        let tx = conn.transaction().unwrap();
-        assert!(set_project_for_direct_sessions(&tx, &missing_member, None).is_err());
-        drop(tx);
-        for id in &ids {
-            assert_eq!(
-                get_row(&conn, id).unwrap().unwrap().project_id,
-                Some(project_b.id.clone())
-            );
-        }
-
-        let tx = conn.transaction().unwrap();
-        set_project_for_direct_sessions(&tx, &ids, None).unwrap();
-        tx.commit().unwrap();
-        for id in &ids {
-            assert!(get_row(&conn, id).unwrap().unwrap().project_id.is_none());
         }
     }
 
@@ -1164,14 +1078,6 @@ mod tests {
             )
             .unwrap();
         assert_eq!(marked, 0);
-
-        conn.execute(
-            "UPDATE sessions SET resume_on_launch = 1 WHERE id IN ('a-missing-key', 'd-resumable')",
-            [],
-        )
-        .unwrap();
-        assert_eq!(clear_resume_on_launch(&conn).unwrap(), 2);
-        assert_eq!(take_resume_id(&mut conn), None);
     }
 
     #[test]
@@ -1269,7 +1175,7 @@ mod tests {
 
         assert_eq!(clear_chat_resume_on_launch(&conn).unwrap(), 1);
         assert_eq!(
-            take_resume_on_launch(&mut conn).unwrap(),
+            take_resume_on_launch_excluding(&mut conn, &HashSet::new()).unwrap(),
             Some(ResumeOnLaunchClaim {
                 session_id: "shell".into(),
                 shell: true,

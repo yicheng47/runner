@@ -222,10 +222,6 @@ pub fn accent_ink() -> Hsla {
     color(colors().accent_ink)
 }
 
-pub fn composer_bg() -> Hsla {
-    panel()
-}
-
 pub fn border() -> Hsla {
     color(colors().line)
 }

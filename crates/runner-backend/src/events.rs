@@ -3,19 +3,16 @@
 // A single `tokio::sync::broadcast` channel is the source of truth for
 // every event a frontend can observe. Producers (command bodies, the
 // session manager's forwarder threads, the per-mission event bus, MCP
-// tools) send `AppEvent`s; each frontend holds one subscriber and forwards
-// to its own surface — the Tauri layer re-emits every event to the webview
-// under the same name with the same JSON payload, so webview-observable
-// behavior is unchanged from the old direct `AppHandle::emit` calls.
+// tools) send `AppEvent`s; the GPUI frontend holds one subscriber and
+// applies each event to its native state under the same channel name.
 //
-// Payloads are converted to `serde_json::Value` at send time. Tauri's
-// `emit` serialized payloads to JSON anyway, so this is the same wire
-// shape with one intermediate representation.
+// Payloads are converted to `serde_json::Value` at send time so every
+// subscriber observes the same owned wire shape.
 
 use serde::Serialize;
 use tokio::sync::broadcast;
 
-/// One frontend-observable event. `name` is the channel the webview
+/// One frontend-observable event. `name` is the channel the GPUI frontend
 /// subscribes to (`"session/exit"`, `"chat/layout-changed"`, …); every
 /// producer uses a static string so a typo is greppable.
 #[derive(Debug, Clone)]
@@ -29,8 +26,8 @@ pub struct AppEvent {
 const CHANNEL_CAPACITY: usize = 8192;
 
 /// Cheap-to-clone handle on the broadcast channel. Sending never blocks;
-/// with no live subscriber the event is dropped, mirroring the old
-/// `let _ = app.emit(..)` behavior against a not-yet-loaded webview.
+/// with no live subscriber the event is dropped; producers do not wait for
+/// the GPUI event loop to attach.
 #[derive(Clone)]
 pub struct EventChannel {
     tx: broadcast::Sender<AppEvent>,

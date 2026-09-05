@@ -9,8 +9,7 @@ autobins = false
 
 # Source-side agent binary. `cli_install` renames this to `runner` when
 # copying into `$APPDATA/runner/bin/` so spawned agents get the compact
-# mission-communication command on PATH without colliding with the Tauri
-# app crate's `runner` binary in the shared workspace `target/` dir.
+# mission-communication command on PATH. The GPUI app binary is `Runner`.
 [[bin]]
 name = "runner-agent-cli"
 path = "src/main.rs"

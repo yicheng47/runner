@@ -245,8 +245,8 @@ impl AppStore {
         let waker: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
             let _ = wake_tx.unbounded_send(());
         });
-        let bridge =
-            TerminalBridge::new(core.clone(), Arc::clone(&waker)).expect("start event bridge");
+        let bridge = TerminalBridge::new(core.clone(), Arc::clone(&waker))
+            .expect("terminal event bridge installation is infallible");
 
         cx.spawn(async move |weak, cx| {
             while wake_rx.next().await.is_some() {

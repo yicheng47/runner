@@ -795,7 +795,7 @@ pub async fn mission_start_impl_with_size(
 
     // Now mount the bus. Initial replay from offset 0 picks up the opening
     // events (durable since `start()` committed them under the DB tx),
-    // fans them to the Tauri emitter (UI) and the RouterSubscriber (which
+    // fans them to the GPUI event channel and the RouterSubscriber (which
     // dispatches `mission_goal` → launch prompt to the lead). Fresh
     // mission: NO `reconstruct_from_log()` call — setting a watermark
     // over the just-written `mission_goal` would suppress the bootstrap
@@ -1162,34 +1162,6 @@ pub async fn mission_rename_impl(state: &AppCore, id: String, title: String) -> 
         return Err(Error::msg(format!("mission not found: {id}")));
     }
     get(&conn, &id)
-}
-
-pub fn mission_set_project(
-    state: &AppCore,
-    id: &str,
-    project_id: Option<String>,
-) -> Result<Mission> {
-    let mut conn = state.db.get()?;
-    if repo::mission::set_project(&mut conn, id, project_id.as_deref())? == 0 {
-        return Err(Error::msg(format!("mission not found: {id}")));
-    }
-    // Keep the tree in step with the pointer: reparent the mission's
-    // node under the new project's node (or root), appended at the end.
-    if let Some(node) = repo::node::find_by_ref(&conn, repo::node::NodeType::Mission, id)? {
-        let parent = match project_id.as_deref() {
-            Some(project_id) => Some(repo::node::ensure_project_node(&conn, project_id)?.id),
-            None => None,
-        };
-        repo::node::reparent_append(&conn, &node.id, parent.as_deref())?;
-    }
-    let mission = get(&conn, id)?;
-    state
-        .events
-        .emit("mission/changed", &serde_json::json!({ "mission_id": id }));
-    state
-        .events
-        .emit("chat/layout-changed", &serde_json::json!({}));
-    Ok(mission)
 }
 
 /// Terminal end-of-mission. Kills every live PTY, writes the

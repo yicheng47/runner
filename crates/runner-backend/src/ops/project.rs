@@ -66,24 +66,6 @@ pub fn project_rename(state: &AppCore, id: String, name: String) -> Result<Proje
     Ok(row)
 }
 
-pub fn project_set_cwd(state: &AppCore, id: String, cwd: String) -> Result<ProjectRow> {
-    let conn = state.db.get()?;
-    if repo::project::set_cwd(&conn, &id, &clean_value(cwd, "cwd")?)? == 0 {
-        return Err(Error::msg(format!("project not found: {id}")));
-    }
-    let row = repo::project::get(&conn, &id)?.ok_or_else(|| Error::msg("project disappeared"))?;
-    emit_changed(state);
-    Ok(row)
-}
-
-pub fn project_reorder(state: &AppCore, ordered_ids: Vec<String>) -> Result<Vec<ProjectRow>> {
-    let conn = state.db.get()?;
-    repo::project::reorder(&conn, &ordered_ids)?;
-    let rows = repo::project::list(&conn)?;
-    emit_changed(state);
-    Ok(rows)
-}
-
 /// Delete a project after archiving member missions and chats and closing member
 /// terminals. Missions archive first as complete self-consistent operations;
 /// member tabs and the project node and row then change in one transaction. The

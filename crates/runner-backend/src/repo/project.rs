@@ -59,23 +59,6 @@ pub fn rename(conn: &Connection, id: &str, name: &str) -> rusqlite::Result<usize
     )
 }
 
-pub fn set_cwd(conn: &Connection, id: &str, cwd: &str) -> rusqlite::Result<usize> {
-    conn.execute(
-        "UPDATE projects SET cwd = ?2 WHERE id = ?1",
-        rusqlite::params![id, cwd],
-    )
-}
-
-pub fn reorder(conn: &Connection, ordered_ids: &[String]) -> rusqlite::Result<()> {
-    for (position, id) in ordered_ids.iter().enumerate() {
-        conn.execute(
-            "UPDATE projects SET position = ?2 WHERE id = ?1",
-            rusqlite::params![id, position as i64],
-        )?;
-    }
-    Ok(())
-}
-
 pub fn delete(conn: &Connection, id: &str) -> rusqlite::Result<usize> {
     conn.execute("DELETE FROM projects WHERE id = ?1", [id])
 }
@@ -83,23 +66,6 @@ pub fn delete(conn: &Connection, id: &str) -> rusqlite::Result<usize> {
 #[cfg(test)]
 mod tests {
     use crate::db;
-
-    #[test]
-    fn projects_keep_cwd_and_position() {
-        let pool = db::open_in_memory().unwrap();
-        let conn = pool.get().unwrap();
-        let a = super::create(&conn, "A", "/tmp/a").unwrap();
-        let b = super::create(&conn, "B", "/tmp/b").unwrap();
-        super::set_cwd(&conn, &a.id, "/tmp/a-next").unwrap();
-        super::reorder(&conn, &[b.id.clone(), a.id.clone()]).unwrap();
-
-        let rows = super::list(&conn).unwrap();
-        assert_eq!(
-            rows.iter().map(|row| row.name.as_str()).collect::<Vec<_>>(),
-            ["B", "A"]
-        );
-        assert_eq!(rows[1].cwd, "/tmp/a-next");
-    }
 
     #[test]
     fn delete_unbinds_sessions_and_missions() {

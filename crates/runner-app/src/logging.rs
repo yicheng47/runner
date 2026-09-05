@@ -85,13 +85,20 @@ impl Write for RotatingFile {
         if self.bytes > 0 && self.bytes.saturating_add(bytes.len() as u64) > self.max_bytes {
             self.rotate()?;
         }
-        let written = self.file.as_mut().expect("log file missing").write(bytes)?;
+        let written = self
+            .file
+            .as_mut()
+            .ok_or_else(|| io::Error::other("log file unavailable after failed rotation"))?
+            .write(bytes)?;
         self.bytes = self.bytes.saturating_add(written as u64);
         Ok(written)
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        self.file.as_mut().expect("log file missing").flush()
+        self.file
+            .as_mut()
+            .ok_or_else(|| io::Error::other("log file unavailable after failed rotation"))?
+            .flush()
     }
 }
 
@@ -190,6 +197,18 @@ mod tests {
             std::fs::read_to_string(backup_path(&path, 1)).unwrap(),
             "12345678"
         );
+    }
+
+    #[test]
+    fn writer_propagates_a_failed_rotation_on_later_flushes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(LOG_FILE_NAME);
+        let mut writer = RotatingFile::open(path.clone(), 1, 1).unwrap();
+        writer.write_all(b"full").unwrap();
+        std::fs::create_dir(backup_path(&path, 1)).unwrap();
+
+        assert!(writer.write_all(b"next").is_err());
+        assert!(writer.flush().is_err());
     }
 
     #[test]

@@ -427,65 +427,6 @@ pub fn move_and_reorder(
     Ok(())
 }
 
-/// Reparent a node to the end of a new scope without reordering the
-/// destination — the move-to-project menu paths use this; drags go
-/// through `move_and_reorder`. Callers own any domain write-through.
-pub fn reparent_append(
-    conn: &Connection,
-    id: &str,
-    parent_id: Option<&str>,
-) -> rusqlite::Result<usize> {
-    let position = next_position(conn, parent_id)?;
-    conn.execute(
-        "UPDATE nodes SET parent_id = ?2, position = ?3 WHERE id = ?1",
-        rusqlite::params![id, parent_id, position],
-    )
-}
-
-/// Re-derive a tab node's placement from its members' `sessions.
-/// project_id` pointers, after a pointer write that may cover only
-/// some members: a unanimous non-NULL project wins; mixed or absent
-/// membership moves the tab out of a project node to the root end.
-pub fn reconcile_tab_placement(conn: &Connection, tab_id: &str) -> rusqlite::Result<()> {
-    let Some(tab) = get(conn, tab_id)? else {
-        return Ok(());
-    };
-    if tab.node_type != NodeType::Tab {
-        return Ok(());
-    }
-    let members = session_ids(&tab);
-    let mut unanimous: Option<String> = None;
-    let mut all_share = !members.is_empty();
-    for (index, session_id) in members.iter().enumerate() {
-        let project_id: Option<Option<String>> = conn
-            .query_row(
-                "SELECT project_id FROM sessions WHERE id = ?1",
-                [session_id],
-                |row| row.get(0),
-            )
-            .optional()?;
-        let project_id = project_id.flatten();
-        if project_id.is_none() || (index > 0 && project_id != unanimous) {
-            all_share = false;
-            break;
-        }
-        unanimous = project_id;
-    }
-    if all_share {
-        if let Some(project_id) = unanimous {
-            let parent = ensure_project_node(conn, &project_id)?;
-            if tab.parent_id.as_deref() != Some(parent.id.as_str()) {
-                reparent_append(conn, &tab.id, Some(&parent.id))?;
-            }
-            return Ok(());
-        }
-    }
-    if effective_project(conn, tab.parent_id.as_deref())?.is_some() {
-        reparent_append(conn, &tab.id, None)?;
-    }
-    Ok(())
-}
-
 /// The project a node belongs to by placement: its parent when the
 /// parent is a project node.
 fn effective_project(
@@ -1667,57 +1608,6 @@ mod tests {
             })
             .unwrap();
         assert_eq!(mission_project, None);
-    }
-
-    #[test]
-    fn reconcile_tab_placement_follows_member_pointers() {
-        let pool = db::open_in_memory().unwrap();
-        let conn = pool.get().unwrap();
-        let project = crate::repo::project::create(&conn, "A", "/tmp/a").unwrap();
-        insert_session(&conn, "a", None);
-        insert_session(&conn, "b", None);
-        let tab = super::create_tab(
-            &conn,
-            None,
-            "pair",
-            0,
-            r#"{"preset":"cols-2","slots":["a","b"],"sizes":{}}"#,
-        )
-        .unwrap();
-
-        // Half the members carry the project -> the tab stays at root.
-        conn.execute(
-            "UPDATE sessions SET project_id = ?1 WHERE id = 'a'",
-            [&project.id],
-        )
-        .unwrap();
-        super::reconcile_tab_placement(&conn, &tab.id).unwrap();
-        assert_eq!(super::get(&conn, &tab.id).unwrap().unwrap().parent_id, None);
-
-        // Unanimous membership moves the tab into the project.
-        conn.execute(
-            "UPDATE sessions SET project_id = ?1 WHERE id = 'b'",
-            [&project.id],
-        )
-        .unwrap();
-        super::reconcile_tab_placement(&conn, &tab.id).unwrap();
-        let project_node = super::find_by_ref(&conn, NodeType::Project, &project.id)
-            .unwrap()
-            .unwrap();
-        assert_eq!(
-            super::get(&conn, &tab.id)
-                .unwrap()
-                .unwrap()
-                .parent_id
-                .as_deref(),
-            Some(project_node.id.as_str())
-        );
-
-        // Mixed again -> out of the project node, back to root.
-        conn.execute("UPDATE sessions SET project_id = NULL WHERE id = 'a'", [])
-            .unwrap();
-        super::reconcile_tab_placement(&conn, &tab.id).unwrap();
-        assert_eq!(super::get(&conn, &tab.id).unwrap().unwrap().parent_id, None);
     }
 
     /// The finalization boundary of archive-all container deletes: a

@@ -6,9 +6,8 @@
 //
 // Reader threads pump raw PTY bytes into the existing
 // `RuntimeOutput::Stream` channel that `SessionManager`'s forwarder
-// consumes. There is no host-side terminal model; xterm.js on the
-// frontend is the only emulator. See plan §"Why no headless emulator"
-// for the trade-offs.
+// consumes. The GPUI frontend owns the only terminal model; the backend
+// does not run a second headless emulator.
 //
 // The `#[cfg(unix)]` gate is applied at the parent `session/mod.rs`
 // when this module is registered, so no inner attribute is needed
@@ -64,7 +63,7 @@ const ORPHAN_SWEEP_CONFIRM: Duration = Duration::from_secs(1);
 /// `DEFAULT_IDLE_THRESHOLD` so genuine work started right after a resize
 /// still surfaces promptly.
 const RESIZE_GRACE: Duration = Duration::from_millis(500);
-// PTYs can boot before their frontend xterm pane is ready to answer startup
+// PTYs can boot before their GPUI terminal pane is ready to answer startup
 // probes. Answer them here so Codex does not cache fallback colors first.
 const TERMINAL_QUERY_STARTUP_BUDGET: usize = 8 * 1024;
 const TERMINAL_QUERY_TAIL: usize = 16;
@@ -871,14 +870,17 @@ fn write_to(runtime: &PtyRuntime, session_id: &str, bytes: &[u8]) -> RuntimeResu
 /// Map a symbolic key name to the byte sequence the child PTY expects.
 /// Conservative table — covers the only production caller (`"Enter"`
 /// from manager.rs) plus the doc-string examples on `SessionRuntime::send_key`
-/// (`"Escape"`, `"C-c"`, `"Up"`). xterm.js translates user typing
-/// client-side before sending it through `send_bytes`, so this isn't
-/// the place to keep the full `KeyboardEvent.key` space.
+/// (`"Escape"`, `"C-c"`, `"Up"`). The GPUI terminal translates ordinary
+/// user typing before sending it through `send_bytes`, so this table only
+/// covers named keys injected by the backend.
 fn translate_key(key: &str) -> RuntimeResult<Vec<u8>> {
     // C-<letter> chord: Ctrl + letter → control byte.
     if let Some(rest) = key.strip_prefix("C-") {
         if rest.len() == 1 {
-            let ch = rest.chars().next().unwrap();
+            let ch = rest
+                .chars()
+                .next()
+                .expect("single-byte control chord has one character");
             if ch.is_ascii_alphabetic() {
                 let upper = ch.to_ascii_uppercase() as u8;
                 let ctrl = upper - b'A' + 1;

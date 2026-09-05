@@ -130,16 +130,6 @@ pub fn runtime_catalog(state: &AppCore) -> Result<Vec<RuntimeCatalogEntry>> {
         .collect())
 }
 
-pub fn selectable_runtime_catalog(
-    state: &AppCore,
-    enabled_agents: Option<&[String]>,
-) -> Result<Vec<RuntimeCatalogEntry>> {
-    Ok(filter_selectable_runtime_catalog(
-        runtime_catalog(state)?,
-        enabled_agents,
-    ))
-}
-
 pub fn filter_selectable_runtime_catalog(
     catalog: Vec<RuntimeCatalogEntry>,
     enabled_agents: Option<&[String]>,

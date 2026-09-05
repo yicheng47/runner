@@ -1,7 +1,8 @@
-// Error types shared between the Tauri binary and the `runner` CLI.
+// Error types shared between the GPUI binary and the `runner` CLI.
 //
-// Narrower than the app-wide error in `src-tauri/src/error.rs` — no rusqlite or
-// tauri deps leak in here. App code wraps this via `From<runner_core::Error>`.
+// Narrower than the backend error in `runner-backend/src/error.rs` — no
+// rusqlite dependency leaks in here. Backend code wraps this via
+// `From<runner_core::Error>`.
 
 use thiserror::Error;
 
