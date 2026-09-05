@@ -778,7 +778,9 @@ impl NativeRoot {
         .detach();
     }
 
-    fn render_crew_editor(&mut self, _: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    fn render_crew_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        #[cfg(not(windows))]
+        let _ = window;
         let editor = &self.crew_surfaces.editor;
         let crew = editor.crew.clone();
         let slots = editor.slots.clone();
@@ -805,6 +807,13 @@ impl NativeRoot {
             .px_8()
             .pb_4()
             .pt(rems(36. / 16.))
+            .map(|header| {
+                #[cfg(windows)]
+                let header = header.pr(px(
+                    32. * self.settings(cx).app_zoom + self.caption_inset(window, cx)
+                ));
+                header
+            })
             .on_key_down(cx.listener(Self::on_crew_name_key_down))
             .child(
                 div()

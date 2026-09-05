@@ -161,6 +161,13 @@ impl NativeRoot {
             .h(rems(WORKSPACE_HEADER_HEIGHT / 16.))
             .pl(px(self.workspace_titlebar_padding(window, cx)))
             .pr_2()
+            .map(|header| {
+                #[cfg(windows)]
+                let header = header
+                    .pr(px(8. * self.settings(cx).app_zoom
+                        + self.chat_header_caption_inset(window, cx)));
+                header
+            })
             .flex()
             .items_center()
             .gap_2()
@@ -272,6 +279,8 @@ impl NativeRoot {
             panel_visibility,
             panel_open || panel_animating,
             panel_open && !panel_animating,
+            #[cfg(windows)]
+            window,
             cx,
         );
         div()
@@ -454,6 +463,10 @@ impl NativeRoot {
                 .chain(panel_action),
         )
         .into_div();
+        #[cfg(windows)]
+        let header = header.pr(px(
+            8. * self.settings(cx).app_zoom + self.chat_header_caption_inset(window, cx)
+        ));
 
         let error_banner = self.chat_error.clone().map(|error| {
             div()
@@ -593,6 +606,8 @@ impl NativeRoot {
             panel_visibility,
             panel_open || panel_animating,
             panel_open && !panel_animating,
+            #[cfg(windows)]
+            window,
             cx,
         );
 
@@ -846,6 +861,18 @@ impl NativeRoot {
         }
     }
 
+    #[cfg(windows)]
+    fn chat_header_caption_inset(&self, window: &Window, cx: &App) -> f32 {
+        let visibility = self.chat_panel_visibility.value_at(
+            Instant::now(),
+            Duration::from_millis(CHAT_PANEL_TRANSITION_MS),
+        );
+        (self.caption_inset(window, cx)
+            - self.settings(cx).chat_panel_width * self.settings(cx).app_zoom * visibility)
+            .max(0.)
+    }
+
+    #[cfg_attr(windows, allow(clippy::too_many_arguments))]
     fn render_chat_side_panel(
         &self,
         detail: Option<&DirectSessionEntry>,
@@ -853,6 +880,7 @@ impl NativeRoot {
         visibility: f32,
         show_panel: bool,
         border_on: bool,
+        #[cfg(windows)] window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let width = self.settings(cx).chat_panel_width;
@@ -885,6 +913,13 @@ impl NativeRoot {
                 .h(rems(WORKSPACE_HEADER_HEIGHT / 16.))
                 .pl_4()
                 .pr_2()
+                .map(|header| {
+                    #[cfg(windows)]
+                    let header = header.pr(px(
+                        8. * self.settings(cx).app_zoom + self.caption_inset(window, cx)
+                    ));
+                    header
+                })
                 .flex()
                 .items_center()
                 .justify_end()

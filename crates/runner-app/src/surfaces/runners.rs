@@ -1756,7 +1756,11 @@ impl NativeRoot {
         match route {
             AppRoute::Chat => self.render_active_tab(window, cx),
             AppRoute::Runners => self.render_runners_page(cx),
-            AppRoute::RunnerDetail(_) => self.render_runner_detail(cx),
+            AppRoute::RunnerDetail(_) => self.render_runner_detail(
+                #[cfg(windows)]
+                window,
+                cx,
+            ),
             AppRoute::Crews | AppRoute::CrewEditor(_) => self.render_crew_surface(window, cx),
             AppRoute::Mission(_) => self.mission_workspace.clone().into_any_element(),
             AppRoute::ArchivedChat => self.render_archived_chat(window, cx),
@@ -2105,7 +2109,11 @@ impl NativeRoot {
             .into_any_element()
     }
 
-    fn render_runner_detail(&mut self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_runner_detail(
+        &mut self,
+        #[cfg(windows)] window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let root = cx.entity();
         let back_root = root.clone();
         let back_key_root = root.clone();
@@ -2162,6 +2170,11 @@ impl NativeRoot {
                     .py_8()
                     .child(
                         div()
+                            .map(|header| {
+                                #[cfg(windows)]
+                                let header = header.pr(px(self.caption_inset(window, cx)));
+                                header
+                            })
                             .flex()
                             .items_center()
                             .justify_between()
