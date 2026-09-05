@@ -185,6 +185,10 @@ impl SessionRuntime for PtyRuntime {
         cmd.env("COLUMNS", cols.to_string());
         cmd.env("LINES", rows.to_string());
 
+        #[cfg(windows)]
+        launch::adapt_windows_batch_command(&mut cmd)
+            .map_err(|error| RuntimeError::Msg(error.to_string()))?;
+
         let mut child = pair
             .slave
             .spawn_command(cmd)
@@ -1858,6 +1862,88 @@ mod tests {
         let status = rt.status(&session).unwrap().unwrap();
         assert!(!status.alive);
         assert_eq!(status.exit_code, Some(7));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn spawn_batch_roundtrips_arguments_windows() {
+        let dir = tempfile::tempdir().unwrap();
+        let batch = dir.path().join("argument echo.BaT");
+        std::fs::write(&batch,
+            "@echo off\r\n\"%RUNNER_BATCH_TEST_EXE%\" --exact session::pty_runtime::tests::batch_argument_probe --nocapture -- %*\r\n").unwrap();
+        let args = [
+            "one",
+            "two words",
+            "80% coverage",
+            "say \"hello\"",
+            "bang!",
+            "left&right",
+            "tail\\",
+            "a^b>c|d",
+            "%RUNNER_BATCH_TEST_EXPANSION%",
+        ];
+        let mut launch = spec("batch-echo", batch.to_str().unwrap(), &args);
+        launch.cwd = Some(dir.path().to_path_buf());
+        launch.env.insert(
+            "RUNNER_BATCH_TEST_EXE".into(),
+            std::env::current_exe()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned(),
+        );
+        launch.env.insert(
+            "RUNNER_BATCH_TEST_EXPANSION".into(),
+            "must not expand".into(),
+        );
+        let rt = PtyRuntime::new();
+        let (session, stream) = rt.spawn(launch).unwrap();
+        let mut output = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while Instant::now() < deadline {
+            match stream.recv_timeout(Duration::from_millis(100)) {
+                Ok(RuntimeOutput::Stream(bytes)) => output.extend(bytes),
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                _ => {}
+            }
+        }
+        rt.stop(&session).unwrap();
+        let output = String::from_utf8_lossy(&output);
+        for (index, arg) in args.iter().enumerate() {
+            assert!(
+                output.contains(&format!("BATCH_ARG_{index}={arg}")),
+                "missing argument {index}: {output}"
+            );
+        }
+        assert!(output.contains("BATCH_ENV_CLEARED"), "{output}");
+        assert!(
+            output.contains(&format!("BATCH_ARG_COUNT={}", args.len())),
+            "{output}"
+        );
+        assert!(rt
+            .status(&session)
+            .unwrap()
+            .unwrap()
+            .command
+            .unwrap()
+            .starts_with(batch.to_str().unwrap()));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn batch_argument_probe() {
+        if std::env::var_os("RUNNER_BATCH_TEST_EXE").is_none() {
+            return;
+        }
+        let args = std::env::args()
+            .skip_while(|arg| arg != "--")
+            .skip(1)
+            .collect::<Vec<_>>();
+        println!("BATCH_ARG_COUNT={}", args.len());
+        for (index, arg) in args.iter().enumerate() {
+            println!("BATCH_ARG_{index}={arg}");
+        }
+        assert!(std::env::var_os("RUNNER_BATCH_COMMAND_LINE").is_none());
+        println!("BATCH_ENV_CLEARED");
     }
 
     #[cfg(windows)]

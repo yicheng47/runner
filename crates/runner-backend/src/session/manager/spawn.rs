@@ -480,6 +480,12 @@ impl SessionManager {
         first_turn: Option<&str>,
         mission_bus_dir: Option<&Path>,
     ) -> bool {
+        #[cfg(windows)]
+        let first_turn = if crate::session::launch::is_windows_batch(&runner.command) {
+            None
+        } else {
+            first_turn
+        };
         if runner.runtime == "claude-code" {
             let _ = std::fs::remove_file(crate::session::claude_rekey::drop_path(
                 app_data_dir,
@@ -697,6 +703,8 @@ impl SessionManager {
             size_source,
             plan,
             first_turn_delivered_via_argv,
+            #[cfg(windows)]
+            first_turn,
             resolved_cwd,
             row_started_at: started_at,
             codex_prompt_marker,
@@ -741,6 +749,8 @@ impl SessionManager {
             mut size_source,
             plan,
             first_turn_delivered_via_argv,
+            #[cfg(windows)]
+            first_turn,
             resolved_cwd,
             row_started_at,
             codex_prompt_marker,
@@ -925,10 +935,16 @@ impl SessionManager {
         }
 
         emit_runner_activity(&pool, &runner, events.as_ref());
-        if matches!(runner.runtime.as_str(), "claude-code" | "codex" | "trae")
-            && !plan.resuming
-            && !first_turn_delivered_via_argv
-        {
+        #[cfg(windows)]
+        self.paste_windows_batch_first_turn(&session_id, &runner, &plan, first_turn.as_deref())?;
+        let missing_first_turn =
+            matches!(runner.runtime.as_str(), "claude-code" | "codex" | "trae")
+                && !plan.resuming
+                && !first_turn_delivered_via_argv;
+        #[cfg(windows)]
+        let missing_first_turn =
+            missing_first_turn && !crate::session::launch::is_windows_batch(&runner.command);
+        if missing_first_turn {
             log::warn!(
                 "first-turn argv not delivered for {session_id} (runtime {}); skipping post-spawn injection",
                 runner.runtime,
@@ -1357,10 +1373,16 @@ impl SessionManager {
         if emit_activity {
             emit_runner_activity(&pool, &runner, events.as_ref());
         }
-        if matches!(runner.runtime.as_str(), "claude-code" | "codex" | "trae")
-            && !plan.resuming
-            && !first_turn_delivered_via_argv
-        {
+        #[cfg(windows)]
+        self.paste_windows_batch_first_turn(&session_id, &runner, &plan, first_turn.as_deref())?;
+        let missing_first_turn =
+            matches!(runner.runtime.as_str(), "claude-code" | "codex" | "trae")
+                && !plan.resuming
+                && !first_turn_delivered_via_argv;
+        #[cfg(windows)]
+        let missing_first_turn =
+            missing_first_turn && !crate::session::launch::is_windows_batch(&runner.command);
+        if missing_first_turn {
             log::warn!(
                 "first-turn argv not delivered for direct chat {session_id} (runtime {}); skipping post-spawn injection",
                 runner.runtime,
@@ -1375,6 +1397,28 @@ impl SessionManager {
             pid: None,
             fresh_fallback_lead: false,
         })
+    }
+
+    #[cfg(windows)]
+    fn paste_windows_batch_first_turn(
+        &self,
+        session_id: &str,
+        runner: &Runner,
+        plan: &router::runtime::ResumePlan,
+        first_turn: Option<&str>,
+    ) -> Result<()> {
+        if matches!(runner.runtime.as_str(), "claude-code" | "codex" | "trae")
+            && !plan.resuming
+            && crate::session::launch::is_windows_batch(&runner.command)
+        {
+            if let Some(body) = first_turn.filter(|body| !body.trim().is_empty()) {
+                if let Err(error) = self.inject_paste(session_id, body.as_bytes()) {
+                    let _ = self.kill(session_id);
+                    return Err(error);
+                }
+            }
+        }
+        Ok(())
     }
 
     #[allow(clippy::too_many_arguments)]

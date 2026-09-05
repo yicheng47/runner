@@ -6862,3 +6862,85 @@ fn headless_fork_descendant() {
     // The inherited stderr pipe stays open without emitting libtest progress as Codex JSON.
     thread::sleep(Duration::from_secs(30));
 }
+
+#[cfg(windows)]
+#[test]
+fn windows_batch_first_turn_is_pasted_after_spawn() {
+    let dir = tempfile::tempdir().unwrap();
+    let batch = dir.path().join("prompt reader.cmd");
+    std::fs::write(&batch,
+        "@echo off\r\n\"%RUNNER_BATCH_PROMPT_EXE%\" --exact session::manager::tests::windows_batch_prompt_probe --nocapture\r\n").unwrap();
+    let mut runner = runner(batch.to_str().unwrap(), &[]);
+    runner.runtime = "claude-code".into();
+    runner.env.insert(
+        "RUNNER_BATCH_PROMPT_EXE".into(),
+        std::env::current_exe()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned(),
+    );
+    let pool = pool_with_schema();
+    insert_crew_runner(&pool, "batch-prompt", &runner.id);
+    let events = capture();
+    let mgr = manager_with_runtime(
+        Default::default(),
+        Arc::new(crate::session::pty_runtime::PtyRuntime::new()),
+    );
+    let spawned = mgr
+        .spawn_direct(
+            &runner,
+            None,
+            None,
+            None,
+            None,
+            Some(dir.path().to_str().unwrap()),
+            None,
+            None,
+            dir.path(),
+            Arc::clone(&pool),
+            events.clone(),
+            Some("first line\nsecond line".into()),
+        )
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let output = loop {
+        let bytes = events
+            .output
+            .lock()
+            .unwrap()
+            .iter()
+            .flat_map(|event| event.bytes.iter().copied())
+            .collect::<Vec<_>>();
+        let output = String::from_utf8_lossy(&bytes).into_owned();
+        if output.contains("BATCH_INPUT_FIRST=first line")
+            && output.contains("BATCH_INPUT_SECOND=second line")
+            || Instant::now() >= deadline
+        {
+            break output;
+        }
+        thread::sleep(Duration::from_millis(20));
+    };
+    mgr.kill(&spawned.id).unwrap();
+    assert!(output.contains("BATCH_INPUT_FIRST=first line"), "{output}");
+    assert!(
+        output.contains("BATCH_INPUT_SECOND=second line"),
+        "{output}"
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_batch_prompt_probe() {
+    if std::env::var_os("RUNNER_BATCH_PROMPT_EXE").is_none() {
+        return;
+    }
+    let mut first = String::new();
+    let mut second = String::new();
+    std::io::stdin().read_line(&mut first).unwrap();
+    std::io::stdin().read_line(&mut second).unwrap();
+    println!("BATCH_INPUT_FIRST={}", first.trim_end_matches(['\r', '\n']));
+    println!(
+        "BATCH_INPUT_SECOND={}",
+        second.trim_end_matches(['\r', '\n'])
+    );
+}

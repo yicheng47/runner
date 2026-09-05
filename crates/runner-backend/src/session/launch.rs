@@ -5,6 +5,100 @@
 
 use std::path::Path;
 
+#[cfg(windows)]
+pub(super) fn is_windows_batch(command: &str) -> bool {
+    Path::new(command)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            extension.eq_ignore_ascii_case("cmd") || extension.eq_ignore_ascii_case("bat")
+        })
+}
+
+#[cfg(windows)]
+pub(super) fn adapt_windows_batch_command(
+    command: &mut portable_pty::CommandBuilder,
+) -> crate::error::Result<()> {
+    let argv = command.get_argv();
+    let program = argv[0].to_string_lossy();
+    if !is_windows_batch(&program) {
+        return Ok(());
+    }
+    let args = argv[1..]
+        .iter()
+        .map(|arg| arg.to_string_lossy())
+        .collect::<Vec<_>>();
+    let line = windows_batch_command_line(&program, args.iter().map(|arg| arg.as_ref()))?;
+    let interpreter = command
+        .get_env("ComSpec")
+        .unwrap_or(std::ffi::OsStr::new("cmd.exe"))
+        .to_owned();
+    // The space/quote-free variable reference bypasses portable-pty's C argv quoting. The Windows
+    // probe proved substitution preserves literal % and needs no outer quote pair; argument quotes
+    // and backslashes follow Rust 1.97.1 append_bat_arg. Multiline first turns use post-spawn paste.
+    command.env(
+        "RUNNER_BATCH_COMMAND_LINE",
+        format!("set \"RUNNER_BATCH_COMMAND_LINE=\" & {line}"),
+    );
+    *command.get_argv_mut() = vec![
+        interpreter,
+        "/e:ON".into(),
+        "/v:OFF".into(),
+        "/d".into(),
+        "/c".into(),
+        "%RUNNER_BATCH_COMMAND_LINE%".into(),
+    ];
+    Ok(())
+}
+
+#[cfg(windows)]
+fn windows_batch_command_line<'a>(
+    program: &str,
+    args: impl IntoIterator<Item = &'a str>,
+) -> crate::error::Result<String> {
+    use crate::error::Error;
+    if program.contains(['"', '\0', '\r', '\n']) || program.ends_with('\\') {
+        return Err(Error::msg("invalid Windows batch script path"));
+    }
+    let mut line = format!("\"{program}\"");
+    for arg in args {
+        if arg.contains(['\0', '\r', '\n']) {
+            return Err(Error::msg(
+                "Windows batch arguments cannot contain NUL, CR or LF",
+            ));
+        }
+        line.push(' ');
+        // Keep std's allowlist: without an outer quote pair, bare cmd metacharacters execute.
+        let quote = arg.is_empty()
+            || arg.ends_with('\\')
+            || arg.chars().any(|ch| {
+                (ch.is_ascii() && !(ch.is_ascii_alphanumeric() || r"#$*+-./:?@\_".contains(ch)))
+                    || ch.is_control()
+            });
+        if quote {
+            line.push('"');
+        }
+        let mut backslashes = 0;
+        for ch in arg.chars() {
+            if ch == '\\' {
+                backslashes += 1;
+            } else {
+                if ch == '"' {
+                    line.extend(std::iter::repeat_n('\\', backslashes));
+                    line.push('"');
+                }
+                backslashes = 0;
+            }
+            line.push(ch);
+        }
+        if quote {
+            line.extend(std::iter::repeat_n('\\', backslashes));
+            line.push('"');
+        }
+    }
+    Ok(line)
+}
+
 /// Tool dirs we always include on the spawned process's PATH, even
 /// when the shell-PATH resolver failed/timed out. Covers the most
 /// common locations users install agent CLIs into. `~/`-prefixed
@@ -202,6 +296,55 @@ pub fn shell_quote(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_batch_builder_matches_proven_cmd_expansion() {
+        assert_eq!(
+            windows_batch_command_line(r"C:\tools\agent.cmd", ["word", "two words", "80%", "say \"hi\"", "", "tail\\"]).unwrap(),
+            "\"C:\\tools\\agent.cmd\" word \"two words\" \"80%\" \"say \"\"hi\"\"\" \"\" \"tail\\\\\""
+        );
+        assert_eq!(
+            windows_batch_command_line("agent.bat", ["x\\\"y"]).unwrap(),
+            "\"agent.bat\" \"x\\\\\"\"y\""
+        );
+        for arg in ["a\rb", "a\nb", "a\0b"] {
+            assert!(windows_batch_command_line("agent.cmd", [arg]).is_err());
+        }
+        for program in ["bad\".cmd", "bad\\", "bad\0.cmd"] {
+            assert!(windows_batch_command_line(program, []).is_err());
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_batch_adapter_preserves_non_batch_commands() {
+        let mut command = portable_pty::CommandBuilder::new("agent.exe");
+        command.args(["two words", "80%", "a\nb"]);
+        let original = command.clone();
+        adapt_windows_batch_command(&mut command).unwrap();
+        assert_eq!(command, original);
+        assert!(is_windows_batch("agent.CmD"));
+        assert!(is_windows_batch("agent.BAT"));
+        let mut command = portable_pty::CommandBuilder::new("agent.CmD");
+        command.env("ComSpec", r"C:\Windows\System32\cmd.exe");
+        adapt_windows_batch_command(&mut command).unwrap();
+        assert_eq!(
+            command.get_argv(),
+            &vec![
+                std::ffi::OsString::from(r"C:\Windows\System32\cmd.exe"),
+                "/e:ON".into(),
+                "/v:OFF".into(),
+                "/d".into(),
+                "/c".into(),
+                "%RUNNER_BATCH_COMMAND_LINE%".into()
+            ]
+        );
+        assert_eq!(
+            command.get_env("RUNNER_BATCH_COMMAND_LINE").unwrap(),
+            "set \"RUNNER_BATCH_COMMAND_LINE=\" & \"agent.CmD\""
+        );
+    }
     use std::path::PathBuf;
 
     #[test]

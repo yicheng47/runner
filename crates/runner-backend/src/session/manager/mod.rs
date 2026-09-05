@@ -727,6 +727,8 @@ pub struct PendingMissionSpawn {
     size_source: &'static str,
     plan: router::runtime::ResumePlan,
     first_turn_delivered_via_argv: bool,
+    #[cfg(windows)]
+    first_turn: Option<String>,
     resolved_cwd: Option<String>,
     row_started_at: String,
     codex_prompt_marker: Option<String>,
