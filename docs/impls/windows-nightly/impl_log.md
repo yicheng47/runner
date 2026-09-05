@@ -6,8 +6,20 @@ Dated record for the Windows nightly program ([README](README.md), [plan](plan.m
 
 - **Landed on `nightly-windows`**: Phase 0 compile gate ([#482](https://github.com/yicheng47/runner/pull/482), `9a213e5`), Phase 1 it opens on the PC ([#483](https://github.com/yicheng47/runner/pull/483), `952767c`), Windows title row fix for [#484](https://github.com/yicheng47/runner/issues/484) ([#485](https://github.com/yicheng47/runner/pull/485), `2a28ada`).
 - **Current nightly**: `Runner-Nightly-0.7.5.20260905.1323-x64.zip` from `2a28ada`, run 33968763863.
-- **Next**: Jason's PC pass on the 1323 zip against the Phase 1 checklist plus the #484 checks; file failures as `bug:` issues against #437 and fix in `fix/437-…` PRs into `nightly-windows`. Then the Phase 2 brief (Job Object lifecycle, one-tier stop, sweep change, both `runner` shims, MCP pipe end to end).
-- **Open**: an unsigned Inno Setup installer for the friend (asked 2026-09-05, undecided); the router logs a `mission_warning` "human_response references unknown question_id" on every answer from the app's ask dialog (unfiled, answers still reach the crew).
+- **Next**: Todo 1 (cursor jump), then Phase 2, then Phase 3, each a codex-crew mission landing on `nightly-windows`; then a nightly cut for Jason's PC pass.
+- **Working rule (Jason, 2026-09-05)**: bugs found by this program are not filed as GitHub issues; they go in the Todo list below and are fixed by `fix/437-…` PRs into `nightly-windows`. Missions and merges are self-driven on codex-crew; Jason tests the nightly cut at the end of a run.
+
+## Todo
+
+Remaining work, in the order it should land. Move an item to a dated entry when it ships; keep it here with a note if it is blocked.
+
+1. **Cursor jumps in a codex chat on Windows** (Jason, first PC pass). ConPTY re-emits whole screens without synchronized-update markers; Runner reads 8 KB per event and takes the terminal lock per event, so the renderer can paint a half-applied redraw with the cursor at an intermediate position. Fix like alacritty/Zed: drain the PTY under one terminal lock with a larger buffer (`pty_runtime.rs` reader thread), and batch wakeups for ~4 ms before `cx.notify()` (`app_store.rs`). Portable code, testable on macOS; a PC fixture recording (`RUNNER_RECORD_INPUT_FIXTURE`) would pin it in the corpus.
+2. **Phase 2 — agents run.** Windows `process` module on Job Objects, one-tier stop, sweep change, both `runner` shims, MCP pipe end to end, test twins, `cargo test` in the Windows CI job. Acceptance on the PC: claude direct chat, codex direct chat, a two-slot crew mission with `runner signal` reaching the feed and Stop leaving no orphans.
+3. **Phase 3 — polish.** `explorer /select`, icon resource, long-path manifest, ConPTY resize fixtures, promote `Rust / Windows` to required on `nightly-windows`, release notes with the SmartScreen step. The CJK IME pass and DPI drag are PC checks.
+4. **PC checklist items not yet reported** (Phase 1): database under `%APPDATA%`, Settings pipe name and Ctrl+A/C/X/V, PowerShell pane, Ctrl+C interrupt, Ctrl+[ as ESC, IME, DPI drag; and the #484 checks (drag, double-click, caption buttons, snap flyout, F11, Alt+Tab name, top-edge resize).
+5. **Installer** — an unsigned Inno Setup installer for the friend (asked 2026-09-05, undecided). Outside the spec's scope until Jason decides.
+
+Outside this program, seen while running it: the router logs a `mission_warning` "human_response references unknown question_id" on every answer from the app's ask dialog; the answer still reaches the crew.
 
 ## Windows nightlies
 
