@@ -25,7 +25,7 @@ A drawer shell is never a pane, never a sidebar row, and never part of a tab's c
 
 The chat header's two clusters get a rule: **the left cluster acts on the session, the right cluster toggles a surface.**
 
-- Left (`title_actions`, `crates/runner-app/src/surfaces/panes.rs:241`): icon · title · ⋯ · Stop · **⑂ Fork**. Fork moves here from the trailing group where [60](../60-fork-chat-to-pane-or-tab.md) placed it (`trailing_actions`, `panes.rs:315`); its enabled / disabled / pending states and the confirm dialog are unchanged.
+- Left (`title_actions`, `crates/runner-app/src/surfaces/panes.rs:241`): icon · title · ⋯ · Stop · **⑂ Fork**. Fork moves here from the trailing group where [60](./60-fork-chat-to-pane-or-tab.md) placed it (`trailing_actions`, `panes.rs:315`); its enabled / disabled / pending states and the confirm dialog are unchanged.
 - Right (`trailing_actions`): **split** (the layout picker, `panes.rs:271`) · **drawer** · **side panel** (`panes.rs:286`). Codex's order.
 
 The drawer toggle is a lucide `panel-bottom` glyph in the same hollow / filled pair the sidebar and side panel already use (`assets.rs` `PANEL_LEFT_*` / `PANEL_RIGHT_*`). Hidden: hollow, ghost variant, tooltip "Show terminal drawer · ⌥F12". Open: filled, `ButtonVariant::Secondary` — the raised pill the layout picker gets while it is open (`panes.rs:273`) — tooltip "Hide terminal drawer · ⌥F12". The shortcut hint follows the configured binding and disappears when the action is unbound. The toggle renders on every chat tab, including a single-pane one; it does not render on a terminal-only tab (`focused_shell`, a single shell pane and nothing else) or in the mission workspace.

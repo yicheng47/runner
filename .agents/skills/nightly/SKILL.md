@@ -63,7 +63,7 @@ After a production release, move the crates to the next nightly version (`0.6.0`
 2. Check that no Windows nightly run is in progress with `gh run list --workflow nightly.yml --branch nightly-windows --status in_progress --json databaseId`; another Windows dispatch would cancel it. Windows and macOS use separate concurrency groups. Check CI for the selected sha with `gh run list --commit <sha> --workflow ci.yaml --limit 1 --json status,conclusion`. Missing or failed → stop; in progress is fine, the workflow waits for it. Both `Rust / macOS` and `Rust / Windows` must pass.
 3. **Dispatch:** `gh workflow run nightly.yml --ref nightly-windows -f platform=windows`. Find the new run with `gh run list --workflow nightly.yml --branch nightly-windows --limit 1 --json databaseId,status,headSha`; confirm its `headSha` matches preflight.
 4. **Watch:** `gh run watch <id> --exit-status`. On failure, inspect `gh run view <id> --log-failed`, report the failing step, and stop. A failure in the public-release verification means the friend cannot use the download link; do not report the build as ready.
-5. Run `windows check`, then `windows stamp`. Report the version, UTC stamp, run id, sha, and public x64 zip URL. Jason extracts the zip and runs the Phase 1 PC checklist in `docs/impls/437-windows-nightly.md`.
+5. Run `windows check`, then `windows stamp`. Report the version, UTC stamp, run id, sha, and public x64 zip URL. Jason extracts the zip and runs the Phase 1 PC checklist in `docs/impls/windows-nightly/plan.md`.
 
 ### `windows check`
 
@@ -74,4 +74,4 @@ After a production release, move the crates to the next nightly version (`0.6.0`
 
 ### `windows stamp`
 
-After a successful cut and public-download check, record the x64 zip filename and URL, UTC stamp, run id, source sha, and a short description of what it carries under `## Windows nightlies` in `docs/impls/437-windows-nightly.md` (create the section on the first cut). Keep the current entry first and the last three previous entries. Record PC results only after Jason supplies them. Commit only that document as `docs: Windows nightly <stamp>` on `nightly-windows`, then push that branch. This uses the skill's existing docs-commit authorization; it does not authorize code pushes, merging, or a macOS dispatch.
+After a successful cut and public-download check, record the x64 zip filename and URL, UTC stamp, run id, source sha, and a short description of what it carries under `## Windows nightlies` in `docs/impls/windows-nightly/impl_log.md` (create the section on the first cut). Keep the current entry first and the last three previous entries. Record PC results only after Jason supplies them. Commit only that document as `docs: Windows nightly <stamp>` on `nightly-windows`, then push that branch. This uses the skill's existing docs-commit authorization; it does not authorize code pushes, merging, or a macOS dispatch.
