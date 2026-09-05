@@ -1,4 +1,7 @@
-use std::{path::PathBuf, time::Duration};
+use std::time::Duration;
+
+use crate::ipc::IpcStream;
+use runner_core::app_paths::IpcEndpoint;
 
 use rmcp::handler::server::ServerHandler;
 use rmcp::model::{
@@ -7,29 +10,14 @@ use rmcp::model::{
 };
 use rmcp::service::{RequestContext, RoleServer};
 use rmcp::ServiceExt;
-use tokio::net::UnixStream;
 use tokio::time::timeout;
 
-const APP_IDENTIFIER: &str = "com.wycstudios.runner";
 const CONNECT_TIMEOUT: Duration = Duration::from_millis(500);
 
-fn app_data_segment() -> String {
-    if cfg!(debug_assertions) {
-        format!("{APP_IDENTIFIER}-dev")
-    } else {
-        APP_IDENTIFIER.to_string()
-    }
-}
-
-fn socket_path() -> Option<PathBuf> {
-    let home = std::env::var_os("HOME").map(PathBuf::from)?;
-    #[cfg(target_os = "macos")]
-    let base = home.join("Library/Application Support");
-    #[cfg(target_os = "linux")]
-    let base = std::env::var_os("XDG_DATA_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| home.join(".local/share"));
-    Some(base.join(app_data_segment()).join("mcp.sock"))
+fn endpoint() -> Option<IpcEndpoint> {
+    let debug = cfg!(debug_assertions);
+    let app_data_dir = runner_core::app_paths::app_data_dir(debug)?;
+    Some(runner_core::app_paths::mcp_endpoint(&app_data_dir, debug))
 }
 
 pub fn run() -> i32 {
@@ -121,20 +109,20 @@ async fn proxy_call_tool(request: CallToolRequestParams) -> Result<CallToolResul
         .map_err(proxy_service_error)
 }
 
-async fn connect_app() -> Result<UnixStream, ErrorData> {
-    let path = socket_path().ok_or_else(|| {
+async fn connect_app() -> Result<IpcStream, ErrorData> {
+    let path = endpoint().ok_or_else(|| {
         ErrorData::internal_error(
-            "Runner app data directory could not be resolved from HOME.",
+            "Runner app data directory could not be resolved from the home directory.",
             None,
         )
     })?;
 
-    match timeout(CONNECT_TIMEOUT, UnixStream::connect(&path)).await {
+    match timeout(CONNECT_TIMEOUT, IpcStream::connect(&path)).await {
         Ok(Ok(stream)) => Ok(stream),
         Ok(Err(e)) => Err(ErrorData::internal_error(
             format!(
                 "Runner.app is not running. Open Runner and retry. Could not connect to {}: {e}",
-                path.display()
+                path
             ),
             None,
         )),

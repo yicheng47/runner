@@ -869,7 +869,7 @@ fn file_target_from_captures(
 
 fn resolve_file_candidate(candidate: &str, cwd: Option<&Path>) -> Option<PathBuf> {
     let path = if let Some(rest) = candidate.strip_prefix("~/") {
-        PathBuf::from(std::env::var_os("HOME")?).join(rest)
+        runner_backend::app_paths::home_dir()?.join(rest)
     } else if candidate.starts_with('/') {
         PathBuf::from(candidate)
     } else {

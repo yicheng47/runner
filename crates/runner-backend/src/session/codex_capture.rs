@@ -64,7 +64,7 @@ fn claimed_rollouts() -> &'static Mutex<HashSet<PathBuf>> {
 }
 
 pub fn sessions_root_for(runtime: &str) -> Option<PathBuf> {
-    let home = PathBuf::from(std::env::var_os("HOME")?);
+    let home = runner_core::app_paths::home_dir()?;
     match runtime {
         "codex" => Some(home.join(".codex").join("sessions")),
         "trae" => Some(home.join(".trae").join("cli").join("sessions")),
@@ -666,7 +666,7 @@ mod tests {
 
     #[test]
     fn sessions_root_for_maps_codex_lineage_layouts() {
-        let home = PathBuf::from(std::env::var_os("HOME").expect("tests require HOME"));
+        let home = runner_core::app_paths::home_dir().expect("tests require a home directory");
         assert_eq!(
             sessions_root_for("codex"),
             Some(home.join(".codex").join("sessions")),

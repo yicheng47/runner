@@ -43,10 +43,10 @@ impl ServerHandler for RunnerMcpHandler {
     }
 }
 
-pub(crate) async fn serve_connection(stream: tokio::net::UnixStream, state: AppCore) {
+pub(crate) async fn serve_connection(stream: crate::ipc::IpcStream, state: AppCore) {
     let (read, write) = stream.into_split();
     let handler = RunnerMcpHandler::new(state);
-    // OwnedWriteHalf needs to be wrapped in BufWriter for the
+    // WriteHalf needs to be wrapped in BufWriter for the
     // async-rw transport codec (it expects AsyncBufRead + AsyncWrite).
     let write = tokio::io::BufWriter::new(write);
     match handler.serve((read, write)).await {

@@ -174,7 +174,7 @@ impl McpPane {
         snippets: McpSnippets,
         cx: &mut Context<Self>,
     ) {
-        let binding_dir = parent_path(&status.socket_path);
+        let binding_dir = binding_location(&status.endpoint);
         self.binding_copy.update(cx, |copy, copy_cx| {
             copy.set_value((!binding_dir.is_empty()).then_some(binding_dir), copy_cx)
         });
@@ -246,7 +246,7 @@ impl McpPane {
         let binding_dir = self
             .status
             .as_ref()
-            .map(|status| parent_path(&status.socket_path))
+            .map(|status| binding_location(&status.endpoint))
             .unwrap_or_default();
         let binding_field = div()
             .h_8()
@@ -525,6 +525,18 @@ impl Render for McpPane {
     }
 }
 
+fn binding_location(endpoint: &str) -> String {
+    #[cfg(unix)]
+    {
+        parent_path(endpoint)
+    }
+    #[cfg(windows)]
+    {
+        endpoint.to_string()
+    }
+}
+
+#[cfg(any(unix, test))]
 fn parent_path(path: &str) -> String {
     path.rfind('/')
         .filter(|index| *index > 0)

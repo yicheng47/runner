@@ -76,7 +76,7 @@ Runner is a local macOS desktop app. A user configures a **crew** of CLI coding 
 | Event transport | **Append-only NDJSON per mission** | Tailable, crash-durable, replayable; `flock(LOCK_EX)` for cross-process append atomicity. |
 | File watching | **`notify`** | The bus tails the NDJSON file and republishes lines. |
 | Bundled CLI | **`runner`** (`cli/`) | Agents talk to the bus through it — `runner signal …`, `runner msg post …`, `runner msg read`. Dropped at `$APPDATA/bin/runner` on first run, PATH-prepended per spawn. |
-| MCP | **`rmcp`** server over a Unix socket + `runner-mcp` stdio bridge | Runner.app owns stateful tool execution (crews, runners, slots, projects, missions, direct sessions); external clients spawn `runner-mcp`, which bridges stdio to `$APPDATA/mcp.sock`. |
+| MCP | **`rmcp`** server over local IPC + `runner-mcp` stdio bridge | Runner.app owns stateful tool execution (crews, runners, slots, projects, missions, direct sessions); external clients spawn `runner-mcp`, which bridges stdio to `$APPDATA/mcp.sock` on Unix or `\\.\pipe\com.wycstudios.runner[-dev]` on Windows. |
 | Logging | **`tracing`** + rotating file layer + panic hook | `~/Library/Logs/com.wycstudios.runner/runner.log`; release filter `info`, debug builds `debug`, `RUST_LOG` overrides. |
 | Updater | **Sparkle 2.9.5** via `objc2` (`updater` feature) | `SPUStandardUpdaterController`, EdDSA-signed appcast on GitHub Releases (production only; the nightly channel has no feed — see §14). |
 | Packaging | `script/bundle-mac` | `.app` assembly, Developer ID codesign, notarization, DMG; `CFBundleVersion` is the build stamp. |

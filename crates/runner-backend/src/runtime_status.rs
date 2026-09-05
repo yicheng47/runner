@@ -97,7 +97,7 @@ pub fn status_list(
         .clone();
     let overrides = db::runtime_overrides(pool)?;
     let path = direct_chat_path(&shell_env);
-    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let home = runner_core::app_paths::home_dir();
 
     let runtimes = runtime_definitions()
         .iter()
@@ -308,7 +308,7 @@ fn validation_error(code: &str, message: impl Into<String>) -> OverrideValidatio
 
 pub fn direct_chat_path(shell_env: &LoginShellEnv) -> String {
     let process_path = std::env::var("PATH").ok();
-    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let home = runner_core::app_paths::home_dir();
     launch::compose_path(
         None,
         None,
@@ -319,10 +319,39 @@ pub fn direct_chat_path(shell_env: &LoginShellEnv) -> String {
 }
 
 pub fn find_executable(command: &str, path: &str) -> Option<PathBuf> {
-    path.split(':')
-        .filter(|entry| !entry.is_empty())
-        .map(|entry| Path::new(entry).join(command))
-        .find(|candidate| validate_executable_path(candidate).is_ok())
+    #[cfg(windows)]
+    let extensions = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string());
+    for entry in std::env::split_paths(path).filter(|entry| !entry.as_os_str().is_empty()) {
+        #[cfg(windows)]
+        for extension in extensions
+            .split(';')
+            .filter(|extension| !extension.is_empty())
+        {
+            let candidate = entry.join(format!("{command}{extension}"));
+            if validate_executable_path(&candidate).is_ok() {
+                return Some(candidate);
+            }
+        }
+        #[cfg(windows)]
+        if !Path::new(command)
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| {
+                extensions.split(';').any(|suffix| {
+                    suffix
+                        .strip_prefix('.')
+                        .is_some_and(|suffix| extension.eq_ignore_ascii_case(suffix))
+                })
+            })
+        {
+            continue;
+        }
+        let candidate = entry.join(command);
+        if validate_executable_path(&candidate).is_ok() {
+            return Some(candidate);
+        }
+    }
+    None
 }
 
 pub fn apply_discovery_result(
@@ -438,8 +467,10 @@ fn log_runtime_paths(pool: &DbPool, shell_env: &SharedShellEnv) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
+    #[cfg(unix)]
     fn executable(dir: &Path, name: &str) -> PathBuf {
         let path = dir.join(name);
         std::fs::write(&path, "#!/bin/sh\n").unwrap();
@@ -486,7 +517,40 @@ mod tests {
         );
     }
 
+    #[cfg(windows)]
     #[test]
+    fn resolver_uses_pathext_before_bare_names_and_keeps_path_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = dir.path().join("first");
+        let second = dir.path().join("second");
+        std::fs::create_dir_all(&first).unwrap();
+        std::fs::create_dir_all(&second).unwrap();
+        let command = "runner-path-test";
+        let extensions = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".into());
+        let extension = extensions
+            .split(';')
+            .find(|extension| !extension.is_empty())
+            .unwrap();
+        let expected = first.join(format!("{command}{extension}"));
+        std::fs::write(&expected, "").unwrap();
+        std::fs::write(first.join(command), "").unwrap();
+        let later = second.join(format!("{command}{extension}"));
+        std::fs::write(&later, "").unwrap();
+        let path = std::env::join_paths([first, second]).unwrap();
+        let path = path.to_str().unwrap();
+        assert_eq!(find_executable(command, path), Some(expected.clone()));
+        std::fs::remove_file(expected).unwrap();
+        assert_eq!(find_executable(command, path), Some(later.clone()));
+        assert_eq!(
+            find_executable(&format!("{command}{extension}"), path),
+            Some(later.clone())
+        );
+        std::fs::remove_file(later).unwrap();
+        assert_eq!(find_executable(command, path), None);
+    }
+
+    #[test]
+    #[cfg(unix)]
     fn resolver_requires_regular_executable_file() {
         let dir = tempfile::tempdir().unwrap();
         let executable = executable(dir.path(), "codex");
@@ -504,6 +568,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn override_validation_rejects_relative_missing_directory_and_non_executable_paths() {
         let dir = tempfile::tempdir().unwrap();
         assert_eq!(
@@ -533,6 +598,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn effective_command_precedence_and_stale_override_fallthrough() {
         let pool = crate::db::open_in_memory().unwrap();
         let detected_dir = tempfile::tempdir().unwrap();

@@ -415,6 +415,7 @@ fn capture() -> Arc<Capture> {
     Arc::new(Capture::default())
 }
 
+#[cfg(unix)]
 fn fork_materializer(stdout: &str, exit_code: i32) -> (tempfile::TempDir, String, PathBuf) {
     use std::os::unix::fs::PermissionsExt;
 
@@ -436,6 +437,7 @@ fn fork_materializer(stdout: &str, exit_code: i32) -> (tempfile::TempDir, String
     (dir, command.to_string_lossy().into_owned(), capture_path)
 }
 
+#[cfg(unix)]
 fn codex_fork_materializer(
     source_key: &str,
     fork_key: &str,
@@ -489,11 +491,13 @@ fn codex_fork_materializer(
     )
 }
 
+#[cfg(unix)]
 struct RepairingCapture {
     pool: Arc<DbPool>,
     updated: Mutex<Vec<SessionUpdatedEvent>>,
 }
 
+#[cfg(unix)]
 impl SessionEvents for RepairingCapture {
     fn output(&self, _ev: &OutputEvent) {}
 
@@ -6115,6 +6119,7 @@ fn claude_direct_chat_fork_spawns_tui_directly_with_copied_row() {
 }
 
 #[test]
+#[cfg(unix)]
 fn codex_direct_chat_fork_captures_headless_key_then_resumes_without_watcher() {
     let pool = pool_with_schema();
     let runner_id = ulid::Ulid::new().to_string();
@@ -6203,6 +6208,7 @@ fn codex_direct_chat_fork_captures_headless_key_then_resumes_without_watcher() {
 }
 
 #[test]
+#[cfg(unix)]
 fn fork_materialization_missing_thread_event_removes_row_and_tab() {
     let pool = pool_with_schema();
     let source_id = ulid::Ulid::new().to_string();
@@ -6262,6 +6268,7 @@ fn fork_materialization_missing_thread_event_removes_row_and_tab() {
 }
 
 #[test]
+#[cfg(unix)]
 fn headless_fork_rejects_nonzero_exit_and_kills_timed_out_process_group() {
     use std::os::unix::fs::PermissionsExt;
 
@@ -6468,6 +6475,7 @@ fn resume_respawns_recorded_override_runtime() {
 }
 
 #[test]
+#[cfg(unix)]
 fn catalog_default_runner_uses_detected_command_while_custom_command_stays_untouched() {
     use std::os::unix::fs::PermissionsExt;
 
@@ -6575,6 +6583,7 @@ fn catalog_default_runner_uses_detected_command_while_custom_command_stays_untou
 }
 
 #[test]
+#[cfg(unix)]
 fn runtime_only_resume_keeps_live_recorded_path_and_reresolves_dead_path() {
     use std::os::unix::fs::PermissionsExt;
 

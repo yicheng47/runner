@@ -194,6 +194,7 @@ fn resolve_worktree_main_root(cwd: &Path) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use std::os::unix::fs::symlink;
     use std::sync::{Arc, Barrier};
     use std::thread;
@@ -424,6 +425,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn symlinked_cwd_seeds_realpath() {
         let temp = tempfile::tempdir().unwrap();
         let target = temp.path().join("target");
@@ -443,6 +445,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn atomic_write_preserves_config_symlink() {
         let temp = tempfile::tempdir().unwrap();
         let cwd = temp.path().join("project");

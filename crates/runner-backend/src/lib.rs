@@ -6,11 +6,14 @@
 // adapter: it builds an `AppCore`, subscribes to its event channel, and
 // delegates its command surface to `ops::*`.
 
+pub use runner_core::app_paths;
+
 pub mod cli_install;
 pub mod db;
 pub mod error;
 pub mod event_bus;
 pub mod events;
+pub mod ipc;
 pub mod mcp;
 pub mod model;
 pub mod ops;

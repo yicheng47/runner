@@ -1769,7 +1769,9 @@ impl NativeRoot {
                             exit_code,
                             &default_session_label(&entry),
                             entry.cwd.as_deref(),
-                            std::env::var("HOME").ok().as_deref(),
+                            runner_backend::app_paths::home_dir()
+                                .as_deref()
+                                .and_then(|home| home.to_str()),
                         ),
                         move |window, cx| {
                             restart_root.update(cx, |this, cx| {
@@ -2181,7 +2183,9 @@ impl NativeRoot {
                                         exit_code,
                                         &default_session_label(entry),
                                         entry.cwd.as_deref(),
-                                        std::env::var("HOME").ok().as_deref(),
+                                        runner_backend::app_paths::home_dir()
+                                            .as_deref()
+                                            .and_then(|home| home.to_str()),
                                     ),
                                     move |window, cx| {
                                         restart_root.update(cx, |this, cx| {

@@ -1,3 +1,4 @@
+mod ipc;
 mod mcp;
 
 fn main() {

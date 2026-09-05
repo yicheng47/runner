@@ -42,14 +42,16 @@ tokio-util = { version = "0.7", features = ["rt"] }
 # Codex MCP config lives in ~/.codex/config.toml; toml_edit preserves
 # user-authored comments + formatting on round-trip writes.
 toml_edit = "0.25"
+portable-pty = "0.9"
 
 # Unix-only deps:
 #  - libc: process-group signals, descendant discovery, and process-argv reads
 #    in the native PTY runtime.
-#  - portable-pty: the in-process PTY implementation used for agent sessions.
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
-portable-pty = "0.9"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_JobObjects", "Win32_System_Threading"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSPasteboard", "NSPasteboardItem", "NSWorkspace"] }

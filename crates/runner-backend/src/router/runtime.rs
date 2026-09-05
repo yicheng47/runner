@@ -815,10 +815,10 @@ fn conversation_file_exists(
             // surface its own error rather than masking it.
             return true;
         };
-        let Some(home) = std::env::var_os("HOME") else {
+        let Some(home) = runner_core::app_paths::home_dir() else {
             return true;
         };
-        let path = std::path::PathBuf::from(home)
+        let path = home
             .join(agent_dir)
             .join("projects")
             .join(encode_project_dir(cwd))
