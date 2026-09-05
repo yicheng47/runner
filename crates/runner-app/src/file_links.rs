@@ -142,9 +142,19 @@ fn editor_argv(editor: FileLinkEditor, target: &FileLinkTarget) -> Vec<String> {
     }
 }
 
+#[cfg(target_os = "macos")]
 fn open_argv(target: &FileLinkTarget) -> Vec<String> {
     vec![
         "/usr/bin/open".into(),
+        target.path.to_string_lossy().into_owned(),
+    ]
+}
+
+#[cfg(windows)]
+fn open_argv(target: &FileLinkTarget) -> Vec<String> {
+    vec![
+        "rundll32.exe".into(),
+        "url.dll,FileProtocolHandler".into(),
         target.path.to_string_lossy().into_owned(),
     ]
 }
@@ -253,9 +263,38 @@ mod tests {
             editor_argv(FileLinkEditor::Cursor, &target(None, Some(3))),
             ["cursor", "--goto", "/tmp/src/lib.rs"]
         );
+        #[cfg(target_os = "macos")]
         assert_eq!(
             editor_argv(FileLinkEditor::DefaultApp, &target(Some(1), None)),
             ["/usr/bin/open", "/tmp/src/lib.rs"]
         );
+        #[cfg(windows)]
+        assert_eq!(
+            editor_argv(FileLinkEditor::DefaultApp, &target(Some(1), None)),
+            [
+                "rundll32.exe",
+                "url.dll,FileProtocolHandler",
+                "/tmp/src/lib.rs"
+            ]
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn open_argv_passes_windows_paths_verbatim() {
+        for path in [
+            r"C:\Users\Jason Wang\项目\notes & %PATH% !.txt",
+            r"\\server\shared files\notes.txt",
+        ] {
+            let target = FileLinkTarget {
+                path: path.into(),
+                line: Some(12),
+                column: Some(5),
+            };
+            assert_eq!(
+                open_argv(&target),
+                ["rundll32.exe", "url.dll,FileProtocolHandler", path]
+            );
+        }
     }
 }

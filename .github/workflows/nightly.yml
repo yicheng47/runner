@@ -193,6 +193,7 @@ jobs:
         run: |
           new_zip="target/x86_64-pc-windows-msvc/release/Runner-Nightly-${{ steps.build.outputs.short_version }}-x64.zip"
           notes="Extract the zip before running Runner.exe so Runner.exe, runner-agent-cli.exe, and runner-mcp.exe stay together. This build is unsigned. If SmartScreen shows Windows protected your PC, choose More info → Run anyway."
+          notes+=$'\n\nFor agents, install Git for Windows (Claude Code uses Git Bash, including the runner sh shim), Node.js LTS, and the agent CLIs (@anthropic-ai/claude-code and/or @openai/codex).'
           if gh release view nightly-win >/dev/null 2>&1; then
             gh release edit nightly-win --title "Runner Nightly (Windows)" --notes "$notes" --prerelease --draft=false
           else

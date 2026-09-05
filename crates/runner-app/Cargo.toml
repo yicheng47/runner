@@ -20,7 +20,6 @@ anyhow = "1"
 base64 = "0.22"
 chrono = { workspace = true }
 futures = "0.3"
-gpui = { package = "gpui-ce", version = "0.3" }
 runner-backend = { path = "../runner-backend" }
 runner-terminal = { path = "../runner-terminal" }
 serde.workspace = true
@@ -32,13 +31,22 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 unicode-segmentation = "1"
 
 [target.'cfg(target_os = "macos")'.dependencies]
+gpui = { package = "gpui-ce", version = "0.3" }
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", default-features = false, features = ["NSApplication", "NSButton", "NSControl", "NSImage", "NSResponder", "NSScreen", "NSView", "NSWindow"] }
 objc2-foundation = { version = "0.3", default-features = false, features = ["NSArray", "NSData", "NSDate", "NSDateFormatter", "NSDictionary", "NSError", "NSFormatter", "NSGeometry", "NSString"] }
 raw-window-handle = "0.6"
 
-[dev-dependencies]
-gpui = { package = "gpui-ce", version = "0.3", features = ["test-support"] }
+[target.'cfg(windows)'.dependencies]
+# Keep gpui's defaults except windows-manifest; resync when its defaults change.
+gpui = { package = "gpui-ce", version = "0.3", default-features = false, features = ["font-kit", "wayland", "x11"] }
+
+[target.'cfg(windows)'.dev-dependencies]
+gpui = { package = "gpui-ce", version = "0.3", default-features = false, features = ["test-support"] }
+
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"
 
 [target.'cfg(target_os = "macos")'.dev-dependencies]
 font-kit = { package = "zed-font-kit", version = "0.14.1-zed" }
+gpui = { package = "gpui-ce", version = "0.3", features = ["test-support"] }
