@@ -775,6 +775,11 @@ impl MissionWorkspace {
         }
     }
 
+    #[cfg_attr(not(windows), allow(dead_code))]
+    fn caption_inset(&self, window: &Window, cx: &App) -> f32 {
+        super::app_shell::caption_inset_for(self.settings(cx).app_zoom, window.is_fullscreen())
+    }
+
     fn render_open_sidebar_button(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         self.sidebar_collapsed.then(|| {
             div()
@@ -825,7 +830,8 @@ impl MissionWorkspace {
         area: gpui::Div,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        area.id(id)
+        let area = area
+            .id(id)
             .window_control_area(WindowControlArea::Drag)
             .on_mouse_down_out(cx.listener(|this, _, _, _| {
                 this.titlebar_drag_armed = false;
@@ -841,7 +847,9 @@ impl MissionWorkspace {
                 cx.listener(|this, _, _, _| {
                     this.titlebar_drag_armed = true;
                 }),
-            )
+            );
+        #[cfg(target_os = "macos")]
+        let area = area
             .on_mouse_move(cx.listener(|this, _, window, _| {
                 if this.titlebar_drag_armed {
                     this.titlebar_drag_armed = false;
@@ -853,7 +861,8 @@ impl MissionWorkspace {
                     cx.stop_propagation();
                     window.titlebar_double_click();
                 }
-            })
+            });
+        area
     }
 
     fn leave_archived_mission(
@@ -3248,6 +3257,8 @@ impl MissionWorkspace {
             rail_visibility,
             rail_open || rail_animating,
             rail_open && !rail_animating,
+            #[cfg(windows)]
+            window,
             cx,
         );
         div()
@@ -3272,10 +3283,15 @@ impl MissionWorkspace {
             .on_action(cx.listener(Self::focus_previous_mission_tab))
             .on_action(cx.listener(Self::focus_next_mission_tab))
             .on_drag_move::<MissionRailResizeDrag>(cx.listener(
-                |this, event: &DragMoveEvent<MissionRailResizeDrag>, _, cx| {
+                |this, event: &DragMoveEvent<MissionRailResizeDrag>, window, cx| {
+                    #[cfg(not(windows))]
+                    let _ = window;
                     let width = f32::from(event.bounds.right() - event.event.position.x)
                         / this.settings(cx).app_zoom;
                     let width = app_settings::clamp_mission_rail_width(width);
+                    #[cfg(windows)]
+                    let width = width
+                        .max(this.caption_inset(window, cx) / this.settings(cx).app_zoom + 120.);
                     this.update_app_settings(cx, false, |settings| {
                         if settings.mission_rail_width == width {
                             return false;
@@ -3400,6 +3416,22 @@ impl MissionWorkspace {
         .title_actions(controls.into_iter().map(IntoElement::into_any_element))
         .trailing_actions(drawer_action.into_iter().chain(rail_action))
         .into_div();
+        #[cfg(windows)]
+        let row = {
+            let zoom = self.settings(cx).app_zoom;
+            let inset = self.caption_inset(window, cx);
+            let rail_width = self
+                .settings(cx)
+                .mission_rail_width
+                .max(inset / zoom + 120.);
+            let visibility = self.rail_visibility.value_at(
+                Instant::now(),
+                Duration::from_millis(MISSION_RAIL_TRANSITION_MS),
+            );
+            row.pr(px(
+                8. * zoom + (inset - rail_width * zoom * visibility).max(0.)
+            ))
+        };
         self.render_titlebar_drag_area("mission-titlebar-drag", row, cx)
             .into_any_element()
     }
@@ -5365,9 +5397,12 @@ impl MissionWorkspace {
         visibility: f32,
         show_rail: bool,
         border_on: bool,
+        #[cfg(windows)] window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let width = self.settings(cx).mission_rail_width;
+        #[cfg(windows)]
+        let width = width.max(self.caption_inset(window, cx) / self.settings(cx).app_zoom + 120.);
         let visible_width = width * visibility;
         if !show_rail {
             return div()
@@ -5388,6 +5423,13 @@ impl MissionWorkspace {
             .h(rems(WORKSPACE_HEADER_HEIGHT / 16.))
             .flex_none()
             .px_4()
+            .map(|header| {
+                #[cfg(windows)]
+                let header = header.pr(px(
+                    16. * self.settings(cx).app_zoom + self.caption_inset(window, cx)
+                ));
+                header
+            })
             .flex()
             .items_center()
             .border_b_1()
@@ -5456,6 +5498,11 @@ impl MissionWorkspace {
             .child(
                 div()
                     .id("mission-rail-resize")
+                    .map(|handle| {
+                        #[cfg(windows)]
+                        let handle = handle.occlude();
+                        handle
+                    })
                     .absolute()
                     .left_0()
                     .top_0()
@@ -6086,6 +6133,11 @@ fn rail_view_button(
 ) -> gpui::Stateful<gpui::Div> {
     div()
         .id(id)
+        .map(|button| {
+            #[cfg(windows)]
+            let button = button.on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation());
+            button
+        })
         .group("mission-rail-view-button")
         .size(rems(28. / 16.))
         .flex()

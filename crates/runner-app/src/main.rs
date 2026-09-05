@@ -1355,7 +1355,7 @@ fn open_runner_window(
             #[cfg(windows)]
             titlebar: Some(TitlebarOptions {
                 title: Some("Runner".into()),
-                appears_transparent: false,
+                appears_transparent: true,
                 traffic_light_position: None,
             }),
             ..Default::default()

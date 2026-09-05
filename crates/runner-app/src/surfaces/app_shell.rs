@@ -5,6 +5,8 @@ use crate::toast::ToastTone;
 use crate::*;
 
 const TITLEBAR_HEIGHT: f32 = 44.;
+#[cfg(windows)]
+pub(crate) use runner_app::ui::CAPTION_BUTTON_WIDTH;
 pub(crate) const TITLEBAR_DRAG_HEIGHT: f32 = 28.;
 #[cfg(target_os = "macos")]
 pub(crate) const SIDEBAR_TOGGLE_GLYPH_X: f32 = 94.3;
@@ -57,6 +59,22 @@ impl Render for SidebarResizeDrag {
 fn alpha(mut color: gpui::Hsla, value: f32) -> gpui::Hsla {
     color.a = value;
     color
+}
+
+pub(super) fn caption_inset_for(zoom: f32, fullscreen: bool) -> f32 {
+    #[cfg(windows)]
+    {
+        if fullscreen {
+            0.
+        } else {
+            3. * CAPTION_BUTTON_WIDTH * zoom
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (zoom, fullscreen);
+        0.
+    }
 }
 
 fn settings_update_hint_version(
@@ -167,6 +185,14 @@ impl NativeRoot {
             .children(settings_confirm)
             .child(command_palette)
             .children(toast)
+            .map(|root| {
+                #[cfg(windows)]
+                let root = root.children(
+                    self.render_caption_buttons(window, cx)
+                        .map(|caption| deferred(caption).with_priority(200)),
+                );
+                root
+            })
             .on_modifiers_changed(move |event, window, cx| {
                 modifier_sidebar.update(cx, |sidebar, sidebar_cx| {
                     sidebar.handle_shortcut_modifiers_changed(event.modifiers, window, sidebar_cx);
@@ -541,6 +567,11 @@ impl NativeRoot {
     pub(crate) fn render_sidebar_resize_handle(&self, cx: &App) -> AnyElement {
         div()
             .id("sidebar-resize")
+            .map(|handle| {
+                #[cfg(windows)]
+                let handle = handle.occlude();
+                handle
+            })
             .absolute()
             .right_0()
             .top_0()
@@ -612,13 +643,87 @@ impl NativeRoot {
         })
     }
 
+    #[cfg(windows)]
+    pub(crate) fn render_caption_buttons(&self, window: &Window, cx: &App) -> Option<AnyElement> {
+        if window.is_fullscreen() {
+            return None;
+        }
+        let zoom = self.settings(cx).app_zoom;
+        let maximize_icon = if window.is_maximized() {
+            "copy.svg"
+        } else {
+            "square.svg"
+        };
+        Some(
+            div()
+                .absolute()
+                .top_0()
+                .right_0()
+                .h(px(TITLEBAR_HEIGHT * zoom))
+                .flex()
+                .when(
+                    matches!(self.route, AppRoute::Settings | AppRoute::RunnerDetail(_)),
+                    |caption| caption.bg(theme::bg()),
+                )
+                .children(
+                    [
+                        ("caption-minimize", WindowControlArea::Min, "minus.svg"),
+                        ("caption-maximize", WindowControlArea::Max, maximize_icon),
+                        ("caption-close", WindowControlArea::Close, "close.svg"),
+                    ]
+                    .into_iter()
+                    .map(|(id, area, icon)| {
+                        let close = matches!(area, WindowControlArea::Close);
+                        div()
+                            .id(id)
+                            .group(id)
+                            .w(px(CAPTION_BUTTON_WIDTH * zoom))
+                            .h_full()
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .occlude()
+                            .window_control_area(area)
+                            .hover(move |button| {
+                                button.bg(if close {
+                                    gpui::rgb(0xc42b1c).into()
+                                } else {
+                                    alpha(theme::sidebar_selected(), 0.6)
+                                })
+                            })
+                            .child(
+                                svg()
+                                    .path(icon)
+                                    .size(px(10. * zoom))
+                                    .text_color(theme::muted())
+                                    .group_hover(id, move |icon| {
+                                        icon.text_color(if close {
+                                            gpui::rgb(0xffffff).into()
+                                        } else {
+                                            theme::text()
+                                        })
+                                    }),
+                            )
+                    }),
+                )
+                .into_any_element(),
+        )
+    }
+
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub(crate) fn caption_inset(&self, window: &Window, cx: &App) -> f32 {
+        caption_inset_for(self.settings(cx).app_zoom, window.is_fullscreen())
+    }
+
     pub(crate) fn render_titlebar_drag_area(
         &self,
         id: &'static str,
         area: gpui::Div,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        area.id(id)
+        let area = area
+            .id(id)
             .window_control_area(WindowControlArea::Drag)
             .on_mouse_down_out(cx.listener(|this, _, _, _| {
                 this.titlebar_drag_armed = false;
@@ -634,7 +739,9 @@ impl NativeRoot {
                 cx.listener(|this, _, _, _| {
                     this.titlebar_drag_armed = true;
                 }),
-            )
+            );
+        #[cfg(target_os = "macos")]
+        let area = area
             .on_mouse_move(cx.listener(|this, _, window, _| {
                 if this.titlebar_drag_armed {
                     this.titlebar_drag_armed = false;
@@ -646,7 +753,8 @@ impl NativeRoot {
                     cx.stop_propagation();
                     window.titlebar_double_click();
                 }
-            })
+            });
+        area
     }
 
     fn render_toast(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -1061,6 +1169,29 @@ impl NativeRoot {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[cfg(not(windows))]
+    fn caption_inset_is_zero_off_windows() {
+        for zoom in [0.75, 1., 1.25, 2.] {
+            for fullscreen in [false, true] {
+                assert_eq!(caption_inset_for(zoom, fullscreen), 0.);
+            }
+        }
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn caption_inset_tracks_zoom_and_fullscreen() {
+        assert_eq!(CAPTION_BUTTON_WIDTH, 46.);
+        for zoom in [0.75, 1., 1.25, 2.] {
+            assert_eq!(
+                caption_inset_for(zoom, false),
+                3. * CAPTION_BUTTON_WIDTH * zoom
+            );
+            assert_eq!(caption_inset_for(zoom, true), 0.);
+        }
+    }
 
     #[test]
     fn archived_mission_only_leaves_its_open_route() {

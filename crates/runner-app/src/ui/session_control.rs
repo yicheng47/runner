@@ -234,6 +234,12 @@ impl RenderOnce for SessionControl {
             .children(icon_element)
             .when(!header, |control| control.child(label));
         if !disabled {
+            #[cfg(windows)]
+            {
+                control = control.on_mouse_down(gpui::MouseButton::Left, |_, _, cx| {
+                    cx.stop_propagation();
+                });
+            }
             control = control.hover(move |control| match self.kind {
                 SessionControlKind::Resume if header => control
                     .bg(theme::with_alpha(theme::accent(), 0.1))
@@ -266,5 +272,67 @@ impl RenderOnce for SessionControl {
         } else {
             control.into_any_element()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::{
+        Context, Modifiers, MouseButton, Render, TestAppContext, VisualTestContext,
+        WindowControlArea,
+    };
+    use std::cell::Cell;
+
+    struct HeaderControlHost {
+        parent_mouse_down: Rc<Cell<bool>>,
+        control_clicked: Rc<Cell<bool>>,
+    }
+
+    impl Render for HeaderControlHost {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let parent_mouse_down = self.parent_mouse_down.clone();
+            let control_clicked = self.control_clicked.clone();
+            div()
+                .size_full()
+                .window_control_area(WindowControlArea::Drag)
+                .on_mouse_down(MouseButton::Left, move |_, _, _| {
+                    parent_mouse_down.set(true)
+                })
+                .child(
+                    div()
+                        .size(px(28.))
+                        .debug_selector(|| "HEADER_SESSION_CONTROL".into())
+                        .child(
+                            SessionControl::new("header-stop", SessionControlKind::Stop)
+                                .variant(SessionControlVariant::Header)
+                                .on_press(move |_, _| control_clicked.set(true)),
+                        ),
+                )
+        }
+    }
+
+    #[test]
+    fn header_control_mouse_down_preserves_platform_drag_behavior() {
+        let mut cx = TestAppContext::single();
+        let parent_mouse_down = Rc::new(Cell::new(false));
+        let control_clicked = Rc::new(Cell::new(false));
+        let parent_for_host = parent_mouse_down.clone();
+        let clicked_for_host = control_clicked.clone();
+        let window = cx.add_window(move |_, _| HeaderControlHost {
+            parent_mouse_down: parent_for_host,
+            control_clicked: clicked_for_host,
+        });
+        cx.run_until_parked();
+        let mut window = VisualTestContext::from_window(window.into(), &cx);
+        let bounds = window.debug_bounds("HEADER_SESSION_CONTROL").unwrap();
+        window.simulate_click(bounds.center(), Modifiers::default());
+        window.run_until_parked();
+
+        assert!(control_clicked.get());
+        #[cfg(windows)]
+        assert!(!parent_mouse_down.get());
+        #[cfg(not(windows))]
+        assert!(parent_mouse_down.get());
     }
 }
