@@ -43,3 +43,27 @@ jobs:
 
       - name: Verify lockfile is committed
         run: git diff --exit-code -- Cargo.lock
+
+  rust-windows:
+    name: Rust / Windows
+    runs-on: windows-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        run: rustup show active-toolchain
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check
+        run: cargo check --workspace --all-targets
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Verify lockfile is committed
+        run: git diff --exit-code -- Cargo.lock
