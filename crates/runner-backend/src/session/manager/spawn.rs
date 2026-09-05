@@ -35,7 +35,7 @@ pub(super) fn run_headless_fork(
     };
     let codex_sessions_root = codex_fork_sessions_root(spec)?;
     let inherited_path = std::env::var("PATH").ok();
-    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let home = runner_core::app_paths::home_dir();
     let path = crate::session::launch::compose_path(
         spec.shim_dir.as_deref(),
         spec.bundled_bin_dir.as_deref(),
@@ -256,7 +256,7 @@ fn codex_fork_sessions_root(spec: &SpawnSpec) -> Result<PathBuf> {
                 .filter(|value| !value.is_empty())
                 .map(PathBuf::from)
         })
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".codex")))
+        .or_else(|| runner_core::app_paths::home_dir().map(|home| home.join(".codex")))
         .ok_or_else(|| Error::msg("fork materialization cannot resolve Codex sessions root"))?;
     let codex_home = if codex_home.is_absolute() {
         codex_home
@@ -1993,7 +1993,7 @@ impl SessionManager {
                 }
                 None => None,
             };
-            let home = std::env::var_os("HOME").map(PathBuf::from);
+            let home = runner_core::app_paths::home_dir();
             let (cwd, notice) = resolve_shell_resume_cwd(
                 snap.cwd.as_deref(),
                 project_cwd.as_deref(),

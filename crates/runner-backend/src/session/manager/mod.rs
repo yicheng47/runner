@@ -1291,7 +1291,7 @@ fn capture_cwd(explicit: Option<String>) -> Option<String> {
             return Some(cwd);
         }
     }
-    std::env::var_os("HOME").and_then(|h| h.into_string().ok())
+    runner_core::app_paths::home_dir().and_then(|h| h.into_os_string().into_string().ok())
 }
 
 /// Outcome of resolving a runtime override against a runner row

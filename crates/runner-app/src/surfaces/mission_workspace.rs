@@ -1797,7 +1797,9 @@ impl MissionWorkspace {
             mission.cwd.as_deref(),
             project_cwd,
             &self.settings(cx).default_working_dir,
-            std::env::var("HOME").ok().as_deref(),
+            runner_backend::app_paths::home_dir()
+                .as_deref()
+                .and_then(|home| home.to_str()),
         );
         let size = self.estimated_mission_drawer_terminal_size(window, cx);
         let mut spawned_id = None;
@@ -3689,7 +3691,9 @@ impl MissionWorkspace {
                             exit_code,
                             &default_session_label(&entry),
                             entry.cwd.as_deref(),
-                            std::env::var("HOME").ok().as_deref(),
+                            runner_backend::app_paths::home_dir()
+                                .as_deref()
+                                .and_then(|home| home.to_str()),
                         ),
                         move |window, cx| {
                             restart_root.update(cx, |this, cx| {

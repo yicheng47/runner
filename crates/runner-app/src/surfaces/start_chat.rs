@@ -193,7 +193,9 @@ impl NativeRoot {
             None,
             project_cwd,
             &self.settings(cx).default_working_dir,
-            std::env::var("HOME").ok().as_deref(),
+            runner_backend::app_paths::home_dir()
+                .as_deref()
+                .and_then(|home| home.to_str()),
         );
         let mut spawned_id = None;
         let result = (|| -> Result<String> {
@@ -460,7 +462,9 @@ impl NativeRoot {
             sibling_cwd.as_deref(),
             project_cwd,
             &self.settings(cx).default_working_dir,
-            std::env::var("HOME").ok().as_deref(),
+            runner_backend::app_paths::home_dir()
+                .as_deref()
+                .and_then(|home| home.to_str()),
         );
         (project_id, cwd)
     }

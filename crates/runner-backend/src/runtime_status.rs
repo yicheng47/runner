@@ -97,7 +97,7 @@ pub fn status_list(
         .clone();
     let overrides = db::runtime_overrides(pool)?;
     let path = direct_chat_path(&shell_env);
-    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let home = runner_core::app_paths::home_dir();
 
     let runtimes = runtime_definitions()
         .iter()
@@ -308,7 +308,7 @@ fn validation_error(code: &str, message: impl Into<String>) -> OverrideValidatio
 
 pub fn direct_chat_path(shell_env: &LoginShellEnv) -> String {
     let process_path = std::env::var("PATH").ok();
-    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let home = runner_core::app_paths::home_dir();
     launch::compose_path(
         None,
         None,

@@ -10,26 +10,12 @@ use rmcp::ServiceExt;
 use tokio::net::UnixStream;
 use tokio::time::timeout;
 
-const APP_IDENTIFIER: &str = "com.wycstudios.runner";
 const CONNECT_TIMEOUT: Duration = Duration::from_millis(500);
 
-fn app_data_segment() -> String {
-    if cfg!(debug_assertions) {
-        format!("{APP_IDENTIFIER}-dev")
-    } else {
-        APP_IDENTIFIER.to_string()
-    }
-}
-
 fn socket_path() -> Option<PathBuf> {
-    let home = std::env::var_os("HOME").map(PathBuf::from)?;
-    #[cfg(target_os = "macos")]
-    let base = home.join("Library/Application Support");
-    #[cfg(target_os = "linux")]
-    let base = std::env::var_os("XDG_DATA_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| home.join(".local/share"));
-    Some(base.join(app_data_segment()).join("mcp.sock"))
+    let debug = cfg!(debug_assertions);
+    let app_data_dir = runner_core::app_paths::app_data_dir(debug)?;
+    Some(runner_core::app_paths::mcp_endpoint(&app_data_dir, debug).0)
 }
 
 pub fn run() -> i32 {

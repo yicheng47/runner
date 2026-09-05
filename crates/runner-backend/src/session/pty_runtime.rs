@@ -125,7 +125,7 @@ impl SessionRuntime for PtyRuntime {
         // bundled_bin_dir / shell_path / HOME / inherited PATH
         // precedence rules.
         let inherited_path = std::env::var("PATH").ok();
-        let home_path: Option<PathBuf> = std::env::var_os("HOME").map(PathBuf::from);
+        let home_path: Option<PathBuf> = runner_core::app_paths::home_dir();
         let composed_path = launch::compose_path(
             spec.shim_dir.as_deref(),
             spec.bundled_bin_dir.as_deref(),

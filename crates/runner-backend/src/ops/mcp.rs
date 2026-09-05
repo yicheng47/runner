@@ -74,9 +74,7 @@ impl Client {
 }
 
 fn home_dir() -> Result<PathBuf> {
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .ok_or_else(|| Error::msg("HOME env var not set"))
+    runner_core::app_paths::home_dir().ok_or_else(|| Error::msg("home directory is not available"))
 }
 
 fn claude_code_path() -> Result<PathBuf> {
