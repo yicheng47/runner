@@ -186,6 +186,43 @@ pub(crate) fn kill_headless_fork(child: &mut std::process::Child, process_tree: 
 }
 
 #[cfg(test)]
+pub(crate) fn read_raw_console_input(len: usize) -> io::Result<Vec<u8>> {
+    use std::io::Read;
+    use windows_sys::Win32::System::Console::{
+        ENABLE_ECHO_INPUT, ENABLE_LINE_INPUT, ENABLE_PROCESSED_INPUT, ENABLE_VIRTUAL_TERMINAL_INPUT,
+    };
+    let mut input = std::io::stdin();
+    let mode = console_input_mode(&input)?;
+    set_console_input_mode(
+        &input,
+        (mode & !(ENABLE_ECHO_INPUT | ENABLE_LINE_INPUT | ENABLE_PROCESSED_INPUT))
+            | ENABLE_VIRTUAL_TERMINAL_INPUT,
+    )?;
+    let mut bytes = vec![0; len];
+    let read = input.read_exact(&mut bytes);
+    let restore = set_console_input_mode(&input, mode);
+    read?;
+    restore?;
+    Ok(bytes)
+}
+
+#[cfg(test)]
+fn console_input_mode(input: &std::io::Stdin) -> io::Result<u32> {
+    let mut mode = 0;
+    check_bool(unsafe {
+        windows_sys::Win32::System::Console::GetConsoleMode(input.as_raw_handle(), &mut mode)
+    })?;
+    Ok(mode)
+}
+
+#[cfg(test)]
+fn set_console_input_mode(input: &std::io::Stdin, mode: u32) -> io::Result<()> {
+    check_bool(unsafe {
+        windows_sys::Win32::System::Console::SetConsoleMode(input.as_raw_handle(), mode)
+    })
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::io::{BufRead, Write};

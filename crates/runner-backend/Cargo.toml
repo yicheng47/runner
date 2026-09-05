@@ -65,3 +65,6 @@ block2 = "0.6"
 # event-log flock from a second fd; matches the version `runner-core`
 # pulls in transitively so the trait impl resolves identically.
 fs2 = "0.4"
+
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { version = "0.61", features = ["Win32_System_Console"] }

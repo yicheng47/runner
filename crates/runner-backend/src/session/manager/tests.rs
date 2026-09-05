@@ -6934,11 +6934,15 @@ fn windows_batch_prompt_probe() {
     if std::env::var_os("RUNNER_BATCH_PROMPT_EXE").is_none() {
         return;
     }
-    let mut first = String::new();
-    let mut second = String::new();
-    std::io::stdin().read_line(&mut first).unwrap();
-    std::io::stdin().read_line(&mut second).unwrap();
-    println!("BATCH_INPUT_FIRST={}", first.trim_end_matches(['\r', '\n']));
+    // Cooked console reads consume LF; agent TUIs read raw input instead.
+    let expected = b"first line\nsecond line\r";
+    let bytes = crate::session::process::read_raw_console_input(expected.len()).unwrap();
+    assert_eq!(bytes, expected);
+    let (first, second) = std::str::from_utf8(&bytes)
+        .unwrap()
+        .split_once('\n')
+        .unwrap();
+    println!("BATCH_INPUT_FIRST={first}");
     println!(
         "BATCH_INPUT_SECOND={}",
         second.trim_end_matches(['\r', '\n'])
