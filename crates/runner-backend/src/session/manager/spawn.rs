@@ -68,11 +68,7 @@ pub(super) fn run_headless_fork(
         command.env("COLUMNS", cols.to_string());
         command.env("LINES", rows.to_string());
     }
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        command.process_group(0);
-    }
+    crate::session::process::prepare_headless_fork(&mut command);
 
     let mut child = command
         .spawn()
@@ -193,7 +189,7 @@ fn run_thread_started_headless_fork(
     };
 
     if terminate {
-        terminate_headless_fork(&mut child);
+        crate::session::process::kill_headless_fork(&mut child);
     }
     stdout_reader
         .join()
@@ -268,15 +264,6 @@ fn codex_fork_sessions_root(spec: &SpawnSpec) -> Result<PathBuf> {
             .join(codex_home)
     };
     Ok(codex_home.join("sessions"))
-}
-
-fn terminate_headless_fork(child: &mut std::process::Child) {
-    #[cfg(unix)]
-    unsafe {
-        libc::kill(-(child.id() as i32), libc::SIGKILL);
-    }
-    let _ = child.kill();
-    let _ = child.wait();
 }
 
 fn delete_failed_fork(pool: &DbPool, session_id: &str) -> Result<()> {
