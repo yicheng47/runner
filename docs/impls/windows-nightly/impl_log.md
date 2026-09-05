@@ -5,7 +5,7 @@ Dated record for the Windows nightly program ([README](README.md), [plan](plan.m
 ## Current state (update with each entry)
 
 - **Landed on `nightly-windows`**: Phase 0 compile gate ([#482](https://github.com/yicheng47/runner/pull/482), `9a213e5`), Phase 1 it opens on the PC ([#483](https://github.com/yicheng47/runner/pull/483), `952767c`), Windows title row fix for [#484](https://github.com/yicheng47/runner/issues/484) ([#485](https://github.com/yicheng47/runner/pull/485), `2a28ada`), PTY burst coalescing for the ConPTY cursor jump ([#486](https://github.com/yicheng47/runner/pull/486), `36f98eb`), Phase 2 agents run ([#487](https://github.com/yicheng47/runner/pull/487), `c946827`), Phase 3 code ([#488](https://github.com/yicheng47/runner/pull/488), `93e21d1`).
-- **Current nightly**: `Runner-Nightly-0.7.5.20260905.1323-x64.zip` from `2a28ada`, run 33968763863.
+- **Current nightly**: `Runner-Nightly-0.7.5.20260905.1853-x64.zip` from `2e6e23f`, run 33985440571 — Phases 0-3 complete; awaiting Jason's PC pass.
 - **Next**: Jason's PC pass on the nightly cut from `93e21d1` — the first real agent acceptance (Todo 2). What he finds decides the next missions; the remaining code-free items are PC- or time-gated.
 - **Working rule (Jason, 2026-09-05)**: bugs found by this program are not filed as GitHub issues; they go in the Todo list below and are fixed by `fix/437-…` PRs into `nightly-windows`. Missions and merges are self-driven on codex-crew; Jason tests the nightly cut at the end of a run.
 
@@ -25,6 +25,7 @@ Seen while running it: `router::tests::human_messages_nudge_the_broadcast_roster
 | --- | --- | --- | --- | --- |
 | 20260905.1004 | [Runner-Nightly-0.7.5.20260905.1004-x64.zip](https://github.com/yicheng47/runner/releases/download/nightly-win/Runner-Nightly-0.7.5.20260905.1004-x64.zip) (18.8 MB) | `952767c` | [33959658297](https://github.com/yicheng47/runner/actions/runs/33959658297) | First cut: Phases 0 and 1. OS-drawn title bar. |
 | 20260905.1323 | [Runner-Nightly-0.7.5.20260905.1323-x64.zip](https://github.com/yicheng47/runner/releases/download/nightly-win/Runner-Nightly-0.7.5.20260905.1323-x64.zip) (18.8 MB) | `2a28ada` | [33968763863](https://github.com/yicheng47/runner/actions/runs/33968763863) | #484 fix: OS bar hidden, caption buttons in the header. |
+| 20260905.1853 | [Runner-Nightly-0.7.5.20260905.1853-x64.zip](https://github.com/yicheng47/runner/releases/download/nightly-win/Runner-Nightly-0.7.5.20260905.1853-x64.zip) (18.8 MB) | `2e6e23f` | [33985440571](https://github.com/yicheng47/runner/actions/runs/33985440571) | Phases 2 and 3: Job Objects, batch-shim launch, readiness-gated first turn, burst coalescing, icon, manifest, file links. First cut where agents can run. |
 
 ## 2026-09-04 — spec
 
