@@ -267,3 +267,42 @@ pub trait SessionRuntime: Send + Sync {
         Ok(None)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{mpsc, Arc};
+
+    #[test]
+    fn output_stream_try_recv_preserves_receiver_semantics() {
+        let (tx, rx) = mpsc::channel();
+        let stop = Arc::new(AtomicBool::new(false));
+        let output = OutputStream::new(rx, Arc::clone(&stop));
+        assert_eq!(output.try_recv().unwrap_err(), mpsc::TryRecvError::Empty);
+        tx.send(RuntimeOutput::Stream(b"hello".to_vec())).unwrap();
+        tx.send(RuntimeOutput::StatusTransition {
+            state: RunnerStatus::Idle,
+            source: "forwarder",
+        })
+        .unwrap();
+        drop(tx);
+        assert!(
+            matches!(output.try_recv().unwrap(), RuntimeOutput::Stream(bytes) if bytes == b"hello")
+        );
+        assert!(matches!(
+            output.try_recv().unwrap(),
+            RuntimeOutput::StatusTransition {
+                state: RunnerStatus::Idle,
+                source: "forwarder",
+            }
+        ));
+        assert_eq!(
+            output.try_recv().unwrap_err(),
+            mpsc::TryRecvError::Disconnected
+        );
+        assert!(!stop.load(Ordering::SeqCst));
+        drop(output);
+        assert!(stop.load(Ordering::SeqCst));
+    }
+}
