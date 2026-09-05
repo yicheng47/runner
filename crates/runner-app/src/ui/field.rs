@@ -1447,9 +1447,23 @@ pub fn effective_working_dir(
 }
 
 fn handle_key_down<T>(input: &mut TextBuffer, event: &KeyDownEvent, cx: &mut Context<T>) -> bool {
+    handle_key_down_for_platform(input, event, cx, cfg!(windows))
+}
+
+fn handle_key_down_for_platform<T>(
+    input: &mut TextBuffer,
+    event: &KeyDownEvent,
+    cx: &mut Context<T>,
+    windows: bool,
+) -> bool {
     let key = event.keystroke.key.as_str();
     let modifiers = event.keystroke.modifiers;
-    if modifiers.platform {
+    let command = if windows {
+        modifiers.control && matches!(key, "a" | "c" | "x" | "v")
+    } else {
+        modifiers.platform
+    };
+    if command {
         return match key {
             "a" => {
                 input.select_all();
@@ -1493,7 +1507,12 @@ fn handle_key_down<T>(input: &mut TextBuffer, event: &KeyDownEvent, cx: &mut Con
             _ => false,
         };
     }
-    if modifiers.alt {
+    let word = if windows {
+        modifiers.control
+    } else {
+        modifiers.alt
+    };
+    if word {
         return match key {
             "left" => {
                 input.move_left(Boundary::Word, modifiers.shift);
@@ -1625,6 +1644,62 @@ fn is_word(segment: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn editing_shortcuts_use_command_on_macos_and_control_on_windows() {
+        let cx = gpui::TestAppContext::single();
+        for windows in [false, true] {
+            cx.update(|cx| {
+                let input = cx.new(|_| TextBuffer::default());
+                input.update(cx, |input, cx| {
+                    let press =
+                        |input: &mut TextBuffer, key: &str, cx: &mut Context<TextBuffer>| {
+                            handle_key_down_for_platform(
+                                input,
+                                &KeyDownEvent {
+                                    keystroke: gpui::Keystroke::parse(key).unwrap(),
+                                    is_held: false,
+                                    prefer_character_input: false,
+                                },
+                                cx,
+                                windows,
+                            )
+                        };
+                    let command = if windows { "ctrl" } else { "cmd" };
+                    input.reset("one two");
+                    assert!(press(input, &format!("{command}-a"), cx));
+                    assert_eq!(input.selected_text(), Some("one two"));
+                    assert!(press(input, &format!("{command}-c"), cx));
+                    assert_eq!(
+                        cx.read_from_clipboard().unwrap().text().as_deref(),
+                        Some("one two")
+                    );
+                    assert!(press(input, &format!("{command}-x"), cx));
+                    assert_eq!(input.text, "");
+                    assert!(press(input, &format!("{command}-v"), cx));
+                    assert_eq!(input.text, "one two");
+                    let word = if windows { "ctrl" } else { "alt" };
+                    assert!(press(input, &format!("{word}-left"), cx));
+                    assert_eq!(input.selection.caret, 4);
+                    assert!(press(input, &format!("{word}-shift-right"), cx));
+                    assert_eq!(input.selected_text(), Some("two"));
+                    assert!(press(input, "right", cx));
+                    assert_eq!(input.selection.caret, 7);
+                    assert!(press(input, "home", cx));
+                    assert_eq!(input.selection.caret, 0);
+                    assert!(press(input, "end", cx));
+                    assert_eq!(input.selection.caret, 7);
+                    if !windows {
+                        assert!(!press(input, "ctrl-a", cx));
+                        assert!(press(input, "cmd-left", cx));
+                        assert_eq!(input.selection.caret, 0);
+                        assert!(press(input, "cmd-right", cx));
+                        assert_eq!(input.selection.caret, 7);
+                    }
+                });
+            });
+        }
+    }
 
     #[test]
     fn marked_text_uses_utf16_offsets_and_blocks_enter_until_committed() {

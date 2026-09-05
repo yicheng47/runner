@@ -3,13 +3,15 @@ use std::collections::BTreeMap;
 use gpui::{App, KeyBinding, Keystroke};
 use serde::{Deserialize, Deserializer, Serialize};
 
+#[cfg(not(windows))]
+use crate::{Hide, HideOthers, Quit};
+
 use crate::{
-    CloseWindowOrPane, CommandPalette, Copy, FocusNextPane, FocusPreviousPane, Hide, HideOthers,
-    Minimize, MissionTabNext, MissionTabPrevious, NavigateNextPage, NavigatePreviousPage, NewTab,
-    NewWindow, OpenSettings, Paste, Quit, SelectTab1, SelectTab2, SelectTab3, SelectTab4,
-    SelectTab5, SelectTab6, SelectTab7, SelectTab8, SelectTab9, SplitPaneDown, SplitPaneRight,
-    StopFocusedSession, ToggleFullscreen, ToggleSidebar, ToggleTerminalDrawer, ZoomIn, ZoomOut,
-    ZoomReset,
+    CloseWindowOrPane, CommandPalette, Copy, FocusNextPane, FocusPreviousPane, Minimize,
+    MissionTabNext, MissionTabPrevious, NavigateNextPage, NavigatePreviousPage, NewTab, NewWindow,
+    OpenSettings, Paste, SelectTab1, SelectTab2, SelectTab3, SelectTab4, SelectTab5, SelectTab6,
+    SelectTab7, SelectTab8, SelectTab9, SplitPaneDown, SplitPaneRight, StopFocusedSession,
+    ToggleFullscreen, ToggleSidebar, ToggleTerminalDrawer, ZoomIn, ZoomOut, ZoomReset,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -83,6 +85,54 @@ fn key_combo(
     }
 }
 
+fn platform_default(macos: &str) -> String {
+    #[cfg(windows)]
+    {
+        windows_default(macos)
+    }
+    #[cfg(not(windows))]
+    {
+        macos.to_owned()
+    }
+}
+
+#[cfg(any(windows, test))]
+fn windows_default(macos: &str) -> String {
+    match macos {
+        "ctrl-cmd-f" => return "f11".into(),
+        "cmd-[" => return "ctrl-pageup".into(),
+        "cmd-]" => return "ctrl-pagedown".into(),
+        "shift-cmd-[" | "cmd-{" => return "ctrl-shift-pageup".into(),
+        "shift-cmd-]" | "cmd-}" => return "ctrl-shift-pagedown".into(),
+        _ => {}
+    }
+    if !macos.contains("cmd-") {
+        return macos.into();
+    }
+    let key = macos.rsplit('-').next().unwrap();
+    if key.len() == 1 && key.as_bytes()[0].is_ascii_alphabetic() {
+        let shifted_collision = macos.contains("shift-") && matches!(key, "d" | "k" | "n");
+        let alt = macos.contains("alt-") || shifted_collision;
+        format!("ctrl-shift-{}{key}", if alt { "alt-" } else { "" })
+    } else {
+        macos.replace("cmd-", "ctrl-")
+    }
+}
+
+fn default_combo(macos: &str, label: Option<&str>, shift_optional: bool) -> KeyCombo {
+    let keystroke = Keystroke::parse(&platform_default(macos)).expect("valid default binding");
+    let (code, implied_shift) = code_from_gpui_key(&keystroke.key).expect("valid default key");
+    key_combo(
+        &code,
+        keystroke.modifiers.platform,
+        keystroke.modifiers.control,
+        keystroke.modifiers.alt,
+        keystroke.modifiers.shift || implied_shift,
+        label,
+        shift_optional,
+    )
+}
+
 pub(crate) fn entries() -> &'static [KeymapEntry] {
     static KEYMAP: std::sync::OnceLock<Vec<KeymapEntry>> = std::sync::OnceLock::new();
     KEYMAP.get_or_init(|| {
@@ -92,7 +142,7 @@ pub(crate) fn entries() -> &'static [KeymapEntry] {
                 title: "New window",
                 description: "Open another Runner window.",
                 scope: KeymapScope::Global,
-                default: key_combo("KeyN", true, false, false, true, None, false),
+                default: default_combo("shift-cmd-n", None, false),
                 fixed: true,
             },
             KeymapEntry {
@@ -100,7 +150,7 @@ pub(crate) fn entries() -> &'static [KeymapEntry] {
                 title: "New chat",
                 description: "Fill the focused empty pane or start a chat in a new tab.",
                 scope: KeymapScope::Global,
-                default: key_combo("KeyN", true, false, false, false, None, false),
+                default: default_combo("cmd-n", None, false),
                 fixed: false,
             },
             KeymapEntry {
@@ -108,7 +158,7 @@ pub(crate) fn entries() -> &'static [KeymapEntry] {
                 title: "Command palette",
                 description: "Search commands, missions, chats, runners, and crews.",
                 scope: KeymapScope::Global,
-                default: key_combo("KeyK", true, false, false, false, None, false),
+                default: default_combo("cmd-k", None, false),
                 fixed: false,
             },
             KeymapEntry {
@@ -116,7 +166,7 @@ pub(crate) fn entries() -> &'static [KeymapEntry] {
                 title: "Toggle sidebar",
                 description: "Collapse or expand the app sidebar.",
                 scope: KeymapScope::Global,
-                default: key_combo("KeyS", true, false, false, false, None, false),
+                default: default_combo("cmd-s", None, false),
                 fixed: false,
             },
             KeymapEntry {
@@ -124,7 +174,7 @@ pub(crate) fn entries() -> &'static [KeymapEntry] {
                 title: "Toggle terminal drawer",
                 description: "Show or hide the active chat tab's terminal drawer.",
                 scope: KeymapScope::Global,
-                default: key_combo("F12", false, false, true, false, None, false),
+                default: default_combo("alt-f12", None, false),
                 fixed: false,
             },
             KeymapEntry {
@@ -132,7 +182,7 @@ pub(crate) fn entries() -> &'static [KeymapEntry] {
                 title: "Open settings",
                 description: "Open this settings page.",
                 scope: KeymapScope::Global,
-                default: key_combo("Comma", true, false, false, false, None, false),
+                default: default_combo("cmd-,", None, false),
                 fixed: false,
             },
             KeymapEntry {
@@ -140,7 +190,7 @@ pub(crate) fn entries() -> &'static [KeymapEntry] {
                 title: "Previous page",
                 description: "Step back through recently viewed missions and chats.",
                 scope: KeymapScope::Global,
-                default: key_combo("BracketLeft", true, false, false, true, None, false),
+                default: default_combo("shift-cmd-[", None, false),
                 fixed: false,
             },
             KeymapEntry {
@@ -148,7 +198,7 @@ pub(crate) fn entries() -> &'static [KeymapEntry] {
                 title: "Next page",
                 description: "Step forward through recently viewed missions and chats.",
                 scope: KeymapScope::Global,
-                default: key_combo("BracketRight", true, false, false, true, None, false),
+                default: default_combo("shift-cmd-]", None, false),
                 fixed: false,
             },
             KeymapEntry {
@@ -156,7 +206,7 @@ pub(crate) fn entries() -> &'static [KeymapEntry] {
                 title: "Zoom in",
                 description: "Scale the whole app up.",
                 scope: KeymapScope::Global,
-                default: key_combo("Equal", true, false, false, false, Some("+"), true),
+                default: default_combo("cmd-=", Some("+"), true),
                 fixed: false,
             },
             KeymapEntry {
@@ -164,7 +214,7 @@ pub(crate) fn entries() -> &'static [KeymapEntry] {
                 title: "Zoom out",
                 description: "Scale the whole app down.",
                 scope: KeymapScope::Global,
-                default: key_combo("Minus", true, false, false, false, None, false),
+                default: default_combo("cmd--", None, false),
                 fixed: false,
             },
             KeymapEntry {
@@ -172,7 +222,7 @@ pub(crate) fn entries() -> &'static [KeymapEntry] {
                 title: "Reset zoom",
                 description: "Return the app to 100%.",
                 scope: KeymapScope::Global,
-                default: key_combo("Digit0", true, false, false, false, None, false),
+                default: default_combo("cmd-0", None, false),
                 fixed: false,
             },
             KeymapEntry {
@@ -180,7 +230,7 @@ pub(crate) fn entries() -> &'static [KeymapEntry] {
                 title: "Go to tab 1",
                 description: "Open the first visible sidebar tab or mission.",
                 scope: KeymapScope::Global,
-                default: key_combo("Digit1", true, false, false, false, None, false),
+                default: default_combo("cmd-1", None, false),
                 fixed: false,
             },
             KeymapEntry {
@@ -188,7 +238,7 @@ pub(crate) fn entries() -> &'static [KeymapEntry] {
                 title: "Go to tab 2",
                 description: "Open the second visible sidebar tab or mission.",
                 scope: KeymapScope::Global,
-                default: key_combo("Digit2", true, false, false, false, None, false),
+                default: default_combo("cmd-2", None, false),
                 fixed: false,
             },
             KeymapEntry {
@@ -196,7 +246,7 @@ pub(crate) fn entries() -> &'static [KeymapEntry] {
                 title: "Go to tab 3",
                 description: "Open the third visible sidebar tab or mission.",
                 scope: KeymapScope::Global,
-                default: key_combo("Digit3", true, false, false, false, None, false),
+                default: default_combo("cmd-3", None, false),
                 fixed: false,
             },
             KeymapEntry {
@@ -204,7 +254,7 @@ pub(crate) fn entries() -> &'static [KeymapEntry] {
                 title: "Go to tab 4",
                 description: "Open the fourth visible sidebar tab or mission.",
                 scope: KeymapScope::Global,
-                default: key_combo("Digit4", true, false, false, false, None, false),
+                default: default_combo("cmd-4", None, false),
                 fixed: false,
             },
             KeymapEntry {
@@ -212,7 +262,7 @@ pub(crate) fn entries() -> &'static [KeymapEntry] {
                 title: "Go to tab 5",
                 description: "Open the fifth visible sidebar tab or mission.",
                 scope: KeymapScope::Global,
-                default: key_combo("Digit5", true, false, false, false, None, false),
+                default: default_combo("cmd-5", None, false),
                 fixed: false,
             },
             KeymapEntry {
@@ -220,7 +270,7 @@ pub(crate) fn entries() -> &'static [KeymapEntry] {
                 title: "Go to tab 6",
                 description: "Open the sixth visible sidebar tab or mission.",
                 scope: KeymapScope::Global,
-                default: key_combo("Digit6", true, false, false, false, None, false),
+                default: default_combo("cmd-6", None, false),
                 fixed: false,
             },
             KeymapEntry {
@@ -228,7 +278,7 @@ pub(crate) fn entries() -> &'static [KeymapEntry] {
                 title: "Go to tab 7",
                 description: "Open the seventh visible sidebar tab or mission.",
                 scope: KeymapScope::Global,
-                default: key_combo("Digit7", true, false, false, false, None, false),
+                default: default_combo("cmd-7", None, false),
                 fixed: false,
             },
             KeymapEntry {
@@ -236,7 +286,7 @@ pub(crate) fn entries() -> &'static [KeymapEntry] {
                 title: "Go to tab 8",
                 description: "Open the eighth visible sidebar tab or mission.",
                 scope: KeymapScope::Global,
-                default: key_combo("Digit8", true, false, false, false, None, false),
+                default: default_combo("cmd-8", None, false),
                 fixed: false,
             },
             KeymapEntry {
@@ -244,7 +294,7 @@ pub(crate) fn entries() -> &'static [KeymapEntry] {
                 title: "Go to tab 9",
                 description: "Open the ninth visible sidebar tab or mission.",
                 scope: KeymapScope::Global,
-                default: key_combo("Digit9", true, false, false, false, None, false),
+                default: default_combo("cmd-9", None, false),
                 fixed: false,
             },
             KeymapEntry {
@@ -252,7 +302,7 @@ pub(crate) fn entries() -> &'static [KeymapEntry] {
                 title: "Previous chat pane",
                 description: "Focus the previous pane while a chat is split.",
                 scope: KeymapScope::ChatSplit,
-                default: key_combo("BracketLeft", true, false, false, false, None, false),
+                default: default_combo("cmd-[", None, false),
                 fixed: false,
             },
             KeymapEntry {
@@ -260,7 +310,7 @@ pub(crate) fn entries() -> &'static [KeymapEntry] {
                 title: "Next chat pane",
                 description: "Focus the next pane while a chat is split.",
                 scope: KeymapScope::ChatSplit,
-                default: key_combo("BracketRight", true, false, false, false, None, false),
+                default: default_combo("cmd-]", None, false),
                 fixed: false,
             },
             KeymapEntry {
@@ -268,7 +318,7 @@ pub(crate) fn entries() -> &'static [KeymapEntry] {
                 title: "Split pane right",
                 description: "Add a side-by-side pane to the active tab.",
                 scope: KeymapScope::Global,
-                default: key_combo("KeyD", true, false, false, false, None, false),
+                default: default_combo("cmd-d", None, false),
                 fixed: false,
             },
             KeymapEntry {
@@ -276,7 +326,7 @@ pub(crate) fn entries() -> &'static [KeymapEntry] {
                 title: "Split pane down",
                 description: "Add a stacked pane to the active tab.",
                 scope: KeymapScope::Global,
-                default: key_combo("KeyD", true, false, false, true, None, false),
+                default: default_combo("shift-cmd-d", None, false),
                 fixed: false,
             },
             KeymapEntry {
@@ -284,7 +334,7 @@ pub(crate) fn entries() -> &'static [KeymapEntry] {
                 title: "Close pane",
                 description: "Close the focused pane while split; otherwise close the window.",
                 scope: KeymapScope::ChatSplit,
-                default: key_combo("KeyW", true, false, false, false, None, false),
+                default: default_combo("cmd-w", None, false),
                 fixed: true,
             },
             KeymapEntry {
@@ -292,7 +342,7 @@ pub(crate) fn entries() -> &'static [KeymapEntry] {
                 title: "Stop focused session",
                 description: "Stop the chat or terminal in the focused pane.",
                 scope: KeymapScope::Global,
-                default: key_combo("Period", true, false, false, false, None, false),
+                default: default_combo("cmd-.", None, false),
                 fixed: false,
             },
             KeymapEntry {
@@ -300,7 +350,7 @@ pub(crate) fn entries() -> &'static [KeymapEntry] {
                 title: "Copy",
                 description: "Copy the current terminal selection.",
                 scope: KeymapScope::Terminal,
-                default: key_combo("KeyC", true, false, false, false, None, false),
+                default: default_combo("cmd-c", None, false),
                 fixed: true,
             },
             KeymapEntry {
@@ -308,7 +358,7 @@ pub(crate) fn entries() -> &'static [KeymapEntry] {
                 title: "Previous mission tab",
                 description: "Cycle back through the feed and open runner tabs.",
                 scope: KeymapScope::Mission,
-                default: key_combo("BracketLeft", true, false, false, false, None, false),
+                default: default_combo("cmd-[", None, false),
                 fixed: false,
             },
             KeymapEntry {
@@ -316,7 +366,7 @@ pub(crate) fn entries() -> &'static [KeymapEntry] {
                 title: "Next mission tab",
                 description: "Cycle forward through the feed and open runner tabs.",
                 scope: KeymapScope::Mission,
-                default: key_combo("BracketRight", true, false, false, false, None, false),
+                default: default_combo("cmd-]", None, false),
                 fixed: false,
             },
         ]
@@ -331,28 +381,31 @@ fn reserved_entries() -> &'static [KeymapEntry] {
     static RESERVED: std::sync::OnceLock<Vec<KeymapEntry>> = std::sync::OnceLock::new();
     RESERVED.get_or_init(|| {
         vec![
+            #[cfg(not(windows))]
             KeymapEntry {
                 id: "system-quit",
                 title: "Quit Runner",
                 description: "",
                 scope: KeymapScope::Global,
-                default: key_combo("KeyQ", true, false, false, false, None, false),
+                default: default_combo("cmd-q", None, false),
                 fixed: true,
             },
+            #[cfg(not(windows))]
             KeymapEntry {
                 id: "system-hide",
                 title: "Hide Runner",
                 description: "",
                 scope: KeymapScope::Global,
-                default: key_combo("KeyH", true, false, false, false, None, false),
+                default: default_combo("cmd-h", None, false),
                 fixed: true,
             },
+            #[cfg(not(windows))]
             KeymapEntry {
                 id: "system-hide-others",
                 title: "Hide Others",
                 description: "",
                 scope: KeymapScope::Global,
-                default: key_combo("KeyH", true, false, true, false, None, false),
+                default: default_combo("alt-cmd-h", None, false),
                 fixed: true,
             },
             KeymapEntry {
@@ -360,7 +413,7 @@ fn reserved_entries() -> &'static [KeymapEntry] {
                 title: "Minimize",
                 description: "",
                 scope: KeymapScope::Global,
-                default: key_combo("KeyM", true, false, false, false, None, false),
+                default: default_combo("cmd-m", None, false),
                 fixed: true,
             },
             KeymapEntry {
@@ -368,7 +421,7 @@ fn reserved_entries() -> &'static [KeymapEntry] {
                 title: "Close window",
                 description: "",
                 scope: KeymapScope::Global,
-                default: key_combo("KeyW", true, false, false, false, None, false),
+                default: default_combo("cmd-w", None, false),
                 fixed: true,
             },
             KeymapEntry {
@@ -376,7 +429,7 @@ fn reserved_entries() -> &'static [KeymapEntry] {
                 title: "Toggle fullscreen",
                 description: "",
                 scope: KeymapScope::Global,
-                default: key_combo("KeyF", true, true, false, false, None, false),
+                default: default_combo("ctrl-cmd-f", None, false),
                 fixed: true,
             },
             KeymapEntry {
@@ -384,7 +437,7 @@ fn reserved_entries() -> &'static [KeymapEntry] {
                 title: "Paste",
                 description: "",
                 scope: KeymapScope::Global,
-                default: key_combo("KeyV", true, false, false, false, None, false),
+                default: default_combo("cmd-v", None, false),
                 fixed: true,
             },
         ]
@@ -656,6 +709,7 @@ fn default_key_label(code: &str) -> String {
     }
 }
 
+#[cfg(not(windows))]
 pub(crate) fn format_combo(combo: &KeyCombo) -> String {
     format!(
         "{}{}{}{}{}",
@@ -671,6 +725,34 @@ pub(crate) fn format_combo(combo: &KeyCombo) -> String {
             .label
             .clone()
             .unwrap_or_else(|| default_key_label(&combo.code))
+    )
+}
+
+#[cfg(windows)]
+pub(crate) fn format_combo(combo: &KeyCombo) -> String {
+    format!(
+        "{}{}{}{}{}",
+        if combo.ctrl { "Ctrl+" } else { "" },
+        if combo.shift && !combo.shift_optional {
+            "Shift+"
+        } else {
+            ""
+        },
+        if combo.alt { "Alt+" } else { "" },
+        if combo.meta { "Win+" } else { "" },
+        combo
+            .label
+            .clone()
+            .unwrap_or_else(|| match combo.code.as_str() {
+                "Enter" | "Tab" | "Backspace" | "Delete" | "Home" | "End" => combo.code.clone(),
+                "ArrowLeft" => "Left".into(),
+                "ArrowRight" => "Right".into(),
+                "ArrowUp" => "Up".into(),
+                "ArrowDown" => "Down".into(),
+                "PageUp" => "PageUp".into(),
+                "PageDown" => "PageDown".into(),
+                _ => default_key_label(&combo.code),
+            })
     )
 }
 
@@ -794,7 +876,9 @@ fn binding_strings(combo: &KeyCombo) -> Vec<String> {
 
 fn binding_context(entry: &KeymapEntry, combo: &KeyCombo) -> Option<&'static str> {
     match entry.id {
-        "new-chat" | "command-palette" | "page-previous" | "page-next" if combo.meta => {
+        "new-chat" | "command-palette" | "page-previous" | "page-next"
+            if combo.meta || (cfg!(windows) && combo == &entry.default) =>
+        {
             Some("!TextInput && !Settings")
         }
         "new-chat" | "command-palette" | "page-previous" | "page-next" => {
@@ -812,21 +896,27 @@ pub(crate) fn install_bindings(
 ) {
     cx.clear_key_bindings();
     cx.bind_keys([
-        KeyBinding::new("cmd-c", Copy, Some("Terminal")),
-        KeyBinding::new("cmd-c", Copy, Some("MissionFeed")),
-        KeyBinding::new("cmd-v", Paste, Some("Terminal")),
+        KeyBinding::new(&platform_default("cmd-c"), Copy, Some("Terminal")),
+        #[cfg(not(windows))]
+        KeyBinding::new(&platform_default("cmd-c"), Copy, Some("MissionFeed")),
+        #[cfg(windows)]
+        KeyBinding::new("ctrl-c", Copy, Some("MissionFeed")),
+        KeyBinding::new(&platform_default("cmd-v"), Paste, Some("Terminal")),
     ]);
     if shortcuts_suspended {
         return;
     }
     cx.bind_keys([
-        KeyBinding::new("cmd-q", Quit, None),
-        KeyBinding::new("cmd-h", Hide, None),
-        KeyBinding::new("cmd-alt-h", HideOthers, None),
-        KeyBinding::new("cmd-m", Minimize, None),
-        KeyBinding::new("cmd-w", CloseWindowOrPane, None),
-        KeyBinding::new("shift-cmd-n", NewWindow, None),
-        KeyBinding::new("ctrl-cmd-f", ToggleFullscreen, None),
+        #[cfg(not(windows))]
+        KeyBinding::new(&platform_default("cmd-q"), Quit, None),
+        #[cfg(not(windows))]
+        KeyBinding::new(&platform_default("cmd-h"), Hide, None),
+        #[cfg(not(windows))]
+        KeyBinding::new(&platform_default("cmd-alt-h"), HideOthers, None),
+        KeyBinding::new(&platform_default("cmd-m"), Minimize, None),
+        KeyBinding::new(&platform_default("cmd-w"), CloseWindowOrPane, None),
+        KeyBinding::new(&platform_default("shift-cmd-n"), NewWindow, None),
+        KeyBinding::new(&platform_default("ctrl-cmd-f"), ToggleFullscreen, None),
     ]);
     for entry in entries().iter().filter(|entry| !entry.fixed) {
         let Some(combo) = effective_binding(entry.id, overrides) else {
@@ -879,6 +969,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(windows))]
     fn registry_matches_the_shipped_defaults_and_fixed_entry() {
         assert_eq!(entries().len(), 29);
         assert_eq!(entries().iter().filter(|entry| entry.fixed).count(), 3);
@@ -924,7 +1015,10 @@ mod tests {
             assert_eq!(entry.title, format!("Go to tab {index}"));
             assert_eq!(entry.scope, KeymapScope::Global);
             assert!(!entry.fixed);
-            assert_eq!(binding_strings(&entry.default), [format!("cmd-{index}")]);
+            assert_eq!(
+                binding_strings(&entry.default),
+                [platform_default(&format!("cmd-{index}"))]
+            );
             assert_eq!(binding_context(entry, &entry.default), None);
         }
     }
@@ -934,14 +1028,14 @@ mod tests {
         let mut overrides = KeymapOverrides::new();
         assert_eq!(
             effective_binding("command-palette", &overrides),
-            Some(combo_for("KeyK", false))
+            Some(entry("command-palette").unwrap().default.clone())
         );
         overrides.insert("command-palette".into(), None);
         assert_eq!(effective_binding("command-palette", &overrides), None);
         overrides.insert("new-window".into(), Some(combo_for("KeyP", false)));
         assert_eq!(
             effective_binding("new-window", &overrides),
-            Some(combo_for("KeyN", true))
+            Some(entry("new-window").unwrap().default.clone())
         );
     }
 
@@ -976,10 +1070,10 @@ mod tests {
         overrides.insert("pane-previous".into(), Some(combo_for("KeyJ", false)));
         overrides.insert(
             "mission-tab-next".into(),
-            Some(combo_for("BracketLeft", false)),
+            Some(entry("pane-previous").unwrap().default.clone()),
         );
         assert!(find_conflict(
-            &combo_for("BracketLeft", false),
+            &entry("pane-previous").unwrap().default,
             "pane-previous",
             &overrides
         )
@@ -987,7 +1081,7 @@ mod tests {
 
         overrides.insert(
             "toggle-sidebar".into(),
-            Some(combo_for("BracketLeft", false)),
+            Some(entry("pane-previous").unwrap().default.clone()),
         );
         let conflict = clear_override("pane-previous", &mut overrides).unwrap_err();
         assert_eq!(conflict.id, "toggle-sidebar");
@@ -997,8 +1091,12 @@ mod tests {
     #[test]
     fn conflicts_include_system_owned_shortcuts_without_blocking_split_close() {
         let overrides = KeymapOverrides::new();
-        let conflict = find_conflict(&combo_for("KeyQ", false), "new-chat", &overrides).unwrap();
-        assert_eq!(conflict.id, "system-quit");
+        let reserved = reserved_entries()
+            .iter()
+            .find(|entry| entry.id == "system-minimize")
+            .unwrap();
+        let conflict = find_conflict(&reserved.default, "new-chat", &overrides).unwrap();
+        assert_eq!(conflict.id, "system-minimize");
         assert!(find_conflict(&combo_for("KeyW", false), "close-pane", &overrides).is_none());
     }
 
@@ -1028,19 +1126,28 @@ mod tests {
             key: "+".into(),
             ..bare
         };
-        assert_eq!(format_combo(&combo_from_event(&plus).unwrap()), "⇧⌘+");
+        assert_eq!(
+            format_combo(&combo_from_event(&plus).unwrap()),
+            if cfg!(windows) {
+                "Shift+Win++"
+            } else {
+                "⇧⌘+"
+            }
+        );
     }
 
     #[test]
     fn shift_optional_matches_both_zoom_in_forms_only() {
         let combo = entry("zoom-in").unwrap().default.clone();
+        #[cfg(not(windows))]
+        assert_eq!((combo.meta, combo.ctrl, combo.alt), (true, false, false));
         for shift in [false, true] {
             assert!(combo_matches_event(
                 &combo,
                 &KeyEventLike {
-                    meta: true,
-                    ctrl: false,
-                    alt: false,
+                    meta: combo.meta,
+                    ctrl: combo.ctrl,
+                    alt: combo.alt,
                     shift,
                     code: "Equal".into(),
                     key: if shift { "+" } else { "=" }.into(),
@@ -1062,6 +1169,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(windows))]
     fn registry_defaults_compile_to_gpui_runtime_keystrokes() {
         type ExpectedBinding<'a> = (&'a str, &'a str, bool, bool, bool, bool);
         type ExpectedEntry<'a> = (&'a str, &'a [ExpectedBinding<'a>]);
@@ -1186,5 +1294,320 @@ mod tests {
                 .modifiers
                 .shift
         );
+    }
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn macos_defaults_are_byte_identical_to_phase_zero() {
+        let expected = [
+            (
+                "new-window",
+                key_combo("KeyN", true, false, false, true, None, false),
+            ),
+            (
+                "new-chat",
+                key_combo("KeyN", true, false, false, false, None, false),
+            ),
+            (
+                "command-palette",
+                key_combo("KeyK", true, false, false, false, None, false),
+            ),
+            (
+                "toggle-sidebar",
+                key_combo("KeyS", true, false, false, false, None, false),
+            ),
+            (
+                "toggle-terminal-drawer",
+                key_combo("F12", false, false, true, false, None, false),
+            ),
+            (
+                "open-settings",
+                key_combo("Comma", true, false, false, false, None, false),
+            ),
+            (
+                "page-previous",
+                key_combo("BracketLeft", true, false, false, true, None, false),
+            ),
+            (
+                "page-next",
+                key_combo("BracketRight", true, false, false, true, None, false),
+            ),
+            (
+                "zoom-in",
+                key_combo("Equal", true, false, false, false, Some("+"), true),
+            ),
+            (
+                "zoom-out",
+                key_combo("Minus", true, false, false, false, None, false),
+            ),
+            (
+                "zoom-reset",
+                key_combo("Digit0", true, false, false, false, None, false),
+            ),
+            (
+                "select-tab-1",
+                key_combo("Digit1", true, false, false, false, None, false),
+            ),
+            (
+                "select-tab-2",
+                key_combo("Digit2", true, false, false, false, None, false),
+            ),
+            (
+                "select-tab-3",
+                key_combo("Digit3", true, false, false, false, None, false),
+            ),
+            (
+                "select-tab-4",
+                key_combo("Digit4", true, false, false, false, None, false),
+            ),
+            (
+                "select-tab-5",
+                key_combo("Digit5", true, false, false, false, None, false),
+            ),
+            (
+                "select-tab-6",
+                key_combo("Digit6", true, false, false, false, None, false),
+            ),
+            (
+                "select-tab-7",
+                key_combo("Digit7", true, false, false, false, None, false),
+            ),
+            (
+                "select-tab-8",
+                key_combo("Digit8", true, false, false, false, None, false),
+            ),
+            (
+                "select-tab-9",
+                key_combo("Digit9", true, false, false, false, None, false),
+            ),
+            (
+                "pane-previous",
+                key_combo("BracketLeft", true, false, false, false, None, false),
+            ),
+            (
+                "pane-next",
+                key_combo("BracketRight", true, false, false, false, None, false),
+            ),
+            (
+                "split-pane-right",
+                key_combo("KeyD", true, false, false, false, None, false),
+            ),
+            (
+                "split-pane-down",
+                key_combo("KeyD", true, false, false, true, None, false),
+            ),
+            (
+                "close-pane",
+                key_combo("KeyW", true, false, false, false, None, false),
+            ),
+            (
+                "stop-session",
+                key_combo("Period", true, false, false, false, None, false),
+            ),
+            (
+                "copy",
+                key_combo("KeyC", true, false, false, false, None, false),
+            ),
+            (
+                "mission-tab-previous",
+                key_combo("BracketLeft", true, false, false, false, None, false),
+            ),
+            (
+                "mission-tab-next",
+                key_combo("BracketRight", true, false, false, false, None, false),
+            ),
+            (
+                "system-quit",
+                key_combo("KeyQ", true, false, false, false, None, false),
+            ),
+            (
+                "system-hide",
+                key_combo("KeyH", true, false, false, false, None, false),
+            ),
+            (
+                "system-hide-others",
+                key_combo("KeyH", true, false, true, false, None, false),
+            ),
+            (
+                "system-minimize",
+                key_combo("KeyM", true, false, false, false, None, false),
+            ),
+            (
+                "system-close-window",
+                key_combo("KeyW", true, false, false, false, None, false),
+            ),
+            (
+                "system-toggle-fullscreen",
+                key_combo("KeyF", true, true, false, false, None, false),
+            ),
+            (
+                "system-paste",
+                key_combo("KeyV", true, false, false, false, None, false),
+            ),
+        ];
+        let actual = entries()
+            .iter()
+            .chain(reserved_entries())
+            .map(|entry| (entry.id, &entry.default))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            serde_json::to_vec(&actual).unwrap(),
+            serde_json::to_vec(expected.as_slice()).unwrap()
+        );
+    }
+
+    #[test]
+    fn windows_defaults_preserve_terminal_control_keys_and_resolve_shift_collisions() {
+        for (macos, windows) in [
+            ("cmd-n", "ctrl-shift-n"),
+            ("shift-cmd-n", "ctrl-shift-alt-n"),
+            ("cmd-d", "ctrl-shift-d"),
+            ("shift-cmd-d", "ctrl-shift-alt-d"),
+            ("cmd-k", "ctrl-shift-k"),
+            ("shift-cmd-k", "ctrl-shift-alt-k"),
+            ("shift-cmd-z", "ctrl-shift-z"),
+            ("cmd-c", "ctrl-shift-c"),
+            ("cmd-v", "ctrl-shift-v"),
+            ("cmd-h", "ctrl-shift-h"),
+            ("cmd-alt-h", "ctrl-shift-alt-h"),
+            ("cmd-,", "ctrl-,"),
+            ("cmd--", "ctrl--"),
+            ("cmd-1", "ctrl-1"),
+            ("cmd-[", "ctrl-pageup"),
+            ("shift-cmd-[", "ctrl-shift-pageup"),
+            ("cmd-]", "ctrl-pagedown"),
+            ("shift-cmd-]", "ctrl-shift-pagedown"),
+            ("cmd-{", "ctrl-shift-pageup"),
+            ("cmd-}", "ctrl-shift-pagedown"),
+            ("cmd-left", "ctrl-left"),
+            ("ctrl-cmd-f", "f11"),
+            ("alt-f12", "alt-f12"),
+        ] {
+            let actual = windows_default(macos);
+            assert_eq!(actual, windows, "{macos}");
+            let keystroke = Keystroke::parse(&actual).unwrap();
+            assert!(!keystroke.modifiers.platform);
+            assert!(!matches!(keystroke.key.as_str(), "[" | "]" | "{" | "}"));
+            assert!(code_from_gpui_key(&keystroke.key).is_some(), "{macos}");
+            #[cfg(target_os = "macos")]
+            assert_eq!(platform_default(macos).as_bytes(), macos.as_bytes());
+        }
+        for entry in entries().iter().chain(reserved_entries()) {
+            for binding in binding_strings(&entry.default) {
+                let windows = Keystroke::parse(&windows_default(&binding)).unwrap();
+                assert!(!windows.modifiers.platform, "{}", entry.id);
+                assert!(code_from_gpui_key(&windows.key).is_some(), "{}", entry.id);
+                if windows.key.len() == 1 && windows.key.as_bytes()[0].is_ascii_alphabetic() {
+                    assert!(
+                        windows.modifiers.control && windows.modifiers.shift,
+                        "{}",
+                        entry.id
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn windows_defaults_have_no_unexpected_scope_collisions() {
+        let defaults = entries()
+            .iter()
+            .chain(reserved_entries())
+            .filter(|entry| {
+                !matches!(
+                    entry.id,
+                    "system-quit" | "system-hide" | "system-hide-others"
+                )
+            })
+            .map(|entry| {
+                let binding = windows_default(&binding_strings(&entry.default)[0]);
+                let keystroke = Keystroke::parse(&binding).unwrap();
+                let mut combo = combo_from_keystroke(&keystroke).unwrap();
+                combo.shift_optional = entry.default.shift_optional;
+                (entry, combo)
+            })
+            .collect::<Vec<_>>();
+        for (index, (left, left_combo)) in defaults.iter().enumerate() {
+            for (right, right_combo) in &defaults[index + 1..] {
+                if matches!((left.id, right.id), ("close-pane", "system-close-window")) {
+                    assert!(combos_collide(left_combo, right_combo));
+                    continue;
+                }
+                assert!(
+                    !left.scope.overlaps(right.scope) || !combos_collide(left_combo, right_combo),
+                    "{} collides with {}",
+                    left.id,
+                    right.id
+                );
+            }
+        }
+        let fullscreen = Keystroke::parse(&windows_default("ctrl-cmd-f")).unwrap();
+        assert_eq!(
+            code_from_gpui_key(&fullscreen.key),
+            Some(("F11".into(), false))
+        );
+    }
+
+    #[test]
+    fn default_navigation_reaches_terminals_and_user_overrides_keep_their_modifiers() {
+        for id in ["new-chat", "command-palette", "page-previous", "page-next"] {
+            let entry = entry(id).unwrap();
+            assert_eq!(
+                binding_context(entry, &entry.default),
+                Some("!TextInput && !Settings")
+            );
+            let user_combo = key_combo("KeyP", false, true, false, false, None, false);
+            let overrides = KeymapOverrides::from([(id.into(), Some(user_combo.clone()))]);
+            assert_eq!(effective_binding(id, &overrides), Some(user_combo.clone()));
+            assert_eq!(binding_strings(&user_combo), ["ctrl-p"]);
+            assert_eq!(
+                binding_context(entry, &user_combo),
+                Some("!TextInput && !Settings && !Terminal")
+            );
+        }
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn windows_table_has_no_command_modifier_or_quit_binding() {
+        for entry in entries().iter().chain(reserved_entries()) {
+            assert!(!entry.default.meta, "{}", entry.id);
+            assert!(!matches!(
+                entry.id,
+                "system-quit" | "system-hide" | "system-hide-others"
+            ));
+            for binding in binding_strings(&entry.default) {
+                assert!(!binding.contains("cmd-"), "{}: {binding}", entry.id);
+                assert!(!Keystroke::parse(&binding).unwrap().modifiers.platform);
+            }
+            if !entry.id.starts_with("system-") {
+                assert!(
+                    find_conflict(&entry.default, entry.id, &KeymapOverrides::new()).is_none(),
+                    "{}",
+                    entry.id
+                );
+            }
+        }
+        for (id, hint) in [
+            ("new-chat", "Ctrl+Shift+N"),
+            ("new-window", "Ctrl+Shift+Alt+N"),
+            ("split-pane-right", "Ctrl+Shift+D"),
+            ("split-pane-down", "Ctrl+Shift+Alt+D"),
+            ("pane-previous", "Ctrl+PageUp"),
+            ("pane-next", "Ctrl+PageDown"),
+            ("mission-tab-previous", "Ctrl+PageUp"),
+            ("mission-tab-next", "Ctrl+PageDown"),
+            ("page-previous", "Ctrl+Shift+PageUp"),
+            ("page-next", "Ctrl+Shift+PageDown"),
+            ("open-settings", "Ctrl+,"),
+            ("zoom-in", "Ctrl++"),
+        ] {
+            assert_eq!(format_combo(&entry(id).unwrap().default), hint);
+        }
+        assert!(find_conflict(
+            &key_combo("KeyQ", false, true, false, true, None, false),
+            "new-chat",
+            &KeymapOverrides::new()
+        )
+        .is_none());
     }
 }
