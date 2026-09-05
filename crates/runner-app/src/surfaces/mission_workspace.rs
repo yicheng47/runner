@@ -27,6 +27,7 @@ use runner_backend::windows::Subject;
 use runner_terminal::input_state::ECHO_WINDOW;
 
 use super::*;
+#[cfg(target_os = "macos")]
 use crate::surfaces::app_shell::{SIDEBAR_TOGGLE_GLYPH_INSET, SIDEBAR_TOGGLE_GLYPH_X};
 use crate::surfaces::mission_composer::{
     key_down as composer_key_down, mention_options, select_target as select_composer_target,
@@ -759,9 +760,17 @@ impl MissionWorkspace {
     }
 
     fn workspace_titlebar_padding(&self, window: &Window, cx: &App) -> f32 {
-        if self.sidebar_collapsed && !window.is_fullscreen() {
-            SIDEBAR_TOGGLE_GLYPH_X - SIDEBAR_TOGGLE_GLYPH_INSET * self.settings(cx).app_zoom
-        } else {
+        #[cfg(target_os = "macos")]
+        {
+            if self.sidebar_collapsed && !window.is_fullscreen() {
+                SIDEBAR_TOGGLE_GLYPH_X - SIDEBAR_TOGGLE_GLYPH_INSET * self.settings(cx).app_zoom
+            } else {
+                16. * self.settings(cx).app_zoom
+            }
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = window;
             16. * self.settings(cx).app_zoom
         }
     }

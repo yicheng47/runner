@@ -18,10 +18,12 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result};
 use futures::StreamExt as _;
+#[cfg(target_os = "macos")]
+use gpui::QuitMode;
 use gpui::{
     actions, div, point, prelude::*, px, relative, rems, size, AnyElement, App, Application,
     Bounds, ClipboardItem, Context, CursorStyle, DragMoveEvent, Entity, FocusHandle, Global,
-    KeyDownEvent, Menu, MenuItem, MouseButton, OsAction, QuitMode, ScrollDelta, ScrollHandle,
+    KeyDownEvent, Menu, MenuItem, MouseButton, OsAction, ScrollDelta, ScrollHandle,
     ScrollWheelEvent, SharedString, Subscription, SystemMenuType, TitlebarOptions, Window,
     WindowBounds, WindowOptions,
 };
@@ -1070,9 +1072,9 @@ fn run() -> Result<()> {
     let shutdown_core = core.clone();
     let ui_settings_path = settings_path(&paths.app_data_dir);
 
-    let application = Application::new()
-        .with_assets(Assets)
-        .with_quit_mode(QuitMode::Explicit);
+    let application = Application::new().with_assets(Assets);
+    #[cfg(target_os = "macos")]
+    let application = application.with_quit_mode(QuitMode::Explicit);
     application.on_reopen(|cx| {
         if !window_label_is_open(cx, "main") {
             if let Err(error) = open_runner_window("main".into(), None, None, cx) {
@@ -1342,11 +1344,18 @@ fn open_runner_window(
     let result = cx.open_window(
         WindowOptions {
             window_bounds: Some(bounds),
+            #[cfg(target_os = "macos")]
             titlebar: Some(TitlebarOptions {
                 title: None,
                 appears_transparent: true,
                 // The zoom-aware AppKit frame path owns this position. Giving GPUI a second
                 // position makes its resize callback race the frame update and visibly jump.
+                traffic_light_position: None,
+            }),
+            #[cfg(windows)]
+            titlebar: Some(TitlebarOptions {
+                title: Some("Runner".into()),
+                appears_transparent: false,
                 traffic_light_position: None,
             }),
             ..Default::default()
