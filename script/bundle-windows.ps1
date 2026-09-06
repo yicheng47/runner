@@ -55,15 +55,7 @@ try {
     & $compiler /Qp "/DAppVersion=$shortVersion" "/DBaseVersion=$($version -replace '-.*$', '')" "/DSourceDir=$release" "/DOutputDir=$release" (Join-Path $PSScriptRoot 'windows/runner.iss')
     if ($LASTEXITCODE -ne 0) { throw 'Windows installer compilation failed' }
 
-    $stage = Join-Path $release "Runner-Nightly-$shortVersion-x64"
-    New-Item -ItemType Directory -Force -Path $stage | Out-Null
-    foreach ($binary in 'Runner.exe', 'runner-agent-cli.exe', 'runner-mcp.exe') {
-        Copy-Item -LiteralPath (Join-Path $release $binary) -Destination $stage
-    }
-    Copy-Item -LiteralPath 'LICENSE', 'crates/runner-app/LICENSE.xterm', 'assets/fonts/JetBrainsMono-NF-LICENSE.txt', 'assets/fonts/JetBrainsMono-NF-NOTICE.txt', 'assets/fonts/OFL.txt' -Destination $stage
-    Compress-Archive -LiteralPath $stage -DestinationPath "$stage.zip" -Force
     Write-Host "Unsigned installer: $(Join-Path $release "Runner-Setup-$shortVersion-x64.exe")"
-    Write-Host "Portable archive: $stage.zip"
 } finally {
     $env:RUNNER_BUILD_STAMP = $previousStamp
     $env:RUNNER_BUILD_SHA = $previousSha

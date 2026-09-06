@@ -157,7 +157,7 @@ jobs:
         with:
           cache-on-failure: true
 
-      - name: Build Windows installer and portable archive
+      - name: Build Windows installer
         shell: pwsh
         env:
           RUNNER_BUILD_STAMP: ${{ steps.build.outputs.stamp }}
@@ -187,7 +187,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          new_zip="target/x86_64-pc-windows-msvc/release/Runner-Nightly-${{ steps.build.outputs.short_version }}-x64.zip"
           new_setup="target/x86_64-pc-windows-msvc/release/Runner-Setup-${{ steps.build.outputs.short_version }}-x64.exe"
           notes="script/windows/release-notes.md"
           if gh release view nightly-win >/dev/null 2>&1; then
@@ -195,17 +194,15 @@ jobs:
           else
             gh release create nightly-win --target nightly-windows --prerelease --title "Runner Nightly (Windows)" --notes-file "$notes"
           fi
-          gh release upload nightly-win "$new_setup" "$new_zip" --clobber
-          for pattern in '^Runner-Setup-.*\.([0-9]{8})\.([0-9]{4})-x64\.exe$' '^Runner-Nightly-.*\.([0-9]{8})\.([0-9]{4})-x64\.zip$'; do
-            gh release view nightly-win --json assets --jq '.assets[].name' | while IFS= read -r name; do
-              if [[ "$name" =~ $pattern ]]; then
-                printf '%s.%s\t%s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "$name"
-              fi
-            done | sort -r | sed -n '11,$p' | cut -f2- | while IFS= read -r stale; do
-              gh release delete-asset nightly-win "$stale" --yes
-            done
+          gh release upload nightly-win "$new_setup" --clobber
+          pattern='^Runner-Setup-.*\.([0-9]{8})\.([0-9]{4})-x64\.exe$'
+          gh release view nightly-win --json assets --jq '.assets[].name' | while IFS= read -r name; do
+            if [[ "$name" =~ $pattern ]]; then
+              printf '%s.%s\t%s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "$name"
+            fi
+          done | sort -r | sed -n '11,$p' | cut -f2- | while IFS= read -r stale; do
+            gh release delete-asset nightly-win "$stale" --yes
           done
-          echo "NEW_ZIP_NAME=${new_zip##*/}" >> "$GITHUB_ENV"
           echo "NEW_SETUP_NAME=${new_setup##*/}" >> "$GITHUB_ENV"
 
       - name: Verify the Windows prerelease is public
@@ -217,4 +214,3 @@ jobs:
           test "$is_prerelease" = "true" || { echo "error: Windows nightly must be a prerelease" >&2; exit 1; }
           test "$is_draft" = "false" || { echo "error: Windows nightly must be published" >&2; exit 1; }
           curl --silent --fail --head --location "https://github.com/yicheng47/runner/releases/download/nightly-win/$NEW_SETUP_NAME" >/dev/null
-          curl --silent --fail --head --location "https://github.com/yicheng47/runner/releases/download/nightly-win/$NEW_ZIP_NAME" >/dev/null
