@@ -1,8 +1,8 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use anyhow::{bail, Context as _, Result};
+use anyhow::{Context as _, Result};
 use runner_backend::{
     cli_install, db, event_bus, events, mcp, ops, repo, runtime_status, session, shell_path,
     windows, AppCore,
@@ -254,16 +254,14 @@ pub fn stop_running_sessions_on_quit(core: &AppCore) -> Result<()> {
         repo::session::mark_running_for_resume_on_launch(&mut conn)
             .context("stamp sessions for resume on launch")?
     };
-    let mut failures = Vec::new();
-    for id in ids {
-        if let Err(error) = core.sessions.kill(&id) {
-            failures.push(format!("{id}: {error}"));
-        }
+    let n = ids.len();
+    let started = Instant::now();
+    let result = core.sessions.kill_many(&ids);
+    if n > 0 {
+        let elapsed = started.elapsed();
+        tracing::info!("quit teardown: stopped {n} sessions in {elapsed:?}");
     }
-    if !failures.is_empty() {
-        bail!("failed to stop sessions on quit: {}", failures.join("; "));
-    }
-    Ok(())
+    result.map_err(|error| anyhow::anyhow!("failed to stop sessions on quit: {error}"))
 }
 
 #[cfg(test)]

@@ -105,6 +105,26 @@ impl SessionManager {
         Ok(())
     }
 
+    pub fn kill_many(&self, ids: &[String]) -> Result<()> {
+        let failures = std::thread::scope(|scope| {
+            let handles: Vec<_> = ids
+                .iter()
+                .map(|id| (id, scope.spawn(move || self.kill(id))))
+                .collect();
+            let mut failures = Vec::new();
+            for (id, handle) in handles {
+                if let Err(error) = handle.join().unwrap() {
+                    failures.push(format!("{id}: {error}"));
+                }
+            }
+            failures
+        });
+        if !failures.is_empty() {
+            return Err(Error::msg(failures.join("; ")));
+        }
+        Ok(())
+    }
+
     /// Register a fresh cancellation flag for a mission's background
     /// PTY-spawn task. Called from `mission_start` before dispatching
     /// `complete_mission_session_spawn`. Returns the shared flag the
@@ -172,19 +192,8 @@ impl SessionManager {
                 })
                 .collect()
         };
-        let mut failures = Vec::new();
-        for id in ids {
-            if let Err(error) = self.kill(&id) {
-                failures.push(format!("{id}: {error}"));
-            }
-        }
-        if !failures.is_empty() {
-            return Err(Error::msg(format!(
-                "failed to kill mission sessions: {}",
-                failures.join("; ")
-            )));
-        }
-        Ok(())
+        self.kill_many(&ids)
+            .map_err(|error| Error::msg(format!("failed to kill mission sessions: {error}")))
     }
 
     pub(crate) fn reap_live_mission_siblings(
@@ -257,19 +266,8 @@ impl SessionManager {
                 })
                 .collect()
         };
-        let mut failures = Vec::new();
-        for id in ids {
-            if let Err(error) = self.kill(&id) {
-                failures.push(format!("{id}: {error}"));
-            }
-        }
-        if !failures.is_empty() {
-            return Err(Error::msg(format!(
-                "failed to kill runner sessions: {}",
-                failures.join("; ")
-            )));
-        }
-        Ok(())
+        self.kill_many(&ids)
+            .map_err(|error| Error::msg(format!("failed to kill runner sessions: {error}")))
     }
 
     pub(super) fn forget_runtime_handle(

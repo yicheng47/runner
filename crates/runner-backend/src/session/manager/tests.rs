@@ -13,7 +13,7 @@ use crate::session::runtime::{
     SpawnSpec,
 };
 use std::collections::{HashMap, HashSet};
-use std::sync::Mutex;
+use std::sync::{Barrier, Mutex};
 use std::time::{Duration, Instant};
 
 /// Use this for paths consumed by spawn/resume, including stored cwd fields.
@@ -105,6 +105,7 @@ struct FakeRuntime {
     /// work (a resize) between the fork and the handle install.
     spawn_hook: std::sync::Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
     stop_gate: std::sync::Mutex<Option<RuntimeGate>>,
+    stop_barrier: std::sync::Mutex<Option<Arc<Barrier>>>,
     /// What `status()` returns for any pane lookup. Most tests
     /// want exit_code=0 (clean stop); the kill-semantics test
     /// wants exit_code=143 (SIGTERM) to verify the
@@ -260,6 +261,10 @@ impl SessionRuntime for FakeRuntime {
 
     fn stop(&self, session: &RuntimeSession) -> RuntimeResult<()> {
         self.stops.lock().unwrap().push(session.session_id.clone());
+        let barrier = self.stop_barrier.lock().unwrap().clone();
+        if let Some(barrier) = barrier {
+            barrier.wait();
+        }
         let gate = self.stop_gate.lock().unwrap().take();
         if let Some(gate) = gate {
             let _ = gate.entered.send(());
@@ -2621,6 +2626,58 @@ fn kill_blocks_until_session_row_is_terminal() {
     // forwarder also calls stop on its way out as
     // belt-and-suspenders cleanup once the channel closes).
     assert!(!fake.stops.lock().unwrap().is_empty());
+}
+
+#[test]
+fn kill_many_stops_sessions_concurrently() {
+    let pool = pool_with_schema();
+    let mission_id = ulid::Ulid::new().to_string();
+    let runner_id = ulid::Ulid::new().to_string();
+    let slot_id = insert_crew_runner(&pool, &mission_id, &runner_id);
+    let mission = Mission {
+        id: mission_id,
+        crew_id: "c".into(),
+        ..mission()
+    };
+    let mut runner = runner("/bin/cat", &[]);
+    runner.id = runner_id;
+    let mut slot = slot_for(&runner);
+    slot.id = slot_id;
+    slot.crew_id = "c".into();
+
+    let fake = fake_runtime();
+    let mgr = mgr_with_fake(None, Arc::clone(&fake));
+    let ids: Vec<_> = (0..3)
+        .map(|_| {
+            mgr.spawn(
+                &mission,
+                &runner,
+                &slot,
+                fixture_tmp_dir(),
+                PathBuf::from("/dev/null"),
+                Arc::clone(&pool),
+                capture(),
+                None,
+            )
+            .unwrap()
+            .id
+        })
+        .collect();
+    *fake.stop_barrier.lock().unwrap() = Some(Arc::new(Barrier::new(ids.len())));
+
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let kill_ids = ids.clone();
+    let kill = std::thread::spawn(move || {
+        let _ = done_tx.send(mgr.kill_many(&kill_ids));
+    });
+    done_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("kill_many must reach every stop barrier concurrently")
+        .unwrap();
+    kill.join().unwrap();
+
+    let stopped: HashSet<_> = fake.stops.lock().unwrap().iter().cloned().collect();
+    assert_eq!(stopped, ids.into_iter().collect());
 }
 
 #[test]
