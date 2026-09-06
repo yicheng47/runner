@@ -192,6 +192,8 @@ pub struct AppSettings {
     pub default_runtime: String,
     pub disabled_agents: BTreeSet<String>,
     pub enabled_agents: BTreeSet<String>,
+    #[cfg(windows)]
+    pub initialized_mcp_clients: BTreeSet<String>,
     #[serde(default, deserialize_with = "keymap::deserialize_overrides")]
     pub keymap_overrides: KeymapOverrides,
 }
@@ -226,6 +228,8 @@ impl Default for AppSettings {
             default_runtime: String::new(),
             disabled_agents: BTreeSet::new(),
             enabled_agents: BTreeSet::new(),
+            #[cfg(windows)]
+            initialized_mcp_clients: BTreeSet::new(),
             keymap_overrides: KeymapOverrides::new(),
         }
     }

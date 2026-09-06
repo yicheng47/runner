@@ -34,10 +34,10 @@ enum ChatMode {
 
 impl ChatMode {
     fn from_persisted(value: Option<&str>) -> Self {
-        if value.is_some_and(|value| value.trim() == "runtime") {
-            Self::Runtime
-        } else {
+        if value.is_some_and(|value| value.trim() == "runner") {
             Self::Runner
+        } else {
+            Self::Runtime
         }
     }
 
@@ -1399,8 +1399,10 @@ impl NativeRoot {
         let root = cx.entity();
         let browse_root = root.clone();
         let content = div()
+            .debug_selector(|| "START_CHAT_FORM".into())
             .flex()
             .flex_col()
+            .when(cfg!(windows), |content| content.w(rems(FIELD_WIDTH / 16.)))
             .gap_5()
             .on_key_down(cx.listener(Self::on_start_chat_key_down))
             .children(modal.error.as_ref().map(|error| {
@@ -1417,6 +1419,7 @@ impl NativeRoot {
             }))
             .child(
                 div()
+                    .debug_selector(|| "START_CHAT_MODES".into())
                     .flex()
                     .w_full()
                     .p(rems(2. / 16.))
@@ -1425,19 +1428,19 @@ impl NativeRoot {
                     .border_color(theme::border())
                     .bg(theme::bg())
                     .child(self.render_mode_button(
-                        "Runner",
-                        ChatMode::Runner,
-                        mode,
-                        submitting,
-                        modal.runner_mode_focus.clone(),
-                        cx,
-                    ))
-                    .child(self.render_mode_button(
                         "Direct",
                         ChatMode::Runtime,
                         mode,
                         submitting,
                         modal.direct_mode_focus.clone(),
+                        cx,
+                    ))
+                    .child(self.render_mode_button(
+                        "Runner",
+                        ChatMode::Runner,
+                        mode,
+                        submitting,
+                        modal.runner_mode_focus.clone(),
                         cx,
                     )),
             )
@@ -1567,6 +1570,10 @@ impl NativeRoot {
         let key_root = root.clone();
         let click_focus = focus_handle.clone();
         let mut button = div()
+            .debug_selector(move || match mode {
+                ChatMode::Runner => "START_CHAT_RUNNER_MODE".into(),
+                ChatMode::Runtime => "START_CHAT_DIRECT_MODE".into(),
+            })
             .id(match mode {
                 ChatMode::Runner => "start-chat-mode-runner",
                 ChatMode::Runtime => "start-chat-mode-runtime",
@@ -1723,8 +1730,8 @@ fn set_start_chat_controls_disabled(
 fn start_chat_focus_order(modal: &StartChatModal, cx: &Context<NativeRoot>) -> Vec<FocusHandle> {
     let mut order = vec![
         modal.close_focus.clone(),
-        modal.runner_mode_focus.clone(),
         modal.direct_mode_focus.clone(),
+        modal.runner_mode_focus.clone(),
     ];
     match modal.mode {
         ChatMode::Runner => {
@@ -1951,6 +1958,104 @@ fn write_start_chat_mode(app_data_dir: &Path, mode: ChatMode) -> std::io::Result
 mod tests {
     use super::*;
 
+    #[cfg(windows)]
+    #[test]
+    fn mode_selector_defaults_to_direct_and_keeps_its_width_when_switching() {
+        use gpui::{size, Render, TestAppContext, VisualTestContext};
+        use runner_backend::{db, event_bus, events, mcp, router, session, shell_path, windows};
+        use std::sync::{Mutex, RwLock};
+
+        struct ModalHost(Entity<NativeRoot>);
+        impl Render for ModalHost {
+            fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                div().size_full().child(
+                    self.0
+                        .update(cx, |root, cx| root.render_start_chat_modal(cx)),
+                )
+            }
+        }
+
+        let temp = tempfile::tempdir().unwrap();
+        let runtime_shell_env = Arc::new(RwLock::new(shell_path::LoginShellEnv::default()));
+        let runtime_discovery =
+            Arc::new(RwLock::new(shell_path::DiscoveryState::startup(None, None)));
+        let core = AppCore {
+            db: Arc::new(db::open_pool(&temp.path().join("runner.db")).unwrap()),
+            app_data_dir: temp.path().to_owned(),
+            sessions: session::SessionManager::new(
+                runtime_shell_env.clone(),
+                runtime_discovery.clone(),
+                Arc::new(session::pty_runtime::PtyRuntime::new()),
+            ),
+            runtime_shell_env,
+            runtime_discovery,
+            buses: event_bus::BusRegistry::new(),
+            routers: router::RouterRegistry::new(),
+            mission_grid_hint: Arc::new(Mutex::new(None)),
+            mcp: Arc::new(mcp::McpHandle::new()),
+            windows: Arc::new(windows::WindowRegistry::new()),
+            events: events::EventChannel::new(),
+            session_event_observer: Default::default(),
+            app_version: "0.0.0-test".into(),
+        };
+        let mut cx = TestAppContext::single();
+        let updater = cx.new(|cx| Updater::new(false, cx));
+        cx.set_global(GlobalUpdater(updater));
+        let store = cx.new(|cx| {
+            AppStore::new(
+                core,
+                temp.path().join("settings.json"),
+                AppSettings::default(),
+                None,
+                cx,
+            )
+        });
+        cx.set_global(GlobalAppStore(store.clone()));
+        cx.set_global(WindowLayoutCheckpoint::default());
+        let host = cx.add_window(|window, cx| {
+            window.resize(size(px(1200.), px(1000.)));
+            let root = cx.new(|cx| {
+                NativeRoot::new(
+                    "test-chat-modal".into(),
+                    temp.path().to_owned(),
+                    Some("chats".into()),
+                    None,
+                    store,
+                    window,
+                    cx,
+                )
+            });
+            root.update(cx, |root, cx| {
+                root.open_start_chat_modal(ChatTarget::NewTab, None, None, window, cx);
+                assert_eq!(
+                    root.start_chat_modal.as_ref().unwrap().mode,
+                    ChatMode::Runtime
+                );
+            });
+            ModalHost(root)
+        });
+        cx.run_until_parked();
+        let mut window = VisualTestContext::from_window(host.into(), &cx);
+        for mode in [ChatMode::Runtime, ChatMode::Runner, ChatMode::Runtime] {
+            host.update(&mut window, |host, _, cx| {
+                host.0
+                    .update(cx, |root, cx| root.set_start_chat_mode(mode, cx));
+                cx.notify();
+            })
+            .unwrap();
+            window.run_until_parked();
+            let form = window.debug_bounds("START_CHAT_FORM").unwrap();
+            let modes = window.debug_bounds("START_CHAT_MODES").unwrap();
+            let runner = window.debug_bounds("START_CHAT_RUNNER_MODE").unwrap();
+            let direct = window.debug_bounds("START_CHAT_DIRECT_MODE").unwrap();
+            assert!(direct.origin.x < runner.origin.x);
+            assert!(modes.size.width >= px(FIELD_WIDTH), "{mode:?}: {modes:?}");
+            assert_eq!(modes.size.width, form.size.width, "{mode:?}: {form:?}");
+            assert!((runner.size.width - direct.size.width).abs() <= px(1.));
+            assert!(runner.size.width > px(200.));
+        }
+    }
+
     #[test]
     fn new_terminal_targets_only_an_available_mission_drawer() {
         let mission = AppRoute::Mission("mission".into());
@@ -2109,15 +2214,18 @@ mod tests {
     }
 
     #[test]
-    fn mode_preference_round_trips_and_invalid_values_fall_back_to_runner() {
+    fn mode_preference_round_trips_and_invalid_values_fall_back_to_direct() {
         let temp = tempfile::tempdir().unwrap();
+        assert_eq!(read_start_chat_mode(temp.path()), ChatMode::Runtime);
+
+        write_start_chat_mode(temp.path(), ChatMode::Runner).unwrap();
         assert_eq!(read_start_chat_mode(temp.path()), ChatMode::Runner);
 
         write_start_chat_mode(temp.path(), ChatMode::Runtime).unwrap();
         assert_eq!(read_start_chat_mode(temp.path()), ChatMode::Runtime);
 
         fs::write(start_chat_mode_path(temp.path()), "unexpected").unwrap();
-        assert_eq!(read_start_chat_mode(temp.path()), ChatMode::Runner);
+        assert_eq!(read_start_chat_mode(temp.path()), ChatMode::Runtime);
     }
 
     #[test]

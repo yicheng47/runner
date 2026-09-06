@@ -191,6 +191,14 @@ impl McpPane {
         if self.busy.is_some() {
             return;
         }
+        #[cfg(windows)]
+        self.app_store.update(cx, |store, cx| {
+            store.update_settings(
+                |settings| settings.initialized_mcp_clients.insert(client.key().into()),
+                true,
+                cx,
+            );
+        });
         self.busy = Some(client);
         self.error = None;
         let core = self.app_store.read(cx).core.clone();

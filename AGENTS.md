@@ -56,7 +56,7 @@ Surface hierarchy (strict — do not blur these in code, docs, or UI copy):
 - Workspace tests: `make test`.
 - Everything CI runs: `make verify` (check + test + clippy + fmt-check).
 
-On Windows, use `.\make.cmd run` to build and start the app with its CLI sidecars, or `.\make.cmd build` to build only. Add `--release` for optimized binaries under `target\release`; the default development binaries are under `target\debug`. The script works in PowerShell and Command Prompt without GNU Make and supports `build` and `run`; use the native Cargo commands in [Local Windows development](docs/impls/windows-nightly/README.md#local-windows-development) for checks.
+On Windows, use `.\make.cmd run` to build and start the app with its CLI sidecars, or `.\make.cmd build` to build only. Add `--release` for optimized binaries under `target\release`; the default development binaries are under `target\debug`. Use `.\make.cmd clean` to remove the Cargo target directory, or `.\make.cmd clean --release` to clean only release outputs; close the development app and finish other builds first. Installed apps, user data, Rust toolchains, and Cargo's shared dependency cache are kept. The script works in PowerShell and Command Prompt without GNU Make; use the native Cargo commands in [Local Windows development](docs/impls/windows-nightly/README.md#local-windows-development) for checks.
 
 Prefer the smallest check that covers the change. For native UI changes, run the `runner-app` tests plus workspace clippy; for core behavior, run the relevant crate tests.
 

@@ -288,7 +288,7 @@ fn runtime_catalog_options() -> Vec<RuntimeCatalogEntry> {
             command: "traecli".into(),
             native_fork: crate::router::runtime::supports_native_fork("trae"),
             description: "TRAE CLI".into(),
-            default_enabled: false,
+            default_enabled: cfg!(target_os = "macos"),
             available: false,
             default_model: None,
             default_effort: None,
@@ -321,7 +321,7 @@ mod tests {
         );
         assert!(catalog[0].default_enabled);
         assert!(catalog[1].default_enabled);
-        assert!(!catalog[2].default_enabled);
+        assert_eq!(catalog[2].default_enabled, cfg!(target_os = "macos"));
         assert_eq!(
             catalog[0]
                 .models
@@ -360,15 +360,25 @@ mod tests {
     #[test]
     fn selectable_catalog_requires_availability_and_honors_agent_settings() {
         let mut catalog = runtime_catalog_options();
+        assert!(filter_selectable_runtime_catalog(catalog.clone(), None).is_empty());
+        assert!(
+            filter_selectable_runtime_catalog(catalog.clone(), Some(&["trae".to_string()]))
+                .is_empty()
+        );
         for runtime in &mut catalog {
             runtime.available = true;
         }
+        let expected = if cfg!(target_os = "macos") {
+            vec!["codex", "claude-code", "trae"]
+        } else {
+            vec!["codex", "claude-code"]
+        };
         assert_eq!(
             filter_selectable_runtime_catalog(catalog.clone(), None)
                 .iter()
                 .map(|runtime| runtime.name.as_str())
                 .collect::<Vec<_>>(),
-            ["codex", "claude-code"]
+            expected
         );
 
         let enabled = vec!["trae".to_string()];

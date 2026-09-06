@@ -3,7 +3,7 @@ setlocal
 
 set "RUNNER_TARGET=%~1"
 if not defined RUNNER_TARGET set "RUNNER_TARGET=build"
-if /i not "%RUNNER_TARGET%"=="build" if /i not "%RUNNER_TARGET%"=="run" goto usage
+if /i not "%RUNNER_TARGET%"=="build" if /i not "%RUNNER_TARGET%"=="run" if /i not "%RUNNER_TARGET%"=="clean" goto usage
 
 set "RUNNER_PROFILE="
 if not "%~2"=="" (
@@ -24,6 +24,10 @@ if errorlevel 1 (
 
 pushd "%~dp0"
 if errorlevel 1 exit /b 1
+if /i "%RUNNER_TARGET%"=="clean" (
+    cargo clean %RUNNER_PROFILE%
+    goto done
+)
 cargo build --workspace %RUNNER_PROFILE%
 if errorlevel 1 goto done
 if /i "%RUNNER_TARGET%"=="run" cargo run -p runner-app %RUNNER_PROFILE%
@@ -34,5 +38,5 @@ popd
 exit /b %RUNNER_EXIT_CODE%
 
 :usage
-echo Usage: %~nx0 [build^|run] [--release]
+echo Usage: %~nx0 [build^|run^|clean] [--release]
 exit /b 2
