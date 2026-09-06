@@ -623,7 +623,7 @@ impl RenderOnce for PaginatedListPage {
                         .child(
                             div()
                                 .flex_none()
-                                .font_family("JetBrains Mono")
+                                .font_family(theme::UI_MONOSPACE_FONT)
                                 .text_size(rems(11. / 16.))
                                 .text_color(theme::muted())
                                 .child(format!(

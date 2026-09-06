@@ -174,7 +174,7 @@ impl McpPane {
         snippets: McpSnippets,
         cx: &mut Context<Self>,
     ) {
-        let binding_dir = parent_path(&status.socket_path);
+        let binding_dir = binding_location(&status.endpoint);
         self.binding_copy.update(cx, |copy, copy_cx| {
             copy.set_value((!binding_dir.is_empty()).then_some(binding_dir), copy_cx)
         });
@@ -191,6 +191,14 @@ impl McpPane {
         if self.busy.is_some() {
             return;
         }
+        #[cfg(windows)]
+        self.app_store.update(cx, |store, cx| {
+            store.update_settings(
+                |settings| settings.initialized_mcp_clients.insert(client.key().into()),
+                true,
+                cx,
+            );
+        });
         self.busy = Some(client);
         self.error = None;
         let core = self.app_store.read(cx).core.clone();
@@ -246,7 +254,7 @@ impl McpPane {
         let binding_dir = self
             .status
             .as_ref()
-            .map(|status| parent_path(&status.socket_path))
+            .map(|status| binding_location(&status.endpoint))
             .unwrap_or_default();
         let binding_field = div()
             .h_8()
@@ -263,7 +271,7 @@ impl McpPane {
                     .min_w_0()
                     .flex_1()
                     .truncate()
-                    .font_family("JetBrains Mono")
+                    .font_family(theme::UI_MONOSPACE_FONT)
                     .text_size(rems(11. / 16.))
                     .text_color(theme::muted())
                     .child(if binding_dir.is_empty() {
@@ -433,7 +441,7 @@ impl McpPane {
                                 div()
                                     .min_w_0()
                                     .flex_1()
-                                    .font_family("JetBrains Mono")
+                                    .font_family(theme::UI_MONOSPACE_FONT)
                                     .text_size(rems(10. / 16.))
                                     .line_height(rems(14.5 / 16.))
                                     .text_color(theme::faint())
@@ -525,6 +533,18 @@ impl Render for McpPane {
     }
 }
 
+fn binding_location(endpoint: &str) -> String {
+    #[cfg(unix)]
+    {
+        parent_path(endpoint)
+    }
+    #[cfg(windows)]
+    {
+        endpoint.to_string()
+    }
+}
+
+#[cfg(any(unix, test))]
 fn parent_path(path: &str) -> String {
     path.rfind('/')
         .filter(|index| *index > 0)

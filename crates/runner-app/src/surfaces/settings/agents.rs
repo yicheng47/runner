@@ -678,7 +678,7 @@ impl AgentsPane {
             )
             .children(runtime_defaults_visible(runtime).then(|| {
                 div()
-                    .font_family("JetBrains Mono")
+                    .font_family(theme::UI_MONOSPACE_FONT)
                     .text_size(rems(11. / 16.))
                     .line_height(rems(15.4 / 16.))
                     .text_color(theme::faint())
@@ -686,7 +686,7 @@ impl AgentsPane {
             }))
             .children(presentation.caption.map(|caption| {
                 div()
-                    .font_family("JetBrains Mono")
+                    .font_family(theme::UI_MONOSPACE_FONT)
                     .text_size(rems(11. / 16.))
                     .line_height(rems(15.4 / 16.))
                     .text_color(if validation.is_some() {
@@ -1035,6 +1035,11 @@ fn shell_description(shell: Option<&ShellDiscoveryStatus>) -> String {
             "{} returned no usable environment; refresh or set an override below.",
             selected.unwrap_or("")
         ),
+        #[cfg(windows)]
+        Some(DiscoveryOutcome::NoShell) => {
+            "Inherited environment. Spawned agents use your Windows PATH and proxy settings.".into()
+        }
+        #[cfg(not(windows))]
         Some(DiscoveryOutcome::NoShell) => {
             "No supported login shell was configured; set an executable override below.".into()
         }
@@ -1049,6 +1054,24 @@ fn shell_description(shell: Option<&ShellDiscoveryStatus>) -> String {
 mod tests {
     use super::*;
     use runner_backend::runtime_status::ShellDiscoveryStatus;
+
+    #[test]
+    fn no_shell_description_matches_the_platform_environment() {
+        let shell = ShellDiscoveryStatus {
+            shell: None,
+            outcome: Some(DiscoveryOutcome::NoShell),
+            duration_ms: None,
+            checking: false,
+            using_last_known_good: false,
+            last_known_good_captured_at: None,
+        };
+        let expected = if cfg!(windows) {
+            "Inherited environment. Spawned agents use your Windows PATH and proxy settings."
+        } else {
+            "No supported login shell was configured; set an executable override below."
+        };
+        assert_eq!(shell_description(Some(&shell)), expected);
+    }
 
     fn runtime(state: RuntimeRowState) -> RuntimeExecutableStatus {
         RuntimeExecutableStatus {

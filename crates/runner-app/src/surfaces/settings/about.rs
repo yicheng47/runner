@@ -63,7 +63,7 @@ impl Render for AboutPane {
                                                     .bg(theme::raised())
                                                     .px(rems(6. / 16.))
                                                     .py(rems(2. / 16.))
-                                                    .font_family("Menlo")
+                                                    .font_family(theme::SYSTEM_MONOSPACE_FONT)
                                                     .text_size(rems(11. / 16.))
                                                     .text_color(theme::muted())
                                                     .child(format!(

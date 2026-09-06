@@ -1078,7 +1078,9 @@ impl Render for TextField {
             .text_size(rems(self.text_size / 16.))
             .when(multiline, |input| input.line_height(rems(20. / 16.)))
             .text_color(theme::text())
-            .when(self.monospace, |input| input.font_family("JetBrains Mono"))
+            .when(self.monospace, |input| {
+                input.font_family(theme::UI_MONOSPACE_FONT)
+            })
             .when(self.kind == TextFieldKind::Input, |input| {
                 input.child(self.render_text(focused))
             })
@@ -1417,9 +1419,9 @@ pub type WorkingDirField = BrowseField;
 pub fn working_dir_placeholder(owner_path: Option<&str>, default_path: &str) -> String {
     owner_path
         .filter(|path| !path.trim().is_empty())
-        .or_else(|| (!default_path.trim().is_empty()).then_some(default_path.trim()))
-        .unwrap_or("(no working directory)")
-        .to_owned()
+        .map(str::to_owned)
+        .or_else(|| effective_working_dir("", false, default_path))
+        .unwrap_or_else(|| "Home directory".to_owned())
 }
 
 pub fn working_dir_text_field(
@@ -1443,13 +1445,32 @@ pub fn effective_working_dir(
         return None;
     }
     let default_path = default_path.trim();
-    (!default_path.is_empty()).then(|| default_path.to_owned())
+    (!default_path.is_empty())
+        .then(|| default_path.to_owned())
+        .or_else(|| {
+            runner_backend::app_paths::home_dir()
+                .and_then(|home| home.into_os_string().into_string().ok())
+        })
 }
 
 fn handle_key_down<T>(input: &mut TextBuffer, event: &KeyDownEvent, cx: &mut Context<T>) -> bool {
+    handle_key_down_for_platform(input, event, cx, cfg!(windows))
+}
+
+fn handle_key_down_for_platform<T>(
+    input: &mut TextBuffer,
+    event: &KeyDownEvent,
+    cx: &mut Context<T>,
+    windows: bool,
+) -> bool {
     let key = event.keystroke.key.as_str();
     let modifiers = event.keystroke.modifiers;
-    if modifiers.platform {
+    let command = if windows {
+        modifiers.control && matches!(key, "a" | "c" | "x" | "v")
+    } else {
+        modifiers.platform
+    };
+    if command {
         return match key {
             "a" => {
                 input.select_all();
@@ -1493,7 +1514,12 @@ fn handle_key_down<T>(input: &mut TextBuffer, event: &KeyDownEvent, cx: &mut Con
             _ => false,
         };
     }
-    if modifiers.alt {
+    let word = if windows {
+        modifiers.control
+    } else {
+        modifiers.alt
+    };
+    if word {
         return match key {
             "left" => {
                 input.move_left(Boundary::Word, modifiers.shift);
@@ -1625,6 +1651,62 @@ fn is_word(segment: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn editing_shortcuts_use_command_on_macos_and_control_on_windows() {
+        let cx = gpui::TestAppContext::single();
+        for windows in [false, true] {
+            cx.update(|cx| {
+                let input = cx.new(|_| TextBuffer::default());
+                input.update(cx, |input, cx| {
+                    let press =
+                        |input: &mut TextBuffer, key: &str, cx: &mut Context<TextBuffer>| {
+                            handle_key_down_for_platform(
+                                input,
+                                &KeyDownEvent {
+                                    keystroke: gpui::Keystroke::parse(key).unwrap(),
+                                    is_held: false,
+                                    prefer_character_input: false,
+                                },
+                                cx,
+                                windows,
+                            )
+                        };
+                    let command = if windows { "ctrl" } else { "cmd" };
+                    input.reset("one two");
+                    assert!(press(input, &format!("{command}-a"), cx));
+                    assert_eq!(input.selected_text(), Some("one two"));
+                    assert!(press(input, &format!("{command}-c"), cx));
+                    assert_eq!(
+                        cx.read_from_clipboard().unwrap().text().as_deref(),
+                        Some("one two")
+                    );
+                    assert!(press(input, &format!("{command}-x"), cx));
+                    assert_eq!(input.text, "");
+                    assert!(press(input, &format!("{command}-v"), cx));
+                    assert_eq!(input.text, "one two");
+                    let word = if windows { "ctrl" } else { "alt" };
+                    assert!(press(input, &format!("{word}-left"), cx));
+                    assert_eq!(input.selection.caret, 4);
+                    assert!(press(input, &format!("{word}-shift-right"), cx));
+                    assert_eq!(input.selected_text(), Some("two"));
+                    assert!(press(input, "right", cx));
+                    assert_eq!(input.selection.caret, 7);
+                    assert!(press(input, "home", cx));
+                    assert_eq!(input.selection.caret, 0);
+                    assert!(press(input, "end", cx));
+                    assert_eq!(input.selection.caret, 7);
+                    if !windows {
+                        assert!(!press(input, "ctrl-a", cx));
+                        assert!(press(input, "cmd-left", cx));
+                        assert_eq!(input.selection.caret, 0);
+                        assert!(press(input, "cmd-right", cx));
+                        assert_eq!(input.selection.caret, 7);
+                    }
+                });
+            });
+        }
+    }
 
     #[test]
     fn marked_text_uses_utf16_offsets_and_blocks_enter_until_committed() {
@@ -1767,7 +1849,12 @@ mod tests {
             "/runner"
         );
         assert_eq!(working_dir_placeholder(None, "/default"), "/default");
-        assert_eq!(working_dir_placeholder(None, ""), "(no working directory)");
+        let home = runner_backend::app_paths::home_dir()
+            .expect("home directory")
+            .into_os_string()
+            .into_string()
+            .unwrap();
+        assert_eq!(working_dir_placeholder(None, ""), home);
 
         assert_eq!(
             effective_working_dir(" /typed ", true, "/default"),
@@ -1778,6 +1865,7 @@ mod tests {
             effective_working_dir("", false, "/default"),
             Some("/default".into())
         );
-        assert_eq!(effective_working_dir("", false, ""), None);
+        assert_eq!(effective_working_dir("", false, ""), Some(home.clone()));
+        assert_eq!(effective_working_dir(" \t", false, " "), Some(home));
     }
 }

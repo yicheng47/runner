@@ -1,0 +1,4 @@
+crates/runner-backend/migrations/*.sql text eol=lf
+tests/fixtures/system-prompts/*.md text eol=lf
+crates/runner-terminal/fixtures/*.txt text eol=lf
+make.cmd text eol=crlf

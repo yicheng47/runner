@@ -2,8 +2,9 @@ use std::collections::BTreeMap;
 use std::hash::{Hash as _, Hasher as _};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
-use futures::StreamExt as _;
+use futures::{FutureExt as _, StreamExt as _};
 use gpui::{App, AppContext as _, Context, Entity, Global};
 use runner_backend::events::AppEvent;
 use runner_backend::model::Runner;
@@ -18,6 +19,9 @@ use runner_terminal::terminal::TerminalBridge;
 
 use crate::app_settings::{AppSettings, TerminalCursorStyle, TerminalFontFamily, TerminalTheme};
 
+#[cfg(windows)]
+mod mcp_defaults_windows;
+
 #[derive(Clone)]
 pub(crate) struct GlobalAppStore(pub(crate) Entity<AppStore>);
 
@@ -28,12 +32,16 @@ pub(crate) enum StoreRefreshKind {
     Activity,
     Nodes,
     Missions,
+    #[cfg(windows)]
+    Runtimes,
     All,
 }
 
 impl StoreRefreshKind {
     pub(crate) fn for_event(event: &AppEvent) -> Option<Self> {
         match event.name {
+            #[cfg(windows)]
+            "runtime/changed" => Some(Self::Runtimes),
             "session/status" => Some(Self::Activity),
             "chat/tab-attention-changed" | "chat/layout-changed" => Some(Self::Nodes),
             "event/appended"
@@ -250,7 +258,21 @@ impl AppStore {
 
         cx.spawn(async move |weak, cx| {
             while wake_rx.next().await.is_some() {
-                while wake_rx.try_recv().is_ok() {}
+                let delay = cx
+                    .background_executor()
+                    .timer(Duration::from_millis(4))
+                    .fuse();
+                futures::pin_mut!(delay);
+                loop {
+                    futures::select_biased! {
+                        _ = delay => break,
+                        wake = wake_rx.next().fuse() => {
+                            if wake.is_none() {
+                                break;
+                            }
+                        }
+                    }
+                }
                 if weak
                     .update(cx, |this, cx| {
                         this.revisions.terminal_wake = this.revisions.terminal_wake.wrapping_add(1);
@@ -327,6 +349,9 @@ impl AppStore {
         };
         if let Some(error) = settings_error {
             store.record_error(error);
+        } else {
+            #[cfg(windows)]
+            store.initialize_mcp_defaults();
         }
         store.refresh_sessions_inner();
         store.refresh_runners_inner();
@@ -340,6 +365,10 @@ impl AppStore {
     }
 
     pub(crate) fn refresh(&mut self, refresh: StoreRefreshKind, cx: &mut Context<Self>) {
+        #[cfg(windows)]
+        if matches!(refresh, StoreRefreshKind::Runtimes | StoreRefreshKind::All) {
+            self.initialize_mcp_defaults();
+        }
         if matches!(refresh, StoreRefreshKind::Activity | StoreRefreshKind::All) {
             self.refresh_activity_inner();
         }
@@ -448,8 +477,22 @@ impl AppStore {
         let terminal_settings = TerminalSettingsSnapshot::from(&self.settings);
         let mission_settings = MissionSettingsSnapshot::from(&self.settings);
         let shell_settings = ShellSettingsSnapshot::from(&self.settings);
+        #[cfg(windows)]
+        let agent_settings = (
+            self.settings.enabled_agents.clone(),
+            self.settings.disabled_agents.clone(),
+        );
         if !update(&mut self.settings) {
             return false;
+        }
+        #[cfg(windows)]
+        if agent_settings
+            != (
+                self.settings.enabled_agents.clone(),
+                self.settings.disabled_agents.clone(),
+            )
+        {
+            self.initialize_mcp_defaults();
         }
         if persist {
             self.save_settings();

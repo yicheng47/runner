@@ -791,8 +791,7 @@ fn is_uuid(s: &str) -> bool {
     uuid::Uuid::parse_str(s).is_ok()
 }
 
-/// Check an agent conversation path using that CLI's project-directory
-/// encoder (Claude Code replaces `/` and `.`).
+/// Check an agent conversation path using that CLI's project-directory encoder.
 fn conversation_file_exists(
     agent_dir: &str,
     cwd: Option<&str>,
@@ -815,18 +814,35 @@ fn conversation_file_exists(
             // surface its own error rather than masking it.
             return true;
         };
-        let Some(home) = std::env::var_os("HOME") else {
+        let Some(home) = runner_core::app_paths::home_dir() else {
             return true;
         };
-        let path = std::path::PathBuf::from(home)
-            .join(agent_dir)
-            .join("projects")
-            .join(encode_project_dir(cwd))
-            .join(format!("{uuid}.jsonl"));
-        path.exists()
+        conversation_file_exists_at(&home, agent_dir, cwd, uuid, encode_project_dir)
     }
 }
 
+fn conversation_file_exists_at(
+    home: &Path,
+    agent_dir: &str,
+    cwd: &str,
+    uuid: &str,
+    encode_project_dir: fn(&str) -> String,
+) -> bool {
+    home.join(agent_dir)
+        .join("projects")
+        .join(encode_project_dir(cwd))
+        .join(format!("{uuid}.jsonl"))
+        .exists()
+}
+
+#[cfg(windows)]
+fn claude_code_project_dir(cwd: &str) -> String {
+    cwd.chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect()
+}
+
+#[cfg(not(windows))]
 fn claude_code_project_dir(cwd: &str) -> String {
     cwd.chars()
         .map(|c| if c == '/' || c == '.' { '-' } else { c })
@@ -843,6 +859,51 @@ pub fn claude_code_conversation_exists(cwd: Option<&str>, uuid: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn claude_transcript_lookup_preserves_resume_identity() {
+        let home = tempfile::tempdir().unwrap();
+        let prior = uuid::Uuid::new_v4().to_string();
+        #[cfg(windows)]
+        let cases = [
+            ("C--Users-ROG", [r"C:\Users\ROG", "C:/Users/ROG"]),
+            (
+                "C--Work-my-project-v1-0",
+                [r"C:\Work\my_project v1.0", "C:/Work/my_project v1.0"],
+            ),
+        ];
+        #[cfg(not(windows))]
+        let cases = [(
+            "-Users-tester-app-test",
+            ["/Users/tester/app.test", "/Users/tester/app-test"],
+        )];
+
+        for (encoded, cwds) in cases {
+            let project_dir = home.path().join(".claude/projects").join(encoded);
+            std::fs::create_dir_all(&project_dir).unwrap();
+            std::fs::write(project_dir.join(format!("{prior}.jsonl")), "{}\n").unwrap();
+            for cwd in cwds {
+                let exists = conversation_file_exists_at(
+                    home.path(),
+                    ".claude",
+                    cwd,
+                    &prior,
+                    claude_code_project_dir,
+                );
+                assert!(exists, "saved Claude transcript must be found for {cwd}");
+                let plan = resume_plan("claude-code", exists.then_some(prior.as_str()));
+                assert!(plan.resuming);
+                assert_eq!(plan.args, ["--resume", prior.as_str()]);
+            }
+        }
+        assert!(!conversation_file_exists_at(
+            home.path(),
+            ".claude",
+            cases[0].1[0],
+            &uuid::Uuid::new_v4().to_string(),
+            claude_code_project_dir,
+        ));
+    }
 
     #[test]
     fn claude_code_returns_no_argv_for_system_prompt() {

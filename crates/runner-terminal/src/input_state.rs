@@ -698,6 +698,36 @@ mod tests {
     }
 
     #[test]
+    fn coalesced_composer_echo_and_clear_stays_idle() {
+        let start = Instant::now();
+        let mut term = new_term(40, 5);
+        feed(
+            &mut term,
+            b"\x1b[2;1H\xe2\x9d\xaf Try a task\x1b[4;1H  \xe2\x94\x94 ",
+        );
+        let mut tracker = InputTracker::new(start);
+        tracker.initial_observation(start);
+        tracker.observe_input(
+            &InputEvent::Key {
+                kind: InputKind::Content { text: "h".into() },
+            },
+            start,
+            &term,
+        );
+        let burst = [
+            b"\x1b[2;1H\x1b[K\xe2\x9d\xaf h\x1b[4;1H\x1b[K  \xe2\x94\x94 hooked 12 files"
+                .as_slice(),
+            b"\x1b[2;1H\x1b[K\xe2\x9d\xaf Try a task",
+        ]
+        .concat();
+        feed(&mut term, &burst);
+        assert!(tracker
+            .observe_output(start + Duration::from_millis(2), &term)
+            .is_none());
+        assert_eq!(tracker.current_reported_state().state, InputState::Idle);
+    }
+
+    #[test]
     fn matcher_accepts_collapsed_multiline_paste_but_not_a_transcript_row() {
         assert_eq!(
             match_prompt_prefix(

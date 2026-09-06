@@ -1,0 +1,34 @@
+{
+  "version": "2.17",
+  "children": [
+    {
+      "type": "frame", "id": "winShell", "name": "Windows shared title bar — 32 px, sidebar below", "x": 0, "y": 0, "width": 1200, "height": 760, "layout": "none", "fill": "#15161B",
+      "children": [
+        {
+          "type": "frame", "id": "winSidebar", "name": "Sidebar content starts below window chrome", "x": 0, "y": 32, "width": 240, "height": 728, "layout": "none", "fill": "#24262D",
+          "children": [
+            { "type": "text", "id": "winBrand", "name": "Existing Runner brand row", "x": 24, "y": 12, "content": "›  Runner", "fontFamily": "Inter", "fontSize": 16, "fontWeight": "600", "fill": "#DCDCE0" },
+            { "type": "text", "id": "winSearch", "name": "Existing search button", "x": 207, "y": 12, "content": "⌕", "fontFamily": "Segoe UI", "fontSize": 18, "fill": "#9A9BA5" },
+            { "type": "text", "id": "winWorkspace", "x": 20, "y": 64, "content": "WORKSPACE", "fontFamily": "Inter", "fontSize": 10, "fill": "#6E707C" },
+            { "type": "text", "id": "winNewChat", "x": 20, "y": 96, "content": "+  New chat", "fontFamily": "Inter", "fontSize": 14, "fill": "#DCDCE0" },
+            { "type": "text", "id": "winRunners", "x": 20, "y": 132, "content": "›_  runner", "fontFamily": "Inter", "fontSize": 14, "fill": "#9A9BA5" },
+            { "type": "text", "id": "winCrews", "x": 20, "y": 168, "content": "crew", "fontFamily": "Inter", "fontSize": 14, "fill": "#9A9BA5" }
+          ]
+        },
+        { "type": "text", "id": "winEmpty", "x": 545, "y": 370, "content": "No direct chats yet", "fontFamily": "Inter", "fontSize": 16, "fill": "#9A9BA5" },
+        {
+          "type": "frame", "id": "winTitlebar", "name": "Full-width Windows chrome; buttons remain above overlays", "x": 0, "y": 0, "width": 1200, "height": 32, "layout": "none", "fill": "#24262D",
+          "children": [
+            { "type": "text", "id": "winToggle", "name": "Sidebar toggle — 28 px hit target", "x": 14, "y": 6, "content": "▥", "fontFamily": "Segoe UI", "fontSize": 16, "fill": "#9A9BA5" },
+            { "type": "text", "id": "winBack", "name": "Previous page", "x": 48, "y": 4, "content": "←", "fontFamily": "Segoe UI", "fontSize": 18, "fill": "#6E707C" },
+            { "type": "text", "id": "winNext", "name": "Next page", "x": 80, "y": 4, "content": "→", "fontFamily": "Segoe UI", "fontSize": 18, "fill": "#6E707C" },
+            { "type": "text", "id": "winTitle", "name": "Draggable title region", "x": 570, "y": 8, "content": "Runner", "fontFamily": "Inter", "fontSize": 12, "fill": "#9A9BA5" },
+            { "type": "text", "id": "winMin", "name": "Minimize — 46 px hit target", "x": 1079, "y": 5, "content": "−", "fontFamily": "Segoe UI", "fontSize": 16, "fill": "#9A9BA5" },
+            { "type": "text", "id": "winMax", "name": "Maximize / restore — 46 px hit target", "x": 1126, "y": 6, "content": "□", "fontFamily": "Segoe UI", "fontSize": 14, "fill": "#9A9BA5" },
+            { "type": "text", "id": "winClose", "name": "Close — 46 px hit target", "x": 1170, "y": 4, "content": "×", "fontFamily": "Segoe UI", "fontSize": 18, "fill": "#9A9BA5" }
+          ]
+        }
+      ]
+    }
+  ]
+}

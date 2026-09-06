@@ -13,7 +13,7 @@ pub mod codex_capture;
 pub(crate) mod codex_trust;
 pub mod launch;
 pub mod manager;
-#[cfg(unix)]
+pub(crate) mod process;
 pub mod pty_runtime;
 pub mod runtime;
 

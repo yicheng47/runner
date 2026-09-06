@@ -50,16 +50,10 @@ impl TerminalTheme {
 pub fn app_font() -> Font {
     let mut font = font("Inter");
     font.fallbacks = Some(FontFallbacks::from_fonts(
-        [
-            "Inter Variable",
-            ".SystemUIFont",
-            "Segoe UI",
-            "PingFang SC",
-            "Microsoft YaHei",
-            "sans-serif",
-        ]
-        .map(str::to_owned)
-        .to_vec(),
+        runner_app::platform_fonts::APP_FONT_FALLBACKS
+            .iter()
+            .map(|family| (*family).to_owned())
+            .collect(),
     ));
     font
 }
@@ -85,7 +79,7 @@ pub enum TerminalFontFamily {
 impl TerminalFontFamily {
     pub fn family(self) -> &'static str {
         match self {
-            Self::Menlo => "Menlo",
+            Self::Menlo => runner_app::theme::SYSTEM_MONOSPACE_FONT,
             Self::JetBrainsMono => "JetBrainsMono Nerd Font Mono",
         }
     }
@@ -93,9 +87,10 @@ impl TerminalFontFamily {
     pub fn font(self) -> Font {
         let mut font = font(self.family());
         font.fallbacks = Some(FontFallbacks::from_fonts(
-            ["PingFang SC", "Microsoft YaHei", "sans-serif"]
-                .map(str::to_owned)
-                .into(),
+            runner_app::platform_fonts::TERMINAL_FONT_FALLBACKS
+                .iter()
+                .map(|family| (*family).to_owned())
+                .collect(),
         ));
         font
     }
@@ -197,6 +192,8 @@ pub struct AppSettings {
     pub default_runtime: String,
     pub disabled_agents: BTreeSet<String>,
     pub enabled_agents: BTreeSet<String>,
+    #[cfg(windows)]
+    pub initialized_mcp_clients: BTreeSet<String>,
     #[serde(default, deserialize_with = "keymap::deserialize_overrides")]
     pub keymap_overrides: KeymapOverrides,
 }
@@ -231,6 +228,8 @@ impl Default for AppSettings {
             default_runtime: String::new(),
             disabled_agents: BTreeSet::new(),
             enabled_agents: BTreeSet::new(),
+            #[cfg(windows)]
+            initialized_mcp_clients: BTreeSet::new(),
             keymap_overrides: KeymapOverrides::new(),
         }
     }
@@ -611,6 +610,12 @@ mod tests {
         for family in [TerminalFontFamily::JetBrainsMono, TerminalFontFamily::Menlo] {
             let font = family.font();
             assert_eq!(font.family.as_ref(), family.family());
+            #[cfg(windows)]
+            assert_eq!(
+                font.fallbacks.unwrap().fallback_list(),
+                ["Microsoft YaHei", "Segoe UI"]
+            );
+            #[cfg(not(windows))]
             assert_eq!(
                 font.fallbacks.unwrap().fallback_list(),
                 ["PingFang SC", "Microsoft YaHei", "sans-serif"]
@@ -633,6 +638,12 @@ mod tests {
     fn app_font_is_inter_with_the_cjk_fallback_chain() {
         let inter = app_font();
         assert_eq!(inter.family.as_ref(), "Inter");
+        #[cfg(windows)]
+        assert_eq!(
+            inter.fallbacks.unwrap().fallback_list(),
+            ["Segoe UI", "Microsoft YaHei"]
+        );
+        #[cfg(not(windows))]
         assert_eq!(
             inter.fallbacks.unwrap().fallback_list(),
             [

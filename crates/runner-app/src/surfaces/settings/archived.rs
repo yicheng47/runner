@@ -408,7 +408,7 @@ impl ArchivedPane {
                     .max_w(rems(180. / 16.))
                     .flex_none()
                     .truncate()
-                    .font_family("JetBrains Mono")
+                    .font_family(theme::UI_MONOSPACE_FONT)
                     .text_size(rems(11. / 16.))
                     .text_color(theme::faint())
                     .child(cwd)
@@ -729,6 +729,7 @@ fn format_timestamp(timestamp: DateTime<Utc>, now: DateTime<Local>) -> String {
     localized_timestamp(timestamp, same_day)
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn localized_timestamp_template(time_only: bool) -> &'static str {
     if time_only {
         "jm"

@@ -364,7 +364,7 @@ mod tests {
             let row = repo::session::get_row(&conn, "runner-session")
                 .unwrap()
                 .unwrap();
-            if row.agent_session_key.as_deref() == Some(new_key.as_str()) {
+            if row.agent_session_key.as_deref() == Some(new_key.as_str()) && !path.exists() {
                 break;
             }
             assert!(

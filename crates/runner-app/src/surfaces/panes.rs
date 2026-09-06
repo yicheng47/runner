@@ -300,9 +300,18 @@ impl NativeRoot {
                 .justify_center()
                 .text_color(theme::muted())
                 .child(if self.app_store.read(cx).sessions.is_empty() {
-                    "No direct chats yet — press ⌘N"
+                    keymap::effective_binding("new-chat", &self.settings(cx).keymap_overrides)
+                        .map_or_else(
+                            || "No direct chats yet".to_owned(),
+                            |combo| {
+                                format!(
+                                    "No direct chats yet — press {}",
+                                    keymap::format_combo(&combo)
+                                )
+                            },
+                        )
                 } else {
-                    "No active tab"
+                    "No active tab".to_owned()
                 })
                 .into_any_element();
         };
@@ -454,7 +463,6 @@ impl NativeRoot {
                 .chain(panel_action),
         )
         .into_div();
-
         let error_banner = self.chat_error.clone().map(|error| {
             div()
                 .mx_8()
@@ -966,7 +974,8 @@ impl NativeRoot {
                                         .child(
                                             div()
                                                 .when(identity_monospace, |identity| {
-                                                    identity.font_family("Menlo")
+                                                    identity
+                                                        .font_family(theme::SYSTEM_MONOSPACE_FONT)
                                                 })
                                                 .text_size(rems(14. / 16.))
                                                 .font_weight(FontWeight::SEMIBOLD)
@@ -1003,7 +1012,7 @@ impl NativeRoot {
                                                     div()
                                                         .flex_1()
                                                         .min_w(px(0.))
-                                                        .font_family("Menlo")
+                                                        .font_family(theme::SYSTEM_MONOSPACE_FONT)
                                                         .text_color(theme::muted())
                                                         .child(
                                                             detail
@@ -1067,6 +1076,11 @@ impl NativeRoot {
             .child(
                 div()
                     .id("chat-panel-resize")
+                    .map(|handle| {
+                        #[cfg(windows)]
+                        let handle = handle.occlude();
+                        handle
+                    })
                     .absolute()
                     .left_0()
                     .top_0()
@@ -1334,7 +1348,7 @@ impl NativeRoot {
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child(
                 div()
-                    .font_family("Menlo")
+                    .font_family(theme::SYSTEM_MONOSPACE_FONT)
                     .text_size(rems(10. / 16.))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(theme::faint())
@@ -1349,7 +1363,7 @@ impl NativeRoot {
                     .child(
                         div()
                             .w(rems(8. / 16.))
-                            .font_family("Menlo")
+                            .font_family(theme::SYSTEM_MONOSPACE_FONT)
                             .text_size(rems(11. / 16.))
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(theme::muted())
@@ -1769,7 +1783,9 @@ impl NativeRoot {
                             exit_code,
                             &default_session_label(&entry),
                             entry.cwd.as_deref(),
-                            std::env::var("HOME").ok().as_deref(),
+                            runner_backend::app_paths::home_dir()
+                                .as_deref()
+                                .and_then(|home| home.to_str()),
                         ),
                         move |window, cx| {
                             restart_root.update(cx, |this, cx| {
@@ -2181,7 +2197,9 @@ impl NativeRoot {
                                         exit_code,
                                         &default_session_label(entry),
                                         entry.cwd.as_deref(),
-                                        std::env::var("HOME").ok().as_deref(),
+                                        runner_backend::app_paths::home_dir()
+                                            .as_deref()
+                                            .and_then(|home| home.to_str()),
                                     ),
                                     move |window, cx| {
                                         restart_root.update(cx, |this, cx| {
@@ -2522,7 +2540,7 @@ fn side_panel_value(value: String) -> AnyElement {
     div()
         .flex_1()
         .min_w(px(0.))
-        .font_family("Menlo")
+        .font_family(theme::SYSTEM_MONOSPACE_FONT)
         .text_color(theme::muted())
         .child(value)
         .into_any_element()
@@ -2784,13 +2802,23 @@ mod tests {
     #[test]
     fn empty_pane_offers_only_the_chat_entry_point() {
         let mut overrides = keymap::KeymapOverrides::new();
+        #[cfg(unix)]
         assert_eq!(empty_pane_action_label(&overrides), "⌘N  New chat");
+        #[cfg(windows)]
+        assert_eq!(empty_pane_action_label(&overrides), "Ctrl+N  New chat");
 
         let mut rebound = keymap::entry("new-chat").unwrap().default.clone();
         rebound.meta = false;
         rebound.ctrl = true;
+        #[cfg(windows)]
+        {
+            rebound.shift = false;
+        }
         overrides.insert("new-chat".into(), Some(rebound));
+        #[cfg(unix)]
         assert_eq!(empty_pane_action_label(&overrides), "⌃N  New chat");
+        #[cfg(windows)]
+        assert_eq!(empty_pane_action_label(&overrides), "Ctrl+N  New chat");
 
         overrides.insert("new-chat".into(), None);
         assert_eq!(empty_pane_action_label(&overrides), "New chat");
@@ -2799,13 +2827,25 @@ mod tests {
     #[test]
     fn terminal_drawer_tooltip_tracks_rebound_and_unbound_shortcuts() {
         let mut overrides = keymap::KeymapOverrides::new();
+        #[cfg(unix)]
         assert_eq!(
             terminal_drawer_tooltip(false, &overrides),
             "Show terminal drawer · ⌥F12"
         );
+        #[cfg(windows)]
+        assert_eq!(
+            terminal_drawer_tooltip(false, &overrides),
+            "Show terminal drawer · Alt+F12"
+        );
+        #[cfg(unix)]
         assert_eq!(
             terminal_drawer_tooltip(true, &overrides),
             "Hide terminal drawer · ⌥F12"
+        );
+        #[cfg(windows)]
+        assert_eq!(
+            terminal_drawer_tooltip(true, &overrides),
+            "Hide terminal drawer · Alt+F12"
         );
 
         let mut rebound = keymap::entry("toggle-terminal-drawer")
@@ -2816,9 +2856,15 @@ mod tests {
         rebound.ctrl = true;
         rebound.code = "Backquote".into();
         overrides.insert("toggle-terminal-drawer".into(), Some(rebound));
+        #[cfg(unix)]
         assert_eq!(
             terminal_drawer_tooltip(false, &overrides),
             "Show terminal drawer · ⌃`"
+        );
+        #[cfg(windows)]
+        assert_eq!(
+            terminal_drawer_tooltip(false, &overrides),
+            "Show terminal drawer · Ctrl+`"
         );
 
         overrides.insert("toggle-terminal-drawer".into(), None);
@@ -2831,14 +2877,27 @@ mod tests {
     #[test]
     fn split_panes_tooltip_tracks_rebound_and_unbound_shortcuts() {
         let mut overrides = keymap::KeymapOverrides::new();
+        #[cfg(unix)]
         assert_eq!(split_panes_tooltip(&overrides), "Split panes · ⌘D / ⇧⌘D");
+        #[cfg(windows)]
+        assert_eq!(
+            split_panes_tooltip(&overrides),
+            "Split panes · Ctrl+D / Ctrl+Shift+D"
+        );
 
         let mut rebound = keymap::entry("split-pane-right").unwrap().default.clone();
         rebound.meta = false;
         rebound.ctrl = true;
+        #[cfg(windows)]
+        {
+            rebound.shift = false;
+        }
         overrides.insert("split-pane-right".into(), Some(rebound));
         overrides.insert("split-pane-down".into(), None);
+        #[cfg(unix)]
         assert_eq!(split_panes_tooltip(&overrides), "Split panes · ⌃D");
+        #[cfg(windows)]
+        assert_eq!(split_panes_tooltip(&overrides), "Split panes · Ctrl+D");
 
         overrides.insert("split-pane-right".into(), None);
         assert_eq!(split_panes_tooltip(&overrides), "Split panes");

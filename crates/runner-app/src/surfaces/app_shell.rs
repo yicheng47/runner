@@ -4,9 +4,10 @@ use crate::app_settings::{clamp_sidebar_width, nudge_zoom};
 use crate::toast::ToastTone;
 use crate::*;
 
-const TITLEBAR_HEIGHT: f32 = 44.;
 pub(crate) const TITLEBAR_DRAG_HEIGHT: f32 = 28.;
+#[cfg(target_os = "macos")]
 pub(crate) const SIDEBAR_TOGGLE_GLYPH_X: f32 = 94.3;
+#[cfg(target_os = "macos")]
 pub(crate) const SIDEBAR_TOGGLE_GLYPH_INSET: f32 = 6.3;
 const SIDEBAR_TRANSITION_MS: u64 = 200;
 // Deliberately differs from main's inherited 19.5px line box to align both footer dividers.
@@ -52,15 +53,15 @@ impl Render for SidebarResizeDrag {
     }
 }
 
-fn alpha(mut color: gpui::Hsla, value: f32) -> gpui::Hsla {
-    color.a = value;
-    color
-}
-
 fn settings_update_hint_version(
     available: Option<&runner_app::updater::UpdateInfo>,
 ) -> Option<&str> {
     available.map(|update| update.version())
+}
+
+pub(crate) fn alpha(mut color: gpui::Hsla, value: f32) -> gpui::Hsla {
+    color.a = value;
+    color
 }
 
 impl NativeRoot {
@@ -118,18 +119,7 @@ impl NativeRoot {
                     .h_full()
                     .flex()
                     .flex_col()
-                    .child(
-                        self.render_titlebar_drag_area(
-                            "main-titlebar-drag",
-                            div()
-                                .absolute()
-                                .top_0()
-                                .left_0()
-                                .right_0()
-                                .h(px(TITLEBAR_DRAG_HEIGHT * self.settings(cx).app_zoom)),
-                            cx,
-                        ),
-                    )
+                    .children(self.render_main_titlebar_drag_area(cx))
                     .child(workspace),
             )
             .children(preview_trigger)
@@ -165,6 +155,7 @@ impl NativeRoot {
             .children(settings_confirm)
             .child(command_palette)
             .children(toast)
+            .map(|root| self.decorate_window(root, window, cx))
             .on_modifiers_changed(move |event, window, cx| {
                 modifier_sidebar.update(cx, |sidebar, sidebar_cx| {
                     sidebar.handle_shortcut_modifiers_changed(event.modifiers, window, sidebar_cx);
@@ -266,71 +257,7 @@ impl NativeRoot {
         }
         let preview =
             self.sidebar_collapsed && (self.sidebar_preview_open || self.sidebar_preview_peeking);
-        let fullscreen = window.is_fullscreen();
-        let titlebar_padding = if fullscreen {
-            8. * self.settings(cx).app_zoom
-        } else {
-            SIDEBAR_TOGGLE_GLYPH_X - SIDEBAR_TOGGLE_GLYPH_INSET * self.settings(cx).app_zoom
-        };
-        let panel_path = if self.sidebar_collapsed {
-            "panel-left-hidden.svg"
-        } else {
-            "panel-left-open.svg"
-        };
-        let titlebar = self.render_titlebar_drag_area(
-            "sidebar-titlebar-drag",
-            div()
-                .flex_none()
-                .h(px(TITLEBAR_HEIGHT * self.settings(cx).app_zoom))
-                .pl(px(titlebar_padding))
-                .pr_3()
-                .flex()
-                .items_center()
-                .child(
-                    div()
-                        .id("sidebar-toggle")
-                        .group("sidebar-toggle")
-                        .flex_none()
-                        .w(px(28. * self.settings(cx).app_zoom))
-                        .h(px(28. * self.settings(cx).app_zoom))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .rounded_sm()
-                        .cursor_pointer()
-                        .text_color(theme::muted())
-                        .hover(|button| {
-                            button
-                                .bg(alpha(theme::sidebar_selected(), 0.6))
-                                .text_color(theme::text())
-                        })
-                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                        .child(
-                            svg()
-                                .path(panel_path)
-                                .w(px(14. * self.settings(cx).app_zoom))
-                                .h(px(14. * self.settings(cx).app_zoom))
-                                .flex_none()
-                                .text_color(theme::muted())
-                                .group_hover("sidebar-toggle", |icon| {
-                                    icon.text_color(theme::text())
-                                }),
-                        )
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            cx.stop_propagation();
-                            if this.sidebar_collapsed {
-                                this.set_sidebar_collapsed(false, true, cx);
-                                this.sidebar_preview_open = false;
-                                this.sidebar_preview_peeking = false;
-                            } else {
-                                this.set_sidebar_collapsed(true, true, cx);
-                                this.sidebar_preview_peeking = false;
-                            }
-                            cx.notify();
-                        })),
-                ),
-            cx,
-        );
+        let titlebar = self.render_sidebar_titlebar(window, cx);
         let search_button = div()
             .id("sidebar-search")
             .group("sidebar-search")
@@ -398,7 +325,11 @@ impl NativeRoot {
             )
             .child(Tooltip::new(
                 "sidebar-search-tooltip",
-                "Search (⌘K)",
+                keymap::effective_binding("command-palette", &self.settings(cx).keymap_overrides)
+                    .map_or_else(
+                        || "Search".to_owned(),
+                        |combo| format!("Search ({})", keymap::format_combo(&combo)),
+                    ),
                 search_button,
             ));
         let updater = global_updater(cx);
@@ -409,7 +340,7 @@ impl NativeRoot {
             let click_updater = updater.clone();
             Tooltip::new(
                 "sidebar-update-tooltip",
-                format!("Runner {version} is ready to install"),
+                crate::platform_ui::update_hint_tooltip(&version),
                 div()
                     .id("sidebar-update")
                     .flex_none()
@@ -429,7 +360,7 @@ impl NativeRoot {
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_click(move |_, _, cx| {
                         cx.stop_propagation();
-                        click_updater.read(cx).check_for_updates();
+                        crate::platform_ui::activate_update_hint(&click_updater, cx);
                     })
                     .child(
                         svg()
@@ -440,8 +371,7 @@ impl NativeRoot {
                     ),
             )
         });
-        let settings_button = div()
-            .flex_none()
+        let settings_button = crate::platform_ui::sidebar_section()
             .px_3()
             .pt_2()
             .border_t_1()
@@ -508,7 +438,7 @@ impl NativeRoot {
             .bg(theme::sidebar())
             .border_r_1()
             .border_color(theme::border())
-            .child(titlebar)
+            .children(titlebar)
             .child(brand)
             .child(self.sidebar.clone())
             .child(settings_button)
@@ -535,6 +465,11 @@ impl NativeRoot {
     pub(crate) fn render_sidebar_resize_handle(&self, cx: &App) -> AnyElement {
         div()
             .id("sidebar-resize")
+            .map(|handle| {
+                #[cfg(windows)]
+                let handle = handle.occlude();
+                handle
+            })
             .absolute()
             .right_0()
             .top_0()
@@ -569,50 +504,14 @@ impl NativeRoot {
         })
     }
 
-    pub(crate) fn render_open_sidebar_button(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        self.sidebar_collapsed.then(|| {
-            div()
-                .id("open-sidebar")
-                .group("open-sidebar")
-                .flex_none()
-                .w(px(28. * self.settings(cx).app_zoom))
-                .h(px(28. * self.settings(cx).app_zoom))
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded_sm()
-                .cursor_pointer()
-                .text_color(theme::muted())
-                .hover(|button| button.bg(theme::raised()).text_color(theme::text()))
-                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .child(
-                    svg()
-                        .path("panel-left-hidden.svg")
-                        .w(px(14. * self.settings(cx).app_zoom))
-                        .h(px(14. * self.settings(cx).app_zoom))
-                        .flex_none()
-                        .text_color(theme::muted())
-                        .group_hover("open-sidebar", |icon| icon.text_color(theme::text())),
-                )
-                .on_click(cx.listener(|this, _, window, cx| {
-                    cx.stop_propagation();
-                    this.set_sidebar_collapsed(false, true, cx);
-                    this.sidebar_preview_open = false;
-                    this.sidebar_preview_peeking = false;
-                    this.focus_active_terminal(window, cx);
-                    cx.notify();
-                }))
-                .into_any_element()
-        })
-    }
-
     pub(crate) fn render_titlebar_drag_area(
         &self,
         id: &'static str,
         area: gpui::Div,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        area.id(id)
+        let area = area
+            .id(id)
             .window_control_area(WindowControlArea::Drag)
             .on_mouse_down_out(cx.listener(|this, _, _, _| {
                 this.titlebar_drag_armed = false;
@@ -628,7 +527,9 @@ impl NativeRoot {
                 cx.listener(|this, _, _, _| {
                     this.titlebar_drag_armed = true;
                 }),
-            )
+            );
+        #[cfg(target_os = "macos")]
+        let area = area
             .on_mouse_move(cx.listener(|this, _, window, _| {
                 if this.titlebar_drag_armed {
                     this.titlebar_drag_armed = false;
@@ -640,7 +541,8 @@ impl NativeRoot {
                     cx.stop_propagation();
                     window.titlebar_double_click();
                 }
-            })
+            });
+        area
     }
 
     fn render_toast(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -753,9 +655,17 @@ impl NativeRoot {
     }
 
     pub(crate) fn workspace_titlebar_padding(&self, window: &Window, cx: &App) -> f32 {
-        if self.sidebar_collapsed && !window.is_fullscreen() {
-            SIDEBAR_TOGGLE_GLYPH_X - SIDEBAR_TOGGLE_GLYPH_INSET * self.settings(cx).app_zoom
-        } else {
+        #[cfg(target_os = "macos")]
+        {
+            if self.sidebar_collapsed && !window.is_fullscreen() {
+                SIDEBAR_TOGGLE_GLYPH_X - SIDEBAR_TOGGLE_GLYPH_INSET * self.settings(cx).app_zoom
+            } else {
+                16. * self.settings(cx).app_zoom
+            }
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = window;
             16. * self.settings(cx).app_zoom
         }
     }
@@ -1086,7 +996,7 @@ mod tests {
     }
 
     #[test]
-    fn settings_update_hint_tracks_available_state() {
+    fn settings_update_hint_shows_available_version() {
         let available = runner_app::updater::UpdateInfo::new("0.6.1");
 
         assert_eq!(settings_update_hint_version(None), None);

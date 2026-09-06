@@ -72,7 +72,10 @@ fn link_tooltip(
             return if modifier_held {
                 "Open in browser".into()
             } else {
-                "⌘-click to open in browser".into()
+                format!(
+                    "{}-click to open in browser",
+                    crate::platform_ui::PRIMARY_MODIFIER
+                )
             };
         }
         LinkTarget::File { path, line, .. } => (path, *line),
@@ -84,7 +87,10 @@ fn link_tooltip(
         } else {
             editor.label()
         };
-        return format!("⌘-click to open in {destination}");
+        return format!(
+            "{}-click to open in {destination}",
+            crate::platform_ui::PRIMARY_MODIFIER
+        );
     }
     let name = path
         .file_name()
@@ -142,9 +148,19 @@ fn editor_argv(editor: FileLinkEditor, target: &FileLinkTarget) -> Vec<String> {
     }
 }
 
+#[cfg(target_os = "macos")]
 fn open_argv(target: &FileLinkTarget) -> Vec<String> {
     vec![
         "/usr/bin/open".into(),
+        target.path.to_string_lossy().into_owned(),
+    ]
+}
+
+#[cfg(windows)]
+fn open_argv(target: &FileLinkTarget) -> Vec<String> {
+    vec![
+        "rundll32.exe".into(),
+        "url.dll,FileProtocolHandler".into(),
         target.path.to_string_lossy().into_owned(),
     ]
 }
@@ -193,10 +209,11 @@ mod tests {
 
     #[test]
     fn link_tooltip_teaches_the_gesture_then_names_the_action() {
+        let modifier = if cfg!(windows) { "Ctrl" } else { "⌘" };
         let url = LinkTarget::Url("https://example.com".into());
         assert_eq!(
             link_tooltip(&url, false, FileLinkEditor::Zed, None),
-            "⌘-click to open in browser"
+            format!("{modifier}-click to open in browser")
         );
         assert_eq!(
             link_tooltip(&url, true, FileLinkEditor::Zed, None),
@@ -206,7 +223,7 @@ mod tests {
         let file = file_target();
         assert_eq!(
             link_tooltip(&file, false, FileLinkEditor::Zed, Some(true)),
-            "⌘-click to open in Zed"
+            format!("{modifier}-click to open in Zed")
         );
         assert_eq!(
             link_tooltip(&file, true, FileLinkEditor::Zed, Some(true)),
@@ -214,7 +231,7 @@ mod tests {
         );
         assert_eq!(
             link_tooltip(&file, false, FileLinkEditor::VsCode, Some(false)),
-            "⌘-click to open in default app"
+            format!("{modifier}-click to open in default app")
         );
         assert_eq!(
             link_tooltip(&file, true, FileLinkEditor::VsCode, Some(false)),
@@ -253,9 +270,38 @@ mod tests {
             editor_argv(FileLinkEditor::Cursor, &target(None, Some(3))),
             ["cursor", "--goto", "/tmp/src/lib.rs"]
         );
+        #[cfg(target_os = "macos")]
         assert_eq!(
             editor_argv(FileLinkEditor::DefaultApp, &target(Some(1), None)),
             ["/usr/bin/open", "/tmp/src/lib.rs"]
         );
+        #[cfg(windows)]
+        assert_eq!(
+            editor_argv(FileLinkEditor::DefaultApp, &target(Some(1), None)),
+            [
+                "rundll32.exe",
+                "url.dll,FileProtocolHandler",
+                "/tmp/src/lib.rs"
+            ]
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn open_argv_passes_windows_paths_verbatim() {
+        for path in [
+            r"C:\Users\Jason Wang\项目\notes & %PATH% !.txt",
+            r"\\server\shared files\notes.txt",
+        ] {
+            let target = FileLinkTarget {
+                path: path.into(),
+                line: Some(12),
+                column: Some(5),
+            };
+            assert_eq!(
+                open_argv(&target),
+                ["rundll32.exe", "url.dll,FileProtocolHandler", path]
+            );
+        }
     }
 }

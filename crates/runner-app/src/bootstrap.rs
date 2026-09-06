@@ -8,7 +8,6 @@ use runner_backend::{
     windows, AppCore,
 };
 
-pub const APP_IDENTIFIER: &str = "com.wycstudios.runner";
 pub const AUTO_RESUME_STAGGER_MS: u64 = 300;
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -37,7 +36,10 @@ impl NativeMcpServer {
             .context("create native MCP runtime")?;
         core.mcp
             .start(
-                &core.app_data_dir.join("mcp.sock"),
+                &runner_backend::app_paths::mcp_endpoint(
+                    &core.app_data_dir,
+                    cfg!(debug_assertions),
+                ),
                 core.clone(),
                 runtime.handle(),
             )
@@ -65,22 +67,14 @@ impl NativePaths {
 }
 
 pub fn native_paths() -> Result<NativePaths> {
-    let home = std::env::var_os("HOME").context("HOME is not set")?;
-    Ok(paths_for_home(Path::new(&home), cfg!(debug_assertions)))
+    let home = runner_backend::app_paths::home_dir().context("home directory is not available")?;
+    Ok(paths_for_home(&home, cfg!(debug_assertions)))
 }
 
 fn paths_for_home(home: &Path, debug: bool) -> NativePaths {
-    let segment = if debug {
-        format!("{APP_IDENTIFIER}-dev")
-    } else {
-        APP_IDENTIFIER.to_string()
-    };
     NativePaths {
-        app_data_dir: home
-            .join("Library")
-            .join("Application Support")
-            .join(&segment),
-        log_dir: home.join("Library").join("Logs").join(segment),
+        app_data_dir: runner_backend::app_paths::app_data_dir_for_home(home, debug),
+        log_dir: runner_backend::app_paths::log_dir_for_home(home, debug),
     }
 }
 
@@ -285,6 +279,7 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn paths_match_tauri_bundle_convention() {
         let release = paths_for_home(Path::new("/Users/tester"), false);
@@ -302,6 +297,45 @@ mod tests {
         assert!(debug.log_dir.ends_with("com.wycstudios.runner-dev"));
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn paths_use_xdg_data_home_on_linux() {
+        let home = Path::new("/home/tester");
+        let base = std::env::var_os("XDG_DATA_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home.join(".local/share"));
+        for debug in [false, true] {
+            let paths = paths_for_home(home, debug);
+            let segment = if debug {
+                "com.wycstudios.runner-dev"
+            } else {
+                "com.wycstudios.runner"
+            };
+            assert_eq!(paths.app_data_dir, base.join(segment));
+            assert_eq!(paths.log_dir, paths.app_data_dir.join("logs"));
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn paths_use_roaming_app_data_on_windows() {
+        let home = Path::new(r"C:\Users\tester");
+        let base = std::env::var_os("APPDATA")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home.join("AppData/Roaming"));
+        for debug in [false, true] {
+            let paths = paths_for_home(home, debug);
+            let segment = if debug {
+                "com.wycstudios.runner-dev"
+            } else {
+                "com.wycstudios.runner"
+            };
+            assert_eq!(paths.app_data_dir, base.join(segment));
+            assert_eq!(paths.log_dir, paths.app_data_dir.join("logs"));
+        }
+    }
+
+    #[cfg(unix)]
     #[test]
     fn native_mcp_server_binds_and_removes_the_app_data_socket() {
         let temp = tempfile::tempdir().unwrap();
@@ -311,8 +345,8 @@ mod tests {
 
         let server = NativeMcpServer::start(&core).unwrap();
         assert_eq!(
-            core.mcp.socket_path().as_deref(),
-            Some(socket_path.as_path())
+            core.mcp.endpoint(),
+            Some(runner_backend::app_paths::IpcEndpoint(socket_path.clone()))
         );
         assert!(socket_path.exists());
         server._runtime.block_on(async {

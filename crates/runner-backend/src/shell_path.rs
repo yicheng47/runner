@@ -6,17 +6,26 @@
 //! fails or times out.
 
 use std::collections::BTreeMap;
+#[cfg(unix)]
 use std::process::{Command, Stdio};
+#[cfg(unix)]
 use std::sync::mpsc;
+#[cfg(unix)]
 use std::thread;
-use std::time::{Duration, Instant};
+#[cfg(unix)]
+use std::time::Duration;
+use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 
+#[cfg(unix)]
 const RESOLVE_TIMEOUT: Duration = Duration::from_secs(5);
+#[cfg(unix)]
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
+#[cfg(unix)]
 const STDOUT_DRAIN_GRACE: Duration = Duration::from_millis(500);
 
+#[cfg(any(unix, test))]
 const CAPTURED_VARS: &[&str] = &[
     "PATH",
     "HTTP_PROXY",
@@ -102,6 +111,8 @@ pub(crate) fn configured_shell(value: Option<String>) -> Option<String> {
 }
 
 pub(crate) fn shell_login_args(shell: &str) -> Vec<String> {
+    #[cfg(not(unix))]
+    let _ = shell;
     #[cfg(unix)]
     if shell_probe_args(shell).is_some() {
         return vec!["-l".to_string()];
@@ -220,6 +231,7 @@ fn resolve_shell_env(shell: &str, timeout: Duration, started: Instant) -> Discov
     finish_discovery(Some(shell.to_string()), outcome, started, env)
 }
 
+#[cfg(unix)]
 fn capture_outcome(env: &LoginShellEnv) -> DiscoveryOutcome {
     if env.path.is_none() && env.vars.is_empty() {
         DiscoveryOutcome::EmptyCapture
@@ -271,6 +283,7 @@ fn finish_discovery(
     }
 }
 
+#[cfg(any(unix, test))]
 fn parse_login_shell_env(stdout: &str) -> LoginShellEnv {
     let mut env = LoginShellEnv::default();
     for var in CAPTURED_VARS {

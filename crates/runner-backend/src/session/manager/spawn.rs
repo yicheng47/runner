@@ -35,7 +35,7 @@ pub(super) fn run_headless_fork(
     };
     let codex_sessions_root = codex_fork_sessions_root(spec)?;
     let inherited_path = std::env::var("PATH").ok();
-    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let home = runner_core::app_paths::home_dir();
     let path = crate::session::launch::compose_path(
         spec.shim_dir.as_deref(),
         spec.bundled_bin_dir.as_deref(),
@@ -68,15 +68,18 @@ pub(super) fn run_headless_fork(
         command.env("COLUMNS", cols.to_string());
         command.env("LINES", rows.to_string());
     }
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        command.process_group(0);
-    }
+    crate::session::process::prepare_headless_fork(&mut command);
 
     let mut child = command
         .spawn()
         .map_err(|error| Error::msg(format!("fork materialization spawn: {error}")))?;
+    #[cfg(windows)]
+    let process_tree =
+        crate::session::process::ProcessTree::adopt(child.id()).map_err(|error| {
+            let _ = child.kill();
+            let _ = child.wait();
+            Error::msg(format!("fork materialization adopt process tree: {error}"))
+        })?;
     let stdout = child
         .stdout
         .take()
@@ -93,6 +96,8 @@ pub(super) fn run_headless_fork(
         codex_sessions_root,
         source_key,
         timeout,
+        #[cfg(windows)]
+        process_tree,
     )
 }
 
@@ -103,6 +108,7 @@ fn run_thread_started_headless_fork(
     sessions_root: PathBuf,
     source_key: &str,
     timeout: Duration,
+    #[cfg(windows)] process_tree: crate::session::process::ProcessTree,
 ) -> Result<String> {
     let (key_tx, key_rx) = std::sync::mpsc::sync_channel(1);
     let stdout_reader = thread::spawn(move || {
@@ -193,8 +199,14 @@ fn run_thread_started_headless_fork(
     };
 
     if terminate {
-        terminate_headless_fork(&mut child);
+        #[cfg(unix)]
+        crate::session::process::kill_headless_fork(&mut child);
+        #[cfg(windows)]
+        crate::session::process::kill_headless_fork(&mut child, &process_tree);
     }
+    // Close descendant pipe writers before joining readers, even if the launcher already exited.
+    #[cfg(windows)]
+    drop(process_tree);
     stdout_reader
         .join()
         .map_err(|_| Error::msg("fork materialization stdout reader panicked"))?;
@@ -256,7 +268,7 @@ fn codex_fork_sessions_root(spec: &SpawnSpec) -> Result<PathBuf> {
                 .filter(|value| !value.is_empty())
                 .map(PathBuf::from)
         })
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".codex")))
+        .or_else(|| runner_core::app_paths::home_dir().map(|home| home.join(".codex")))
         .ok_or_else(|| Error::msg("fork materialization cannot resolve Codex sessions root"))?;
     let codex_home = if codex_home.is_absolute() {
         codex_home
@@ -268,15 +280,6 @@ fn codex_fork_sessions_root(spec: &SpawnSpec) -> Result<PathBuf> {
             .join(codex_home)
     };
     Ok(codex_home.join("sessions"))
-}
-
-fn terminate_headless_fork(child: &mut std::process::Child) {
-    #[cfg(unix)]
-    unsafe {
-        libc::kill(-(child.id() as i32), libc::SIGKILL);
-    }
-    let _ = child.kill();
-    let _ = child.wait();
 }
 
 fn delete_failed_fork(pool: &DbPool, session_id: &str) -> Result<()> {
@@ -477,6 +480,12 @@ impl SessionManager {
         first_turn: Option<&str>,
         mission_bus_dir: Option<&Path>,
     ) -> bool {
+        #[cfg(windows)]
+        let first_turn = if crate::session::launch::is_windows_batch(&runner.command) {
+            None
+        } else {
+            first_turn
+        };
         if runner.runtime == "claude-code" {
             let _ = std::fs::remove_file(crate::session::claude_rekey::drop_path(
                 app_data_dir,
@@ -593,8 +602,7 @@ impl SessionManager {
         // claude-code (its conversation files are keyed under
         // `~/.claude/projects/<encoded-cwd>/<uuid>.jsonl`; resuming with a
         // different cwd makes `--resume` fail).
-        let resolved_cwd: Option<String> =
-            mission.cwd.clone().or_else(|| runner.working_dir.clone());
+        let resolved_cwd = resolve_spawn_cwd(mission.cwd.as_deref(), runner.working_dir.as_deref());
 
         // Per-slot runner shim: hardcodes the RUNNER_* env vars + exec's
         // the real bundled CLI. claude-code's Bash tool spawns
@@ -610,6 +618,7 @@ impl SessionManager {
             &events_log_path,
             mission.cwd.as_deref(),
         )
+        .inspect_err(|error| log::warn!("install session runner shim: {error}"))
         .ok();
         let bundled_bin_dir = Some(app_data_dir.join("bin"));
 
@@ -693,6 +702,8 @@ impl SessionManager {
             size_source,
             plan,
             first_turn_delivered_via_argv,
+            #[cfg(windows)]
+            first_turn,
             resolved_cwd,
             row_started_at: started_at,
             codex_prompt_marker,
@@ -737,6 +748,8 @@ impl SessionManager {
             mut size_source,
             plan,
             first_turn_delivered_via_argv,
+            #[cfg(windows)]
+            first_turn,
             resolved_cwd,
             row_started_at,
             codex_prompt_marker,
@@ -783,6 +796,8 @@ impl SessionManager {
         }
 
         let spawn_started_at_dt = Utc::now();
+        #[cfg(windows)]
+        let first_turn_deadline = Instant::now() + WINDOWS_FIRST_TURN_TIMEOUT;
         // The row has been visible since registration. A measurement can
         // arrive before its trailing persistence settle, so manager memory
         // wins over the row and the registration hint.
@@ -856,7 +871,7 @@ impl SessionManager {
             if matches!(runner.runtime.as_str(), "codex" | "trae") && plan.assigned_key.is_none() {
                 crate::session::codex_capture::sessions_root_for(&runner.runtime).and_then(
                     |sessions_root| {
-                        capture_cwd(resolved_cwd.clone()).map(|cwd| CodexCaptureContext {
+                        resolved_cwd.clone().map(|cwd| CodexCaptureContext {
                             mission_id: Some(mission.id.clone()),
                             sessions_root,
                             spawn_cwd: cwd,
@@ -885,6 +900,8 @@ impl SessionManager {
         self.install_handle(
             &session_id,
             SessionHandle {
+                #[cfg(windows)]
+                pending_first_turn: None,
                 id: session_id.clone(),
                 mission_id: Some(mission.id.clone()),
                 runner_id: Some(runner.id.clone()),
@@ -901,6 +918,15 @@ impl SessionManager {
         if first_turn_delivered_via_argv {
             self.arm_completion(&session_id);
         }
+
+        #[cfg(windows)]
+        self.queue_windows_batch_first_turn(
+            &session_id,
+            &runner,
+            &plan,
+            first_turn.as_deref(),
+            first_turn_deadline,
+        );
 
         let forwarder = self.start_forwarder_thread(
             session_id.clone(),
@@ -921,10 +947,14 @@ impl SessionManager {
         }
 
         emit_runner_activity(&pool, &runner, events.as_ref());
-        if matches!(runner.runtime.as_str(), "claude-code" | "codex" | "trae")
-            && !plan.resuming
-            && !first_turn_delivered_via_argv
-        {
+        let missing_first_turn =
+            matches!(runner.runtime.as_str(), "claude-code" | "codex" | "trae")
+                && !plan.resuming
+                && !first_turn_delivered_via_argv;
+        #[cfg(windows)]
+        let missing_first_turn =
+            missing_first_turn && !crate::session::launch::is_windows_batch(&runner.command);
+        if missing_first_turn {
             log::warn!(
                 "first-turn argv not delivered for {session_id} (runtime {}); skipping post-spawn injection",
                 runner.runtime,
@@ -1147,18 +1177,11 @@ impl SessionManager {
         // `agent_session_key` (claude-code) or leaves it NULL (codex).
         let plan = router::runtime::resume_plan(&runner.runtime, None);
 
-        // Working directory precedence: explicit `cwd` arg (Chat now
-        // dialog folder) ► runner's `working_dir`. A direct chat must
-        // name a real directory: portable-pty silently substitutes
-        // $HOME for a missing or nonexistent cwd, which strands the
-        // agent in the wrong place and breaks codex session-key
-        // capture (the rollout cwd can never match the row).
-        let resolved_cwd: Option<String> = cwd
-            .map(|s| s.to_string())
-            .or_else(|| runner.working_dir.clone());
-        let Some(chat_cwd) = resolved_cwd.as_deref().filter(|c| !c.is_empty()) else {
+        // Reject explicitly missing folders before portable-pty can substitute another cwd.
+        let resolved_cwd = resolve_spawn_cwd(cwd, runner.working_dir.as_deref());
+        let Some(chat_cwd) = resolved_cwd.as_deref() else {
             return Err(Error::msg(
-                "select a working directory before starting a chat",
+                "home directory is unavailable; select a working directory before starting a chat",
             ));
         };
         if !std::path::Path::new(chat_cwd).is_dir() {
@@ -1246,6 +1269,8 @@ impl SessionManager {
         }
 
         let spawn_started_at_dt = Utc::now();
+        #[cfg(windows)]
+        let first_turn_deadline = Instant::now() + WINDOWS_FIRST_TURN_TIMEOUT;
         self.seed_codex_project_trust(&session_id, &runner.runtime, spec.cwd.as_deref());
         let (rt_session, output) = match self.runtime.spawn(spec) {
             Ok(p) => p,
@@ -1289,7 +1314,7 @@ impl SessionManager {
             if matches!(runner.runtime.as_str(), "codex" | "trae") && plan.assigned_key.is_none() {
                 crate::session::codex_capture::sessions_root_for(&runner.runtime).and_then(
                     |sessions_root| {
-                        capture_cwd(resolved_cwd.clone()).map(|cwd| CodexCaptureContext {
+                        resolved_cwd.clone().map(|cwd| CodexCaptureContext {
                             mission_id: None,
                             sessions_root,
                             spawn_cwd: cwd,
@@ -1309,6 +1334,8 @@ impl SessionManager {
         self.install_handle(
             &session_id,
             SessionHandle {
+                #[cfg(windows)]
+                pending_first_turn: None,
                 id: session_id.clone(),
                 mission_id: None,
                 runner_id: persisted_runner_id.map(str::to_string),
@@ -1332,6 +1359,15 @@ impl SessionManager {
             events.as_ref(),
         );
 
+        #[cfg(windows)]
+        self.queue_windows_batch_first_turn(
+            &session_id,
+            &runner,
+            &plan,
+            first_turn.as_deref(),
+            first_turn_deadline,
+        );
+
         let forwarder = self.start_forwarder_thread(
             session_id.clone(),
             None,
@@ -1353,10 +1389,14 @@ impl SessionManager {
         if emit_activity {
             emit_runner_activity(&pool, &runner, events.as_ref());
         }
-        if matches!(runner.runtime.as_str(), "claude-code" | "codex" | "trae")
-            && !plan.resuming
-            && !first_turn_delivered_via_argv
-        {
+        let missing_first_turn =
+            matches!(runner.runtime.as_str(), "claude-code" | "codex" | "trae")
+                && !plan.resuming
+                && !first_turn_delivered_via_argv;
+        #[cfg(windows)]
+        let missing_first_turn =
+            missing_first_turn && !crate::session::launch::is_windows_batch(&runner.command);
+        if missing_first_turn {
             log::warn!(
                 "first-turn argv not delivered for direct chat {session_id} (runtime {}); skipping post-spawn injection",
                 runner.runtime,
@@ -1371,6 +1411,37 @@ impl SessionManager {
             pid: None,
             fresh_fallback_lead: false,
         })
+    }
+
+    #[cfg(windows)]
+    fn queue_windows_batch_first_turn(
+        &self,
+        session_id: &str,
+        runner: &Runner,
+        plan: &router::runtime::ResumePlan,
+        first_turn: Option<&str>,
+        deadline: Instant,
+    ) {
+        if matches!(runner.runtime.as_str(), "claude-code" | "codex" | "trae")
+            && !plan.resuming
+            && crate::session::launch::is_windows_batch(&runner.command)
+        {
+            if let Some(body) = first_turn.filter(|body| !body.trim().is_empty()) {
+                let state = self.session_state_or_insert(session_id);
+                let mut state = state.lock().unwrap();
+                if let Some(handle) = state.handle.as_mut() {
+                    handle.pending_first_turn = Some(PendingFirstTurn {
+                        body: body.to_owned(),
+                        deadline,
+                        output_tail: Vec::new(),
+                    });
+                } else {
+                    log::warn!(
+                        "cannot queue first turn for {session_id}: session handle is missing"
+                    );
+                }
+            }
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1452,10 +1523,10 @@ impl SessionManager {
             )?
         };
 
-        let resolved_cwd = source.cwd.clone().or_else(|| runner.working_dir.clone());
-        let Some(chat_cwd) = resolved_cwd.as_deref().filter(|cwd| !cwd.is_empty()) else {
+        let resolved_cwd = resolve_spawn_cwd(source.cwd.as_deref(), runner.working_dir.as_deref());
+        let Some(chat_cwd) = resolved_cwd.as_deref() else {
             return Err(Error::msg(
-                "select a working directory before forking a chat",
+                "home directory is unavailable; select a working directory before forking a chat",
             ));
         };
         if !Path::new(chat_cwd).is_dir() {
@@ -1508,7 +1579,7 @@ impl SessionManager {
             let mut row = crate::repo::session::SessionRowDb::new_running(session_id.clone());
             row.project_id.clone_from(&source.project_id);
             row.runner_id.clone_from(&source.runner_id);
-            row.cwd.clone_from(&source.cwd);
+            row.cwd = resolved_cwd.clone();
             row.started_at = Some(started_at_dt);
             row.agent_session_key = match &plan {
                 router::runtime::ForkPlan::Direct(plan) => plan.assigned_key.clone(),
@@ -1606,6 +1677,8 @@ impl SessionManager {
                 self.install_handle(
                     &session_id,
                     SessionHandle {
+                        #[cfg(windows)]
+                        pending_first_turn: None,
                         id: session_id.clone(),
                         mission_id: None,
                         runner_id: source.runner_id.clone(),
@@ -1948,11 +2021,10 @@ impl SessionManager {
         // print "No conversation found" and leave the TUI half-broken.
         // Detect the missing file up front and degrade to a fresh
         // spawn with a newly self-assigned uuid via `--session-id`.
-        let resolved_cwd_for_check: Option<String> = snap.cwd.clone().or_else(|| {
-            snap.runner_id
-                .as_ref()
-                .and_then(|_| runner.working_dir.clone())
-        });
+        let resolved_cwd_for_check = resolve_spawn_cwd(
+            snap.cwd.as_deref(),
+            snap.runner_id.as_ref().and(runner.working_dir.as_deref()),
+        );
         let is_lead_slot = mission_ctx.as_ref().is_some_and(|c| c.lead);
         let conversation_missing =
             match (runner.runtime.as_str(), snap.agent_session_key.as_deref()) {
@@ -1993,7 +2065,7 @@ impl SessionManager {
                 }
                 None => None,
             };
-            let home = std::env::var_os("HOME").map(PathBuf::from);
+            let home = runner_core::app_paths::home_dir();
             let (cwd, notice) = resolve_shell_resume_cwd(
                 snap.cwd.as_deref(),
                 project_cwd.as_deref(),
@@ -2001,11 +2073,7 @@ impl SessionManager {
             )?;
             (Some(cwd), notice)
         } else {
-            let cwd = snap.cwd.clone().or_else(|| {
-                snap.runner_id
-                    .as_ref()
-                    .and_then(|_| runner.working_dir.clone())
-            });
+            let cwd = resolved_cwd_for_check;
             if mission_ctx.is_none() {
                 if let Some(missing_cwd) = cwd
                     .as_deref()
@@ -2173,7 +2241,7 @@ impl SessionManager {
             if matches!(runner.runtime.as_str(), "codex" | "trae") && plan.assigned_key.is_none() {
                 crate::session::codex_capture::sessions_root_for(&runner.runtime).and_then(
                     |sessions_root| {
-                        capture_cwd(resolved_cwd.clone()).map(|cwd| CodexCaptureContext {
+                        resolved_cwd.clone().map(|cwd| CodexCaptureContext {
                             mission_id: snap.mission_id.clone(),
                             sessions_root,
                             spawn_cwd: cwd,
@@ -2203,6 +2271,8 @@ impl SessionManager {
         self.install_handle(
             session_id,
             SessionHandle {
+                #[cfg(windows)]
+                pending_first_turn: None,
                 id: session_id.to_string(),
                 mission_id: snap.mission_id.clone(),
                 runner_id: snap.runner_id.clone(),

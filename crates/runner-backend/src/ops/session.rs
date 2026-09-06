@@ -869,7 +869,28 @@ pub fn session_start_runtime(
 }
 
 fn resolve_shell_command(shell: Option<String>) -> String {
-    crate::shell_path::configured_shell(shell).unwrap_or_else(|| "/bin/zsh".to_string())
+    crate::shell_path::configured_shell(shell).unwrap_or_else(|| {
+        #[cfg(unix)]
+        {
+            "/bin/zsh".to_string()
+        }
+        #[cfg(windows)]
+        {
+            windows_shell_command(
+                &std::env::var("PATH").unwrap_or_default(),
+                std::env::var("ComSpec").unwrap_or_else(|_| "cmd.exe".to_string()),
+            )
+        }
+    })
+}
+
+#[cfg(windows)]
+fn windows_shell_command(path: &str, comspec: String) -> String {
+    ["pwsh.exe", "powershell.exe"]
+        .into_iter()
+        .find_map(|command| crate::runtime_status::find_executable(command, path))
+        .map(|path| path.to_string_lossy().into_owned())
+        .unwrap_or(comspec)
 }
 
 /// Spawn the user's configured login shell as a runtime-only direct session
@@ -951,11 +972,37 @@ mod tests {
         assert!(err.contains("unsupported clipboard image type"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn shell_command_uses_environment_value_with_zsh_fallback() {
         assert_eq!(resolve_shell_command(Some("/bin/fish".into())), "/bin/fish");
         assert_eq!(resolve_shell_command(None), "/bin/zsh");
         assert_eq!(resolve_shell_command(Some("  ".into())), "/bin/zsh");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn shell_command_prefers_pwsh_then_powershell_then_comspec() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().to_str().unwrap();
+        let comspec = r"C:\Windows\System32\cmd.exe";
+        assert_eq!(windows_shell_command(path, comspec.into()), comspec);
+        let powershell = dir.path().join("powershell.exe");
+        std::fs::write(&powershell, "").unwrap();
+        assert_eq!(
+            windows_shell_command(path, comspec.into()),
+            powershell.to_str().unwrap()
+        );
+        let pwsh = dir.path().join("pwsh.exe");
+        std::fs::write(&pwsh, "").unwrap();
+        assert_eq!(
+            windows_shell_command(path, comspec.into()),
+            pwsh.to_str().unwrap()
+        );
+        assert_eq!(
+            resolve_shell_command(Some("C:/Git/bin/bash.exe".into())),
+            "C:/Git/bin/bash.exe"
+        );
     }
 
     #[test]

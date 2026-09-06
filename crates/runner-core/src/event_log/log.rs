@@ -6,6 +6,8 @@
 //     processes (the app, multiple `runner` CLI invocations) interleave at
 //     whole-line granularity and produce strictly monotonic ULIDs.
 //   - Append-only semantics so the watcher can stream new lines by byte offset.
+//     Windows uses read/write access for tail repair; append_locked seeks to EOF
+//     under the exclusive lock immediately before its write.
 //
 // Failure modes and what we do about them:
 //
@@ -77,7 +79,10 @@ impl EventLog {
         let file = OpenOptions::new()
             .create(true)
             .read(true)
-            .append(true)
+            // Windows needs write access for tail repair; append_locked seeks to EOF under the lock.
+            .write(cfg!(windows))
+            .append(!cfg!(windows))
+            .truncate(false)
             .open(&path)?;
 
         file.lock_exclusive()?;
@@ -121,7 +126,9 @@ impl EventLog {
         let file = OpenOptions::new()
             .create(true)
             .read(true)
-            .append(true)
+            .write(cfg!(windows))
+            .append(!cfg!(windows))
+            .truncate(false)
             .open(&self.path)?;
 
         file.lock_exclusive()?;
@@ -148,7 +155,9 @@ impl EventLog {
         let file = OpenOptions::new()
             .create(true)
             .read(true)
-            .append(true)
+            .write(cfg!(windows))
+            .append(!cfg!(windows))
+            .truncate(false)
             .open(&self.path)
             .map_err(TryAppendError::from_io)?;
 
@@ -203,6 +212,8 @@ impl EventLog {
         line.push(b'\n');
 
         let pre_len = file.metadata()?.len();
+        #[cfg(windows)]
+        (&*file).seek(SeekFrom::End(0))?;
         let write_res = (&*file).write_all(&line);
         if let Err(e) = write_res {
             // Partial-write rollback: truncate back to what we saw before the
@@ -220,6 +231,9 @@ impl EventLog {
     /// anyway) is silently skipped.
     pub fn read_from(&self, offset: u64) -> Result<Vec<LogEntry>> {
         let mut file = File::open(&self.path)?;
+        // Windows byte-range locks also exclude readers in the same process.
+        #[cfg(windows)]
+        FileExt::lock_shared(&file)?;
         file.seek(SeekFrom::Start(offset))?;
         let mut reader = BufReader::new(file);
 
@@ -260,6 +274,8 @@ impl EventLog {
     /// not per-line corruption and re-trying makes sense.
     pub fn read_from_lossy(&self, offset: u64) -> Result<(Vec<LogEntry>, Vec<SkipReport>)> {
         let mut file = File::open(&self.path)?;
+        #[cfg(windows)]
+        FileExt::lock_shared(&file)?;
         file.seek(SeekFrom::Start(offset))?;
         let mut reader = BufReader::new(file);
 
@@ -628,6 +644,52 @@ mod tests {
         assert!(log.read_from(0).unwrap().is_empty());
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn readers_wait_for_a_writer_to_release_its_lock() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        for lossy in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let log = EventLog::open(dir.path()).unwrap();
+            let event = log.append(draft_signal("runner_status")).unwrap();
+            let blocker = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(log.path())
+                .unwrap();
+            blocker.lock_exclusive().unwrap();
+
+            let (started_tx, started_rx) = mpsc::channel();
+            let (done_tx, done_rx) = mpsc::channel();
+            let reader = std::thread::spawn(move || {
+                started_tx.send(()).unwrap();
+                let result = if lossy {
+                    log.read_from_lossy(0).map(|(entries, skipped)| {
+                        assert!(skipped.is_empty());
+                        entries
+                    })
+                } else {
+                    log.read_from(0)
+                };
+                done_tx.send(()).unwrap();
+                result
+            });
+            started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+            let waited = matches!(
+                done_rx.recv_timeout(Duration::from_millis(50)),
+                Err(mpsc::RecvTimeoutError::Timeout)
+            );
+            FileExt::unlock(&blocker).unwrap();
+
+            let entries = reader.join().unwrap().unwrap();
+            assert!(waited, "reader must wait for the exclusive writer lock");
+            assert_eq!(entries.len(), 1);
+            assert_eq!(entries[0].event.id, event.id);
+        }
+    }
+
     #[test]
     fn try_append_returns_contended_when_lock_held() {
         // Issue #124: the session forwarder's `runner_status` emission
@@ -702,6 +764,32 @@ mod tests {
         let entries = log.read_from(0).unwrap();
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[1].event.id, next.id);
+    }
+
+    #[test]
+    fn append_repairs_a_tail_written_after_open() {
+        for nonblocking in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let log = EventLog::open(dir.path()).unwrap();
+            let first = log.append(draft_signal("ask_lead")).unwrap();
+            OpenOptions::new()
+                .append(true)
+                .open(log.path())
+                .unwrap()
+                .write_all(b"{\"id\":\"crashed")
+                .unwrap();
+
+            let next = if nonblocking {
+                log.try_append(draft_signal("runner_status")).unwrap()
+            } else {
+                log.append(draft_signal("runner_status")).unwrap()
+            };
+            let entries = log.read_from(0).unwrap();
+            assert_eq!(entries.len(), 2);
+            assert_eq!(entries[0].event.id, first.id);
+            assert_eq!(entries[1].event.id, next.id);
+            assert!(next.id > first.id);
+        }
     }
 
     #[test]

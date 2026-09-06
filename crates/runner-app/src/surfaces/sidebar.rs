@@ -1016,8 +1016,9 @@ impl Sidebar {
                 .await;
             let _ = weak.update_in(cx, |this, window, cx| {
                 let modifiers = window.modifiers();
-                let held_since = (modifiers.platform && this.cmd_held_since == Some(started_at))
-                    .then_some(started_at);
+                let held_since = (crate::platform_ui::primary_modifier_held(modifiers)
+                    && this.cmd_held_since == Some(started_at))
+                .then_some(started_at);
                 if should_show_shortcut_pills(
                     held_since,
                     Instant::now(),
@@ -1101,10 +1102,9 @@ impl Sidebar {
             field.select_all(input_cx);
         });
         let focus = input.read(cx).focus_handle();
-        let root = cx.entity();
         self._rename_focus_subscription =
-            Some(cx.on_focus_out(&focus, window, move |_, _, window, cx| {
-                root.update(cx, |this, cx| this.submit_sidebar_rename(window, cx));
+            Some(cx.on_focus_out(&focus, window, |this, _, window, cx| {
+                this.submit_sidebar_rename(window, cx);
             }));
         self.rename = Some(SidebarRename { target, input });
         focus.focus(window);
@@ -2320,7 +2320,12 @@ impl Sidebar {
             match entry {
                 WorkspaceEntry::NewTab => {
                     let shell = self.shell.clone();
-                    workspace_new_chat_row(move |window, cx| {
+                    let shortcut = keymap::effective_binding(
+                        "new-chat",
+                        &self.app_store.read(cx).settings.keymap_overrides,
+                    )
+                    .map(|combo| keymap::format_combo(&combo));
+                    workspace_new_chat_row(shortcut, move |window, cx| {
                         if let Some(shell) = shell.upgrade() {
                             shell.update(cx, |shell, shell_cx| {
                                 let project_id = shell.active_project_id(shell_cx);
@@ -2367,15 +2372,17 @@ impl Sidebar {
             .overflow_hidden()
             .pb_3()
             .child(
-                div().flex_none().child(section_title("WORKSPACE")).child(
-                    div()
-                        .px_3()
-                        .pb_1()
-                        .flex()
-                        .flex_col()
-                        .gap(rems(2. / 16.))
-                        .children(workspace_rows),
-                ),
+                crate::platform_ui::sidebar_section()
+                    .child(section_title("WORKSPACE"))
+                    .child(
+                        div()
+                            .px_3()
+                            .pb_1()
+                            .flex()
+                            .flex_col()
+                            .gap(rems(2. / 16.))
+                            .children(workspace_rows),
+                    ),
             )
             .child(
                 div()
@@ -2892,10 +2899,11 @@ impl Sidebar {
         let over_projects = visible_projects.clone();
         let over_project_id = node.id.clone();
         let over_children = nested_ids.clone();
-        let mut header_wrap = div()
-            .id(SharedString::from(format!("project-drag-wrap-{}", node.id)))
-            .relative()
-            .child(header);
+        let mut header_wrap = crate::platform_ui::sidebar_row_wrapper(SharedString::from(format!(
+            "project-drag-wrap-{}",
+            node.id
+        )))
+        .child(header);
         if !renaming {
             header_wrap = header_wrap
                 .on_drag(
@@ -3124,39 +3132,40 @@ impl Sidebar {
         let marker_after = format!("{marker_prefix}:{}:true", node.id);
         let active_before = self.drop_marker.as_deref() == Some(marker_before.as_str());
         let active_after = self.drop_marker.as_deref() == Some(marker_after.as_str());
-        let mut wrapper = div()
-            .id(SharedString::from(format!("sidebar-drag-{}", node.id)))
-            .relative()
-            .cursor_move()
-            .child(row)
-            .on_drag(drag, move |drag: &SidebarNodeDrag, _, _, cx| {
-                drag_root.update(cx, |this, cx| {
-                    this.start_sidebar_drag(drag.node_id.clone(), cx);
-                });
-                cx.new(|_| drag.clone())
-            })
-            .on_drag_move::<SidebarNodeDrag>(cx.listener(
-                move |this, event: &DragMoveEvent<SidebarNodeDrag>, _, cx| {
-                    if !event.bounds.contains(&event.event.position) {
-                        return;
-                    }
-                    let dragged = event.drag(cx).node_id.clone();
-                    let after = event.event.position.y > event.bounds.center().y;
-                    this.update_row_drop_target(
-                        &dragged,
-                        kind,
-                        parent_id.as_deref(),
-                        &visible_ids,
-                        &hovered_id,
-                        after,
-                        format!("{marker_prefix}:{hovered_id}:{after}"),
-                        cx,
-                    );
-                },
-            ))
-            .on_drop(cx.listener(|this, drag: &SidebarNodeDrag, _, cx| {
-                this.commit_sidebar_drop(&drag.node_id, cx);
-            }));
+        let mut wrapper = crate::platform_ui::sidebar_row_wrapper(SharedString::from(format!(
+            "sidebar-drag-{}",
+            node.id
+        )))
+        .cursor_move()
+        .child(row)
+        .on_drag(drag, move |drag: &SidebarNodeDrag, _, _, cx| {
+            drag_root.update(cx, |this, cx| {
+                this.start_sidebar_drag(drag.node_id.clone(), cx);
+            });
+            cx.new(|_| drag.clone())
+        })
+        .on_drag_move::<SidebarNodeDrag>(cx.listener(
+            move |this, event: &DragMoveEvent<SidebarNodeDrag>, _, cx| {
+                if !event.bounds.contains(&event.event.position) {
+                    return;
+                }
+                let dragged = event.drag(cx).node_id.clone();
+                let after = event.event.position.y > event.bounds.center().y;
+                this.update_row_drop_target(
+                    &dragged,
+                    kind,
+                    parent_id.as_deref(),
+                    &visible_ids,
+                    &hovered_id,
+                    after,
+                    format!("{marker_prefix}:{hovered_id}:{after}"),
+                    cx,
+                );
+            },
+        ))
+        .on_drop(cx.listener(|this, drag: &SidebarNodeDrag, _, cx| {
+            this.commit_sidebar_drop(&drag.node_id, cx);
+        }));
         if active_before {
             wrapper = wrapper.border_t_2().border_color(theme::accent());
         } else if active_after {
@@ -3628,7 +3637,10 @@ fn section_title(label: &'static str) -> AnyElement {
         .into_any_element()
 }
 
-fn workspace_new_chat_row(on_click: impl Fn(&mut Window, &mut gpui::App) + 'static) -> AnyElement {
+fn workspace_new_chat_row(
+    shortcut: Option<String>,
+    on_click: impl Fn(&mut Window, &mut gpui::App) + 'static,
+) -> AnyElement {
     div()
         .id("workspace-new-chat")
         .w_full()
@@ -3661,14 +3673,14 @@ fn workspace_new_chat_row(on_click: impl Fn(&mut Window, &mut gpui::App) + 'stat
                 .text_color(theme::muted())
                 .child("New chat"),
         )
-        .child(
+        .children(shortcut.map(|shortcut| {
             div()
                 .flex_none()
                 .text_size(rems(11. / 16.))
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(theme::faint())
-                .child("⌘N"),
-        )
+                .child(shortcut)
+        }))
         .on_click(move |_, window, cx| on_click(window, cx))
         .into_any_element()
 }
@@ -3857,7 +3869,9 @@ fn sidebar_row_label(label: String, selected: bool, monospace: bool) -> AnyEleme
         .flex_1()
         .overflow_hidden()
         .whitespace_nowrap()
-        .when(monospace, |label| label.font_family("Menlo"))
+        .when(monospace, |label| {
+            label.font_family(theme::SYSTEM_MONOSPACE_FONT)
+        })
         .font_weight(if selected {
             FontWeight::SEMIBOLD
         } else {
@@ -3973,7 +3987,7 @@ fn tab_shortcut_pill(index: u8, selected: bool) -> AnyElement {
         .justify_center()
         .rounded(rems(4. / 16.))
         .bg(theme::raised())
-        .font_family("JetBrains Mono")
+        .font_family(theme::UI_MONOSPACE_FONT)
         .font_weight(FontWeight::MEDIUM)
         .text_size(rems(10. / 16.))
         .text_color(if selected {
@@ -3986,11 +4000,11 @@ fn tab_shortcut_pill(index: u8, selected: bool) -> AnyElement {
 }
 
 fn other_modifiers_held(modifiers: gpui::Modifiers) -> bool {
-    modifiers.control || modifiers.alt || modifiers.shift || modifiers.function
+    crate::platform_ui::other_shortcut_modifiers_held(modifiers)
 }
 
 fn command_held_alone(modifiers: gpui::Modifiers) -> bool {
-    modifiers.platform && !other_modifiers_held(modifiers)
+    crate::platform_ui::primary_modifier_held(modifiers) && !other_modifiers_held(modifiers)
 }
 
 fn attention_indicator(attention: AttentionState) -> AnyElement {
@@ -4084,6 +4098,124 @@ mod tests {
         prelude::*, size, Context, Render, ScrollHandle, TestAppContext, VisualTestContext, Window,
     };
     use runner_backend::events::AppEvent;
+
+    struct SidebarRenameTest {
+        sidebar: Entity<Sidebar>,
+        input: Entity<TextField>,
+    }
+
+    impl Render for SidebarRenameTest {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .size_full()
+                .flex()
+                .flex_col()
+                .child(self.input.clone())
+                .child(
+                    div()
+                        .id("outside-rename")
+                        .h(px(40.))
+                        .w_full()
+                        .on_click(|_, window, _| window.blur())
+                        .debug_selector(|| "OUTSIDE_RENAME".into()),
+                )
+        }
+    }
+
+    #[test]
+    fn mission_rename_commits_when_the_field_loses_focus() {
+        use runner_backend::{db, event_bus, events, mcp, router, session, shell_path, windows};
+        use std::sync::{Mutex, RwLock};
+
+        let temp = tempfile::tempdir().unwrap();
+        let pool = Arc::new(db::open_pool(&temp.path().join("runner.db")).unwrap());
+        pool.get()
+            .unwrap()
+            .execute_batch(
+                "INSERT INTO crews (id, name, created_at, updated_at)
+                 VALUES ('crew', 'Crew', '2026-09-06T00:00:00Z', '2026-09-06T00:00:00Z');
+                 INSERT INTO missions (id, crew_id, title, status, started_at)
+                 VALUES ('mission', 'crew', 'Original mission', 'completed', '2026-09-06T00:00:00Z');",
+            )
+            .unwrap();
+        let runtime_shell_env = Arc::new(RwLock::new(shell_path::LoginShellEnv::default()));
+        let runtime_discovery =
+            Arc::new(RwLock::new(shell_path::DiscoveryState::startup(None, None)));
+        let core = AppCore {
+            db: pool.clone(),
+            app_data_dir: temp.path().to_owned(),
+            sessions: session::SessionManager::new(
+                runtime_shell_env.clone(),
+                runtime_discovery.clone(),
+                Arc::new(session::pty_runtime::PtyRuntime::new()),
+            ),
+            runtime_shell_env,
+            runtime_discovery,
+            buses: event_bus::BusRegistry::new(),
+            routers: router::RouterRegistry::new(),
+            mission_grid_hint: Arc::new(Mutex::new(None)),
+            mcp: Arc::new(mcp::McpHandle::new()),
+            windows: Arc::new(windows::WindowRegistry::new()),
+            events: events::EventChannel::new(),
+            session_event_observer: Default::default(),
+            app_version: "0.0.0-test".into(),
+        };
+        let mut cx = TestAppContext::single();
+        let store = cx.new(|cx| {
+            AppStore::new(
+                core,
+                temp.path().join("settings.json"),
+                AppSettings::default(),
+                None,
+                cx,
+            )
+        });
+        let host = cx.add_window(|window, cx| {
+            let sidebar = cx.new(|cx| Sidebar::new(WeakEntity::new_invalid(), store, None, cx));
+            sidebar.update(cx, |sidebar, cx| {
+                sidebar.begin_sidebar_rename(
+                    SidebarRenameTarget::Mission {
+                        mission_id: "mission".into(),
+                        original: "Original mission".into(),
+                    },
+                    "Original mission".into(),
+                    "Mission name".into(),
+                    window,
+                    cx,
+                );
+            });
+            let input = sidebar.read(cx).rename.as_ref().unwrap().input.clone();
+            SidebarRenameTest { sidebar, input }
+        });
+        cx.run_until_parked();
+        let mut window = VisualTestContext::from_window(host.into(), &cx);
+        window.update(|window, _| window.activate_window());
+        window.run_until_parked();
+        host.update(&mut window, |host, window, cx| {
+            host.input.update(cx, |field, cx| {
+                field.set_text("Renamed mission", cx);
+                assert!(field.focus_handle().is_focused(window));
+            });
+        })
+        .unwrap();
+        let outside = window.debug_bounds("OUTSIDE_RENAME").unwrap();
+        window.simulate_click(outside.center(), gpui::Modifiers::default());
+        window.run_until_parked();
+        host.update(&mut window, |host, _, cx| {
+            assert!(host.sidebar.read(cx).rename.is_none());
+        })
+        .unwrap();
+        let title: String = pool
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT title FROM missions WHERE id = 'mission'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(title, "Renamed mission");
+    }
 
     fn direct_session(id: &str, runtime: &str, status: SessionStatus) -> DirectSessionEntry {
         DirectSessionEntry {
@@ -4245,6 +4377,25 @@ mod tests {
         assert!(!WorkspaceEntry::NewTab.selected(&AppRoute::Settings));
         assert!(WorkspaceEntry::Runner.selectable());
         assert!(WorkspaceEntry::Crew.selectable());
+    }
+
+    #[test]
+    fn shortcut_pills_use_the_platform_primary_modifier_alone() {
+        let mut modifiers = gpui::Modifiers {
+            control: cfg!(windows),
+            platform: !cfg!(windows),
+            ..Default::default()
+        };
+        assert!(command_held_alone(modifiers));
+        assert!(!other_modifiers_held(modifiers));
+        modifiers.shift = true;
+        assert!(!command_held_alone(modifiers));
+        assert!(other_modifiers_held(modifiers));
+        assert!(!command_held_alone(gpui::Modifiers {
+            control: !cfg!(windows),
+            platform: cfg!(windows),
+            ..Default::default()
+        }));
     }
 
     #[test]

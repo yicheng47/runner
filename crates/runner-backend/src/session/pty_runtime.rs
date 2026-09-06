@@ -8,10 +8,6 @@
 // `RuntimeOutput::Stream` channel that `SessionManager`'s forwarder
 // consumes. The GPUI frontend owns the only terminal model; the backend
 // does not run a second headless emulator.
-//
-// The `#[cfg(unix)]` gate is applied at the parent `session/mod.rs`
-// when this module is registered, so no inner attribute is needed
-// here.
 
 use std::collections::HashMap;
 use std::io::{ErrorKind, Read, Write};
@@ -21,18 +17,25 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use portable_pty::{
-    native_pty_system, Child, ChildKiller, CommandBuilder, ExitStatus, MasterPty, PtySize,
-};
+use portable_pty::{native_pty_system, Child, CommandBuilder, ExitStatus, MasterPty, PtySize};
+
+#[cfg(unix)]
+use portable_pty::ChildKiller;
 
 use super::launch;
+#[cfg(any(unix, test))]
+use super::process::process_exists;
+use super::process::{kill_process, ProcessTree};
+#[cfg(unix)]
+use super::process::{process_command_line, reap_descendants, wait_for_process_exit_until};
 use super::runtime::{
     OutputStream, RunnerStatus, RuntimeError, RuntimeOutput, RuntimeResult, RuntimeSession,
     SessionRuntime, SessionStatus, SpawnSpec,
 };
 
 const RUNTIME_LABEL: &str = "native-pty";
-const READ_BUF: usize = 8 * 1024;
+// Typical ConPTY redraws can fit in one read; the forwarder coalesces larger bursts.
+const READ_BUF: usize = 64 * 1024;
 /// Silence before a session reads as Idle. The agent TUIs animate a spinner
 /// while a turn runs, so genuine work rarely goes quiet; the 2 s window is
 /// for the moments it does (a tool call that pauses the spinner), because
@@ -44,16 +47,16 @@ const IDLE_MONITOR_POLL: Duration = Duration::from_millis(50);
 /// (SIGTERM to each tool shell, SIGKILL backstop at 1.5 s, SessionEnd hooks,
 /// force-exit at 5 s) so a stop never cuts that cleanup short; codex has no
 /// SIGHUP handler and exits at once, so the window costs nothing there.
-#[cfg(not(test))]
+#[cfg(all(unix, not(test)))]
 const HUP_GRACE: Duration = Duration::from_secs(6);
-#[cfg(test)]
+#[cfg(all(unix, test))]
 const HUP_GRACE: Duration = Duration::from_millis(250);
+#[cfg(unix)]
 const KILL_GRACE: Duration = Duration::from_millis(250);
-/// How long descendants that outlived the agent get after SIGTERM before
-/// SIGKILL. codex has no SIGHUP handler, so anything it was running (in its
-/// own session via `setsid`) is still alive once codex is gone.
-const DESCENDANT_TERM_GRACE: Duration = Duration::from_secs(1);
-const STOP_POLL: Duration = Duration::from_millis(10);
+#[cfg(windows)]
+const WINDOWS_KILL_GRACE: Duration = Duration::from_secs(2);
+pub(super) const STOP_POLL: Duration = Duration::from_millis(10);
+#[cfg(unix)]
 const ORPHAN_SWEEP_CONFIRM: Duration = Duration::from_secs(1);
 /// Window right after a `resize` (SIGWINCH) during which repaint bytes
 /// from the child's TUI are not treated as fresh activity. Without this,
@@ -93,8 +96,12 @@ impl Default for PtyRuntime {
 }
 
 struct SessionHandle {
+    #[cfg(unix)]
     master: Mutex<Box<dyn MasterPty + Send>>,
+    #[cfg(windows)]
+    master: Mutex<Option<Box<dyn MasterPty + Send>>>,
     writer: Mutex<Box<dyn Write + Send>>,
+    #[cfg(unix)]
     killer: Mutex<Box<dyn ChildKiller + Send + Sync>>,
     /// `Arc<Mutex<Option<Box<dyn Child + Send + Sync>>>>` — the reader
     /// thread `try_wait`s on this once it observes EOF so the manager
@@ -114,6 +121,7 @@ struct SessionHandle {
     /// `IdleDetector`), so resizing an idle session doesn't read as Busy.
     last_resize: Mutex<Option<Instant>>,
     pid: Option<i32>,
+    process_tree: Option<ProcessTree>,
     command: String,
 }
 
@@ -125,7 +133,7 @@ impl SessionRuntime for PtyRuntime {
         // bundled_bin_dir / shell_path / HOME / inherited PATH
         // precedence rules.
         let inherited_path = std::env::var("PATH").ok();
-        let home_path: Option<PathBuf> = std::env::var_os("HOME").map(PathBuf::from);
+        let home_path: Option<PathBuf> = runner_core::app_paths::home_dir();
         let composed_path = launch::compose_path(
             spec.shim_dir.as_deref(),
             spec.bundled_bin_dir.as_deref(),
@@ -177,7 +185,11 @@ impl SessionRuntime for PtyRuntime {
         cmd.env("COLUMNS", cols.to_string());
         cmd.env("LINES", rows.to_string());
 
-        let child = pair
+        #[cfg(windows)]
+        launch::adapt_windows_batch_command(&mut cmd)
+            .map_err(|error| RuntimeError::Msg(error.to_string()))?;
+
+        let mut child = pair
             .slave
             .spawn_command(cmd)
             .map_err(|e| RuntimeError::Msg(format!("spawn_command: {e}")))?;
@@ -187,6 +199,26 @@ impl SessionRuntime for PtyRuntime {
         drop(pair.slave);
 
         let pid = child.process_id().map(|p| p as i32);
+        let mut process_tree = match child.process_id().map(ProcessTree::adopt).transpose() {
+            Ok(tree) => tree,
+            Err(error) => {
+                #[cfg(unix)]
+                let _ = child.kill();
+                #[cfg(windows)]
+                if let Some(pid) = pid {
+                    kill_process(pid).map_err(|kill_error| {
+                        RuntimeError::Msg(format!(
+                            "adopt process tree: {error}; terminate child: {kill_error}"
+                        ))
+                    })?;
+                }
+                let _ = child.wait();
+                return Err(RuntimeError::Msg(format!("adopt process tree: {error}")));
+            }
+        };
+        if let Some(tree) = process_tree.as_mut() {
+            tree.attach_pty(pair.master.as_ref());
+        }
         let reader = pair
             .master
             .try_clone_reader()
@@ -195,6 +227,7 @@ impl SessionRuntime for PtyRuntime {
             .master
             .take_writer()
             .map_err(|e| RuntimeError::Msg(format!("take_writer: {e}")))?;
+        #[cfg(unix)]
         let killer = child.clone_killer();
 
         let (tx, rx) = mpsc::channel::<RuntimeOutput>();
@@ -204,14 +237,19 @@ impl SessionRuntime for PtyRuntime {
             Arc::new(Mutex::new(Some(child)));
 
         let handle = Arc::new(SessionHandle {
+            #[cfg(unix)]
             master: Mutex::new(pair.master),
+            #[cfg(windows)]
+            master: Mutex::new(Some(pair.master)),
             writer: Mutex::new(writer),
+            #[cfg(unix)]
             killer: Mutex::new(killer),
             child: Arc::clone(&child_slot),
             exit_code: AtomicI32::new(EXIT_UNSET),
             alive: AtomicBool::new(true),
             last_resize: Mutex::new(None),
             pid,
+            process_tree,
             command: format_command_summary(&spec.command, &spec.args),
         });
 
@@ -246,19 +284,27 @@ impl SessionRuntime for PtyRuntime {
         Ok((rt_session, stream))
     }
 
+    #[cfg(unix)]
     fn stop(&self, session: &RuntimeSession) -> RuntimeResult<()> {
         let handle = lookup(self, &session.session_id)?;
         let mut killer = handle.killer.lock().expect("killer poisoned");
         let child = handle.child.lock().expect("child slot poisoned").take();
         // Snapshot before SIGHUP: once the agent is gone its children are
         // reparented to launchd and nothing else can tell they were its.
-        let descendants = handle.pid.map(live_descendants).unwrap_or_default();
+        let descendants: Vec<i32> = handle
+            .process_tree
+            .as_ref()
+            .map(ProcessTree::snapshot_descendants)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|pid| pid as i32)
+            .collect();
 
         let result = match child {
             Some(mut child) => {
                 let result = stop_and_reap_child(
                     &session.session_id,
-                    handle.pid,
+                    handle.process_tree.as_ref(),
                     killer.as_mut(),
                     child.as_mut(),
                 );
@@ -290,6 +336,35 @@ impl SessionRuntime for PtyRuntime {
         result
     }
 
+    #[cfg(windows)]
+    fn stop(&self, session: &RuntimeSession) -> RuntimeResult<()> {
+        let handle = lookup(self, &session.session_id)?;
+        let child = handle.child.lock().expect("child slot poisoned").take();
+        match child {
+            Some(mut child) => {
+                match stop_and_reap_child(
+                    &session.session_id,
+                    handle.process_tree.as_ref(),
+                    child.as_mut(),
+                ) {
+                    Ok(status) => {
+                        record_exit_status(&handle, status);
+                        Ok(())
+                    }
+                    Err(error) => {
+                        handle
+                            .child
+                            .lock()
+                            .expect("child slot poisoned")
+                            .replace(child);
+                        Err(error)
+                    }
+                }
+            }
+            None => stop_child_owned_by_reader(&session.session_id, &handle),
+        }
+    }
+
     fn send_bytes(&self, session: &RuntimeSession, bytes: &[u8]) -> RuntimeResult<()> {
         write_to(self, &session.session_id, bytes)
     }
@@ -303,6 +378,10 @@ impl SessionRuntime for PtyRuntime {
         let handle = lookup(self, &session.session_id)?;
         {
             let master = handle.master.lock().expect("master poisoned");
+            #[cfg(windows)]
+            let Some(master) = master.as_ref() else {
+                return Ok(());
+            };
             master
                 .resize(PtySize {
                     rows,
@@ -340,7 +419,6 @@ impl SessionRuntime for PtyRuntime {
         }))
     }
 
-    #[cfg(unix)]
     fn has_foreground_process(&self, session: &RuntimeSession) -> RuntimeResult<Option<bool>> {
         let handle = match self
             .sessions
@@ -351,28 +429,19 @@ impl SessionRuntime for PtyRuntime {
             Some(handle) => Arc::clone(handle),
             None => return Ok(Some(false)),
         };
-        let foreground_pid = handle
-            .master
-            .lock()
-            .expect("SessionHandle.master poisoned")
-            .process_group_leader();
-        Ok(distinct_foreground_process(handle.pid, foreground_pid))
+        // Keep foreground queries serialized with other PTY master operations.
+        let _master = handle.master.lock().expect("SessionHandle.master poisoned");
+        Ok(handle
+            .process_tree
+            .as_ref()
+            .and_then(|tree| tree.has_other_processes().ok()))
     }
 }
 
 #[cfg(unix)]
-fn distinct_foreground_process(
-    shell_pid: Option<i32>,
-    foreground_pid: Option<i32>,
-) -> Option<bool> {
-    shell_pid
-        .zip(foreground_pid)
-        .map(|(shell_pid, foreground_pid)| shell_pid != foreground_pid)
-}
-
 fn stop_and_reap_child(
     session_id: &str,
-    pid: Option<i32>,
+    process_tree: Option<&ProcessTree>,
     killer: &mut dyn ChildKiller,
     child: &mut dyn Child,
 ) -> RuntimeResult<ExitStatus> {
@@ -406,7 +475,7 @@ fn stop_and_reap_child(
             .map_err(|e| RuntimeError::Msg(format!("wait {session_id}: {e}")));
     }
 
-    let pid = pid.ok_or_else(|| {
+    let process_tree = process_tree.ok_or_else(|| {
         RuntimeError::Msg(format!(
             "session {session_id} survived SIGHUP but has no pid for SIGKILL"
         ))
@@ -414,7 +483,7 @@ fn stop_and_reap_child(
     log::warn!(
         "session {session_id} survived SIGHUP for {HUP_GRACE:?}; SIGKILL to its process group"
     );
-    let kill_error = signal_process_group(pid, libc::SIGKILL).err();
+    let kill_error = process_tree.terminate().err();
     if poll_until(STOP_POLL, KILL_GRACE, || {
         child
             .try_wait()
@@ -438,6 +507,7 @@ fn stop_and_reap_child(
     )))
 }
 
+#[cfg(unix)]
 fn stop_child_owned_by_reader(
     session_id: &str,
     pid: Option<i32>,
@@ -474,7 +544,16 @@ fn stop_child_owned_by_reader(
     log::warn!(
         "session {session_id} survived SIGHUP for {HUP_GRACE:?}; SIGKILL to its process group"
     );
-    let kill_error = signal_process_group(pid, libc::SIGKILL).err();
+    let kill_error = handle
+        .process_tree
+        .as_ref()
+        .ok_or_else(|| {
+            RuntimeError::Msg(format!(
+                "session {session_id} has no process tree for SIGKILL"
+            ))
+        })?
+        .terminate()
+        .err();
     if poll_until(STOP_POLL, KILL_GRACE, || {
         Ok(reader_reaped_child(handle, Some(pid)).then_some(()))
     })?
@@ -494,7 +573,55 @@ fn stop_child_owned_by_reader(
     )))
 }
 
-fn poll_until<T>(
+#[cfg(windows)]
+fn terminate_session_job<'a>(
+    session_id: &str,
+    process_tree: Option<&'a ProcessTree>,
+) -> RuntimeResult<&'a ProcessTree> {
+    let tree = process_tree
+        .ok_or_else(|| RuntimeError::Msg(format!("session {session_id} has no process job")))?;
+    tree.terminate()
+        .map_err(|e| RuntimeError::Msg(format!("terminate job {session_id}: {e}")))?;
+    Ok(tree)
+}
+
+#[cfg(windows)]
+fn stop_and_reap_child(
+    session_id: &str,
+    process_tree: Option<&ProcessTree>,
+    child: &mut dyn Child,
+) -> RuntimeResult<ExitStatus> {
+    let tree = terminate_session_job(session_id, process_tree)?;
+    poll_until(STOP_POLL, WINDOWS_KILL_GRACE, || {
+        if !tree
+            .root_has_exited()
+            .map_err(|e| RuntimeError::Msg(format!("wait {session_id}: {e}")))?
+        {
+            return Ok(None);
+        }
+        child
+            .try_wait()
+            .map_err(|e| RuntimeError::Msg(format!("try_wait {session_id}: {e}")))
+    })?
+    .ok_or_else(|| RuntimeError::Msg(format!("session {session_id} survived job termination")))
+}
+
+#[cfg(windows)]
+fn stop_child_owned_by_reader(session_id: &str, handle: &SessionHandle) -> RuntimeResult<()> {
+    let tree = terminate_session_job(session_id, handle.process_tree.as_ref())?;
+    poll_until(STOP_POLL, WINDOWS_KILL_GRACE, || {
+        tree.root_has_exited()
+            .map(|exited| exited.then_some(()))
+            .map_err(|e| RuntimeError::Msg(format!("wait {session_id}: {e}")))
+    })?
+    .ok_or_else(|| {
+        RuntimeError::Msg(format!(
+            "session {session_id} was not reaped after job termination"
+        ))
+    })
+}
+
+pub(super) fn poll_until<T>(
     poll_interval: Duration,
     timeout: Duration,
     mut poll: impl FnMut() -> RuntimeResult<Option<T>>,
@@ -512,39 +639,7 @@ fn poll_until<T>(
     }
 }
 
-fn signal_process_group(pid: i32, signal: i32) -> std::io::Result<()> {
-    if pid <= 1 {
-        return Err(std::io::Error::new(
-            ErrorKind::InvalidInput,
-            format!("refusing to signal unsafe pid {pid}"),
-        ));
-    }
-    let group_result = unsafe { libc::kill(-pid, signal) };
-    if group_result == 0 {
-        return Ok(());
-    }
-    let group_error = std::io::Error::last_os_error();
-    if group_error.raw_os_error() != Some(libc::ESRCH) {
-        return Err(group_error);
-    }
-    signal_process(pid, signal)
-}
-
-fn signal_process(pid: i32, signal: i32) -> std::io::Result<()> {
-    if pid <= 1 {
-        return Err(std::io::Error::new(
-            ErrorKind::InvalidInput,
-            format!("refusing to signal unsafe pid {pid}"),
-        ));
-    }
-    let process_result = unsafe { libc::kill(pid, signal) };
-    if process_result == 0 {
-        Ok(())
-    } else {
-        Err(std::io::Error::last_os_error())
-    }
-}
-
+#[cfg(unix)]
 fn reaped_exit_status(handle: &SessionHandle) -> Option<i32> {
     match handle.exit_code.load(Ordering::Acquire) {
         EXIT_UNSET => None,
@@ -552,6 +647,7 @@ fn reaped_exit_status(handle: &SessionHandle) -> Option<i32> {
     }
 }
 
+#[cfg(unix)]
 fn reader_reaped_child(handle: &SessionHandle, pid: Option<i32>) -> bool {
     reaped_exit_status(handle).is_some() || pid.is_some_and(|pid| !process_exists(pid))
 }
@@ -635,9 +731,21 @@ fn idle_monitor_thread(
     tx: mpsc::Sender<RuntimeOutput>,
     stop: Arc<AtomicBool>,
     done: Arc<AtomicBool>,
+    #[cfg(windows)] handle: Arc<SessionHandle>,
 ) {
     loop {
         if stop.load(Ordering::Acquire) || done.load(Ordering::Acquire) {
+            break;
+        }
+        #[cfg(windows)]
+        if handle
+            .process_tree
+            .as_ref()
+            .is_some_and(|tree| tree.root_has_exited().unwrap_or(false))
+        {
+            // ConPTY retains its output pipe until the master closes; the reader must keep draining.
+            let master = handle.master.lock().expect("master poisoned").take();
+            drop(master);
             break;
         }
         let transition = {
@@ -676,7 +784,18 @@ fn reader_thread(
             let tx = tx.clone();
             let stop = Arc::clone(&stop);
             let done = Arc::clone(&monitor_done);
-            move || idle_monitor_thread(detector, tx, stop, done)
+            #[cfg(windows)]
+            let handle = Arc::clone(&handle);
+            move || {
+                idle_monitor_thread(
+                    detector,
+                    tx,
+                    stop,
+                    done,
+                    #[cfg(windows)]
+                    handle,
+                )
+            }
         });
     let monitor = match monitor {
         Ok(handle) => Some(handle),
@@ -945,6 +1064,7 @@ pub fn cleanup_stale_running_rows_on_startup(
     Ok(updated)
 }
 
+#[cfg(unix)]
 pub fn cleanup_orphan_processes_on_startup(
     pool: &r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>,
 ) -> crate::error::Result<usize> {
@@ -1009,7 +1129,7 @@ pub fn cleanup_orphan_processes_on_startup(
             continue;
         }
 
-        let signal_error = signal_process(pid, libc::SIGKILL).err();
+        let signal_error = kill_process(pid).err();
         signaled.push((session_id, raw_pid, pid, signal_error));
     }
 
@@ -1032,6 +1152,19 @@ pub fn cleanup_orphan_processes_on_startup(
     Ok(reaped)
 }
 
+// Job handles closed with the previous app; only stale database pids need clearing.
+#[cfg(windows)]
+pub fn cleanup_orphan_processes_on_startup(
+    pool: &r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>,
+) -> crate::error::Result<usize> {
+    pool.get()?.execute(
+        "UPDATE sessions SET pid = NULL WHERE status != 'running' AND pid IS NOT NULL",
+        [],
+    )?;
+    Ok(0)
+}
+
+#[cfg(unix)]
 fn clear_recorded_pid(conn: &rusqlite::Connection, session_id: &str, expected_pid: i64) {
     if let Err(error) = conn.execute(
         "UPDATE sessions
@@ -1047,188 +1180,7 @@ fn clear_recorded_pid(conn: &rusqlite::Connection, session_id: &str, expected_pi
     }
 }
 
-/// Every live process below `pid`, depth-first, as of right now.
-#[cfg(target_os = "macos")]
-fn live_descendants(pid: i32) -> Vec<i32> {
-    let mut found = Vec::new();
-    let mut frontier = vec![pid];
-    while let Some(parent) = frontier.pop() {
-        let mut buf = [0 as libc::pid_t; 1024];
-        // Returns the number of pids written, not bytes (unlike proc_listpids).
-        let count = unsafe {
-            libc::proc_listchildpids(
-                parent,
-                buf.as_mut_ptr().cast(),
-                std::mem::size_of_val(&buf) as libc::c_int,
-            )
-        };
-        if count <= 0 {
-            continue;
-        }
-        for &child in &buf[..(count as usize).min(buf.len())] {
-            if child > 1 && !found.contains(&child) {
-                found.push(child);
-                frontier.push(child);
-            }
-        }
-    }
-    found
-}
-
-#[cfg(not(target_os = "macos"))]
-fn live_descendants(_pid: i32) -> Vec<i32> {
-    Vec::new()
-}
-
-/// SIGTERM, then SIGKILL, whichever of the pre-stop `descendants` are still
-/// running now that the agent itself has exited.
-fn reap_descendants(session_id: &str, descendants: &[i32]) {
-    let survivors: Vec<i32> = descendants
-        .iter()
-        .copied()
-        .filter(|&pid| process_exists(pid))
-        .collect();
-    if survivors.is_empty() {
-        return;
-    }
-    log::warn!(
-        "session {session_id}: {} descendant(s) outlived the agent; SIGTERM {survivors:?}",
-        survivors.len()
-    );
-    for &pid in &survivors {
-        if let Err(error) = signal_process(pid, libc::SIGTERM) {
-            log::warn!("session {session_id}: SIGTERM pid {pid} failed: {error}");
-        }
-    }
-    let _ = poll_until(STOP_POLL, DESCENDANT_TERM_GRACE, || {
-        Ok::<_, RuntimeError>(
-            survivors
-                .iter()
-                .all(|&pid| !process_exists(pid))
-                .then_some(()),
-        )
-    });
-    let stubborn: Vec<i32> = survivors
-        .into_iter()
-        .filter(|&pid| process_exists(pid))
-        .collect();
-    if stubborn.is_empty() {
-        return;
-    }
-    log::warn!("session {session_id}: SIGKILL descendants that ignored SIGTERM {stubborn:?}");
-    for &pid in &stubborn {
-        if let Err(error) = signal_process(pid, libc::SIGKILL) {
-            log::warn!("session {session_id}: SIGKILL pid {pid} failed: {error}");
-        }
-    }
-}
-
-fn process_exists(pid: i32) -> bool {
-    if pid <= 1 {
-        return false;
-    }
-    let result = unsafe { libc::kill(pid, 0) };
-    result == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
-}
-
-#[cfg(target_os = "macos")]
-fn process_command_line(pid: i32) -> std::io::Result<Option<String>> {
-    let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid];
-    let mut size = 0;
-    let size_result = unsafe {
-        libc::sysctl(
-            mib.as_mut_ptr(),
-            mib.len() as u32,
-            std::ptr::null_mut(),
-            &mut size,
-            std::ptr::null_mut(),
-            0,
-        )
-    };
-    if size_result != 0 {
-        let error = std::io::Error::last_os_error();
-        return if error.raw_os_error() == Some(libc::ESRCH) {
-            Ok(None)
-        } else {
-            Err(error)
-        };
-    }
-    let mut bytes = vec![0u8; size];
-    let read_result = unsafe {
-        libc::sysctl(
-            mib.as_mut_ptr(),
-            mib.len() as u32,
-            bytes.as_mut_ptr().cast(),
-            &mut size,
-            std::ptr::null_mut(),
-            0,
-        )
-    };
-    if read_result != 0 {
-        let error = std::io::Error::last_os_error();
-        return if error.raw_os_error() == Some(libc::ESRCH) {
-            Ok(None)
-        } else {
-            Err(error)
-        };
-    }
-    bytes.truncate(size);
-    Ok(parse_macos_process_args(&bytes))
-}
-
-#[cfg(target_os = "macos")]
-fn parse_macos_process_args(bytes: &[u8]) -> Option<String> {
-    let argc_bytes: [u8; std::mem::size_of::<i32>()] =
-        bytes.get(..std::mem::size_of::<i32>())?.try_into().ok()?;
-    let argc = i32::from_ne_bytes(argc_bytes);
-    if argc <= 0 {
-        return None;
-    }
-
-    let mut cursor = std::mem::size_of::<i32>();
-    cursor += bytes.get(cursor..)?.iter().position(|byte| *byte == 0)? + 1;
-    while bytes.get(cursor) == Some(&0) {
-        cursor += 1;
-    }
-
-    let mut args = Vec::with_capacity(argc as usize);
-    for _ in 0..argc {
-        let remaining = bytes.get(cursor..)?;
-        let end = remaining.iter().position(|byte| *byte == 0)?;
-        args.push(String::from_utf8_lossy(&remaining[..end]).into_owned());
-        cursor += end + 1;
-    }
-    (!args.is_empty()).then(|| args.join(" "))
-}
-
-#[cfg(target_os = "linux")]
-fn process_command_line(pid: i32) -> std::io::Result<Option<String>> {
-    let path = format!("/proc/{pid}/cmdline");
-    let bytes = match std::fs::read(path) {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error),
-    };
-    let args: Vec<_> = bytes
-        .split(|byte| *byte == 0)
-        .filter(|arg| !arg.is_empty())
-        .map(|arg| String::from_utf8_lossy(arg).into_owned())
-        .collect();
-    Ok((!args.is_empty()).then(|| args.join(" ")))
-}
-
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
-fn process_command_line(pid: i32) -> std::io::Result<Option<String>> {
-    let output = std::process::Command::new("ps")
-        .args(["-p", &pid.to_string(), "-o", "command="])
-        .output()?;
-    if !output.status.success() {
-        return Ok(None);
-    }
-    let command_line = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    Ok((!command_line.is_empty()).then_some(command_line))
-}
-
+#[cfg(unix)]
 fn command_line_matches_recorded_agent(
     command_line: &str,
     runtime: Option<&str>,
@@ -1262,21 +1214,10 @@ fn command_line_matches_recorded_agent(
     expected_name.is_some() && expected_name == actual_name
 }
 
-fn wait_for_process_exit_until(pid: i32, deadline: Instant) -> bool {
-    loop {
-        if !process_exists(pid) {
-            return true;
-        }
-        let now = Instant::now();
-        if now >= deadline {
-            return false;
-        }
-        thread::sleep(STOP_POLL.min(deadline.saturating_duration_since(now)));
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    use super::super::process::distinct_foreground_process;
     use super::*;
     use std::collections::BTreeMap;
 
@@ -1304,6 +1245,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     fn wait_for_command_identity(pid: i32, command: &str) {
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
@@ -1325,6 +1267,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     fn recorded_pid(
         pool: &r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>,
         session_id: &str,
@@ -1477,6 +1420,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn spawn_cat_pipes_bytes_back() {
         let rt = PtyRuntime::new();
         let (sess, stream) = rt.spawn(spec("test-cat", "/bin/cat", &[])).unwrap();
@@ -1506,6 +1450,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn spawn_emits_idle_after_silence_and_busy_on_more_output() {
         let rt = PtyRuntime::new();
         let (sess, stream) = rt
@@ -1546,6 +1491,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn spawn_exit_seven_records_exit_code() {
         let rt = PtyRuntime::new();
         let (sess, stream) = rt
@@ -1586,6 +1532,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn resize_succeeds_on_live_session() {
         let rt = PtyRuntime::new();
         let (sess, _stream) = rt
@@ -1608,7 +1555,34 @@ mod tests {
         assert_eq!(attempts, 3);
     }
 
+    #[cfg(unix)]
     #[test]
+    fn foreground_process_tracks_shell_jobs() {
+        let rt = PtyRuntime::new();
+        let (session, _stream) = rt
+            .spawn(spec("test-foreground", "/bin/sh", &["-i"]))
+            .unwrap();
+        let result = (|| -> RuntimeResult<()> {
+            for expected in [false, true, false] {
+                if expected {
+                    rt.send_bytes(&session, b"/bin/sleep 1\n")?;
+                }
+                poll_until(STOP_POLL, Duration::from_secs(5), || {
+                    Ok((rt.has_foreground_process(&session)? == Some(expected)).then_some(()))
+                })?
+                .ok_or_else(|| {
+                    RuntimeError::Msg(format!("foreground state never became {expected}"))
+                })?;
+            }
+            Ok(())
+        })();
+        let stopped = rt.stop(&session);
+        result.unwrap();
+        stopped.unwrap();
+    }
+
+    #[test]
+    #[cfg(unix)]
     fn stop_reaps_descendants_the_agent_left_behind() {
         // Models codex: the agent dies on SIGHUP at once, forwarding nothing
         // (zsh execs into `sleep`), and its child sits in its own process
@@ -1657,6 +1631,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn stop_sigkills_and_reaps_child_that_ignores_hup_and_term() {
         let rt = PtyRuntime::new();
         let (sess, stream) = rt
@@ -1704,6 +1679,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn recorded_agent_identity_matches_command_path_or_runtime_default() {
         assert!(command_line_matches_recorded_agent(
             "claude --resume abc",
@@ -1783,6 +1759,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn startup_orphan_sweep_kills_only_matching_processes() {
         let dir = tempfile::tempdir().unwrap();
         let pool = crate::db::open_pool(&dir.path().join("runner.db")).unwrap();
@@ -1865,5 +1842,205 @@ mod tests {
         assert!(process_exists(mismatched_pid));
         mismatched.kill().unwrap();
         mismatched.wait().unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn spawn_exit_seven_records_exit_code_windows() {
+        let rt = PtyRuntime::new();
+        let (session, stream) = rt
+            .spawn(spec("exit-seven", "cmd", &["/c", "exit 7"]))
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            if let Err(mpsc::RecvTimeoutError::Disconnected) =
+                stream.recv_timeout(Duration::from_millis(100))
+            {
+                break;
+            }
+        }
+        let status = rt.status(&session).unwrap().unwrap();
+        assert!(!status.alive);
+        assert_eq!(status.exit_code, Some(7));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn spawn_batch_roundtrips_arguments_windows() {
+        let dir = tempfile::tempdir().unwrap();
+        let batch = dir.path().join("argument echo.BaT");
+        std::fs::write(&batch,
+            "@echo off\r\n\"%RUNNER_BATCH_TEST_EXE%\" --exact session::pty_runtime::tests::batch_argument_probe --nocapture -- %*\r\n").unwrap();
+        let args = [
+            "one",
+            "two words",
+            "80% coverage",
+            "say \"hello\"",
+            "bang!",
+            "left&right",
+            "tail\\",
+            "a^b>c|d",
+            "%RUNNER_BATCH_TEST_EXPANSION%",
+        ];
+        let mut launch = spec("batch-echo", batch.to_str().unwrap(), &args);
+        launch.cwd = Some(dir.path().to_path_buf());
+        launch.env.insert(
+            "RUNNER_BATCH_TEST_EXE".into(),
+            std::env::current_exe()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned(),
+        );
+        launch.env.insert(
+            "RUNNER_BATCH_TEST_EXPANSION".into(),
+            "must not expand".into(),
+        );
+        let rt = PtyRuntime::new();
+        let (session, stream) = rt.spawn(launch).unwrap();
+        let mut output = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while Instant::now() < deadline {
+            match stream.recv_timeout(Duration::from_millis(100)) {
+                Ok(RuntimeOutput::Stream(bytes)) => output.extend(bytes),
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                _ => {}
+            }
+        }
+        rt.stop(&session).unwrap();
+        let output = String::from_utf8_lossy(&output);
+        for (index, arg) in args.iter().enumerate() {
+            assert!(
+                output.contains(&format!("BATCH_ARG_{index}={arg}")),
+                "missing argument {index}: {output}"
+            );
+        }
+        assert!(output.contains("BATCH_ENV_CLEARED"), "{output}");
+        assert!(
+            output.contains(&format!("BATCH_ARG_COUNT={}", args.len())),
+            "{output}"
+        );
+        assert!(rt
+            .status(&session)
+            .unwrap()
+            .unwrap()
+            .command
+            .unwrap()
+            .starts_with(batch.to_str().unwrap()));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn batch_argument_probe() {
+        if std::env::var_os("RUNNER_BATCH_TEST_EXE").is_none() {
+            return;
+        }
+        let args = std::env::args()
+            .skip_while(|arg| arg != "--")
+            .skip(1)
+            .collect::<Vec<_>>();
+        println!("BATCH_ARG_COUNT={}", args.len());
+        for (index, arg) in args.iter().enumerate() {
+            println!("BATCH_ARG_{index}={arg}");
+        }
+        assert!(std::env::var_os("RUNNER_BATCH_COMMAND_LINE").is_none());
+        println!("BATCH_ENV_CLEARED");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn spawn_emits_idle_after_silence_and_busy_on_more_output_windows() {
+        let rt = PtyRuntime::new();
+        let (session, stream) = rt.spawn(spec(
+            "idle-windows", "cmd", &["/d", "/c", r"echo first & %SystemRoot%\System32\timeout.exe /t 2 /nobreak >nul & %SystemRoot%\System32\timeout.exe /t 2 /nobreak >nul & echo second"],
+        )).unwrap();
+        let mut statuses = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(12);
+        while Instant::now() < deadline {
+            match stream.recv_timeout(Duration::from_millis(100)) {
+                Ok(RuntimeOutput::StatusTransition { state, source }) => {
+                    assert_eq!(source, "forwarder");
+                    statuses.push(state);
+                    if statuses
+                        .windows(2)
+                        .any(|w| w == [RunnerStatus::Idle, RunnerStatus::Busy])
+                    {
+                        break;
+                    }
+                }
+                Ok(RuntimeOutput::Stream(_)) | Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+        }
+        rt.stop(&session).unwrap();
+        assert!(
+            statuses
+                .windows(2)
+                .any(|w| w == [RunnerStatus::Idle, RunnerStatus::Busy]),
+            "got {statuses:?}"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn foreground_process_tracks_job_and_stop_reaps_child_windows() {
+        let rt = PtyRuntime::new();
+        let (session, _stream) = rt.spawn(spec("job-stop", "cmd", &["/d", "/q"])).unwrap();
+        assert_eq!(rt.has_foreground_process(&session).unwrap(), Some(false));
+        rt.send_bytes(&session, b"ping -n 30 127.0.0.1 >nul\r")
+            .unwrap();
+        assert!(poll_until(STOP_POLL, Duration::from_secs(5), || {
+            Ok((rt.has_foreground_process(&session)? == Some(true)).then_some(()))
+        })
+        .unwrap()
+        .is_some());
+        let pid = rt.status(&session).unwrap().unwrap().pid.unwrap();
+        rt.stop(&session).unwrap();
+        assert!(!process_exists(pid));
+        assert!(!rt.status(&session).unwrap().unwrap().alive);
+        assert!(poll_until(STOP_POLL, Duration::from_secs(5), || {
+            Ok((rt.has_foreground_process(&session)? == Some(false)).then_some(()))
+        })
+        .unwrap()
+        .is_some());
+        rt.stop(&session).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn stop_child_owned_by_reader_terminates_job_windows() {
+        let rt = PtyRuntime::new();
+        let (session, _stream) = rt.spawn(spec("reader-stop", "cmd", &["/d", "/q"])).unwrap();
+        let handle = lookup(&rt, &session.session_id).unwrap();
+        let mut child = handle.child.lock().unwrap().take().unwrap();
+        rt.stop(&session).unwrap();
+        assert!(child.try_wait().unwrap().is_some());
+        assert!(!process_exists(handle.pid.unwrap()));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn startup_demotes_rows_and_clears_pids_without_killing_windows() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = crate::db::open_pool(&dir.path().join("runner.db")).unwrap();
+        let pid = std::process::id();
+        pool.get().unwrap().execute(
+            "INSERT INTO sessions (id, status, pid, agent_runtime, agent_command) VALUES ('stale', 'running', ?1, 'test', 'runner-backend.exe')",
+            [pid],
+        ).unwrap();
+        assert_eq!(cleanup_stale_running_rows_on_startup(&pool).unwrap(), 1);
+        assert_eq!(cleanup_orphan_processes_on_startup(&pool).unwrap(), 0);
+        let (status, recorded_pid, stopped_at): (String, Option<i64>, Option<String>) = pool
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT status, pid, stopped_at FROM sessions WHERE id = 'stale'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(status, "stopped");
+        assert_eq!(recorded_pid, None);
+        assert!(stopped_at.is_some());
+        assert!(process_exists(pid as i32));
     }
 }

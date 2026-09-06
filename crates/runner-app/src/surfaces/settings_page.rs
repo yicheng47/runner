@@ -214,7 +214,7 @@ impl SettingsState {
             working_dir_text_field(
                 input_cx.focus_handle(),
                 settings.default_working_dir.clone(),
-                "/absolute/path",
+                runner_app::ui::working_dir_placeholder(None, ""),
             )
             .truncate_unfocused()
         });
@@ -264,10 +264,13 @@ impl SettingsState {
             &root,
             "settings-terminal-font",
             terminal_font_value(settings.terminal_font_family),
-            ["JetBrains Mono", "Menlo"]
-                .into_iter()
-                .map(|value| SelectOption::new(value, value))
-                .collect(),
+            [
+                ("JetBrains Mono", "JetBrains Mono"),
+                ("Menlo", theme::SYSTEM_MONOSPACE_FONT),
+            ]
+            .into_iter()
+            .map(|(value, label)| SelectOption::new(value, label))
+            .collect(),
             SettingsSelection::TerminalFont,
             cx,
         );
@@ -1110,7 +1113,7 @@ impl NativeRoot {
             .child(
                 PaneHeader::new(
                     "Keyboard shortcuts",
-                    "Shortcuts must include ⌘, Control, or Option. Function keys can be used alone.",
+                    crate::platform_ui::SHORTCUT_REQUIREMENTS,
                 )
                 .action(reset),
             )
@@ -1466,7 +1469,7 @@ impl NativeRoot {
             "settings-app-zoom",
             56.,
             div()
-                .font_family("Menlo")
+                .font_family(theme::SYSTEM_MONOSPACE_FONT)
                 .text_size(rems(12. / 16.))
                 .font_weight(FontWeight::MEDIUM)
                 .child(format!(
@@ -1527,7 +1530,7 @@ impl NativeRoot {
                     "Default working directory",
                     div().w(rems(280. / 16.)).child(working_dir),
                 )
-                .subtitle("Cwd new chats inherit unless overridden.")
+                .subtitle("Default for new chats. Leave blank to use your home directory.")
                 .into_any_element(),
                 file_link_row.into_any_element(),
                 SettingsRow::new("App zoom", zoom)
@@ -1688,7 +1691,7 @@ impl NativeRoot {
                 .flex()
                 .items_center()
                 .gap(rems(3. / 16.))
-                .font_family("Menlo")
+                .font_family(theme::SYSTEM_MONOSPACE_FONT)
                 .child(
                     div()
                         .text_size(rems(12. / 16.))
@@ -1741,7 +1744,7 @@ fn shortcut_chip(label: String, editable: bool) -> gpui::Div {
         .border_1()
         .border_color(theme::border())
         .bg(theme::raised())
-        .font_family("Menlo")
+        .font_family(theme::SYSTEM_MONOSPACE_FONT)
         .text_size(rems(11. / 16.))
         .line_height(rems(14. / 16.))
         .text_color(theme::muted())
@@ -1758,7 +1761,10 @@ fn shortcut_chip(label: String, editable: bool) -> gpui::Div {
 fn file_link_hint(editor: FileLinkEditor, cli_found: Option<bool>) -> (String, bool) {
     match (editor, cli_found) {
         (FileLinkEditor::DefaultApp, _) => (
-            "⌘-click opens the file in its default app. The cited line is lost.".into(),
+            format!(
+                "{}-click opens the file in its default app. The cited line is lost.",
+                crate::platform_ui::PRIMARY_MODIFIER
+            ),
             false,
         ),
         (editor, Some(false)) => (
@@ -1771,7 +1777,8 @@ fn file_link_hint(editor: FileLinkEditor, cli_found: Option<bool>) -> (String, b
         ),
         (editor, _) => (
             format!(
-                "⌘-click opens the file at the cited line via {}.",
+                "{}-click opens the file at the cited line via {}.",
+                crate::platform_ui::PRIMARY_MODIFIER,
                 editor.cli().unwrap_or_default()
             ),
             false,

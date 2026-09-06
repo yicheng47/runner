@@ -433,7 +433,7 @@ impl Render for StyledSelect {
                                     })
                                     .text_color(theme::text())
                                     .when(self.monospace, |label| {
-                                        label.font_family("JetBrains Mono")
+                                        label.font_family(theme::UI_MONOSPACE_FONT)
                                     })
                                     .child(label),
                             )
@@ -542,7 +542,7 @@ impl Render for StyledSelect {
                                         .font_weight(FontWeight::MEDIUM)
                                         .text_color(foreground)
                                         .when(self.monospace, |label| {
-                                            label.font_family("JetBrains Mono")
+                                            label.font_family(theme::UI_MONOSPACE_FONT)
                                         })
                                         .child(option.label),
                                 )

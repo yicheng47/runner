@@ -1,10 +1,10 @@
 # Fork a chat — implementation plan
 
-Implementation plan for [feature 60 — Fork a chat into a split pane or a new tab](../features/60-fork-chat-to-pane-or-tab.md) ([#398](https://github.com/yicheng47/runner/issues/398)). The spec says what; this file says how, against the GPUI code as surveyed on 2026-08-28. One `codex peer` mission on a task branch off `main`; the brief is derived from §Backend and §App when the mission starts and lives at `docs/impls/archive/gpui-rewrite/briefs/fork-chat.md`.
+Implementation plan for [feature 60 — Fork a chat into a split pane or a new tab](../../features/archive/60-fork-chat-to-pane-or-tab.md) ([#398](https://github.com/yicheng47/runner/issues/398)). The spec says what; this file says how, against the GPUI code as surveyed on 2026-08-28. One `codex peer` mission on a task branch off `main`; the brief is derived from §Backend and §App when the mission starts and lives at `docs/impls/archive/gpui-rewrite/briefs/fork-chat.md`.
 
-## Status (2026-08-28)
+## Status
 
-Planned, not scheduled. Nothing has landed.
+Shipped 2026-09-01 in [#460](https://github.com/yicheng47/runner/pull/460) (`4b82c82`); [#398](https://github.com/yicheng47/runner/issues/398) closed the same day. Archived 2026-09-05.
 
 ## Implementation log
 

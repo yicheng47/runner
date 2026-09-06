@@ -27,6 +27,7 @@ use runner_backend::windows::Subject;
 use runner_terminal::input_state::ECHO_WINDOW;
 
 use super::*;
+#[cfg(target_os = "macos")]
 use crate::surfaces::app_shell::{SIDEBAR_TOGGLE_GLYPH_INSET, SIDEBAR_TOGGLE_GLYPH_X};
 use crate::surfaces::mission_composer::{
     key_down as composer_key_down, mention_options, select_target as select_composer_target,
@@ -759,9 +760,17 @@ impl MissionWorkspace {
     }
 
     fn workspace_titlebar_padding(&self, window: &Window, cx: &App) -> f32 {
-        if self.sidebar_collapsed && !window.is_fullscreen() {
-            SIDEBAR_TOGGLE_GLYPH_X - SIDEBAR_TOGGLE_GLYPH_INSET * self.settings(cx).app_zoom
-        } else {
+        #[cfg(target_os = "macos")]
+        {
+            if self.sidebar_collapsed && !window.is_fullscreen() {
+                SIDEBAR_TOGGLE_GLYPH_X - SIDEBAR_TOGGLE_GLYPH_INSET * self.settings(cx).app_zoom
+            } else {
+                16. * self.settings(cx).app_zoom
+            }
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = window;
             16. * self.settings(cx).app_zoom
         }
     }
@@ -816,7 +825,8 @@ impl MissionWorkspace {
         area: gpui::Div,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        area.id(id)
+        let area = area
+            .id(id)
             .window_control_area(WindowControlArea::Drag)
             .on_mouse_down_out(cx.listener(|this, _, _, _| {
                 this.titlebar_drag_armed = false;
@@ -832,7 +842,9 @@ impl MissionWorkspace {
                 cx.listener(|this, _, _, _| {
                     this.titlebar_drag_armed = true;
                 }),
-            )
+            );
+        #[cfg(target_os = "macos")]
+        let area = area
             .on_mouse_move(cx.listener(|this, _, window, _| {
                 if this.titlebar_drag_armed {
                     this.titlebar_drag_armed = false;
@@ -844,7 +856,8 @@ impl MissionWorkspace {
                     cx.stop_propagation();
                     window.titlebar_double_click();
                 }
-            })
+            });
+        area
     }
 
     fn leave_archived_mission(
@@ -1797,7 +1810,9 @@ impl MissionWorkspace {
             mission.cwd.as_deref(),
             project_cwd,
             &self.settings(cx).default_working_dir,
-            std::env::var("HOME").ok().as_deref(),
+            runner_backend::app_paths::home_dir()
+                .as_deref()
+                .and_then(|home| home.to_str()),
         );
         let size = self.estimated_mission_drawer_terminal_size(window, cx);
         let mut spawned_id = None;
@@ -3067,6 +3082,8 @@ impl MissionWorkspace {
             .get(session_id)
             .and_then(|chat| chat.terminal.selection_text())
         else {
+            #[cfg(windows)]
+            cx.propagate();
             return;
         };
         cx.write_to_clipboard(ClipboardItem::new_string(text));
@@ -3689,7 +3706,9 @@ impl MissionWorkspace {
                             exit_code,
                             &default_session_label(&entry),
                             entry.cwd.as_deref(),
-                            std::env::var("HOME").ok().as_deref(),
+                            runner_backend::app_paths::home_dir()
+                                .as_deref()
+                                .and_then(|home| home.to_str()),
                         ),
                         move |window, cx| {
                             restart_root.update(cx, |this, cx| {
@@ -3929,7 +3948,7 @@ impl MissionWorkspace {
                                 .min_w(px(0.))
                                 .max_w(rems(140. / 16.))
                                 .truncate()
-                                .font_family("JetBrains Mono")
+                                .font_family(theme::UI_MONOSPACE_FONT)
                                 .child(format!("@{}", session.handle)),
                         )
                         .child(
@@ -4231,7 +4250,7 @@ impl MissionWorkspace {
                     .px_1()
                     .py(rems(2. / 16.))
                     .cursor_pointer()
-                    .font_family("JetBrains Mono")
+                    .font_family(theme::UI_MONOSPACE_FONT)
                     .text_size(rems(12. / 16.))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(theme::accent())
@@ -4313,7 +4332,7 @@ impl MissionWorkspace {
                     .child(
                         div()
                             .flex_none()
-                            .font_family("JetBrains Mono")
+                            .font_family(theme::UI_MONOSPACE_FONT)
                             .text_size(rems(12. / 16.))
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(theme::accent())
@@ -4331,7 +4350,7 @@ impl MissionWorkspace {
                     .children((index == active_index).then(|| {
                         div()
                             .ml_auto()
-                            .font_family("JetBrains Mono")
+                            .font_family(theme::UI_MONOSPACE_FONT)
                             .text_size(rems(10. / 16.))
                             .text_color(theme::faint())
                             .child("↵")
@@ -4599,7 +4618,7 @@ impl MissionWorkspace {
                             .child(
                                 div()
                                     .truncate()
-                                    .font_family("JetBrains Mono")
+                                    .font_family(theme::UI_MONOSPACE_FONT)
                                     .text_size(rems(13. / 16.))
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(runner_app::ui::hue_for_seed(&author).color())
@@ -4623,7 +4642,7 @@ impl MissionWorkspace {
                             .children(target.map(|target| {
                                 div()
                                     .truncate()
-                                    .font_family("JetBrains Mono")
+                                    .font_family(theme::UI_MONOSPACE_FONT)
                                     .text_size(rems(11. / 16.))
                                     .text_color(theme::muted())
                                     .child(format!("→ @{target}"))
@@ -4724,7 +4743,7 @@ impl MissionWorkspace {
                     .child(
                         div()
                             .flex_none()
-                            .font_family("JetBrains Mono")
+                            .font_family(theme::UI_MONOSPACE_FONT)
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(runner_app::ui::hue_for_seed(&event.from).color())
                             .child(format!("@{}", event.from)),
@@ -4799,7 +4818,9 @@ impl MissionWorkspace {
                         theme::bg()
                     })
                     .p_3()
-                    .when(!warning, |payload| payload.font_family("JetBrains Mono"))
+                    .when(!warning, |payload| {
+                        payload.font_family(theme::UI_MONOSPACE_FONT)
+                    })
                     .text_size(rems(12. / 16.))
                     .line_height(rems(17. / 16.))
                     .text_color(if warning {
@@ -4934,7 +4955,7 @@ impl MissionWorkspace {
                             .child(
                                 div()
                                     .truncate()
-                                    .font_family("JetBrains Mono")
+                                    .font_family(theme::UI_MONOSPACE_FONT)
                                     .text_size(rems(13. / 16.))
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(runner_app::ui::hue_for_seed(&asker).color())
@@ -4955,7 +4976,7 @@ impl MissionWorkspace {
                             .child(
                                 div()
                                     .truncate()
-                                    .font_family("JetBrains Mono")
+                                    .font_family(theme::UI_MONOSPACE_FONT)
                                     .text_size(rems(11. / 16.))
                                     .text_color(theme::muted())
                                     .child(chain),
@@ -5293,7 +5314,7 @@ impl MissionWorkspace {
                     .child("Submit / clear")
                     .child(
                         div()
-                            .font_family("Menlo")
+                            .font_family(theme::SYSTEM_MONOSPACE_FONT)
                             .text_size(rems(10. / 16.))
                             .font_weight(FontWeight::NORMAL)
                             .child("↵"),
@@ -5443,6 +5464,11 @@ impl MissionWorkspace {
             .child(
                 div()
                     .id("mission-rail-resize")
+                    .map(|handle| {
+                        #[cfg(windows)]
+                        let handle = handle.occlude();
+                        handle
+                    })
                     .absolute()
                     .left_0()
                     .top_0()
@@ -5612,7 +5638,7 @@ impl MissionWorkspace {
                                         div()
                                             .min_w(px(0.))
                                             .truncate()
-                                            .font_family("JetBrains Mono")
+                                            .font_family(theme::UI_MONOSPACE_FONT)
                                             .text_size(rems(13. / 16.))
                                             .font_weight(FontWeight::SEMIBOLD)
                                             .text_color(
@@ -5711,7 +5737,7 @@ impl MissionWorkspace {
                                         div()
                                             .min_w(px(0.))
                                             .flex_1()
-                                            .font_family("JetBrains Mono")
+                                            .font_family(theme::UI_MONOSPACE_FONT)
                                             .text_color(theme::muted())
                                             .child(
                                                 session
@@ -5730,15 +5756,26 @@ impl MissionWorkspace {
 
     fn reveal_mission_cwd(&mut self, cwd: String, cx: &mut Context<Self>) {
         let task = cx.background_spawn(async move {
-            let status = Command::new("open")
-                .arg("-R")
-                .arg(cwd)
-                .status()
-                .map_err(|error| error.to_string())?;
-            if status.success() {
-                Ok(())
-            } else {
-                Err(format!("Finder exited with status {status}"))
+            #[cfg(target_os = "macos")]
+            {
+                let status = Command::new("open")
+                    .arg("-R")
+                    .arg(cwd)
+                    .status()
+                    .map_err(|error| error.to_string())?;
+                if status.success() {
+                    Ok(())
+                } else {
+                    Err(format!("Finder exited with status {status}"))
+                }
+            }
+            #[cfg(windows)]
+            {
+                Command::new("explorer.exe")
+                    .arg(format!("/select,{cwd}"))
+                    .spawn()
+                    .map(|_| ())
+                    .map_err(|error| error.to_string())
             }
         });
         cx.spawn(async move |weak, cx| {
@@ -5782,7 +5819,7 @@ impl MissionWorkspace {
                         div()
                             .min_w(px(0.))
                             .flex_1()
-                            .font_family("Menlo")
+                            .font_family(theme::SYSTEM_MONOSPACE_FONT)
                             .text_size(rems(11. / 16.))
                             .text_color(theme::muted())
                             .child(mission.id.clone()),
@@ -5825,9 +5862,13 @@ impl MissionWorkspace {
                 },
                 |cwd| {
                     let reveal = cwd.clone();
+                    #[cfg(target_os = "macos")]
+                    let reveal_label = "Reveal in Finder";
+                    #[cfg(windows)]
+                    let reveal_label = "Reveal in Explorer";
                     Tooltip::new(
                         "reveal-mission-cwd-tooltip",
-                        "Reveal in Finder",
+                        reveal_label,
                         div()
                             .id("reveal-mission-cwd")
                             .w_full()
@@ -5838,7 +5879,7 @@ impl MissionWorkspace {
                             .px_2()
                             .py_2()
                             .cursor_pointer()
-                            .font_family("Menlo")
+                            .font_family(theme::SYSTEM_MONOSPACE_FONT)
                             .text_size(rems(11. / 16.))
                             .text_color(theme::text())
                             .hover(|button| button.border_color(theme::border_strong()))
@@ -6073,6 +6114,11 @@ fn rail_view_button(
 ) -> gpui::Stateful<gpui::Div> {
     div()
         .id(id)
+        .map(|button| {
+            #[cfg(windows)]
+            let button = button.on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation());
+            button
+        })
         .group("mission-rail-view-button")
         .size(rems(28. / 16.))
         .flex()

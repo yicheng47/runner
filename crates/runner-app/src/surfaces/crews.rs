@@ -43,7 +43,7 @@ impl Render for SlotDrag {
             .border_color(theme::accent())
             .bg(theme::panel())
             .shadow_lg()
-            .font_family("JetBrains Mono")
+            .font_family(theme::UI_MONOSPACE_FONT)
             .text_size(rems(13. / 16.))
             .text_color(theme::text())
             .child(self.label.clone())
@@ -428,7 +428,7 @@ impl NativeRoot {
                         .text_size(rems(12. / 16.))
                         .child(
                             div()
-                                .font_family("JetBrains Mono")
+                                .font_family(theme::UI_MONOSPACE_FONT)
                                 .font_weight(FontWeight::MEDIUM)
                                 .child(format!("@{}", member.slot_handle)),
                         )
@@ -778,7 +778,7 @@ impl NativeRoot {
         .detach();
     }
 
-    fn render_crew_editor(&mut self, _: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    fn render_crew_editor(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let editor = &self.crew_surfaces.editor;
         let crew = editor.crew.clone();
         let slots = editor.slots.clone();
@@ -2162,7 +2162,7 @@ impl NativeRoot {
                             div()
                                 .w(rems(160. / 16.))
                                 .truncate()
-                                .font_family("JetBrains Mono")
+                                .font_family(theme::UI_MONOSPACE_FONT)
                                 .text_size(rems(13. / 16.))
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .text_color(theme::accent())
@@ -2224,7 +2224,7 @@ impl NativeRoot {
             .child(
                 div()
                     .pr_1()
-                    .font_family("JetBrains Mono")
+                    .font_family(theme::UI_MONOSPACE_FONT)
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(theme::faint())
                     .child("@"),
@@ -2568,7 +2568,7 @@ impl NativeRoot {
                             .gap_2()
                             .child(
                                 div()
-                                    .font_family("JetBrains Mono")
+                                    .font_family(theme::UI_MONOSPACE_FONT)
                                     .text_size(rems(13. / 16.))
                                     .font_weight(FontWeight::MEDIUM)
                                     .child(format!("@{}", slot.slot.slot_handle)),
@@ -2601,7 +2601,7 @@ impl NativeRoot {
                             ))
                             .child(
                                 div()
-                                    .font_family("JetBrains Mono")
+                                    .font_family(theme::UI_MONOSPACE_FONT)
                                     .text_size(rems(11. / 16.))
                                     .text_color(theme::faint())
                                     .child(format!("from @{}", slot.runner.handle)),
@@ -2623,7 +2623,7 @@ impl NativeRoot {
                         div()
                             .mt_1()
                             .truncate()
-                            .font_family("JetBrains Mono")
+                            .font_family(theme::UI_MONOSPACE_FONT)
                             .text_size(rems(11. / 16.))
                             .text_color(theme::faint())
                             .child(format!("$ {summary}"))

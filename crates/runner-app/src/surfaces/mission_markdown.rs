@@ -514,7 +514,7 @@ fn render_block(
             .bg(theme::bg())
             .px_3()
             .py_2()
-            .font_family("JetBrains Mono")
+            .font_family(theme::UI_MONOSPACE_FONT)
             .text_size(rems(12. / 16.))
             .line_height(rems(19. / 16.))
             .whitespace_nowrap()

@@ -5,6 +5,100 @@
 
 use std::path::Path;
 
+#[cfg(windows)]
+pub(super) fn is_windows_batch(command: &str) -> bool {
+    Path::new(command)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            extension.eq_ignore_ascii_case("cmd") || extension.eq_ignore_ascii_case("bat")
+        })
+}
+
+#[cfg(windows)]
+pub(super) fn adapt_windows_batch_command(
+    command: &mut portable_pty::CommandBuilder,
+) -> crate::error::Result<()> {
+    let argv = command.get_argv();
+    let program = argv[0].to_string_lossy();
+    if !is_windows_batch(&program) {
+        return Ok(());
+    }
+    let args = argv[1..]
+        .iter()
+        .map(|arg| arg.to_string_lossy())
+        .collect::<Vec<_>>();
+    let line = windows_batch_command_line(&program, args.iter().map(|arg| arg.as_ref()))?;
+    let interpreter = command
+        .get_env("ComSpec")
+        .unwrap_or(std::ffi::OsStr::new("cmd.exe"))
+        .to_owned();
+    // The space/quote-free variable reference bypasses portable-pty's C argv quoting. The Windows
+    // probe proved substitution preserves literal % and needs no outer quote pair; argument quotes
+    // and backslashes follow Rust 1.97.1 append_bat_arg. Multiline first turns wait for TUI readiness before post-spawn paste.
+    command.env(
+        "RUNNER_BATCH_COMMAND_LINE",
+        format!("set \"RUNNER_BATCH_COMMAND_LINE=\" & {line}"),
+    );
+    *command.get_argv_mut() = vec![
+        interpreter,
+        "/e:ON".into(),
+        "/v:OFF".into(),
+        "/d".into(),
+        "/c".into(),
+        "%RUNNER_BATCH_COMMAND_LINE%".into(),
+    ];
+    Ok(())
+}
+
+#[cfg(windows)]
+fn windows_batch_command_line<'a>(
+    program: &str,
+    args: impl IntoIterator<Item = &'a str>,
+) -> crate::error::Result<String> {
+    use crate::error::Error;
+    if program.contains(['"', '\0', '\r', '\n']) || program.ends_with('\\') {
+        return Err(Error::msg("invalid Windows batch script path"));
+    }
+    let mut line = format!("\"{program}\"");
+    for arg in args {
+        if arg.contains(['\0', '\r', '\n']) {
+            return Err(Error::msg(
+                "Windows batch arguments cannot contain NUL, CR or LF",
+            ));
+        }
+        line.push(' ');
+        // Keep std's allowlist: without an outer quote pair, bare cmd metacharacters execute.
+        let quote = arg.is_empty()
+            || arg.ends_with('\\')
+            || arg.chars().any(|ch| {
+                (ch.is_ascii() && !(ch.is_ascii_alphanumeric() || r"#$*+-./:?@\_".contains(ch)))
+                    || ch.is_control()
+            });
+        if quote {
+            line.push('"');
+        }
+        let mut backslashes = 0;
+        for ch in arg.chars() {
+            if ch == '\\' {
+                backslashes += 1;
+            } else {
+                if ch == '"' {
+                    line.extend(std::iter::repeat_n('\\', backslashes));
+                    line.push('"');
+                }
+                backslashes = 0;
+            }
+            line.push(ch);
+        }
+        if quote {
+            line.extend(std::iter::repeat_n('\\', backslashes));
+            line.push('"');
+        }
+    }
+    Ok(line)
+}
+
 /// Tool dirs we always include on the spawned process's PATH, even
 /// when the shell-PATH resolver failed/timed out. Covers the most
 /// common locations users install agent CLIs into. `~/`-prefixed
@@ -64,20 +158,26 @@ pub fn compose_path(
         push(bin.display().to_string());
     }
     if let Some(sp) = shell_path {
-        for entry in sp.split(':') {
-            push(entry.to_string());
+        for entry in std::env::split_paths(sp) {
+            push(entry.to_string_lossy().into_owned());
         }
     }
     for fallback in fallback_cli_dirs(home) {
         push(fallback);
     }
     if let Some(pp) = process_path {
-        for entry in pp.split(':') {
-            push(entry.to_string());
+        for entry in std::env::split_paths(pp) {
+            push(entry.to_string_lossy().into_owned());
         }
     }
 
-    parts.join(":")
+    // The old Unix join treated literal colons in supplied directories as PATH separators.
+    #[cfg(unix)]
+    let parts = parts.iter().flat_map(std::env::split_paths);
+    std::env::join_paths(parts)
+        .expect("PATH entries must not contain the platform separator")
+        .to_string_lossy()
+        .into_owned()
 }
 
 fn fallback_cli_dirs(home: Option<&Path>) -> Vec<String> {
@@ -196,6 +296,55 @@ pub fn shell_quote(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_batch_builder_matches_proven_cmd_expansion() {
+        assert_eq!(
+            windows_batch_command_line(r"C:\tools\agent.cmd", ["word", "two words", "80%", "say \"hi\"", "", "tail\\"]).unwrap(),
+            "\"C:\\tools\\agent.cmd\" word \"two words\" \"80%\" \"say \"\"hi\"\"\" \"\" \"tail\\\\\""
+        );
+        assert_eq!(
+            windows_batch_command_line("agent.bat", ["x\\\"y"]).unwrap(),
+            "\"agent.bat\" \"x\\\\\"\"y\""
+        );
+        for arg in ["a\rb", "a\nb", "a\0b"] {
+            assert!(windows_batch_command_line("agent.cmd", [arg]).is_err());
+        }
+        for program in ["bad\".cmd", "bad\\", "bad\0.cmd"] {
+            assert!(windows_batch_command_line(program, []).is_err());
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_batch_adapter_preserves_non_batch_commands() {
+        let mut command = portable_pty::CommandBuilder::new("agent.exe");
+        command.args(["two words", "80%", "a\nb"]);
+        let original = command.clone();
+        adapt_windows_batch_command(&mut command).unwrap();
+        assert_eq!(command, original);
+        assert!(is_windows_batch("agent.CmD"));
+        assert!(is_windows_batch("agent.BAT"));
+        let mut command = portable_pty::CommandBuilder::new("agent.CmD");
+        command.env("ComSpec", r"C:\Windows\System32\cmd.exe");
+        adapt_windows_batch_command(&mut command).unwrap();
+        assert_eq!(
+            command.get_argv(),
+            &vec![
+                std::ffi::OsString::from(r"C:\Windows\System32\cmd.exe"),
+                "/e:ON".into(),
+                "/v:OFF".into(),
+                "/d".into(),
+                "/c".into(),
+                "%RUNNER_BATCH_COMMAND_LINE%".into()
+            ]
+        );
+        assert_eq!(
+            command.get_env("RUNNER_BATCH_COMMAND_LINE").unwrap(),
+            "set \"RUNNER_BATCH_COMMAND_LINE=\" & \"agent.CmD\""
+        );
+    }
     use std::path::PathBuf;
 
     #[test]
@@ -233,9 +382,17 @@ mod tests {
         let path = compose_path(
             None,
             None,
-            Some("/opt/homebrew/bin:/usr/local/bin"),
+            Some(
+                &std::env::join_paths(["/opt/homebrew/bin", "/usr/local/bin"])
+                    .unwrap()
+                    .to_string_lossy(),
+            ),
             Some(Path::new("/Users/test")),
-            Some("/usr/bin:/bin"),
+            Some(
+                &std::env::join_paths(["/usr/bin", "/bin"])
+                    .unwrap()
+                    .to_string_lossy(),
+            ),
         );
         // Doesn't contain the per-mission shim or "/runner/bin"
         // bundled-bin path shapes — neither was passed in. Version
@@ -254,17 +411,24 @@ mod tests {
             Some(&bundled),
             Some("/opt/homebrew/bin"),
             Some(Path::new("/Users/test")),
-            Some("/usr/bin:/bin"),
+            Some(
+                &std::env::join_paths(["/usr/bin", "/bin"])
+                    .unwrap()
+                    .to_string_lossy(),
+            ),
         );
-        let parts: Vec<&str> = path.split(':').collect();
+        let parts: Vec<_> = std::env::split_paths(&path).collect();
         let shim_idx = parts
             .iter()
-            .position(|p| p == &"/data/shims/build/bin")
+            .position(|p| p == Path::new("/data/shims/build/bin"))
             .unwrap();
-        let bundled_idx = parts.iter().position(|p| p == &"/data/runner/bin").unwrap();
+        let bundled_idx = parts
+            .iter()
+            .position(|p| p == Path::new("/data/runner/bin"))
+            .unwrap();
         let homebrew_idx = parts
             .iter()
-            .position(|p| p == &"/opt/homebrew/bin")
+            .position(|p| p == Path::new("/opt/homebrew/bin"))
             .unwrap();
         assert!(
             shim_idx < bundled_idx,
@@ -295,16 +459,28 @@ mod tests {
             "/opt/homebrew/bin",
             "/usr/local/bin",
         ] {
+            #[cfg(unix)]
             assert!(path.contains(d), "fallback {d} missing from {path}");
+            #[cfg(windows)]
+            assert!(
+                std::env::split_paths(&path).any(|entry| entry == Path::new(d)),
+                "fallback {d} missing from {path}"
+            );
         }
     }
 
     #[test]
     fn expand_home_handles_tilde_and_passthrough() {
         let h = Path::new("/Users/jason");
+        #[cfg(unix)]
         assert_eq!(
             expand_home("~/.cargo/bin", Some(h)),
             "/Users/jason/.cargo/bin"
+        );
+        #[cfg(windows)]
+        assert_eq!(
+            expand_home("~/.cargo/bin", Some(h)),
+            h.join(".cargo/bin").to_string_lossy()
         );
         assert_eq!(expand_home("~", Some(h)), "/Users/jason");
         assert_eq!(expand_home("/abs/path", Some(h)), "/abs/path");
@@ -328,23 +504,32 @@ mod tests {
         let path = compose_path(
             None,
             None,
-            Some("/shell/bin:/opt/homebrew/bin"),
+            Some(
+                &std::env::join_paths(["/shell/bin", "/opt/homebrew/bin"])
+                    .unwrap()
+                    .to_string_lossy(),
+            ),
             Some(home.path()),
             Some("/usr/bin"),
         );
-        let parts = path.split(':').collect::<Vec<_>>();
-        assert_eq!(parts[0], "/shell/bin");
+        let parts = std::env::split_paths(&path).collect::<Vec<_>>();
+        assert_eq!(parts[0], Path::new("/shell/bin"));
         assert_eq!(
             parts
                 .iter()
-                .filter(|entry| **entry == "/opt/homebrew/bin")
+                .filter(|entry| entry.as_path() == Path::new("/opt/homebrew/bin"))
                 .count(),
             1
         );
         let nvm = parts
             .iter()
-            .filter(|entry| entry.contains(".nvm/versions/node"))
-            .copied()
+            .filter(|entry| {
+                entry
+                    .to_string_lossy()
+                    .replace('\\', "/")
+                    .contains(".nvm/versions/node")
+            })
+            .map(|entry| entry.to_string_lossy())
             .collect::<Vec<_>>();
         assert!(nvm[0].contains("v20.12.1"), "{nvm:?}");
         assert!(nvm[1].contains("v18.20.0"), "{nvm:?}");
@@ -359,15 +544,54 @@ mod tests {
         let path = compose_path(
             None,
             None,
-            Some("/opt/homebrew/bin:/usr/local/bin"),
+            Some(
+                &std::env::join_paths(["/opt/homebrew/bin", "/usr/local/bin"])
+                    .unwrap()
+                    .to_string_lossy(),
+            ),
             Some(Path::new("/h")),
             Some("/usr/bin"),
         );
-        let parts: Vec<&str> = path.split(':').collect();
-        let homebrew_count = parts.iter().filter(|p| **p == "/opt/homebrew/bin").count();
-        let local_count = parts.iter().filter(|p| **p == "/usr/local/bin").count();
+        let parts: Vec<_> = std::env::split_paths(&path).collect();
+        let homebrew_count = parts
+            .iter()
+            .filter(|p| p.as_path() == Path::new("/opt/homebrew/bin"))
+            .count();
+        let local_count = parts
+            .iter()
+            .filter(|p| p.as_path() == Path::new("/usr/local/bin"))
+            .count();
         assert_eq!(homebrew_count, 1, "homebrew bin should appear once: {path}");
         assert_eq!(local_count, 1, "local bin should appear once: {path}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn compose_path_keeps_literal_colons_as_unix_path_separators() {
+        let path = compose_path(Some(Path::new("/shim:directory")), None, None, None, None);
+        assert!(path.starts_with("/shim:directory:"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn compose_path_keeps_drive_letters_and_quoted_directories() {
+        let shell_path = std::env::join_paths([r"C:\Tools", r"D:\Tools;extra"]).unwrap();
+        let path = compose_path(
+            Some(Path::new(r"C:\Runner\shim")),
+            None,
+            Some(shell_path.to_str().unwrap()),
+            None,
+            None,
+        );
+        let parts = std::env::split_paths(&path).take(3).collect::<Vec<_>>();
+        assert_eq!(
+            parts,
+            [
+                Path::new(r"C:\Runner\shim"),
+                Path::new(r"C:\Tools"),
+                Path::new(r"D:\Tools;extra")
+            ]
+        );
     }
 
     #[test]
@@ -375,9 +599,10 @@ mod tests {
         // Empty shell_path / process_path values shouldn't produce
         // a `::` segment.
         let path = compose_path(None, None, Some(""), Some(Path::new("/h")), Some(""));
-        assert!(!path.contains("::"), "path = {path}");
-        assert!(!path.starts_with(':'), "path = {path}");
-        assert!(!path.ends_with(':'), "path = {path}");
+        assert!(
+            std::env::split_paths(&path).all(|part| !part.as_os_str().is_empty()),
+            "path = {path}"
+        );
     }
 
     #[test]
