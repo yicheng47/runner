@@ -1,6 +1,6 @@
 # 437 — Windows nightly: implementation plan
 
-Tracking issue: [#437](https://github.com/yicheng47/runner/issues/437). Feature, P2. Spec: [`docs/features/437-windows-nightly.md`](../../features/437-windows-nightly.md) — the spec wins on any detail this plan leaves out, except the dated amendments under Decisions. Baseline `main` at `08e2bf7` (v0.7.5, 2026-09-05). Phase 0–3 pointers are to that baseline; re-grep before editing. Phase 4 started on 2026-09-06 with unsigned installers for testing; signing follows separately.
+Tracking issue: [#437](https://github.com/yicheng47/runner/issues/437). Feature, P2. Spec: [`docs/features/archive/437-windows-nightly.md`](../../../features/archive/437-windows-nightly.md) — the spec wins on any detail this plan leaves out, except the dated amendments under Decisions. Baseline `main` at `08e2bf7` (v0.7.5, 2026-09-05). Phase 0–3 pointers are to that baseline; re-grep before editing. Phase 4 started on 2026-09-06 with unsigned installers for testing; signing follows separately.
 
 ## What ships
 

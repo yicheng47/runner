@@ -1,6 +1,8 @@
 # 437 — Windows nightly: program record
 
-Implementation program for [feature 437 — Windows nightly](../../features/437-windows-nightly.md) ([#437](https://github.com/yicheng47/runner/issues/437)). The spec says *what*; this directory says *how, in what order, and what has landed*. Same shape as the [local-skills](../local-skills/README.md) record: this file is the condensed state and the decisions that bind, [plan.md](plan.md) covers Phases 0–4 with the per-file touch list, and [impl_log.md](impl_log.md) is the dated log and the Windows nightly stamps. Mission briefs are sent verbatim as the mission goal and are recorded in the log entry for that phase.
+Archived after [Runner 0.8.0](https://github.com/yicheng47/runner/releases/tag/v0.8.0) shipped on 2026-09-06. macOS and Windows are maintained together on `main`. Current build and installer instructions, plus outstanding follow-up work, live in [Windows development](../../../arch/windows.md). The status notes and branch references below are the historical migration record.
+
+Implementation program for [feature 437 — Windows nightly](../../../features/archive/437-windows-nightly.md) ([#437](https://github.com/yicheng47/runner/issues/437)). The spec says *what*; this directory says *how, in what order, and what has landed*. Same shape as the [local-skills](../../local-skills/README.md) record: this file is the condensed state and the decisions that bind, [plan.md](plan.md) covers Phases 0–4 with the per-file touch list, and [impl_log.md](impl_log.md) is the dated log and the Windows nightly stamps. Mission briefs are sent verbatim as the mission goal and are recorded in the log entry for that phase.
 
 ## Status (2026-09-06)
 

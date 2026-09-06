@@ -16,6 +16,8 @@
   ·
   <a href="#features">Features</a>
   ·
+  <a href="#supported-agents">Agents</a>
+  ·
   <a href="#drive-it-from-your-agents-mcp">MCP</a>
   ·
   <a href="#example-crew">Crew example</a>
@@ -29,7 +31,7 @@
 
 ---
 
-> Status: alpha, actively shipping. macOS on Apple Silicon.
+> Status: alpha, actively shipping. Native macOS (Apple Silicon) and Windows (x64), with Windows support starting in 0.8.0.
 
 ---
 
@@ -49,7 +51,11 @@ Runner is a native macOS and Windows app written in Rust: [gpui-ce](https://gith
 
 Download the latest macOS build (Apple Silicon `.dmg`) from the [releases page](https://github.com/yicheng47/runner/releases/latest). Signed and notarized, with updates through Sparkle. Intel Macs and Linux are not supported.
 
-Starting with **0.8.0**, Windows x64 installers (`Runner-Setup-…-x64.exe`) are available alongside the Mac DMG on the [releases page](https://github.com/yicheng47/runner/releases/latest). Windows 10 version 1809 or later is required; installers are currently unsigned. Close Runner and run the newer installer to upgrade while retaining settings, chats, and missions. Production builds check stable releases; testing builds remain on [`nightly-win`](https://github.com/yicheng47/runner/releases/tag/nightly-win). Installing a production build over a nightly switches to stable updates. See [Windows installation and development](docs/impls/windows-nightly/README.md#building-and-testing-the-windows-installer).
+Starting with **0.8.0**, Windows x64 installers (`Runner-Setup-…-x64.exe`) are available alongside the Mac DMG on the [releases page](https://github.com/yicheng47/runner/releases/latest). Windows 10 version 1809 or later is required.
+
+The Windows installer is currently **unsigned**. If Windows SmartScreen shows **Windows protected your PC**, click **More info → Run anyway** to continue installation.
+
+Close Runner and run the newer installer to upgrade while retaining settings, chats, and missions.
 
 <!-- TODO(demo): add a "## Demo" section here once the new hero video is recorded — a Peer
      Coding Crew mission on a real repo (mission start from a project → feed + per-slot
@@ -104,7 +110,7 @@ Every chat is a real 1:1 PTY with a runner, no mission required. Tabs hold up to
 
 ### A real terminal
 
-Every pane is a real PTY behind an `alacritty_terminal` grid, drawn by GPUI on the GPU — claude-code, codex, and any modern TUI render with their actual ANSI palette, mouse reporting, alt-screen redraws, and pixel-snapped box-drawing glyphs. Mouse selection and ⌘C, IME composition (Pinyin included), file-path paste, 10,000 lines of scrollback. Sessions are resumable across app restarts; the event log is the source of truth.
+Every pane is a real PTY behind an `alacritty_terminal` grid, drawn by GPUI on the GPU — claude-code, codex, and any modern TUI render with their actual ANSI palette, mouse reporting, alt-screen redraws, and pixel-snapped box-drawing glyphs. Mouse selection and copy (⌘C on macOS, Ctrl+C on Windows), IME composition (Pinyin included), file-path paste, 10,000 lines of scrollback. Sessions are resumable across app restarts; the event log is the source of truth.
 
 </td>
 </tr>
@@ -116,7 +122,7 @@ Every pane is a real PTY behind an `alacritty_terminal` grid, drawn by GPUI on t
 
 ### Multi-window
 
-`⇧⌘N` opens additional OS windows — a mission on one screen, a wall of chats on the other. Windows coordinate ownership of shared sessions: the primary owns the PTY, and any other window showing the same session gets a hand-off overlay instead of a corrupted terminal.
+`⇧⌘N` on macOS or `Ctrl+Shift+N` on Windows opens additional OS windows — a mission on one screen, a wall of chats on the other. Windows coordinate ownership of shared sessions: the primary owns the PTY, and any other window showing the same session gets a hand-off overlay instead of a corrupted terminal.
 
 </td>
 </tr>
@@ -128,7 +134,7 @@ Every pane is a real PTY behind an `alacritty_terminal` grid, drawn by GPUI on t
 
 ### Drive it from your agents (MCP)
 
-Everything above is also an MCP tool. Runner bundles a `runner-mcp` stdio sidecar, and **Settings → MCP** registers it with Claude Code, Codex, or TRAE in one click. Connected agents assemble crews, start and steer missions (`mission_start`, `mission_feed`, `mission_post_human_signal`), and spin up chats (`session_start_direct`). The compounding trick: your daily driver agent plans a fix, dispatches a coder/reviewer crew, and keeps working — agents dispatching crews of agents, every session still a real PTY you can open and watch.
+Everything above is also an MCP tool. Runner bundles a `runner-mcp` stdio sidecar, and **Settings → MCP** registers it with Claude Code and Codex on both platforms, plus TRAE CLI on macOS. Connected agents assemble crews, start and steer missions (`mission_start`, `mission_feed`, `mission_post_human_signal`), and spin up chats (`session_start_direct`). The compounding trick: your daily driver agent plans a fix, dispatches a coder/reviewer crew, and keeps working — agents dispatching crews of agents, every session still a real PTY you can open and watch.
 
 </td>
 </tr>
@@ -138,9 +144,20 @@ Everything above is also an MCP tool. Runner bundles a `runner-mcp` stdio sideca
 
 - **Projects** — bind a working directory once; chats and missions started inside a project inherit its cwd and stay grouped in their own sidebar section.
 - **Themes** — Auto / Light / Dark chrome with two variants per side (Runner and Catppuccin Mocha dark; Codex Light and Catppuccin Latte light), independent terminal palettes (Runner, Catppuccin Mocha, Monokai), Inter bundled as the UI font, and JetBrains Mono (the Nerd Font Mono build) bundled for terminals.
-- **Auto-update** — Sparkle, with a hint on the sidebar's Settings row when a new build is waiting; nightly and release feeds are signed with the same key.
+- **Updates** — macOS releases update through Sparkle. Windows checks for newer builds and shows a download icon beside Settings; close Runner and run the downloaded installer to upgrade while retaining your data.
 - **Bundled `runner` CLI** — spawned agents message each other, check the crew roster, and post signals from inside their own PTYs.
-- **Runtimes** — Claude Code and Codex are first-class: daily-driven, with fixture-tested terminal rendering and tuned launch/nudge timing. TRAE CLI runs through the same paths but sees far less use and may have rough edges — [issues](https://github.com/yicheng47/runner/issues) are welcome. All three are detected on `PATH`, with per-runtime executable overrides in **Settings → Agents**.
+
+## Supported agents
+
+| Agent | macOS (Apple Silicon) | Windows (x64) |
+| --- | --- | --- |
+| Claude Code | Supported | Supported |
+| Codex | Supported | Supported |
+| TRAE CLI | Experimental | Not validated |
+
+Claude Code and Codex are the primary supported agents, with fixture-tested terminal rendering and tuned launch/nudge timing. TRAE CLI sees less use and may have rough edges; it is enabled by default on macOS when detected, and disabled by default on Windows, where Runner integration has not been validated. [Issues](https://github.com/yicheng47/runner/issues) are welcome.
+
+Install the agent CLIs separately. Runner detects them on `PATH`, with per-agent executable overrides in **Settings → Agents**. On Windows, Claude Code also requires Git for Windows for Git Bash; npm-based CLI installations require Node.js. PowerShell 7 is optional. Agents run natively on Windows, without WSL.
 
 ## Example crew
 
@@ -170,7 +187,7 @@ Each is a copy-pasteable handle + system-prompt set you can spawn into a new Cre
 
 Architecture, runtime contracts, product vision, and per-feature specs live in [`docs/`](./docs/) — start with [`docs/arch/arch.md`](./docs/arch/arch.md) for the wire-level overview, or [`docs/product/vision.md`](./docs/product/vision.md) for the product direction.
 
-For dev setup, prereqs, and contributor conventions see [AGENTS.md](./AGENTS.md).
+macOS and Windows are developed together on `main`. For dev setup, prereqs, and contributor conventions see [AGENTS.md](./AGENTS.md).
 
 ## Acknowledgements
 
