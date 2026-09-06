@@ -775,11 +775,6 @@ impl MissionWorkspace {
         }
     }
 
-    #[cfg_attr(not(windows), allow(dead_code))]
-    fn caption_inset(&self, window: &Window, cx: &App) -> f32 {
-        super::app_shell::caption_inset_for(self.settings(cx).app_zoom, window.is_fullscreen())
-    }
-
     fn render_open_sidebar_button(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         self.sidebar_collapsed.then(|| {
             div()
@@ -3087,6 +3082,8 @@ impl MissionWorkspace {
             .get(session_id)
             .and_then(|chat| chat.terminal.selection_text())
         else {
+            #[cfg(windows)]
+            cx.propagate();
             return;
         };
         cx.write_to_clipboard(ClipboardItem::new_string(text));
@@ -3257,8 +3254,6 @@ impl MissionWorkspace {
             rail_visibility,
             rail_open || rail_animating,
             rail_open && !rail_animating,
-            #[cfg(windows)]
-            window,
             cx,
         );
         div()
@@ -3283,15 +3278,10 @@ impl MissionWorkspace {
             .on_action(cx.listener(Self::focus_previous_mission_tab))
             .on_action(cx.listener(Self::focus_next_mission_tab))
             .on_drag_move::<MissionRailResizeDrag>(cx.listener(
-                |this, event: &DragMoveEvent<MissionRailResizeDrag>, window, cx| {
-                    #[cfg(not(windows))]
-                    let _ = window;
+                |this, event: &DragMoveEvent<MissionRailResizeDrag>, _, cx| {
                     let width = f32::from(event.bounds.right() - event.event.position.x)
                         / this.settings(cx).app_zoom;
                     let width = app_settings::clamp_mission_rail_width(width);
-                    #[cfg(windows)]
-                    let width = width
-                        .max(this.caption_inset(window, cx) / this.settings(cx).app_zoom + 120.);
                     this.update_app_settings(cx, false, |settings| {
                         if settings.mission_rail_width == width {
                             return false;
@@ -3416,22 +3406,6 @@ impl MissionWorkspace {
         .title_actions(controls.into_iter().map(IntoElement::into_any_element))
         .trailing_actions(drawer_action.into_iter().chain(rail_action))
         .into_div();
-        #[cfg(windows)]
-        let row = {
-            let zoom = self.settings(cx).app_zoom;
-            let inset = self.caption_inset(window, cx);
-            let rail_width = self
-                .settings(cx)
-                .mission_rail_width
-                .max(inset / zoom + 120.);
-            let visibility = self.rail_visibility.value_at(
-                Instant::now(),
-                Duration::from_millis(MISSION_RAIL_TRANSITION_MS),
-            );
-            row.pr(px(
-                8. * zoom + (inset - rail_width * zoom * visibility).max(0.)
-            ))
-        };
         self.render_titlebar_drag_area("mission-titlebar-drag", row, cx)
             .into_any_element()
     }
@@ -3974,7 +3948,7 @@ impl MissionWorkspace {
                                 .min_w(px(0.))
                                 .max_w(rems(140. / 16.))
                                 .truncate()
-                                .font_family("JetBrains Mono")
+                                .font_family(theme::UI_MONOSPACE_FONT)
                                 .child(format!("@{}", session.handle)),
                         )
                         .child(
@@ -4276,7 +4250,7 @@ impl MissionWorkspace {
                     .px_1()
                     .py(rems(2. / 16.))
                     .cursor_pointer()
-                    .font_family("JetBrains Mono")
+                    .font_family(theme::UI_MONOSPACE_FONT)
                     .text_size(rems(12. / 16.))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(theme::accent())
@@ -4358,7 +4332,7 @@ impl MissionWorkspace {
                     .child(
                         div()
                             .flex_none()
-                            .font_family("JetBrains Mono")
+                            .font_family(theme::UI_MONOSPACE_FONT)
                             .text_size(rems(12. / 16.))
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(theme::accent())
@@ -4376,7 +4350,7 @@ impl MissionWorkspace {
                     .children((index == active_index).then(|| {
                         div()
                             .ml_auto()
-                            .font_family("JetBrains Mono")
+                            .font_family(theme::UI_MONOSPACE_FONT)
                             .text_size(rems(10. / 16.))
                             .text_color(theme::faint())
                             .child("↵")
@@ -4644,7 +4618,7 @@ impl MissionWorkspace {
                             .child(
                                 div()
                                     .truncate()
-                                    .font_family("JetBrains Mono")
+                                    .font_family(theme::UI_MONOSPACE_FONT)
                                     .text_size(rems(13. / 16.))
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(runner_app::ui::hue_for_seed(&author).color())
@@ -4668,7 +4642,7 @@ impl MissionWorkspace {
                             .children(target.map(|target| {
                                 div()
                                     .truncate()
-                                    .font_family("JetBrains Mono")
+                                    .font_family(theme::UI_MONOSPACE_FONT)
                                     .text_size(rems(11. / 16.))
                                     .text_color(theme::muted())
                                     .child(format!("→ @{target}"))
@@ -4769,7 +4743,7 @@ impl MissionWorkspace {
                     .child(
                         div()
                             .flex_none()
-                            .font_family("JetBrains Mono")
+                            .font_family(theme::UI_MONOSPACE_FONT)
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(runner_app::ui::hue_for_seed(&event.from).color())
                             .child(format!("@{}", event.from)),
@@ -4844,7 +4818,9 @@ impl MissionWorkspace {
                         theme::bg()
                     })
                     .p_3()
-                    .when(!warning, |payload| payload.font_family("JetBrains Mono"))
+                    .when(!warning, |payload| {
+                        payload.font_family(theme::UI_MONOSPACE_FONT)
+                    })
                     .text_size(rems(12. / 16.))
                     .line_height(rems(17. / 16.))
                     .text_color(if warning {
@@ -4979,7 +4955,7 @@ impl MissionWorkspace {
                             .child(
                                 div()
                                     .truncate()
-                                    .font_family("JetBrains Mono")
+                                    .font_family(theme::UI_MONOSPACE_FONT)
                                     .text_size(rems(13. / 16.))
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(runner_app::ui::hue_for_seed(&asker).color())
@@ -5000,7 +4976,7 @@ impl MissionWorkspace {
                             .child(
                                 div()
                                     .truncate()
-                                    .font_family("JetBrains Mono")
+                                    .font_family(theme::UI_MONOSPACE_FONT)
                                     .text_size(rems(11. / 16.))
                                     .text_color(theme::muted())
                                     .child(chain),
@@ -5338,7 +5314,7 @@ impl MissionWorkspace {
                     .child("Submit / clear")
                     .child(
                         div()
-                            .font_family("Menlo")
+                            .font_family(theme::SYSTEM_MONOSPACE_FONT)
                             .text_size(rems(10. / 16.))
                             .font_weight(FontWeight::NORMAL)
                             .child("↵"),
@@ -5397,12 +5373,9 @@ impl MissionWorkspace {
         visibility: f32,
         show_rail: bool,
         border_on: bool,
-        #[cfg(windows)] window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let width = self.settings(cx).mission_rail_width;
-        #[cfg(windows)]
-        let width = width.max(self.caption_inset(window, cx) / self.settings(cx).app_zoom + 120.);
         let visible_width = width * visibility;
         if !show_rail {
             return div()
@@ -5423,13 +5396,6 @@ impl MissionWorkspace {
             .h(rems(WORKSPACE_HEADER_HEIGHT / 16.))
             .flex_none()
             .px_4()
-            .map(|header| {
-                #[cfg(windows)]
-                let header = header.pr(px(
-                    16. * self.settings(cx).app_zoom + self.caption_inset(window, cx)
-                ));
-                header
-            })
             .flex()
             .items_center()
             .border_b_1()
@@ -5672,7 +5638,7 @@ impl MissionWorkspace {
                                         div()
                                             .min_w(px(0.))
                                             .truncate()
-                                            .font_family("JetBrains Mono")
+                                            .font_family(theme::UI_MONOSPACE_FONT)
                                             .text_size(rems(13. / 16.))
                                             .font_weight(FontWeight::SEMIBOLD)
                                             .text_color(
@@ -5771,7 +5737,7 @@ impl MissionWorkspace {
                                         div()
                                             .min_w(px(0.))
                                             .flex_1()
-                                            .font_family("JetBrains Mono")
+                                            .font_family(theme::UI_MONOSPACE_FONT)
                                             .text_color(theme::muted())
                                             .child(
                                                 session
@@ -5853,7 +5819,7 @@ impl MissionWorkspace {
                         div()
                             .min_w(px(0.))
                             .flex_1()
-                            .font_family("Menlo")
+                            .font_family(theme::SYSTEM_MONOSPACE_FONT)
                             .text_size(rems(11. / 16.))
                             .text_color(theme::muted())
                             .child(mission.id.clone()),
@@ -5913,7 +5879,7 @@ impl MissionWorkspace {
                             .px_2()
                             .py_2()
                             .cursor_pointer()
-                            .font_family("Menlo")
+                            .font_family(theme::SYSTEM_MONOSPACE_FONT)
                             .text_size(rems(11. / 16.))
                             .text_color(theme::text())
                             .hover(|button| button.border_color(theme::border_strong()))

@@ -98,22 +98,8 @@ fn platform_default(macos: &str) -> String {
 
 #[cfg(any(windows, test))]
 fn windows_default(macos: &str) -> String {
-    match macos {
-        "ctrl-cmd-f" => return "f11".into(),
-        "cmd-[" => return "ctrl-pageup".into(),
-        "cmd-]" => return "ctrl-pagedown".into(),
-        "shift-cmd-[" | "cmd-{" => return "ctrl-shift-pageup".into(),
-        "shift-cmd-]" | "cmd-}" => return "ctrl-shift-pagedown".into(),
-        _ => {}
-    }
-    if !macos.contains("cmd-") {
-        return macos.into();
-    }
-    let key = macos.rsplit('-').next().unwrap();
-    if key.len() == 1 && key.as_bytes()[0].is_ascii_alphabetic() {
-        let shifted_collision = macos.contains("shift-") && matches!(key, "d" | "k" | "n");
-        let alt = macos.contains("alt-") || shifted_collision;
-        format!("ctrl-shift-{}{key}", if alt { "alt-" } else { "" })
+    if macos == "ctrl-cmd-f" {
+        "f11".into()
     } else {
         macos.replace("cmd-", "ctrl-")
     }
@@ -1456,28 +1442,28 @@ mod tests {
     }
 
     #[test]
-    fn windows_defaults_preserve_terminal_control_keys_and_resolve_shift_collisions() {
+    fn windows_defaults_replace_command_with_control() {
         for (macos, windows) in [
-            ("cmd-n", "ctrl-shift-n"),
-            ("shift-cmd-n", "ctrl-shift-alt-n"),
-            ("cmd-d", "ctrl-shift-d"),
-            ("shift-cmd-d", "ctrl-shift-alt-d"),
-            ("cmd-k", "ctrl-shift-k"),
-            ("shift-cmd-k", "ctrl-shift-alt-k"),
-            ("shift-cmd-z", "ctrl-shift-z"),
-            ("cmd-c", "ctrl-shift-c"),
-            ("cmd-v", "ctrl-shift-v"),
-            ("cmd-h", "ctrl-shift-h"),
-            ("cmd-alt-h", "ctrl-shift-alt-h"),
+            ("cmd-n", "ctrl-n"),
+            ("shift-cmd-n", "shift-ctrl-n"),
+            ("cmd-d", "ctrl-d"),
+            ("shift-cmd-d", "shift-ctrl-d"),
+            ("cmd-k", "ctrl-k"),
+            ("shift-cmd-k", "shift-ctrl-k"),
+            ("shift-cmd-z", "shift-ctrl-z"),
+            ("cmd-c", "ctrl-c"),
+            ("cmd-v", "ctrl-v"),
+            ("cmd-h", "ctrl-h"),
+            ("cmd-alt-h", "ctrl-alt-h"),
             ("cmd-,", "ctrl-,"),
             ("cmd--", "ctrl--"),
             ("cmd-1", "ctrl-1"),
-            ("cmd-[", "ctrl-pageup"),
-            ("shift-cmd-[", "ctrl-shift-pageup"),
-            ("cmd-]", "ctrl-pagedown"),
-            ("shift-cmd-]", "ctrl-shift-pagedown"),
-            ("cmd-{", "ctrl-shift-pageup"),
-            ("cmd-}", "ctrl-shift-pagedown"),
+            ("cmd-[", "ctrl-["),
+            ("shift-cmd-[", "shift-ctrl-["),
+            ("cmd-]", "ctrl-]"),
+            ("shift-cmd-]", "shift-ctrl-]"),
+            ("cmd-{", "ctrl-{"),
+            ("cmd-}", "ctrl-}"),
             ("cmd-left", "ctrl-left"),
             ("ctrl-cmd-f", "f11"),
             ("alt-f12", "alt-f12"),
@@ -1486,7 +1472,6 @@ mod tests {
             assert_eq!(actual, windows, "{macos}");
             let keystroke = Keystroke::parse(&actual).unwrap();
             assert!(!keystroke.modifiers.platform);
-            assert!(!matches!(keystroke.key.as_str(), "[" | "]" | "{" | "}"));
             assert!(code_from_gpui_key(&keystroke.key).is_some(), "{macos}");
             #[cfg(target_os = "macos")]
             assert_eq!(platform_default(macos).as_bytes(), macos.as_bytes());
@@ -1497,11 +1482,7 @@ mod tests {
                 assert!(!windows.modifiers.platform, "{}", entry.id);
                 assert!(code_from_gpui_key(&windows.key).is_some(), "{}", entry.id);
                 if windows.key.len() == 1 && windows.key.as_bytes()[0].is_ascii_alphabetic() {
-                    assert!(
-                        windows.modifiers.control && windows.modifiers.shift,
-                        "{}",
-                        entry.id
-                    );
+                    assert!(windows.modifiers.control, "{}", entry.id);
                 }
             }
         }
@@ -1588,16 +1569,20 @@ mod tests {
             }
         }
         for (id, hint) in [
-            ("new-chat", "Ctrl+Shift+N"),
-            ("new-window", "Ctrl+Shift+Alt+N"),
-            ("split-pane-right", "Ctrl+Shift+D"),
-            ("split-pane-down", "Ctrl+Shift+Alt+D"),
-            ("pane-previous", "Ctrl+PageUp"),
-            ("pane-next", "Ctrl+PageDown"),
-            ("mission-tab-previous", "Ctrl+PageUp"),
-            ("mission-tab-next", "Ctrl+PageDown"),
-            ("page-previous", "Ctrl+Shift+PageUp"),
-            ("page-next", "Ctrl+Shift+PageDown"),
+            ("new-chat", "Ctrl+N"),
+            ("new-window", "Ctrl+Shift+N"),
+            ("command-palette", "Ctrl+K"),
+            ("toggle-sidebar", "Ctrl+S"),
+            ("split-pane-right", "Ctrl+D"),
+            ("split-pane-down", "Ctrl+Shift+D"),
+            ("copy", "Ctrl+C"),
+            ("close-pane", "Ctrl+W"),
+            ("pane-previous", "Ctrl+["),
+            ("pane-next", "Ctrl+]"),
+            ("mission-tab-previous", "Ctrl+["),
+            ("mission-tab-next", "Ctrl+]"),
+            ("page-previous", "Ctrl+Shift+["),
+            ("page-next", "Ctrl+Shift+]"),
             ("open-settings", "Ctrl+,"),
             ("zoom-in", "Ctrl++"),
         ] {

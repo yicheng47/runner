@@ -161,13 +161,6 @@ impl NativeRoot {
             .h(rems(WORKSPACE_HEADER_HEIGHT / 16.))
             .pl(px(self.workspace_titlebar_padding(window, cx)))
             .pr_2()
-            .map(|header| {
-                #[cfg(windows)]
-                let header = header
-                    .pr(px(8. * self.settings(cx).app_zoom
-                        + self.chat_header_caption_inset(window, cx)));
-                header
-            })
             .flex()
             .items_center()
             .gap_2()
@@ -279,8 +272,6 @@ impl NativeRoot {
             panel_visibility,
             panel_open || panel_animating,
             panel_open && !panel_animating,
-            #[cfg(windows)]
-            window,
             cx,
         );
         div()
@@ -309,9 +300,18 @@ impl NativeRoot {
                 .justify_center()
                 .text_color(theme::muted())
                 .child(if self.app_store.read(cx).sessions.is_empty() {
-                    "No direct chats yet — press ⌘N"
+                    keymap::effective_binding("new-chat", &self.settings(cx).keymap_overrides)
+                        .map_or_else(
+                            || "No direct chats yet".to_owned(),
+                            |combo| {
+                                format!(
+                                    "No direct chats yet — press {}",
+                                    keymap::format_combo(&combo)
+                                )
+                            },
+                        )
                 } else {
-                    "No active tab"
+                    "No active tab".to_owned()
                 })
                 .into_any_element();
         };
@@ -463,11 +463,6 @@ impl NativeRoot {
                 .chain(panel_action),
         )
         .into_div();
-        #[cfg(windows)]
-        let header = header.pr(px(
-            8. * self.settings(cx).app_zoom + self.chat_header_caption_inset(window, cx)
-        ));
-
         let error_banner = self.chat_error.clone().map(|error| {
             div()
                 .mx_8()
@@ -606,8 +601,6 @@ impl NativeRoot {
             panel_visibility,
             panel_open || panel_animating,
             panel_open && !panel_animating,
-            #[cfg(windows)]
-            window,
             cx,
         );
 
@@ -861,18 +854,6 @@ impl NativeRoot {
         }
     }
 
-    #[cfg(windows)]
-    fn chat_header_caption_inset(&self, window: &Window, cx: &App) -> f32 {
-        let visibility = self.chat_panel_visibility.value_at(
-            Instant::now(),
-            Duration::from_millis(CHAT_PANEL_TRANSITION_MS),
-        );
-        (self.caption_inset(window, cx)
-            - self.settings(cx).chat_panel_width * self.settings(cx).app_zoom * visibility)
-            .max(0.)
-    }
-
-    #[cfg_attr(windows, allow(clippy::too_many_arguments))]
     fn render_chat_side_panel(
         &self,
         detail: Option<&DirectSessionEntry>,
@@ -880,7 +861,6 @@ impl NativeRoot {
         visibility: f32,
         show_panel: bool,
         border_on: bool,
-        #[cfg(windows)] window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let width = self.settings(cx).chat_panel_width;
@@ -913,13 +893,6 @@ impl NativeRoot {
                 .h(rems(WORKSPACE_HEADER_HEIGHT / 16.))
                 .pl_4()
                 .pr_2()
-                .map(|header| {
-                    #[cfg(windows)]
-                    let header = header.pr(px(
-                        8. * self.settings(cx).app_zoom + self.caption_inset(window, cx)
-                    ));
-                    header
-                })
                 .flex()
                 .items_center()
                 .justify_end()
@@ -1001,7 +974,8 @@ impl NativeRoot {
                                         .child(
                                             div()
                                                 .when(identity_monospace, |identity| {
-                                                    identity.font_family("Menlo")
+                                                    identity
+                                                        .font_family(theme::SYSTEM_MONOSPACE_FONT)
                                                 })
                                                 .text_size(rems(14. / 16.))
                                                 .font_weight(FontWeight::SEMIBOLD)
@@ -1038,7 +1012,7 @@ impl NativeRoot {
                                                     div()
                                                         .flex_1()
                                                         .min_w(px(0.))
-                                                        .font_family("Menlo")
+                                                        .font_family(theme::SYSTEM_MONOSPACE_FONT)
                                                         .text_color(theme::muted())
                                                         .child(
                                                             detail
@@ -1374,7 +1348,7 @@ impl NativeRoot {
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child(
                 div()
-                    .font_family("Menlo")
+                    .font_family(theme::SYSTEM_MONOSPACE_FONT)
                     .text_size(rems(10. / 16.))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(theme::faint())
@@ -1389,7 +1363,7 @@ impl NativeRoot {
                     .child(
                         div()
                             .w(rems(8. / 16.))
-                            .font_family("Menlo")
+                            .font_family(theme::SYSTEM_MONOSPACE_FONT)
                             .text_size(rems(11. / 16.))
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(theme::muted())
@@ -2566,7 +2540,7 @@ fn side_panel_value(value: String) -> AnyElement {
     div()
         .flex_1()
         .min_w(px(0.))
-        .font_family("Menlo")
+        .font_family(theme::SYSTEM_MONOSPACE_FONT)
         .text_color(theme::muted())
         .child(value)
         .into_any_element()
@@ -2831,10 +2805,7 @@ mod tests {
         #[cfg(unix)]
         assert_eq!(empty_pane_action_label(&overrides), "⌘N  New chat");
         #[cfg(windows)]
-        assert_eq!(
-            empty_pane_action_label(&overrides),
-            "Ctrl+Shift+N  New chat"
-        );
+        assert_eq!(empty_pane_action_label(&overrides), "Ctrl+N  New chat");
 
         let mut rebound = keymap::entry("new-chat").unwrap().default.clone();
         rebound.meta = false;
@@ -2911,7 +2882,7 @@ mod tests {
         #[cfg(windows)]
         assert_eq!(
             split_panes_tooltip(&overrides),
-            "Split panes · Ctrl+Shift+D / Ctrl+Shift+Alt+D"
+            "Split panes · Ctrl+D / Ctrl+Shift+D"
         );
 
         let mut rebound = keymap::entry("split-pane-right").unwrap().default.clone();

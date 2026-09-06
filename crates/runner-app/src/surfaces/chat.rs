@@ -1371,6 +1371,8 @@ impl NativeRoot {
             .get(session_id)
             .and_then(|chat| chat.terminal.selection_text())
         else {
+            #[cfg(windows)]
+            cx.propagate();
             return;
         };
         cx.write_to_clipboard(ClipboardItem::new_string(text));

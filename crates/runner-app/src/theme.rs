@@ -3,6 +3,8 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use gpui::{rgb, Hsla};
 use serde::{Deserialize, Serialize};
 
+pub use crate::platform_fonts::{SYSTEM_MONOSPACE_FONT, UI_MONOSPACE_FONT};
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ThemeIntent {

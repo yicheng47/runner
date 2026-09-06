@@ -403,6 +403,113 @@ fn forwarder_coalesces_queued_stream_chunks_into_one_output_event() {
     );
 }
 
+#[cfg(windows)]
+#[test]
+fn windows_coalescer_preserves_delayed_cursor_repair_with_a_bounded_grace() {
+    for (delay_ms, split_redraw) in [(12, false), (105, false), (105, true), (130, false)] {
+        // ConPTY closes the synchronized update before its delayed cursor repair.
+        let redraw = b"\x1b[?2026h\x1b[?25l\x1b[38;1H\x1b[?25h\x1b[0 q\x1b[?2026l";
+        let restore = b"\x1b[?25l \x1b[42;3H\x1b[?25h";
+        let mut arrivals = std::collections::VecDeque::new();
+        let mut bytes = redraw.to_vec();
+        let mut expected = bytes.clone();
+        for at_ms in (12..delay_ms.min(100)).step_by(12) {
+            arrivals.push_back((Duration::from_millis(at_ms), redraw.to_vec()));
+            expected.extend_from_slice(redraw);
+        }
+        if split_redraw {
+            let redraw = b"\x1b[?2026h\x1b[?25l\x1b[38;1H\x1b[?25h";
+            arrivals.push_back((Duration::from_millis(delay_ms), redraw.to_vec()));
+            expected.extend_from_slice(redraw);
+            arrivals.push_back((Duration::from_millis(delay_ms + 2), b"\x1b[?2026l".to_vec()));
+            expected.extend_from_slice(b"\x1b[?2026l");
+        }
+        let repair_ms = delay_ms + if split_redraw { 2 } else { 0 };
+        arrivals.push_back((Duration::from_millis(repair_ms), restore.to_vec()));
+        let started = Instant::now();
+        let elapsed = std::cell::Cell::new(Duration::ZERO);
+        let pending = super::output::coalesce_windows_output(
+            &mut bytes,
+            |timeout| {
+                let deadline = elapsed.get() + timeout;
+                if arrivals.front().is_some_and(|(at, _)| *at <= deadline) {
+                    let (at, bytes) = arrivals.pop_front().unwrap();
+                    elapsed.set(at);
+                    Ok(RuntimeOutput::Stream(bytes))
+                } else {
+                    elapsed.set(deadline);
+                    Err(RecvTimeoutError::Timeout)
+                }
+            },
+            || started + elapsed.get(),
+        );
+        assert!(pending.is_none());
+        if delay_ms < 125 {
+            expected.extend_from_slice(restore);
+            assert!(arrivals.is_empty());
+            assert_eq!(
+                elapsed.get(),
+                Duration::from_millis(if delay_ms < 100 {
+                    repair_ms + 25
+                } else {
+                    repair_ms
+                }),
+            );
+        } else {
+            assert_eq!(elapsed.get(), Duration::from_millis(125));
+            assert_eq!(arrivals.len(), 1);
+        }
+        assert_eq!(
+            bytes, expected,
+            "cursor repair after {delay_ms} ms, split redraw: {split_redraw}",
+        );
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn forwarder_delivers_a_cursor_burst_without_waiting_for_eof() {
+    let fake = fake_runtime();
+    let mgr = mgr_with_fake(None, Arc::clone(&fake));
+    let (rt_session, output) = fake
+        .spawn(SpawnSpec {
+            session_id: "cursor-burst-test".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    let redraw = b"\x1b[?2026h\x1b[?25l\x1b[38;1H\x1b[?25h\x1b[0 q\x1b[?2026l";
+    let restore = b"\x1b[?25l \x1b[42;3H\x1b[?25h";
+    fake.push_output(0, redraw);
+    fake.push_output(0, restore);
+    let capture = Arc::new(ForwarderCapture::default());
+    let forwarder = mgr.start_forwarder_thread(
+        rt_session.session_id.clone(),
+        None,
+        rt_session,
+        output,
+        pool_with_schema(),
+        capture.clone(),
+        runner("fake", &[]),
+        false,
+        false,
+        None,
+    );
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while capture.0.lock().unwrap().is_empty() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(5));
+    }
+    let events = std::mem::take(&mut *capture.0.lock().unwrap());
+    fake.close_spawn(0);
+    forwarder.join().unwrap();
+    assert_eq!(
+        events,
+        vec![ForwardedEvent::Output(
+            1,
+            [redraw.as_slice(), restore.as_slice()].concat()
+        )],
+    );
+}
+
 #[test]
 fn forwarder_preserves_status_transition_between_stream_chunks() {
     let events = forward_queued_output(vec![
@@ -505,10 +612,13 @@ fn runner(command: &str, args: &[&str]) -> Runner {
 }
 
 fn assert_effective_command(command: &str, catalog_name: &str) {
+    let path = std::path::Path::new(command);
+    #[cfg(windows)]
+    let name = path.file_stem();
+    #[cfg(not(windows))]
+    let name = path.file_name();
     assert_eq!(
-        std::path::Path::new(command)
-            .file_name()
-            .and_then(|name| name.to_str()),
+        name.and_then(|name| name.to_str()),
         Some(catalog_name),
         "expected {catalog_name} or an absolute path ending in {catalog_name}, got {command}",
     );
@@ -2268,8 +2378,14 @@ fn mission_spawn_cwd_prefers_mission_over_runner_working_dir() {
         resolved_spawn_cwd(None, Some("/runner-only")),
         Some(PathBuf::from("/runner-only")),
     );
-    // Neither set: inherit parent (None).
-    assert_eq!(resolved_spawn_cwd(None, None), None);
+    assert_eq!(
+        resolved_spawn_cwd(None, None),
+        runner_core::app_paths::home_dir()
+    );
+    assert_eq!(
+        resolved_spawn_cwd(Some(""), Some("/runner-only")),
+        Some(PathBuf::from("/runner-only")),
+    );
 }
 
 // Pre-#88 `mission_spawn_injects_preamble_for_non_lead_worker`
@@ -5392,12 +5508,18 @@ fn shell_resume_uses_nearest_existing_cwd_and_feeds_notice_first() {
     }
     let output = events.output.lock().unwrap();
     assert_eq!(output[0].seq, 1);
+    let home = runner_core::app_paths::home_dir();
+    let displayed_paths = [&missing_cwd, &existing_ancestor].map(|path| {
+        match home.as_ref().and_then(|home| path.strip_prefix(home).ok()) {
+            Some(relative) => format!("~/{}", relative.display()),
+            None => path.to_string_lossy().into_owned(),
+        }
+    });
     assert_eq!(
         output[0].bytes,
         format!(
             "\x1b[33mrunner: {} no longer exists\r\n        opened {} instead\x1b[0m\r\n",
-            missing_cwd.to_string_lossy(),
-            existing_ancestor.to_string_lossy(),
+            displayed_paths[0], displayed_paths[1],
         )
         .into_bytes()
     );
@@ -5405,6 +5527,52 @@ fn shell_resume_uses_nearest_existing_cwd_and_feeds_notice_first() {
     drop(output);
 
     mgr.kill("shell-missing-cwd").unwrap();
+}
+
+#[test]
+fn runtime_direct_spawn_defaults_to_home_and_preserves_explicit_directories() {
+    let home = runner_core::app_paths::home_dir().expect("home directory");
+    let selected = tempfile::tempdir().unwrap();
+    for (cwd, runner_cwd, expected) in [
+        (None, None, home.as_path()),
+        (Some(""), None, home.as_path()),
+        (Some(" \t"), Some(""), home.as_path()),
+        (None, selected.path().to_str(), selected.path()),
+        (selected.path().to_str(), home.to_str(), selected.path()),
+    ] {
+        let pool = pool_with_schema();
+        let fake = fake_runtime();
+        let mgr = mgr_with_fake(None, Arc::clone(&fake));
+        let mut configured = runner("/bin/sh", &[]);
+        configured.working_dir = runner_cwd.map(str::to_owned);
+        let spawned = mgr
+            .spawn_runtime_direct(
+                &configured,
+                None,
+                cwd,
+                None,
+                None,
+                fixture_tmp_dir(),
+                Arc::clone(&pool),
+                capture(),
+            )
+            .unwrap();
+        let stored_cwd: String = pool
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT cwd FROM sessions WHERE id = ?1",
+                params![spawned.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(Path::new(&stored_cwd), expected);
+        assert_eq!(
+            fake.last_spawn_spec().unwrap().cwd.as_deref(),
+            Some(expected)
+        );
+        mgr.kill(&spawned.id).unwrap();
+    }
 }
 
 #[test]

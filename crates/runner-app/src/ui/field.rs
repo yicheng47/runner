@@ -1078,7 +1078,9 @@ impl Render for TextField {
             .text_size(rems(self.text_size / 16.))
             .when(multiline, |input| input.line_height(rems(20. / 16.)))
             .text_color(theme::text())
-            .when(self.monospace, |input| input.font_family("JetBrains Mono"))
+            .when(self.monospace, |input| {
+                input.font_family(theme::UI_MONOSPACE_FONT)
+            })
             .when(self.kind == TextFieldKind::Input, |input| {
                 input.child(self.render_text(focused))
             })
@@ -1417,9 +1419,9 @@ pub type WorkingDirField = BrowseField;
 pub fn working_dir_placeholder(owner_path: Option<&str>, default_path: &str) -> String {
     owner_path
         .filter(|path| !path.trim().is_empty())
-        .or_else(|| (!default_path.trim().is_empty()).then_some(default_path.trim()))
-        .unwrap_or("(no working directory)")
-        .to_owned()
+        .map(str::to_owned)
+        .or_else(|| effective_working_dir("", false, default_path))
+        .unwrap_or_else(|| "Home directory".to_owned())
 }
 
 pub fn working_dir_text_field(
@@ -1443,7 +1445,12 @@ pub fn effective_working_dir(
         return None;
     }
     let default_path = default_path.trim();
-    (!default_path.is_empty()).then(|| default_path.to_owned())
+    (!default_path.is_empty())
+        .then(|| default_path.to_owned())
+        .or_else(|| {
+            runner_backend::app_paths::home_dir()
+                .and_then(|home| home.into_os_string().into_string().ok())
+        })
 }
 
 fn handle_key_down<T>(input: &mut TextBuffer, event: &KeyDownEvent, cx: &mut Context<T>) -> bool {
@@ -1842,7 +1849,12 @@ mod tests {
             "/runner"
         );
         assert_eq!(working_dir_placeholder(None, "/default"), "/default");
-        assert_eq!(working_dir_placeholder(None, ""), "(no working directory)");
+        let home = runner_backend::app_paths::home_dir()
+            .expect("home directory")
+            .into_os_string()
+            .into_string()
+            .unwrap();
+        assert_eq!(working_dir_placeholder(None, ""), home);
 
         assert_eq!(
             effective_working_dir(" /typed ", true, "/default"),
@@ -1853,6 +1865,7 @@ mod tests {
             effective_working_dir("", false, "/default"),
             Some("/default".into())
         );
-        assert_eq!(effective_working_dir("", false, ""), None);
+        assert_eq!(effective_working_dir("", false, ""), Some(home.clone()));
+        assert_eq!(effective_working_dir(" \t", false, " "), Some(home));
     }
 }

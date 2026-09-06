@@ -5,6 +5,7 @@ mod file_links;
 mod keymap;
 mod list_controls;
 mod mac_chrome;
+mod platform_ui;
 mod surfaces;
 mod terminal;
 mod window_state;
@@ -1172,7 +1173,7 @@ fn run() -> Result<()> {
             {
                 cx.defer(move |cx| {
                     if let Err(error) = window.update(cx, close_window_or_pane) {
-                        eprintln!("Runner cmd-w failed: {error:#}");
+                        eprintln!("Runner close window failed: {error:#}");
                     }
                 });
             }
@@ -1377,7 +1378,7 @@ fn open_runner_window(
                 let _ = weak.update(cx, |this, cx| {
                     this.prepare_window_close(window, cx);
                 });
-                true
+                platform_ui::finish_window_close(window)
             });
             root
         },

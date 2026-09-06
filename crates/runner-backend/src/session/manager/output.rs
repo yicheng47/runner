@@ -3,6 +3,54 @@ use super::*;
 // Match alacritty's read budget while bounding a single terminal-lock hold.
 const MAX_OUTPUT_BURST: usize = 1024 * 1024;
 
+#[cfg(windows)]
+pub(super) fn coalesce_windows_output(
+    bytes: &mut Vec<u8>,
+    mut recv: impl FnMut(Duration) -> Result<RuntimeOutput, RecvTimeoutError>,
+    now: impl Fn() -> Instant,
+) -> Option<RuntimeOutput> {
+    let mut burst_deadline = now() + Duration::from_millis(100);
+    let mut cursor_repair_grace = false;
+    while bytes.len() < MAX_OUTPUT_BURST {
+        // ConPTY can send the cursor repair a frame after ending a sync update.
+        let next =
+            recv(Duration::from_millis(25).min(burst_deadline.saturating_duration_since(now())));
+        match next {
+            Ok(RuntimeOutput::Stream(next)) if bytes.len() + next.len() <= MAX_OUTPUT_BURST => {
+                bytes.extend(next);
+                if cursor_repair_grace {
+                    let sync_end = b"\x1b[?2026l";
+                    if let Some(end) = bytes
+                        .windows(sync_end.len())
+                        .rposition(|sequence| sequence == sync_end)
+                    {
+                        let repair = &bytes[end + sync_end.len()..];
+                        if repair.ends_with(b"\x1b[?25h")
+                            && !repair
+                                .windows(b"\x1b[?2026h".len())
+                                .any(|sequence| sequence == b"\x1b[?2026h")
+                        {
+                            break;
+                        }
+                    }
+                }
+            }
+            Ok(next) => return Some(next),
+            Err(RecvTimeoutError::Timeout)
+                if !cursor_repair_grace
+                    && now() >= burst_deadline
+                    && bytes.ends_with(b"\x1b[?2026l") =>
+            {
+                // The time cap must not cut off ConPTY's final cursor repair.
+                cursor_repair_grace = true;
+                burst_deadline = now() + Duration::from_millis(25);
+            }
+            Err(_) => break,
+        }
+    }
+    None
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum LocalInputClass {
     SetPending,
@@ -129,8 +177,18 @@ impl SessionManager {
                     .unwrap_or_else(|| output.recv_timeout(Duration::from_millis(500)));
                 match next {
                     Ok(RuntimeOutput::Stream(mut bytes)) => {
+                        #[cfg(windows)]
+                        {
+                            pending = coalesce_windows_output(
+                                &mut bytes,
+                                |timeout| output.recv_timeout(timeout),
+                                Instant::now,
+                            );
+                        }
+                        #[cfg(not(windows))]
                         while bytes.len() < MAX_OUTPUT_BURST {
-                            match output.try_recv() {
+                            let next = output.try_recv();
+                            match next {
                                 Ok(RuntimeOutput::Stream(next))
                                     if bytes.len() + next.len() <= MAX_OUTPUT_BURST =>
                                 {

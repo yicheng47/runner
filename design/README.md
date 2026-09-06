@@ -4,6 +4,8 @@ Pencil (`.pen`) source files for the Runners UI. Open these in the Pencil app; t
 
 Conventions:
 
+The Windows shared title bar is recorded in `windows-header.pen`, frame `winShell` and header `winTitlebar`: a 32 px row above the sidebar and workspace, sidebar/history controls on the left, and 46 px caption buttons on the right. It is separate from the macOS chrome.
+
 - One `.pen` file per major surface (e.g. `home.pen`, `crew-editor.pen`, `runner-card.pen`).
 - `runner-mvp-design.pen` is the historical MVP canvas; do not add new feature work to it.
 - `chat-attention-indicators.pen` frame `R4LJz` contains the issue #285 working, unread, and collapsed-rollup states.

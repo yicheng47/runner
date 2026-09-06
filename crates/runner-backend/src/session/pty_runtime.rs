@@ -1951,7 +1951,7 @@ mod tests {
     fn spawn_emits_idle_after_silence_and_busy_on_more_output_windows() {
         let rt = PtyRuntime::new();
         let (session, stream) = rt.spawn(spec(
-            "idle-windows", "cmd", &["/d", "/c", "echo first & timeout /t 2 /nobreak >nul & timeout /t 2 /nobreak >nul & echo second"],
+            "idle-windows", "cmd", &["/d", "/c", r"echo first & %SystemRoot%\System32\timeout.exe /t 2 /nobreak >nul & %SystemRoot%\System32\timeout.exe /t 2 /nobreak >nul & echo second"],
         )).unwrap();
         let mut statuses = Vec::new();
         let deadline = Instant::now() + Duration::from_secs(12);

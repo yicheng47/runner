@@ -542,9 +542,7 @@ impl PaginatedListPage {
 }
 
 impl RenderOnce for PaginatedListPage {
-    fn render(self, window: &mut Window, _cx: &mut App) -> impl IntoElement {
-        #[cfg(not(windows))]
-        let _ = window;
+    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
         let body = if self.loading && !self.loaded {
             div()
                 .text_size(rems(14. / 16.))
@@ -625,7 +623,7 @@ impl RenderOnce for PaginatedListPage {
                         .child(
                             div()
                                 .flex_none()
-                                .font_family("JetBrains Mono")
+                                .font_family(theme::UI_MONOSPACE_FONT)
                                 .text_size(rems(11. / 16.))
                                 .text_color(theme::muted())
                                 .child(format!(
@@ -657,13 +655,6 @@ impl RenderOnce for PaginatedListPage {
                     .pb(rems(18. / 16.))
                     .child(
                         div()
-                            .map(|header| {
-                                #[cfg(windows)]
-                                let header = header.when(!window.is_fullscreen(), |header| {
-                                    header.pr(rems(3. * super::CAPTION_BUTTON_WIDTH / 16.))
-                                });
-                                header
-                            })
                             .flex()
                             .items_center()
                             .justify_between()

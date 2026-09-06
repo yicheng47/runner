@@ -73,7 +73,7 @@ impl NativeRoot {
             TextField::new(
                 input_cx.focus_handle(),
                 cwd,
-                "/Users/you/projects/foo (optional)",
+                "Runner default or home directory",
                 true,
             )
             .text_size(12.)
@@ -475,7 +475,7 @@ impl NativeRoot {
                         ),
                 )
                 .emphasized(true)
-                .subtitle("Each runner's PTY starts in this directory. Exposed as $MISSION_CWD."),
+                .subtitle("Each runner starts here. Leave blank to use its default directory or your home directory."),
             )
             .child(
                 div()

@@ -231,6 +231,9 @@ impl EventLog {
     /// anyway) is silently skipped.
     pub fn read_from(&self, offset: u64) -> Result<Vec<LogEntry>> {
         let mut file = File::open(&self.path)?;
+        // Windows byte-range locks also exclude readers in the same process.
+        #[cfg(windows)]
+        FileExt::lock_shared(&file)?;
         file.seek(SeekFrom::Start(offset))?;
         let mut reader = BufReader::new(file);
 
@@ -271,6 +274,8 @@ impl EventLog {
     /// not per-line corruption and re-trying makes sense.
     pub fn read_from_lossy(&self, offset: u64) -> Result<(Vec<LogEntry>, Vec<SkipReport>)> {
         let mut file = File::open(&self.path)?;
+        #[cfg(windows)]
+        FileExt::lock_shared(&file)?;
         file.seek(SeekFrom::Start(offset))?;
         let mut reader = BufReader::new(file);
 
@@ -637,6 +642,52 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let log = EventLog::open(dir.path()).unwrap();
         assert!(log.read_from(0).unwrap().is_empty());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn readers_wait_for_a_writer_to_release_its_lock() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        for lossy in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let log = EventLog::open(dir.path()).unwrap();
+            let event = log.append(draft_signal("runner_status")).unwrap();
+            let blocker = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(log.path())
+                .unwrap();
+            blocker.lock_exclusive().unwrap();
+
+            let (started_tx, started_rx) = mpsc::channel();
+            let (done_tx, done_rx) = mpsc::channel();
+            let reader = std::thread::spawn(move || {
+                started_tx.send(()).unwrap();
+                let result = if lossy {
+                    log.read_from_lossy(0).map(|(entries, skipped)| {
+                        assert!(skipped.is_empty());
+                        entries
+                    })
+                } else {
+                    log.read_from(0)
+                };
+                done_tx.send(()).unwrap();
+                result
+            });
+            started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+            let waited = matches!(
+                done_rx.recv_timeout(Duration::from_millis(50)),
+                Err(mpsc::RecvTimeoutError::Timeout)
+            );
+            FileExt::unlock(&blocker).unwrap();
+
+            let entries = reader.join().unwrap().unwrap();
+            assert!(waited, "reader must wait for the exclusive writer lock");
+            assert_eq!(entries.len(), 1);
+            assert_eq!(entries[0].event.id, event.id);
+        }
     }
 
     #[test]

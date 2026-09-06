@@ -678,7 +678,7 @@ impl AgentsPane {
             )
             .children(runtime_defaults_visible(runtime).then(|| {
                 div()
-                    .font_family("JetBrains Mono")
+                    .font_family(theme::UI_MONOSPACE_FONT)
                     .text_size(rems(11. / 16.))
                     .line_height(rems(15.4 / 16.))
                     .text_color(theme::faint())
@@ -686,7 +686,7 @@ impl AgentsPane {
             }))
             .children(presentation.caption.map(|caption| {
                 div()
-                    .font_family("JetBrains Mono")
+                    .font_family(theme::UI_MONOSPACE_FONT)
                     .text_size(rems(11. / 16.))
                     .line_height(rems(15.4 / 16.))
                     .text_color(if validation.is_some() {

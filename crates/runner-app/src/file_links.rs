@@ -72,7 +72,10 @@ fn link_tooltip(
             return if modifier_held {
                 "Open in browser".into()
             } else {
-                "⌘-click to open in browser".into()
+                format!(
+                    "{}-click to open in browser",
+                    crate::platform_ui::PRIMARY_MODIFIER
+                )
             };
         }
         LinkTarget::File { path, line, .. } => (path, *line),
@@ -84,7 +87,10 @@ fn link_tooltip(
         } else {
             editor.label()
         };
-        return format!("⌘-click to open in {destination}");
+        return format!(
+            "{}-click to open in {destination}",
+            crate::platform_ui::PRIMARY_MODIFIER
+        );
     }
     let name = path
         .file_name()
@@ -203,10 +209,11 @@ mod tests {
 
     #[test]
     fn link_tooltip_teaches_the_gesture_then_names_the_action() {
+        let modifier = if cfg!(windows) { "Ctrl" } else { "⌘" };
         let url = LinkTarget::Url("https://example.com".into());
         assert_eq!(
             link_tooltip(&url, false, FileLinkEditor::Zed, None),
-            "⌘-click to open in browser"
+            format!("{modifier}-click to open in browser")
         );
         assert_eq!(
             link_tooltip(&url, true, FileLinkEditor::Zed, None),
@@ -216,7 +223,7 @@ mod tests {
         let file = file_target();
         assert_eq!(
             link_tooltip(&file, false, FileLinkEditor::Zed, Some(true)),
-            "⌘-click to open in Zed"
+            format!("{modifier}-click to open in Zed")
         );
         assert_eq!(
             link_tooltip(&file, true, FileLinkEditor::Zed, Some(true)),
@@ -224,7 +231,7 @@ mod tests {
         );
         assert_eq!(
             link_tooltip(&file, false, FileLinkEditor::VsCode, Some(false)),
-            "⌘-click to open in default app"
+            format!("{modifier}-click to open in default app")
         );
         assert_eq!(
             link_tooltip(&file, true, FileLinkEditor::VsCode, Some(false)),

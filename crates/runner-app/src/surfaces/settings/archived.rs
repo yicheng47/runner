@@ -408,7 +408,7 @@ impl ArchivedPane {
                     .max_w(rems(180. / 16.))
                     .flex_none()
                     .truncate()
-                    .font_family("JetBrains Mono")
+                    .font_family(theme::UI_MONOSPACE_FONT)
                     .text_size(rems(11. / 16.))
                     .text_color(theme::faint())
                     .child(cwd)

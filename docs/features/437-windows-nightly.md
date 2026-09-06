@@ -1,10 +1,12 @@
 # Windows nightly — a pre-release a friend can download
 
-Tracking issue: [#437](https://github.com/yicheng47/runner/issues/437) (closed won't-do 2026-08-27; reopened for this scope). Status: gap analysis, planned. Priority P2.
+Tracking issue: [#437](https://github.com/yicheng47/runner/issues/437) (closed won't-do 2026-08-27; reopened for this scope). Status as of 2026-09-06: Phase 0–3 implementation landed on `nightly-windows`; local fixes and PC acceptance in progress. Priority P2. The [program record](../impls/windows-nightly/README.md) and [current Todo list](../impls/windows-nightly/impl_log.md#todo) track the implemented behavior, later decisions superseding this original gap analysis, and remaining validation.
 
 ## Motivation
 
-A friend wants to run Runner on Windows, and Jason now has a Windows PC to test on, which was the missing piece when #437 was closed: the objection was a second platform with no test loop, not the port itself. The target is deliberately small — a **nightly pre-release** built by CI that anyone can download from the releases page without a GitHub account, run from a zip, and report on. No installer, no signing, no updater, no production channel. Those are a later decision once the nightly has users.
+September 6 scope clarification: Windows includes update detection, the sidebar download indicator, and manual-download controls. Jason has added **Phase 4 — Windows installer and upgrades** as remaining port work: a per-user Inno Setup EXE installer, Windows signing, and user-run upgrades that preserve settings and missions. Automatic update download/installation and a production channel remain outside scope. The crew mission smoke test is accepted. See the [remaining phase](../impls/windows-nightly/plan.md#phase-4--windows-installer-and-upgrades-remaining) and [program decisions](../impls/windows-nightly/plan.md#decisions).
+
+A friend wants to run Runner on Windows, and Jason now has a Windows PC to test on, which was the missing piece when #437 was closed: the objection was a second platform with no test loop, not the port itself. The original target was a **nightly pre-release** ZIP built by CI that anyone could download without a GitHub account. Phases 0–3 established that path; Phase 4 extends it to the installer and upgrade experience described above. The gap analysis below retains the original baseline where later decisions supersede it.
 
 This spec replaces the #437 inventory (surveyed 2026-08-23 on `b9cbb9b`) with a measured one from `main` at `49543b2` (0.7.4, 2026-09-04). The measurement changes the shape of the work: the compile gap is about seventeen errors, the app already builds against GPUI's Windows backend, and the effort sits in three behavioural areas the compiler cannot see — process lifecycle, agent spawning, and the MCP transport — plus a CI job.
 
@@ -80,7 +82,7 @@ The current `nightly` release is a **draft**: invisible on the releases page and
 - **Job Objects replace signal escalation rather than emulating it.** A job kills the whole tree in one call, so the snapshot-then-sweep design that exists to catch descendants on macOS has no Windows counterpart to port. The lifecycle code gets a platform trait with two implementations, not one implementation with two branches.
 - **Named pipe, not TCP.** It is the platform's equivalent of the Unix socket, per-user by default, and needs no port or token file. rmcp does not care which.
 - **Windows Terminal keymap conventions.** Ctrl for app chords, Ctrl+Shift for terminal copy and paste, Ctrl+C untouched. Anything else surprises the target user.
-- **Portable zip, standard title bar, no icon.** Every item that is cosmetic or an installer concern stays out until someone other than Jason has run the nightly.
+- **Installer after portable validation.** The original ZIP-only boundary is superseded by the September 6 Phase 4 decision. Use a per-user Inno Setup EXE as the primary download, preserve user data across upgrades, and retain the ZIP as an optional portable artifact. Windows-specific packaging and update code must preserve macOS behavior.
 - **Separate public pre-release tag.** `nightly-win` is a published pre-release, never a draft — confirmed by Jason 2026-09-04; renamed from the planned `nightly-windows` tag on 2026-09-05 to avoid colliding with the long-lived branch of that name. `nightly` stays a draft; changing the macOS nightly's visibility is a different decision and not needed for this one.
 
 ## Phases
@@ -90,11 +92,13 @@ Each phase is one PR that leaves the macOS build, tests, and the `Rust / macOS` 
 0. **Compile gate.** Add the non-required `windows-latest` check job to CI and make it green: the `ipc` module with the named-pipe implementation, the `home_dir` and app-data helpers, `pty_runtime` un-gated with a Windows lifecycle module that compiles (stubs are acceptable here), `cfg(unix)` on the shell-spawning tests. Deliverable: `Runner.exe` builds. About one session.
 1. **It opens on the PC.** The `nightly-windows` job and its first zip. Jason runs it: the window opens with the OS title bar, the database is created under `%APPDATA%`, Settings renders, the Ctrl keymap works, the shell pane opens PowerShell. Fix what breaks. This is already something the friend can download. One to two sessions plus PC time.
 2. **Agents run.** Job Object lifecycle, liveness and identity, orphan sweep, `PATHEXT` discovery, both `runner` shims, `;` `PATH`, the MCP pipe end to end from a Claude Code session. Acceptance: a claude direct chat, a codex direct chat, then a two-slot crew mission with `runner signal` reaching the feed and Stop leaving no orphans. The real port. Three to five sessions, most of it PC testing.
-3. **Nightly polish.** `explorer /select`, icon resource, long-path manifest, ConPTY resize fixtures, a CJK IME pass, the Windows CI job promoted to required, release notes with the SmartScreen step. Signing and an installer are filed as their own issue if the nightly earns them.
+3. **Nightly polish.** `explorer /select`, icon resource, long-path manifest, ConPTY resize fixtures, a CJK IME pass, the Windows CI job promoted to required, release notes with the SmartScreen step. Installer/signing work now follows in Phase 4.
+4. **Windows installer and upgrades — remaining.** Package the app and both CLI sidecars into a signed per-user Inno Setup installer, install under `%LOCALAPPDATA%\Programs\Runner`, register Start Menu and uninstall entries, publish through the Windows nightly job, and adapt the update indicator/checker to installer downloads. Verify fresh install, upgrade between nightlies, data preservation, uninstall/reinstall, and unchanged macOS behavior. The user runs the downloaded installer; automatic update installation remains later work.
 
 ## Non-goals
 
-- A production Windows release: installer (MSI/NSIS), code signing, an updater, or a Windows entry in `release.yml`.
+- A production Windows release channel or Windows entry in `release.yml`; the nightly installer and Windows signing are now in Phase 4.
+- Automatic update download/installation and app-managed restart; update notifications and user-run installer upgrades are in scope.
 - Spawning agents through WSL.
 - ARM64 Windows. x64 only until someone asks.
 - Linux, which stays a non-goal in `docs/product/vision.md`.

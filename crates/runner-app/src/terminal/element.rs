@@ -511,7 +511,14 @@ fn mouse_modifiers(modifiers: gpui::Modifiers) -> MouseModifiers {
 }
 
 fn link_modifier(modifiers: gpui::Modifiers) -> bool {
-    modifiers.platform || modifiers.control
+    #[cfg(windows)]
+    {
+        modifiers.control
+    }
+    #[cfg(not(windows))]
+    {
+        modifiers.platform || modifiers.control
+    }
 }
 
 fn autoscroll_amount(bounds: Bounds<Pixels>, position: Point<Pixels>) -> i32 {
@@ -1408,16 +1415,19 @@ mod tests {
     use super::{autoscroll_amount, cell_and_side, link_modifier, point_for_viewport};
 
     #[test]
-    fn terminal_links_require_the_platform_or_control_modifier() {
+    fn terminal_links_use_control_on_windows_and_preserve_macos_modifiers() {
         assert!(!link_modifier(gpui::Modifiers::default()));
         assert!(!link_modifier(gpui::Modifiers {
             alt: true,
             ..Default::default()
         }));
-        assert!(link_modifier(gpui::Modifiers {
-            platform: true,
-            ..Default::default()
-        }));
+        assert_eq!(
+            link_modifier(gpui::Modifiers {
+                platform: true,
+                ..Default::default()
+            }),
+            !cfg!(windows),
+        );
         assert!(link_modifier(gpui::Modifiers {
             control: true,
             ..Default::default()

@@ -40,6 +40,7 @@ raw-window-handle = "0.6"
 [target.'cfg(windows)'.dependencies]
 # Keep gpui's defaults except windows-manifest; resync when its defaults change.
 gpui = { package = "gpui-ce", version = "0.3", default-features = false, features = ["font-kit", "wayland", "x11"] }
+reqwest = { package = "zed-reqwest", version = "0.12.15-zed", default-features = false, features = ["blocking", "json", "rustls-tls-native-roots"] }
 
 [target.'cfg(windows)'.dev-dependencies]
 gpui = { package = "gpui-ce", version = "0.3", default-features = false, features = ["test-support"] }

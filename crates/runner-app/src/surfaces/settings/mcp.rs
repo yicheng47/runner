@@ -263,7 +263,7 @@ impl McpPane {
                     .min_w_0()
                     .flex_1()
                     .truncate()
-                    .font_family("JetBrains Mono")
+                    .font_family(theme::UI_MONOSPACE_FONT)
                     .text_size(rems(11. / 16.))
                     .text_color(theme::muted())
                     .child(if binding_dir.is_empty() {
@@ -433,7 +433,7 @@ impl McpPane {
                                 div()
                                     .min_w_0()
                                     .flex_1()
-                                    .font_family("JetBrains Mono")
+                                    .font_family(theme::UI_MONOSPACE_FONT)
                                     .text_size(rems(10. / 16.))
                                     .line_height(rems(14.5 / 16.))
                                     .text_color(theme::faint())

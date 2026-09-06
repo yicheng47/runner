@@ -602,8 +602,7 @@ impl SessionManager {
         // claude-code (its conversation files are keyed under
         // `~/.claude/projects/<encoded-cwd>/<uuid>.jsonl`; resuming with a
         // different cwd makes `--resume` fail).
-        let resolved_cwd: Option<String> =
-            mission.cwd.clone().or_else(|| runner.working_dir.clone());
+        let resolved_cwd = resolve_spawn_cwd(mission.cwd.as_deref(), runner.working_dir.as_deref());
 
         // Per-slot runner shim: hardcodes the RUNNER_* env vars + exec's
         // the real bundled CLI. claude-code's Bash tool spawns
@@ -872,7 +871,7 @@ impl SessionManager {
             if matches!(runner.runtime.as_str(), "codex" | "trae") && plan.assigned_key.is_none() {
                 crate::session::codex_capture::sessions_root_for(&runner.runtime).and_then(
                     |sessions_root| {
-                        capture_cwd(resolved_cwd.clone()).map(|cwd| CodexCaptureContext {
+                        resolved_cwd.clone().map(|cwd| CodexCaptureContext {
                             mission_id: Some(mission.id.clone()),
                             sessions_root,
                             spawn_cwd: cwd,
@@ -1178,18 +1177,11 @@ impl SessionManager {
         // `agent_session_key` (claude-code) or leaves it NULL (codex).
         let plan = router::runtime::resume_plan(&runner.runtime, None);
 
-        // Working directory precedence: explicit `cwd` arg (Chat now
-        // dialog folder) ► runner's `working_dir`. A direct chat must
-        // name a real directory: portable-pty silently substitutes
-        // $HOME for a missing or nonexistent cwd, which strands the
-        // agent in the wrong place and breaks codex session-key
-        // capture (the rollout cwd can never match the row).
-        let resolved_cwd: Option<String> = cwd
-            .map(|s| s.to_string())
-            .or_else(|| runner.working_dir.clone());
-        let Some(chat_cwd) = resolved_cwd.as_deref().filter(|c| !c.is_empty()) else {
+        // Reject explicitly missing folders before portable-pty can substitute another cwd.
+        let resolved_cwd = resolve_spawn_cwd(cwd, runner.working_dir.as_deref());
+        let Some(chat_cwd) = resolved_cwd.as_deref() else {
             return Err(Error::msg(
-                "select a working directory before starting a chat",
+                "home directory is unavailable; select a working directory before starting a chat",
             ));
         };
         if !std::path::Path::new(chat_cwd).is_dir() {
@@ -1322,7 +1314,7 @@ impl SessionManager {
             if matches!(runner.runtime.as_str(), "codex" | "trae") && plan.assigned_key.is_none() {
                 crate::session::codex_capture::sessions_root_for(&runner.runtime).and_then(
                     |sessions_root| {
-                        capture_cwd(resolved_cwd.clone()).map(|cwd| CodexCaptureContext {
+                        resolved_cwd.clone().map(|cwd| CodexCaptureContext {
                             mission_id: None,
                             sessions_root,
                             spawn_cwd: cwd,
@@ -1531,10 +1523,10 @@ impl SessionManager {
             )?
         };
 
-        let resolved_cwd = source.cwd.clone().or_else(|| runner.working_dir.clone());
-        let Some(chat_cwd) = resolved_cwd.as_deref().filter(|cwd| !cwd.is_empty()) else {
+        let resolved_cwd = resolve_spawn_cwd(source.cwd.as_deref(), runner.working_dir.as_deref());
+        let Some(chat_cwd) = resolved_cwd.as_deref() else {
             return Err(Error::msg(
-                "select a working directory before forking a chat",
+                "home directory is unavailable; select a working directory before forking a chat",
             ));
         };
         if !Path::new(chat_cwd).is_dir() {
@@ -1587,7 +1579,7 @@ impl SessionManager {
             let mut row = crate::repo::session::SessionRowDb::new_running(session_id.clone());
             row.project_id.clone_from(&source.project_id);
             row.runner_id.clone_from(&source.runner_id);
-            row.cwd.clone_from(&source.cwd);
+            row.cwd = resolved_cwd.clone();
             row.started_at = Some(started_at_dt);
             row.agent_session_key = match &plan {
                 router::runtime::ForkPlan::Direct(plan) => plan.assigned_key.clone(),
@@ -2029,11 +2021,10 @@ impl SessionManager {
         // print "No conversation found" and leave the TUI half-broken.
         // Detect the missing file up front and degrade to a fresh
         // spawn with a newly self-assigned uuid via `--session-id`.
-        let resolved_cwd_for_check: Option<String> = snap.cwd.clone().or_else(|| {
-            snap.runner_id
-                .as_ref()
-                .and_then(|_| runner.working_dir.clone())
-        });
+        let resolved_cwd_for_check = resolve_spawn_cwd(
+            snap.cwd.as_deref(),
+            snap.runner_id.as_ref().and(runner.working_dir.as_deref()),
+        );
         let is_lead_slot = mission_ctx.as_ref().is_some_and(|c| c.lead);
         let conversation_missing =
             match (runner.runtime.as_str(), snap.agent_session_key.as_deref()) {
@@ -2082,11 +2073,7 @@ impl SessionManager {
             )?;
             (Some(cwd), notice)
         } else {
-            let cwd = snap.cwd.clone().or_else(|| {
-                snap.runner_id
-                    .as_ref()
-                    .and_then(|_| runner.working_dir.clone())
-            });
+            let cwd = resolved_cwd_for_check;
             if mission_ctx.is_none() {
                 if let Some(missing_cwd) = cwd
                     .as_deref()
@@ -2254,7 +2241,7 @@ impl SessionManager {
             if matches!(runner.runtime.as_str(), "codex" | "trae") && plan.assigned_key.is_none() {
                 crate::session::codex_capture::sessions_root_for(&runner.runtime).and_then(
                     |sessions_root| {
-                        capture_cwd(resolved_cwd.clone()).map(|cwd| CodexCaptureContext {
+                        resolved_cwd.clone().map(|cwd| CodexCaptureContext {
                             mission_id: snap.mission_id.clone(),
                             sessions_root,
                             spawn_cwd: cwd,

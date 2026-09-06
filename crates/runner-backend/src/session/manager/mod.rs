@@ -1293,21 +1293,16 @@ impl SessionManager {
     }
 }
 
-/// Compute current activity counters for `runner` and emit a
-/// `runner/activity` event. Best-effort: if the DB roundtrip fails we drop
-/// the emission rather than failing the spawn/reap path. Runners list will
-/// reconcile via the next emission or a manual refresh.
-/// Resolve the cwd the codex_capture watcher should match against.
-/// portable-pty substitutes $HOME when the spawn has no cwd (or a
-/// nonexistent one), so the fallback must be the home dir — that is
-/// what codex stamps into the rollout's `payload.cwd`.
-fn capture_cwd(explicit: Option<String>) -> Option<String> {
-    if let Some(cwd) = explicit {
-        if !cwd.is_empty() {
-            return Some(cwd);
-        }
-    }
-    runner_core::app_paths::home_dir().and_then(|h| h.into_os_string().into_string().ok())
+fn resolve_spawn_cwd(explicit: Option<&str>, runner_default: Option<&str>) -> Option<String> {
+    [explicit, runner_default]
+        .into_iter()
+        .flatten()
+        .find(|cwd| !cwd.trim().is_empty())
+        .map(str::to_owned)
+        .or_else(|| {
+            runner_core::app_paths::home_dir()
+                .and_then(|home| home.into_os_string().into_string().ok())
+        })
 }
 
 /// Outcome of resolving a runtime override against a runner row

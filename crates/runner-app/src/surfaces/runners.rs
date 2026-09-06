@@ -894,7 +894,7 @@ impl NativeRoot {
             .child(
                 div()
                     .pr_1()
-                    .font_family("JetBrains Mono")
+                    .font_family(theme::UI_MONOSPACE_FONT)
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(theme::faint())
                     .child("@"),
@@ -1324,7 +1324,7 @@ impl NativeRoot {
                             .bg(theme::raised())
                             .px(rems(6. / 16.))
                             .py(rems(2. / 16.))
-                            .font_family("JetBrains Mono")
+                            .font_family(theme::UI_MONOSPACE_FONT)
                             .text_size(rems(12. / 16.))
                             .font_weight(FontWeight::NORMAL)
                             .text_color(theme::muted())
@@ -1756,11 +1756,7 @@ impl NativeRoot {
         match route {
             AppRoute::Chat => self.render_active_tab(window, cx),
             AppRoute::Runners => self.render_runners_page(cx),
-            AppRoute::RunnerDetail(_) => self.render_runner_detail(
-                #[cfg(windows)]
-                window,
-                cx,
-            ),
+            AppRoute::RunnerDetail(_) => self.render_runner_detail(cx),
             AppRoute::Crews | AppRoute::CrewEditor(_) => self.render_crew_surface(window, cx),
             AppRoute::Mission(_) => self.mission_workspace.clone().into_any_element(),
             AppRoute::ArchivedChat => self.render_archived_chat(window, cx),
@@ -1949,7 +1945,7 @@ impl NativeRoot {
                                     .gap_2()
                                     .child(
                                         div()
-                                            .font_family("JetBrains Mono")
+                                            .font_family(theme::UI_MONOSPACE_FONT)
                                             .text_size(rems(1.))
                                             .font_weight(FontWeight::SEMIBOLD)
                                             .text_color(theme::text())
@@ -1957,7 +1953,7 @@ impl NativeRoot {
                                     )
                                     .child(
                                         div()
-                                            .font_family("JetBrains Mono")
+                                            .font_family(theme::UI_MONOSPACE_FONT)
                                             .text_size(rems(11. / 16.))
                                             .text_color(theme::faint())
                                             .child(item.runner.runtime.clone()),
@@ -2055,7 +2051,7 @@ impl NativeRoot {
                                 div()
                                     .mt(rems(6. / 16.))
                                     .truncate()
-                                    .font_family("JetBrains Mono")
+                                    .font_family(theme::UI_MONOSPACE_FONT)
                                     .text_size(rems(11. / 16.))
                                     .text_color(theme::faint())
                                     .child(format!("$ {command}")),
@@ -2109,11 +2105,7 @@ impl NativeRoot {
             .into_any_element()
     }
 
-    fn render_runner_detail(
-        &mut self,
-        #[cfg(windows)] window: &Window,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
+    fn render_runner_detail(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let root = cx.entity();
         let back_root = root.clone();
         let back_key_root = root.clone();
@@ -2170,11 +2162,6 @@ impl NativeRoot {
                     .py_8()
                     .child(
                         div()
-                            .map(|header| {
-                                #[cfg(windows)]
-                                let header = header.pr(px(self.caption_inset(window, cx)));
-                                header
-                            })
                             .flex()
                             .items_center()
                             .justify_between()
@@ -2216,7 +2203,7 @@ impl NativeRoot {
                                     .child(div().text_color(theme::border_strong()).child("›"))
                                     .child(
                                         div()
-                                            .font_family("JetBrains Mono")
+                                            .font_family(theme::UI_MONOSPACE_FONT)
                                             .text_size(rems(1.))
                                             .font_weight(FontWeight::SEMIBOLD)
                                             .text_color(theme::text())
@@ -2383,7 +2370,7 @@ impl NativeRoot {
                         Some("Used whenever this runner spawns. Override per crew/mission slot later (v0.x)."),
                         if let Some(prompt) = runner.system_prompt.clone() {
                             div()
-                                .font_family("JetBrains Mono")
+                                .font_family(theme::UI_MONOSPACE_FONT)
                                 .text_size(rems(12. / 16.))
                                 .line_height(rems(19.5 / 16.))
                                 .text_color(theme::text())
@@ -2416,7 +2403,7 @@ impl NativeRoot {
                                     .border_color(theme::border_strong())
                                     .bg(theme::bg())
                                     .p(rems(6. / 16.))
-                                    .font_family("JetBrains Mono")
+                                    .font_family(theme::UI_MONOSPACE_FONT)
                                     .text_size(rems(12. / 16.))
                                     .text_color(theme::faint())
                                     .child(runner.working_dir.clone().unwrap_or_else(|| "—".into())),
@@ -3175,7 +3162,9 @@ fn detail_metadata_row(
             div()
                 .min_w(px(0.))
                 .text_right()
-                .when(monospace, |value| value.font_family("JetBrains Mono"))
+                .when(monospace, |value| {
+                    value.font_family(theme::UI_MONOSPACE_FONT)
+                })
                 .when(subtle, |value| {
                     value.text_size(rems(10. / 16.)).text_color(theme::faint())
                 })
