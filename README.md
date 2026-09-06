@@ -43,13 +43,13 @@ The coordination model is explicit. A **runner** is a reusable agent configurati
 
 Runner also runs as an **MCP server**: any MCP client — including the agents themselves — can create crews, start missions, and steer them programmatically. See [Drive it from your agents](#drive-it-from-your-agents-mcp).
 
-Runner is a native macOS app written in Rust: [gpui-ce](https://github.com/gpui-ce/gpui-ce) — the community-maintained fork of [Zed](https://zed.dev)'s GPUI — for the UI, `alacritty_terminal` for the terminal grid, SQLite for state. No webview.
+Runner is a native macOS and Windows app written in Rust: [gpui-ce](https://github.com/gpui-ce/gpui-ce) — the community-maintained fork of [Zed](https://zed.dev)'s GPUI — for the UI, `alacritty_terminal` for the terminal grid, SQLite for state. No webview.
 
 ## Download
 
-Latest macOS build (Apple Silicon `.dmg`) on the [releases page](https://github.com/yicheng47/runner/releases/latest). The rolling [`nightly`](https://github.com/yicheng47/runner/releases/tag/nightly) prerelease updates itself through Sparkle. Signed and notarized; Intel Macs and Linux are not supported.
+Download the latest macOS build (Apple Silicon `.dmg`) from the [releases page](https://github.com/yicheng47/runner/releases/latest). Signed and notarized, with updates through Sparkle. Intel Macs and Linux are not supported.
 
-Windows x64 installers are available on the [`nightly-win` release](https://github.com/yicheng47/runner/releases/tag/nightly-win). The next tagged release will also include `Runner-Setup-…-x64.exe` alongside the Mac DMG. Windows installers are currently unsigned. Production builds check stable releases; nightlies check `nightly-win`. Close Runner and run the newer installer to upgrade while retaining settings and missions. See [Windows installation and development](docs/impls/windows-nightly/README.md#building-and-testing-the-windows-installer).
+Starting with **0.8.0**, Windows x64 installers (`Runner-Setup-…-x64.exe`) are available alongside the Mac DMG on the [releases page](https://github.com/yicheng47/runner/releases/latest). Windows 10 version 1809 or later is required; installers are currently unsigned. Close Runner and run the newer installer to upgrade while retaining settings, chats, and missions. Production builds check stable releases; testing builds remain on [`nightly-win`](https://github.com/yicheng47/runner/releases/tag/nightly-win). Installing a production build over a nightly switches to stable updates. See [Windows installation and development](docs/impls/windows-nightly/README.md#building-and-testing-the-windows-installer).
 
 <!-- TODO(demo): add a "## Demo" section here once the new hero video is recorded — a Peer
      Coding Crew mission on a real repo (mission start from a project → feed + per-slot
