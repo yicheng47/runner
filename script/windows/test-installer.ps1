@@ -72,8 +72,12 @@ class Fixture { static void Main() {} }
             Copy-Item -LiteralPath "$stage/Runner.exe" -Destination (Join-Path $stage $binary)
         }
     }
-    $channelOptions = if ($revision -eq 2) { @('/DUpdatesUrl=https://github.com/yicheng47/runner/releases/latest') } else { @() }
-    & $compiler /Q "/DAppId=$appId" "/DAppName=$appName" "/DAppVersion=0.7.5.20260101.000$revision" /DBaseVersion=0.7.5 "/DSourceDir=$stage" "/DOutputDir=$testRoot" @channelOptions (Join-Path $PSScriptRoot 'runner.iss')
+    $updatesUrl = if ($revision -eq 2) {
+        'https://github.com/yicheng47/runner/releases/latest'
+    } else {
+        'https://github.com/yicheng47/runner/releases/tag/nightly-win'
+    }
+    & $compiler /Q "/DAppId=$appId" "/DAppName=$appName" "/DAppVersion=0.7.5.20260101.000$revision" /DBaseVersion=0.7.5 "/DUpdatesUrl=$updatesUrl" "/DSourceDir=$stage" "/DOutputDir=$testRoot" (Join-Path $PSScriptRoot 'runner.iss')
     if ($LASTEXITCODE -ne 0) { throw 'Installer test compilation failed' }
 }
 

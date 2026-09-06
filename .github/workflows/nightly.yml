@@ -50,6 +50,7 @@ jobs:
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
         with:
+          key: ${{ hashFiles('Cargo.toml') }}
           cache-on-failure: true
 
       - name: Install Metal toolchain
@@ -156,6 +157,7 @@ jobs:
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
         with:
+          key: ${{ hashFiles('Cargo.toml') }}
           cache-on-failure: true
 
       - name: Build Windows installer
