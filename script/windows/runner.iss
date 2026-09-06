@@ -16,6 +16,9 @@
 #ifndef AppName
   #define AppName "Runner"
 #endif
+#ifndef UpdatesUrl
+  #define UpdatesUrl "https://github.com/yicheng47/runner/releases/tag/nightly-win"
+#endif
 
 [Setup]
 AppId={#AppId}
@@ -23,7 +26,7 @@ AppName={#AppName}
 AppVersion={#AppVersion}
 AppPublisher=wyc studios
 AppPublisherURL=https://github.com/yicheng47/runner
-AppUpdatesURL=https://github.com/yicheng47/runner/releases/tag/nightly-win
+AppUpdatesURL={#UpdatesUrl}
 DefaultDirName={localappdata}\Programs\{#AppName}
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest

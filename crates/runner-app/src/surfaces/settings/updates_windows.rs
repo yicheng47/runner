@@ -2,7 +2,7 @@ use chrono::{DateTime, Local};
 use gpui::prelude::*;
 use gpui::{div, Context, Entity, Render, Subscription, Window};
 use runner_app::ui::{Button, ButtonSize, PaneHeader, SettingsCard, SettingsRow, Toggle};
-use runner_app::updater::{Updater, WINDOWS_DOWNLOAD_URL};
+use runner_app::updater::{windows_download_url, Updater};
 
 use crate::app_store::AppStore;
 use crate::theme;
@@ -69,7 +69,7 @@ impl Render for UpdatesPane {
             .gap_5()
             .child(PaneHeader::new(
                 "Updates",
-                "Get notified about new Windows nightlies. Download and install them manually.",
+                "Get notified about new Windows builds. Download and install them manually.",
             ))
             .child(SettingsCard::new([
                 SettingsRow::new(
@@ -92,12 +92,12 @@ impl Render for UpdatesPane {
                 .subtitle(status)
                 .into_any_element(),
                 SettingsRow::new(
-                    "Windows nightly",
+                    "Windows downloads",
                     Button::new("updates-download", "View downloads")
                         .icon("external-link.svg")
                         .size(ButtonSize::Sm)
                         .on_press(|_, cx| {
-                            cx.open_url(WINDOWS_DOWNLOAD_URL);
+                            cx.open_url(windows_download_url());
                         }),
                 )
                 .subtitle("Download Runner-Setup, close Runner, then run the installer. Your settings and missions stay in place.")
@@ -125,7 +125,7 @@ impl Render for UpdatesPane {
                         },
                     ),
                 )
-                .subtitle("Packaged nightlies check at startup and every six hours.")
+                .subtitle("Packaged builds check at startup and every six hours.")
                 .into_any_element(),
                 SettingsRow::new(
                     "Last checked",

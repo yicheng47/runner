@@ -4,11 +4,9 @@ on:
   pull_request:
     branches:
       - main
-      - nightly-windows
   push:
     branches:
       - main
-      - nightly-windows
 
 permissions:
   contents: read
@@ -34,15 +32,35 @@ jobs:
 
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Check formatting
+        run: cargo fmt --all --check
 
       - name: Install Metal toolchain
         run: xcodebuild -downloadComponent MetalToolchain
 
-      - name: Verify
-        run: make verify
+      - name: Clippy
+        run: cargo clippy --locked --workspace --all-targets --profile ci -- -D warnings
+
+      - name: Clippy with updater
+        run: cargo clippy --locked -p runner-app --features updater --all-targets --profile ci -- -D warnings
+
+      - name: Test
+        run: cargo test --locked --workspace --no-fail-fast --profile ci --timings
 
       - name: Verify lockfile is committed
         run: git diff --exit-code -- Cargo.lock
+
+      - name: Upload build timings
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cargo-timings-macos
+          path: target/cargo-timings/*.html
+          if-no-files-found: ignore
+          retention-days: 7
 
   rust-windows:
     name: Rust / Windows
@@ -58,18 +76,17 @@ jobs:
 
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
-
-      - name: Check
-        run: cargo check --workspace --all-targets
+        with:
+          cache-on-failure: true
 
       - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --locked --workspace --all-targets --profile ci -- -D warnings
 
       - name: Test
-        run: cargo test --workspace --no-fail-fast
+        run: cargo test --locked --workspace --no-fail-fast --profile ci --timings
 
       - name: Build Runner for resource verification
-        run: cargo build -p runner-app
+        run: cargo build --locked -p runner-app --profile ci --timings
 
       - name: Verify Windows installer behavior
         run: ./script/windows/test-installer.ps1
@@ -95,7 +112,7 @@ jobs:
             }
           }
           '@
-          $module = [Resources]::LoadLibraryEx((Resolve-Path target/debug/Runner.exe), [IntPtr]::Zero, 2)
+          $module = [Resources]::LoadLibraryEx((Resolve-Path target/ci/Runner.exe), [IntPtr]::Zero, 2)
           if ($module -eq [IntPtr]::Zero) { throw 'Cannot load Runner.exe resources' }
           try {
             $manifest = [Text.Encoding]::UTF8.GetString([Resources]::Read($module, 24, 1))
@@ -109,3 +126,12 @@ jobs:
 
       - name: Verify lockfile is committed
         run: git diff --exit-code -- Cargo.lock
+
+      - name: Upload build timings
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cargo-timings-windows
+          path: target/cargo-timings/*.html
+          if-no-files-found: ignore
+          retention-days: 7

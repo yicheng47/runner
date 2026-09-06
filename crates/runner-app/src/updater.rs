@@ -7,7 +7,7 @@ use gpui::{App, Context, Entity, Global};
 mod native;
 
 #[cfg(windows)]
-pub use native::WINDOWS_DOWNLOAD_URL;
+pub use native::windows_download_url;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct UpdateInfo {
