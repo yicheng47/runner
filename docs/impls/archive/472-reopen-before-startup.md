@@ -1,6 +1,6 @@
 # 472 — Reopen during startup must not abort the app
 
-Tracking issue: [#472](https://github.com/yicheng47/runner/issues/472). Bug, P1, macOS. Baseline `main` at `236eb8c` (2026-09-06). Companion: [#473](https://github.com/yicheng47/runner/issues/473) (slow quit), which is what makes this race easy to hit; it is a separate mission and out of scope here.
+Tracking issue: [#472](https://github.com/yicheng47/runner/issues/472). Bug, P1, macOS. Baseline `main` at `236eb8c` (2026-09-06). Shipped 2026-09-06 in [#495](https://github.com/yicheng47/runner/pull/495). Companion: [#473](https://github.com/yicheng47/runner/issues/473) (slow quit), which is what makes this race easy to hit; it is a separate mission and out of scope here.
 
 ## What ships
 
