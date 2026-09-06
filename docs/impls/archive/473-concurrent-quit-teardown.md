@@ -1,6 +1,6 @@
 # 473 — Quit tears sessions down concurrently
 
-Tracking issue: [#473](https://github.com/yicheng47/runner/issues/473). Bug, P2, universal. Baseline `main` at `f654ca9` (2026-09-06), with [#472](https://github.com/yicheng47/runner/issues/472) landed. Companion: #472 was the launch abort that a slow quit sets up; it is fixed and out of scope here.
+Tracking issue: [#473](https://github.com/yicheng47/runner/issues/473). Bug, P2, universal. Baseline `main` at `f654ca9` (2026-09-06), with [#472](https://github.com/yicheng47/runner/issues/472) landed. Shipped 2026-09-06 in [#496](https://github.com/yicheng47/runner/pull/496). Companion: #472 was the launch abort that a slow quit sets up; it is fixed and out of scope here.
 
 ## What ships
 
