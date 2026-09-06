@@ -17,12 +17,15 @@ permissions:
   contents: write
 
 jobs:
-  build-macos:
-    runs-on: macos-15
-    timeout-minutes: 90
-    env:
-      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
-
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      stamp: ${{ steps.release.outputs.stamp }}
+      sha: ${{ steps.release.outputs.sha }}
+      version: ${{ steps.release.outputs.version }}
+      release_tag: ${{ steps.release.outputs.release_tag }}
+      release_title: ${{ steps.release.outputs.release_title }}
+      bridge_mode: ${{ steps.release.outputs.bridge_mode }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
@@ -59,6 +62,17 @@ jobs:
           echo "release_title=$release_title" >> "$GITHUB_OUTPUT"
           echo "bridge_mode=$bridge_mode" >> "$GITHUB_OUTPUT"
 
+  build-macos:
+    needs: prepare
+    runs-on: macos-15
+    timeout-minutes: 90
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
       - name: Require release signing keys
         env:
           SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
@@ -79,6 +93,7 @@ jobs:
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
         with:
+          key: ${{ hashFiles('Cargo.toml') }}
           cache-on-failure: true
 
       - name: Install Metal toolchain
@@ -110,8 +125,8 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          RUNNER_BUILD_STAMP: ${{ steps.release.outputs.stamp }}
-          RUNNER_BUILD_SHA: ${{ steps.release.outputs.sha }}
+          RUNNER_BUILD_STAMP: ${{ needs.prepare.outputs.stamp }}
+          RUNNER_BUILD_SHA: ${{ needs.prepare.outputs.sha }}
         run: ./script/bundle-mac --channel production
 
       - name: Fetch pinned Sparkle tools
@@ -131,12 +146,12 @@ jobs:
           SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
         run: |
           appcast_dir=$(mktemp -d "$RUNNER_TEMP/runner-release-appcast.XXXXXX")
-          dmg="target/release/Runner-${{ steps.release.outputs.version }}-arm64.dmg"
-          release_url="https://github.com/yicheng47/runner/releases/tag/${{ steps.release.outputs.release_tag }}"
+          dmg="target/release/Runner-${{ needs.prepare.outputs.version }}-arm64.dmg"
+          release_url="https://github.com/yicheng47/runner/releases/tag/${{ needs.prepare.outputs.release_tag }}"
           cp "$dmg" "$appcast_dir/"
           printf '%s' "$SPARKLE_ED_PRIVATE_KEY" | "$SPARKLE_TOOLS_DIR/generate_appcast" \
             --ed-key-file - \
-            --download-url-prefix "https://github.com/yicheng47/runner/releases/download/${{ steps.release.outputs.release_tag }}/" \
+            --download-url-prefix "https://github.com/yicheng47/runner/releases/download/${{ needs.prepare.outputs.release_tag }}/" \
             --full-release-notes-url "$release_url" \
             --link "$release_url" \
             --maximum-versions 10 \
@@ -146,7 +161,7 @@ jobs:
           echo "APPCAST=$appcast_dir/appcast.xml" >> "$GITHUB_ENV"
 
       - name: Build and sign the v0.6.0 Tauri bridge
-        if: steps.release.outputs.bridge_mode == 'build'
+        if: needs.prepare.outputs.bridge_mode == 'build'
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
@@ -161,7 +176,7 @@ jobs:
           test "$expected" = "$actual" || { echo "error: bridge signed with key $actual; 0.5.x clients trust $expected" >&2; exit 1; }
 
       - name: Generate the v0.6.0 Tauri updater manifest
-        if: steps.release.outputs.bridge_mode == 'build'
+        if: needs.prepare.outputs.bridge_mode == 'build'
         run: |
           bridge_url="https://github.com/yicheng47/runner/releases/download/v0.6.0/Runner.app.tar.gz"
           bridge_release_url="https://github.com/yicheng47/runner/releases/tag/v0.6.0"
@@ -176,10 +191,77 @@ jobs:
             > target/release/latest.json
 
       - name: Carry the v0.6.0 Tauri updater manifest through 0.6.x
-        if: steps.release.outputs.bridge_mode == 'carry'
+        if: needs.prepare.outputs.bridge_mode == 'carry'
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release download v0.6.0 --pattern latest.json --dir target/release
+
+      - name: Stage macOS release artifacts
+        run: |
+          mkdir -p target/release-artifacts
+          cp "$DMG" "$APPCAST" target/release-artifacts/
+          if [[ "${{ needs.prepare.outputs.bridge_mode }}" == "build" ]]; then
+            cp target/release/Runner.app.tar.gz target/release/Runner.app.tar.gz.sig target/release/latest.json target/release-artifacts/
+          elif [[ "${{ needs.prepare.outputs.bridge_mode }}" == "carry" ]]; then
+            cp target/release/latest.json target/release-artifacts/
+          fi
+
+      - name: Upload macOS release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-macos
+          path: target/release-artifacts/*
+          if-no-files-found: error
+
+  build-windows:
+    needs: prepare
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        run: |
+          rustup show active-toolchain
+          rustup target add x86_64-pc-windows-msvc
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ hashFiles('Cargo.toml') }}
+          cache-on-failure: true
+
+      - name: Build Windows production installer
+        env:
+          RUNNER_BUILD_STAMP: ${{ needs.prepare.outputs.stamp }}
+          RUNNER_BUILD_SHA: ${{ needs.prepare.outputs.sha }}
+        run: ./script/bundle-windows.ps1 -Channel production
+
+      - name: Verify installer upgrade and uninstall behavior
+        run: ./script/windows/test-installer.ps1 -SourceDir target/x86_64-pc-windows-msvc/release
+
+      - name: Upload Windows release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-windows
+          path: target/x86_64-pc-windows-msvc/release/Runner-Setup-${{ needs.prepare.outputs.version }}.${{ needs.prepare.outputs.stamp }}-x64.exe
+          if-no-files-found: error
+
+  publish:
+    needs: [prepare, build-macos, build-windows]
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Download release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: release-artifacts
+          merge-multiple: true
 
       - name: Require CI green for this commit
         env:
@@ -200,17 +282,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          release_tag="${{ steps.release.outputs.release_tag }}"
-          release_title="${{ steps.release.outputs.release_title }}"
+          release_tag="${{ needs.prepare.outputs.release_tag }}"
+          release_title="${{ needs.prepare.outputs.release_title }}"
+          notes="Windows x64 installers are unsigned. Close Runner before installing an upgrade; settings and missions are retained."
           if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
-            gh release create "$release_tag" --draft --verify-tag --title "$release_title" --notes "See https://github.com/yicheng47/runner/commits/$release_tag"
+            gh release create "$release_tag" --draft --verify-tag --title "$release_title" --notes "See https://github.com/yicheng47/runner/commits/$release_tag. $notes"
           else
-            gh release create "$release_tag" --draft --prerelease --title "$release_title" --notes "Dry-run artifacts for commit $GITHUB_SHA. Delete this draft after inspection."
+            gh release create "$release_tag" --draft --prerelease --target "$GITHUB_SHA" --title "$release_title" --notes "Dry-run artifacts for commit $GITHUB_SHA. Delete this draft after inspection. $notes"
           fi
-          artifacts=("$DMG" "$APPCAST")
-          if [[ "${{ steps.release.outputs.bridge_mode }}" == "build" ]]; then
-            artifacts+=(target/release/Runner.app.tar.gz target/release/Runner.app.tar.gz.sig target/release/latest.json)
-          elif [[ "${{ steps.release.outputs.bridge_mode }}" == "carry" ]]; then
-            artifacts+=(target/release/latest.json)
-          fi
-          gh release upload "$release_tag" "${artifacts[@]}" --clobber
+          gh release upload "$release_tag" release-artifacts/* --clobber

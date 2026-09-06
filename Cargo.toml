@@ -36,9 +36,22 @@ opt-level = 3
 [profile.dev.package.taffy]
 opt-level = 3
 
-# Release binaries use whole-program optimization to keep the ARM64 package small.
+# CI needs quick compilation and useful failure backtraces, not full UI optimization.
+[profile.ci]
+inherits = "dev"
+debug = "line-tables-only"
+
+[profile.ci.package."*"]
+opt-level = 1
+
+[profile.ci.package.gpui-ce]
+opt-level = 1
+
+[profile.ci.package.taffy]
+opt-level = 1
+
+# Thin LTO balances release build time with runtime optimization.
 # Not stripped: the panic hook logs backtraces, and stripping would turn their
 # frames into bare addresses.
 [profile.release]
-lto = "fat"
-codegen-units = 1
+lto = "thin"

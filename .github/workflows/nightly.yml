@@ -1,4 +1,5 @@
 name: Nightly
+run-name: Nightly (${{ inputs.platform }})
 
 on:
   workflow_dispatch:
@@ -49,6 +50,7 @@ jobs:
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
         with:
+          key: ${{ hashFiles('Cargo.toml') }}
           cache-on-failure: true
 
       - name: Install Metal toolchain
@@ -155,6 +157,7 @@ jobs:
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
         with:
+          key: ${{ hashFiles('Cargo.toml') }}
           cache-on-failure: true
 
       - name: Build Windows installer
@@ -192,7 +195,7 @@ jobs:
           if gh release view nightly-win >/dev/null 2>&1; then
             gh release edit nightly-win --title "Runner Nightly (Windows)" --notes-file "$notes" --prerelease --draft=false
           else
-            gh release create nightly-win --target nightly-windows --prerelease --title "Runner Nightly (Windows)" --notes-file "$notes"
+            gh release create nightly-win --target main --prerelease --title "Runner Nightly (Windows)" --notes-file "$notes"
           fi
           gh release upload nightly-win "$new_setup" --clobber
           pattern='^Runner-Setup-.*\.([0-9]{8})\.([0-9]{4})-x64\.exe$'

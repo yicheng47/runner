@@ -29,7 +29,7 @@ function Invoke-Setup([string]$Path, [string]$Label, [string[]]$Extra = @(), [sw
     }
 }
 
-function Assert-Installed([string]$Stage, [string]$Version) {
+function Assert-Installed([string]$Stage, [string]$Version, [string]$UpdatesUrl = 'https://github.com/yicheng47/runner/releases/tag/nightly-win') {
     foreach ($binary in $binaries) {
         $expected = (Get-FileHash -LiteralPath (Join-Path $Stage $binary)).Hash
         $actual = (Get-FileHash -LiteralPath (Join-Path $installDir $binary)).Hash
@@ -39,6 +39,7 @@ function Assert-Installed([string]$Stage, [string]$Version) {
     if ($entry.DisplayVersion -ne $Version -or $entry.InstallLocation.TrimEnd('\') -ne $installDir) {
         throw 'Uninstall entry has the wrong version or installation directory'
     }
+    if ($entry.URLUpdateInfo -ne $UpdatesUrl) { throw 'Uninstall entry has the wrong update channel' }
     $shortcut = (New-Object -ComObject WScript.Shell).CreateShortcut($shortcutPath)
     if ($shortcut.TargetPath -ne (Join-Path $installDir 'Runner.exe')) { throw 'Start Menu target differs' }
     if ($shortcut.WorkingDirectory -ne [Environment]::GetFolderPath('UserProfile')) { throw 'Start Menu cwd is not home' }
@@ -71,7 +72,12 @@ class Fixture { static void Main() {} }
             Copy-Item -LiteralPath "$stage/Runner.exe" -Destination (Join-Path $stage $binary)
         }
     }
-    & $compiler /Q "/DAppId=$appId" "/DAppName=$appName" "/DAppVersion=0.7.5.20260101.000$revision" /DBaseVersion=0.7.5 "/DSourceDir=$stage" "/DOutputDir=$testRoot" (Join-Path $PSScriptRoot 'runner.iss')
+    $updatesUrl = if ($revision -eq 2) {
+        'https://github.com/yicheng47/runner/releases/latest'
+    } else {
+        'https://github.com/yicheng47/runner/releases/tag/nightly-win'
+    }
+    & $compiler /Q "/DAppId=$appId" "/DAppName=$appName" "/DAppVersion=0.7.5.20260101.000$revision" /DBaseVersion=0.7.5 "/DUpdatesUrl=$updatesUrl" "/DSourceDir=$stage" "/DOutputDir=$testRoot" (Join-Path $PSScriptRoot 'runner.iss')
     if ($LASTEXITCODE -ne 0) { throw 'Installer test compilation failed' }
 }
 
@@ -95,8 +101,8 @@ foreach ($binary in $binaries) {
     (Get-Item -LiteralPath (Join-Path $installDir $binary)).LastWriteTimeUtc = [DateTime]::UtcNow.AddDays(1)
 }
 Invoke-Setup $second 'upgrade'
-Assert-Installed "$testRoot/payload-2" '0.7.5.20260101.0002'
-Write-Host 'PASS: fresh install, shortcut, per-user registration, blocked upgrades/uninstalls, same-version binary replacement'
+Assert-Installed "$testRoot/payload-2" '0.7.5.20260101.0002' 'https://github.com/yicheng47/runner/releases/latest'
+Write-Host 'PASS: fresh install, shortcut, per-user registration, blocked upgrades/uninstalls, same-version binary replacement, nightly-to-production channel switch'
 
 Invoke-Setup $uninstaller 'uninstall'
 if ((Test-Path -LiteralPath $registryKey) -or (Test-Path -LiteralPath $shortcutPath)) { throw 'Uninstall registration or shortcut remains' }
@@ -106,7 +112,7 @@ foreach ($binary in $binaries) {
 if ((Get-Content -LiteralPath $retainedFile -Raw).Trim() -ne 'keep across upgrade and uninstall') { throw 'Uninstall removed unowned data' }
 
 Invoke-Setup $second 'reinstall' @("/DIR=`"$installDir`"")
-Assert-Installed "$testRoot/payload-2" '0.7.5.20260101.0002'
+Assert-Installed "$testRoot/payload-2" '0.7.5.20260101.0002' 'https://github.com/yicheng47/runner/releases/latest'
 if (-not (Test-Path -LiteralPath $retainedFile)) { throw 'Reinstall removed retained data' }
 Invoke-Setup $uninstaller 'final-uninstall'
 Write-Host 'PASS: uninstall removes binaries/shortcut/entry, retains unowned data, and reinstall succeeds'

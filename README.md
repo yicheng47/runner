@@ -49,7 +49,7 @@ Runner is a native macOS app written in Rust: [gpui-ce](https://github.com/gpui-
 
 Latest macOS build (Apple Silicon `.dmg`) on the [releases page](https://github.com/yicheng47/runner/releases/latest). The rolling [`nightly`](https://github.com/yicheng47/runner/releases/tag/nightly) prerelease updates itself through Sparkle. Signed and notarized; Intel Macs and Linux are not supported.
 
-Experimental Windows x64 builds are available on the separate [`nightly-win` release](https://github.com/yicheng47/runner/releases/tag/nightly-win). Use `Runner-Setup-…-x64.exe` when available, or extract the entire portable ZIP before launching Runner. These testing builds are unsigned. Windows update notifications open the downloads page; close Runner and run the newer installer to upgrade while retaining settings and missions. See [Windows installation and development](docs/impls/windows-nightly/README.md#building-and-testing-the-windows-installer).
+Windows x64 installers are available on the [`nightly-win` release](https://github.com/yicheng47/runner/releases/tag/nightly-win). The next tagged release will also include `Runner-Setup-…-x64.exe` alongside the Mac DMG. Windows installers are currently unsigned. Production builds check stable releases; nightlies check `nightly-win`. Close Runner and run the newer installer to upgrade while retaining settings and missions. See [Windows installation and development](docs/impls/windows-nightly/README.md#building-and-testing-the-windows-installer).
 
 <!-- TODO(demo): add a "## Demo" section here once the new hero video is recorded — a Peer
      Coding Crew mission on a real repo (mission start from a project → feed + per-slot

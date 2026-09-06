@@ -7,10 +7,24 @@ use serde::Deserialize;
 
 use super::{UpdateInfo, Updater};
 
-pub const WINDOWS_DOWNLOAD_URL: &str =
-    "https://github.com/yicheng47/runner/releases/tag/nightly-win";
-const RELEASE_API: &str = "https://api.github.com/repos/yicheng47/runner/releases/tags/nightly-win";
 const CHECK_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
+
+fn release_urls(channel: Option<&str>) -> (&'static str, &'static str) {
+    match channel {
+        Some("production") => (
+            "https://api.github.com/repos/yicheng47/runner/releases/latest",
+            "https://github.com/yicheng47/runner/releases/latest",
+        ),
+        _ => (
+            "https://api.github.com/repos/yicheng47/runner/releases/tags/nightly-win",
+            "https://github.com/yicheng47/runner/releases/tag/nightly-win",
+        ),
+    }
+}
+
+pub fn windows_download_url() -> &'static str {
+    release_urls(option_env!("RUNNER_RELEASE_CHANNEL")).1
+}
 
 pub(super) struct NativeUpdater {
     automatically_checks: Cell<bool>,
@@ -81,7 +95,8 @@ impl NativeUpdater {
                 let result = cx
                     .background_executor()
                     .spawn(async {
-                        let release = fetch_release(RELEASE_API)?;
+                        let release =
+                            fetch_release(release_urls(option_env!("RUNNER_RELEASE_CHANNEL")).0)?;
                         available_update(&release, option_env!("RUNNER_BUILD_STAMP"))
                     })
                     .await;
@@ -158,10 +173,10 @@ fn fetch_release(url: &str) -> Result<Release> {
         .send()?
         .error_for_status()?
         .json()
-        .context("read Windows nightly release")
+        .context("read Windows release")
 }
 
-fn nightly_version(name: &str) -> Option<(&str, &str)> {
+fn installer_version(name: &str) -> Option<(&str, &str)> {
     let version = name
         .strip_prefix("Runner-Setup-")
         .and_then(|name| name.strip_suffix("-x64.exe"))
@@ -194,7 +209,7 @@ fn available_update(
         .assets
         .iter()
         .filter(|asset| asset.state == "uploaded")
-        .filter_map(|asset| nightly_version(&asset.name))
+        .filter_map(|asset| installer_version(&asset.name))
         .max_by_key(|(_, stamp)| *stamp)
     else {
         bail!("Windows release has no completed x64 installer or portable ZIP");
@@ -208,6 +223,26 @@ fn available_update(
 mod tests {
     use super::*;
     use gpui::AppContext as _;
+
+    #[test]
+    fn production_release_ignores_macos_assets_and_requires_a_windows_installer() {
+        let mut release: Release = serde_json::from_value(serde_json::json!({"assets": [
+            {"name": "Runner-0.7.6-arm64.dmg", "state": "uploaded"},
+            {"name": "appcast.xml", "state": "uploaded"},
+            {"name": "Runner-Setup-0.7.6.20260908.0100-x64.exe", "state": "uploaded"}
+        ]}))
+        .unwrap();
+        assert_eq!(
+            available_update(&release, Some("20260907.0100")).unwrap(),
+            Some(UpdateInfo::new("0.7.6.20260908.0100"))
+        );
+        assert_eq!(
+            available_update(&release, Some("20260908.0100")).unwrap(),
+            None
+        );
+        release.assets.pop();
+        assert!(available_update(&release, Some("20260907.0100")).is_err());
+    }
 
     #[test]
     fn rolling_release_uses_newest_completed_windows_asset() {

@@ -54,7 +54,9 @@ Surface hierarchy (strict — do not blur these in code, docs, or UI copy):
 - Format: `make fmt`.
 - Clippy: `make clippy`.
 - Workspace tests: `make test`.
-- Everything CI runs: `make verify` (check + test + clippy + fmt-check).
+- Local validation: `make verify` (check + test + clippy + fmt-check).
+
+CI runs Clippy and workspace tests with `--profile ci`, which uses lighter dependency optimization and debug information. Reproduce it with `cargo clippy --locked --workspace --all-targets --profile ci -- -D warnings` and `cargo test --locked --workspace --no-fail-fast --profile ci --timings`; macOS also checks formatting and Clippy with `--features updater`. Normal development uses the `dev` profile; releases use level 3 optimization with thin LTO and Cargo's default codegen units.
 
 On Windows, use `.\make.cmd run` to build and start the app with its CLI sidecars, or `.\make.cmd build` to build only. Add `--release` for optimized binaries under `target\release`; the default development binaries are under `target\debug`. Use `.\make.cmd clean` to remove the Cargo target directory, or `.\make.cmd clean --release` to clean only release outputs; close the development app and finish other builds first. Installed apps, user data, Rust toolchains, and Cargo's shared dependency cache are kept. The script works in PowerShell and Command Prompt without GNU Make; use the native Cargo commands in [Local Windows development](docs/impls/windows-nightly/README.md#local-windows-development) for checks.
 

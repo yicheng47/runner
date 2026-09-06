@@ -31,7 +31,7 @@ pub(crate) fn update_hint_tooltip(version: &str) -> String {
 }
 
 pub(crate) fn activate_update_hint(_updater: &Entity<Updater>, cx: &mut App) {
-    cx.open_url(runner_app::updater::WINDOWS_DOWNLOAD_URL);
+    cx.open_url(runner_app::updater::windows_download_url());
 }
 
 pub(crate) fn finish_window_close(window: &mut Window) -> bool {
@@ -255,7 +255,7 @@ mod tests {
         });
         assert_eq!(
             cx.opened_url().as_deref(),
-            Some(runner_app::updater::WINDOWS_DOWNLOAD_URL)
+            Some(runner_app::updater::windows_download_url())
         );
     }
 }

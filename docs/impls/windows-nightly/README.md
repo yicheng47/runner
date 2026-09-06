@@ -4,7 +4,9 @@ Implementation program for [feature 437 — Windows nightly](../../features/437-
 
 ## Status (2026-09-06)
 
-The Phase 0–3 implementation and Phase 4a unsigned installer are published on the public [`nightly-win` prerelease](https://github.com/yicheng47/runner/releases/tag/nightly-win) from `nightly-windows`. The first installer release, `0.7.5.20260906.0842` from `31ac40c`, contains the September 6 chrome, sidebar, font, keybinding, home-directory, event-log, shutdown, cursor, rename, and update-notification fixes. Both macOS and Windows CI jobs, real-payload installer checks, and anonymous installer/ZIP downloads passed. See the [nightly record](impl_log.md#windows-nightlies) for the latest published build. No changes have been merged to `main`.
+**Main and release integration.** Jason reports Windows testing passed and most macOS regression checks passed. The port merged into `main` through [#489](https://github.com/yicheng47/runner/pull/489) at `5e59ba9` after both platform checks passed. New Windows development and nightly builds use `main`; the temporary integration branch instructions below are historical. Tagged releases now build the Mac DMG and Windows x64 installer from one build identity and create a single draft only after both builds and CI pass. Windows installers remain unsigned, with manual upgrades. Production builds check stable releases, while Windows nightlies keep the public `nightly-win` channel. Publishing the release remains manual. This supersedes the earlier nightly-only production boundary.
+
+The following paragraphs record the acceptance state before main integration. The Phase 0–3 implementation and Phase 4a unsigned installer were published on the public [`nightly-win` prerelease](https://github.com/yicheng47/runner/releases/tag/nightly-win) from `nightly-windows`. The first installer release, `0.7.5.20260906.0842` from `31ac40c`, contained the September 6 chrome, sidebar, font, keybinding, home-directory, event-log, shutdown, cursor, rename, and update-notification fixes. Both macOS and Windows CI jobs, real-payload installer checks, and anonymous installer/ZIP downloads passed. See the [nightly record](impl_log.md#windows-nightlies) for the latest published build.
 
 Jason reports that cursor drift seems fixed and the crew mission and MCP smoke tests passed. Claude Resume works in the updated development app; the older installed/public build predates its transcript-path fix. Separate direct-session lifecycle and crash/relaunch tests, IME/resize/DPI, final UI/path checks, the remaining shutdown `window not found` diagnostic, and native macOS validation are outstanding. See the ordered [Todo list](impl_log.md#todo) and [review dispositions](review_log.md#2026-09-06--review-follow-up-codex-inline).
 
@@ -16,11 +18,11 @@ The accepted follow-up fixes Windows Claude transcript lookup and the collapsing
 
 ## End state
 
-A public `nightly-win` pre-release built from `nightly-windows`, distributed only as an x64 per-user installer, signed after Phase 4b. The installer keeps `Runner.exe`, `runner-agent-cli.exe`, and `runner-mcp.exe` together, registers shortcuts/uninstall, and preserves user data across upgrades. Runner checks for newer nightlies and links to user-run installer upgrades. Direct chats and crew missions run natively on ConPTY with Job Objects, the `runner` CLI reaches agents through both shims, and MCP uses a named pipe. macOS behavior and its Sparkle updater stay unchanged.
+A Windows x64 per-user installer built from `main` for both tagged production releases and the public `nightly-win` prerelease, signed after Phase 4b. The installer keeps `Runner.exe`, `runner-agent-cli.exe`, and `runner-mcp.exe` together, registers shortcuts/uninstall, and preserves user data across upgrades. Runner checks its packaged release channel and links to user-run installer upgrades. Direct chats and crew missions run natively on ConPTY with Job Objects, the `runner` CLI reaches agents through both shims, and MCP uses a named pipe. macOS behavior and its Sparkle updater stay unchanged.
 
 ## Local Windows development
 
-Prerequisites: Git for Windows, Rust 1.97.1 through rustup (including rustfmt and Clippy), MSVC v143 x64/x86 build tools, and the Windows 11 SDK. These are installed on JASONPC; the first native build and workspace tests passed on 2026-09-06. Use the `nightly-windows` branch. After installing Rust, fully restart the terminal application to pick up the saved user `PATH`, or run `$env:Path = "$env:USERPROFILE\.cargo\bin;$env:Path"` in the current PowerShell for direct Cargo commands. The shortcut also finds Cargo under `%CARGO_HOME%\bin` or the default `%USERPROFILE%\.cargo\bin` when it is absent from `PATH`.
+Prerequisites: Git for Windows, Rust 1.97.1 through rustup (including rustfmt and Clippy), MSVC v143 x64/x86 build tools, and the Windows 11 SDK. These are installed on JASONPC; the first native build and workspace tests passed on 2026-09-06. Use `main` after the port merge. After installing Rust, fully restart the terminal application to pick up the saved user `PATH`, or run `$env:Path = "$env:USERPROFILE\.cargo\bin;$env:Path"` in the current PowerShell for direct Cargo commands. The shortcut also finds Cargo under `%CARGO_HOME%\bin` or the default `%USERPROFILE%\.cargo\bin` when it is absent from `PATH`.
 
 ```powershell
 Set-Location C:\Users\ROG\repos\yicheng47\runner
@@ -35,6 +37,8 @@ To clean local build outputs, close the development app, finish any Cargo builds
 
 Windows update notifications use the `nightly-win` release's uploaded x64 installer timestamps; the checker also understands legacy ZIP assets. Packaged nightlies check at startup and every six hours when automatic checking is enabled. A newer build shows the download icon beside Settings; clicking it opens the Windows release page. Settings → Updates also offers Check for updates and View downloads. Download `Runner-Setup-…-x64.exe`, close Runner normally, and run the installer over the existing installation. Portable ZIP distribution was retired on 2026-09-06. Automatic installation is not implemented. Unstamped local builds cannot be compared with published nightlies and do not check automatically.
 
+Production installers use the same timestamp comparison against the latest published stable release and open its downloads page. The app displays the base release version; the installer filename and Installed Apps version retain the build stamp. Installing a production build over a nightly switches the update channel while retaining the same installation and data directories. Existing nightly installations stay on the nightly channel until a production installer is run.
+
 To preview the update icon and footer layout in a debug build, set the existing environment variable before launching:
 
 ```powershell
@@ -48,18 +52,18 @@ The development-only `HRESULT(0x887A002D)` followed by “Failed to get DXGI deb
 
 For a checkout reused from before Phase 2, check `git ls-files --eol` if SQL migration or terminal snapshot tests differ only in line endings. The existing `.gitattributes` requires LF for migration SQL, system-prompt fixtures, and terminal text snapshots, but Git can leave old CRLF files in place when switching branches. Normalize those working files to LF without changing their contents or re-blessing snapshots.
 
-Run the same Windows checks as CI with native Cargo commands; GNU Make is optional:
+Run CI's Windows Clippy and test commands with native Cargo; GNU Make is optional:
 
 ```powershell
-cargo check --workspace --all-targets
-if ($LASTEXITCODE -ne 0) { throw 'Cargo check failed' }
-cargo clippy --workspace --all-targets -- -D warnings
+cargo clippy --locked --workspace --all-targets --profile ci -- -D warnings
 if ($LASTEXITCODE -ne 0) { throw 'Clippy failed' }
-cargo test --workspace --no-fail-fast
+cargo test --locked --workspace --no-fail-fast --profile ci --timings
 if ($LASTEXITCODE -ne 0) { throw 'Tests failed' }
 cargo fmt --all --check
 if ($LASTEXITCODE -ne 0) { throw 'Formatting check failed' }
 ```
+
+The `ci` profile uses level 1 dependency optimization and minimal backtrace debug information to reduce compilation cost. CI also builds `Runner.exe` under `target/ci` for resource verification, runs installer smoke tests, and uploads Cargo timing reports. Development builds retain their UI optimization settings; release builds use level 3 with thin LTO and default codegen parallelism.
 
 ## Building and testing the Windows installer
 
@@ -70,6 +74,8 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\script\bundle-windows.
 ```
 
 This downloads the checksum-verified portable Inno Setup 6.7.3 compiler into `target/tools` on first use, builds optimized x64 binaries with a UTC nightly stamp, and produces `target/x86_64-pc-windows-msvc/release/Runner-Setup-<version>.<stamp>-x64.exe`. The installer includes the app, CLI sidecars, and license notices; no portable ZIP is produced. The Windows packaging build links the C runtime statically and verifies with MSVC's `dumpbin` that no Visual C++ runtime DLL is required and the app uses the GUI subsystem. `-Stamp YYYYMMDD.HHMM`, `-Sha <commit>`, and `-Jobs <count>` are optional; CI supplies the stamp and SHA through environment variables. Building an installer does not install or launch Runner. The script requires the existing Rust/MSVC prerequisites; end users do not need the build tools, a separate Visual C++ runtime installation, or PowerShell 7.
+
+The default channel is `nightly`. Add `-Channel production` to build a stable-channel installer. `release.yml` supplies this option for tagged releases and dry runs; `nightly.yml` retains the default. Both workflows create installers only, and neither publishes a production release automatically.
 
 Run the installer directly on the PC to install under `%LOCALAPPDATA%\Programs\Runner`, then launch Runner from the Start Menu. These testing installers are unsigned, so Windows may show a warning. The installer adds an Installed Apps entry; uninstall removes its files and shortcut but retains `%APPDATA%\com.wycstudios.runner`. Release and portable builds share that data directory. Development builds use `%APPDATA%\com.wycstudios.runner-dev` and are separate. Settings and missions need no export/import when moving from a portable release to the installer.
 
@@ -86,7 +92,7 @@ The first command uses small generated test executables; the second tests the ac
 
 The plan's [Decisions](plan.md#decisions) section is the full list. The ones a mission is most likely to trip over:
 
-1. **`nightly-windows` is the base branch, not `main`.** Created 2026-09-05 from `main` at `7cf7dd1`, checked out in the `../runner-windows` worktree. Every phase and fix PR bases on it and merges into it; `nightly.yml` builds from it; `ci.yaml` triggers on it. `main` stays the macOS product. It has no branch protection, so `gh pr merge --auto` merges at once there.
+1. **Both platforms now develop and release from `main`.** The temporary `nightly-windows` branch was created 2026-09-05 from `main` at `7cf7dd1` for the port. Following Jason's cross-platform acceptance and merge request, CI runs on PRs into `main` and pushes to `main`; both nightly variants dispatch from `main`. The old integration-branch push triggers are removed to avoid duplicate pre-merge runs.
 2. **The release tag is `nightly-win`, never `nightly-windows`.** A tag with the branch's name makes `git push origin nightly-windows` an ambiguous refspec after the first cut. Decided during the Phase 1 review.
 3. **Workflow-file PRs land with a local `--no-ff` merge.** The `gh` token lacks the `workflow` scope, so `gh pr merge` refuses any PR that touches `.github/workflows/`. #482, #483 and #485 all landed as `git checkout nightly-windows && git merge --no-ff <branch> && git push`; GitHub still records the PR as merged.
 4. **Keymap: replace Cmd with Ctrl, preserving existing Shift modifiers.** Jason requested this on 2026-09-06, superseding the earlier extra-Shift mapping. New chat is `Ctrl+N`, new window `Ctrl+Shift+N`, search `Ctrl+K`, split right/down `Ctrl+D` / `Ctrl+Shift+D`, and close `Ctrl+W`. Pane and mission-tab cycling use `Ctrl+[` / `Ctrl+]`; page history adds Shift. Terminal copy/paste use `Ctrl+C/V`; without a selection, `Ctrl+C` reaches the PTY as an interrupt. App shortcuts take precedence over matching terminal shortcuts. Fullscreen remains `F11`; Quit and both Hide bindings are omitted on Windows. Labels follow active bindings, links use Ctrl-click, and holding Ctrl reveals sidebar tab numbers.
