@@ -157,20 +157,16 @@ jobs:
         with:
           cache-on-failure: true
 
-      - name: Build Windows nightly
+      - name: Build Windows installer and portable archive
+        shell: pwsh
         env:
           RUNNER_BUILD_STAMP: ${{ steps.build.outputs.stamp }}
           RUNNER_BUILD_SHA: ${{ steps.build.outputs.sha }}
-        run: cargo build --release -p runner-app -p runner-cli --target x86_64-pc-windows-msvc
+        run: ./script/bundle-windows.ps1
 
-      - name: Stage and zip Windows nightly
+      - name: Verify installer upgrade and uninstall behavior
         shell: pwsh
-        run: |
-          $release = "target/x86_64-pc-windows-msvc/release"
-          $name = "Runner-Nightly-${{ steps.build.outputs.short_version }}-x64"
-          $stage = New-Item -ItemType Directory -Path "$release/$name"
-          Copy-Item "$release/Runner.exe", "$release/runner-agent-cli.exe", "$release/runner-mcp.exe" -Destination $stage
-          Compress-Archive -Path $stage -DestinationPath "$release/$name.zip"
+        run: ./script/windows/test-installer.ps1 -SourceDir target/x86_64-pc-windows-msvc/release
 
       - name: Require CI green for this commit
         env:
@@ -192,22 +188,25 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           new_zip="target/x86_64-pc-windows-msvc/release/Runner-Nightly-${{ steps.build.outputs.short_version }}-x64.zip"
-          notes="Extract the zip before running Runner.exe so Runner.exe, runner-agent-cli.exe, and runner-mcp.exe stay together. This build is unsigned. If SmartScreen shows Windows protected your PC, choose More info → Run anyway."
-          notes+=$'\n\nFor agents, install Git for Windows (Claude Code uses Git Bash, including the runner sh shim), Node.js LTS, and the agent CLIs (@anthropic-ai/claude-code and/or @openai/codex).'
+          new_setup="target/x86_64-pc-windows-msvc/release/Runner-Setup-${{ steps.build.outputs.short_version }}-x64.exe"
+          notes="script/windows/release-notes.md"
           if gh release view nightly-win >/dev/null 2>&1; then
-            gh release edit nightly-win --title "Runner Nightly (Windows)" --notes "$notes" --prerelease --draft=false
+            gh release edit nightly-win --title "Runner Nightly (Windows)" --notes-file "$notes" --prerelease --draft=false
           else
-            gh release create nightly-win --target nightly-windows --prerelease --title "Runner Nightly (Windows)" --notes "$notes"
+            gh release create nightly-win --target nightly-windows --prerelease --title "Runner Nightly (Windows)" --notes-file "$notes"
           fi
-          gh release upload nightly-win "$new_zip" --clobber
-          gh release view nightly-win --json assets --jq '.assets[].name' | while IFS= read -r name; do
-            if [[ "$name" =~ ([0-9]{8})\.([0-9]{4})-x64\.zip$ ]]; then
-              printf '%s.%s\t%s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "$name"
-            fi
-          done | sort -r | sed -n '11,$p' | cut -f2- | while IFS= read -r stale; do
-            gh release delete-asset nightly-win "$stale" --yes
+          gh release upload nightly-win "$new_setup" "$new_zip" --clobber
+          for pattern in '^Runner-Setup-.*\.([0-9]{8})\.([0-9]{4})-x64\.exe$' '^Runner-Nightly-.*\.([0-9]{8})\.([0-9]{4})-x64\.zip$'; do
+            gh release view nightly-win --json assets --jq '.assets[].name' | while IFS= read -r name; do
+              if [[ "$name" =~ $pattern ]]; then
+                printf '%s.%s\t%s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "$name"
+              fi
+            done | sort -r | sed -n '11,$p' | cut -f2- | while IFS= read -r stale; do
+              gh release delete-asset nightly-win "$stale" --yes
+            done
           done
           echo "NEW_ZIP_NAME=${new_zip##*/}" >> "$GITHUB_ENV"
+          echo "NEW_SETUP_NAME=${new_setup##*/}" >> "$GITHUB_ENV"
 
       - name: Verify the Windows prerelease is public
         env:
@@ -217,4 +216,5 @@ jobs:
           is_draft=$(gh release view nightly-win --json isDraft --jq .isDraft)
           test "$is_prerelease" = "true" || { echo "error: Windows nightly must be a prerelease" >&2; exit 1; }
           test "$is_draft" = "false" || { echo "error: Windows nightly must be published" >&2; exit 1; }
+          curl --silent --fail --head --location "https://github.com/yicheng47/runner/releases/download/nightly-win/$NEW_SETUP_NAME" >/dev/null
           curl --silent --fail --head --location "https://github.com/yicheng47/runner/releases/download/nightly-win/$NEW_ZIP_NAME" >/dev/null

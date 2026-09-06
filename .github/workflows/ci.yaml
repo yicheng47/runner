@@ -71,6 +71,9 @@ jobs:
       - name: Build Runner for resource verification
         run: cargo build -p runner-app
 
+      - name: Verify Windows installer behavior
+        run: ./script/windows/test-installer.ps1
+
       - name: Verify Runner manifest and icon
         shell: pwsh
         run: |

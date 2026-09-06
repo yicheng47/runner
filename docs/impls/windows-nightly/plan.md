@@ -1,6 +1,6 @@
 # 437 — Windows nightly: implementation plan
 
-Tracking issue: [#437](https://github.com/yicheng47/runner/issues/437). Feature, P2. Spec: [`docs/features/437-windows-nightly.md`](../../features/437-windows-nightly.md) — the spec wins on any detail this plan leaves out, except the dated amendments under Decisions. Baseline `main` at `08e2bf7` (v0.7.5, 2026-09-05). Phase 0–3 pointers are to that baseline; re-grep before editing. Phase 4 was added on 2026-09-06 and remains planned.
+Tracking issue: [#437](https://github.com/yicheng47/runner/issues/437). Feature, P2. Spec: [`docs/features/437-windows-nightly.md`](../../features/437-windows-nightly.md) — the spec wins on any detail this plan leaves out, except the dated amendments under Decisions. Baseline `main` at `08e2bf7` (v0.7.5, 2026-09-05). Phase 0–3 pointers are to that baseline; re-grep before editing. Phase 4 started on 2026-09-06 with unsigned installers for testing; signing follows separately.
 
 ## What ships
 
@@ -74,7 +74,7 @@ Organized by phase so each mission takes one slice. Line numbers are on the base
 
 ### Phase 4 — Windows installer and upgrades (remaining)
 
-Recorded at Jason's request on 2026-09-06. This phase extends the port to the installation and update mechanism discussed after the crew smoke test passed. It is planned work; the current release still uses ZIPs.
+Started at Jason's request on 2026-09-06. This phase extends the port to the installation and update mechanism discussed after the crew smoke test passed. Rollout is staged: **4a** implements and validates unsigned installers; **4b** selects a signing provider, configures credentials, and signs the distribution. Signing does not block local installer testing. The published release still uses ZIPs until a new nightly is authorized and published.
 
 - **Installer.** Use Inno Setup to produce `Runner-Setup-<version>.<stamp>-x64.exe`. Install for the current user under `%LOCALAPPDATA%\Programs\Runner` without requiring administrator privileges. Keep the app and both CLI sidecars together, add a Start Menu shortcut and an Installed Apps/uninstall entry, and use a stable installer identity and directory across upgrades. Keep installer scripts separate from macOS packaging.
 - **Upgrade and data.** The update indicator opens the Windows release/download page; the user downloads the newer installer, closes Runner normally, and runs it over the existing installation. Replace all three executables together, including nightlies with the same crate version and a newer build stamp. Preserve the existing `%APPDATA%\com.wycstudios.runner` database, settings, missions, and logs. Uninstall removes application files and shortcuts while retaining user data by default. Prompt for a normal close if Runner is running; do not terminate an active mission merely to replace files.
@@ -82,11 +82,14 @@ Recorded at Jason's request on 2026-09-06. This phase extends the port to the in
 - **Update detection and UI.** Update `crates/runner-app/src/updater/windows.rs` to recognize completed installer assets and compare their build stamps. Update `surfaces/settings/updates_windows.rs` and Windows tooltip/download text to describe installer upgrades. Preserve `RUNNER_DEV_UPDATE_AVAILABLE` for debug previews, keep older/equal builds from appearing as upgrades, and handle the transition from ZIP-only releases. Automatic download, silent installation, and app-managed restart are not part of this phase.
 - **Documentation.** Replace the primary ZIP/extract instructions with installer and upgrade instructions, document the optional portable download, and record the tested installer version and results in `impl_log.md`.
 
+Stage 4a implementation lives in `script/bundle-windows.ps1` and `script/windows/`: a SHA-256-pinned portable Inno Setup 6.7.3 compiler, the installer definition, isolated installer smoke tests, and release notes. The build command stamps the app and packages the EXE plus portable ZIP. `ignoreversion` ensures same-version nightlies replace every binary; writable-file probes run before installation/uninstallation, and Restart Manager closing/restarting is disabled. The installer does not write to or remove Runner's AppData directory. The Windows checker accepts completed installer assets alongside legacy ZIPs. Windows CI tests the installer definition with temporary executables; nightly packaging repeats the test with the actual release payload before publication. No signing credentials are configured yet.
+
 Direct EXE distribution through GitHub does not require a Microsoft Store developer account. Signed releases need a signing provider and publisher identity validation; verify country eligibility when selecting the provider. As checked on 2026-09-06, Azure Artifact Signing's public-trust regions do not include mainland China, so a China-based publisher needs another eligible provider. Microsoft Store registration is a separate distribution choice. References: [Windows code signing](https://learn.microsoft.com/en-us/windows/apps/package-and-deploy/code-signing-options), [Azure signing prerequisites](https://learn.microsoft.com/en-us/azure/artifact-signing/quickstart).
 
 Acceptance before this phase is complete:
 
-- [ ] Install as a normal user on Windows; launch from the Start Menu and confirm both sidecars, agent discovery, and MCP work from the installed path.
+- [x] Local installer smoke on JASONPC: Jason reported that `Runner-Setup-0.7.5.20260906.0818-x64.exe` worked smoothly with no warning on 2026-09-06.
+- [ ] Confirm Start Menu launch, both sidecars, agent discovery, and MCP from the installed path. The general installer acceptance does not establish these individual checks.
 - [ ] Upgrade an older installed nightly using the update indicator and downloaded installer; confirm the newer build runs, all three binaries update, and settings/missions survive. Include two nightlies sharing a crate version.
 - [ ] Confirm a current/newer installed build shows no upgrade and a failed check does not erase a known available update; verify the debug icon preview still works.
 - [ ] Cancel or defer an upgrade while Runner is open without interrupting a live mission or damaging the existing installation.
@@ -108,13 +111,13 @@ JASONPC is Jason's Windows 11 PC, user `ROG`, with the native checkout at `C:\Us
 1. **It opens** — one mission for the workflow and the app-shell changes (title bar, keymap rewrite, `NoShell` wording), then Jason dispatches `nightly.yml` with `platform=windows`, downloads the zip on the PC, and runs the Phase 1 checklist. Fixes land as small PRs. One to two sessions plus PC time. After this phase the friend already has a link.
 2. **Agents run** — one mission for the Windows `process` module, the one-tier stop, the sweep change, both shims, and the test twins; then the Phase 2 acceptance on the PC, which is where the time goes. Expect two or three fix rounds. Three to five sessions.
 3. **Polish** — one mission for the reveal/open commands, icon, manifest, notes; PC passes for resize and IME; promote the check. One session.
-4. **Installer and upgrades — remaining.** Build the Inno Setup per-user installer, configure signing and Windows CI publication, adapt update detection to installer assets, and pass the install/upgrade/uninstall checklist above. The existing update indicator leads to a user-run installer; automatic installation remains separate.
+4. **Installer and upgrades — in progress.** Stage 4a implements the unsigned Inno Setup per-user installer, Windows CI publication, and installer update detection. Complete live install/upgrade/uninstall acceptance, then configure signing in Stage 4b. The existing update indicator leads to a user-run installer; automatic installation remains separate.
 
 Each phase is its own PR off `nightly-windows`, merged back into `nightly-windows`; nothing in the branch may change macOS behavior, and the diff for a `#[cfg(unix)]` move must be a move (`git diff --color-moved` shows it as such).
 
 ## Decisions
 
-- **2026-09-06 installer phase.** Jason requested that the proposed EXE installer and manual upgrade mechanism be recorded as remaining Windows port work. Phase 4 now includes the per-user Inno Setup installer, signed release artifacts, and update-indicator-to-installer flow with data preservation. This supersedes the original ZIP-only scope and installer/signing exclusions. Implementation has not started.
+- **2026-09-06 installer phase.** Jason first requested recording the EXE installer and manual upgrade mechanism, then authorized implementation. Start with unsigned installers for testing; signing follows as Stage 4b. Phase 4 includes the per-user Inno Setup installer, eventual signed release artifacts, and update-indicator-to-installer flow with data preservation. This supersedes the original ZIP-only scope and installer/signing exclusions.
 
 - **2026-09-06 Windows update indicator.** Jason requested the existing sidebar update button and debug environment preview on Windows. The Windows implementation now checks uploaded x64 ZIP timestamps on `nightly-win`, shows a download indicator for a newer packaged nightly, and opens the release page when clicked. Settings exposes automatic/manual checks and manual downloads. Automatic installation remains outside this migration's scope; macOS retains Sparkle. The earlier “no updater” boundary allows these notifications and manual-download controls.
 

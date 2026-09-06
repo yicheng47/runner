@@ -163,8 +163,12 @@ fn fetch_release(url: &str) -> Result<Release> {
 
 fn nightly_version(name: &str) -> Option<(&str, &str)> {
     let version = name
-        .strip_prefix("Runner-Nightly-")?
-        .strip_suffix("-x64.zip")?;
+        .strip_prefix("Runner-Setup-")
+        .and_then(|name| name.strip_suffix("-x64.exe"))
+        .or_else(|| {
+            name.strip_prefix("Runner-Nightly-")?
+                .strip_suffix("-x64.zip")
+        })?;
     let mut parts = version.rsplitn(3, '.');
     let time = parts.next()?;
     let date = parts.next()?;
@@ -193,7 +197,7 @@ fn available_update(
         .filter_map(|asset| nightly_version(&asset.name))
         .max_by_key(|(_, stamp)| *stamp)
     else {
-        bail!("Windows release has no completed x64 nightly ZIP");
+        bail!("Windows release has no completed x64 installer or portable ZIP");
     };
     Ok(installed_stamp
         .filter(|installed| stamp > *installed)
@@ -225,11 +229,34 @@ mod tests {
     }
 
     #[test]
+    fn installer_updates_work_during_the_portable_zip_transition() {
+        let release: Release = serde_json::from_value(serde_json::json!({"assets": [
+            {"name": "Runner-Setup-0.7.5.20260909.0100-x64.exe", "state": "starter"},
+            {"name": "Runner-Setup-0.7.5.20260908.0100-arm64.exe", "state": "uploaded"},
+            {"name": "Runner-Setup-0.7.5.20260907.0100-x64.exe", "state": "uploaded"},
+            {"name": "Runner-Nightly-0.7.5.20260905.0100-x64.zip", "state": "uploaded"},
+            {"name": "Runner-Setup-0.7.5.20260906.0100-x64.exe", "state": "uploaded"}
+        ]}))
+        .unwrap();
+        assert_eq!(
+            available_update(&release, Some("20260906.0100")).unwrap(),
+            Some(UpdateInfo::new("0.7.5.20260907.0100"))
+        );
+        for stamp in [None, Some("20260907.0100"), Some("20260908.0100")] {
+            assert_eq!(available_update(&release, stamp).unwrap(), None);
+        }
+    }
+
+    #[test]
     fn incomplete_or_malformed_release_is_not_reported_as_up_to_date() {
         for name in [
             "Runner.zip",
             "Runner-Nightly-0.7.5.20260907.bad-x64.zip",
             "Runner-Nightly-0.7.5-x64.zip",
+            "Runner-Setup-0.7.5.20260907.bad-x64.exe",
+            "Runner-Setup-0.7.5-x64.exe",
+            "Runner-Setup-0.7.5.20260907.0100-x64.zip",
+            "Runner-Nightly-0.7.5.20260907.0100-x64.exe",
         ] {
             let release = Release {
                 assets: vec![Asset {

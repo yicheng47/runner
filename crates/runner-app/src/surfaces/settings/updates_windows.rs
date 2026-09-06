@@ -100,7 +100,7 @@ impl Render for UpdatesPane {
                             cx.open_url(WINDOWS_DOWNLOAD_URL);
                         }),
                 )
-                .subtitle("Download the ZIP, close Runner, then extract and launch the new copy.")
+                .subtitle("Download Runner-Setup, close Runner, then run the installer. Your settings and missions stay in place.")
                 .into_any_element(),
                 SettingsRow::new(
                     "Automatically check for updates",

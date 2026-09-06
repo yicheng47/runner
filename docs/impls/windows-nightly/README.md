@@ -4,7 +4,7 @@ Implementation program for [feature 437 — Windows nightly](../../features/437-
 
 ## Status (2026-09-06)
 
-The Phase 0–3 implementation has landed on `nightly-windows`; remaining acceptance and Phase 3 validation continue, and Phase 4 installer/upgrades is planned. The September 6 checkpoint includes the chrome, sidebar, font, keybinding, home-directory, event-log, shutdown, cursor, rename, and update-notification fixes plus review follow-ups. Final native Windows validation passed 1,000 workspace tests (one ignored), workspace check, Clippy, formatting, and diff checks. The checkpoint is for `nightly-windows`; these fixes are not yet in a published nightly.
+The Phase 0–3 implementation has landed on `nightly-windows`; remaining acceptance and Phase 3 validation continue. Phase 4 installer/upgrades is now in progress, starting with unsigned installers for testing. The September 6 checkpoint includes the chrome, sidebar, font, keybinding, home-directory, event-log, shutdown, cursor, rename, and update-notification fixes plus review follow-ups. Final native Windows validation passed 1,000 workspace tests (one ignored), workspace check, Clippy, formatting, and diff checks. That checkpoint was committed and pushed as `184a6a9`; these fixes are not yet in a published nightly.
 
 Jason has run the app and interacted with Codex; his latest feedback is that cursor drift seems fixed and the crew mission smoke test passed. The first local mission pass exposed a sidebar rename panic, now fixed with a regression that reproduced the original failure; the short Settings footer is also fixed. All 285 app tests and workspace Clippy passed after those follow-ups, and the executable was rebuilt. Separate direct-session lifecycle and crash/relaunch tests, IME/resize/DPI, final UI/path checks, the remaining shutdown `window not found` diagnostic, and native macOS validation are outstanding. See the ordered [Todo list](impl_log.md#todo) and [review dispositions](review_log.md#2026-09-06--review-follow-up-codex-inline).
 
@@ -12,7 +12,7 @@ The Windows update indicator and manual-download page are now implemented in sep
 
 The latest public zip is still `Runner-Nightly-0.7.5.20260905.1853-x64.zip`, before the local fixes; the public API was rechecked during the update-indicator work. A fresh nightly follows acceptance, an authorized commit/push, and CI. Required Windows branch checks follow the planned week of green merges.
 
-**Phase 4 — Windows installer and upgrades remains to be implemented.** Jason requested the per-user Inno Setup EXE installer as the primary download, signed app/sidecars and installer, Start Menu/uninstall integration, and upgrades that preserve settings and missions. The update indicator will lead to the newer installer, which the user downloads and runs; the checker must recognize installer assets. ZIP can remain an optional portable download. See the [phase and acceptance checklist](plan.md#phase-4--windows-installer-and-upgrades-remaining). Automatic download/installation and a production Windows channel remain later scope.
+**Phase 4 — Windows installer and upgrades is in progress.** The unsigned per-user Inno Setup installer, Start Menu/uninstall integration, installer update detection, and Windows packaging workflow are implemented in the working tree. The build uses a checksum-pinned portable Inno Setup 6.7.3 compiler under `target/tools`. Automated smoke tests cover registration, shortcuts, same-version binary replacement, refusal when files are locked, uninstall, and reinstall. Jason confirmed that the local `0818` installer worked smoothly on JASONPC with no warning. Installed agent/MCP and saved-mission checks, a GitHub-downloaded install/upgrade pass, and publication remain pending. Signing is Stage 4b; the local artifact remains unsigned. See the [phase and acceptance checklist](plan.md#phase-4--windows-installer-and-upgrades-remaining). Automatic download/installation and a production Windows channel remain later scope.
 
 ## End state
 
@@ -31,7 +31,7 @@ Use `.\make.cmd run` for the daily build-and-run loop, or `.\make.cmd build --re
 
 The development build produces `target\debug\Runner.exe`, `runner-agent-cli.exe`, and `runner-mcp.exe` together. Launch `.\target\debug\Runner.exe` to start the existing build without rebuilding. Debug builds use `%APPDATA%\com.wycstudios.runner-dev` and its separate MCP pipe, so they can be tested separately from the downloaded release. Release builds put the three executables under `target\release`.
 
-Windows update notifications use the `nightly-win` release's uploaded x64 ZIP timestamps. Packaged nightlies check at startup and every six hours when automatic checking is enabled. A newer build shows the download icon beside Settings; clicking it opens the Windows release page. Settings → Updates also offers Check for updates and View downloads. Download the ZIP, close Runner, then extract and launch the new copy with both CLI sidecars beside it. Automatic installation is not implemented. Unstamped local builds cannot be compared with published nightlies and do not check automatically.
+Windows update notifications use the `nightly-win` release's uploaded x64 installer or legacy ZIP timestamps. Packaged nightlies check at startup and every six hours when automatic checking is enabled. A newer build shows the download icon beside Settings; clicking it opens the Windows release page. Settings → Updates also offers Check for updates and View downloads. Download `Runner-Setup-…-x64.exe`, close Runner normally, and run the installer over the existing installation. The optional portable ZIP must be fully extracted with both CLI sidecars beside Runner. Automatic installation is not implemented. Unstamped local builds cannot be compared with published nightlies and do not check automatically.
 
 To preview the update icon and footer layout in a debug build, set the existing environment variable before launching:
 
@@ -58,6 +58,27 @@ if ($LASTEXITCODE -ne 0) { throw 'Tests failed' }
 cargo fmt --all --check
 if ($LASTEXITCODE -ne 0) { throw 'Formatting check failed' }
 ```
+
+## Building and testing the Windows installer
+
+From PowerShell in the repository, run:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\script\bundle-windows.ps1
+```
+
+This downloads the checksum-verified portable Inno Setup 6.7.3 compiler into `target/tools` on first use, builds optimized x64 binaries with a UTC nightly stamp, and produces `target/x86_64-pc-windows-msvc/release/Runner-Setup-<version>.<stamp>-x64.exe` plus `Runner-Nightly-<version>.<stamp>-x64.zip`. Both formats include the app, CLI sidecars, and license notices. The Windows packaging build links the C runtime statically and verifies with MSVC's `dumpbin` that no Visual C++ runtime DLL is required and the app uses the GUI subsystem. `-Stamp YYYYMMDD.HHMM`, `-Sha <commit>`, and `-Jobs <count>` are optional; CI supplies the stamp and SHA through environment variables. Building an installer does not install or launch Runner. The script requires the existing Rust/MSVC prerequisites; end users do not need the build tools, a separate Visual C++ runtime installation, or PowerShell 7.
+
+Run the installer directly on the PC to install under `%LOCALAPPDATA%\Programs\Runner`, then launch Runner from the Start Menu. These testing installers are unsigned, so Windows may show a warning. The installer adds an Installed Apps entry; uninstall removes its files and shortcut but retains `%APPDATA%\com.wycstudios.runner`. Release and portable builds share that data directory. Development builds use `%APPDATA%\com.wycstudios.runner-dev` and are separate. Settings and missions need no export/import when moving from a portable release to the installer.
+
+For automated installer checks without launching Runner:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\script\windows\test-installer.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\script\windows\test-installer.ps1 -SourceDir .\target\x86_64-pc-windows-msvc\release
+```
+
+The first command uses small generated test executables; the second tests the actual release payload. Each uses a unique test installation identity, a directory under `%TEMP%`, and a temporary Start Menu/uninstall entry. Neither launches the packaged app or reads/writes Runner's data. Tests verify same-version upgrades (including older payload timestamps), each locked binary, refusal to uninstall locked files, remembered installation paths, shortcut targets/home cwd, uninstall cleanup, retention of unowned files, and reinstall. Logs and payloads remain under the printed temporary path; successful tests remove their registration and shortcut. Live agent/MCP and saved-mission acceptance still belongs to the PC pass.
 
 ## Decisions that bind
 
