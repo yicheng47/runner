@@ -1078,14 +1078,7 @@ fn run() -> Result<()> {
     let application = Application::new().with_assets(Assets);
     #[cfg(target_os = "macos")]
     let application = application.with_quit_mode(QuitMode::Explicit);
-    application.on_reopen(|cx| {
-        if !window_label_is_open(cx, "main") {
-            if let Err(error) = open_runner_window("main".into(), None, None, cx) {
-                eprintln!("Runner main-window reopen failed: {error:#}");
-            }
-        }
-        cx.activate(true);
-    });
+    application.on_reopen(handle_reopen);
     application.run(move |cx: &mut App| {
         cx.text_system()
             .add_fonts(
@@ -1279,6 +1272,19 @@ fn run() -> Result<()> {
     shutdown_result
 }
 
+fn handle_reopen(cx: &mut App) {
+    if cx.try_global::<GlobalAppStore>().is_none() {
+        // Startup is still running and will open and activate the windows itself.
+        return;
+    }
+    if !window_label_is_open(cx, "main") {
+        if let Err(error) = open_runner_window("main".into(), None, None, cx) {
+            eprintln!("Runner main-window reopen failed: {error:#}");
+        }
+    }
+    cx.activate(true);
+}
+
 fn open_new_runner_window(initial_route: Option<String>, cx: &mut App) -> Result<String> {
     let label = if !window_label_is_open(cx, "main") {
         "main".into()
@@ -1451,6 +1457,15 @@ fn main() {
 #[cfg(test)]
 mod native_root_tests {
     use super::*;
+
+    #[test]
+    fn reopen_before_startup_ignores_missing_globals() {
+        let cx = gpui::TestAppContext::single();
+        cx.update(|cx| {
+            handle_reopen(cx);
+            assert!(cx.windows().is_empty());
+        });
+    }
 
     #[test]
     fn cmd_w_hides_focused_drawers_and_only_closes_a_split_chat_pane() {
