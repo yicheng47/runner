@@ -63,8 +63,24 @@ Name: "{userprograms}\{#AppName}"; Filename: "{app}\Runner.exe"; WorkingDir: "{%
 
 [Run]
 Filename: "{app}\Runner.exe"; WorkingDir: "{%USERPROFILE}"; Description: "Launch {#AppName}"; Flags: nowait postinstall unchecked skipifsilent
+Filename: "{app}\Runner.exe"; WorkingDir: "{%USERPROFILE}"; Flags: nowait; Check: RelaunchRequested
 
 [Code]
+var
+  InstallCompleted: Boolean;
+
+function OpenProcess(DesiredAccess: LongWord; InheritHandle: Boolean; ProcessId: LongWord): THandle;
+  external 'OpenProcess@kernel32.dll stdcall';
+function WaitForSingleObject(Handle: THandle; Milliseconds: LongWord): LongWord;
+  external 'WaitForSingleObject@kernel32.dll stdcall';
+function CloseHandle(Handle: THandle): Boolean;
+  external 'CloseHandle@kernel32.dll stdcall';
+
+function RelaunchRequested: Boolean;
+begin
+  Result := ExpandConstant('{param:RELAUNCH|0}') = '1';
+end;
+
 function ApplicationFilesInUse: Boolean;
 var
   Names: TArrayOfString;
@@ -90,10 +106,38 @@ begin
 end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  ProcessId: Integer;
+  ProcessHandle: THandle;
+  WaitResult: LongWord;
 begin
   Result := '';
+  ProcessId := StrToIntDef(ExpandConstant('{param:WAITPID|0}'), 0);
+  if ProcessId <> 0 then begin
+    ProcessHandle := OpenProcess($00100000, False, ProcessId);
+    if ProcessHandle <> 0 then begin
+      Log('Waiting for Runner process ' + IntToStr(ProcessId));
+      WaitResult := WaitForSingleObject(ProcessHandle, 30000);
+      CloseHandle(ProcessHandle);
+      Log('Runner process wait finished: ' + IntToStr(WaitResult));
+    end;
+  end;
   if ApplicationFilesInUse then
     Result := 'Runner files are in use. Close Runner normally and finish any running CLI commands, then try again. You can cancel to keep working.';
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssDone then
+    InstallCompleted := True;
+end;
+
+procedure DeinitializeSetup;
+var
+  ResultCode: Integer;
+begin
+  if RelaunchRequested and not InstallCompleted and FileExists(ExpandConstant('{app}\Runner.exe')) then
+    Exec(ExpandConstant('{app}\Runner.exe'), '', ExpandConstant('{%USERPROFILE}'), SW_SHOWNORMAL, ewNoWait, ResultCode);
 end;
 
 function InitializeUninstall: Boolean;
