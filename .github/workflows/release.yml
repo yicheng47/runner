@@ -308,7 +308,7 @@ jobs:
         run: |
           release_tag="${{ needs.prepare.outputs.release_tag }}"
           release_title="${{ needs.prepare.outputs.release_title }}"
-          notes="Windows x64 installers are unsigned. Close Runner before installing an upgrade; settings and missions are retained."
+          notes="Windows downloads and verifies updates in the background. Open the update icon or Settings → Updates → Update, then choose Install and restart; settings, chats, and missions are retained. Installers are not yet Authenticode-signed."
           if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
             gh release create "$release_tag" --draft --verify-tag --title "$release_title" --notes "See https://github.com/yicheng47/runner/commits/$release_tag. $notes"
           else

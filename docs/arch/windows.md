@@ -39,7 +39,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\script\bundle-windows.
 
 The script downloads the checksum-verified portable Inno Setup compiler into `target/tools`, builds optimized x64 binaries, and produces `target/x86_64-pc-windows-msvc/release/Runner-Setup-<version>.<stamp>-x64.exe`. The installer contains Runner, both CLI sidecars, and license notices. `-Stamp YYYYMMDD.HHMM`, `-Sha <commit>`, and `-Jobs <count>` are optional; CI supplies the build identity through environment variables. Building an installer does not install or launch Runner.
 
-The packaging build links the C runtime statically and verifies with MSVC's `dumpbin` that no separate Visual C++ runtime is needed and the app uses the GUI subsystem. End users do not need Rust, MSVC, or PowerShell 7. Installers are currently unsigned; SmartScreen may require **More info → Run anyway**.
+The packaging build links the C runtime statically and verifies with MSVC's `dumpbin` that no separate Visual C++ runtime is needed and the app uses the GUI subsystem. End users do not need Rust, MSVC, or PowerShell 7. Installers are not yet Authenticode-signed; SmartScreen may require **More info → Run anyway** for the initial download and installation. Both Windows packaging jobs publish a minisign `.sig` alongside each installer for in-app update verification.
 
 Run installer checks without launching Runner:
 
@@ -50,11 +50,17 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\script\windows\test-in
 if ($LASTEXITCODE -ne 0) { throw 'Installer payload tests failed' }
 ```
 
-The first command uses generated test executables; the second uses the actual release payload. Each uses a separate temporary installation identity and checks install, upgrade, locked-file refusal, uninstall, and reinstall without modifying the installed Runner app or its data.
+The first command uses generated test executables; the second uses the actual release payload. Each uses a separate temporary installation identity and checks install, upgrade, locked-file refusal, uninstall, and reinstall without modifying the installed Runner app or its data. Fixture mode also checks `/WAITPID` and successful/refused `/RELAUNCH` handoffs, launching and stopping only the temporary fixture executables.
 
 ## Update behavior
 
-Production builds check the latest stable GitHub release at startup and every six hours when automatic checking is enabled. A newer installer shows a download icon beside Settings. Settings → Updates offers manual checks and downloads. Close Runner and run the downloaded installer to upgrade; installation remains manual. The installer filename and Installed Apps version retain the build stamp, while the app displays the base release version. Unstamped local builds do not check automatically.
+Packaged Windows builds always check at startup and every six hours: production builds use the latest stable GitHub release, and nightly builds use `nightly-win`. Settings → Updates also offers **Check for updates**. **Automatically download updates** defaults on; turning it off leaves checks enabled and waits for **Download** in the update dialog. The older automatic-check setting is ignored on Windows. Unstamped local builds do not check automatically.
+
+Only a completed x64 installer with its exact `<installer>.sig` asset in the same release can be installed in-app. The updater streams bytes into `<app data>\updates\<installer>.partial`, reports progress in the centered update dialog, and verifies the minisign signature against `packaging/windows-update-public-key` before renaming the staged file. Cancel deletes the partial download; retry starts from zero. Startup removes partial and obsolete files and re-verifies a complete current candidate without downloading the installer again. Releases without a signature and legacy portable ZIP releases show **View downloads** only.
+
+The icon beside Settings appears for available, ready, and failed updates; both it and the hero card's **Update** button open the same dialog. **Install and restart** starts the verified installer detached with `/SILENT /NORESTART /WAITPID=<Runner pid> /RELAUNCH=1 /LOG=<log directory>\update-<stamp>.log`, then uses Runner's normal quit flow to preserve session auto-resume and stop PTYs. Setup waits up to 30 seconds for Runner to exit before the existing in-use check, installs, and relaunches Runner. Settings, chats, and missions are retained. The installer filename and Installed Apps version retain the build stamp, while the app displays the base release version.
+
+If installation is refused or aborted, Setup relaunches the old app when it still exists. Runner records each install attempt beside the staged installer; on the next successful check, an unfinished attempt becomes an installer failure after signature verification. The dialog offers **Install and restart** again, and **Settings → Diagnostics → Open log folder** exposes the installer log path. External Runner CLI processes that hold installed files open must be closed before retrying. A successful upgrade removes the old staged installer and attempt record during startup cleanup.
 
 To preview the update indicator in a development build, set `$env:RUNNER_DEV_UPDATE_AVAILABLE = '0.8.0.20260907.1200'` before `.\make.cmd run`. Clear it with `Remove-Item Env:RUNNER_DEV_UPDATE_AVAILABLE` before the next launch. Release builds ignore this preview variable.
 
@@ -66,4 +72,3 @@ The unsigned Windows port shipped in 0.8.0; these items were not completed by th
 - Complete detailed installed-build lifecycle, crash/relaunch, IME, resize, DPI, path, and update/data-retention acceptance. The [remaining validation checklist](../impls/archive/windows-nightly/impl_log.md#todo) preserves the specific cases and prior results. TRAE remains disabled by default on Windows and native validation is deferred unless requested.
 - Investigate the shutdown `window not found` diagnostic. The separate development-only DXGI debug-interface warning is an optional gpui-ce debug probe and is skipped in release builds.
 - Promote `Rust / Windows` to a required branch check after a week of green merges, planned no earlier than 2026-09-12; inspect current branch protection before changing it.
-- Add integrated Windows downloads and installation under [#493](https://github.com/yicheng47/runner/issues/493), with its [feature spec](../features/493-windows-auto-update.md).

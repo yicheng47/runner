@@ -405,6 +405,8 @@ struct NativeRoot {
     pane_rename: Option<PaneRename>,
     _pane_rename_focus_subscription: Option<Subscription>,
     terminal_close_confirm: Option<TerminalCloseConfirm>,
+    #[cfg(windows)]
+    update_dialog: Option<Entity<surfaces::update_dialog::UpdateDialog>>,
     fork_confirm: Option<ForkConfirm>,
     forking_sessions: HashMap<String, String>,
     chat_rename_modal: Option<ChatRenameModal>,
@@ -708,6 +710,8 @@ impl NativeRoot {
             pane_rename: None,
             _pane_rename_focus_subscription: None,
             terminal_close_confirm: None,
+            #[cfg(windows)]
+            update_dialog: None,
             fork_confirm: None,
             forking_sessions: HashMap::new(),
             chat_rename_modal: None,
@@ -741,7 +745,18 @@ impl NativeRoot {
             _activation_subscription: None,
             _bounds_subscription: None,
             _project_cwd_subscription: None,
+            #[cfg(not(windows))]
             _updater_subscription: cx.observe(&updater, |_, _, cx| cx.notify()),
+            #[cfg(windows)]
+            _updater_subscription: cx.observe_in(&updater, window, |root, updater, window, cx| {
+                if matches!(
+                    updater.read(cx).state(),
+                    runner_app::updater::UpdateState::UpToDate { .. }
+                ) {
+                    root.close_update_dialog(window, cx);
+                }
+                cx.notify();
+            }),
             _store_subscription: cx
                 .observe(&app_store, |this, _, cx| this.handle_app_store_update(cx)),
         };

@@ -156,6 +156,17 @@ impl NativeRoot {
             .child(command_palette)
             .children(toast)
             .map(|root| self.decorate_window(root, window, cx))
+            .map(|root| {
+                #[cfg(windows)]
+                let root = root
+                    .children(
+                        self.update_dialog
+                            .clone()
+                            .map(|dialog| deferred(dialog).with_priority(300)),
+                    )
+                    .on_action(cx.listener(Self::open_update_dialog));
+                root
+            })
             .on_modifiers_changed(move |event, window, cx| {
                 modifier_sidebar.update(cx, |sidebar, sidebar_cx| {
                     sidebar.handle_shortcut_modifiers_changed(event.modifiers, window, sidebar_cx);
@@ -338,9 +349,14 @@ impl NativeRoot {
             settings_update_hint_version(updater.read(cx).available()).map(str::to_owned);
         let update_hint = update_version.map(|version| {
             let click_updater = updater.clone();
+            #[cfg(not(windows))]
+            let tooltip = crate::platform_ui::update_hint_tooltip(&version);
+            #[cfg(windows)]
+            let tooltip =
+                crate::platform_ui::update_hint_tooltip(&version, updater.read(cx).state());
             Tooltip::new(
                 "sidebar-update-tooltip",
-                crate::platform_ui::update_hint_tooltip(&version),
+                tooltip,
                 div()
                     .id("sidebar-update")
                     .flex_none()
@@ -358,9 +374,12 @@ impl NativeRoot {
                             .bg(alpha(theme::accent(), 0.1))
                     })
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .on_click(move |_, _, cx| {
+                    .on_click(move |_, _window, cx| {
                         cx.stop_propagation();
+                        #[cfg(not(windows))]
                         crate::platform_ui::activate_update_hint(&click_updater, cx);
+                        #[cfg(windows)]
+                        crate::platform_ui::activate_update_hint(&click_updater, _window, cx);
                     })
                     .child(
                         svg()

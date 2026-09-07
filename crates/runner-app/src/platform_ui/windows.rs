@@ -26,12 +26,22 @@ pub(crate) fn sidebar_section() -> Div {
     div().flex_none().w_full().flex().flex_col()
 }
 
-pub(crate) fn update_hint_tooltip(version: &str) -> String {
-    format!("Runner {version} is available — open downloads")
+pub(crate) fn update_hint_tooltip(
+    version: &str,
+    state: &runner_app::updater::UpdateState,
+) -> String {
+    if matches!(state, runner_app::updater::UpdateState::Ready { .. }) {
+        format!("Runner {version} is ready to install")
+    } else {
+        format!("Runner {version} is available")
+    }
 }
 
-pub(crate) fn activate_update_hint(_updater: &Entity<Updater>, cx: &mut App) {
-    cx.open_url(runner_app::updater::windows_download_url());
+pub(crate) fn activate_update_hint(_updater: &Entity<Updater>, window: &mut Window, cx: &mut App) {
+    window.dispatch_action(
+        Box::new(crate::surfaces::update_dialog::OpenUpdateDialog),
+        cx,
+    );
 }
 
 pub(crate) fn finish_window_close(window: &mut Window) -> bool {
@@ -245,17 +255,94 @@ impl NativeRoot {
 mod tests {
     use super::*;
 
+    struct UpdateTriggerTestView {
+        focus: FocusHandle,
+        updater: Entity<Updater>,
+        opened: bool,
+    }
+
+    impl Render for UpdateTriggerTestView {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .size_full()
+                .track_focus(&self.focus)
+                .on_action(cx.listener(
+                    |this, _: &crate::surfaces::update_dialog::OpenUpdateDialog, _, _| {
+                        this.opened = true;
+                    },
+                ))
+        }
+    }
+
     #[test]
-    fn update_indicator_opens_windows_downloads() {
-        let cx = gpui::TestAppContext::single();
-        cx.update(|cx| {
-            let updater = cx.new(|cx| Updater::new(false, PathBuf::new(), cx));
-            activate_update_hint(&updater, cx);
-            assert!(!updater.read(cx).is_checking());
+    fn update_indicator_requests_the_dialog_without_opening_a_browser() {
+        let mut cx = gpui::TestAppContext::single();
+        let window = cx.add_window(|window, cx| {
+            let focus = cx.focus_handle();
+            focus.focus(window);
+            UpdateTriggerTestView {
+                focus,
+                updater: cx.new(|cx| Updater::new(false, PathBuf::new(), cx)),
+                opened: false,
+            }
         });
-        assert_eq!(
-            cx.opened_url().as_deref(),
-            Some(runner_app::updater::windows_download_url())
-        );
+        cx.run_until_parked();
+        window
+            .update(&mut cx, |view, window, cx| {
+                activate_update_hint(&view.updater, window, cx);
+            })
+            .unwrap();
+        cx.run_until_parked();
+        window
+            .update(&mut cx, |view, _, cx| {
+                assert!(view.opened);
+                assert!(!view.updater.read(cx).is_checking());
+            })
+            .unwrap();
+        assert!(cx.opened_url().is_none());
+    }
+
+    #[test]
+    fn update_indicator_visibility_and_tooltip_follow_state() {
+        use runner_app::updater::{UpdateInfo, UpdateState, UpdateStep};
+        let info = UpdateInfo::new("0.8.2");
+        for state in [
+            UpdateState::UpToDate { checking: false },
+            UpdateState::Downloading {
+                received: 1,
+                total: 2,
+            },
+            UpdateState::Available {
+                info: info.clone(),
+                installer_url: "url".into(),
+                sig_url: None,
+            },
+            UpdateState::Ready {
+                info: info.clone(),
+                path: PathBuf::from("verified.exe"),
+            },
+            UpdateState::Failed {
+                step: UpdateStep::Verify,
+                message: "test".into(),
+                info: Some(info),
+            },
+        ] {
+            let ready = matches!(state, UpdateState::Ready { .. });
+            assert_eq!(
+                state.available().is_some(),
+                !matches!(
+                    state,
+                    UpdateState::UpToDate { .. } | UpdateState::Downloading { .. }
+                )
+            );
+            assert_eq!(
+                update_hint_tooltip("0.8.2", &state),
+                if ready {
+                    "Runner 0.8.2 is ready to install"
+                } else {
+                    "Runner 0.8.2 is available"
+                }
+            );
+        }
     }
 }

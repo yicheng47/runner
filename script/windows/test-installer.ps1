@@ -142,8 +142,17 @@ class LockHelper {
         for ($attempt = 0; $attempt -lt 100; $attempt++) {
             $processes = @(Get-Process -Name Runner -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $fixturePath })
             if ($processes.Count -gt 0) {
-                foreach ($process in $processes) { $process.Kill(); $process.WaitForExit() }
-                if ($processes.Count -ne 1) { throw 'Installer relaunched the fixture more than once' }
+                try {
+                    if ($processes.Count -ne 1) { throw 'Installer relaunched the fixture more than once' }
+                } finally {
+                    foreach ($process in $processes) { $process.Kill(); $process.WaitForExit() }
+                    Start-Sleep -Milliseconds 250
+                    $remaining = @(Get-Process -Name Runner -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $fixturePath })
+                    if ($remaining.Count -gt 0) {
+                        foreach ($process in $remaining) { $process.Kill(); $process.WaitForExit() }
+                        throw 'Installer left an additional relaunched fixture running'
+                    }
+                }
                 return
             }
             Start-Sleep -Milliseconds 50

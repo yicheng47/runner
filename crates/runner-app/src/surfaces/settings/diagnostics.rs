@@ -33,6 +33,19 @@ impl DiagnosticsPane {
 
 impl Render for DiagnosticsPane {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(not(windows))]
+        let logs_label = "Reveal logs in Finder";
+        #[cfg(windows)]
+        let logs_label = "Open log folder";
+        let logs_description =
+            "Open the folder containing runner.log so you can attach it to a bug report."
+                .to_owned();
+        #[cfg(windows)]
+        let logs_description = runner_app::updater::global_updater(cx)
+            .read(cx)
+            .install_log_path()
+            .map(|path| format!("{logs_description} Installer log: {}", path.display()))
+            .unwrap_or(logs_description);
         div()
             .flex()
             .flex_col()
@@ -43,7 +56,7 @@ impl Render for DiagnosticsPane {
             ))
             .child(SettingsCard::new([SettingsRow::new(
                 "Application logs",
-                Button::new("diagnostics-reveal-logs", "Reveal logs in Finder")
+                Button::new("diagnostics-reveal-logs", logs_label)
                     .icon("folder-open.svg")
                     .size(ButtonSize::Sm)
                     .on_press({
@@ -53,7 +66,7 @@ impl Render for DiagnosticsPane {
                         }
                     }),
             )
-            .subtitle("Open the folder containing runner.log so you can attach it to a bug report.")
+            .subtitle(logs_description)
             .into_any_element()]))
             .children(self.error.clone().map(|error| {
                 div()

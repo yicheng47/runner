@@ -128,6 +128,8 @@ pub(super) struct NativeUpdater {
     candidate: Option<Candidate>,
     transfer: Option<Transfer>,
     progress_task: Option<Task<()>>,
+    verified_path: Option<PathBuf>,
+    install_log: Option<PathBuf>,
 }
 
 impl Drop for NativeUpdater {
@@ -256,6 +258,8 @@ impl Updater {
                 candidate: None,
                 transfer: None,
                 progress_task: None,
+                verified_path: None,
+                install_log: None,
             },
             state,
         }
@@ -297,6 +301,8 @@ impl Updater {
         match result {
             Ok((candidate, staged)) => {
                 self.native.last_check_at.set(Some(SystemTime::now()));
+                self.native.verified_path = None;
+                self.native.install_log = None;
                 self.state = candidate.as_ref().map_or(
                     UpdateState::UpToDate { checking: false },
                     Candidate::available,
@@ -311,7 +317,14 @@ impl Updater {
             Err(error) => {
                 tracing::warn!("Windows update check failed: {error:#}");
                 // A failed check must not discard an already verified installer.
-                if !matches!(self.state, UpdateState::Ready { .. }) {
+                if !matches!(
+                    self.state,
+                    UpdateState::Ready { .. }
+                        | UpdateState::Failed {
+                            step: UpdateStep::Install,
+                            ..
+                        }
+                ) {
                     self.state = UpdateState::Failed {
                         step: UpdateStep::Check,
                         message: format!("Could not check for updates: {error}"),
@@ -389,6 +402,48 @@ impl Updater {
         }
     }
 
+    pub fn install_log_path(&self) -> Option<&Path> {
+        self.native.install_log.as_deref()
+    }
+
+    pub fn prepare_install(&mut self, log_dir: &Path) -> Result<(PathBuf, PathBuf)> {
+        if !matches!(
+            self.state,
+            UpdateState::Ready { .. }
+                | UpdateState::Failed {
+                    step: UpdateStep::Install,
+                    ..
+                }
+        ) {
+            bail!("The update is not ready to install");
+        }
+        let path = self
+            .native
+            .verified_path
+            .clone()
+            .context("No verified installer is staged")?;
+        let candidate = self
+            .native
+            .candidate
+            .as_ref()
+            .context("No update is selected")?;
+        let (_, stamp) = installer_version(&candidate.name).context("Invalid installer version")?;
+        let log = log_dir.join(format!("update-{stamp}.log"));
+        fs::create_dir_all(log_dir)?;
+        fs::write(attempt_path(&path), log.to_string_lossy().as_bytes())?;
+        self.native.install_log = Some(log.clone());
+        Ok((path, log))
+    }
+
+    pub fn fail_install(&mut self, error: impl std::fmt::Display, cx: &mut Context<Self>) {
+        self.state = UpdateState::Failed {
+            step: UpdateStep::Install,
+            message: error.to_string(),
+            info: self.update_info().cloned(),
+        };
+        cx.notify();
+    }
+
     fn finish_download(
         &mut self,
         mut result: Result<Option<PathBuf>, Failure>,
@@ -408,14 +463,30 @@ impl Updater {
         }
         self.native.transfer = None;
         self.native.progress_task = None;
+        self.native.verified_path = None;
+        self.native.install_log = None;
         let Some(candidate) = &self.native.candidate else {
             return;
         };
         self.state = match result {
-            Ok(Some(path)) => UpdateState::Ready {
-                path,
-                info: candidate.info.clone(),
-            },
+            Ok(Some(path)) => {
+                self.native.verified_path = Some(path.clone());
+                self.native.install_log = fs::read_to_string(attempt_path(&path))
+                    .ok()
+                    .map(PathBuf::from);
+                if self.native.install_log.is_some() {
+                    UpdateState::Failed {
+                        step: UpdateStep::Install,
+                        message: "The installer did not finish the update. Close any external Runner CLI commands and try again. The installer log is in Settings → Diagnostics.".into(),
+                        info: Some(candidate.info.clone()),
+                    }
+                } else {
+                    UpdateState::Ready {
+                        path,
+                        info: candidate.info.clone(),
+                    }
+                }
+            }
             Ok(None) => candidate.available(),
             Err(failure) => UpdateState::Failed {
                 step: failure.step,
@@ -544,15 +615,21 @@ fn sweep(
         }
         let name = entry.file_name();
         let name = name.to_string_lossy();
-        let stale = installer_version(&name).is_some_and(|(_, stamp)| {
+        let installer_name = name.strip_suffix(".attempt").unwrap_or(&name);
+        let stale = installer_version(installer_name).is_some_and(|(_, stamp)| {
             installed_stamp.is_some_and(|installed| stamp <= installed)
-                || (candidate_known && candidate.is_none_or(|candidate| candidate.name != name))
+                || (candidate_known
+                    && candidate.is_none_or(|candidate| candidate.name != installer_name))
         });
         if name.ends_with(".partial") || stale {
             fs::remove_file(entry.path())?;
         }
     }
     Ok(())
+}
+
+fn attempt_path(path: &Path) -> PathBuf {
+    path.with_extension("exe.attempt")
 }
 
 fn verify_file(path: &Path, encoded_signature: &str, public_key: &str) -> Result<()> {
@@ -569,8 +646,8 @@ fn verify_staged(
     candidate: &Candidate,
     public_key: &str,
 ) -> Result<(), Failure> {
-    let result = (|| -> Result<()> {
-        let signature = client
+    let signature = (|| -> Result<String> {
+        client
             .get(
                 candidate
                     .sig_url
@@ -580,9 +657,11 @@ fn verify_staged(
             .timeout(Duration::from_secs(20))
             .send()?
             .error_for_status()?
-            .text()?;
-        verify_file(path, &signature, public_key)
-    })();
+            .text()
+            .context("fetch Windows installer signature")
+    })()
+    .map_err(|error| Failure::new(UpdateStep::Verify, error))?;
+    let result = verify_file(path, &signature, public_key);
     if result.is_err() {
         let _ = fs::remove_file(path);
     }
@@ -619,6 +698,11 @@ fn download(
     let partial = dir.join(format!("{}.partial", candidate.name));
     let result = (|| {
         let client = http_client().map_err(|error| Failure::new(UpdateStep::Download, error))?;
+        let final_path = dir.join(&candidate.name);
+        if final_path.is_file() {
+            verify_staged(&client, &final_path, candidate, public_key)?;
+            return Ok(Some(final_path));
+        }
         let streamed = (|| -> Result<bool> {
             fs::create_dir_all(dir)?;
             let mut response = client
@@ -965,6 +1049,138 @@ mod tests {
         );
         task.join().unwrap();
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn signature_transport_failure_preserves_cached_installer_for_retry() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut candidate = candidate();
+        let path = dir.path().join(&candidate.name);
+        fs::write(&path, FIXTURE).unwrap();
+        let (url, task) = server(vec![
+            ("503 Unavailable", Vec::new()),
+            ("200 OK", SIGNATURE.as_bytes().to_vec()),
+        ]);
+        candidate.sig_url = Some(url);
+        candidate.installer_url = "http://127.0.0.1:0/must-not-download".into();
+        assert_eq!(
+            verify_staged(&http_client().unwrap(), &path, &candidate, TEST_KEY)
+                .unwrap_err()
+                .step,
+            UpdateStep::Verify
+        );
+        assert_eq!(fs::read(&path).unwrap(), FIXTURE);
+        let transfer = Transfer::default();
+        assert_eq!(
+            download(&candidate, dir.path(), &transfer, TEST_KEY).unwrap(),
+            Some(path)
+        );
+        task.join().unwrap();
+        assert_eq!(transfer.received.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn install_handoff_requires_verified_state_and_recovers_an_unfinished_attempt() {
+        let dir = tempfile::tempdir().unwrap();
+        let logs = dir.path().join("logs");
+        let candidate = candidate();
+        let path = dir.path().join(&candidate.name);
+        fs::write(&path, FIXTURE).unwrap();
+        verify_file(&path, SIGNATURE, TEST_KEY).unwrap();
+        let cx = gpui::TestAppContext::single();
+        cx.update(|cx| {
+            let updater = cx.new(|cx| Updater::new(false, dir.path().to_owned(), cx));
+            updater.update(cx, |updater, cx| {
+                updater.finish_windows_check(Ok((Some(candidate.clone()), None)), cx);
+                for state in [
+                    UpdateState::UpToDate { checking: false },
+                    candidate.available(),
+                    UpdateState::Downloading {
+                        received: 1,
+                        total: 2,
+                    },
+                    UpdateState::Ready {
+                        path: path.clone(),
+                        info: candidate.info.clone(),
+                    },
+                    UpdateState::Failed {
+                        step: UpdateStep::Install,
+                        message: "test".into(),
+                        info: Some(candidate.info.clone()),
+                    },
+                ] {
+                    updater.state = state;
+                    assert!(updater.prepare_install(&logs).is_err());
+                }
+                assert!(!attempt_path(&path).exists());
+                updater.finish_download(Ok(Some(path.clone())), cx);
+                assert!(matches!(updater.state(), UpdateState::Ready { .. }));
+                let (installer, log) = updater.prepare_install(&logs).unwrap();
+                assert_eq!(installer, path);
+                assert_eq!(log, logs.join("update-20260908.0100.log"));
+                assert_eq!(updater.install_log_path(), Some(log.as_path()));
+                assert_eq!(
+                    fs::read_to_string(attempt_path(&path)).unwrap(),
+                    log.to_string_lossy()
+                );
+                updater.fail_install("spawn failed", cx);
+                assert_eq!(updater.prepare_install(&logs).unwrap(), (path.clone(), log));
+            });
+            let restarted = cx.new(|cx| Updater::new(false, dir.path().to_owned(), cx));
+            restarted.update(cx, |updater, cx| {
+                verify_file(&path, SIGNATURE, TEST_KEY).unwrap();
+                updater.finish_windows_check(
+                    Ok((Some(candidate.clone()), Some(Ok(path.clone())))),
+                    cx,
+                );
+                assert!(matches!(
+                    updater.state(),
+                    UpdateState::Failed {
+                        step: UpdateStep::Install,
+                        ..
+                    }
+                ));
+                assert!(updater.available().is_some());
+                assert_eq!(
+                    updater.install_log_path(),
+                    Some(logs.join("update-20260908.0100.log").as_path())
+                );
+                updater.finish_windows_check(Err(anyhow::anyhow!("offline")), cx);
+                assert!(matches!(
+                    updater.state(),
+                    UpdateState::Failed {
+                        step: UpdateStep::Install,
+                        ..
+                    }
+                ));
+                assert!(updater.prepare_install(&logs).is_ok());
+            });
+            let unverified = cx.new(|cx| Updater::new(false, dir.path().to_owned(), cx));
+            unverified.update(cx, |updater, cx| {
+                updater.finish_windows_check(
+                    Ok((
+                        Some(candidate.clone()),
+                        Some(Err(Failure::new(UpdateStep::Verify, "bad signature"))),
+                    )),
+                    cx,
+                );
+                assert!(matches!(
+                    updater.state(),
+                    UpdateState::Failed {
+                        step: UpdateStep::Verify,
+                        ..
+                    }
+                ));
+                assert!(updater.prepare_install(&logs).is_err());
+                assert!(updater.install_log_path().is_none());
+            });
+        });
+        sweep(dir.path(), Some("20260907.0100"), Some(&candidate), true).unwrap();
+        assert!(path.exists());
+        assert!(attempt_path(&path).exists());
+        sweep(dir.path(), Some("20260908.0100"), None, false).unwrap();
+        assert!(!path.exists());
+        assert!(!attempt_path(&path).exists());
     }
 
     #[test]
