@@ -249,7 +249,7 @@ mod tests {
     fn update_indicator_opens_windows_downloads() {
         let cx = gpui::TestAppContext::single();
         cx.update(|cx| {
-            let updater = cx.new(|cx| Updater::new(false, cx));
+            let updater = cx.new(|cx| Updater::new(false, PathBuf::new(), cx));
             activate_update_hint(&updater, cx);
             assert!(!updater.read(cx).is_checking());
         });

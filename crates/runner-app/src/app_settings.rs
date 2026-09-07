@@ -189,6 +189,8 @@ pub struct AppSettings {
     pub file_link_editor: FileLinkEditor,
     pub resume_on_launch: bool,
     pub automatically_check_for_updates: bool,
+    #[cfg(windows)]
+    pub automatically_download_updates: bool,
     pub default_runtime: String,
     pub disabled_agents: BTreeSet<String>,
     pub enabled_agents: BTreeSet<String>,
@@ -225,6 +227,8 @@ impl Default for AppSettings {
             file_link_editor: FileLinkEditor::DefaultApp,
             resume_on_launch: false,
             automatically_check_for_updates: true,
+            #[cfg(windows)]
+            automatically_download_updates: true,
             default_runtime: String::new(),
             disabled_agents: BTreeSet::new(),
             enabled_agents: BTreeSet::new(),
@@ -666,5 +670,20 @@ mod tests {
         }
         let value = serde_json::to_value(AppSettings::default()).unwrap();
         assert!(value.get("appFontFamily").is_none());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn automatic_downloads_default_on_and_persist_independently_of_checks() {
+        let mut settings: AppSettings =
+            serde_json::from_str(r#"{"automaticallyCheckForUpdates":false}"#).unwrap();
+        assert!(settings.automatically_download_updates);
+        settings.automatically_download_updates = false;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        settings.save(&path).unwrap();
+        let loaded = AppSettings::load(&path).unwrap();
+        assert!(!loaded.automatically_download_updates);
+        assert!(!loaded.automatically_check_for_updates);
     }
 }

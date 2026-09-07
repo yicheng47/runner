@@ -1112,12 +1112,25 @@ fn run() -> Result<()> {
             )
         });
         let keymap_overrides = app_store.read(cx).settings.keymap_overrides.clone();
+        #[cfg(not(windows))]
         let automatically_check_for_updates =
             app_store.read(cx).settings.automatically_check_for_updates;
+        #[cfg(windows)]
+        let automatically_download_updates =
+            app_store.read(cx).settings.automatically_download_updates;
         keymap::install_bindings(cx, &keymap_overrides, false);
         cx.set_global(GlobalAppStore(app_store));
         cx.set_global(GlobalNativePaths(paths.clone()));
+        #[cfg(not(windows))]
         let updater = cx.new(|cx| Updater::new(automatically_check_for_updates, cx));
+        #[cfg(windows)]
+        let updater = cx.new(|cx| {
+            Updater::new(
+                automatically_download_updates,
+                paths.app_data_dir.join("updates"),
+                cx,
+            )
+        });
         cx.set_global(GlobalUpdater(updater.clone()));
         updater.read(cx).start();
         cx.set_global(WindowLayoutCheckpoint::default());
