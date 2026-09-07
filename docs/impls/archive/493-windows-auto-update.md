@@ -1,6 +1,6 @@
 # 493 — Automatic updates on Windows
 
-Tracking issue: [#493](https://github.com/yicheng47/runner/issues/493). Feature, P2, Windows. Spec: [`docs/features/493-windows-auto-update.md`](../features/493-windows-auto-update.md). Design: `design/windows-updates.pen` (frame ids in [`design/README.md`](../../design/README.md)). Baseline `main` at `6f2918d` (2026-09-07).
+Tracking issue: [#493](https://github.com/yicheng47/runner/issues/493). Feature, P2, Windows. Spec: [`docs/features/archive/493-windows-auto-update.md`](../../features/archive/493-windows-auto-update.md). Design: `design/windows-updates.pen` (frame ids in [`design/README.md`](../../../design/README.md)). Baseline `main` at `6f2918d` (2026-09-07). Shipped 2026-09-07 in [#499](https://github.com/yicheng47/runner/pull/499) (four reviewed commits plus the rename-aside follow-up) and [#500](https://github.com/yicheng47/runner/pull/500) (dialog layering under the Windows title bar; shell-launched relaunch to escape Redirection Guard, found when the relaunched app could not see Codex's junctioned `bin`), released as 0.8.2. Verified end to end on JASONPC across nightlies 20260907.1425 → 1439 → 1531.
 
 ## What ships
 
@@ -92,7 +92,7 @@ All in `crates/runner-app/src/updater/windows.rs` and `crates/runner-app/src/upd
 - No new dependencies beyond `minisign-verify`. No async runtime, no new HTTP client.
 - Follow `AGENTS.md`. Match the surrounding code; comments only for non-obvious intent.
 - Do not launch the app (`.\make.cmd run`) and do not dispatch workflows or touch GitHub releases; the human does the nightly and the smoke test. Do not run the installer against the real per-user installation; `test-installer.ps1` uses its own identity.
-- This machine is Windows. Use PowerShell for the scripts and the native Cargo commands from [Local Windows development](../arch/windows.md#local-windows-development).
+- This machine is Windows. Use PowerShell for the scripts and the native Cargo commands from [Local Windows development](../../arch/windows.md#local-windows-development).
 - Mission authorization: after the reviewer reports each phase clean, commit that phase on the feature branch with an imperative subject and the scopes in `AGENTS.md` (`ci`, `validation`, `updater`, `ui`, `docs`). No push, no pull request, no merge: the human reviews the branch and decides the PR boundaries.
 
 ## Jason's smoke test (after landing)

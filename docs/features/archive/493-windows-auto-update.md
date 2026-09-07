@@ -1,6 +1,6 @@
 # Automatic updates on Windows
 
-Tracking issue: [#493](https://github.com/yicheng47/runner/issues/493). Status: planned. Priority P2.
+Tracking issue: [#493](https://github.com/yicheng47/runner/issues/493), closed. Shipped in [Runner 0.8.2](https://github.com/yicheng47/runner/releases/tag/v0.8.2) on 2026-09-07 through [#499](https://github.com/yicheng47/runner/pull/499) and [#500](https://github.com/yicheng47/runner/pull/500); archived with the [implementation brief](../../impls/archive/493-windows-auto-update.md). Current behavior is documented in [Windows development](../../arch/windows.md#update-behavior). Two things changed after the first real run and are folded into the text below: the installer renames in-use binaries aside instead of refusing, and every installer launch of Runner goes through the shell to escape Redirection Guard.
 
 ## Motivation
 
@@ -12,7 +12,7 @@ The app must not run a downloaded installer it cannot prove came from Runner's C
 
 - **What is signed.** CI signs the installer bytes with the minisign key already in the repository's secrets (`TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`, key id `596D7429FAE1FE23`), using the same `@tauri-apps/cli signer sign` step `release.yml` already runs for the 0.6.0 bridge. The output is uploaded as a release asset next to the installer: `Runner-Setup-<version>-x64.exe.sig`, the base64-encoded minisign signature text that `signer sign` produces.
 - **What verifies it.** The minisign public key that 0.5.2's `tauri.conf.json` trusted lives in the tree as `packaging/windows-update-public-key` and is compiled into `Runner.exe`. Verification uses the `minisign-verify` crate, the one `tauri-plugin-updater` uses: decode the `.sig` asset, decode the public key, verify the full installer file, and only then rename the download into place. Nothing is ever executed before verification succeeds.
-- **Relation to #497.** Authenticode tells Windows and SmartScreen who published the binary; the minisign signature tells Runner that the bytes are the ones CI built. [#497](./497-windows-code-signing.md) is not a prerequisite. When it ships, the updater adds a second gate, a `WinVerifyTrust` check on the downloaded installer, and the spec records it there.
+- **Relation to #497.** Authenticode tells Windows and SmartScreen who published the binary; the minisign signature tells Runner that the bytes are the ones CI built. [#497](../497-windows-code-signing.md) is not a prerequisite. When it ships, the updater adds a second gate, a `WinVerifyTrust` check on the downloaded installer, and the spec records it there.
 - **SmartScreen.** Files the app writes itself carry no Mark-of-the-Web, and `CreateProcess` does not consult SmartScreen, so an in-app install should not hit the **Windows protected your PC** interstitial that manual downloads hit today. Verification confirms this on a fresh PC rather than assuming it.
 - **Failure is inert.** A release whose installer has no `.sig` is reported the way it is today, notify-only with the browser link. A signature that fails to verify deletes the download, shows a verification error with retry and manual-download actions, and never runs anything. The installed app is untouched in every failure path.
 
@@ -43,7 +43,7 @@ The dialog is the 420 px card the confirms use: app icon, a title naming the ver
 - **Up to date**: no dialog; the hero's button checks. Checking is that button spinning, not a state of its own.
 - **Available**: "Runner <version> is available", **View downloads** and **Download**. When the release has no `.sig`, the same dialog explains that this release cannot be installed from Runner and offers only **View downloads**; that is today's behavior in a dialog, not a separate state.
 - **Downloading**: progress bar with received/total and percent, **Cancel**. The signature check is the last moment of the bar, not a state.
-- **Ready**: "Runner <version> is ready to install", body "Runner closes, the installer runs, and Runner reopens on the new version.", **Later** and **Install and restart**. No running-work warning: quitting stamps sessions for auto-resume exactly as ⌘Q does today, and [#491](./491-confirm-quit-running-work.md) was closed on 2026-09-07 in favor of a detached session host, after which nothing is interrupted at all.
+- **Ready**: "Runner <version> is ready to install", body "Runner closes, the installer runs, and Runner reopens on the new version.", **Later** and **Install and restart**. No running-work warning: quitting stamps sessions for auto-resume exactly as ⌘Q does today, and [#491](../491-confirm-quit-running-work.md) was closed on 2026-09-07 in favor of a detached session host, after which nothing is interrupted at all.
 - **Failed**: one state whose body names what failed (download, signature, or installer), with **View downloads** and **Retry**; after an installer failure the primary is **Install and restart** again.
 
 There is no separate confirm dialog: **Install and restart** inside the Ready dialog is the one action that quits, and reaching it takes two deliberate clicks (open the dialog, press the button), the same as Sparkle's prompt on macOS.
@@ -89,11 +89,11 @@ Nothing new is needed: the installer only touches `%LOCALAPPDATA%\Programs\Runne
 ## Non-goals
 
 - macOS changes. Sparkle stays, with its own prompts and the existing macOS Updates pane. The sidebar icon is the only shared element, and it already dispatches per platform: Sparkle's prompt on macOS, this dialog on Windows.
-- Authenticode signing. [#497](./497-windows-code-signing.md) owns it; this feature consumes it when available.
+- Authenticode signing. [#497](../497-windows-code-signing.md) owns it; this feature consumes it when available.
 - Unattended installation or a scheduled restart. Install happens only when the user confirms, every time.
 - Resumable or delta downloads. The installer is tens of megabytes; a restart from zero is fine.
 - In-app channel switching. Nightly and stable stay separate installers.
-- Portable ZIP updates, Windows ARM64, CLI self-updates ([#475](https://github.com/yicheng47/runner/issues/475)), and a session host ([#466](./466-sessions-outlive-the-app.md)).
+- Portable ZIP updates, Windows ARM64, CLI self-updates ([#475](https://github.com/yicheng47/runner/issues/475)), and a session host ([#466](../466-sessions-outlive-the-app.md)).
 
 ## Design
 
