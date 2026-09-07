@@ -62,7 +62,7 @@ To preview the update indicator in a development build, set `$env:RUNNER_DEV_UPD
 
 The unsigned Windows port shipped in 0.8.0; these items were not completed by that release:
 
-- Windows signing: choose the provider, configure credentials, and sign/verify the app, sidecars, installer, and uninstaller. The [archived signing plan](../impls/archive/windows-nightly/plan.md#phase-4--windows-installer-and-upgrades-remaining) retains the original scope and provider research.
+- Windows signing, tracked in [#497](https://github.com/yicheng47/runner/issues/497) with its [feature spec](../features/497-windows-code-signing.md): choose the provider, configure credentials, and sign/verify the app, sidecars, installer, and uninstaller. The [archived signing plan](../impls/archive/windows-nightly/plan.md#phase-4--windows-installer-and-upgrades-remaining) retains the original scope and provider research.
 - Complete detailed installed-build lifecycle, crash/relaunch, IME, resize, DPI, path, and update/data-retention acceptance. The [remaining validation checklist](../impls/archive/windows-nightly/impl_log.md#todo) preserves the specific cases and prior results. TRAE remains disabled by default on Windows and native validation is deferred unless requested.
 - Investigate the shutdown `window not found` diagnostic. The separate development-only DXGI debug-interface warning is an optional gpui-ce debug probe and is skipped in release builds.
 - Promote `Rust / Windows` to a required branch check after a week of green merges, planned no earlier than 2026-09-12; inspect current branch protection before changing it.

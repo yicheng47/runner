@@ -12,7 +12,7 @@ Runner 0.8.0 is the first stable release with a Windows build. macOS already has
 - Retain automatic/manual update checks and add a preference for automatic downloads. Keep a notify-only path when automatic downloads are disabled.
 - Respect the packaged release channel: stable releases for production, `nightly-win` for nightlies. Do not switch channels implicitly.
 - Install only when the user chooses to restart; never interrupt agents or shell processes with an automatic restart. Route the restart through the running-work confirmation planned in #491.
-- Verify update authenticity before running a downloaded installer. Choose and document the signing/trust mechanism with the Windows signing work tracked in #437; a failed verification must leave the installed app usable.
+- Verify update authenticity before running a downloaded installer. Choose and document the signing/trust mechanism with the Windows signing work tracked in #497; a failed verification must leave the installed app usable.
 - Preserve settings, chats, missions, and the existing per-user installation path. Relaunch the updated app after installation and surface actionable download/install failures with retry and manual-download options.
 
 macOS keeps Sparkle. Automatic CLI updates (#475), a session daemon (#466), additional CPU architectures, and a packaging-framework migration are outside this feature's scope.
