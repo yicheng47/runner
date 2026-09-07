@@ -477,7 +477,7 @@ impl Updater {
                 if self.native.install_log.is_some() {
                     UpdateState::Failed {
                         step: UpdateStep::Install,
-                        message: "The installer did not finish the update. Close any external Runner CLI commands and try again. The installer log is in Settings → Diagnostics.".into(),
+                        message: "The installer did not finish the update. Check the installer log in Settings → Diagnostics, then try again.".into(),
                         info: Some(candidate.info.clone()),
                     }
                 } else {

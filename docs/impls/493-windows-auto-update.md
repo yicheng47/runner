@@ -31,18 +31,21 @@ The tree already holds three uncommitted files that belong to this feature: `doc
 
 `script/windows/runner.iss` gains two switches read with `{param:WAITPID|0}` and `{param:RELAUNCH|0}`:
 
-- `PrepareToInstall`: when `WAITPID` is non-zero, `OpenProcess(SYNCHRONIZE, False, pid)` (import `OpenProcess@kernel32.dll stdcall`, likewise `WaitForSingleObject` and `CloseHandle`), wait up to 30 000 ms, close the handle, then fall through to the existing `ApplicationFilesInUse` check. A pid that no longer exists is not an error.
+- `PrepareToInstall`: first attempt to delete leftover `*.old` files, ignoring failures for running files. When `WAITPID` is non-zero, `OpenProcess(SYNCHRONIZE, False, pid)` (import `OpenProcess@kernel32.dll stdcall`, likewise `WaitForSingleObject` and `CloseHandle`), wait up to 30 000 ms, close the handle, then prepare the application files. A pid that no longer exists is not an error. For each in-use `Runner.exe`, `runner-agent-cli.exe`, or `runner-mcp.exe`, use `RenameFile` to move it to `<name>.old` and install the new file at the original path. If a prior `.old` cannot be deleted, use `<name>.1.old`, `<name>.2.old`, and so on.
+- **Rename-aside decision (2026-09-07 follow-up):** an external process running the installed `runner-mcp.exe` directly can keep its image open across an update. Rename that image instead of refusing the install so the process keeps working while new launches use the replacement. Current mission shims use a separate copy under `<app data>\bin`, so the smoke test must explicitly run the installed binary. Cleanup runs at every install and uninstall; a running `.old` never blocks either. `InitializeUninstall` only cleans old files and returns true; `CurUninstallStepChanged(usUninstall)` prepares canonical binaries after confirmation and aborts only when it genuinely cannot prepare a file, such as a handle that denies renaming. Canceling the confirmation leaves all canonical binaries in place.
 - A second `[Run]` entry, `Filename: "{app}\Runner.exe"; WorkingDir: "{%USERPROFILE}"; Flags: nowait; Check: RelaunchRequested`, with no `postinstall` and no `skipifsilent`, so it runs after a silent install. The existing checked-by-hand entry stays.
-- `CurStepChanged(ssDone)` sets an `InstallCompleted` flag. `DeinitializeSetup`: when `RELAUNCH=1`, the install did not complete, and `{app}\Runner.exe` exists, `Exec` it with `ewNoWait`. This is what keeps the old app usable after an in-use refusal or a mid-copy abort.
-- Do not touch `CloseApplications`, `RestartApplications`, `PrivilegesRequired`, the in-use check, or the uninstall path.
+- `CurStepChanged(ssDone)` sets an `InstallCompleted` flag. On an incomplete install, restore renamed binaries whose original paths are missing after rollback, then keep the existing `DeinitializeSetup` relaunch check: when `RELAUNCH=1`, the install did not complete, and `{app}\Runner.exe` exists, `Exec` it with `ewNoWait`. This keeps the old app usable after a mid-copy abort even when its executable was renamed aside. Also restore any preceding renames if preparing another file fails before copying starts.
+- Do not touch `CloseApplications`, `RestartApplications`, or `PrivilegesRequired`. Preserve `/RELAUNCH` and the completed-install guard.
 
 ### Installer tests
 
-`script/windows/test-installer.ps1` gains three cases using the same fixture executables and temporary identity as today:
+`script/windows/test-installer.ps1` uses generated fixture executables and its temporary identity for these cases:
 
-1. `/WAITPID=<pid>` where the pid belongs to a helper that holds the fixture `Runner.exe` open and exits after about three seconds: the install succeeds, and the log shows it waited rather than refused.
+1. `/WAITPID=<pid>` with a helper that exits after about three seconds while a separate fixture `Runner.exe` keeps running: the install succeeds, and the log shows the wait completed before the rename.
 2. `/RELAUNCH=1` on a successful silent install: a process running from the installed `Runner.exe` path exists afterwards; the test kills it.
-3. `/RELAUNCH=1` with a helper holding the file open for the whole run: the install is refused as today, and a process running from the previously installed `Runner.exe` exists afterwards; the test kills both.
+3. Each application binary runs as a helper throughout an upgrade: the new binary is in place, `<name>.old` contains the old bytes, and the helper remains alive. A second live version forces a numbered suffix. Subsequent installs delete exited old files while preserving running ones; uninstall succeeds with a running `.old` present. After all helpers exit, the next install removes the remaining stale files.
+4. Force a genuine copy failure after `Runner.exe` has been renamed aside: rollback restores the original files and `/RELAUNCH=1` reopens the old fixture. The test stops both the original helper and the relaunched fixture.
+5. Open the non-silent uninstall confirmation with all three fixture binaries running. Before answering, verify their canonical paths and hashes remain intact and no `.old` files appear; click **No** and verify the installation, registration, shortcut, and running helpers are preserved.
 
 `-SourceDir` payload mode keeps working unchanged.
 
@@ -96,7 +99,7 @@ All in `crates/runner-app/src/updater/windows.rs` and `crates/runner-app/src/upd
 
 1. Dispatch a Windows nightly from the branch's merge; confirm `nightly-win` carries `Runner-Setup-<v>-x64.exe` and `.sig`. Install it by hand once.
 2. Dispatch a second Windows nightly. In the installed app, expect the sidebar icon within a check cycle (or press Check for updates), then Update → Install and restart. Expect: Runner closes, Setup's progress window runs a few seconds, Runner reopens, About shows the new stamp, chats and missions are intact, no SmartScreen interstitial.
-3. With an external `runner-mcp.exe` held open (this Claude Code session's MCP proxy will do), Install and restart: Setup refuses with its message, the old Runner relaunches, the dialog shows Failed with the log path in Diagnostics.
+3. Start `%LOCALAPPDATA%\Programs\Runner\runner-mcp.exe` directly by full path and keep it running, then Install and restart: Setup succeeds, Runner reopens on the new build, and that external MCP process keeps running from `runner-mcp.exe.old` (or a numbered `.old`). After that process exits, the next install removes the stale file. A normal mission's `%APPDATA%\com.wycstudios.runner\bin\runner-mcp.exe` copy does not hold the installed binary open and does not exercise this case.
 4. Turn Automatically download updates off, cut a third nightly: the icon appears, the dialog offers Download, nothing is fetched until pressed.
 
 ## Non-goals
