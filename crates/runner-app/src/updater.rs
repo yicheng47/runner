@@ -7,7 +7,7 @@ use gpui::{App, Context, Entity, Global};
 mod native;
 
 #[cfg(windows)]
-pub use native::windows_download_url;
+pub use native::{windows_download_url, UpdateState, UpdateStep};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct UpdateInfo {
@@ -94,10 +94,14 @@ pub fn global_updater(cx: &App) -> Entity<Updater> {
 
 pub struct Updater {
     native: native::NativeUpdater,
+    #[cfg(not(windows))]
     available: Option<UpdateInfo>,
+    #[cfg(windows)]
+    state: UpdateState,
 }
 
 impl Updater {
+    #[cfg(not(windows))]
     pub fn new(automatically_checks: bool, cx: &mut Context<Self>) -> Self {
         Self {
             native: native::NativeUpdater::new(
@@ -121,6 +125,7 @@ impl Updater {
         self.native.check_for_updates();
     }
 
+    #[cfg(not(windows))]
     pub fn available(&self) -> Option<&UpdateInfo> {
         self.available.as_ref()
     }
@@ -145,7 +150,10 @@ impl Updater {
 
     #[cfg(windows)]
     pub fn check_error(&self) -> Option<String> {
-        self.native.check_error()
+        match &self.state {
+            UpdateState::Failed { message, .. } => Some(message.clone()),
+            _ => None,
+        }
     }
 
     #[cfg(all(target_os = "macos", feature = "updater"))]

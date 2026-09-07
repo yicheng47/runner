@@ -53,9 +53,9 @@ Download the latest macOS build (Apple Silicon `.dmg`) from the [releases page](
 
 Starting with **0.8.0**, Windows x64 installers (`Runner-Setup-…-x64.exe`) are available alongside the Mac DMG on the [releases page](https://github.com/yicheng47/runner/releases/latest). Windows 10 version 1809 or later is required.
 
-The Windows installer is currently **unsigned**. If Windows SmartScreen shows **Windows protected your PC**, click **More info → Run anyway** to continue installation.
+The Windows installer is not yet **Authenticode-signed**. If Windows SmartScreen shows **Windows protected your PC** during the initial download and installation, click **More info → Run anyway** to continue installation.
 
-Close Runner and run the newer installer to upgrade while retaining settings, chats, and missions.
+Runner checks for Windows updates at startup and every six hours, downloads them in the background by default, and verifies their minisign signatures. Open the update icon beside Settings or **Settings → Updates → Update**, then choose **Install and restart**. Settings, chats, and missions are retained. Turn off **Automatically download updates** to download only when you choose.
 
 <!-- TODO(demo): add a "## Demo" section here once the new hero video is recorded — a Peer
      Coding Crew mission on a real repo (mission start from a project → feed + per-slot
@@ -144,7 +144,7 @@ Everything above is also an MCP tool. Runner bundles a `runner-mcp` stdio sideca
 
 - **Projects** — bind a working directory once; chats and missions started inside a project inherit its cwd and stay grouped in their own sidebar section.
 - **Themes** — Auto / Light / Dark chrome with two variants per side (Runner and Catppuccin Mocha dark; Codex Light and Catppuccin Latte light), independent terminal palettes (Runner, Catppuccin Mocha, Monokai), Inter bundled as the UI font, and JetBrains Mono (the Nerd Font Mono build) bundled for terminals.
-- **Updates** — macOS releases update through Sparkle. Windows checks for newer builds and shows a download icon beside Settings; close Runner and run the downloaded installer to upgrade while retaining your data.
+- **Updates** — macOS releases update through Sparkle. Windows downloads and verifies newer builds in the background; the update icon beside Settings opens a dialog with **Install and restart**, retaining your data.
 - **Bundled `runner` CLI** — spawned agents message each other, check the crew roster, and post signals from inside their own PTYs.
 
 ## Supported agents

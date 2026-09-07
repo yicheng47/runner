@@ -1999,7 +1999,10 @@ mod tests {
             app_version: "0.0.0-test".into(),
         };
         let mut cx = TestAppContext::single();
+        #[cfg(not(windows))]
         let updater = cx.new(|cx| Updater::new(false, cx));
+        #[cfg(windows)]
+        let updater = cx.new(|cx| Updater::new(false, temp.path().join("updates"), cx));
         cx.set_global(GlobalUpdater(updater));
         let store = cx.new(|cx| {
             AppStore::new(
