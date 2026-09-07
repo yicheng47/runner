@@ -62,8 +62,11 @@ Source: "..\..\assets\fonts\OFL.txt"; DestDir: "{app}"; Flags: ignoreversion
 Name: "{userprograms}\{#AppName}"; Filename: "{app}\Runner.exe"; WorkingDir: "{%USERPROFILE}"; AppUserModelID: "{#AppId}"
 
 [Run]
-Filename: "{app}\Runner.exe"; WorkingDir: "{%USERPROFILE}"; Description: "Launch {#AppName}"; Flags: nowait postinstall unchecked skipifsilent
-Filename: "{app}\Runner.exe"; WorkingDir: "{%USERPROFILE}"; Flags: nowait; Check: RelaunchRequested
+; Launch through the shell, never as a child of Setup: Setup runs under Redirection
+; Guard and children inherit it, which makes user-created junctions (Codex's bin,
+; scoop, pnpm) untraversable in the launched app.
+Filename: "{win}\explorer.exe"; Parameters: """{app}\Runner.exe"""; Description: "Launch {#AppName}"; Flags: nowait postinstall unchecked skipifsilent
+Filename: "{win}\explorer.exe"; Parameters: """{app}\Runner.exe"""; Flags: nowait; Check: RelaunchRequested
 
 [Code]
 var
@@ -204,7 +207,7 @@ begin
   if not InstallCompleted then
     RestoreRenamedApplicationFiles;
   if RelaunchRequested and not InstallCompleted and FileExists(ExpandConstant('{app}\Runner.exe')) then
-    Exec(ExpandConstant('{app}\Runner.exe'), '', ExpandConstant('{%USERPROFILE}'), SW_SHOWNORMAL, ewNoWait, ResultCode);
+    Exec(ExpandConstant('{win}\explorer.exe'), '"' + ExpandConstant('{app}\Runner.exe') + '"', '', SW_SHOWNORMAL, ewNoWait, ResultCode);
 end;
 
 function InitializeUninstall: Boolean;
