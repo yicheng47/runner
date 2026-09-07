@@ -607,6 +607,9 @@ pub fn trailing_runtime_args(
     first_turn: Option<&str>,
 ) -> Vec<String> {
     let mut out = model_effort_args(runtime, model, effort);
+    if runtime == "codex" {
+        out.extend(["-c".into(), "check_for_update_on_startup=false".into()]);
+    }
     out.extend(claude_settings_args(
         runtime,
         runner_args,

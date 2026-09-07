@@ -2479,7 +2479,12 @@ fn codex_resume_skips_first_prompt_injection() {
         .expect("codex resume should spawn through FakeRuntime");
     assert_eq!(
         spec.args,
-        vec!["resume".to_string(), prior_key.clone()],
+        vec![
+            "resume".to_string(),
+            prior_key.clone(),
+            "-c".to_string(),
+            "check_for_update_on_startup=false".to_string(),
+        ],
         "codex resume must bind argv to the resumed row's own agent_session_key",
     );
     assert!(
@@ -5091,7 +5096,7 @@ fn enter_claude_launch_gate_first_claude_does_not_sleep() {
 }
 
 #[test]
-fn spawn_argv_injects_claude_fullscreen_for_fresh_and_resume_only() {
+fn spawn_argv_injects_runtime_settings_for_fresh_and_resume() {
     let compose = |runtime: &str, plan: router::runtime::ResumePlan| {
         let mut runner = runner("/bin/cat", &["--debug"]);
         runner.runtime = runtime.into();
@@ -5140,6 +5145,24 @@ fn spawn_argv_injects_claude_fullscreen_for_fresh_and_resume_only() {
 
     let codex = compose("codex", router::runtime::resume_plan("codex", None));
     assert!(!codex.iter().any(|arg| arg == "--settings"));
+    assert!(codex
+        .windows(2)
+        .any(|args| args == ["-c", "check_for_update_on_startup=false"]));
+    assert_eq!(codex.last().map(String::as_str), Some("first turn"));
+
+    let resumed = compose("codex", router::runtime::resume_plan("codex", Some(&prior)));
+    assert_eq!(&resumed[..2], &["resume", prior.as_str()]);
+    assert!(resumed
+        .windows(2)
+        .any(|args| args == ["-c", "check_for_update_on_startup=false"]));
+    assert!(!resumed.iter().any(|arg| arg == "first turn"));
+
+    for runtime in ["claude-code", "trae"] {
+        let args = compose(runtime, router::runtime::resume_plan(runtime, None));
+        assert!(!args
+            .iter()
+            .any(|arg| arg.contains("check_for_update_on_startup")));
+    }
 }
 
 fn spawn_claude_for_resize(
