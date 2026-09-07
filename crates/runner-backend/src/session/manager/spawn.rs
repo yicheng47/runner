@@ -441,6 +441,10 @@ impl SessionManager {
         for (k, v) in extra_env {
             env.insert(k, v);
         }
+        if runner.runtime == "claude-code" {
+            env.insert("CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY".into(), "1".into());
+            env.insert("DISABLE_INSTALLATION_CHECKS".into(), "1".into());
+        }
         let process_has_locale = LOCALE_VARS
             .iter()
             .any(|var| std::env::var_os(var).is_some());
