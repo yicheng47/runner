@@ -155,18 +155,15 @@ impl NativeRoot {
             .children(settings_confirm)
             .child(command_palette)
             .children(toast)
-            .map(|root| self.decorate_window(root, window, cx))
             .map(|root| {
+                // Stays inside the content root so the scrim ends at the Windows title bar.
                 #[cfg(windows)]
                 let root = root
-                    .children(
-                        self.update_dialog
-                            .clone()
-                            .map(|dialog| deferred(dialog).with_priority(300)),
-                    )
+                    .children(self.update_dialog.clone().map(deferred))
                     .on_action(cx.listener(Self::open_update_dialog));
                 root
             })
+            .map(|root| self.decorate_window(root, window, cx))
             .on_modifiers_changed(move |event, window, cx| {
                 modifier_sidebar.update(cx, |sidebar, sidebar_cx| {
                     sidebar.handle_shortcut_modifiers_changed(event.modifiers, window, sidebar_cx);
