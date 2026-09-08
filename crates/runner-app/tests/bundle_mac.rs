@@ -51,7 +51,6 @@ fn assert_update_preferences(plist: &str) {
 
 #[test]
 fn nightly_plist_uses_the_isolated_rolling_channel() {
-    let version = bundle_version();
     let output = run(&[
         "--channel",
         "nightly",
@@ -73,10 +72,7 @@ fn nightly_plist_uses_the_isolated_rolling_channel() {
         plist_value(&plist, "SUFeedURL"),
         "https://github.com/yicheng47/runner/releases/download/nightly/appcast.xml"
     );
-    assert_eq!(
-        plist_value(&plist, "CFBundleShortVersionString"),
-        format!("{version}.20260821.1432")
-    );
+    assert_eq!(plist_value(&plist, "CFBundleShortVersionString"), "abc1234");
     assert_eq!(plist_value(&plist, "CFBundleVersion"), "20260821.1432");
     assert_eq!(
         plist_value(&plist, "SUPublicEDKey"),

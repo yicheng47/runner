@@ -793,6 +793,32 @@ mod tests {
     }
 
     #[test]
+    fn commit_identified_nightly_updates_existing_versioned_installers() {
+        let release = release(&[
+            ("Runner-Setup-9.0.0.20260907.0100-x64.exe", "uploaded"),
+            (
+                "Runner-Setup-nightly.abc1234.20260908.0100-x64.exe",
+                "uploaded",
+            ),
+            (
+                "Runner-Setup-nightly.abc1234.20260908.0100-x64.exe.sig",
+                "uploaded",
+            ),
+        ]);
+        let update = available_update(&release, Some("20260907.0100"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(update.info.version(), "Nightly (abc1234)");
+        assert_eq!(
+            update.sig_url.as_deref(),
+            Some("https://example.com/Runner-Setup-nightly.abc1234.20260908.0100-x64.exe.sig")
+        );
+        assert!(available_update(&release, Some("20260908.0100"))
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
     fn production_release_ignores_macos_assets_and_requires_a_windows_installer() {
         let mut release = release(&[
             ("Runner-0.8.2-arm64.dmg", "uploaded"),

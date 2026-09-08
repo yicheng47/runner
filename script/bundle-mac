@@ -118,14 +118,16 @@ case "$CHANNEL" in
     nightly)
         BUNDLE_ID="com.wycstudios.runner.nightly"
         APP_NAME="Runner Nightly"
-        SHORT_VERSION="$VERSION.$BUILD_STAMP"
+        SHORT_VERSION="$BUILD_SHA"
+        MARKETING_VERSION="Nightly"
         FEED_URL="https://github.com/yicheng47/runner/releases/download/nightly/appcast.xml"
-        DMG_NAME="Runner-Nightly-$SHORT_VERSION-arm64.dmg"
+        DMG_NAME="Runner-Nightly-$BUILD_SHA.$BUILD_STAMP-arm64.dmg"
         ;;
     production)
         BUNDLE_ID="com.wycstudios.runner"
         APP_NAME="Runner"
         SHORT_VERSION="${VERSION%-nightly}"
+        MARKETING_VERSION="$SHORT_VERSION"
         FEED_URL="https://github.com/yicheng47/runner/releases/latest/download/appcast.xml"
         DMG_NAME="Runner-$SHORT_VERSION-arm64.dmg"
         ;;
@@ -237,7 +239,7 @@ require_arm64_slice "$APP_BUNDLE/Contents/Frameworks/Sparkle.framework/Versions/
 
 export RUNNER_BUILD_STAMP="$BUILD_STAMP"
 export RUNNER_BUILD_SHA="$BUILD_SHA"
-export RUNNER_MARKETING_VERSION="$SHORT_VERSION"
+export RUNNER_MARKETING_VERSION="$MARKETING_VERSION"
 export MACOSX_DEPLOYMENT_TARGET="$MINIMUM_SYSTEM_VERSION"
 export RUSTFLAGS="${RUSTFLAGS:-} -Lframework=$SPARKLE_WORK_DIR -Clink-arg=-Wl,-rpath,@executable_path/../Frameworks"
 cargo build --manifest-path "$ROOT_DIR/Cargo.toml" --locked --release --package runner-app --features updater --target "$TARGET_TRIPLE"

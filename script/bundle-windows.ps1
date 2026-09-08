@@ -27,12 +27,16 @@ try {
         $Sha = git rev-parse --short=7 HEAD
         if ($LASTEXITCODE -ne 0) { throw 'Cannot determine the build commit' }
     }
+    if ($Sha -notmatch '^[0-9a-fA-F]{7,40}$') {
+        throw 'Build sha must be a 7-40 character hexadecimal git sha'
+    }
     $metadataJson = cargo metadata --locked --format-version 1 --no-deps
     if ($LASTEXITCODE -ne 0) { throw 'Cargo metadata failed' }
     $metadata = $metadataJson | ConvertFrom-Json
     $version = ($metadata.packages | Where-Object name -eq 'runner-app').version
     $baseVersion = $version -replace '-.*$', ''
-    $shortVersion = if ($Channel -eq 'production') { "$baseVersion.$Stamp" } else { "$version.$Stamp" }
+    $shortSha = $Sha.Substring(0, 7)
+    $shortVersion = if ($Channel -eq 'production') { "$baseVersion.$Stamp" } else { "nightly.$shortSha.$Stamp" }
     $updatesUrl = if ($Channel -eq 'production') {
         'https://github.com/yicheng47/runner/releases/latest'
     } else {
@@ -40,7 +44,7 @@ try {
     }
     $env:RUNNER_BUILD_STAMP = $Stamp
     $env:RUNNER_BUILD_SHA = $Sha
-    $env:RUNNER_MARKETING_VERSION = if ($Channel -eq 'production') { $baseVersion } else { $shortVersion }
+    $env:RUNNER_MARKETING_VERSION = if ($Channel -eq 'production') { $baseVersion } else { 'Nightly' }
     $env:RUNNER_RELEASE_CHANNEL = $Channel
     $env:RUSTFLAGS = "$previousRustflags -C target-feature=+crt-static".Trim()
     cargo build --locked --release -p runner-app -p runner-cli --target x86_64-pc-windows-msvc -j $Jobs
