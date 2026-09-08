@@ -3974,6 +3974,7 @@ impl MissionWorkspace {
                                 })
                                 .child(
                                     svg()
+                                        .flex_none()
                                         .path("close.svg")
                                         .size(rems(12. / 16.))
                                         .text_color(theme::faint())
@@ -4787,6 +4788,7 @@ impl MissionWorkspace {
                             .child(if warning { "details" } else { "payload" })
                             .child(
                                 svg()
+                                    .flex_none()
                                     .path(if expanded {
                                         "chevron-up.svg"
                                     } else {
@@ -5266,6 +5268,7 @@ impl MissionWorkspace {
             .shadow_lg()
             .child(
                 svg()
+                    .flex_none()
                     .path("mail.svg")
                     .size(rems(14. / 16.))
                     .text_color(theme::warning()),
@@ -5695,6 +5698,7 @@ impl MissionWorkspace {
                                     })
                                     .child(
                                         svg()
+                                            .flex_none()
                                             .path("terminal.svg")
                                             .size(rems(12. / 16.))
                                             .text_color(theme::faint())
@@ -5920,6 +5924,7 @@ impl MissionWorkspace {
                     })
                     .child(
                         svg()
+                            .flex_none()
                             .path("users.svg")
                             .size(rems(12. / 16.))
                             .text_color(theme::muted()),
@@ -5935,6 +5940,7 @@ impl MissionWorkspace {
                     .text_size(rems(12. / 16.))
                     .child(
                         svg()
+                            .flex_none()
                             .path("clock.svg")
                             .size(rems(12. / 16.))
                             .text_color(theme::muted()),
@@ -6141,6 +6147,7 @@ fn rail_view_button(
         })
         .child(
             svg()
+                .flex_none()
                 .path(icon)
                 .size(rems(14. / 16.))
                 .text_color(if active {

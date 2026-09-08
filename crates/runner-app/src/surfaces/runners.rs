@@ -1794,6 +1794,7 @@ impl NativeRoot {
             .text_center()
             .child(
                 svg()
+                    .flex_none()
                     .path("search-x.svg")
                     .size(rems(20. / 16.))
                     .text_color(theme::faint()),
@@ -1825,6 +1826,7 @@ impl NativeRoot {
             );
         let empty_state = EmptyStateCard::new(
             svg()
+                .flex_none()
                 .path("terminal.svg")
                 .size(rems(22. / 16.))
                 .text_color(theme::accent()),

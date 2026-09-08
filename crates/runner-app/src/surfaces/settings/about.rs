@@ -143,6 +143,7 @@ fn link_row(
                 .gap(rems(10. / 16.))
                 .child(
                     svg()
+                        .flex_none()
                         .path(icon)
                         .size(rems(14. / 16.))
                         .text_color(theme::muted()),
@@ -162,6 +163,7 @@ fn link_row(
         } else {
             div().child(
                 svg()
+                    .flex_none()
                     .path("external-link.svg")
                     .size(rems(12. / 16.))
                     .text_color(theme::faint()),

@@ -1244,6 +1244,7 @@ impl RenderOnce for Label {
                         })
                         .child(
                             svg()
+                                .flex_none()
                                 .path("info.svg")
                                 .size(rems(14. / 16.))
                                 .text_color(theme::faint()),

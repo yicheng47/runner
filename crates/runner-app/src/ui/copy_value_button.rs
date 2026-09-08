@@ -161,6 +161,7 @@ impl Render for CopyValueButton {
             .on_key_down(cx.listener(Self::on_key_down))
             .child(
                 svg()
+                    .flex_none()
                     .path(if copied { "check.svg" } else { "copy.svg" })
                     .size(rems(12. / 16.))
                     .text_color(if focused {

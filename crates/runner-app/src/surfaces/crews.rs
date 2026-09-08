@@ -314,6 +314,7 @@ impl NativeRoot {
             .text_center()
             .child(
                 svg()
+                    .flex_none()
                     .path("search-x.svg")
                     .size(rems(20. / 16.))
                     .text_color(theme::faint()),
@@ -345,6 +346,7 @@ impl NativeRoot {
             );
         let empty_state = EmptyStateCard::new(
             svg()
+                .flex_none()
                 .path("users.svg")
                 .size(rems(22. / 16.))
                 .text_color(theme::accent()),
@@ -2261,6 +2263,7 @@ impl NativeRoot {
                             .child(div().min_w(px(0.)).flex_1().child(form.query.clone()))
                             .child(
                                 svg()
+                                    .flex_none()
                                     .path("chevron-down.svg")
                                     .size(rems(14. / 16.))
                                     .text_color(theme::faint()),

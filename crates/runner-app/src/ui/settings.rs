@@ -247,6 +247,7 @@ fn stepper_button(
 
     let key_handler = Rc::clone(&handler);
     let icon = svg()
+        .flex_none()
         .path(icon)
         .size(rems(14. / 16.))
         .text_color(theme::faint())

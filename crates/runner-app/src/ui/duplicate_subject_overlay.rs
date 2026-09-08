@@ -90,6 +90,7 @@ impl RenderOnce for DuplicateSubjectOverlay {
                             .flex_none()
                             .child(
                                 svg()
+                                    .flex_none()
                                     .path("app-window.svg")
                                     .size(rems(20. / 16.))
                                     .text_color(theme::accent()),
@@ -171,6 +172,7 @@ impl RenderOnce for DuplicateSubjectOverlay {
                                     })
                                     .child(
                                         svg()
+                                            .flex_none()
                                             .path("app-window.svg")
                                             .size(rems(14. / 16.))
                                             .text_color(theme::accent_ink()),

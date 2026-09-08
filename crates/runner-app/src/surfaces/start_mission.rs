@@ -518,6 +518,7 @@ impl NativeRoot {
                             })
                             .child(
                                 svg()
+                                    .flex_none()
                                     .path(if modal.advanced_open {
                                         "chevron-down.svg"
                                     } else {
