@@ -46,7 +46,7 @@ pub use list::{
 pub use menu::{ContextMenu, MenuAction, MenuItem, MenuKey, MenuState, PopoverMenu};
 pub use model_field::ModelField;
 pub use overlay::{ConfirmDialog, ConfirmDialogState, Drawer, Modal, OverlayWidth};
-pub use scrollbar::{Scrollbar, ScrollbarKind, ScrollbarMetrics};
+pub use scrollbar::{terminal_scrollbar_gutter, Scrollbar, ScrollbarKind, ScrollbarMetrics};
 pub use select::{
     runtime_select_options, RuntimeSelect, SelectHandler, SelectOption, SelectState, StyledSelect,
 };

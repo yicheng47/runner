@@ -1726,6 +1726,7 @@ impl NativeRoot {
                         .flex_1()
                         .min_w(px(0.))
                         .min_h(px(0.))
+                        .pr(runner_app::ui::terminal_scrollbar_gutter())
                         .child(TerminalElement::new(
                             terminal,
                             terminal_interaction,
@@ -2091,6 +2092,7 @@ impl NativeRoot {
                             .flex_1()
                             .min_w(px(0.))
                             .min_h(px(0.))
+                            .pr(runner_app::ui::terminal_scrollbar_gutter())
                             .child(TerminalElement::new(
                                 terminal,
                                 terminal_interaction,
