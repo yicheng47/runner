@@ -8,7 +8,9 @@ Prerequisites: Git for Windows, the repository's pinned Rust toolchain with rust
 
 From the repository root, use `.\make.cmd build` to build the app and both CLI sidecars, or `.\make.cmd run` to build and launch. Add `--release` for optimized binaries. The shortcut works in PowerShell and Command Prompt without GNU Make and defaults to 12 build jobs unless `CARGO_BUILD_JOBS` is set.
 
-Development outputs are `target\debug\Runner.exe`, `runner-agent-cli.exe`, and `runner-mcp.exe`; optimized local builds use `target\release`. Run `.\target\debug\Runner.exe` to launch an existing development build without rebuilding.
+Development outputs are `target\debug\Runner.exe`, `runner-agent-cli.exe`, `runner-mcp.exe`, `conpty.dll`, and `OpenConsole.exe`; optimized local builds use `target\release`. After Cargo builds, `make.cmd` runs `script/windows/conpty.ps1` to download the pinned, checksum-verified ConPTY package into `target/tools`, verify Microsoft's signatures, and copy the two x64 files beside the executables. Run `.\target\debug\Runner.exe` to launch an existing development build without rebuilding.
+
+Runner ships the Windows Terminal ConPTY because the inbox conhost splits Codex redraws around a delayed cursor repair. The shipped ConPTY delivers whole frames, so Runner can forward output immediately without a Windows-only hold. `portable-pty` loads `conpty.dll` beside the executable; the first PTY spawn logs whether that DLL is present or the inbox conhost is in use. See the [output latency spec](../features/492-windows-terminal-output-latency.md) for measurements and the package pin.
 
 Debug builds use `%APPDATA%\com.wycstudios.runner-dev` and a separate MCP pipe. Packaged releases use `%APPDATA%\com.wycstudios.runner`, with logs under its `logs` directory. The per-user installer places application binaries under `%LOCALAPPDATA%\Programs\Runner`; upgrades and uninstall preserve application data.
 
@@ -37,7 +39,7 @@ Build a stable-channel installer from PowerShell:
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\script\bundle-windows.ps1 -Channel production
 ```
 
-The script downloads the checksum-verified portable Inno Setup compiler into `target/tools`, builds optimized x64 binaries, and produces `target/x86_64-pc-windows-msvc/release/Runner-Setup-<version>.<stamp>-x64.exe`. The installer contains Runner, both CLI sidecars, and license notices. `-Stamp YYYYMMDD.HHMM`, `-Sha <commit>`, and `-Jobs <count>` are optional; CI supplies the build identity through environment variables. Building an installer does not install or launch Runner.
+The script downloads the checksum-verified portable Inno Setup compiler and pinned ConPTY package into `target/tools`, builds optimized x64 binaries, and produces `target/x86_64-pc-windows-msvc/release/Runner-Setup-<version>.<stamp>-x64.exe`. The installer contains Runner, both CLI sidecars, `conpty.dll`, `OpenConsole.exe`, and license notices including `LICENSE.conpty`. The ConPTY files sit beside `Runner.exe`, are replaced on every upgrade, and join the binaries in rename-aside handling when in use. `-Stamp YYYYMMDD.HHMM`, `-Sha <commit>`, and `-Jobs <count>` are optional; CI supplies the build identity through environment variables. Building an installer does not install or launch Runner.
 
 The packaging build links the C runtime statically and verifies with MSVC's `dumpbin` that no separate Visual C++ runtime is needed and the app uses the GUI subsystem. End users do not need Rust, MSVC, or PowerShell 7. Local builds are unsigned unless a signing certificate is available; see [Code signing](#code-signing). Both Windows packaging jobs publish a minisign `.sig` alongside each installer for in-app update verification.
 

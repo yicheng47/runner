@@ -145,6 +145,22 @@ impl SessionRuntime for PtyRuntime {
         let (cols, rows) = spec
             .initial_size
             .expect("SessionManager must resolve the initial PTY size");
+        #[cfg(windows)]
+        {
+            static LOG_CONPTY: std::sync::Once = std::sync::Once::new();
+            LOG_CONPTY.call_once(|| {
+                let sideloaded = std::env::current_exe()
+                    .ok()
+                    .is_some_and(|exe| exe.with_file_name("conpty.dll").is_file());
+                if sideloaded {
+                    log::info!(
+                        "PTY host: sideloaded ConPTY (conpty.dll present beside executable)"
+                    );
+                } else {
+                    log::info!("PTY host: inbox conhost (conpty.dll absent beside executable)");
+                }
+            });
+        }
         let pty_system = native_pty_system();
         let pair = pty_system
             .openpty(PtySize {

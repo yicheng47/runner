@@ -410,69 +410,6 @@ fn forwarder_coalesces_queued_stream_chunks_into_one_output_event() {
 
 #[cfg(windows)]
 #[test]
-fn windows_coalescer_preserves_delayed_cursor_repair_with_a_bounded_grace() {
-    for (delay_ms, split_redraw) in [(12, false), (105, false), (105, true), (130, false)] {
-        // ConPTY closes the synchronized update before its delayed cursor repair.
-        let redraw = b"\x1b[?2026h\x1b[?25l\x1b[38;1H\x1b[?25h\x1b[0 q\x1b[?2026l";
-        let restore = b"\x1b[?25l \x1b[42;3H\x1b[?25h";
-        let mut arrivals = std::collections::VecDeque::new();
-        let mut bytes = redraw.to_vec();
-        let mut expected = bytes.clone();
-        for at_ms in (12..delay_ms.min(100)).step_by(12) {
-            arrivals.push_back((Duration::from_millis(at_ms), redraw.to_vec()));
-            expected.extend_from_slice(redraw);
-        }
-        if split_redraw {
-            let redraw = b"\x1b[?2026h\x1b[?25l\x1b[38;1H\x1b[?25h";
-            arrivals.push_back((Duration::from_millis(delay_ms), redraw.to_vec()));
-            expected.extend_from_slice(redraw);
-            arrivals.push_back((Duration::from_millis(delay_ms + 2), b"\x1b[?2026l".to_vec()));
-            expected.extend_from_slice(b"\x1b[?2026l");
-        }
-        let repair_ms = delay_ms + if split_redraw { 2 } else { 0 };
-        arrivals.push_back((Duration::from_millis(repair_ms), restore.to_vec()));
-        let started = Instant::now();
-        let elapsed = std::cell::Cell::new(Duration::ZERO);
-        let pending = super::output::coalesce_windows_output(
-            &mut bytes,
-            |timeout| {
-                let deadline = elapsed.get() + timeout;
-                if arrivals.front().is_some_and(|(at, _)| *at <= deadline) {
-                    let (at, bytes) = arrivals.pop_front().unwrap();
-                    elapsed.set(at);
-                    Ok(RuntimeOutput::Stream(bytes))
-                } else {
-                    elapsed.set(deadline);
-                    Err(RecvTimeoutError::Timeout)
-                }
-            },
-            || started + elapsed.get(),
-        );
-        assert!(pending.is_none());
-        if delay_ms < 125 {
-            expected.extend_from_slice(restore);
-            assert!(arrivals.is_empty());
-            assert_eq!(
-                elapsed.get(),
-                Duration::from_millis(if delay_ms < 100 {
-                    repair_ms + 25
-                } else {
-                    repair_ms
-                }),
-            );
-        } else {
-            assert_eq!(elapsed.get(), Duration::from_millis(125));
-            assert_eq!(arrivals.len(), 1);
-        }
-        assert_eq!(
-            bytes, expected,
-            "cursor repair after {delay_ms} ms, split redraw: {split_redraw}",
-        );
-    }
-}
-
-#[cfg(windows)]
-#[test]
 fn forwarder_delivers_a_cursor_burst_without_waiting_for_eof() {
     let fake = fake_runtime();
     let mgr = mgr_with_fake(None, Arc::clone(&fake));
