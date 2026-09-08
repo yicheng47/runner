@@ -133,6 +133,7 @@ impl Render for UpdatesPane {
 
         let pane = cx.entity();
         let updater_controls_unavailable = !updater_available && available_version.is_none();
+        let installed_version = runner_app::version::display_version_label();
         let toggle_updater = self.updater.clone();
         let toggle_store = self.app_store.clone();
 
@@ -191,17 +192,17 @@ impl Render for UpdatesPane {
                                                     .font_family(theme::SYSTEM_MONOSPACE_FONT)
                                                     .text_size(rems(11. / 16.))
                                                     .text_color(theme::muted())
-                                                    .child(format!(
-                                                        "v{}",
-                                                        runner_app::version::display_version()
-                                                    )),
+                                                    .child(installed_version),
                                             ),
                                     )
                                     .children(available_version.map(|version| {
                                         div()
                                             .text_size(rems(12. / 16.))
                                             .text_color(theme::muted())
-                                            .child(format!("Update available: v{version}"))
+                                            .child(format!(
+                                                "Update available: {}",
+                                                runner_app::version::version_label(&version)
+                                            ))
                                     }))
                                     .children(updater_controls_unavailable.then(|| {
                                         div()

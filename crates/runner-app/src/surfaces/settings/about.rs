@@ -14,6 +14,7 @@ impl AboutPane {
 
 impl Render for AboutPane {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let installed_version = runner_app::version::display_version_label();
         div()
             .flex()
             .flex_col()
@@ -66,10 +67,7 @@ impl Render for AboutPane {
                                                     .font_family(theme::SYSTEM_MONOSPACE_FONT)
                                                     .text_size(rems(11. / 16.))
                                                     .text_color(theme::muted())
-                                                    .child(format!(
-                                                        "v{}",
-                                                        runner_app::version::display_version()
-                                                    )),
+                                                    .child(installed_version),
                                             ),
                                     )
                                     .child(

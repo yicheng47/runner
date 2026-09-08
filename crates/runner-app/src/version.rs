@@ -9,6 +9,18 @@ pub fn display_version() -> String {
     )
 }
 
+pub fn display_version_label() -> String {
+    version_label(&display_version())
+}
+
+pub fn version_label(version: &str) -> String {
+    if version.starts_with(|c: char| c.is_ascii_digit()) {
+        format!("v{version}")
+    } else {
+        version.to_owned()
+    }
+}
+
 fn compose_display_version(
     crate_version: &str,
     marketing_version: Option<&str>,
@@ -70,5 +82,12 @@ mod tests {
             compose_display_version("0.6.0-nightly", None, None, None),
             "0.6.0-nightly (dev)"
         );
+    }
+
+    #[test]
+    fn label_prefixes_numbered_versions_only() {
+        assert_eq!(version_label("0.8.3 (05926cb)"), "v0.8.3 (05926cb)");
+        assert_eq!(version_label("0.8.3-nightly (dev)"), "v0.8.3-nightly (dev)");
+        assert_eq!(version_label("Nightly (05926cb)"), "Nightly (05926cb)");
     }
 }

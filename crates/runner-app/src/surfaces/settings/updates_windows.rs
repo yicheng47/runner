@@ -83,7 +83,7 @@ impl Render for UpdatesPane {
                             .child(div().text_size(rems(1.)).font_weight(FontWeight::BOLD).text_color(theme::text()).child("Runner"))
                             .child(div().rounded_sm().bg(theme::raised()).px(rems(6. / 16.)).py(rems(2. / 16.))
                                 .font_family(theme::SYSTEM_MONOSPACE_FONT).text_size(rems(11. / 16.)).text_color(theme::muted())
-                                .child(format!("v{}", runner_app::version::display_version()))))
+                                .child(runner_app::version::display_version_label())))
                         .child(div().text_size(rems(12. / 16.)).text_color(theme::muted()).child(status)))
                     .child(Button::new("updates-check", if up_to_date { "Check for updates" } else { "Update" })
                         .icon(if up_to_date { "refresh-cw.svg" } else { "circle-arrow-down.svg" })

@@ -56,7 +56,7 @@ fn dialog_content(
     size: u64,
 ) -> Option<DialogContent> {
     let version = info.map_or("", UpdateInfo::version);
-    let installed = format!("Installed v{}", runner_app::version::display_version());
+    let installed = format!("Installed {}", runner_app::version::display_version_label());
     let mut content = DialogContent {
         title: String::new(),
         subtitle: installed.clone(),
