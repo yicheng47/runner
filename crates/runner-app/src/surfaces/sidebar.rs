@@ -2614,11 +2614,7 @@ impl Sidebar {
                 active,
                 false,
             )
-            .children(
-                node.pinned_position
-                    .is_some()
-                    .then(|| pin_indicator(!show_shortcut)),
-            )
+            .children(node.pinned_position.is_some().then(pin_indicator))
             .child(sidebar_icon(leaf_icon, live))
             .child(sidebar_row_label(label.clone(), active, false))
             .child(trailing)
@@ -2729,11 +2725,7 @@ impl Sidebar {
                 active,
                 false,
             )
-            .children(
-                node.pinned_position
-                    .is_some()
-                    .then(|| pin_indicator(!show_shortcut)),
-            )
+            .children(node.pinned_position.is_some().then(pin_indicator))
             .child(sidebar_icon("flag.svg", summary.all_sessions_live))
             .child(sidebar_row_label(label.clone(), active, false))
             .child(trailing)
@@ -3965,20 +3957,17 @@ fn sidebar_icon(path: &'static str, active: bool) -> AnyElement {
         .into_any_element()
 }
 
-fn pin_indicator(visible: bool) -> AnyElement {
-    div()
+/// Leading pin glyph. It stays put while the ⌘ shortcut pills show: the
+/// pills only replace the trailing slot.
+fn pin_indicator() -> AnyElement {
+    svg()
+        .path("pin.svg")
         .size(rems(10. / 16.))
         .flex_none()
-        .children(visible.then(|| {
-            svg()
-                .flex_none()
-                .path("pin.svg")
-                .size(rems(10. / 16.))
-                .text_color(theme::faint())
-                .with_transformation(Transformation::rotate(radians(
-                    -std::f32::consts::FRAC_PI_4,
-                )))
-        }))
+        .text_color(theme::faint())
+        .with_transformation(Transformation::rotate(radians(
+            -std::f32::consts::FRAC_PI_4,
+        )))
         .into_any_element()
 }
 
