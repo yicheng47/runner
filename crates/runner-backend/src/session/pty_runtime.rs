@@ -1544,8 +1544,10 @@ mod tests {
 
     #[test]
     fn poll_until_returns_the_first_observed_value() {
+        // The deadline only bounds a hung poll; a loaded CI runner must not
+        // be able to turn the third attempt into a timeout.
         let mut attempts = 0;
-        let result = poll_until(Duration::from_millis(1), Duration::from_millis(20), || {
+        let result = poll_until(Duration::from_millis(1), Duration::from_secs(30), || {
             attempts += 1;
             Ok((attempts == 3).then_some(attempts))
         })

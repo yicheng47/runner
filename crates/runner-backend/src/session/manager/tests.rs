@@ -2828,23 +2828,25 @@ fn spawn_direct_writes_session_with_null_mission_id_and_emits_activity() {
     );
 
     // Simulate clean exit so the activity emission cycle
-    // completes (spawn-time emit then reap-time emit).
+    // completes (spawn-time emit then reap-time emit). The exit event is
+    // emitted after the reap-time activity, so it is the signal to wait on;
+    // the stopped row lands before either.
     fake.close_spawn(0);
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
         let conn = pool.get().unwrap();
-        let row: (String, Option<String>) = conn
+        let mission_id: Option<String> = conn
             .query_row(
-                "SELECT status, mission_id FROM sessions WHERE id = ?1",
+                "SELECT mission_id FROM sessions WHERE id = ?1",
                 params![&spawned.id],
-                |r| Ok((r.get(0)?, r.get(1)?)),
+                |r| r.get(0),
             )
             .unwrap();
         assert_eq!(
-            row.1, None,
+            mission_id, None,
             "direct session must persist with NULL mission_id"
         );
-        if row.0 != "running" {
+        if !cap.exit.lock().unwrap().is_empty() {
             break;
         }
         if Instant::now() > deadline {
@@ -3841,7 +3843,10 @@ fn resume_reuses_row_and_preserves_agent_session_key() {
 
 /// Poll the sessions row until the forwarder demotes it from
 /// `running` — `resume()` refuses rows that still look live.
-fn wait_for_db_stop(pool: &DbPool, session_id: &str) {
+/// The forwarder flips the row to stopped before it emits activity and
+/// forgets the runtime handle, so waiting on the row alone can observe a
+/// session the manager still treats as live.
+fn wait_for_session_exit(mgr: &SessionManager, pool: &DbPool, session_id: &str) {
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
         let conn = pool.get().unwrap();
@@ -3852,11 +3857,14 @@ fn wait_for_db_stop(pool: &DbPool, session_id: &str) {
                 |r| r.get(0),
             )
             .unwrap();
-        if status != "running" {
+        let handle_released = mgr
+            .session_state(session_id)
+            .is_none_or(|state| state.lock().unwrap().handle.is_none());
+        if status != "running" && handle_released {
             return;
         }
         if Instant::now() > deadline {
-            panic!("session {session_id} never left running");
+            panic!("session {session_id} never finished exiting (status={status}, handle_released={handle_released})");
         }
         std::thread::sleep(Duration::from_millis(20));
     }
@@ -3908,7 +3916,7 @@ fn resume_applies_a_size_pushed_mid_fork() {
         .unwrap();
     let session_id = spawned.id.clone();
     fake.close_spawn(0);
-    wait_for_db_stop(&pool, &session_id);
+    wait_for_session_exit(&mgr, &pool, &session_id);
     {
         let mgr = Arc::clone(&mgr);
         let pool = Arc::clone(&pool);
@@ -4037,7 +4045,7 @@ fn resume_size_resolution_prefers_explicit_then_persisted_after_manager_restart(
         )
         .unwrap();
     first_fake.close_spawn(0);
-    wait_for_db_stop(&pool, &spawned.id);
+    wait_for_session_exit(&first_mgr, &pool, &spawned.id);
     first_mgr.resize(&spawned.id, 132, 41, &pool).unwrap();
     first_mgr.settle_pending_resize_now(&spawned.id);
     let persisted: (u16, u16) = pool
@@ -4080,7 +4088,7 @@ fn resume_size_resolution_prefers_explicit_then_persisted_after_manager_restart(
         "unsized resume must use the DB size without manager memory"
     );
     resumed_mgr.kill(&spawned.id).unwrap();
-    wait_for_db_stop(&pool, &spawned.id);
+    wait_for_session_exit(&resumed_mgr, &pool, &spawned.id);
 
     resumed_mgr
         .resume(
