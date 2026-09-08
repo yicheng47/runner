@@ -1,6 +1,6 @@
 # macOS nightly replaces Runner
 
-Tracking issue: [#505](https://github.com/yicheng47/runner/issues/505). Status: planned, 2026-09-08. Priority P2. Bundled with [#504](./504-single-nightly-release.md) in one crew mission; brief: [504 — Nightly channel unification](../impls/504-nightly-channel-unification.md).
+Tracking issue: [#505](https://github.com/yicheng47/runner/issues/505). Status: shipped 2026-09-08 in PR [#506](https://github.com/yicheng47/runner/pull/506); archived 2026-09-08. Priority P2. Bundled with [#504](./504-single-nightly-release.md) in one crew mission; brief: [504 — Nightly channel unification](../../impls/archive/504-nightly-channel-unification.md).
 
 ## Motivation
 
@@ -30,11 +30,11 @@ Sparkle refuses an update whose bundle identifier differs from the host's, so th
 
 ### Before handoff
 
-- [ ] `bundle_mac` tests: the nightly plist carries the production bundle id and name, the nightly feed, the stamp, and the short sha; the production plist is unchanged and still carries the stable feed.
-- [ ] Reviewer reports no remaining must-fix findings on the working-tree diff.
+- [x] `bundle_mac` tests: the nightly plist carries the production bundle id and name, the nightly feed, the stamp, and the short sha; the production plist is unchanged and still carries the stable feed.
+- [x] Reviewer reports no remaining must-fix findings on the working-tree diff.
 
 ### After landing and an authorized cut
 
-- [ ] The cut's DMG opens as a `Runner` volume containing `Runner.app`, installs over the production `Runner.app`, and the app shows `Nightly (<sha>)`.
-- [ ] That install's Sparkle check offers the next nightly and installs it in place.
-- [ ] A production install's Sparkle check still offers nothing.
+- [x] The cut's DMG opens as a `Runner` volume containing `Runner.app`, installs over the production `Runner.app`, and the app shows `Nightly (<sha>)`. `2bf743d` on 2026-09-08; `Runner Nightly.app` deleted.
+- [x] That install's Sparkle check offers the next nightly and installs it in place. `d3838a5` on 2026-09-08, missions intact.
+- [x] A production install's Sparkle check still offers nothing. The production appcast still serves 0.8.2 and `releases/latest` is unchanged; no production install remains on the Mac for a live check.

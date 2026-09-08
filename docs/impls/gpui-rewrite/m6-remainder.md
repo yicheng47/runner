@@ -12,7 +12,7 @@ Everything lands on `main` (the only line since the 2026-08-23 cutover): a crew 
 
 ## Status (2026-08-28)
 
-`v0.6.0` shipped 2026-08-23 and every landed M6 item since is recorded with its commit in the program record ([README.md](README.md) §Timeline); the items landed through GA are in full in the archived M6 document ([../archive/gpui-rewrite/m6-consolidation.md](../archive/gpui-rewrite/m6-consolidation.md)). [#445](https://github.com/yicheng47/runner/issues/445) tracked the queued items and closed 2026-08-27 once they landed. This file keeps only what is still open, in the order queued; an item gets its own issue when it is scheduled. Everything lands on `main` and ships as tagged releases (the post-GA nightly was dropped 2026-08-27; the unified public nightly channels are available via `/nightly run` after [#502](../502-unified-nightly.md) lands). Numbers are identifiers, not sequence.
+`v0.6.0` shipped 2026-08-23 and every landed M6 item since is recorded with its commit in the program record ([README.md](README.md) §Timeline); the items landed through GA are in full in the archived M6 document ([../archive/gpui-rewrite/m6-consolidation.md](../archive/gpui-rewrite/m6-consolidation.md)). [#445](https://github.com/yicheng47/runner/issues/445) tracked the queued items and closed 2026-08-27 once they landed. This file keeps only what is still open, in the order queued; an item gets its own issue when it is scheduled. Everything lands on `main` and ships as tagged releases (the post-GA nightly was dropped 2026-08-27; the unified public nightly channels are available via `/nightly run` after [#502](../archive/502-unified-nightly.md) lands). Numbers are identifiers, not sequence.
 
 ## Pending — post-GA, in order
 

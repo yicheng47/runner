@@ -1,6 +1,6 @@
 # One nightly release for both platforms
 
-Tracking issue: [#504](https://github.com/yicheng47/runner/issues/504). Status: planned, 2026-09-08. Priority P2. Bundled with [#505](./505-macos-nightly-replaces-runner.md) in one crew mission; brief: [504 — Nightly channel unification](../impls/504-nightly-channel-unification.md).
+Tracking issue: [#504](https://github.com/yicheng47/runner/issues/504). Status: shipped 2026-09-08 in PR [#506](https://github.com/yicheng47/runner/pull/506); `nightly-win` deleted by hand the same day; archived 2026-09-08. Priority P2. Bundled with [#505](./505-macos-nightly-replaces-runner.md) in one crew mission; brief: [504 — Nightly channel unification](../../impls/archive/504-nightly-channel-unification.md).
 
 ## Motivation
 
@@ -37,13 +37,13 @@ Installed Windows nightlies still read `nightly-win`, and that address is compil
 
 ### Before handoff
 
-- [ ] `make test-nightly` covers a `both` cut leaving four assets on `nightly`, single-platform cuts touching only their assets, per-platform retention on one release with paired signatures and appcast protection, and upload or download failure reported as incomplete without pruning. Nothing in the workflow references `nightly-win`.
-- [ ] Windows updater tests cover the nightly channel addresses pointing at `nightly` and a release holding both platforms' assets still selecting the newest installer with its signature.
-- [ ] Reviewer reports no remaining must-fix findings on the working-tree diff.
+- [x] `make test-nightly` covers a `both` cut leaving four assets on `nightly`, single-platform cuts touching only their assets, per-platform retention on one release with paired signatures and appcast protection, and upload or download failure reported as incomplete without pruning. Nothing in the workflow references `nightly-win`.
+- [x] Windows updater tests cover the nightly channel addresses pointing at `nightly` and a release holding both platforms' assets still selecting the newest installer with its signature.
+- [x] Reviewer reports no remaining must-fix findings on the working-tree diff.
 
 ### After landing and an authorized cut
 
 - [x] A `both` cut leaves `nightly` with the DMG, appcast, installer, and signature from one sha and stamp, all anonymously downloadable; `nightly-win` is untouched. Verified on run 34187805571 from the PR branch, 2026-09-08.
-- [ ] `-f platform=windows` replaces only the installer and signature on `nightly`; `-f platform=macos` replaces only the DMG and appcast.
-- [ ] The hand-installed build on the PC checks `nightly` and updates from it in-app on the next cut; `nightly-win` is then deleted.
+- [ ] `-f platform=windows` replaces only the installer and signature on `nightly`; `-f platform=macos` replaces only the DMG and appcast. Not exercised as of archiving; covered by the workflow tests only.
+- [ ] The hand-installed build on the PC checks `nightly` and updates from it in-app on the next cut. Pending; `nightly-win` was deleted ahead of it on 2026-09-08, so the PC's current nightly reports a failed check until the hand install.
 - [x] `releases/latest` still resolves to the current production release. Verified `v0.8.2` after run 34187805571.

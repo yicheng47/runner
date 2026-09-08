@@ -1,6 +1,6 @@
 # One nightly for both platforms
 
-Tracking issue: [#502](https://github.com/yicheng47/runner/issues/502). Status: commit-only nightly identity implemented, locally validated, and reviewed clean, 2026-09-08; post-landing live verification pending. Priority P1. Crew brief: [502 — Unified nightly implementation](../impls/502-unified-nightly.md).
+Tracking issue: [#502](https://github.com/yicheng47/runner/issues/502). Status: shipped 2026-09-08 in PR [#503](https://github.com/yicheng47/runner/pull/503), then superseded the same day by [#504](./504-single-nightly-release.md) (one release) and [#505](./505-macos-nightly-replaces-runner.md) (same-app Mac nightly); archived 2026-09-08. Priority P1. Crew brief: [502 — Unified nightly implementation](../../impls/archive/502-unified-nightly.md).
 
 ## Motivation
 
@@ -77,10 +77,12 @@ This mission implements and reviews the working-tree change. Commits, pushes, PR
 
 ### After landing and an authorized cut
 
-- [ ] `gh workflow run nightly.yml --ref main` with no input builds both platforms with one stamp; `-f platform=macos` and `-f platform=windows` each build only that platform.
-- [ ] A second dispatch while one is running cancels the whole first run.
+- [x] `gh workflow run nightly.yml --ref main` with no input builds both platforms with one stamp. Runs 34180651973, 34187805571, and 34194264330.
+- [ ] `-f platform=macos` and `-f platform=windows` each build only that platform. Not exercised as of archiving; covered by the workflow tests only.
+- [ ] A second dispatch while one is running cancels the whole first run. Not exercised as of archiving.
 - [x] `nightly` is a public prerelease with a DMG and `appcast.xml` that download anonymously; `nightly-win` unchanged in shape. Verified on run 34180651973, 2026-09-08.
-- [ ] An installed macOS nightly finds the next nightly through Sparkle and installs it; an installed Windows nightly does the same through the in-app updater.
-- [ ] Both DMG and installer names contain the same short commit and stamp, and both apps display `Nightly (<sha>)` without an official version.
-- [ ] `releases/latest` still resolves to `v0.8.2`; a production install's Sparkle check offers nothing.
+- [x] An installed macOS nightly finds the next nightly through Sparkle and installs it. `2bf743d` → `d3838a5` on 2026-09-08, data intact.
+- [ ] An installed Windows nightly does the same through the in-app updater. Pending the PC's hand install of the first `nightly` build.
+- [x] Both DMG and installer names contain the same short commit and stamp; the Mac displays `Nightly (<sha>)`. The PC display is confirmed with its hand install.
+- [x] `releases/latest` still resolves to `v0.8.2` after every cut, and the production appcast still serves 0.8.2. No production install remains on the Mac to run a live check.
 - [x] The workflow builds nightlies from the existing bare crate version without a version bump. Verified on run 34180651973 at crate version 0.8.2.

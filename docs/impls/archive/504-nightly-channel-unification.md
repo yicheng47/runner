@@ -1,6 +1,6 @@
 # 504 — Nightly channel unification
 
-Tracking issues: [#504](https://github.com/yicheng47/runner/issues/504) and [#505](https://github.com/yicheng47/runner/issues/505). Specs: [One nightly release for both platforms](../features/504-single-nightly-release.md) and [macOS nightly replaces Runner](../features/505-macos-nightly-replaces-runner.md). Baseline: `main` at `2e09fbb`, Runner 0.8.2, 2026-09-08. Status: planned; crew brief.
+Tracking issues: [#504](https://github.com/yicheng47/runner/issues/504) and [#505](https://github.com/yicheng47/runner/issues/505). Specs: [One nightly release for both platforms](../../features/archive/504-single-nightly-release.md) and [macOS nightly replaces Runner](../../features/archive/505-macos-nightly-replaces-runner.md). Baseline: `main` at `2e09fbb`, Runner 0.8.2, 2026-09-08. Status: shipped in PR [#506](https://github.com/yicheng47/runner/pull/506) on 2026-09-08, followed by the #507 tag move and changelog in PR [#508](https://github.com/yicheng47/runner/pull/508); archived 2026-09-08.
 
 ## Goal
 

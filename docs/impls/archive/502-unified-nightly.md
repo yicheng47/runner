@@ -1,6 +1,6 @@
 # 502 — Unified nightly implementation
 
-Tracking issue: [#502](https://github.com/yicheng47/runner/issues/502). Spec: [One nightly for both platforms](../features/502-unified-nightly.md). Baseline: `main` at `99e32ef`, Runner 0.8.2, 2026-09-08. Status: commit-only nightly identity implemented, locally validated, and reviewed clean per Jason’s 2026-09-08 clarification. All changes remain uncommitted; post-landing live verification is pending.
+Tracking issue: [#502](https://github.com/yicheng47/runner/issues/502). Spec: [One nightly for both platforms](../../features/archive/502-unified-nightly.md). Baseline: `main` at `99e32ef`, Runner 0.8.2, 2026-09-08. Status: shipped in PR [#503](https://github.com/yicheng47/runner/pull/503) on 2026-09-08 and archived the same day; superseded by the [504 brief](./504-nightly-channel-unification.md). All changes remain uncommitted; post-landing live verification is pending.
 
 ## Goal
 
