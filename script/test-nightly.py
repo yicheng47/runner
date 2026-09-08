@@ -79,13 +79,8 @@ sleep() { :; }
 git() {
   printf 'git %s\n' "$*" >> "$CALLS"
   case "$1" in
-    rev-parse)
-      if [[ "$*" == *nightly* ]]; then
-        [[ -n "$PREVIOUS_TAG_SHA" ]] && printf '%s\n' "$PREVIOUS_TAG_SHA"
-      else
-        printf '%s\n' "$SOURCE_SHA"
-      fi ;;
-    fetch) [[ -n "$PREVIOUS_TAG_SHA" ]] ;;
+    rev-parse) printf '%s\n' "$SOURCE_SHA" ;;
+    describe) [[ -n "$RELEASE_TAG" ]] && printf '%s\n' "$RELEASE_TAG" ;;
     log) printf '%s\n' "$CHANGELOG" | sed '/^$/d' ;;
     config|tag) return 0 ;;
     push) [[ -z "$FAIL_TAG_PUSH" ]] ;;
@@ -122,7 +117,7 @@ class NightlyTests(unittest.TestCase):
                         SETUP_NAME=f'Runner-Setup-{VERSION}-x64.exe',
                         CI_RESULT='success', RELEASE_EXISTS='true',
                         FAIL_UPLOAD='', FAIL_DOWNLOAD='', FAIL_TAG_PUSH='', RUNNER_TEMP=str(self.root),
-                        PREVIOUS_TAG_SHA='1111111aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+                        RELEASE_TAG='v0.8.2',
                         CHANGELOG='- feat(nightly): one change (abc1234)\n- fix(ui): another (def5678)',
                         RELEASE_STATE=str(self.root / 'release.json'),
                         CALLS=str(self.root / 'calls'), GITHUB_OUTPUT=str(self.root / 'outputs'),
@@ -284,11 +279,14 @@ class NightlyTests(unittest.TestCase):
         result = self.publish()
         self.assertEqual(result.returncode, 0, result.stderr)
         text = notes.read_text()
-        self.assertTrue(text.startswith('## Changes since the previous nightly\n'))
-        self.assertIn(f'Previous nightly 1111111, this nightly {SHA[:7]}.', text)
+        self.assertTrue(text.startswith('## Changes since v0.8.2\n'))
+        self.assertIn(f'This nightly is {SHA[:7]}.', text)
         self.assertIn('- feat(nightly): one change (abc1234)\n- fix(ui): another (def5678)\n', text)
         self.assertTrue(text.endswith(fixed))
-        self.assertIn(f'git log --no-merges --format=- %s (%h) {self.env["PREVIOUS_TAG_SHA"]}..{SHA}', self.calls())
+        calls = self.calls()
+        self.assertIn(f'git describe --tags --match v* --abbrev=0 {SHA}', calls)
+        self.assertIn(f'git log --no-merges --format=- %s (%h) v0.8.2..{SHA}', calls)
+        self.assertFalse(any('refs/tags/nightly' in line and line.startswith('git fetch') for line in calls))
 
         self.env['CHANGELOG'] = '\n'.join(f'- change {i} ({i:07x})' for i in range(1, 131))
         self.assertEqual(self.publish().returncode, 0)
@@ -297,21 +295,21 @@ class NightlyTests(unittest.TestCase):
         self.assertNotIn('- change 101 ', text)
 
         self.env['CHANGELOG'] = ''
-        self.env['PREVIOUS_TAG_SHA'] = SHA
         self.assertEqual(self.publish().returncode, 0)
-        self.assertIn(f'Rebuilt from the same commit as the previous nightly, {SHA[:7]}.', notes.read_text())
+        self.assertIn('No commits since v0.8.2.', notes.read_text())
 
-        self.env['PREVIOUS_TAG_SHA'] = ''
+        self.env['RELEASE_TAG'] = ''
         Path(self.env['CALLS']).write_text('')
         self.assertEqual(self.publish().returncode, 0)
         text = notes.read_text()
-        self.assertIn(f'No previous nightly tag. This nightly is {SHA[:7]}.', text)
+        self.assertTrue(text.startswith('## Changes in this nightly\n'))
+        self.assertIn(f'No official release tag is reachable from {SHA[:7]}.', text)
         self.assertTrue(text.endswith(fixed))
         self.assertFalse(any(line.startswith('git log') for line in self.calls()))
         self.assertIn('git push --force origin refs/tags/nightly', self.calls())
 
         for conclusion in ['failure', 'missing']:
-            self.env.update(CI_RESULT=conclusion, PREVIOUS_TAG_SHA='1111111aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')
+            self.env.update(CI_RESULT=conclusion, RELEASE_TAG='v0.8.2')
             Path(self.env['CALLS']).write_text('')
             self.assertNotEqual(self.publish().returncode, 0)
             self.assertFalse(any(line.startswith(('git tag', 'git push')) for line in self.calls()), conclusion)
