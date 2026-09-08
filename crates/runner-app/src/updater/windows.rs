@@ -66,8 +66,8 @@ fn release_urls(channel: Option<&str>) -> (&'static str, &'static str) {
             "https://github.com/yicheng47/runner/releases/latest",
         ),
         _ => (
-            "https://api.github.com/repos/yicheng47/runner/releases/tags/nightly-win",
-            "https://github.com/yicheng47/runner/releases/tag/nightly-win",
+            "https://api.github.com/repos/yicheng47/runner/releases/tags/nightly",
+            "https://github.com/yicheng47/runner/releases/tag/nightly",
         ),
     }
 }
@@ -790,6 +790,55 @@ mod tests {
             }
         });
         (url, task)
+    }
+
+    #[test]
+    fn release_channels_keep_nightly_and_production_addresses_separate() {
+        assert_eq!(
+            release_urls(Some("nightly")),
+            (
+                "https://api.github.com/repos/yicheng47/runner/releases/tags/nightly",
+                "https://github.com/yicheng47/runner/releases/tag/nightly",
+            )
+        );
+        assert_eq!(release_urls(None), release_urls(Some("nightly")));
+        assert_eq!(
+            release_urls(Some("production")),
+            (
+                "https://api.github.com/repos/yicheng47/runner/releases/latest",
+                "https://github.com/yicheng47/runner/releases/latest",
+            )
+        );
+    }
+
+    #[test]
+    fn unified_nightly_selects_the_newest_windows_installer_and_its_signature() {
+        let release = release(&[
+            ("Runner-Nightly-def5678.20260909.0100-arm64.dmg", "uploaded"),
+            ("appcast.xml", "uploaded"),
+            (
+                "Runner-Setup-nightly.abc1234.20260908.0100-x64.exe.sig",
+                "uploaded",
+            ),
+            (
+                "Runner-Setup-nightly.abc1234.20260908.0100-x64.exe",
+                "uploaded",
+            ),
+            ("Runner-Setup-9.0.0.20260907.0100-x64.exe", "uploaded"),
+            ("Runner-Setup-9.0.0.20260907.0100-x64.exe.sig", "uploaded"),
+        ]);
+        let update = available_update(&release, Some("20260907.0100"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(update.info.version(), "Nightly (abc1234)");
+        assert_eq!(
+            update.installer_url,
+            "https://example.com/Runner-Setup-nightly.abc1234.20260908.0100-x64.exe"
+        );
+        assert_eq!(
+            update.sig_url.as_deref(),
+            Some("https://example.com/Runner-Setup-nightly.abc1234.20260908.0100-x64.exe.sig")
+        );
     }
 
     #[test]

@@ -17,7 +17,7 @@
   #define AppName "Runner"
 #endif
 #ifndef UpdatesUrl
-  #define UpdatesUrl "https://github.com/yicheng47/runner/releases/tag/nightly-win"
+  #define UpdatesUrl "https://github.com/yicheng47/runner/releases/tag/nightly"
 #endif
 
 [Setup]

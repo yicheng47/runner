@@ -6,6 +6,7 @@ A plan stays here while its work is in flight and moves to [`archive/`](./archiv
 
 ## Active
 
+- [504 — Nightly channel unification](./504-nightly-channel-unification.md) — one `nightly` release for both platforms, `nightly-win` retired after a hand install on the PC ([#504](https://github.com/yicheng47/runner/issues/504)) and the macOS nightly as the same app as production ([#505](https://github.com/yicheng47/runner/issues/505)); implementation/review brief for the `codex peer` crew.
 - [502 — Unified nightlies](./502-unified-nightly.md) — shared macOS/Windows nightly workflow, macOS Sparkle feed, and commit-based nightly identity; implementation/review brief for the `codex peer` crew.
 - [`local-skills/`](./local-skills/README.md) — feature [73](../features/73-runner-skills.md) implementation program: condensed state and binding decisions, milestone plan, dated impl log.
 - [`gpui-rewrite/`](./gpui-rewrite/) — the GPUI rewrite record; shipped as `v0.6.0` 2026-08-23. What remains is the M6 consolidation queue in [`m6-remainder.md`](./gpui-rewrite/m6-remainder.md), tracked in [#445](https://github.com/yicheng47/runner/issues/445).

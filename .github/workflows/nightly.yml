@@ -282,41 +282,41 @@ jobs:
           gh run watch "$ci_run_id" --exit-status
           gh run view "$ci_run_id" --json headSha,conclusion | jq -e --arg sha "$SOURCE_SHA" '.headSha == $sha and .conclusion == "success"'
 
-      - name: Publish the rolling macOS prerelease
+      - name: Prepare the rolling nightly prerelease
+        run: |
+          if gh release view nightly >/dev/null 2>&1; then
+            gh release edit nightly --target "$SOURCE_SHA" --title "Runner Nightly" --notes-file script/nightly-release-notes.md --prerelease --draft=false --latest=false
+          else
+            gh release create nightly --target "$SOURCE_SHA" --title "Runner Nightly" --notes-file script/nightly-release-notes.md --prerelease --latest=false
+          fi
+
+      - name: Publish macOS nightly assets
         if: inputs.platform == 'both' || inputs.platform == 'macos'
         run: |
-          notes="Rolling nightly builds for macOS Apple Silicon. Runner Nightly checks for updates through its signed Sparkle feed. Production installs use a separate stable feed."
-          if gh release view nightly >/dev/null 2>&1; then
-            gh release edit nightly --target "$SOURCE_SHA" --title "Runner Nightly" --notes "$notes" --prerelease --draft=false --latest=false
-          else
-            gh release create nightly --target "$SOURCE_SHA" --title "Runner Nightly" --notes "$notes" --prerelease --latest=false
-          fi
           gh release upload nightly "nightly-artifacts/macos/$DMG_NAME" --clobber
           gh release upload nightly nightly-artifacts/macos/appcast.xml --clobber
 
-      - name: Publish the rolling Windows prerelease
+      - name: Publish Windows nightly assets
         if: inputs.platform == 'both' || inputs.platform == 'windows'
         run: |
-          if gh release view nightly-win >/dev/null 2>&1; then
-            gh release edit nightly-win --target "$SOURCE_SHA" --title "Runner Nightly (Windows)" --notes-file script/windows/release-notes.md --prerelease --draft=false --latest=false
-          else
-            gh release create nightly-win --target "$SOURCE_SHA" --title "Runner Nightly (Windows)" --notes-file script/windows/release-notes.md --prerelease --latest=false
-          fi
-          gh release upload nightly-win "nightly-artifacts/windows/$SETUP_NAME" --clobber
-          gh release upload nightly-win "nightly-artifacts/windows/$SETUP_NAME.sig" --clobber
+          gh release upload nightly "nightly-artifacts/windows/$SETUP_NAME" --clobber
+          gh release upload nightly "nightly-artifacts/windows/$SETUP_NAME.sig" --clobber
 
-      - name: Verify public prereleases and downloads before pruning
+      - name: Verify the public nightly release and downloads before pruning
         run: |
+          gh release view nightly --json isPrerelease,isDraft,assets | jq -e --arg platform "$PLATFORM" --arg dmg "$DMG_NAME" --arg setup "$SETUP_NAME" '
+            .isPrerelease and (.isDraft | not) and
+            ([.assets[].name] |
+              ($platform == "windows" or (index($dmg) != null and index("appcast.xml") != null)) and
+              ($platform == "macos" or (index($setup) != null and index($setup + ".sig") != null)))'
           if [[ "$PLATFORM" != "windows" ]]; then
-            gh release view nightly --json isPrerelease,isDraft,assets | jq -e --arg dmg "$DMG_NAME" '.isPrerelease and (.isDraft | not) and ([.assets[].name] | index($dmg) != null and index("appcast.xml") != null)'
             curl --silent --show-error --fail --head --location "https://github.com/yicheng47/runner/releases/download/nightly/$DMG_NAME" >/dev/null
             curl --silent --show-error --fail --location "https://github.com/yicheng47/runner/releases/download/nightly/appcast.xml" --output "$RUNNER_TEMP/public-appcast.xml"
             cmp nightly-artifacts/macos/appcast.xml "$RUNNER_TEMP/public-appcast.xml"
           fi
           if [[ "$PLATFORM" != "macos" ]]; then
-            gh release view nightly-win --json isPrerelease,isDraft,assets | jq -e --arg setup "$SETUP_NAME" '.isPrerelease and (.isDraft | not) and ([.assets[].name] | index($setup) != null and index($setup + ".sig") != null)'
-            curl --silent --show-error --fail --head --location "https://github.com/yicheng47/runner/releases/download/nightly-win/$SETUP_NAME" >/dev/null
-            curl --silent --show-error --fail --location "https://github.com/yicheng47/runner/releases/download/nightly-win/$SETUP_NAME.sig" --output "$RUNNER_TEMP/public-installer.sig"
+            curl --silent --show-error --fail --head --location "https://github.com/yicheng47/runner/releases/download/nightly/$SETUP_NAME" >/dev/null
+            curl --silent --show-error --fail --location "https://github.com/yicheng47/runner/releases/download/nightly/$SETUP_NAME.sig" --output "$RUNNER_TEMP/public-installer.sig"
             cmp "nightly-artifacts/windows/$SETUP_NAME.sig" "$RUNNER_TEMP/public-installer.sig"
           fi
 
@@ -341,7 +341,7 @@ jobs:
       - name: Prune Windows nightlies to ten builds
         if: inputs.platform == 'both' || inputs.platform == 'windows'
         run: |
-          assets=$(gh release view nightly-win --json assets --jq '.assets[].name')
+          assets=$(gh release view nightly --json assets --jq '.assets[].name')
           pattern='^Runner-Setup-.*\.([0-9]{8})\.([0-9]{4})-x64\.exe$'
           stale=$(printf '%s\n' "$assets" | while IFS= read -r name; do
             if [[ "$name" =~ $pattern ]]; then
@@ -354,18 +354,18 @@ jobs:
           fi
           while IFS= read -r name; do
             if [[ -n "$name" ]]; then
-              gh release delete-asset nightly-win "$name" --yes
+              gh release delete-asset nightly "$name" --yes
               if printf '%s\n' "$assets" | grep -Fxq "$name.sig"; then
-                gh release delete-asset nightly-win "$name.sig" --yes
+                gh release delete-asset nightly "$name.sig" --yes
               fi
             fi
           done <<< "$stale"
 
       - name: Report completed nightly publication
         run: |
-          echo "Published $PLATFORM nightly $NIGHTLY_VERSION from $SOURCE_SHA" >> "$GITHUB_STEP_SUMMARY"
+          echo "Published $PLATFORM nightly $NIGHTLY_VERSION from $SOURCE_SHA to release nightly." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Report incomplete nightly publication
         if: failure() || cancelled()
         run: |
-          echo "Incomplete $PLATFORM nightly $NIGHTLY_VERSION from $SOURCE_SHA. Some files may already be uploaded; inspect both selected releases before another cut." >> "$GITHUB_STEP_SUMMARY"
+          echo "Incomplete $PLATFORM nightly $NIGHTLY_VERSION from $SOURCE_SHA. Some files may already be uploaded; inspect release nightly before another cut." >> "$GITHUB_STEP_SUMMARY"

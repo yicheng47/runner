@@ -116,8 +116,8 @@ fi
 
 case "$CHANNEL" in
     nightly)
-        BUNDLE_ID="com.wycstudios.runner.nightly"
-        APP_NAME="Runner Nightly"
+        BUNDLE_ID="com.wycstudios.runner"
+        APP_NAME="Runner"
         SHORT_VERSION="$BUILD_SHA"
         MARKETING_VERSION="Nightly"
         FEED_URL="https://github.com/yicheng47/runner/releases/download/nightly/appcast.xml"

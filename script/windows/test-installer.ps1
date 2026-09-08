@@ -31,7 +31,7 @@ function Invoke-Setup([string]$Path, [string]$Label, [string[]]$Extra = @(), [sw
     }
 }
 
-function Assert-Installed([string]$Stage, [string]$Version, [string]$UpdatesUrl = 'https://github.com/yicheng47/runner/releases/tag/nightly-win') {
+function Assert-Installed([string]$Stage, [string]$Version, [string]$UpdatesUrl = 'https://github.com/yicheng47/runner/releases/tag/nightly') {
     foreach ($binary in $binaries) {
         $expected = (Get-FileHash -LiteralPath (Join-Path $Stage $binary)).Hash
         $actual = (Get-FileHash -LiteralPath (Join-Path $installDir $binary)).Hash
@@ -82,7 +82,7 @@ class Fixture {
     $updatesUrl = if ($revision -eq 2) {
         'https://github.com/yicheng47/runner/releases/latest'
     } else {
-        'https://github.com/yicheng47/runner/releases/tag/nightly-win'
+        'https://github.com/yicheng47/runner/releases/tag/nightly'
     }
     & $compiler /Q "/DAppId=$appId" "/DAppName=$appName" "/DAppVersion=0.7.5.20260101.000$revision" /DBaseVersion=0.7.5 "/DUpdatesUrl=$updatesUrl" "/DSourceDir=$stage" "/DOutputDir=$testRoot" (Join-Path $PSScriptRoot 'runner.iss')
     if ($LASTEXITCODE -ne 0) { throw 'Installer test compilation failed' }
