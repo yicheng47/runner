@@ -79,8 +79,8 @@ This mission implements and reviews the working-tree change. Commits, pushes, PR
 
 - [ ] `gh workflow run nightly.yml --ref main` with no input builds both platforms with one stamp; `-f platform=macos` and `-f platform=windows` each build only that platform.
 - [ ] A second dispatch while one is running cancels the whole first run.
-- [ ] `nightly` is a public prerelease with a DMG and `appcast.xml` that download anonymously; `nightly-win` unchanged in shape.
+- [x] `nightly` is a public prerelease with a DMG and `appcast.xml` that download anonymously; `nightly-win` unchanged in shape. Verified on run 34180651973, 2026-09-08.
 - [ ] An installed macOS nightly finds the next nightly through Sparkle and installs it; an installed Windows nightly does the same through the in-app updater.
 - [ ] Both DMG and installer names contain the same short commit and stamp, and both apps display `Nightly (<sha>)` without an official version.
 - [ ] `releases/latest` still resolves to `v0.8.2`; a production install's Sparkle check offers nothing.
-- [ ] The workflow builds nightlies from the existing bare crate version without a version bump.
+- [x] The workflow builds nightlies from the existing bare crate version without a version bump. Verified on run 34180651973 at crate version 0.8.2.

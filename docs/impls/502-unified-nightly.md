@@ -113,3 +113,13 @@ All 20 files are mission-owned working-tree changes on `feat/502-unified-nightly
 Reviewer reported **CLEAN — no remaining must-fix issues** through Runner message `01M1ZDQDJF2M8VSES5ZY0SEMAB` at `2026-09-08T02:32:03.407803Z`, reviewing the 20-file working-tree diff at `99e32ef` (recorded diff hash `3607d3768a4c7cf758b2f06c888c5591ddee96a2`). Reviewer independently reran formatting, the full `runner-app` tests, workspace Clippy, updater-feature Clippy, and the nightly workflow tests; all passed. Only this verdict/status bookkeeping was edited afterward.
 
 The Windows-only updater regression and PowerShell packager still require native Windows validation. Signing, notarization, actual GitHub job scheduling/publication, public downloads, retention, stable-feed isolation, and installed-nightly upgrades remain live checks after landing and explicit authorization.
+
+## First live cut — 2026-09-08
+
+Dispatched by the landing session from the PR branch, not `main`, to validate the workflow before merge: `gh workflow run nightly.yml --ref feat/502-unified-nightly` with the default `both`. Run [34180651973](https://github.com/yicheng47/runner/actions/runs/34180651973) on `ec86f28` (PR [#503](https://github.com/yicheng47/runner/pull/503)); `prepare`, `build-macos`, `build-windows`, and `publish` all succeeded, and `publish` waited on the PR's CI run, where both `Rust / macOS` and `Rust / Windows` passed. Identity `ec86f28.20260908.0236` on both platforms.
+
+- `nightly`: public prerelease, not draft, created fresh (no draft existed; the pre-existing `nightly` tag was reused). Assets `Runner-Nightly-ec86f28.20260908.0236-arm64.dmg` and `appcast.xml`, both anonymously downloadable. The public appcast has one item with `sparkle:version` `20260908.0236`, `sparkle:shortVersionString` `ec86f28`, the `arm64` requirement, an EdDSA signature, and an enclosure URL under `releases/download/nightly/` whose length matches the uploaded DMG.
+- `nightly-win`: public prerelease, `Runner-Setup-nightly.ec86f28.20260908.0236-x64.exe` and its `.sig` added beside the four earlier bare-version installers; nothing pruned (nine assets, under the ten-build limit).
+- `releases/latest` still resolves to `v0.8.2` and the production appcast still serves `0.8.2`.
+
+Still open: single-platform dispatches, cancellation of an in-flight run by a second dispatch, and the installed-nightly upgrades on the Mac and the PC that confirm the `Nightly (<sha>)` display and the Sparkle/in-app offers end to end.
