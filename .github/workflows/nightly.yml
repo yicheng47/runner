@@ -1,7 +1,11 @@
 name: Nightly
-run-name: Nightly (${{ inputs.platform }})
+run-name: Nightly (${{ inputs.platform || 'both' }}${{ github.event_name == 'workflow_run' && ', after CI' || '' }})
 
 on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
   workflow_dispatch:
     inputs:
       platform:
@@ -17,38 +21,62 @@ permissions:
   actions: read
   contents: write
 
-concurrency:
-  group: nightly
-  cancel-in-progress: true
+# Builds of an older commit give way to a newer one; publication never does,
+# so a merge landing mid-upload cannot leave a half-published nightly.
 
 jobs:
   prepare:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
+    env:
+      SOURCE_SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+      PLATFORM: ${{ inputs.platform || 'both' }}
+      AUTOMATIC: ${{ github.event_name == 'workflow_run' }}
     outputs:
       stamp: ${{ steps.build.outputs.stamp }}
       sha: ${{ steps.build.outputs.sha }}
       short_sha: ${{ steps.build.outputs.short_sha }}
       version: ${{ steps.build.outputs.version }}
+      platform: ${{ steps.build.outputs.platform }}
+      skip: ${{ steps.build.outputs.skip }}
     steps:
-      - name: Check out dispatch commit
+      - name: Check out source commit with history
         uses: actions/checkout@v6
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+          fetch-depth: 0
 
-      - name: Compute nightly identity once
+      - name: Compute nightly identity once and decide whether to build
         id: build
         run: |
           stamp=$(date -u +%Y%m%d.%H%M)
           sha=$(git rev-parse HEAD)
-          test "$sha" = "$GITHUB_SHA"
+          test "$sha" = "$SOURCE_SHA"
+          skip=false
+          if [[ "$AUTOMATIC" == "true" ]] && git fetch --force --quiet origin refs/tags/nightly:refs/tags/nightly 2>/dev/null; then
+            previous=$(git rev-parse --verify --quiet 'refs/tags/nightly^{commit}' || true)
+            shippable='^(crates/|cli/|script/|packaging/|assets/|Cargo\.toml$|Cargo\.lock$|Makefile$|rust-toolchain\.toml$|\.cargo/|\.github/workflows/nightly\.yml$)'
+            if [[ "$previous" == "$sha" ]]; then
+              echo "The nightly tag already points at $sha; nothing to build."
+              skip=true
+            elif [[ -n "$previous" ]] && ! git diff --name-only "$previous..$sha" | grep -E -q "$shippable"; then
+              echo "Only docs or metadata changed since ${previous:0:7}; nothing to build."
+              skip=true
+            fi
+          fi
           echo "stamp=$stamp" >> "$GITHUB_OUTPUT"
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
           echo "short_sha=${sha:0:7}" >> "$GITHUB_OUTPUT"
           echo "version=nightly.${sha:0:7}.$stamp" >> "$GITHUB_OUTPUT"
+          echo "platform=$PLATFORM" >> "$GITHUB_OUTPUT"
+          echo "skip=$skip" >> "$GITHUB_OUTPUT"
 
   build-macos:
     needs: prepare
-    if: inputs.platform == 'both' || inputs.platform == 'macos'
+    if: needs.prepare.outputs.skip != 'true' && (needs.prepare.outputs.platform == 'both' || needs.prepare.outputs.platform == 'macos')
+    concurrency:
+      group: nightly-build-macos
+      cancel-in-progress: true
     runs-on: macos-15
     timeout-minutes: 90
     env:
@@ -153,7 +181,10 @@ jobs:
 
   build-windows:
     needs: prepare
-    if: inputs.platform == 'both' || inputs.platform == 'windows'
+    if: needs.prepare.outputs.skip != 'true' && (needs.prepare.outputs.platform == 'both' || needs.prepare.outputs.platform == 'windows')
+    concurrency:
+      group: nightly-build-windows
+      cancel-in-progress: true
     runs-on: windows-latest
     timeout-minutes: 90
     defaults:
@@ -222,15 +253,18 @@ jobs:
   publish:
     needs: [prepare, build-macos, build-windows]
     if: >-
-      ${{ !cancelled() && needs.prepare.result == 'success' &&
-      ((inputs.platform == 'both' && needs.build-macos.result == 'success' && needs.build-windows.result == 'success') ||
-      (inputs.platform == 'macos' && needs.build-macos.result == 'success' && needs.build-windows.result == 'skipped') ||
-      (inputs.platform == 'windows' && needs.build-macos.result == 'skipped' && needs.build-windows.result == 'success')) }}
+      ${{ !cancelled() && needs.prepare.result == 'success' && needs.prepare.outputs.skip != 'true' &&
+      ((needs.prepare.outputs.platform == 'both' && needs.build-macos.result == 'success' && needs.build-windows.result == 'success') ||
+      (needs.prepare.outputs.platform == 'macos' && needs.build-macos.result == 'success' && needs.build-windows.result == 'skipped') ||
+      (needs.prepare.outputs.platform == 'windows' && needs.build-macos.result == 'skipped' && needs.build-windows.result == 'success')) }}
+    concurrency:
+      group: nightly-publish
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 90
     env:
       GH_TOKEN: ${{ github.token }}
-      PLATFORM: ${{ inputs.platform }}
+      PLATFORM: ${{ needs.prepare.outputs.platform }}
       SOURCE_SHA: ${{ needs.prepare.outputs.sha }}
       BUILD_STAMP: ${{ needs.prepare.outputs.stamp }}
       NIGHTLY_VERSION: ${{ needs.prepare.outputs.version }}
@@ -245,14 +279,14 @@ jobs:
           fetch-depth: 0
 
       - name: Download macOS nightly artifacts
-        if: inputs.platform == 'both' || inputs.platform == 'macos'
+        if: needs.prepare.outputs.platform == 'both' || needs.prepare.outputs.platform == 'macos'
         uses: actions/download-artifact@v4
         with:
           name: nightly-macos
           path: nightly-artifacts/macos
 
       - name: Download Windows nightly artifacts
-        if: inputs.platform == 'both' || inputs.platform == 'windows'
+        if: needs.prepare.outputs.platform == 'both' || needs.prepare.outputs.platform == 'windows'
         uses: actions/download-artifact@v4
         with:
           name: nightly-windows
@@ -325,13 +359,13 @@ jobs:
           fi
 
       - name: Publish macOS nightly assets
-        if: inputs.platform == 'both' || inputs.platform == 'macos'
+        if: needs.prepare.outputs.platform == 'both' || needs.prepare.outputs.platform == 'macos'
         run: |
           gh release upload nightly "nightly-artifacts/macos/$DMG_NAME" --clobber
           gh release upload nightly nightly-artifacts/macos/appcast.xml --clobber
 
       - name: Publish Windows nightly assets
-        if: inputs.platform == 'both' || inputs.platform == 'windows'
+        if: needs.prepare.outputs.platform == 'both' || needs.prepare.outputs.platform == 'windows'
         run: |
           gh release upload nightly "nightly-artifacts/windows/$SETUP_NAME" --clobber
           gh release upload nightly "nightly-artifacts/windows/$SETUP_NAME.sig" --clobber
@@ -355,7 +389,7 @@ jobs:
           fi
 
       - name: Prune macOS nightlies to ten builds
-        if: inputs.platform == 'both' || inputs.platform == 'macos'
+        if: needs.prepare.outputs.platform == 'both' || needs.prepare.outputs.platform == 'macos'
         run: |
           assets=$(gh release view nightly --json assets --jq '.assets[].name')
           pattern='^Runner-Nightly-.*\.([0-9]{8})\.([0-9]{4})-(arm64|universal)\.dmg$'
@@ -373,7 +407,7 @@ jobs:
           done <<< "$stale"
 
       - name: Prune Windows nightlies to ten builds
-        if: inputs.platform == 'both' || inputs.platform == 'windows'
+        if: needs.prepare.outputs.platform == 'both' || needs.prepare.outputs.platform == 'windows'
         run: |
           assets=$(gh release view nightly --json assets --jq '.assets[].name')
           pattern='^Runner-Setup-.*\.([0-9]{8})\.([0-9]{4})-x64\.exe$'

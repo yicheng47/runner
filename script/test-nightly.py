@@ -79,7 +79,14 @@ sleep() { :; }
 git() {
   printf 'git %s\n' "$*" >> "$CALLS"
   case "$1" in
-    rev-parse) printf '%s\n' "$SOURCE_SHA" ;;
+    rev-parse)
+      if [[ "$*" == *nightly* ]]; then
+        [[ -n "$PREVIOUS_TAG_SHA" ]] && printf '%s\n' "$PREVIOUS_TAG_SHA"
+      else
+        printf '%s\n' "$SOURCE_SHA"
+      fi ;;
+    fetch) [[ -n "$PREVIOUS_TAG_SHA" ]] ;;
+    diff) printf '%s\n' "$CHANGED_FILES" | sed '/^$/d' ;;
     describe) [[ -n "$RELEASE_TAG" ]] && printf '%s\n' "$RELEASE_TAG" ;;
     log) printf '%s\n' "$CHANGELOG" | sed '/^$/d' ;;
     config|tag) return 0 ;;
@@ -90,9 +97,10 @@ git() {
 '''
 
 
-def condition(expression, platform, prepare='success', macos='success', windows='success', cancelled=False, failure=False):
+def condition(expression, platform, prepare='success', macos='success', windows='success', cancelled=False, failure=False, skip='false'):
     values = {
-        'inputs.platform': repr(platform),
+        'needs.prepare.outputs.platform': repr(platform),
+        'needs.prepare.outputs.skip': repr(skip),
         'needs.prepare.result': repr(prepare),
         'needs.build-macos.result': repr(macos),
         'needs.build-windows.result': repr(windows),
@@ -102,7 +110,7 @@ def condition(expression, platform, prepare='success', macos='success', windows=
     expression = expression.removeprefix('${{').removesuffix('}}').strip()
     for key, value in values.items():
         expression = expression.replace(key, value)
-    expression = expression.replace('&&', ' and ').replace('||', ' or ').replace('!', ' not ')
+    expression = expression.replace('!=', ' NE ').replace('&&', ' and ').replace('||', ' or ').replace('!', ' not ').replace(' NE ', ' != ')
     return eval(' '.join(expression.split()), {'__builtins__': {}}, {})
 
 
@@ -117,7 +125,7 @@ class NightlyTests(unittest.TestCase):
                         SETUP_NAME=f'Runner-Setup-{VERSION}-x64.exe',
                         CI_RESULT='success', RELEASE_EXISTS='true',
                         FAIL_UPLOAD='', FAIL_DOWNLOAD='', FAIL_TAG_PUSH='', RUNNER_TEMP=str(self.root),
-                        RELEASE_TAG='v0.8.2',
+                        RELEASE_TAG='v0.8.2', PREVIOUS_TAG_SHA='', CHANGED_FILES='', AUTOMATIC='false',
                         CHANGELOG='- feat(nightly): one change (abc1234)\n- fix(ui): another (def5678)',
                         RELEASE_STATE=str(self.root / 'release.json'),
                         CALLS=str(self.root / 'calls'), GITHUB_OUTPUT=str(self.root / 'outputs'),
@@ -187,16 +195,26 @@ class NightlyTests(unittest.TestCase):
 
     def test_publish_predicate_including_default_and_cancellation(self):
         self.assertEqual(WORKFLOW[True]['workflow_dispatch']['inputs']['platform']['default'], 'both')
-        self.assertEqual(WORKFLOW['concurrency'], {'group': 'nightly', 'cancel-in-progress': True})
+        self.assertEqual(WORKFLOW[True]['workflow_run'], {'workflows': ['CI'], 'types': ['completed'], 'branches': ['main']})
+        self.assertNotIn('concurrency', WORKFLOW)
+        self.assertEqual(JOBS['build-macos']['concurrency'], {'group': 'nightly-build-macos', 'cancel-in-progress': True})
+        self.assertEqual(JOBS['build-windows']['concurrency'], {'group': 'nightly-build-windows', 'cancel-in-progress': True})
+        self.assertEqual(JOBS['publish']['concurrency'], {'group': 'nightly-publish', 'cancel-in-progress': False})
+        self.assertIn("github.event.workflow_run.conclusion == 'success'", JOBS['prepare']['if'])
         self.assertIn('!cancelled()', JOBS['publish']['if'])
         results = ['success', 'failure', 'cancelled', 'skipped']
-        for platform, prepare, macos, windows, cancelled in itertools.product(
-                ['both', 'macos', 'windows'], results, results, results, [False, True]):
+        for platform, prepare, macos, windows, cancelled, skip in itertools.product(
+                ['both', 'macos', 'windows'], results, results, results, [False, True], ['false', 'true']):
             expected_builds = {'both': ('success', 'success'), 'macos': ('success', 'skipped'),
                                'windows': ('skipped', 'success')}[platform]
-            expected = not cancelled and prepare == 'success' and (macos, windows) == expected_builds
-            with self.subTest(platform=platform, prepare=prepare, macos=macos, windows=windows, cancelled=cancelled):
-                self.assertEqual(condition(JOBS['publish']['if'], platform, prepare, macos, windows, cancelled), expected)
+            expected = not cancelled and prepare == 'success' and skip == 'false' and (macos, windows) == expected_builds
+            with self.subTest(platform=platform, prepare=prepare, macos=macos, windows=windows, cancelled=cancelled, skip=skip):
+                self.assertEqual(condition(JOBS['publish']['if'], platform, prepare, macos, windows, cancelled, skip=skip), expected)
+        for job in ['build-macos', 'build-windows']:
+            own = job.removeprefix('build-')
+            for platform, skip in itertools.product(['both', 'macos', 'windows'], ['false', 'true']):
+                expected = skip == 'false' and platform in ('both', own)
+                self.assertEqual(condition(JOBS[job]['if'], platform, skip=skip), expected, (job, platform, skip))
 
     def test_preparation_identifies_the_commit_without_reading_an_official_version(self):
         stub = self.root / 'script/bundle-mac'
@@ -210,12 +228,41 @@ class NightlyTests(unittest.TestCase):
         self.assertEqual(outputs['short_sha'], SHA[:7])
         self.assertRegex(outputs['stamp'], r'^\d{8}\.\d{4}$')
         self.assertEqual(outputs['version'], f'nightly.{SHA[:7]}.' + outputs['stamp'])
+        self.assertEqual(outputs['platform'], 'both')
+        self.assertEqual(outputs['skip'], 'false')
+
+    def test_automatic_cuts_skip_rebuilds_and_docs_only_changes(self):
+        step = next(step for step in JOBS['prepare']['steps'] if step.get('id') == 'build')
+        older = '2222222bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
+        cases = [
+            ('true', older, 'docs/arch/arch.md\nREADME.md\n.github/workflows/ci.yaml', 'true'),
+            ('true', older, 'docs/arch/arch.md\ncrates/runner-app/src/main.rs', 'false'),
+            ('true', older, '.github/workflows/nightly.yml', 'false'),
+            ('true', older, 'Cargo.lock', 'false'),
+            ('true', SHA, '', 'true'),
+            ('true', '', '', 'false'),
+            ('false', older, 'docs/arch/arch.md', 'false'),
+            ('false', SHA, '', 'false'),
+        ]
+        for automatic, previous, changed, expected in cases:
+            with self.subTest(automatic=automatic, previous=previous[:7], changed=changed):
+                self.env.update(AUTOMATIC=automatic, PREVIOUS_TAG_SHA=previous, CHANGED_FILES=changed)
+                (self.root / 'outputs').write_text('')
+                result = self.shell(step['run'])
+                self.assertEqual(result.returncode, 0, result.stderr)
+                outputs = dict(line.split('=', 1) for line in (self.root / 'outputs').read_text().splitlines())
+                self.assertEqual(outputs['skip'], expected)
+                self.assertEqual(outputs['sha'], SHA)
 
     def test_bash_syntax_and_shared_source_artifacts(self):
         self.assertIsNone(re.search(r'nightly-win\b', (ROOT / '.github/workflows/nightly.yml').read_text()))
         for name, job in JOBS.items():
             checkout = job['steps'][0]
-            self.assertEqual(checkout['with']['ref'], '${{ github.sha }}' if name == 'prepare' else '${{ needs.prepare.outputs.sha }}')
+            if name == 'prepare':
+                self.assertEqual(checkout['with']['ref'], "${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}")
+                self.assertEqual(checkout['with']['fetch-depth'], 0)
+            else:
+                self.assertEqual(checkout['with']['ref'], '${{ needs.prepare.outputs.sha }}')
             for step in job['steps']:
                 if 'run' in step and step.get('shell', 'bash') == 'bash':
                     script = re.sub(r'\$\{\{.*?\}\}', 'fixture', step['run'])
