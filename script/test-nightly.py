@@ -28,21 +28,35 @@ SPARKLE = '{http://www.andymatuschak.org/xml-namespaces/sparkle}'
 MOCKS = r'''
 gh() {
   printf 'gh %s\n' "$*" >> "$CALLS"
+  if [[ "$1" == release && "$3" != nightly ]]; then
+    echo "unexpected release: $3" >&2
+    return 90
+  fi
   case "$1 $2" in
     'run list') if [[ "$CI_RESULT" != missing ]]; then echo 123; fi ;;
     'run watch') [[ "$CI_RESULT" != failure && "$CI_RESULT" != cancelled ]] ;;
     'run view') printf '{"headSha":"%s","conclusion":"%s"}\n' "$CI_SHA" "$CI_RESULT" ;;
     'release view')
       if [[ "$*" == *--jq* ]]; then
-        if [[ "$3" == nightly ]]; then printf '%s\n' "$MAC_ASSETS"; else printf '%s\n' "$WIN_ASSETS"; fi
+        jq -r '.assets[].name' "$RELEASE_STATE"
       elif [[ "$*" == *--json* ]]; then
-        if [[ "$3" == nightly ]]; then printf '%s\n' "$MAC_RELEASE"; else printf '%s\n' "$WIN_RELEASE"; fi
+        cat "$RELEASE_STATE"
       else
         [[ "$RELEASE_EXISTS" == true ]]
       fi ;;
-    'release create'|'release edit') return 0 ;;
-    'release upload') test -s "$4" && [[ "${4##*/}" != "$FAIL_UPLOAD" ]] ;;
-    'release delete-asset') return 0 ;;
+    'release create'|'release edit')
+      while (( $# )); do
+        if [[ "$1" == --notes-file ]]; then test -s "$2"; return; fi
+        shift
+      done
+      return 90 ;;
+    'release upload')
+      test -s "$4" && [[ "${4##*/}" != "$FAIL_UPLOAD" ]] || return 1
+      jq --arg name "${4##*/}" '.assets |= (map(select(.name != $name)) + [{name: $name}])' "$RELEASE_STATE" > "$RELEASE_STATE.tmp"
+      mv "$RELEASE_STATE.tmp" "$RELEASE_STATE" ;;
+    'release delete-asset')
+      jq --arg name "$4" '.assets |= map(select(.name != $name))' "$RELEASE_STATE" > "$RELEASE_STATE.tmp"
+      mv "$RELEASE_STATE.tmp" "$RELEASE_STATE" ;;
     *) echo "unexpected gh call: $*" >&2; return 90 ;;
   esac
 }
@@ -93,10 +107,12 @@ class NightlyTests(unittest.TestCase):
                         SETUP_NAME=f'Runner-Setup-{VERSION}-x64.exe',
                         CI_RESULT='success', RELEASE_EXISTS='true',
                         FAIL_UPLOAD='', FAIL_DOWNLOAD='', RUNNER_TEMP=str(self.root),
+                        RELEASE_STATE=str(self.root / 'release.json'),
                         CALLS=str(self.root / 'calls'), GITHUB_OUTPUT=str(self.root / 'outputs'),
                         GITHUB_STEP_SUMMARY=str(self.root / 'summary'))
         (self.root / 'script').mkdir()
         (self.root / 'script/verify-nightly-appcast.py').symlink_to(ROOT / 'script/verify-nightly-appcast.py')
+        (self.root / 'script/nightly-release-notes.md').symlink_to(ROOT / 'script/nightly-release-notes.md')
         self.mac = self.root / 'nightly-artifacts/macos'
         self.win = self.root / 'nightly-artifacts/windows'
         self.mac.mkdir(parents=True)
@@ -118,19 +134,21 @@ class NightlyTests(unittest.TestCase):
         })
         self.item = item
         self.write_appcast()
-        self.assets('MAC', [self.env['DMG_NAME'], 'appcast.xml'])
-        self.assets('WIN', [self.env['SETUP_NAME'], self.env['SETUP_NAME'] + '.sig'])
+        self.assets([])
 
     def write_appcast(self):
         root = ET.Element('rss')
         ET.SubElement(root, 'channel').append(self.item)
         ET.ElementTree(root).write(self.appcast)
 
-    def assets(self, platform, names):
-        self.env[f'{platform}_ASSETS'] = '\n'.join(names)
-        self.env[f'{platform}_RELEASE'] = json.dumps({
+    def assets(self, names):
+        Path(self.env['RELEASE_STATE']).write_text(json.dumps({
             'isPrerelease': True, 'isDraft': False, 'assets': [{'name': name} for name in names],
-        })
+        }))
+
+    def published_assets(self):
+        release = json.loads(Path(self.env['RELEASE_STATE']).read_text())
+        return {asset['name'] for asset in release['assets']}
 
     def shell(self, script):
         return subprocess.run(['bash', '-euo', 'pipefail', '-c', MOCKS + script],
@@ -182,6 +200,7 @@ class NightlyTests(unittest.TestCase):
         self.assertEqual(outputs['version'], f'nightly.{SHA[:7]}.' + outputs['stamp'])
 
     def test_bash_syntax_and_shared_source_artifacts(self):
+        self.assertIsNone(re.search(r'nightly-win\b', (ROOT / '.github/workflows/nightly.yml').read_text()))
         for name, job in JOBS.items():
             checkout = job['steps'][0]
             self.assertEqual(checkout['with']['ref'], '${{ github.sha }}' if name == 'prepare' else '${{ needs.prepare.outputs.sha }}')
@@ -213,6 +232,7 @@ class NightlyTests(unittest.TestCase):
         for platform, exists in itertools.product(['both', 'macos', 'windows'], ['true', 'false']):
             with self.subTest(platform=platform, exists=exists):
                 self.env.update(PLATFORM=platform, RELEASE_EXISTS=exists)
+                self.assets([])
                 Path(self.env['CALLS']).write_text('')
                 result = self.publish()
                 self.assertEqual(result.returncode, 0, result.stderr)
@@ -224,15 +244,18 @@ class NightlyTests(unittest.TestCase):
                 if platform != 'macos':
                     expected += [self.env['SETUP_NAME'], self.env['SETUP_NAME'] + '.sig']
                 self.assertEqual([Path(line.split()[4]).name for line in uploads], expected)
+                self.assertTrue(all(line.split()[3] == 'nightly' for line in uploads))
+                self.assertEqual(self.published_assets(), set(expected))
+                self.assertEqual(sum(line.startswith('gh release view nightly --json isPrerelease,isDraft,assets') for line in calls), 1)
                 self.assertEqual(sum(line.startswith('gh run watch') for line in calls), 1)
                 first_upload = calls.index(uploads[0])
                 self.assertTrue(any(line.startswith('gh run view') for line in calls[:first_upload]))
                 edits = [line for line in calls if line.startswith(('gh release create', 'gh release edit'))]
+                self.assertEqual(len(edits), 1)
+                self.assertTrue(all('--notes-file script/nightly-release-notes.md' in line for line in edits))
                 self.assertTrue(all('--prerelease' in line and '--latest=false' in line for line in edits))
                 self.assertTrue(all('--target ' + SHA in line for line in edits))
-                if platform != 'both':
-                    forbidden = 'nightly-win' if platform == 'macos' else 'nightly '
-                    self.assertFalse(any(forbidden in line for line in calls if line.startswith('gh release')))
+                self.assertFalse(any('nightly-win' in line for line in calls))
 
     def test_ci_missing_failed_cancelled_skipped_or_wrong_sha_blocks_mutation(self):
         for conclusion, sha in [('missing', SHA), ('failure', SHA), ('cancelled', SHA),
@@ -273,39 +296,91 @@ class NightlyTests(unittest.TestCase):
         self.assertEqual(self.calls(), [])
 
     def test_partial_upload_or_public_verification_failure_never_prunes(self):
-        for variable, value in [('FAIL_UPLOAD', 'appcast.xml'), ('FAIL_UPLOAD', self.env['SETUP_NAME'] + '.sig'),
-                                ('FAIL_DOWNLOAD', 'appcast.xml'), ('FAIL_DOWNLOAD', '.sig')]:
-            with self.subTest(variable=variable, value=value):
-                self.env.update(FAIL_UPLOAD='', FAIL_DOWNLOAD='')
-                self.env[variable] = value
-                Path(self.env['CALLS']).write_text('')
-                Path(self.env['GITHUB_STEP_SUMMARY']).write_text('')
-                self.assertNotEqual(self.publish().returncode, 0)
-                self.assertFalse(any('delete-asset' in line for line in self.calls()))
-                summary = Path(self.env['GITHUB_STEP_SUMMARY']).read_text()
-                self.assertIn(f'Incomplete both nightly {VERSION} from {SHA}', summary)
-                self.assertNotIn('Published', summary)
+        for platform in ['both', 'macos', 'windows']:
+            selected = []
+            if platform != 'windows':
+                selected += [self.env['DMG_NAME'], 'appcast.xml']
+            if platform != 'macos':
+                selected += [self.env['SETUP_NAME'], self.env['SETUP_NAME'] + '.sig']
+            for variable, value in itertools.product(['FAIL_UPLOAD', 'FAIL_DOWNLOAD'], selected):
+                with self.subTest(platform=platform, variable=variable, value=value):
+                    self.env.update(PLATFORM=platform, FAIL_UPLOAD='', FAIL_DOWNLOAD='')
+                    self.env[variable] = value
+                    self.assets([])
+                    Path(self.env['CALLS']).write_text('')
+                    Path(self.env['GITHUB_STEP_SUMMARY']).write_text('')
+                    self.assertNotEqual(self.publish().returncode, 0)
+                    self.assertFalse(any('delete-asset' in line for line in self.calls()))
+                    uploaded = selected[:selected.index(value)] if variable == 'FAIL_UPLOAD' else selected
+                    self.assertEqual(self.published_assets(), set(uploaded))
+                    summary = Path(self.env['GITHUB_STEP_SUMMARY']).read_text()
+                    self.assertIn(f'Incomplete {platform} nightly {VERSION} from {SHA}', summary)
+                    self.assertIn('inspect release nightly', summary)
+                    self.assertNotIn('Published', summary)
+
+    def test_public_verification_requires_selected_assets_and_public_prerelease_flags(self):
+        step = next(step for step in JOBS['publish']['steps'] if step['name'].startswith('Verify the public'))
+        selected = {
+            'macos': [self.env['DMG_NAME'], 'appcast.xml'],
+            'windows': [self.env['SETUP_NAME'], self.env['SETUP_NAME'] + '.sig'],
+        }
+        all_assets = selected['macos'] + selected['windows']
+        for platform in ['both', 'macos', 'windows']:
+            self.env['PLATFORM'] = platform
+            required = all_assets if platform == 'both' else selected[platform]
+            for missing in all_assets:
+                with self.subTest(platform=platform, missing=missing):
+                    self.assets([name for name in all_assets if name != missing])
+                    result = self.shell(step['run'])
+                    self.assertEqual(result.returncode == 0, missing not in required, result.stderr)
+            for flag, value in [('isPrerelease', False), ('isDraft', True)]:
+                self.assets(all_assets)
+                path = Path(self.env['RELEASE_STATE'])
+                release = json.loads(path.read_text())
+                release[flag] = value
+                path.write_text(json.dumps(release))
+                self.assertNotEqual(self.shell(step['run']).returncode, 0)
 
     def test_retention_orders_mixed_versions_by_stamp_and_pairs_signatures(self):
         mac_old = [f'Runner-Nightly-9.0.0-nightly.202608{day:02}.0100-universal.dmg' for day in range(1, 12)]
         win_old = [f'Runner-Setup-9.0.0.202608{day:02}.0100-x64.exe' for day in range(1, 12)]
-        self.assets('MAC', [self.env['DMG_NAME'], 'appcast.xml'] + list(reversed(mac_old)))
-        self.assets('WIN', [self.env['SETUP_NAME'], self.env['SETUP_NAME'] + '.sig'] + win_old + [name + '.sig' for name in win_old])
-        result = self.publish()
-        self.assertEqual(result.returncode, 0, result.stderr)
-        calls = self.calls()
-        deleted = [line.split()[4] for line in calls if 'delete-asset' in line]
-        self.assertEqual(set(deleted), set(mac_old[:2] + win_old[:2] + [name + '.sig' for name in win_old[:2]]))
-        first_delete = next(i for i, line in enumerate(calls) if 'delete-asset' in line)
-        self.assertEqual(sum(line.startswith('curl ') for line in calls[:first_delete]), 4)
+        existing = ['appcast.xml', 'unrelated.txt'] + list(reversed(mac_old)) + win_old + [name + '.sig' for name in win_old]
+        for platform in ['both', 'macos', 'windows']:
+            with self.subTest(platform=platform):
+                self.env['PLATFORM'] = platform
+                self.assets(existing)
+                Path(self.env['CALLS']).write_text('')
+                result = self.publish()
+                self.assertEqual(result.returncode, 0, result.stderr)
+                calls = self.calls()
+                deleted = [line.split()[4] for line in calls if 'delete-asset' in line]
+                expected_deleted = []
+                expected_added = []
+                if platform != 'windows':
+                    expected_deleted += mac_old[:2]
+                    expected_added += [self.env['DMG_NAME']]
+                if platform != 'macos':
+                    expected_deleted += win_old[:2] + [name + '.sig' for name in win_old[:2]]
+                    expected_added += [self.env['SETUP_NAME'], self.env['SETUP_NAME'] + '.sig']
+                self.assertEqual(set(deleted), set(expected_deleted))
+                self.assertEqual(self.published_assets(), (set(existing) | set(expected_added)) - set(expected_deleted))
+                first_delete = next(i for i, line in enumerate(calls) if 'delete-asset' in line)
+                self.assertEqual(sum(line.startswith('curl ') for line in calls[:first_delete]), 4 if platform == 'both' else 2)
 
-    def test_pruning_refuses_to_remove_current_appcast_target(self):
-        newer = [f'Runner-Nightly-0.8.3-nightly.202609{day:02}.0100-arm64.dmg' for day in range(9, 20)]
-        self.assets('MAC', [self.env['DMG_NAME'], 'appcast.xml'] + newer)
-        result = self.publish()
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn('refusing to prune', result.stderr)
-        self.assertFalse(any('delete-asset' in line for line in self.calls()))
+    def test_pruning_refuses_to_remove_current_appcast_target_or_installer(self):
+        for platform in ['macos', 'windows']:
+            with self.subTest(platform=platform):
+                if platform == 'macos':
+                    newer = [f'Runner-Nightly-0.8.3-nightly.202609{day:02}.0100-arm64.dmg' for day in range(9, 20)]
+                else:
+                    newer = [f'Runner-Setup-nightly.abc1234.202609{day:02}.0100-x64.exe' for day in range(9, 20)]
+                    newer += [name + '.sig' for name in newer]
+                self.assets(newer)
+                Path(self.env['CALLS']).write_text('')
+                result = self.publish()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('refusing to prune', result.stderr)
+                self.assertFalse(any('delete-asset' in line for line in self.calls()))
 
 
 if __name__ == '__main__':

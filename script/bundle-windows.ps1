@@ -40,7 +40,7 @@ try {
     $updatesUrl = if ($Channel -eq 'production') {
         'https://github.com/yicheng47/runner/releases/latest'
     } else {
-        'https://github.com/yicheng47/runner/releases/tag/nightly-win'
+        'https://github.com/yicheng47/runner/releases/tag/nightly'
     }
     $env:RUNNER_BUILD_STAMP = $Stamp
     $env:RUNNER_BUILD_SHA = $Sha
