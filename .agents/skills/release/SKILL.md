@@ -1,6 +1,6 @@
 ---
 name: release
-description: Cut a Runner production release — bump the lockstep crates, tag vX.Y.Z, let release.yml build the draft for both platforms, write bilingual (English + 中文) release notes, and hand the publish switch to the user
+description: Cut a Runner production release — bump the lockstep crates, tag vX.Y.Z, let release.yml build the draft for both platforms, write bilingual release notes (English, with 中文 collapsed in a details block), and hand the publish switch to the user
 ---
 
 # Release
@@ -28,7 +28,7 @@ An explicit request to `run` authorizes the bump commit, the push, the tag, and 
 
 ## `notes <version>`
 
-Release notes are **bilingual**: the full English text first, a horizontal rule, then the same content in 中文. Every release since 0.8.3 ships this way; a draft with only the workflow's one-line stub is not ready to publish.
+Release notes are **bilingual**: the full English text first, then the same content in 中文 inside a `<details>` block so the page reads as English-only until a reader expands it (GitHub has no tabs; a collapsed block is the nearest thing, and both in-app updaters open the release page in a browser where it renders). 0.8.3 used a horizontal rule instead; every release since 0.8.4 ships the collapsed form. A draft with only the workflow's one-line stub is not ready to publish.
 
 Source the content from `git log v<previous>..v<version> --no-merges --format='- %s (%h)'` and the closed issues those commits reference. Write for users, not for the repo: what changed for them, in their words, one bullet per change with the issue number at the end. Skip internal work (tests, CI, docs, refactors) unless it changes what users see.
 
@@ -54,7 +54,8 @@ Windows ARM64, Intel Macs, and Linux are not supported.
 
 **Full changelog:** https://github.com/yicheng47/runner/compare/v<previous>...v<version>
 
----
+<details>
+<summary>中文</summary>
 
 Runner <version> 是 macOS 和 Windows 上基于 <previous> 的<修复版本 | 功能版本>。
 
@@ -70,13 +71,17 @@ Runner <version> 是 macOS 和 Windows 上基于 <previous> 的<修复版本 | �
 Windows ARM64、Intel Mac 和 Linux 暂不支持。
 
 **完整变更记录：** https://github.com/yicheng47/runner/compare/v<previous>...v<version>
+
+</details>
 ```
 
-Rules for the 中文 half: translate the meaning, not the words; keep product terms as they appear in the app (Runner, Sparkle, Nightly, ⌘, Settings → Updates); keep file names, issue numbers, and links identical to the English; use the same headings in the same order so a reader can line the two halves up. Read the exact Windows installer name from the draft's assets (`gh release view v<version> --json assets --jq '.assets[].name'`) rather than guessing the stamp.
+Keep a blank line after `<summary>` and before `</details>`, or GitHub renders the markdown inside as literal text.
+
+Rules for the 中文 half: translate the meaning, not the words; keep product terms as they appear in the app (Runner, Sparkle, Nightly, ⌘, Settings → Updates); keep file names, issue numbers, and links identical to the English; use the same headings in the same order so a reader can line the two halves up. Headings inside the details block use `##` like the English half; they render collapsed until expanded. Read the exact Windows installer name from the draft's assets (`gh release view v<version> --json assets --jq '.assets[].name'`) rather than guessing the stamp.
 
 ## `check <version>`
 
-Read-only. `gh release view v<version> --json isDraft,isPrerelease,assets,body`: report draft state, that the DMG, `appcast.xml`, installer, and `.sig` are all present, and whether the body has both the English and the 中文 sections. After publishing, also verify `releases/latest` resolves to the tag and the production appcast's enclosure names the new DMG.
+Read-only. `gh release view v<version> --json isDraft,isPrerelease,assets,body`: report draft state, that the DMG, `appcast.xml`, installer, and `.sig` are all present, and whether the body has the English section and a `<details>` block containing the 中文 section. After publishing, also verify `releases/latest` resolves to the tag and the production appcast's enclosure names the new DMG.
 
 ## Notes
 
