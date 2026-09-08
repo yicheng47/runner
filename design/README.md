@@ -4,6 +4,8 @@ Pencil (`.pen`) source files for the Runners UI. Open these in the Pencil app; t
 
 Conventions:
 
+The macOS titlebar cluster (sidebar toggle, Previous page, Next page; #494) is recorded in `runner.pen`: the two arrows live inside `cmp/SidebarC`'s header row `sbDrag` (`sbBackIcon`, `sbNextIcon`) so every screen that instances the sidebar shows them, and the chrome spec is frame `YRWg3` ("Header navigation — #494 chrome spec") beside the #246 sidebar-toggle spec `w83yF`: control states, expanded/collapsed/fullscreen placement, and behavior notes.
+
 The Windows shared title bar is recorded in `windows-header.pen`, frame `winShell` and header `winTitlebar`: a 32 px row above the sidebar and workspace, sidebar/history controls on the left, and 46 px caption buttons on the right. It is separate from the macOS chrome.
 
 Windows in-app updates (#493) are recorded in `windows-updates.pen`: the centered update dialog component `cmp/UpdateDialog` (`kmgxV`) and its four visible states (`rZRA3`), the main window with the dialog opened from the sidebar icon (`AsdU1`), the Settings → Updates page in the Ready state (`uDGHz`) and with the dialog open while downloading (`Jr0d9`), both with the macOS-style hero card, the hero's status line and button for the five states (`f230`), the sidebar icon states (`f266`), and the flow note (`n300`). Tokens mirror `runner.pen`; the dialog is the only update surface, opened from the sidebar icon or the Settings button.
