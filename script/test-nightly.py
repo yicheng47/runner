@@ -76,7 +76,22 @@ curl() {
   return 90
 }
 sleep() { :; }
-git() { printf '%s\n' "$SOURCE_SHA"; }
+git() {
+  printf 'git %s\n' "$*" >> "$CALLS"
+  case "$1" in
+    rev-parse)
+      if [[ "$*" == *nightly* ]]; then
+        [[ -n "$PREVIOUS_TAG_SHA" ]] && printf '%s\n' "$PREVIOUS_TAG_SHA"
+      else
+        printf '%s\n' "$SOURCE_SHA"
+      fi ;;
+    fetch) [[ -n "$PREVIOUS_TAG_SHA" ]] ;;
+    log) printf '%s\n' "$CHANGELOG" | sed '/^$/d' ;;
+    config|tag) return 0 ;;
+    push) [[ -z "$FAIL_TAG_PUSH" ]] ;;
+    *) echo "unexpected git call: $*" >&2; return 90 ;;
+  esac
+}
 '''
 
 
@@ -106,7 +121,9 @@ class NightlyTests(unittest.TestCase):
                         DMG_NAME=f'Runner-Nightly-{SHA[:7]}.{STAMP}-arm64.dmg',
                         SETUP_NAME=f'Runner-Setup-{VERSION}-x64.exe',
                         CI_RESULT='success', RELEASE_EXISTS='true',
-                        FAIL_UPLOAD='', FAIL_DOWNLOAD='', RUNNER_TEMP=str(self.root),
+                        FAIL_UPLOAD='', FAIL_DOWNLOAD='', FAIL_TAG_PUSH='', RUNNER_TEMP=str(self.root),
+                        PREVIOUS_TAG_SHA='1111111aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+                        CHANGELOG='- feat(nightly): one change (abc1234)\n- fix(ui): another (def5678)',
                         RELEASE_STATE=str(self.root / 'release.json'),
                         CALLS=str(self.root / 'calls'), GITHUB_OUTPUT=str(self.root / 'outputs'),
                         GITHUB_STEP_SUMMARY=str(self.root / 'summary'))
@@ -252,10 +269,60 @@ class NightlyTests(unittest.TestCase):
                 self.assertTrue(any(line.startswith('gh run view') for line in calls[:first_upload]))
                 edits = [line for line in calls if line.startswith(('gh release create', 'gh release edit'))]
                 self.assertEqual(len(edits), 1)
-                self.assertTrue(all('--notes-file script/nightly-release-notes.md' in line for line in edits))
+                self.assertTrue(all(f"--notes-file {self.root}/nightly-notes.md" in line for line in edits))
+                tag_push = calls.index('git push --force origin refs/tags/nightly')
+                self.assertLess(calls.index(next(line for line in calls if line.startswith('gh run view'))), tag_push)
+                self.assertLess(tag_push, calls.index(edits[0]))
+                self.assertIn(f'git tag --force --annotate nightly --message Runner Nightly {VERSION} {SHA}', calls)
                 self.assertTrue(all('--prerelease' in line and '--latest=false' in line for line in edits))
                 self.assertTrue(all('--target ' + SHA in line for line in edits))
                 self.assertFalse(any('nightly-win' in line for line in calls))
+
+    def test_release_notes_carry_the_changelog_and_the_tag_moves_only_after_the_ci_gate(self):
+        fixed = (ROOT / 'script/nightly-release-notes.md').read_text()
+        notes = self.root / 'nightly-notes.md'
+        result = self.publish()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        text = notes.read_text()
+        self.assertTrue(text.startswith('## Changes since the previous nightly\n'))
+        self.assertIn(f'Previous nightly 1111111, this nightly {SHA[:7]}.', text)
+        self.assertIn('- feat(nightly): one change (abc1234)\n- fix(ui): another (def5678)\n', text)
+        self.assertTrue(text.endswith(fixed))
+        self.assertIn(f'git log --no-merges --format=- %s (%h) {self.env["PREVIOUS_TAG_SHA"]}..{SHA}', self.calls())
+
+        self.env['CHANGELOG'] = '\n'.join(f'- change {i} ({i:07x})' for i in range(1, 131))
+        self.assertEqual(self.publish().returncode, 0)
+        text = notes.read_text()
+        self.assertIn('- change 100 (0000064)\n- and 30 more commits\n', text)
+        self.assertNotIn('- change 101 ', text)
+
+        self.env['CHANGELOG'] = ''
+        self.env['PREVIOUS_TAG_SHA'] = SHA
+        self.assertEqual(self.publish().returncode, 0)
+        self.assertIn(f'Rebuilt from the same commit as the previous nightly, {SHA[:7]}.', notes.read_text())
+
+        self.env['PREVIOUS_TAG_SHA'] = ''
+        Path(self.env['CALLS']).write_text('')
+        self.assertEqual(self.publish().returncode, 0)
+        text = notes.read_text()
+        self.assertIn(f'No previous nightly tag. This nightly is {SHA[:7]}.', text)
+        self.assertTrue(text.endswith(fixed))
+        self.assertFalse(any(line.startswith('git log') for line in self.calls()))
+        self.assertIn('git push --force origin refs/tags/nightly', self.calls())
+
+        for conclusion in ['failure', 'missing']:
+            self.env.update(CI_RESULT=conclusion, PREVIOUS_TAG_SHA='1111111aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')
+            Path(self.env['CALLS']).write_text('')
+            self.assertNotEqual(self.publish().returncode, 0)
+            self.assertFalse(any(line.startswith(('git tag', 'git push')) for line in self.calls()), conclusion)
+        self.env['CI_RESULT'] = 'success'
+
+        self.env['FAIL_TAG_PUSH'] = '1'
+        Path(self.env['CALLS']).write_text('')
+        Path(self.env['GITHUB_STEP_SUMMARY']).write_text('')
+        self.assertNotEqual(self.publish().returncode, 0)
+        self.assertFalse(any(line.startswith('gh release') for line in self.calls()))
+        self.assertIn('Incomplete', Path(self.env['GITHUB_STEP_SUMMARY']).read_text())
 
     def test_ci_missing_failed_cancelled_skipped_or_wrong_sha_blocks_mutation(self):
         for conclusion, sha in [('missing', SHA), ('failure', SHA), ('cancelled', SHA),
