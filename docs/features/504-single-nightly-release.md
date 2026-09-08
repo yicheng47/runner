@@ -16,7 +16,7 @@ The updaters do not conflict on one release. Sparkle reads only `appcast.xml`. T
 
 Retention prunes each platform independently to its newest ten by stamp on the same release: DMGs by the existing DMG pattern, installers by the existing installer pattern with paired signature deletion. The appcast's DMG is never pruned. The public-download check reads one release and requires every expected asset for the selected platforms.
 
-One release-notes file covers both platforms. It replaces the inline macOS notes string and `script/windows/release-notes.md`, keeping the Windows install, update, and SmartScreen guidance.
+One release-notes file covers both platforms. It replaces the inline macOS notes string and `script/windows/release-notes.md`, keeping the Windows install, update, and SmartScreen guidance. Since [#507](https://github.com/yicheng47/runner/issues/507) the notes open with the commits since the previous nightly, and `publish` moves the `nightly` tag to the built commit after the CI gate.
 
 ### Windows reads `nightly`
 

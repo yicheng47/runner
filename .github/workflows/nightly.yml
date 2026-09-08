@@ -238,10 +238,11 @@ jobs:
       DMG_NAME: Runner-Nightly-${{ needs.prepare.outputs.short_sha }}.${{ needs.prepare.outputs.stamp }}-arm64.dmg
       SETUP_NAME: Runner-Setup-${{ needs.prepare.outputs.version }}-x64.exe
     steps:
-      - name: Check out dispatch commit
+      - name: Check out dispatch commit with history
         uses: actions/checkout@v6
         with:
           ref: ${{ needs.prepare.outputs.sha }}
+          fetch-depth: 0
 
       - name: Download macOS nightly artifacts
         if: inputs.platform == 'both' || inputs.platform == 'macos'
@@ -282,12 +283,45 @@ jobs:
           gh run watch "$ci_run_id" --exit-status
           gh run view "$ci_run_id" --json headSha,conclusion | jq -e --arg sha "$SOURCE_SHA" '.headSha == $sha and .conclusion == "success"'
 
+      - name: Move the nightly tag to the built commit and compose release notes
+        run: |
+          notes="$RUNNER_TEMP/nightly-notes.md"
+          previous=""
+          if git fetch --force --quiet origin refs/tags/nightly:refs/tags/nightly 2>/dev/null; then
+            previous=$(git rev-parse --verify --quiet 'refs/tags/nightly^{commit}' || true)
+          fi
+          {
+            echo "## Changes since the previous nightly"
+            echo
+            if [[ -z "$previous" ]]; then
+              echo "No previous nightly tag. This nightly is ${SOURCE_SHA:0:7}."
+            elif [[ "$previous" == "$SOURCE_SHA" ]]; then
+              echo "Rebuilt from the same commit as the previous nightly, ${SOURCE_SHA:0:7}."
+            else
+              echo "Previous nightly ${previous:0:7}, this nightly ${SOURCE_SHA:0:7}."
+              echo
+              git log --no-merges --format='- %s (%h)' "$previous..$SOURCE_SHA" > "$RUNNER_TEMP/nightly-changes.txt"
+              head -n 100 "$RUNNER_TEMP/nightly-changes.txt"
+              total=$(wc -l < "$RUNNER_TEMP/nightly-changes.txt")
+              if (( total > 100 )); then
+                echo "- and $((total - 100)) more commits"
+              fi
+            fi
+            echo
+            cat script/nightly-release-notes.md
+          } > "$notes"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag --force --annotate nightly --message "Runner Nightly $NIGHTLY_VERSION" "$SOURCE_SHA"
+          git push --force origin refs/tags/nightly
+
       - name: Prepare the rolling nightly prerelease
         run: |
+          notes="$RUNNER_TEMP/nightly-notes.md"
           if gh release view nightly >/dev/null 2>&1; then
-            gh release edit nightly --target "$SOURCE_SHA" --title "Runner Nightly" --notes-file script/nightly-release-notes.md --prerelease --draft=false --latest=false
+            gh release edit nightly --target "$SOURCE_SHA" --title "Runner Nightly" --notes-file "$notes" --prerelease --draft=false --latest=false
           else
-            gh release create nightly --target "$SOURCE_SHA" --title "Runner Nightly" --notes-file script/nightly-release-notes.md --prerelease --latest=false
+            gh release create nightly --target "$SOURCE_SHA" --title "Runner Nightly" --notes-file "$notes" --prerelease --latest=false
           fi
 
       - name: Publish macOS nightly assets
