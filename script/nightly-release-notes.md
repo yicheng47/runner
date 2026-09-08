@@ -12,7 +12,7 @@ Download the newest **Runner-Setup-…-x64.exe** installer below. It installs Ru
 
 Runner checks for newer builds at startup and every six hours, downloads them in the background by default, and verifies their minisign signatures. Open the update icon beside Settings or **Settings → Updates → Update**, then choose **Install and restart**. Runner closes, the installer runs, and Runner reopens with settings, chats, and missions retained. Turn off **Automatically download updates** to download only when you choose. Uninstalling removes the application and shortcut but keeps your data for a later reinstall.
 
-These testing builds are not yet **Authenticode-signed**. Windows may show a SmartScreen warning during the initial download and installation; where your security settings allow it, choose **More info → Run anyway**. Authenticode signing is planned separately from the minisign verification used for updates.
+The installer, app, and CLI sidecars are **Authenticode-signed**; Windows names the publisher as **Open Source Developer Yicheng Wang**. SmartScreen may still warn while the certificate builds reputation; where your security settings allow it, choose **More info → Run anyway**. In-app updates verify the separate minisign signature.
 
 Older Windows nightlies read the retired `nightly-win` release. Install this build by hand once to switch to `nightly`; subsequent builds update in-app from this release.
 

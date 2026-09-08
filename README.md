@@ -53,7 +53,7 @@ Download the latest macOS build (Apple Silicon `.dmg`) from the [releases page](
 
 Starting with **0.8.0**, Windows x64 installers (`Runner-Setup-…-x64.exe`) are available alongside the Mac DMG on the [releases page](https://github.com/yicheng47/runner/releases/latest). Windows 10 version 1809 or later is required.
 
-The Windows installer is not yet **Authenticode-signed**. If Windows SmartScreen shows **Windows protected your PC** during the initial download and installation, click **More info → Run anyway** to continue installation.
+The Windows installer, app, and CLI sidecars are **Authenticode-signed** with a Certum open-source code-signing certificate; Windows names the publisher as **Open Source Developer Yicheng Wang**. SmartScreen builds reputation per certificate, so a brand-new release may still show **Windows protected your PC** with that publisher named; **More info → Run anyway** continues the installation. Signed nightlies share the certificate.
 
 Runner checks for Windows updates at startup and every six hours, downloads them in the background by default, and verifies their minisign signatures. Open the update icon beside Settings or **Settings → Updates → Update**, then choose **Install and restart**. Settings, chats, and missions are retained. Turn off **Automatically download updates** to download only when you choose.
 

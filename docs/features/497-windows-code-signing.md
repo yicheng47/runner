@@ -1,6 +1,6 @@
 # Windows code signing
 
-Tracking issue: [#497](https://github.com/yicheng47/runner/issues/497). Status: planned. Priority P1.
+Tracking issue: [#497](https://github.com/yicheng47/runner/issues/497). Status: implemented, awaiting the first signed nightly and stable release. Priority P1.
 
 ## Motivation
 
@@ -9,26 +9,41 @@ Every Windows download of Runner 0.8.0 and 0.8.1 is an unsigned Inno Setup insta
 ## Scope
 
 - **What gets signed.** `Runner.exe`, `runner-agent-cli.exe`, and `runner-mcp.exe` after the release build and before packaging; then the installer and the uninstaller. Inno Setup signs both when `[Setup]` carries `SignTool=` and `SignedUninstaller=yes`, so the uninstaller needs no separate step. SHA-256 digests with an RFC 3161 timestamp so signatures stay valid after the certificate expires.
-- **Where it runs.** Both Windows packaging paths: the `build-windows` job in `release.yml` and the Windows job in `nightly.yml`, through `script/bundle-windows.ps1`. Nightlies are signed with the same certificate so `nightly` testers stop hitting SmartScreen and #493 can be exercised on nightlies. Local builds stay unsigned; the script signs only when the provider's credentials are present, and `release.yml` requires them the way it already requires the Apple and Sparkle keys.
-- **Verification in CI.** `script/windows/test-installer.ps1` checks that all five binaries carry a valid, timestamped Authenticode signature whenever signing is enabled. A production release with an unsigned or invalid binary fails before upload.
-- **Publisher identity.** The certificate subject is what Windows shows in SmartScreen and the Properties → Digital Signatures tab. `AppPublisher` in `script/windows/runner.iss` is `wyc studios` today; align it with the name the provider validates.
+- **Where it runs.** Both Windows packaging paths: the `build-windows` job in `release.yml` and the Windows job in `nightly.yml`, through `script/bundle-windows.ps1`. Nightlies are signed with the same certificate so `nightly` testers stop hitting SmartScreen and #493 can be exercised on nightlies. Local builds stay unsigned; the script signs only when the certificate thumbprint is present, and both workflows require the credentials the way `release.yml` already requires the Apple and Sparkle keys.
+- **Verification in CI.** `script/windows/test-installer.ps1` checks that all five binaries carry a valid, timestamped Authenticode signature from the expected certificate whenever signing is enabled. A release with an unsigned or invalid binary fails before upload.
+- **Publisher identity.** The certificate subject is what Windows shows in SmartScreen and the Properties → Digital Signatures tab. `AppPublisher` in `script/windows/runner.iss` stays `wyc studios`: Certum's open-source product fixes the subject to the developer's name, and the installer's publisher field is product branding, not the signing identity.
 - **Wording.** Replace the unsigned / Run anyway text in `README.md`, `docs/arch/windows.md`, `script/nightly-release-notes.md`, and the release notes string in `release.yml`.
 - **Out.** Microsoft Store submission, macOS signing (Developer ID and notarization already ship), the updater's own download verification (#493 consumes this), Windows ARM64.
 
 ## Provider decision
 
-Since 2023-06-01 the CA/Browser Forum requires code-signing private keys on certified hardware, so every provider delivers either a USB token or a cloud HSM. GitHub-hosted runners can only use the cloud form. Candidates, with what was already found:
+Since 2023-06-01 the CA/Browser Forum requires code-signing private keys on certified hardware, so every provider delivers either a USB token or a cloud HSM. GitHub-hosted runners can only use the cloud form.
 
-1. **SignPath Foundation OSS program.** Free code signing for open-source projects; the certificate stays with SignPath and signing runs from GitHub Actions through their action, with the project name on the certificate. Runner is GPL-3.0 with public CI, so it should be eligible; approval is a review, not instant, and the shown publisher is SignPath's, not wyc studios. Try this first.
-2. **Azure Artifact Signing.** About US$10 a month, short-lived Microsoft-issued certificates, the simplest GitHub Actions integration, and Microsoft documents a SmartScreen benefit. Identity validation requires an eligible region: as checked on 2026-09-06, the public-trust regions do not include mainland China, so this works only through an eligible entity.
-3. **Commercial OV certificate with cloud signing** (SSL.com eSigner, DigiCert KeyLocker, Certum SimplySign, GlobalSign). A few hundred US dollars a year plus HSM fees, organization or individual validation, no Azure-style region limit. SmartScreen reputation accrues with download volume, so the interstitial may persist for a while after the first signed release. EV has historically bought immediate reputation; confirm that still holds before paying the premium.
+**Chosen on 2026-09-08: Certum Open Source Code Signing in the Cloud (SimplySign).** Jason bought and activated it on 2026-09-08; the certificate is issued to `CN=Open Source Developer Yicheng Wang, O=Open Source Developer, L=Shanghai, S=Shanghai, C=CN` by `Certum Code Signing 2021 CA`, valid until 2027-09-08, and must be renewed and its thumbprint secret updated before then. The private key sits in Certum's SimplySign cloud HSM. SimplySign has no headless API: signing needs SimplySign Desktop logged in with the account name and a one-time code, after which the certificate is a virtual smart card for about two hours. `script/windows/simplysign.ps1` automates that login on a GitHub-hosted Windows runner, the approach several open-source projects already ship with. Certum allows 5000 cloud signatures a month; a build uses nine.
 
-Certum's open-source certificate is cheap but ships on a physical card, which rules out hosted runners without their cloud service. Whatever is chosen, credentials live only in GitHub Actions secrets and the secret names are recorded here.
+Repository secrets: `CERTUM_USERNAME` (the SimplySign login), `CERTUM_OTP_URI` (the full `otpauth://` URI from the SimplySign enrollment QR code, SHA-256, six digits, 30 seconds), and `CERTUM_CERTIFICATE_SHA1` (the certificate thumbprint). The SimplySign Desktop MSI is pinned by version and SHA-256 in `simplysign.ps1`.
+
+Rejected:
+
+1. **SignPath Foundation OSS program.** Free, but the certificate belongs to SignPath, so Windows would name SignPath Foundation as the publisher; every signing request needs a manual approval in their dashboard, which makes unattended nightlies impractical; and the OSS plan signs uploaded artifacts rather than exposing a key to `signtool`, so Inno Setup could not sign the uninstaller. An application was drafted on 2026-09-07 and not pursued.
+2. **Azure Artifact Signing.** The simplest integration, but as checked on 2026-09-06 the public-trust regions do not include mainland China.
+3. **Commercial OV certificate with cloud signing** (SSL.com eSigner, DigiCert KeyLocker, GlobalSign). A few hundred US dollars a year for the same SmartScreen reputation ramp as the Certum certificate.
+
+## Implementation
+
+- `script/windows/simplysign.ps1` installs SimplySign Desktop, pre-sets its registry so the login dialog opens on launch, derives the one-time code from the secret, types the credentials, and waits for the certificate with a private key to appear in `Cert:\CurrentUser\My`, retrying with a fresh code up to three times.
+- `script/windows/signtool.ps1` returns the newest Windows SDK `signtool.exe`.
+- `script/bundle-windows.ps1` takes `-SigningThumbprint` (default `CERTUM_CERTIFICATE_SHA1`), signs the three executables with `signtool sign /sha1 <thumbprint> /fd sha256 /tr http://time.certum.pl /td sha256`, and compiles `runner.iss` with `/DSign` plus a `/Sauthenticode=…` sign-tool definition.
+- `script/windows/runner.iss` adds `SignTool=authenticode` and `SignedUninstaller=yes` under `#ifdef Sign`.
+- `script/windows/test-installer.ps1` compiles its test installers with the same definition in payload mode and asserts a `Valid`, timestamped signature from the expected thumbprint on the installer, the three installed binaries, and `unins000.exe`.
+- `release.yml` and `nightly.yml` require the three secrets, run `simplysign.ps1` after the Rust cache step, pass the thumbprint to the build and installer-test steps, and keep the minisign step for in-app updates.
+
+Verified locally on 2026-09-08 on JASONPC with SimplySign Desktop connected: `signtool` signed and timestamped a binary with the full Certum chain, and `test-installer.ps1` in payload mode passed its signature assertions on all five files.
 
 ## Implementation Phases
 
-1. Choose the provider and validate the publisher identity; record the decision, the certificate subject, and the CI secret names in this spec.
-2. Wire signing into `bundle-windows.ps1` and both workflows behind the credential check; add the signature verification to `test-installer.ps1`; cut a signed nightly and verify it on `nightly`.
+1. Choose the provider and validate the publisher identity; record the decision, the certificate subject, and the CI secret names in this spec. Done 2026-09-08.
+2. Wire signing into `bundle-windows.ps1` and both workflows behind the credential check; add the signature verification to `test-installer.ps1`; cut a signed nightly and verify it on `nightly`. Code done 2026-09-08; the first signed nightly is pending.
 3. Ship a signed stable release; update the docs and notes; check SmartScreen on a fresh PC and record the result.
 
 ## Verification

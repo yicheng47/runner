@@ -1,8 +1,14 @@
-param([string]$SourceDir)
+param([string]$SourceDir, [string]$SigningThumbprint = $env:CERTUM_CERTIFICATE_SHA1)
 
 $ErrorActionPreference = 'Stop'
 if ($SourceDir) { $SourceDir = (Resolve-Path -LiteralPath $SourceDir).Path }
 $compiler = & (Join-Path $PSScriptRoot 'inno-setup.ps1')
+$signed = [bool]($SourceDir -and $SigningThumbprint)
+$signing = @()
+if ($signed) {
+    $signtool = & (Join-Path $PSScriptRoot 'signtool.ps1')
+    $signing = @('/DSign', ('/Sauthenticode=$q{0}$q sign /sha1 {1} /fd sha256 /tr http://time.certum.pl /td sha256 $f' -f $signtool, $SigningThumbprint))
+}
 $id = [Guid]::NewGuid().ToString('N')
 $appId = "runner-installer-test.$id"
 $appName = "Runner Installer Test $id"
@@ -29,6 +35,13 @@ function Invoke-Setup([string]$Path, [string]$Label, [string[]]$Extra = @(), [sw
     } elseif ($process.ExitCode -ne 0) {
         throw "$Label failed with exit code $($process.ExitCode); see $testRoot/$Label.log"
     }
+}
+
+function Assert-Signed([string]$Path) {
+    $signature = Get-AuthenticodeSignature -LiteralPath $Path
+    if ($signature.Status -ne 'Valid') { throw "$Path signature is $($signature.Status)" }
+    if ($signature.SignerCertificate.Thumbprint -ne $SigningThumbprint) { throw "$Path is signed by $($signature.SignerCertificate.Thumbprint), not $SigningThumbprint" }
+    if (-not $signature.TimeStamperCertificate) { throw "$Path signature is not timestamped" }
 }
 
 function Assert-Installed([string]$Stage, [string]$Version, [string]$UpdatesUrl = 'https://github.com/yicheng47/runner/releases/tag/nightly') {
@@ -84,7 +97,7 @@ class Fixture {
     } else {
         'https://github.com/yicheng47/runner/releases/tag/nightly'
     }
-    & $compiler /Q "/DAppId=$appId" "/DAppName=$appName" "/DAppVersion=0.7.5.20260101.000$revision" /DBaseVersion=0.7.5 "/DUpdatesUrl=$updatesUrl" "/DSourceDir=$stage" "/DOutputDir=$testRoot" (Join-Path $PSScriptRoot 'runner.iss')
+    & $compiler /Q @signing "/DAppId=$appId" "/DAppName=$appName" "/DAppVersion=0.7.5.20260101.000$revision" /DBaseVersion=0.7.5 "/DUpdatesUrl=$updatesUrl" "/DSourceDir=$stage" "/DOutputDir=$testRoot" (Join-Path $PSScriptRoot 'runner.iss')
     if ($LASTEXITCODE -ne 0) { throw 'Installer test compilation failed' }
 }
 
@@ -112,6 +125,10 @@ if ($SourceDir) {
 Invoke-Setup $second 'upgrade'
 Assert-Installed "$testRoot/payload-2" '0.7.5.20260101.0002' 'https://github.com/yicheng47/runner/releases/latest'
 Write-Host 'PASS: fresh install, shortcut, per-user registration, same-version binary replacement, nightly-to-production channel switch'
+if ($signed) {
+    foreach ($path in @($second) + @($binaries | ForEach-Object { Join-Path $installDir $_ }) + @($uninstaller)) { Assert-Signed $path }
+    Write-Host 'PASS: installer, application binaries, and uninstaller carry valid timestamped signatures'
+}
 
 if (-not $SourceDir) {
     Add-Type @'

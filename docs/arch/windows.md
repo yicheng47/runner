@@ -39,7 +39,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\script\bundle-windows.
 
 The script downloads the checksum-verified portable Inno Setup compiler into `target/tools`, builds optimized x64 binaries, and produces `target/x86_64-pc-windows-msvc/release/Runner-Setup-<version>.<stamp>-x64.exe`. The installer contains Runner, both CLI sidecars, and license notices. `-Stamp YYYYMMDD.HHMM`, `-Sha <commit>`, and `-Jobs <count>` are optional; CI supplies the build identity through environment variables. Building an installer does not install or launch Runner.
 
-The packaging build links the C runtime statically and verifies with MSVC's `dumpbin` that no separate Visual C++ runtime is needed and the app uses the GUI subsystem. End users do not need Rust, MSVC, or PowerShell 7. Installers are not yet Authenticode-signed; SmartScreen may require **More info → Run anyway** for the initial download and installation. Both Windows packaging jobs publish a minisign `.sig` alongside each installer for in-app update verification.
+The packaging build links the C runtime statically and verifies with MSVC's `dumpbin` that no separate Visual C++ runtime is needed and the app uses the GUI subsystem. End users do not need Rust, MSVC, or PowerShell 7. Local builds are unsigned unless a signing certificate is available; see [Code signing](#code-signing). Both Windows packaging jobs publish a minisign `.sig` alongside each installer for in-app update verification.
 
 Run installer checks without launching Runner:
 
@@ -51,6 +51,14 @@ if ($LASTEXITCODE -ne 0) { throw 'Installer payload tests failed' }
 ```
 
 The first command uses generated test executables; the second uses the actual release payload. Each uses a separate temporary installation identity and checks install, upgrade, uninstall, and reinstall without modifying the installed Runner app or its data. Fixture mode also checks `/WAITPID`, rename-aside and numbered suffixes for running binaries, stale-file cleanup, uninstall with a running `.old`, cancellation at the uninstall confirmation, and `/RELAUNCH` after success or a genuine copy failure. It launches and stops only temporary fixture executables. Payload mode retains checks for handles that prevent renaming, without launching the payload.
+
+## Code signing
+
+CI signs `Runner.exe`, `runner-agent-cli.exe`, `runner-mcp.exe`, the installer, and the uninstaller with a Certum Open Source Code Signing certificate issued to **Open Source Developer Yicheng Wang** (tracked in [#497](https://github.com/yicheng47/runner/issues/497)). The private key lives in Certum's SimplySign cloud HSM; the only way to reach it is the SimplySign Desktop application, which after a login with the account name and a one-time code exposes the certificate to Windows as a virtual smart card for about two hours. There is no headless API, so `script/windows/simplysign.ps1` installs the pinned, checksum-verified SimplySign Desktop MSI on the runner, pre-sets its registry so the login dialog opens on launch, derives the one-time code from the `otpauth://` secret, types the credentials into the dialog, and waits until the certificate appears in `Cert:\CurrentUser\My` with a private key. It retries with a fresh code and fails the job if the certificate never appears.
+
+`script/bundle-windows.ps1` signs when `CERTUM_CERTIFICATE_SHA1` (or `-SigningThumbprint`) is set: it runs `signtool sign /sha1 <thumbprint> /fd sha256 /tr http://time.certum.pl /td sha256` on the three executables before packaging, then compiles `runner.iss` with `/DSign` and a `/Sauthenticode=…` sign-tool definition so Inno Setup signs Setup and, through `SignedUninstaller=yes`, the uninstaller stub. `script/windows/test-installer.ps1` compiles its test installers the same way in payload mode and asserts that the installer, the three installed binaries, and `unins000.exe` carry a `Valid`, timestamped signature from the expected thumbprint. Without the thumbprint both scripts produce unsigned output, which is what the `Rust / Windows` CI job and local builds use.
+
+Both `release.yml` and `nightly.yml` require the `CERTUM_USERNAME`, `CERTUM_OTP_URI`, and `CERTUM_CERTIFICATE_SHA1` secrets, connect to SimplySign after restoring the Rust cache, and fail before upload if signing or verification fails. The certificate subject is fixed by Certum's open-source product, so `AppPublisher` in `runner.iss` stays `wyc studios` as the product brand. To sign a local build, connect SimplySign Desktop on the PC, then set `$env:CERTUM_CERTIFICATE_SHA1` to the certificate thumbprint before running `bundle-windows.ps1`; `Get-AuthenticodeSignature` on the outputs shows the signer and timestamp.
 
 ## Unified nightlies
 
@@ -76,9 +84,9 @@ To preview the update indicator in a development build, set `$env:RUNNER_DEV_UPD
 
 ## Follow-up work
 
-The unsigned Windows port shipped in 0.8.0; these items were not completed by that release:
+The unsigned Windows port shipped in 0.8.0 and signing followed with [#497](https://github.com/yicheng47/runner/issues/497); these items were not completed by that release:
 
-- Windows signing, tracked in [#497](https://github.com/yicheng47/runner/issues/497) with its [feature spec](../features/497-windows-code-signing.md): choose the provider, configure credentials, and sign/verify the app, sidecars, installer, and uninstaller. The [archived signing plan](../impls/archive/windows-nightly/plan.md#phase-4--windows-installer-and-upgrades-remaining) retains the original scope and provider research.
+- Confirm SmartScreen behavior for the signed stable installer on a fresh Windows 11 PC and record the result in the [signing spec](../features/497-windows-code-signing.md).
 - Complete detailed installed-build lifecycle, crash/relaunch, IME, resize, DPI, path, and update/data-retention acceptance. The [remaining validation checklist](../impls/archive/windows-nightly/impl_log.md#todo) preserves the specific cases and prior results. TRAE remains disabled by default on Windows and native validation is deferred unless requested.
 - Investigate the shutdown `window not found` diagnostic. The separate development-only DXGI debug-interface warning is an optional gpui-ce debug probe and is skipped in release builds.
 - Promote `Rust / Windows` to a required branch check after a week of green merges, planned no earlier than 2026-09-12; inspect current branch protection before changing it.

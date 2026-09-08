@@ -5,7 +5,8 @@ param(
     [string]$Stamp = $env:RUNNER_BUILD_STAMP,
     [string]$Sha = $env:RUNNER_BUILD_SHA,
     [ValidateRange(1, 256)]
-    [int]$Jobs = [Math]::Min(12, [Environment]::ProcessorCount)
+    [int]$Jobs = [Math]::Min(12, [Environment]::ProcessorCount),
+    [string]$SigningThumbprint = $env:CERTUM_CERTIFICATE_SHA1
 )
 
 $ErrorActionPreference = 'Stop'
@@ -15,6 +16,8 @@ if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
     $env:Path = (Join-Path $cargoHome 'bin') + ';' + $env:Path
 }
 $compiler = & (Join-Path $PSScriptRoot 'windows/inno-setup.ps1')
+$signtool = if ($SigningThumbprint) { & (Join-Path $PSScriptRoot 'windows/signtool.ps1') }
+$timestampUrl = 'http://time.certum.pl'
 $previousStamp = $env:RUNNER_BUILD_STAMP
 $previousSha = $env:RUNNER_BUILD_SHA
 $previousMarketing = $env:RUNNER_MARKETING_VERSION
@@ -66,10 +69,19 @@ try {
     if ($LASTEXITCODE -ne 0 -or -not ($headers -match '^\s+2 subsystem')) {
         throw 'Runner.exe must use the Windows GUI subsystem'
     }
-    & $compiler /Qp "/DAppVersion=$shortVersion" "/DBaseVersion=$baseVersion" "/DUpdatesUrl=$updatesUrl" "/DSourceDir=$release" "/DOutputDir=$release" (Join-Path $PSScriptRoot 'windows/runner.iss')
+    $signing = @()
+    if ($SigningThumbprint) {
+        foreach ($binary in 'Runner.exe', 'runner-agent-cli.exe', 'runner-mcp.exe') {
+            & $signtool sign /sha1 $SigningThumbprint /fd sha256 /tr $timestampUrl /td sha256 (Join-Path $release $binary)
+            if ($LASTEXITCODE -ne 0) { throw "Signing $binary failed" }
+        }
+        $signing = @('/DSign', ('/Sauthenticode=$q{0}$q sign /sha1 {1} /fd sha256 /tr {2} /td sha256 $f' -f $signtool, $SigningThumbprint, $timestampUrl))
+    }
+    & $compiler /Qp @signing "/DAppVersion=$shortVersion" "/DBaseVersion=$baseVersion" "/DUpdatesUrl=$updatesUrl" "/DSourceDir=$release" "/DOutputDir=$release" (Join-Path $PSScriptRoot 'windows/runner.iss')
     if ($LASTEXITCODE -ne 0) { throw 'Windows installer compilation failed' }
 
-    Write-Host "Unsigned installer: $(Join-Path $release "Runner-Setup-$shortVersion-x64.exe")"
+    $label = if ($SigningThumbprint) { 'Signed' } else { 'Unsigned' }
+    Write-Host "$label installer: $(Join-Path $release "Runner-Setup-$shortVersion-x64.exe")"
 } finally {
     $env:RUNNER_BUILD_STAMP = $previousStamp
     $env:RUNNER_BUILD_SHA = $previousSha

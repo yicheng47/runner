@@ -46,6 +46,10 @@ WizardStyle=modern
 CloseApplications=no
 RestartApplications=no
 SetupMutex={#AppId}.setup
+#ifdef Sign
+SignTool=authenticode
+SignedUninstaller=yes
+#endif
 
 [Files]
 ; Nightlies share file versions; every upgrade must replace all three binaries.
