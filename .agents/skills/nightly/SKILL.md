@@ -1,77 +1,43 @@
 ---
 name: nightly
-description: Cut, check, or version-bump the Runner nightly — dispatch nightly.yml on main, watch it, verify the rolling draft release, record the stamp
+description: Cut or check Runner nightlies — one workflow for macOS and Windows, public prereleases, shared stamp, and separate stable feeds
 ---
 
 # Nightly
 
-Cut a build on the nightly channel. The `nightly` GitHub release is a rolling **draft** (since 2026-08-24): invisible to anyone without push access — the repo is public and general users must not find nightlies — and its assets are not anonymously downloadable, so the nightly has no Sparkle feed and can never touch production installs. The nightly bundle (`com.wycstudios.runner.nightly`, "Runner Nightly") still bakes `SUFeedURL` `releases/download/nightly/appcast.xml`, which 404s by design. Installs are manual: `gh release download nightly` or a local `./script/bundle-mac --channel nightly` build (the `../runner-nightly` worktree exists for that). `nightly.yml` verifies the release stays hidden after publishing. Contract: `docs/arch/arch.md` §14 (full history: `docs/impls/archive/gpui-rewrite/plan.md` §Release channels).
+One `nightly.yml` dispatch builds both platforms by default from one SHA and UTC stamp. `platform=macos` or `platform=windows` selects one. The rolling `nightly` release serves macOS DMGs and a signed Sparkle appcast; `nightly-win` serves Windows x64 installers and matching minisign signatures at the existing updater URL. Both are public prereleases and keep ten builds by stamp. Production feeds and `releases/latest` stay separate. Contract: `docs/arch/arch.md` §14 and `docs/arch/windows.md`.
 
-Invoking this skill authorizes exactly two outward actions: the workflow dispatch and the one docs commit + push that records the stamp. Nothing else is pushed; run one outward git/gh action per command.
+An explicit request to `run` authorizes that workflow dispatch. Reading or editing this skill and `check` do not authorize dispatch. Nightly is a rolling development channel identified by its commit; official version tags are separate, and no nightly crate-version bump is needed. Commit, push, merge, tagging, direct release mutation, app launch/restart, and installation require the user's explicit instruction. Record only observed results; never invent a successful cut or a PC smoke result.
 
 ## Usage
 
-`/nightly [run | status | bump <version>]` — no action means `run`.
+`/nightly [run [both|macos|windows] | check [both|macos|windows]]` — no action means `run`; omitted platform means `both`.
 
-### `run`
+## `run [platform]`
 
-1. **Preflight — stop on any failure, say which.**
-   - `git fetch origin`; on `main`, clean tree (`git status --short` empty), and `git rev-parse main origin/main` equal. The workflow builds `origin/main`'s head; unpushed local commits are not in the build — ask before pushing them.
-   - `./script/bundle-mac --print-version` must end in `-nightly`. A production crate version (`0.6.0`) labels the build `0.6.0.<stamp>`, indistinguishable from a patch release; run `bump` first.
-   - No nightly run already in progress: `gh run list --workflow nightly.yml --status in_progress --json databaseId`. `concurrency: cancel-in-progress` would kill it.
-   - CI for the sha: `gh run list --commit $(git rev-parse origin/main) --workflow ci.yaml --limit 1 --json status,conclusion`. Missing or failed → stop; in progress is fine, the workflow's "Require CI green" step waits for it.
-   - Live missions: if the `runner` MCP is reachable, `mission_list_summary` — report any running mission. Dispatching is safe (nothing auto-updates; nightly installs are manual), but installing the nightly restarts the app and kills live PTYs, so say so.
-2. **Dispatch:** `gh workflow run nightly.yml --ref main`. Wait ~10 s, then find it: `gh run list --workflow nightly.yml --limit 1 --json databaseId,status,headSha` and confirm `headSha` is the sha from preflight.
-3. **Watch:** `gh run watch <id> --exit-status` (warm cache ~10 min; cold up to ~20; `timeout-minutes: 90`). On failure: `gh run view <id> --log-failed`, report the failing step, stop. A failure in "Verify the nightly release stays hidden" means the nightly leaked onto the public releases page — report it verbatim and do not retry.
-4. **Verify** the rolling draft, not just the run:
-   - `gh release view nightly --json isDraft,assets --jq '{draft:.isDraft, assets:[.assets[].name]}'` — `draft` true; the new `Runner-Nightly-<version>.<stamp>-arm64.dmg` present; at most 10 DMGs (the workflow prunes). `gh` resolves the draft by tag only with push access — that is the point.
-   - The stamp is `YYYYMMDD.HHMM` UTC from the run's "Compute build identity" step; the short version is `<crate version>.<stamp>`, e.g. `0.7.0-nightly.20260824.0312`.
-5. **Record:** in `docs/impls/gpui-rewrite/README.md` §Nightlies, the `- **Current nightly**:` line — move the current entry into a trailing `Previous:` clause (keep the last three) and put the new stamp first with one clause on what it carries (`git log <previous nightly sha>..<sha> --oneline`, the landed M6 items by number) and `run <id> from <sha>`. Commit `docs(gpui-rewrite): nightly <stamp>` on `main`, push.
-6. **Report:** short version, run id, sha, what it carries, and how to install: `gh release download nightly --pattern '*<stamp>*'`, then open the DMG. No update hint appears in the app — the nightly feed is dead by design.
+1. **Preflight — stop on any failure and report it.**
+   - `git fetch origin`; require branch `main`, a clean tree (`git status --short` empty), and `git rev-parse main origin/main` equal. Capture the full `origin/main` SHA. Do not push local commits without instruction.
+   - Check for **any** queued or running nightly, including other platforms: `gh run list --workflow nightly.yml --limit 30 --json databaseId,status,displayTitle,headSha`. Stop if a run is not completed; all platforms share concurrency group `nightly`, so a dispatch cancels the entire older run.
+   - CI for the SHA: `gh run list --commit <sha> --workflow ci.yaml --limit 1 --json status,conclusion`. Missing or completed without `success` → stop. Queued/in-progress is fine: the single publish job waits for CI and verifies its successful conclusion. Both macOS and Windows CI must pass even for a single-platform cut.
+   - If the Runner MCP is reachable, report running missions from `mission_list_summary`. A successful cut can produce a nightly update offer and a Windows background download. Installation/restart remains a separate user action and interrupts live PTYs.
+2. **Dispatch:** `gh workflow run nightly.yml --ref main` for both, or append `-f platform=macos` / `-f platform=windows`. Find the new run with `gh run list --workflow nightly.yml --branch main --limit 5 --json databaseId,status,headSha,displayTitle,createdAt`; require the selected `Nightly (<platform>)` title, creation after dispatch, and `headSha` equal to preflight. If the source changed during dispatch, report the mismatch and do not claim the intended cut succeeded.
+3. **Watch:** `gh run watch <id> --exit-status`. On failure, inspect `gh run view <id> --log-failed` and report the failing step. A failed/cancelled selected build prevents publication of both channels on a `both` run. Failure or cancellation during publication can leave some files uploaded; report the cut incomplete and do not automatically retry.
+4. **Verify:** run `check` for the selected platform(s), using this run's exact commit-based identity, stamp, and SHA. The shared identity is in `prepare`'s build-identity outputs/log and the successful publication job summary. Require the whole run to have succeeded, not just one build job.
+5. **Record:** after successful verification, add a dated cut record to `docs/impls/502-unified-nightly.md` (or its archived location after completion): selected platforms, commit-based identity, UTC stamp, run id, source SHA, exact asset filenames/URLs, and a short change summary from `git log <previous nightly sha>..<sha> --oneline`. Keep prior records intact. Record installed upgrade/PC results only after observing them or receiving them from Jason. Follow `AGENTS.md` branch rules before editing; leave the record uncommitted unless the user explicitly requests commit/push.
+6. **Report:** shared identity, run result, download links, changes included, and any installed-upgrade checks still pending. macOS nightlies can update through Sparkle; Windows nightlies use the in-app updater. Do not install or restart either app from this skill without explicit instruction.
 
-### `status`
+## `check [platform]`
 
-- Current crate version (`./script/bundle-mac --print-version`) and whether it is a nightly version.
-- Newest nightly: `gh release view nightly --json assets --jq '[.assets[].name | select(endswith(".dmg"))] | sort | last'`, plus the last nightly run (`gh run list --workflow nightly.yml --limit 3 --json databaseId,status,conclusion,headSha,createdAt`).
-- Is `origin/main` ahead of the newest nightly's sha? `git log <nightly sha>..origin/main --oneline` — what a new cut would pick up.
-- Hidden: `gh release view nightly --json isDraft --jq .isDraft` is `true`.
+This is read-only and does not dispatch. Read recent `nightly.yml` runs with `gh run list --workflow nightly.yml --branch main --limit 10 --json databaseId,status,conclusion,headSha,createdAt,displayTitle`. A `both` run applies to both channels; a later single-platform cut may mean the channels now have different stamps. Associate each release with its actual successful run, and use `git log <nightly sha>..origin/main --oneline` to describe what a new cut would pick up. If the run/SHA cannot be established, report it unknown.
 
-### `bump <version>`
+For each selected channel, use `gh release view <tag> --json isPrerelease,isDraft,assets`; require `isPrerelease=true`, `isDraft=false`, the expected filenames, and at most ten timestamped installers/DMGs. Sort by trailing `YYYYMMDD.HHMM` stamp, not by the version prefix. Both apps display `Nightly (<sha>)`, independently of the crate version. The UTC stamp orders artifacts and updates; the short commit identifies their source. For example, a Windows artifact identity is `nightly.abc1234.20260908.0100`.
 
-After a production release, move the crates to the next nightly version (`0.6.0` → `0.7.0-nightly`; the minor never rolls during the nightly period). The one hand bump the other way (`X.Y.0-nightly` → `X.Y.0`) happens at cutover and is not this skill.
-
-1. On `main`, clean tree, in sync with `origin/main`.
-2. `<version>` must match `^\d+\.\d+\.\d+$`; the target is `<version>-nightly`.
-3. The three crates carry the version in lockstep: `crates/runner-app/Cargo.toml`, `crates/runner-backend/Cargo.toml`, `crates/runner-terminal/Cargo.toml`. Read each, then Edit the `version = "…"` line under `[package]` — not `sed`, and not any dependency line.
-4. `cargo check --workspace` to refresh `Cargo.lock` (CI fails on an uncommitted lockfile change).
-5. `cargo test -p runner-app --test bundle_mac` — the plist tests derive their expectations from `bundle-mac --print-version`, so they must stay green.
-6. Commit the three manifests plus `Cargo.lock`: `chore: bump version to <version>-nightly`. Push `main`.
+- **macOS / `nightly`:** require `Runner-Nightly-<sha>.<stamp>-arm64.dmg` and `appcast.xml`. Check anonymous DMG access with `curl --silent --show-error --fail --head --location <asset-url>`; download and parse the appcast. Its single signed enclosure must point to that DMG at `https://github.com/yicheng47/runner/releases/download/nightly/`, with the expected stamp, seven-character commit as its short version, and `arm64` hardware requirement. Sparkle supplies the app name in its native alert; Runner’s own update display is `Nightly (<sha>)`. The release page is `https://github.com/yicheng47/runner/releases/tag/nightly`.
+- **Windows / `nightly-win`:** require `Runner-Setup-nightly.<sha>.<stamp>-x64.exe` and its exact `.sig`; anonymous access must succeed for both at `https://github.com/yicheng47/runner/releases/download/nightly-win/`. Installers/signatures prune together. Portable ZIPs are retired. The release page is `https://github.com/yicheng47/runner/releases/tag/nightly-win`.
+- **Stable isolation:** verify `gh api repos/yicheng47/runner/releases/latest --jq .tag_name` still identifies the current production release (0.8.2 when #502 was implemented), not a nightly. Do not report a real installed update or production Sparkle check as tested merely because release metadata is correct.
 
 ## Notes
 
-- Nightlies are dispatch-only (decision 12, amended 2026-08-21): a push to `main` runs CI alone, so a landing never restarts the user's app by accident.
-- The nightly and production apps share one data directory (`~/Library/Application Support/com.wycstudios.runner/`). One instance at a time.
-- Production releases are a different path: tag `vX.Y.Z` on a commit whose crate version is exactly `X.Y.Z` → `release.yml` builds a draft; publishing is the human's switch. Do not tag from this skill.
-
-## Windows variant
-
-`/nightly windows [cut | check | stamp]` — no action means `cut`. Windows builds now use `main`; the temporary `nightly-windows` integration branch is no longer the release source. Use an existing clean checkout of `main`. Its rolling `nightly-win` release is a public prerelease; the macOS commands and draft policy above stay as is. Never run the app or install anything on the PC from this skill. For this Windows variant, invocation authorizes workflow dispatch only; committing or pushing a stamp record requires an explicit user request.
-
-### `windows cut`
-
-1. **Preflight — stop on any failure, say which.** Run `git fetch origin`; require branch `main`, a clean tree, and `git rev-parse main origin/main` equal. Read the version with `cargo metadata --format-version 1 --no-deps | jq -r '.packages[] | select(.name == "runner-app") | .version'`. No version bump is required for this separate prerelease channel.
-2. Check for queued or running nightly workflows before dispatching; Windows and macOS now use the same source branch, so identify Windows runs by `displayTitle` equal to `Nightly (windows)`. Another Windows dispatch would cancel an existing Windows run. Windows and macOS use separate concurrency groups. Check CI for the selected sha with `gh run list --commit <sha> --workflow ci.yaml --limit 1 --json status,conclusion`. Missing or failed → stop; in progress is fine, the workflow waits for it. Both `Rust / macOS` and `Rust / Windows` must pass.
-3. **Dispatch:** `gh workflow run nightly.yml --ref main -f platform=windows`. Find the new run with `gh run list --workflow nightly.yml --branch main --limit 5 --json databaseId,status,headSha,displayTitle`; require `displayTitle` equal to `Nightly (windows)` and confirm its `headSha` matches preflight.
-4. **Watch:** `gh run watch <id> --exit-status`. On failure, inspect `gh run view <id> --log-failed`, report the failing step, and stop. A failure in the public-release verification means the friend cannot use the download link; do not report the build as ready.
-5. Run `windows check`, then `windows stamp`. Report the version, UTC stamp, run id, sha, and public x64 installer URL. Jason closes Runner normally, runs the installer, and follows the PC and upgrade follow-ups in `docs/arch/windows.md`. Windows releases publish installers only; portable ZIPs were retired at Jason's request on 2026-09-06.
-
-### `windows check`
-
-- Read `gh release view nightly-win --json isPrerelease,isDraft,assets --jq '{prerelease:.isPrerelease, draft:.isDraft, assets:[.assets[].name]}'`; require `prerelease` true and `draft` false.
-- Confirm the expected `Runner-Setup-<version>.<stamp>-x64.exe` is present and there are at most ten timestamped x64 installers, with no uploaded portable ZIP assets. The stamp is `YYYYMMDD.HHMM` UTC from the run's build-identity step.
-- Require an anonymous download check to succeed: `curl --silent --fail --head --location "https://github.com/yicheng47/runner/releases/download/nightly-win/<installer>"`. The release page is `https://github.com/yicheng47/runner/releases/tag/nightly-win`.
-- Inspect recent runs with `gh run list --workflow nightly.yml --branch main --limit 5 --json databaseId,status,conclusion,headSha,createdAt,displayTitle` and select `Nightly (windows)`; use `git log <nightly sha>..origin/main --oneline` to show what a new cut would pick up. Builds from before the main merge remain in the `nightly-windows` branch's run history.
-
-### `windows stamp`
-
-After a successful cut and public-download check, record the x64 installer filename and URL, UTC stamp, run id, source sha, and a short description of what it carries under `## Windows nightlies` in `docs/impls/archive/windows-nightly/impl_log.md` (create the section on the first cut). Keep the current entry first and the last three previous entries. Record PC results only after Jason supplies them. Leave the record as a working-tree change; commit and push only when explicitly requested by the user. The Windows variant does not authorize code pushes, merging, or a macOS dispatch.
+- Nightlies are dispatch-only: a push to `main` runs CI alone. Nightlies need no crate-version bump or relationship to the next official version. One `publish` job validates selected artifacts, gates on CI once, uploads the DMG before its appcast and the installer before its signature, checks public downloads, then prunes. A single-platform cut leaves the other release/feed untouched.
+- Nightly and production macOS apps share `~/Library/Application Support/com.wycstudios.runner/`; run one instance at a time. Public prereleases can be found by browsing, while production installs read their separate stable feed.
+- Production releases remain a different path: tag `vX.Y.Z` at a bare `X.Y.Z` crate version → `release.yml` builds a draft; publishing is the human's switch. Do not tag from this skill.

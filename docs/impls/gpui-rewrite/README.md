@@ -75,4 +75,4 @@ Unscheduled, detailed in [m6-remainder.md](m6-remainder.md) ([#445](https://gith
 
 ## Nightlies
 
-- **Current nightly**: `0.6.0-nightly.20260823.0341` (first universal build, M6.17; run 32615982200 from `4fa233d`) — pre-GA; the rolling `nightly` release was deleted after GA and is recreated by the next `/nightly run`. The line above is maintained by the `/nightly` skill.
+- **Last pre-GA nightly**: `0.6.0-nightly.20260823.0341` (first universal build, M6.17; run 32615982200 from `4fa233d`) — pre-GA; the rolling `nightly` release was deleted after GA. This entry is historical. New unified cuts are recorded in the [#502 implementation record](../502-unified-nightly.md) by the `/nightly` skill.
