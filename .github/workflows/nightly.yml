@@ -354,7 +354,7 @@ jobs:
             cmp "nightly-artifacts/windows/$SETUP_NAME.sig" "$RUNNER_TEMP/public-installer.sig"
           fi
 
-      - name: Prune macOS nightlies to ten builds
+      - name: Prune macOS nightlies to two builds
         if: inputs.platform == 'both' || inputs.platform == 'macos'
         run: |
           assets=$(gh release view nightly --json assets --jq '.assets[].name')
@@ -363,7 +363,7 @@ jobs:
             if [[ "$name" =~ $pattern ]]; then
               printf '%s.%s\t%s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "$name"
             fi
-          done | sort -r | sed -n '11,$p' | cut -f2-)
+          done | sort -r | sed -n '3,$p' | cut -f2-)
           if printf '%s\n' "$stale" | grep -Fxq "$DMG_NAME"; then
             echo "error: refusing to prune the DMG referenced by the appcast" >&2
             exit 1
@@ -372,7 +372,7 @@ jobs:
             [[ -z "$name" ]] || gh release delete-asset nightly "$name" --yes
           done <<< "$stale"
 
-      - name: Prune Windows nightlies to ten builds
+      - name: Prune Windows nightlies to two builds
         if: inputs.platform == 'both' || inputs.platform == 'windows'
         run: |
           assets=$(gh release view nightly --json assets --jq '.assets[].name')
@@ -381,7 +381,7 @@ jobs:
             if [[ "$name" =~ $pattern ]]; then
               printf '%s.%s\t%s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "$name"
             fi
-          done | sort -r | sed -n '11,$p' | cut -f2-)
+          done | sort -r | sed -n '3,$p' | cut -f2-)
           if printf '%s\n' "$stale" | grep -Fxq "$SETUP_NAME"; then
             echo "error: refusing to prune the new Windows installer" >&2
             exit 1
