@@ -150,10 +150,10 @@ pub struct OutputStream {
 
 impl OutputStream {
     /// Construct from a `Receiver` plus the stop flag the runtime
-    /// already gave to its forwarder thread. Internal — only the
-    /// runtime impl wires this; manager code drops in via
+    /// already gave to its forwarder thread. Only runtime impls (and
+    /// test stand-ins for them) wire this; manager code drops in via
     /// `recv_timeout`.
-    pub(crate) fn new(
+    pub fn new(
         inner: std::sync::mpsc::Receiver<RuntimeOutput>,
         stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
     ) -> Self {

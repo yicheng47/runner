@@ -66,14 +66,6 @@ const ORPHAN_SWEEP_CONFIRM: Duration = Duration::from_secs(1);
 /// `DEFAULT_IDLE_THRESHOLD` so genuine work started right after a resize
 /// still surfaces promptly.
 const RESIZE_GRACE: Duration = Duration::from_millis(500);
-// PTYs can boot before their GPUI terminal pane is ready to answer startup
-// probes. Answer them here so Codex does not cache fallback colors first.
-const TERMINAL_QUERY_STARTUP_BUDGET: usize = 8 * 1024;
-const TERMINAL_QUERY_TAIL: usize = 16;
-const DEFAULT_OSC10_FG_REPLY: &[u8] = b"\x1b]10;rgb:dcdc/dcdc/e0e0\x1b\\";
-const DEFAULT_OSC11_BG_REPLY: &[u8] = b"\x1b]11;rgb:1515/1616/1b1b\x1b\\";
-const DSR_CURSOR_POS_REPLY: &[u8] = b"\x1b[1;1R";
-const DA1_XTERM_REPLY: &[u8] = b"\x1b[?1;2c";
 
 /// Public constructor. Holds no external state — the runtime is purely
 /// in-memory and the per-session resources tear down with their handles.
@@ -277,7 +269,6 @@ impl SessionRuntime for PtyRuntime {
         let stop_for_reader = Arc::clone(&stop);
         let handle_for_reader = Arc::clone(&handle);
         let session_id_for_reader = spec.session_id.clone();
-        let query_responder = TerminalQueryResponder::default();
         thread::Builder::new()
             .name(format!("pty-reader-{}", spec.session_id))
             .spawn(move || {
@@ -287,7 +278,6 @@ impl SessionRuntime for PtyRuntime {
                     stop_for_reader,
                     handle_for_reader,
                     session_id_for_reader,
-                    query_responder,
                 );
             })
             .map_err(|e| RuntimeError::Msg(format!("spawn reader thread: {e}")))?;
@@ -789,7 +779,6 @@ fn reader_thread(
     stop: Arc<AtomicBool>,
     handle: Arc<SessionHandle>,
     session_id: String,
-    mut query_responder: TerminalQueryResponder,
 ) {
     let detector = Arc::new(Mutex::new(IdleDetector::new(DEFAULT_IDLE_THRESHOLD)));
     let monitor_done = Arc::new(AtomicBool::new(false));
@@ -829,7 +818,6 @@ fn reader_thread(
         match reader.read(&mut buf) {
             Ok(0) => break, // EOF
             Ok(n) => {
-                answer_terminal_queries(&mut query_responder, &buf[..n], &handle, &session_id);
                 let in_resize_grace = handle
                     .last_resize
                     .lock()
@@ -893,96 +881,6 @@ fn reader_thread(
 }
 
 // --- Helpers ------------------------------------------------------------
-
-#[derive(Default)]
-struct TerminalQueryResponder {
-    tail: Vec<u8>,
-    observed: usize,
-}
-
-impl TerminalQueryResponder {
-    fn observe(&mut self, chunk: &[u8]) -> Vec<&'static [u8]> {
-        if chunk.is_empty() {
-            return Vec::new();
-        }
-        if self.observed >= TERMINAL_QUERY_STARTUP_BUDGET {
-            self.observed = self.observed.saturating_add(chunk.len());
-            self.tail.clear();
-            return Vec::new();
-        }
-
-        let remaining = TERMINAL_QUERY_STARTUP_BUDGET - self.observed;
-        let scan_len = chunk.len().min(remaining);
-        let scan_chunk = &chunk[..scan_len];
-        let old_len = self.tail.len();
-        let mut combined = Vec::with_capacity(old_len + scan_chunk.len());
-        combined.extend_from_slice(&self.tail);
-        combined.extend_from_slice(scan_chunk);
-
-        let mut matches: Vec<(usize, &'static [u8])> = Vec::new();
-        for (needle, response) in terminal_query_patterns() {
-            for pos in find_subsequence_positions(&combined, needle) {
-                if pos + needle.len() > old_len {
-                    matches.push((pos, response));
-                }
-            }
-        }
-        matches.sort_by_key(|(pos, _)| *pos);
-
-        let tail_start = combined.len().saturating_sub(TERMINAL_QUERY_TAIL);
-        self.tail.clear();
-        self.tail.extend_from_slice(&combined[tail_start..]);
-        self.observed = self.observed.saturating_add(chunk.len());
-
-        matches.into_iter().map(|(_, response)| response).collect()
-    }
-}
-
-fn terminal_query_patterns() -> &'static [(&'static [u8], &'static [u8])] {
-    &[
-        (b"\x1b]10;?\x1b\\", DEFAULT_OSC10_FG_REPLY),
-        (b"\x1b]10;?\x07", DEFAULT_OSC10_FG_REPLY),
-        (b"\x1b]11;?\x1b\\", DEFAULT_OSC11_BG_REPLY),
-        (b"\x1b]11;?\x07", DEFAULT_OSC11_BG_REPLY),
-        (b"\x1b[6n", DSR_CURSOR_POS_REPLY),
-        (b"\x1b[c", DA1_XTERM_REPLY),
-        (b"\x1b[0c", DA1_XTERM_REPLY),
-    ]
-}
-
-fn find_subsequence_positions(haystack: &[u8], needle: &[u8]) -> Vec<usize> {
-    if needle.is_empty() || haystack.len() < needle.len() {
-        return Vec::new();
-    }
-    haystack
-        .windows(needle.len())
-        .enumerate()
-        .filter_map(|(idx, window)| (window == needle).then_some(idx))
-        .collect()
-}
-
-fn answer_terminal_queries(
-    responder: &mut TerminalQueryResponder,
-    bytes: &[u8],
-    handle: &SessionHandle,
-    session_id: &str,
-) {
-    let responses = responder.observe(bytes);
-    if responses.is_empty() {
-        return;
-    }
-
-    let mut writer = handle.writer.lock().expect("writer poisoned");
-    for response in responses {
-        if let Err(e) = writer.write_all(response) {
-            log::warn!("terminal query response write failed for {session_id}: {e}");
-            return;
-        }
-    }
-    if let Err(e) = writer.flush() {
-        log::warn!("terminal query response flush failed for {session_id}: {e}");
-    }
-}
 
 fn lookup(runtime: &PtyRuntime, session_id: &str) -> RuntimeResult<Arc<SessionHandle>> {
     runtime
@@ -1310,59 +1208,6 @@ mod tests {
         assert_eq!(translate_key("C-D").unwrap(), vec![0x04]);
         assert!(translate_key("OhNoMyKey").is_err());
         assert!(translate_key("C-").is_err());
-    }
-
-    #[test]
-    fn terminal_query_responder_answers_codex_startup_handshake() {
-        let mut responder = TerminalQueryResponder::default();
-        let responses =
-            responder.observe(b"\x1b[?2004h\x1b[6n\x1b]10;?\x1b\\\x1b]11;?\x1b\\\x1b[c");
-
-        assert_eq!(
-            responses,
-            vec![
-                DSR_CURSOR_POS_REPLY,
-                DEFAULT_OSC10_FG_REPLY,
-                DEFAULT_OSC11_BG_REPLY,
-                DA1_XTERM_REPLY,
-            ]
-        );
-    }
-
-    #[test]
-    fn terminal_query_responder_handles_fragmented_osc_without_duplicates() {
-        let mut responder = TerminalQueryResponder::default();
-
-        assert!(responder.observe(b"\x1b]1").is_empty());
-        assert_eq!(
-            responder.observe(b"1;?\x1b\\trail"),
-            vec![DEFAULT_OSC11_BG_REPLY]
-        );
-        assert!(responder.observe(b" more output").is_empty());
-    }
-
-    #[test]
-    fn terminal_query_responder_supports_bel_terminated_colors_and_da_zero() {
-        let mut responder = TerminalQueryResponder::default();
-        let responses = responder.observe(b"\x1b]10;?\x07\x1b]11;?\x07\x1b[0c");
-
-        assert_eq!(
-            responses,
-            vec![
-                DEFAULT_OSC10_FG_REPLY,
-                DEFAULT_OSC11_BG_REPLY,
-                DA1_XTERM_REPLY,
-            ]
-        );
-    }
-
-    #[test]
-    fn terminal_query_responder_only_answers_startup_window() {
-        let mut responder = TerminalQueryResponder::default();
-        let filler = vec![b'x'; TERMINAL_QUERY_STARTUP_BUDGET];
-
-        assert!(responder.observe(&filler).is_empty());
-        assert!(responder.observe(b"\x1b]11;?\x1b\\").is_empty());
     }
 
     #[test]
