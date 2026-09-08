@@ -1,5 +1,6 @@
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::Duration;
 
 use gpui::prelude::*;
 use gpui::{
@@ -54,6 +55,10 @@ impl Render for ScrollbarDrag {
     }
 }
 
+/// How long the thumb stays in its bright state after the list stops moving,
+/// the way macOS overlay scrollbars linger before fading.
+const SCROLL_ACTIVITY_LINGER: Duration = Duration::from_millis(900);
+
 pub struct Scrollbar {
     kind: ScrollbarKind,
     metrics: MetricsReader,
@@ -62,6 +67,8 @@ pub struct Scrollbar {
     last_metrics: ScrollbarMetrics,
     drag_grab: Option<Pixels>,
     min_thumb: f32,
+    scrolling: bool,
+    activity_generation: u64,
 }
 
 impl Scrollbar {
@@ -121,7 +128,25 @@ impl Scrollbar {
             last_metrics: ScrollbarMetrics::default(),
             drag_grab: None,
             min_thumb: 20.,
+            scrolling: false,
+            activity_generation: 0,
         }
+    }
+
+    fn mark_scrolling(&mut self, cx: &mut Context<Self>) {
+        self.scrolling = true;
+        self.activity_generation = self.activity_generation.wrapping_add(1);
+        let generation = self.activity_generation;
+        cx.spawn(async move |weak, cx| {
+            cx.background_executor().timer(SCROLL_ACTIVITY_LINGER).await;
+            let _ = weak.update(cx, |scrollbar, cx| {
+                if scrollbar.activity_generation == generation {
+                    scrollbar.scrolling = false;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
     }
 
     fn on_mouse_down(
@@ -192,6 +217,13 @@ impl Render for Scrollbar {
             ScrollbarKind::Terminal => 1.,
         };
         let entity = cx.entity();
+        // Resting thumb must still read against the sidebar; bright while the
+        // list moves, is dragged, or is hovered (#470).
+        let thumb_color = if self.scrolling || self.drag_grab.is_some() {
+            theme::muted()
+        } else {
+            theme::faint()
+        };
         div()
             .id("theme-scrollbar")
             .absolute()
@@ -225,6 +257,9 @@ impl Render for Scrollbar {
                             let metrics = (scrollbar.metrics)();
                             if scrollbar.track_bounds != bounds || scrollbar.last_metrics != metrics
                             {
+                                if metrics.position != scrollbar.last_metrics.position {
+                                    scrollbar.mark_scrolling(cx);
+                                }
                                 scrollbar.track_bounds = bounds;
                                 scrollbar.last_metrics = metrics;
                                 cx.notify();
@@ -243,8 +278,8 @@ impl Render for Scrollbar {
                     .right(rems(inset / 16.))
                     .h(px(height))
                     .rounded_full()
-                    .bg(theme::border_strong())
-                    .hover(|thumb| thumb.bg(theme::faint()))
+                    .bg(thumb_color)
+                    .hover(|thumb| thumb.bg(theme::muted()))
                     .into_any_element()
             }))
     }
