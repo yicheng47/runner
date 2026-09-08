@@ -286,23 +286,23 @@ jobs:
       - name: Move the nightly tag to the built commit and compose release notes
         run: |
           notes="$RUNNER_TEMP/nightly-notes.md"
-          previous=""
-          if git fetch --force --quiet origin refs/tags/nightly:refs/tags/nightly 2>/dev/null; then
-            previous=$(git rev-parse --verify --quiet 'refs/tags/nightly^{commit}' || true)
-          fi
+          release=$(git describe --tags --match 'v*' --abbrev=0 "$SOURCE_SHA" 2>/dev/null || true)
           {
-            echo "## Changes since the previous nightly"
-            echo
-            if [[ -z "$previous" ]]; then
-              echo "No previous nightly tag. This nightly is ${SOURCE_SHA:0:7}."
-            elif [[ "$previous" == "$SOURCE_SHA" ]]; then
-              echo "Rebuilt from the same commit as the previous nightly, ${SOURCE_SHA:0:7}."
-            else
-              echo "Previous nightly ${previous:0:7}, this nightly ${SOURCE_SHA:0:7}."
+            if [[ -z "$release" ]]; then
+              echo "## Changes in this nightly"
               echo
-              git log --no-merges --format='- %s (%h)' "$previous..$SOURCE_SHA" > "$RUNNER_TEMP/nightly-changes.txt"
-              head -n 100 "$RUNNER_TEMP/nightly-changes.txt"
+              echo "No official release tag is reachable from ${SOURCE_SHA:0:7}."
+            else
+              echo "## Changes since $release"
+              echo
+              echo "This nightly is ${SOURCE_SHA:0:7}."
+              echo
+              git log --no-merges --format='- %s (%h)' "$release..$SOURCE_SHA" > "$RUNNER_TEMP/nightly-changes.txt"
               total=$(wc -l < "$RUNNER_TEMP/nightly-changes.txt")
+              if (( total == 0 )); then
+                echo "No commits since $release."
+              fi
+              head -n 100 "$RUNNER_TEMP/nightly-changes.txt"
               if (( total > 100 )); then
                 echo "- and $((total - 100)) more commits"
               fi
