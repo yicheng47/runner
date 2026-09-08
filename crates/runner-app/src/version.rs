@@ -39,15 +39,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn nightly_stamp_and_sha_follow_release_contract() {
+    fn nightly_identifies_the_commit_without_an_official_version() {
         assert_eq!(
             compose_display_version(
-                "0.6.0-nightly",
-                Some("0.6.0-nightly.20260821.1432"),
+                "0.8.2",
+                Some("Nightly"),
                 Some("20260821.1432"),
                 Some("abc1234fedcba")
             ),
-            "0.6.0-nightly.20260821.1432 (abc1234)"
+            "Nightly (abc1234)"
         );
     }
 

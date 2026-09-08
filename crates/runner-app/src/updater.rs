@@ -16,9 +16,19 @@ pub struct UpdateInfo {
 
 impl UpdateInfo {
     pub fn new(version: impl Into<String>) -> Self {
-        Self {
-            version: version.into(),
-        }
+        let version = version.into();
+        let nightly_sha = version
+            .strip_prefix("nightly.")
+            .and_then(|nightly| nightly.split_once('.'))
+            .map(|(sha, _)| sha)
+            .or_else(|| {
+                (version.len() == 7 && version.bytes().all(|byte| byte.is_ascii_hexdigit()))
+                    .then_some(version.as_str())
+            });
+        let version = nightly_sha
+            .map(|sha| format!("Nightly ({sha})"))
+            .unwrap_or(version);
+        Self { version }
     }
 
     pub fn version(&self) -> &str {
@@ -491,6 +501,22 @@ mod tests {
     use super::*;
     #[cfg(not(any(windows, all(target_os = "macos", feature = "updater"))))]
     use gpui::AppContext as _;
+
+    #[test]
+    fn nightly_update_displays_its_commit_and_preserves_existing_release_labels() {
+        assert_eq!(
+            UpdateInfo::new("nightly.abc1234.20260908.0100").version(),
+            "Nightly (abc1234)"
+        );
+        assert_eq!(UpdateInfo::new("abc1234").version(), "Nightly (abc1234)");
+        for version in [
+            "0.8.2.20260907.0100",
+            "0.8.3-nightly.20260907.0100",
+            "0.8.2",
+        ] {
+            assert_eq!(UpdateInfo::new(version).version(), version);
+        }
+    }
 
     #[test]
     fn found_update_sets_available_version() {

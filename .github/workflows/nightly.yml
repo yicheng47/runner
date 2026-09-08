@@ -5,10 +5,11 @@ on:
   workflow_dispatch:
     inputs:
       platform:
-        description: Platform to build
+        description: Platforms to build from one stamp and commit
         type: choice
-        default: macos
+        default: both
         options:
+          - both
           - macos
           - windows
 
@@ -17,30 +18,55 @@ permissions:
   contents: write
 
 concurrency:
-  group: ${{ inputs.platform == 'windows' && 'nightly-windows' || 'nightly' }}
+  group: nightly
   cancel-in-progress: true
 
 jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      stamp: ${{ steps.build.outputs.stamp }}
+      sha: ${{ steps.build.outputs.sha }}
+      short_sha: ${{ steps.build.outputs.short_sha }}
+      version: ${{ steps.build.outputs.version }}
+    steps:
+      - name: Check out dispatch commit
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Compute nightly identity once
+        id: build
+        run: |
+          stamp=$(date -u +%Y%m%d.%H%M)
+          sha=$(git rev-parse HEAD)
+          test "$sha" = "$GITHUB_SHA"
+          echo "stamp=$stamp" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "short_sha=${sha:0:7}" >> "$GITHUB_OUTPUT"
+          echo "version=nightly.${sha:0:7}.$stamp" >> "$GITHUB_OUTPUT"
+
   build-macos:
-    if: inputs.platform == 'macos'
+    needs: prepare
+    if: inputs.platform == 'both' || inputs.platform == 'macos'
     runs-on: macos-15
     timeout-minutes: 90
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
 
     steps:
-      - name: Check out repository
+      - name: Check out dispatch commit
         uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
 
-      - name: Compute build identity once
-        id: build
-        run: &build-identity |
-          stamp=$(date -u +%Y%m%d.%H%M)
-          sha=$(git rev-parse --short=7 HEAD)
-          version=$(cargo metadata --format-version 1 --no-deps | jq -r '.packages[] | select(.name == "runner-app") | .version')
-          echo "stamp=$stamp" >> "$GITHUB_OUTPUT"
-          echo "sha=$sha" >> "$GITHUB_OUTPUT"
-          echo "short_version=$version.$stamp" >> "$GITHUB_OUTPUT"
+      - name: Require Sparkle signing key
+        env:
+          SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
+        run: |
+          test -n "$SPARKLE_ED_PRIVATE_KEY" || { echo "error: SPARKLE_ED_PRIVATE_KEY is not configured" >&2; exit 1; }
+          public_key=$(tr -d '[:space:]' < packaging/sparkle-public-key)
+          test "$public_key" != "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=" || { echo "error: packaging/sparkle-public-key is still the placeholder" >&2; exit 1; }
 
       - name: Install Rust toolchain
         run: |
@@ -82,59 +108,52 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          RUNNER_BUILD_STAMP: ${{ steps.build.outputs.stamp }}
-          RUNNER_BUILD_SHA: ${{ steps.build.outputs.sha }}
+          RUNNER_BUILD_STAMP: ${{ needs.prepare.outputs.stamp }}
+          RUNNER_BUILD_SHA: ${{ needs.prepare.outputs.short_sha }}
         run: ./script/bundle-mac --channel nightly
 
-      - name: Require CI green for this commit
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Fetch pinned Sparkle tools
         run: |
-          ci_run_id=""
-          for _ in {1..60}; do
-            ci_run_id=$(gh run list --commit "$GITHUB_SHA" --workflow ci.yaml --limit 1 --json databaseId --jq '.[0].databaseId // empty')
-            if [[ -n "$ci_run_id" ]]; then
-              break
-            fi
-            sleep 10
-          done
-          test -n "$ci_run_id" || { echo "error: no CI run found for $GITHUB_SHA" >&2; exit 1; }
-          gh run watch "$ci_run_id" --exit-status
+          sparkle_version=2.9.5
+          sparkle_sha256=015336b601493e05c237964954bff6191370003d94edefe663724c88840d73cc
+          sparkle_archive="$RUNNER_TEMP/Sparkle-$sparkle_version.tar.xz"
+          sparkle_dir="$RUNNER_TEMP/Sparkle-$sparkle_version"
+          curl --fail --location "https://github.com/sparkle-project/Sparkle/releases/download/$sparkle_version/Sparkle-$sparkle_version.tar.xz" --output "$sparkle_archive"
+          printf '%s  %s\n' "$sparkle_sha256" "$sparkle_archive" | shasum -a 256 -c -
+          mkdir -p "$sparkle_dir"
+          tar -xf "$sparkle_archive" -C "$sparkle_dir"
+          echo "SPARKLE_TOOLS_DIR=$sparkle_dir/bin" >> "$GITHUB_ENV"
 
-      - name: Publish the rolling draft release
+      - name: Generate signed nightly appcast
         env:
-          GH_TOKEN: ${{ github.token }}
+          SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
         run: |
-          new_dmg="target/release/Runner-Nightly-${{ steps.build.outputs.short_version }}-arm64.dmg"
-          notes="Rolling draft for the nightly channel. Hidden from the public releases page; fetch with: gh release download nightly"
-          if gh release view nightly >/dev/null 2>&1; then
-            gh release edit nightly --title "Runner Nightly" --notes "$notes" --draft
-          else
-            gh release create nightly --target main --title "Runner Nightly" --notes "$notes" --draft
-          fi
-          gh release upload nightly "$new_dmg" --clobber
-          gh release view nightly --json assets --jq '.assets[].name' | while IFS= read -r name; do
-            if [[ "$name" =~ ([0-9]{8})\.([0-9]{4})-(arm64|universal)\.dmg$ ]]; then
-              printf '%s.%s\t%s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "$name"
-            fi
-          done | sort -r | sed -n '11,$p' | cut -f2- | while IFS= read -r stale; do
-            gh release delete-asset nightly "$stale" --yes
-          done
-          echo "NEW_DMG_NAME=${new_dmg##*/}" >> "$GITHUB_ENV"
+          appcast_dir=$(mktemp -d "$RUNNER_TEMP/runner-nightly-appcast.XXXXXX")
+          dmg="target/release/Runner-Nightly-${{ needs.prepare.outputs.short_sha }}.${{ needs.prepare.outputs.stamp }}-arm64.dmg"
+          release_url="https://github.com/yicheng47/runner/releases/tag/nightly"
+          cp "$dmg" "$appcast_dir/"
+          printf '%s' "$SPARKLE_ED_PRIVATE_KEY" | "$SPARKLE_TOOLS_DIR/generate_appcast" \
+            --ed-key-file - \
+            --download-url-prefix "https://github.com/yicheng47/runner/releases/download/nightly/" \
+            --full-release-notes-url "$release_url" \
+            --link "$release_url" \
+            --maximum-versions 10 \
+            "$appcast_dir"
+          grep -Fq '<sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>' "$appcast_dir/appcast.xml"
+          echo "APPCAST_DIR=$appcast_dir" >> "$GITHUB_ENV"
 
-      - name: Verify the nightly release stays hidden
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          is_draft=$(gh release view nightly --json isDraft --jq .isDraft)
-          test "$is_draft" = "true" || { echo "error: nightly release is published; it must stay a draft" >&2; exit 1; }
-          if curl --silent --fail --head --location "https://github.com/yicheng47/runner/releases/download/nightly/$NEW_DMG_NAME" >/dev/null; then
-            echo "error: nightly assets are publicly reachable without authentication" >&2
-            exit 1
-          fi
+      - name: Upload macOS nightly artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-macos
+          path: |
+            ${{ env.APPCAST_DIR }}/Runner-Nightly-${{ needs.prepare.outputs.short_sha }}.${{ needs.prepare.outputs.stamp }}-arm64.dmg
+            ${{ env.APPCAST_DIR }}/appcast.xml
+          if-no-files-found: error
 
-  nightly-windows:
-    if: inputs.platform == 'windows'
+  build-windows:
+    needs: prepare
+    if: inputs.platform == 'both' || inputs.platform == 'windows'
     runs-on: windows-latest
     timeout-minutes: 90
     defaults:
@@ -142,8 +161,10 @@ jobs:
         shell: bash
 
     steps:
-      - name: Check out repository
+      - name: Check out dispatch commit
         uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
 
       - name: Require Windows signing keys
         shell: bash
@@ -153,10 +174,6 @@ jobs:
         run: |
           test -n "$TAURI_SIGNING_PRIVATE_KEY" || { echo "error: TAURI_SIGNING_PRIVATE_KEY is not configured" >&2; exit 1; }
           test -n "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" || { echo "error: TAURI_SIGNING_PRIVATE_KEY_PASSWORD is not configured" >&2; exit 1; }
-
-      - name: Compute build identity once
-        id: build
-        run: *build-identity
 
       - name: Install Rust toolchain
         run: |
@@ -172,8 +189,8 @@ jobs:
       - name: Build Windows installer
         shell: pwsh
         env:
-          RUNNER_BUILD_STAMP: ${{ steps.build.outputs.stamp }}
-          RUNNER_BUILD_SHA: ${{ steps.build.outputs.sha }}
+          RUNNER_BUILD_STAMP: ${{ needs.prepare.outputs.stamp }}
+          RUNNER_BUILD_SHA: ${{ needs.prepare.outputs.short_sha }}
         run: ./script/bundle-windows.ps1
 
       - name: Verify installer upgrade and uninstall behavior
@@ -186,60 +203,169 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
-          installer="target/x86_64-pc-windows-msvc/release/Runner-Setup-${{ steps.build.outputs.short_version }}-x64.exe"
+          installer="target/x86_64-pc-windows-msvc/release/Runner-Setup-${{ needs.prepare.outputs.version }}-x64.exe"
           npx --yes @tauri-apps/cli@2.10.1 signer sign --private-key "$TAURI_SIGNING_PRIVATE_KEY" --password "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" "$installer"
           sig="$installer.sig"
           expected=23fee1fa29746d59
           actual=$(base64 --decode < "$sig" | sed -n 2p | base64 --decode | xxd -p -s2 -l8)
           test "$expected" = "$actual" || { echo "error: installer signed with key $actual; Windows clients trust $expected" >&2; exit 1; }
 
+      - name: Upload Windows nightly artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-windows
+          path: |
+            target/x86_64-pc-windows-msvc/release/Runner-Setup-${{ needs.prepare.outputs.version }}-x64.exe
+            target/x86_64-pc-windows-msvc/release/Runner-Setup-${{ needs.prepare.outputs.version }}-x64.exe.sig
+          if-no-files-found: error
+
+  publish:
+    needs: [prepare, build-macos, build-windows]
+    if: >-
+      ${{ !cancelled() && needs.prepare.result == 'success' &&
+      ((inputs.platform == 'both' && needs.build-macos.result == 'success' && needs.build-windows.result == 'success') ||
+      (inputs.platform == 'macos' && needs.build-macos.result == 'success' && needs.build-windows.result == 'skipped') ||
+      (inputs.platform == 'windows' && needs.build-macos.result == 'skipped' && needs.build-windows.result == 'success')) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PLATFORM: ${{ inputs.platform }}
+      SOURCE_SHA: ${{ needs.prepare.outputs.sha }}
+      BUILD_STAMP: ${{ needs.prepare.outputs.stamp }}
+      NIGHTLY_VERSION: ${{ needs.prepare.outputs.version }}
+      NIGHTLY_SHORT_SHA: ${{ needs.prepare.outputs.short_sha }}
+      DMG_NAME: Runner-Nightly-${{ needs.prepare.outputs.short_sha }}.${{ needs.prepare.outputs.stamp }}-arm64.dmg
+      SETUP_NAME: Runner-Setup-${{ needs.prepare.outputs.version }}-x64.exe
+    steps:
+      - name: Check out dispatch commit
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+
+      - name: Download macOS nightly artifacts
+        if: inputs.platform == 'both' || inputs.platform == 'macos'
+        uses: actions/download-artifact@v4
+        with:
+          name: nightly-macos
+          path: nightly-artifacts/macos
+
+      - name: Download Windows nightly artifacts
+        if: inputs.platform == 'both' || inputs.platform == 'windows'
+        uses: actions/download-artifact@v4
+        with:
+          name: nightly-windows
+          path: nightly-artifacts/windows
+
+      - name: Validate selected artifacts before publishing
+        run: |
+          if [[ "$PLATFORM" != "windows" ]]; then
+            test -s "nightly-artifacts/macos/$DMG_NAME"
+            python3 script/verify-nightly-appcast.py nightly-artifacts/macos/appcast.xml "nightly-artifacts/macos/$DMG_NAME" "$NIGHTLY_SHORT_SHA" "$BUILD_STAMP"
+          fi
+          if [[ "$PLATFORM" != "macos" ]]; then
+            test -s "nightly-artifacts/windows/$SETUP_NAME"
+            test -s "nightly-artifacts/windows/$SETUP_NAME.sig"
+          fi
+
       - name: Require CI green for this commit
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
           ci_run_id=""
           for _ in {1..60}; do
-            ci_run_id=$(gh run list --commit "$GITHUB_SHA" --workflow ci.yaml --limit 1 --json databaseId --jq '.[0].databaseId // empty')
+            ci_run_id=$(gh run list --commit "$SOURCE_SHA" --workflow ci.yaml --limit 1 --json databaseId --jq '.[0].databaseId // empty')
             if [[ -n "$ci_run_id" ]]; then
               break
             fi
             sleep 10
           done
-          test -n "$ci_run_id" || { echo "error: no CI run found for $GITHUB_SHA" >&2; exit 1; }
+          test -n "$ci_run_id" || { echo "error: no CI run found for $SOURCE_SHA" >&2; exit 1; }
           gh run watch "$ci_run_id" --exit-status
+          gh run view "$ci_run_id" --json headSha,conclusion | jq -e --arg sha "$SOURCE_SHA" '.headSha == $sha and .conclusion == "success"'
+
+      - name: Publish the rolling macOS prerelease
+        if: inputs.platform == 'both' || inputs.platform == 'macos'
+        run: |
+          notes="Rolling nightly builds for macOS Apple Silicon. Runner Nightly checks for updates through its signed Sparkle feed. Production installs use a separate stable feed."
+          if gh release view nightly >/dev/null 2>&1; then
+            gh release edit nightly --target "$SOURCE_SHA" --title "Runner Nightly" --notes "$notes" --prerelease --draft=false --latest=false
+          else
+            gh release create nightly --target "$SOURCE_SHA" --title "Runner Nightly" --notes "$notes" --prerelease --latest=false
+          fi
+          gh release upload nightly "nightly-artifacts/macos/$DMG_NAME" --clobber
+          gh release upload nightly nightly-artifacts/macos/appcast.xml --clobber
 
       - name: Publish the rolling Windows prerelease
-        env:
-          GH_TOKEN: ${{ github.token }}
+        if: inputs.platform == 'both' || inputs.platform == 'windows'
         run: |
-          new_setup="target/x86_64-pc-windows-msvc/release/Runner-Setup-${{ steps.build.outputs.short_version }}-x64.exe"
-          notes="script/windows/release-notes.md"
           if gh release view nightly-win >/dev/null 2>&1; then
-            gh release edit nightly-win --title "Runner Nightly (Windows)" --notes-file "$notes" --prerelease --draft=false
+            gh release edit nightly-win --target "$SOURCE_SHA" --title "Runner Nightly (Windows)" --notes-file script/windows/release-notes.md --prerelease --draft=false --latest=false
           else
-            gh release create nightly-win --target main --prerelease --title "Runner Nightly (Windows)" --notes-file "$notes"
+            gh release create nightly-win --target "$SOURCE_SHA" --title "Runner Nightly (Windows)" --notes-file script/windows/release-notes.md --prerelease --latest=false
           fi
-          gh release upload nightly-win "$new_setup" "$new_setup.sig" --clobber
-          pattern='^Runner-Setup-.*\.([0-9]{8})\.([0-9]{4})-x64\.exe$'
-          assets=$(gh release view nightly-win --json assets --jq '.assets[].name')
-          printf '%s\n' "$assets" | while IFS= read -r name; do
+          gh release upload nightly-win "nightly-artifacts/windows/$SETUP_NAME" --clobber
+          gh release upload nightly-win "nightly-artifacts/windows/$SETUP_NAME.sig" --clobber
+
+      - name: Verify public prereleases and downloads before pruning
+        run: |
+          if [[ "$PLATFORM" != "windows" ]]; then
+            gh release view nightly --json isPrerelease,isDraft,assets | jq -e --arg dmg "$DMG_NAME" '.isPrerelease and (.isDraft | not) and ([.assets[].name] | index($dmg) != null and index("appcast.xml") != null)'
+            curl --silent --show-error --fail --head --location "https://github.com/yicheng47/runner/releases/download/nightly/$DMG_NAME" >/dev/null
+            curl --silent --show-error --fail --location "https://github.com/yicheng47/runner/releases/download/nightly/appcast.xml" --output "$RUNNER_TEMP/public-appcast.xml"
+            cmp nightly-artifacts/macos/appcast.xml "$RUNNER_TEMP/public-appcast.xml"
+          fi
+          if [[ "$PLATFORM" != "macos" ]]; then
+            gh release view nightly-win --json isPrerelease,isDraft,assets | jq -e --arg setup "$SETUP_NAME" '.isPrerelease and (.isDraft | not) and ([.assets[].name] | index($setup) != null and index($setup + ".sig") != null)'
+            curl --silent --show-error --fail --head --location "https://github.com/yicheng47/runner/releases/download/nightly-win/$SETUP_NAME" >/dev/null
+            curl --silent --show-error --fail --location "https://github.com/yicheng47/runner/releases/download/nightly-win/$SETUP_NAME.sig" --output "$RUNNER_TEMP/public-installer.sig"
+            cmp "nightly-artifacts/windows/$SETUP_NAME.sig" "$RUNNER_TEMP/public-installer.sig"
+          fi
+
+      - name: Prune macOS nightlies to ten builds
+        if: inputs.platform == 'both' || inputs.platform == 'macos'
+        run: |
+          assets=$(gh release view nightly --json assets --jq '.assets[].name')
+          pattern='^Runner-Nightly-.*\.([0-9]{8})\.([0-9]{4})-(arm64|universal)\.dmg$'
+          stale=$(printf '%s\n' "$assets" | while IFS= read -r name; do
             if [[ "$name" =~ $pattern ]]; then
               printf '%s.%s\t%s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "$name"
             fi
-          done | sort -r | sed -n '11,$p' | cut -f2- | while IFS= read -r stale; do
-            gh release delete-asset nightly-win "$stale" --yes
-            if printf '%s\n' "$assets" | grep -Fxq "$stale.sig"; then
-              gh release delete-asset nightly-win "$stale.sig" --yes
-            fi
-          done
-          echo "NEW_SETUP_NAME=${new_setup##*/}" >> "$GITHUB_ENV"
+          done | sort -r | sed -n '11,$p' | cut -f2-)
+          if printf '%s\n' "$stale" | grep -Fxq "$DMG_NAME"; then
+            echo "error: refusing to prune the DMG referenced by the appcast" >&2
+            exit 1
+          fi
+          while IFS= read -r name; do
+            [[ -z "$name" ]] || gh release delete-asset nightly "$name" --yes
+          done <<< "$stale"
 
-      - name: Verify the Windows prerelease is public
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Prune Windows nightlies to ten builds
+        if: inputs.platform == 'both' || inputs.platform == 'windows'
         run: |
-          is_prerelease=$(gh release view nightly-win --json isPrerelease --jq .isPrerelease)
-          is_draft=$(gh release view nightly-win --json isDraft --jq .isDraft)
-          test "$is_prerelease" = "true" || { echo "error: Windows nightly must be a prerelease" >&2; exit 1; }
-          test "$is_draft" = "false" || { echo "error: Windows nightly must be published" >&2; exit 1; }
-          curl --silent --fail --head --location "https://github.com/yicheng47/runner/releases/download/nightly-win/$NEW_SETUP_NAME" >/dev/null
+          assets=$(gh release view nightly-win --json assets --jq '.assets[].name')
+          pattern='^Runner-Setup-.*\.([0-9]{8})\.([0-9]{4})-x64\.exe$'
+          stale=$(printf '%s\n' "$assets" | while IFS= read -r name; do
+            if [[ "$name" =~ $pattern ]]; then
+              printf '%s.%s\t%s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "$name"
+            fi
+          done | sort -r | sed -n '11,$p' | cut -f2-)
+          if printf '%s\n' "$stale" | grep -Fxq "$SETUP_NAME"; then
+            echo "error: refusing to prune the new Windows installer" >&2
+            exit 1
+          fi
+          while IFS= read -r name; do
+            if [[ -n "$name" ]]; then
+              gh release delete-asset nightly-win "$name" --yes
+              if printf '%s\n' "$assets" | grep -Fxq "$name.sig"; then
+                gh release delete-asset nightly-win "$name.sig" --yes
+              fi
+            fi
+          done <<< "$stale"
+
+      - name: Report completed nightly publication
+        run: |
+          echo "Published $PLATFORM nightly $NIGHTLY_VERSION from $SOURCE_SHA" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Report incomplete nightly publication
+        if: failure() || cancelled()
+        run: |
+          echo "Incomplete $PLATFORM nightly $NIGHTLY_VERSION from $SOURCE_SHA. Some files may already be uploaded; inspect both selected releases before another cut." >> "$GITHUB_STEP_SUMMARY"

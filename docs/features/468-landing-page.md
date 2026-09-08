@@ -73,7 +73,7 @@ Copy rules carried over from the promotion playbook: concrete over hype, no "orc
 - A Chinese version. Worth a follow-up given where Runner is promoted; v1 is English only.
 - Analytics, newsletter capture, Discord. Nothing that needs a third party.
 - Star counts and testimonials until they help.
-- Nightly builds. The nightly channel is hidden by design and stays off the page.
+- Nightly builds. Nightly prereleases are public for updater access (#502), but stay off the landing page.
 - A comparison table against named competitors.
 - Parallelism claims until worktree isolation ([#403](https://github.com/yicheng47/runner/issues/403)) ships. Carried over from #465, closed as a duplicate of this spec on 2026-09-07.
 
