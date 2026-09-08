@@ -4,8 +4,8 @@ use std::time::Duration;
 
 use gpui::prelude::*;
 use gpui::{
-    canvas, div, px, rems, App, Bounds, Context, CursorStyle, DragMoveEvent, EntityId, MouseButton,
-    MouseDownEvent, Pixels, Point, Render, ScrollHandle, Window,
+    canvas, div, px, rems, App, Bounds, Context, CursorStyle, DragMoveEvent, EntityId, Hsla,
+    MouseButton, MouseDownEvent, Pixels, Point, Rems, Render, ScrollHandle, Window,
 };
 
 use crate::theme;
@@ -16,6 +16,37 @@ use runner_terminal::terminal::TerminalSession;
 pub enum ScrollbarKind {
     App,
     Terminal,
+}
+
+impl ScrollbarKind {
+    /// Track width in logical pixels at 100% zoom; laid out in rems so it
+    /// follows the app zoom.
+    fn gutter(self) -> f32 {
+        match self {
+            ScrollbarKind::App => 10.,
+            ScrollbarKind::Terminal => 8.,
+        }
+    }
+
+    /// Thumb colors as (rest, active); active covers hover, drag, and the
+    /// scroll-activity linger. App panels need a readable resting thumb (#470)
+    /// without going as bright as secondary text; the terminal keeps its
+    /// darker palette so the thumb never competes with the grid (#520).
+    fn thumb_colors(self) -> (Hsla, Hsla) {
+        match self {
+            ScrollbarKind::App => (
+                theme::with_alpha(theme::faint(), 0.7),
+                theme::with_alpha(theme::muted(), 0.6),
+            ),
+            ScrollbarKind::Terminal => (theme::border_strong(), theme::faint()),
+        }
+    }
+}
+
+/// Width the terminal wrappers reserve at their right edge so the grid is
+/// measured beside the scrollbar, not under it.
+pub fn terminal_scrollbar_gutter() -> Rems {
+    rems(ScrollbarKind::Terminal.gutter() / 16.)
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -208,21 +239,17 @@ impl Render for Scrollbar {
         let metrics = (self.metrics)();
         let track_height = f32::from(self.track_bounds.size.height);
         let thumb = metrics.thumb(track_height, self.min_thumb);
-        let gutter = match self.kind {
-            ScrollbarKind::App => 10.,
-            ScrollbarKind::Terminal => 8.,
-        };
+        let gutter = self.kind.gutter();
         let inset = match self.kind {
             ScrollbarKind::App => 2.,
             ScrollbarKind::Terminal => 1.,
         };
         let entity = cx.entity();
-        // Resting thumb must still read against the sidebar; bright while the
-        // list moves, is dragged, or is hovered (#470).
+        let (rest_color, active_color) = self.kind.thumb_colors();
         let thumb_color = if self.scrolling || self.drag_grab.is_some() {
-            theme::muted()
+            active_color
         } else {
-            theme::faint()
+            rest_color
         };
         div()
             .id("theme-scrollbar")
@@ -279,7 +306,7 @@ impl Render for Scrollbar {
                     .h(px(height))
                     .rounded_full()
                     .bg(thumb_color)
-                    .hover(|thumb| thumb.bg(theme::muted()))
+                    .hover(move |thumb| thumb.bg(active_color))
                     .into_any_element()
             }))
     }

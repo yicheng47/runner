@@ -186,6 +186,13 @@ mod static_font_tests {
             faces.iter().map(Font::family_name).collect::<Vec<_>>(),
             vec![TerminalFontFamily::JetBrainsMono.family(); 4]
         );
+        // The UI monospace request must name the bundled family exactly, or
+        // gpui silently resolves it to its own fallback stack (Helvetica on
+        // macOS) with no log line.
+        assert_eq!(
+            runner_app::platform_fonts::UI_MONOSPACE_FONT,
+            TerminalFontFamily::JetBrainsMono.family()
+        );
         assert_eq!(
             faces
                 .iter()

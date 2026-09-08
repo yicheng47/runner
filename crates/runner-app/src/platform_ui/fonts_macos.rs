@@ -1,5 +1,5 @@
 pub const SYSTEM_MONOSPACE_FONT: &str = "Menlo";
-pub const UI_MONOSPACE_FONT: &str = "JetBrains Mono";
+pub const UI_MONOSPACE_FONT: &str = "JetBrainsMono Nerd Font Mono";
 pub const APP_FONT_FALLBACKS: &[&str] = &[
     "Inter Variable",
     ".SystemUIFont",
