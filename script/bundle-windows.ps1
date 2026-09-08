@@ -54,6 +54,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Windows release build failed' }
 
     $release = Join-Path $metadata.target_directory 'x86_64-pc-windows-msvc/release'
+    & (Join-Path $PSScriptRoot 'windows/conpty.ps1') -OutputDir $release
     $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
     $dumpbin = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -find 'VC/Tools/MSVC/**/bin/Hostx64/x64/dumpbin.exe' | Select-Object -First 1
     if (-not $dumpbin) { throw 'Cannot find dumpbin in the MSVC build tools' }

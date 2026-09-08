@@ -30,6 +30,10 @@ if /i "%RUNNER_TARGET%"=="clean" (
 )
 cargo build --workspace %RUNNER_PROFILE%
 if errorlevel 1 goto done
+set "RUNNER_OUTPUT=target\debug"
+if defined RUNNER_PROFILE set "RUNNER_OUTPUT=target\release"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0script\windows\conpty.ps1" -OutputDir "%RUNNER_OUTPUT%"
+if errorlevel 1 goto done
 if /i "%RUNNER_TARGET%"=="run" cargo run -p runner-app %RUNNER_PROFILE%
 
 :done

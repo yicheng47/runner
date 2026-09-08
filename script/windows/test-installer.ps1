@@ -17,6 +17,7 @@ $installDir = Join-Path $testRoot 'installed'
 $registryKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\${appId}_is1"
 $shortcutPath = Join-Path ([Environment]::GetFolderPath('Programs')) "$appName.lnk"
 $binaries = @('Runner.exe', 'runner-agent-cli.exe', 'runner-mcp.exe')
+$payload = $binaries + @('conpty.dll', 'OpenConsole.exe')
 $csc = Join-Path $env:WINDIR 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'
 New-Item -ItemType Directory -Path $testRoot | Out-Null
 Write-Host "Installer smoke artifacts: $testRoot"
@@ -45,7 +46,7 @@ function Assert-Signed([string]$Path) {
 }
 
 function Assert-Installed([string]$Stage, [string]$Version, [string]$UpdatesUrl = 'https://github.com/yicheng47/runner/releases/tag/nightly') {
-    foreach ($binary in $binaries) {
+    foreach ($binary in $payload) {
         $expected = (Get-FileHash -LiteralPath (Join-Path $Stage $binary)).Hash
         $actual = (Get-FileHash -LiteralPath (Join-Path $installDir $binary)).Hash
         if ($actual -ne $expected) { throw "$binary was not replaced by $Version" }
@@ -64,7 +65,7 @@ foreach ($revision in 1, 2) {
     $stage = Join-Path $testRoot "payload-$revision"
     New-Item -ItemType Directory -Path $stage | Out-Null
     if ($SourceDir) {
-        foreach ($binary in $binaries) {
+        foreach ($binary in $payload) {
             $destination = Join-Path $stage $binary
             Copy-Item -LiteralPath (Join-Path $SourceDir $binary) -Destination $destination
             if ($revision -eq 1) {
@@ -91,6 +92,9 @@ class Fixture {
         foreach ($binary in $binaries | Select-Object -Skip 1) {
             Copy-Item -LiteralPath "$stage/Runner.exe" -Destination (Join-Path $stage $binary)
         }
+        foreach ($binary in 'conpty.dll', 'OpenConsole.exe') {
+            Copy-Item -LiteralPath "$stage/Runner.exe" -Destination (Join-Path $stage $binary)
+        }
     }
     $updatesUrl = if ($revision -eq 2) {
         'https://github.com/yicheng47/runner/releases/latest'
@@ -110,7 +114,7 @@ Assert-Installed "$testRoot/payload-1" '0.7.5.20260101.0001'
 $retainedFile = Join-Path $installDir 'retained-user-file.txt'
 Set-Content -LiteralPath $retainedFile -Value 'keep across upgrade and uninstall' -Encoding UTF8
 if ($SourceDir) {
-    foreach ($binary in $binaries) {
+    foreach ($binary in $payload) {
         $lock = [IO.File]::Open((Join-Path $installDir $binary), [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
         try {
             Invoke-Setup $second "blocked-upgrade-$binary" -ExpectBlocked
@@ -276,10 +280,14 @@ public static class InstallerTestWindow {
 
     Invoke-Setup $first 'baseline-copy-failure'
     $copyHelpers = @()
+    $copyLocks = @()
     $lock = $null
     try {
         foreach ($binary in $binaries) {
             $copyHelpers += Start-LockHelper "copy-failure-$binary" 180000 $binary
+        }
+        foreach ($binary in 'conpty.dll', 'OpenConsole.exe') {
+            $copyLocks += [IO.File]::Open((Join-Path $installDir $binary), [IO.FileMode]::Open, [IO.FileAccess]::Read, ([IO.FileShare]::Read -bor [IO.FileShare]::Delete))
         }
         $lock = [IO.File]::Open((Join-Path $installDir 'LICENSE'), [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
         Invoke-Setup $second 'copy-failure' @('/RELAUNCH=1') -ExpectFailure
@@ -287,13 +295,14 @@ public static class InstallerTestWindow {
             if ($helper.HasExited) { throw 'Copy-failure helper exited before Setup finished' }
         }
         Assert-Installed "$testRoot/payload-1" '0.7.5.20260101.0001'
-        foreach ($binary in $binaries) {
+        foreach ($binary in $payload) {
             if (-not (Select-String -LiteralPath "$testRoot/copy-failure.log" -SimpleMatch "Restored application file: $installDir\$binary" -Quiet)) {
                 throw "Aborted install did not restore $binary"
             }
         }
     } finally {
         if ($lock) { $lock.Dispose() }
+        foreach ($copyLock in $copyLocks) { $copyLock.Dispose() }
         foreach ($helper in $copyHelpers) {
             if (-not $helper.HasExited) { $helper.Kill(); $helper.WaitForExit() }
         }
@@ -306,7 +315,7 @@ public static class InstallerTestWindow {
 
 Invoke-Setup $uninstaller 'uninstall'
 if ((Test-Path -LiteralPath $registryKey) -or (Test-Path -LiteralPath $shortcutPath)) { throw 'Uninstall registration or shortcut remains' }
-foreach ($binary in $binaries) {
+foreach ($binary in $payload) {
     if (Test-Path -LiteralPath (Join-Path $installDir $binary)) { throw "Uninstall left $binary" }
 }
 if ((Get-Content -LiteralPath $retainedFile -Raw).Trim() -ne 'keep across upgrade and uninstall') { throw 'Uninstall removed unowned data' }
