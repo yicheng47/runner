@@ -1325,25 +1325,18 @@ fn spawn_marks_session_stopped_after_runtime_channel_closes() {
     // Simulate a clean pane exit.
     fake.close_spawn(0);
 
-    // Poll the DB until the forwarder thread has marked the session stopped.
-    let deadline = Instant::now() + Duration::from_secs(2);
-    let final_status = loop {
-        let conn = pool.get().unwrap();
-        let status: String = conn
-            .query_row(
-                "SELECT status FROM sessions WHERE id = ?1",
-                params![spawned.id],
-                |r| r.get(0),
-            )
-            .unwrap();
-        if status != "running" {
-            break status;
-        }
-        if Instant::now() > deadline {
-            panic!("session never exited");
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    };
+    // Wait for the whole exit sequence: the row flips first, the exit event
+    // and handle release follow, and the assertions below need all of it.
+    wait_for_session_exit(&mgr, &pool, &spawned.id);
+    let final_status: String = pool
+        .get()
+        .unwrap()
+        .query_row(
+            "SELECT status FROM sessions WHERE id = ?1",
+            params![spawned.id],
+            |r| r.get(0),
+        )
+        .unwrap();
     assert_eq!(final_status, "stopped");
     let stored_project: Option<String> = pool
         .get()
@@ -3743,26 +3736,10 @@ fn resume_reuses_row_and_preserves_agent_session_key() {
 
     // Force the spawn to "exit" so the forwarder marks the
     // row stopped; resume() refuses a row that's still
-    // running.
+    // running, and the activity snapshot clears only once the
+    // handle is released after the row flip.
     fake.close_spawn(0);
-    let deadline = Instant::now() + Duration::from_secs(2);
-    loop {
-        let conn = pool.get().unwrap();
-        let status: String = conn
-            .query_row(
-                "SELECT status FROM sessions WHERE id = ?1",
-                params![&session_id],
-                |r| r.get(0),
-            )
-            .unwrap();
-        if status != "running" {
-            break;
-        }
-        if Instant::now() > deadline {
-            panic!("first spawn never exited");
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    wait_for_session_exit(&mgr, &pool, &session_id);
 
     // The claude-code adapter persisted a UUID — capture it.
     let key_before: Option<String> = {
