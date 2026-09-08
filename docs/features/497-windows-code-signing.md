@@ -4,15 +4,15 @@ Tracking issue: [#497](https://github.com/yicheng47/runner/issues/497). Status: 
 
 ## Motivation
 
-Every Windows download of Runner 0.8.0 and 0.8.1 is an unsigned Inno Setup installer. Windows SmartScreen stops it with **Windows protected your PC**, and the user has to find **More info → Run anyway** before the installer will run. The README, the GitHub release notes, and `script/windows/release-notes.md` all tell people to click through that wall. That is acceptable for a nightly tested on one PC and not for a stable release: it reads as untrustworthy, some managed machines have the override disabled, and [#493](https://github.com/yicheng47/runner/issues/493) cannot verify a downloaded installer without a signature to check. Stage 4b of the [archived Windows port plan](../impls/archive/windows-nightly/plan.md#phase-4--windows-installer-and-upgrades-remaining) deferred signing; this spec is that stage.
+Every Windows download of Runner 0.8.0 and 0.8.1 is an unsigned Inno Setup installer. Windows SmartScreen stops it with **Windows protected your PC**, and the user has to find **More info → Run anyway** before the installer will run. The README, the GitHub release notes, and `script/nightly-release-notes.md` all tell people to click through that wall. That is acceptable for a nightly tested on one PC and not for a stable release: it reads as untrustworthy, some managed machines have the override disabled, and [#493](https://github.com/yicheng47/runner/issues/493) cannot verify a downloaded installer without a signature to check. Stage 4b of the [archived Windows port plan](../impls/archive/windows-nightly/plan.md#phase-4--windows-installer-and-upgrades-remaining) deferred signing; this spec is that stage.
 
 ## Scope
 
 - **What gets signed.** `Runner.exe`, `runner-agent-cli.exe`, and `runner-mcp.exe` after the release build and before packaging; then the installer and the uninstaller. Inno Setup signs both when `[Setup]` carries `SignTool=` and `SignedUninstaller=yes`, so the uninstaller needs no separate step. SHA-256 digests with an RFC 3161 timestamp so signatures stay valid after the certificate expires.
-- **Where it runs.** Both Windows packaging paths: the `build-windows` job in `release.yml` and the Windows job in `nightly.yml`, through `script/bundle-windows.ps1`. Nightlies are signed with the same certificate so `nightly-win` testers stop hitting SmartScreen and #493 can be exercised on nightlies. Local builds stay unsigned; the script signs only when the provider's credentials are present, and `release.yml` requires them the way it already requires the Apple and Sparkle keys.
+- **Where it runs.** Both Windows packaging paths: the `build-windows` job in `release.yml` and the Windows job in `nightly.yml`, through `script/bundle-windows.ps1`. Nightlies are signed with the same certificate so `nightly` testers stop hitting SmartScreen and #493 can be exercised on nightlies. Local builds stay unsigned; the script signs only when the provider's credentials are present, and `release.yml` requires them the way it already requires the Apple and Sparkle keys.
 - **Verification in CI.** `script/windows/test-installer.ps1` checks that all five binaries carry a valid, timestamped Authenticode signature whenever signing is enabled. A production release with an unsigned or invalid binary fails before upload.
 - **Publisher identity.** The certificate subject is what Windows shows in SmartScreen and the Properties → Digital Signatures tab. `AppPublisher` in `script/windows/runner.iss` is `wyc studios` today; align it with the name the provider validates.
-- **Wording.** Replace the unsigned / Run anyway text in `README.md`, `docs/arch/windows.md`, `script/windows/release-notes.md`, and the release notes string in `release.yml`.
+- **Wording.** Replace the unsigned / Run anyway text in `README.md`, `docs/arch/windows.md`, `script/nightly-release-notes.md`, and the release notes string in `release.yml`.
 - **Out.** Microsoft Store submission, macOS signing (Developer ID and notarization already ship), the updater's own download verification (#493 consumes this), Windows ARM64.
 
 ## Provider decision
@@ -28,7 +28,7 @@ Certum's open-source certificate is cheap but ships on a physical card, which ru
 ## Implementation Phases
 
 1. Choose the provider and validate the publisher identity; record the decision, the certificate subject, and the CI secret names in this spec.
-2. Wire signing into `bundle-windows.ps1` and both workflows behind the credential check; add the signature verification to `test-installer.ps1`; cut a signed nightly and verify it on `nightly-win`.
+2. Wire signing into `bundle-windows.ps1` and both workflows behind the credential check; add the signature verification to `test-installer.ps1`; cut a signed nightly and verify it on `nightly`.
 3. Ship a signed stable release; update the docs and notes; check SmartScreen on a fresh PC and record the result.
 
 ## Verification
