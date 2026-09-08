@@ -1112,17 +1112,26 @@ mod tests {
 
     use super::{LinkTarget, TerminalBridge, TerminalSession, UserInputMode};
     use crate::replay::visible_lines;
+    use runner_backend::session::runtime::{
+        OutputStream, RuntimeOutput, RuntimeResult, RuntimeSession, SessionRuntime, SessionStatus,
+        SpawnSpec,
+    };
     use runner_backend::AppCore;
 
     /// Minimal `AppCore` over a temp dir — the pieces `boot_core` wires
     /// in runner-app, minus login-shell discovery and startup cleanup.
     fn test_core(root: &std::path::Path) -> AppCore {
+        test_core_with_runtime(
+            root,
+            Arc::new(runner_backend::session::pty_runtime::PtyRuntime::new()),
+        )
+    }
+
+    fn test_core_with_runtime(root: &std::path::Path, runtime: Arc<dyn SessionRuntime>) -> AppCore {
         let app_data_dir = root.join("app-data");
         std::fs::create_dir_all(&app_data_dir).unwrap();
         let pool =
             Arc::new(runner_backend::db::open_pool(&app_data_dir.join("runner.db")).unwrap());
-        let runtime: Arc<dyn runner_backend::session::runtime::SessionRuntime> =
-            Arc::new(runner_backend::session::pty_runtime::PtyRuntime::new());
         let windows = Arc::new(runner_backend::windows::WindowRegistry::new());
         windows.register("main");
         let runtime_shell_env = Arc::new(std::sync::RwLock::new(
@@ -1429,6 +1438,140 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("session not found"));
+    }
+
+    /// Stands in for the PTY: hands the manager a live output channel
+    /// and records every byte the manager writes back to stdin.
+    #[derive(Default)]
+    struct RecordingRuntime {
+        output: std::sync::Mutex<Option<std::sync::mpsc::Sender<RuntimeOutput>>>,
+        writes: std::sync::Mutex<Vec<Vec<u8>>>,
+    }
+
+    impl RecordingRuntime {
+        fn push_output(&self, bytes: &[u8]) {
+            let output = self.output.lock().unwrap();
+            output
+                .as_ref()
+                .expect("spawned")
+                .send(RuntimeOutput::Stream(bytes.to_vec()))
+                .unwrap();
+        }
+
+        fn writes(&self) -> Vec<Vec<u8>> {
+            self.writes.lock().unwrap().clone()
+        }
+    }
+
+    impl SessionRuntime for RecordingRuntime {
+        fn spawn(&self, spec: SpawnSpec) -> RuntimeResult<(RuntimeSession, OutputStream)> {
+            let (tx, rx) = std::sync::mpsc::channel();
+            *self.output.lock().unwrap() = Some(tx);
+            Ok((
+                RuntimeSession {
+                    runtime: "recording".into(),
+                    session_id: spec.session_id,
+                },
+                OutputStream::new(rx, Arc::new(AtomicBool::new(false))),
+            ))
+        }
+
+        fn stop(&self, _: &RuntimeSession) -> RuntimeResult<()> {
+            self.output.lock().unwrap().take();
+            Ok(())
+        }
+
+        fn send_bytes(&self, _: &RuntimeSession, bytes: &[u8]) -> RuntimeResult<()> {
+            self.writes.lock().unwrap().push(bytes.to_vec());
+            Ok(())
+        }
+
+        fn send_key(&self, _: &RuntimeSession, key: &str) -> RuntimeResult<()> {
+            self.writes.lock().unwrap().push(key.as_bytes().to_vec());
+            Ok(())
+        }
+
+        fn resize(&self, _: &RuntimeSession, _: u16, _: u16) -> RuntimeResult<()> {
+            Ok(())
+        }
+
+        fn status(&self, _: &RuntimeSession) -> RuntimeResult<Option<SessionStatus>> {
+            Ok(Some(SessionStatus {
+                alive: true,
+                ..Default::default()
+            }))
+        }
+    }
+
+    /// The terminal is the only thing answering a session's queries,
+    /// and it answers whether or not a pane shows the session (#213's
+    /// contract, #524's regression): one reply per query, in order.
+    #[test]
+    fn hidden_terminal_answers_each_query_once() {
+        let temp = tempfile::tempdir().unwrap();
+        let runtime = Arc::new(RecordingRuntime::default());
+        let core = test_core_with_runtime(temp.path(), Arc::clone(&runtime) as _);
+        let bridge = TerminalBridge::new(core.clone(), Arc::new(|| {})).unwrap();
+        let runner = runner_backend::ops::runner::create(
+            &core.db.get().unwrap(),
+            runner_backend::ops::runner::CreateRunnerInput {
+                handle: "probe".into(),
+                display_name: "Probe".into(),
+                runtime: "shell".into(),
+                command: "probe".into(),
+                args: Vec::new(),
+                working_dir: None,
+                system_prompt: None,
+                env: Default::default(),
+                model: None,
+                effort: None,
+                permission_mode: runner_backend::router::runtime::PermissionMode::Auto,
+            },
+        )
+        .unwrap();
+        let spawned = core
+            .sessions
+            .spawn_direct(
+                &runner,
+                None,
+                None,
+                None,
+                None,
+                Some(temp.path().to_str().unwrap()),
+                Some(80),
+                Some(24),
+                &core.app_data_dir,
+                Arc::clone(&core.db),
+                Arc::new(core.session_events()),
+                None,
+            )
+            .unwrap();
+        assert!(bridge.session(&spawned.id).is_some());
+        assert_eq!(
+            bridge
+                .session(&spawned.id)
+                .unwrap()
+                .viewers
+                .load(Ordering::Acquire),
+            0
+        );
+
+        runtime.push_output(b"\x1b]11;?\x1b\\\x1b[c");
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while runtime.writes().len() < 2 && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let writes = runtime.writes();
+        assert_eq!(
+            writes.len(),
+            2,
+            "expected one OSC 11 report and one DA1 reply, got {writes:?}"
+        );
+        assert_eq!(writes[0], b"\x1b]11;rgb:1515/1616/1b1b\x1b\\");
+        assert_eq!(writes[1], b"\x1b[?6c");
+        core.sessions.kill(&spawned.id).ok();
     }
 
     #[test]
