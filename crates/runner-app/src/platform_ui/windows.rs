@@ -233,6 +233,7 @@ impl NativeRoot {
                             })
                             .child(
                                 svg()
+                                    .flex_none()
                                     .path(icon)
                                     .size(px(10. * zoom))
                                     .text_color(theme::muted())

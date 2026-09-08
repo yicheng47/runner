@@ -204,6 +204,7 @@ impl RenderOnce for SessionOverlay {
                         .gap(rems(10. / 16.))
                         .child(
                             svg()
+                                .flex_none()
                                 .path("pause.svg")
                                 .size(rems(1.))
                                 .text_color(theme::faint()),

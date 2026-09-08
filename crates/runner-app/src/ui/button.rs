@@ -210,6 +210,7 @@ impl RenderOnce for Button {
             .when_some(icon, |button, icon| {
                 button.child(
                     svg()
+                        .flex_none()
                         .path(icon)
                         .size(rems(icon_size / 16.))
                         .text_color(foreground),
@@ -244,6 +245,7 @@ mod tests {
 
 pub fn spinner(id: impl Into<ElementId>, size: f32, color: gpui::Hsla) -> AnyElement {
     svg()
+        .flex_none()
         .path("loader.svg")
         .size(rems(size / 16.))
         .text_color(color)
@@ -469,6 +471,7 @@ impl RenderOnce for IconButton {
         } else {
             button.child(
                 svg()
+                    .flex_none()
                     .path(self.icon)
                     .size(rems(icon_size / 16.))
                     .text_color(foreground),

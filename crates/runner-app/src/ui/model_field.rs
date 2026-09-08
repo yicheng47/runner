@@ -181,6 +181,7 @@ impl Render for ModelField {
                         .when(!self.disabled, |toggle| toggle.cursor_pointer())
                         .child(
                             svg()
+                                .flex_none()
                                 .path(if open {
                                     "chevron-up.svg"
                                 } else {
@@ -247,6 +248,7 @@ impl Render for ModelField {
                                 .when(active, |label| {
                                     label.child(
                                         svg()
+                                            .flex_none()
                                             .path("check.svg")
                                             .size(rems(14. / 16.))
                                             .text_color(theme::accent()),

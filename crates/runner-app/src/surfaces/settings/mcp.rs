@@ -308,6 +308,7 @@ impl McpPane {
                             .gap_2()
                             .child(
                                 svg()
+                                    .flex_none()
                                     .path("plug.svg")
                                     .size(rems(14. / 16.))
                                     .text_color(theme::muted()),

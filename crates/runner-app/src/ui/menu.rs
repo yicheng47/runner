@@ -441,6 +441,7 @@ impl Render for PopoverMenu {
                     })
                     .children(item.icon.map(|icon| {
                         svg()
+                            .flex_none()
                             .path(icon)
                             .size(rems(14. / 16.))
                             .text_color(foreground)
@@ -664,6 +665,7 @@ impl Render for ContextMenu {
                 })
                 .children(item.icon.map(|icon| {
                     svg()
+                        .flex_none()
                         .path(icon)
                         .size(rems(14. / 16.))
                         .text_color(foreground)

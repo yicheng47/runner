@@ -175,6 +175,7 @@ impl RenderOnce for SessionControl {
             SessionControlKind::Resuming => Some(spinner(spinner_id, icon_size, icon_color)),
             _ => icon.map(|icon| {
                 svg()
+                    .flex_none()
                     .path(icon)
                     .size(rems(icon_size / 16.))
                     .text_color(icon_color)

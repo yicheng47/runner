@@ -483,6 +483,7 @@ impl Render for ArchivedPane {
                     .text_center()
                     .child(
                         svg()
+                            .flex_none()
                             .path("archive.svg")
                             .size(rems(20. / 16.))
                             .text_color(theme::faint()),
@@ -568,6 +569,7 @@ impl Render for ArchivedPane {
                             .px(rems(10. / 16.))
                             .child(
                                 svg()
+                                    .flex_none()
                                     .path("search.svg")
                                     .size(rems(14. / 16.))
                                     .text_color(theme::faint()),

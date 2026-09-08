@@ -318,6 +318,7 @@ impl NativeRoot {
             .gap_2()
             .child(
                 svg()
+                    .flex_none()
                     .path("brand-mark.svg")
                     .w(px(32. * self.settings(cx).app_zoom))
                     .h(px(32. * self.settings(cx).app_zoom))
@@ -440,24 +441,32 @@ impl NativeRoot {
                     .children(update_hint),
             );
         let resize_handle = visible.then(|| self.render_sidebar_resize_handle(cx));
+        // The content keeps its full width while the wrapper animates, so the
+        // transition clips instead of squashing every row; a squashed row
+        // shrinks its icons to zero and gpui refuses to paint them (#512).
+        let content = div()
+            .w(px(full_width))
+            .h_full()
+            .flex_none()
+            .flex()
+            .flex_col()
+            .pb_3()
+            .children(titlebar)
+            .child(brand)
+            .child(self.sidebar.clone())
+            .child(settings_button);
         let mut sidebar = div()
             .id("app-sidebar")
             .relative()
             .w(px(width))
             .h_full()
             .flex_none()
-            .flex()
-            .flex_col()
-            .pb_3()
             .overflow_hidden()
             .opacity(visibility)
             .bg(theme::sidebar())
             .border_r_1()
             .border_color(theme::border())
-            .children(titlebar)
-            .child(brand)
-            .child(self.sidebar.clone())
-            .child(settings_button)
+            .child(content)
             .children(resize_handle);
         if preview {
             sidebar = sidebar
@@ -621,6 +630,7 @@ impl NativeRoot {
                                 .hover(|button| button.opacity(1.))
                                 .child(
                                     svg()
+                                        .flex_none()
                                         .path("close.svg")
                                         .w(px(14. * self.settings(cx).app_zoom))
                                         .h(px(14. * self.settings(cx).app_zoom))

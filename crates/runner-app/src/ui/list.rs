@@ -215,7 +215,7 @@ impl Render for SearchInput {
                             clear_key_entity.update(cx, |search, cx| search.clear(cx));
                         }
                     })
-                    .child(svg().path("close.svg").size(rems(14. / 16.)));
+                    .child(svg().flex_none().path("close.svg").size(rems(14. / 16.)));
                 search.child(button)
             })
     }
@@ -345,6 +345,7 @@ fn pager_icon_button(
     let on_press = Rc::new(on_press);
     let key_press = Rc::clone(&on_press);
     let icon = svg()
+        .flex_none()
         .path(icon)
         .size(rems(14. / 16.))
         .text_color(theme::muted())

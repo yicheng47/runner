@@ -2229,6 +2229,7 @@ impl Sidebar {
                                 )
                                 .child(
                                     svg()
+                                        .flex_none()
                                         .path(if chats_open {
                                             "chevron-down.svg"
                                         } else {
@@ -2442,6 +2443,7 @@ impl Sidebar {
                     )
                     .child(
                         svg()
+                            .flex_none()
                             .path(if open {
                                 "chevron-down.svg"
                             } else {
@@ -3716,6 +3718,7 @@ fn project_row_action(
         })
         .child(
             svg()
+                .flex_none()
                 .path(icon)
                 .size(rems(icon_size / 16.))
                 .text_color(theme::muted())
@@ -3968,6 +3971,7 @@ fn pin_indicator(visible: bool) -> AnyElement {
         .flex_none()
         .children(visible.then(|| {
             svg()
+                .flex_none()
                 .path("pin.svg")
                 .size(rems(10. / 16.))
                 .text_color(theme::faint())
