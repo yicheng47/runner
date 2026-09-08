@@ -50,7 +50,7 @@ fn assert_update_preferences(plist: &str) {
 }
 
 #[test]
-fn nightly_plist_uses_the_isolated_rolling_channel() {
+fn nightly_plist_uses_the_production_identity_with_the_nightly_feed() {
     let output = run(&[
         "--channel",
         "nightly",
@@ -64,9 +64,10 @@ fn nightly_plist_uses_the_isolated_rolling_channel() {
     let plist = String::from_utf8(output.stdout).unwrap();
     assert_eq!(
         plist_value(&plist, "CFBundleIdentifier"),
-        "com.wycstudios.runner.nightly"
+        "com.wycstudios.runner"
     );
-    assert_eq!(plist_value(&plist, "CFBundleName"), "Runner Nightly");
+    assert_eq!(plist_value(&plist, "CFBundleName"), "Runner");
+    assert_eq!(plist_value(&plist, "CFBundleDisplayName"), "Runner");
     assert_eq!(plist_value(&plist, "CFBundleExecutable"), "Runner");
     assert_eq!(
         plist_value(&plist, "SUFeedURL"),
@@ -115,6 +116,33 @@ fn production_plist_keeps_the_marketing_version_separate_from_the_stamp() {
         "X2r1GfMmzcCS/9//sSUyyBNxMajjcMqVwQeHHKtAHMs="
     );
     assert_update_preferences(&plist);
+}
+
+#[test]
+fn channel_plists_only_differ_in_the_feed_and_short_version() {
+    let [mut nightly, production] = ["nightly", "production"].map(|channel| {
+        let output = run(&[
+            "--channel",
+            channel,
+            "--stamp",
+            "20260821.1432",
+            "--sha",
+            "abc1234",
+            "--print-plist",
+        ]);
+        assert!(output.status.success());
+        String::from_utf8(output.stdout).unwrap()
+    });
+    for key in ["SUFeedURL", "CFBundleShortVersionString"] {
+        let nightly_value = plist_value(&nightly, key);
+        let production_value = plist_value(&production, key);
+        assert_ne!(nightly_value, production_value);
+        nightly = nightly.replace(
+            &format!("<key>{key}</key>\n    <string>{nightly_value}</string>"),
+            &format!("<key>{key}</key>\n    <string>{production_value}</string>"),
+        );
+    }
+    assert_eq!(nightly, production);
 }
 
 #[test]

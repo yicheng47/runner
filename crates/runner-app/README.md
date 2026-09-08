@@ -1,6 +1,6 @@
 # runner-app
 
-The Runner application: GPUI UI, terminal renderer, Sparkle updater, packaging. The Cargo package is `runner-app`; the binary it builds is `Runner` (`[[bin]]`), which `script/bundle-mac` wraps into `Runner.app` / `Runner Nightly.app`. Everything UI-agnostic — sessions, router, event log, SQLite, MCP — lives in `runner-backend`; the terminal model, input encoding, and the fixture corpus live in `runner-terminal`. How it fits together: [`docs/arch/arch.md`](../../docs/arch/arch.md); how it got here: [`docs/impls/gpui-rewrite/README.md`](../../docs/impls/gpui-rewrite/README.md).
+The Runner application: GPUI UI, terminal renderer, Sparkle updater, packaging. The Cargo package is `runner-app`; the binary it builds is `Runner` (`[[bin]]`), which `script/bundle-mac` wraps into `Runner.app`. Everything UI-agnostic — sessions, router, event log, SQLite, MCP — lives in `runner-backend`; the terminal model, input encoding, and the fixture corpus live in `runner-terminal`. How it fits together: [`docs/arch/arch.md`](../../docs/arch/arch.md); how it got here: [`docs/impls/gpui-rewrite/README.md`](../../docs/impls/gpui-rewrite/README.md).
 
 ## Run
 
@@ -10,7 +10,7 @@ make run
 
 The development build uses `~/Library/Application Support/com.wycstudios.runner-dev/runner.db`, keeping production state isolated; release bundles use `com.wycstudios.runner`. It has no bundle, so macOS labels it by the binary name (`Runner`) and the updater is a no-op (the `updater` feature is off in dev). GPUI requires the Xcode Metal Toolchain component.
 
-One app instance at a time: the dev build and an installed Runner share nothing, but an installed production and nightly bundle share one data directory.
+The dev build and an installed Runner share nothing. Production and nightly installs use the same `Runner.app` and data directory; installing either channel over Runner switches its update feed while retaining data.
 
 ## Checks
 
