@@ -10,6 +10,9 @@ pub(crate) const SIDEBAR_TOGGLE_GLYPH_X: f32 = 94.3;
 #[cfg(target_os = "macos")]
 pub(crate) const SIDEBAR_TOGGLE_GLYPH_INSET: f32 = 6.3;
 const SIDEBAR_TRANSITION_MS: u64 = 200;
+// A pass-through of the left edge on the way to another screen is far shorter
+// than this; a deliberate rest on it is longer.
+const SIDEBAR_PREVIEW_DWELL_MS: u64 = 200;
 // Deliberately differs from main's inherited 19.5px line box to align both footer dividers.
 const SETTINGS_FOOTER_LINE_HEIGHT: f32 = 18.;
 
@@ -518,15 +521,53 @@ impl NativeRoot {
                 .top_0()
                 .w(px(16. * self.settings(cx).app_zoom))
                 .h_full()
-                .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
-                    if *hovered {
-                        this.sidebar_preview_open = true;
-                        this.sidebar_preview_peeking = true;
-                        cx.notify();
+                .on_hover(cx.listener(|this, hovered: &bool, _, _| {
+                    this.sidebar_preview_trigger_hovered = *hovered;
+                    if !*hovered {
+                        this.cancel_sidebar_preview_dwell();
+                    }
+                }))
+                .on_mouse_move(cx.listener(|this, event: &gpui::MouseMoveEvent, _, cx| {
+                    // A drag that reaches the edge, such as a text selection,
+                    // must not open the preview.
+                    if event.pressed_button.is_some() {
+                        this.cancel_sidebar_preview_dwell();
+                    } else {
+                        this.arm_sidebar_preview_dwell(cx);
                     }
                 }))
                 .into_any_element()
         })
+    }
+
+    fn cancel_sidebar_preview_dwell(&mut self) {
+        self.sidebar_preview_dwell = 0;
+    }
+
+    fn arm_sidebar_preview_dwell(&mut self, cx: &mut Context<Self>) {
+        if self.sidebar_preview_dwell != 0 || self.sidebar_preview_open {
+            return;
+        }
+        let generation = self.sidebar_preview_dwell_generation.wrapping_add(1).max(1);
+        self.sidebar_preview_dwell_generation = generation;
+        self.sidebar_preview_dwell = generation;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(SIDEBAR_PREVIEW_DWELL_MS))
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                if this.sidebar_preview_dwell != generation {
+                    return;
+                }
+                this.sidebar_preview_dwell = 0;
+                if this.sidebar_preview_trigger_hovered && this.sidebar_collapsed {
+                    this.sidebar_preview_open = true;
+                    this.sidebar_preview_peeking = true;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
     }
 
     pub(crate) fn render_titlebar_drag_area(
