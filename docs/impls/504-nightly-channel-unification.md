@@ -63,3 +63,14 @@ Also review: the appcast never references a pruned DMG; production addresses and
 ## Handoff
 
 The mission ends with a broadcast naming the branch, the exact changed files, exact check results, the reviewer's clean-verdict message id, and the live checks that remain. The landing session commits, opens the PR, cuts a nightly from the branch to validate, and asks Jason to do the two manual hops: install the Mac DMG over `Runner.app` and delete `Runner Nightly.app`; install the Windows installer on the PC. `nightly-win` is deleted by hand after the PC hop.
+
+## First live cut — 2026-09-08
+
+Dispatched by the landing session from the PR branch to validate before merge: `gh workflow run nightly.yml --ref feat/504-nightly-channel-unification` with the default `both`. The first attempt, run 34186646820, built both platforms and then stopped at the CI gate because the PR's `Rust / macOS` job had failed on `poll_until_returns_the_first_observed_value` in `runner-backend`, a timing test unrelated to this change; nothing was uploaded. After a rerun turned CI green, run [34187805571](https://github.com/yicheng47/runner/actions/runs/34187805571) on `2bf743d` (PR [#506](https://github.com/yicheng47/runner/pull/506)) succeeded through `publish`. `Rust / Windows` passed on the PR, the first native execution of the two new updater tests and the installer test.
+
+- `nightly` now holds `Runner-Nightly-2bf743d.20260908.0440-arm64.dmg`, `appcast.xml`, `Runner-Setup-nightly.2bf743d.20260908.0440-x64.exe`, and its `.sig`, all anonymously downloadable, beside the retained `ec86f28` DMG from the #502 cut. Public prerelease, not draft.
+- The appcast's channel title is `Runner`, the item is `2bf743d`, `sparkle:version` is the stamp, the arm64 requirement is present, and the enclosure length matches the uploaded DMG.
+- The DMG mounts as a `Runner` volume containing `Runner.app` with bundle id `com.wycstudios.runner`, short version `2bf743d`, and the nightly `SUFeedURL`. `codesign --verify --deep --strict` passes and Gatekeeper reports Notarized Developer ID.
+- `nightly-win` is untouched with its `ec86f28` installer and signature. `releases/latest` still resolves to `v0.8.2`.
+
+Still open: the two hand installs (the DMG over `Runner.app` on the Mac, the installer on the PC), the next-cut in-place updates that follow them, single-platform cuts, and the manual deletion of `nightly-win` and `Runner Nightly.app`.

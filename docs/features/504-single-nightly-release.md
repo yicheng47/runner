@@ -43,7 +43,7 @@ Installed Windows nightlies still read `nightly-win`, and that address is compil
 
 ### After landing and an authorized cut
 
-- [ ] A `both` cut from `main` leaves `nightly` with the DMG, appcast, installer, and signature from one sha and stamp, all anonymously downloadable; `nightly-win` is untouched.
+- [x] A `both` cut leaves `nightly` with the DMG, appcast, installer, and signature from one sha and stamp, all anonymously downloadable; `nightly-win` is untouched. Verified on run 34187805571 from the PR branch, 2026-09-08.
 - [ ] `-f platform=windows` replaces only the installer and signature on `nightly`; `-f platform=macos` replaces only the DMG and appcast.
 - [ ] The hand-installed build on the PC checks `nightly` and updates from it in-app on the next cut; `nightly-win` is then deleted.
-- [ ] `releases/latest` still resolves to the current production release.
+- [x] `releases/latest` still resolves to the current production release. Verified `v0.8.2` after run 34187805571.
