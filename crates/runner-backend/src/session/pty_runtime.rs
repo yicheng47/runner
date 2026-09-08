@@ -1159,6 +1159,32 @@ mod tests {
         }
     }
 
+    // The ConPTY host asks the terminal for the cursor position and
+    // device attributes as soon as it starts and holds the client until
+    // something answers. The app's terminal answers these; the tests
+    // that spawn a bare runtime have no terminal, so this stands in for
+    // one (#524).
+    #[cfg(windows)]
+    #[derive(Default)]
+    struct HostHandshake {
+        seen: Vec<u8>,
+        answered: bool,
+    }
+
+    #[cfg(windows)]
+    impl HostHandshake {
+        fn observe(&mut self, rt: &PtyRuntime, session: &RuntimeSession, bytes: &[u8]) {
+            if self.answered {
+                return;
+            }
+            self.seen.extend_from_slice(bytes);
+            if self.seen.windows(4).any(|w| w == b"\x1b[6n") {
+                rt.send_bytes(session, b"\x1b[1;1R\x1b[?6c").unwrap();
+                self.answered = true;
+            }
+        }
+    }
+
     #[cfg(unix)]
     fn wait_for_command_identity(pid: i32, command: &str) {
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -1714,12 +1740,13 @@ mod tests {
         let (session, stream) = rt
             .spawn(spec("exit-seven", "cmd", &["/c", "exit 7"]))
             .unwrap();
+        let mut handshake = HostHandshake::default();
         let deadline = Instant::now() + Duration::from_secs(5);
         while Instant::now() < deadline {
-            if let Err(mpsc::RecvTimeoutError::Disconnected) =
-                stream.recv_timeout(Duration::from_millis(100))
-            {
-                break;
+            match stream.recv_timeout(Duration::from_millis(100)) {
+                Ok(RuntimeOutput::Stream(bytes)) => handshake.observe(&rt, &session, &bytes),
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                _ => {}
             }
         }
         let status = rt.status(&session).unwrap().unwrap();
@@ -1760,11 +1787,15 @@ mod tests {
         );
         let rt = PtyRuntime::new();
         let (session, stream) = rt.spawn(launch).unwrap();
+        let mut handshake = HostHandshake::default();
         let mut output = Vec::new();
         let deadline = Instant::now() + Duration::from_secs(15);
         while Instant::now() < deadline {
             match stream.recv_timeout(Duration::from_millis(100)) {
-                Ok(RuntimeOutput::Stream(bytes)) => output.extend(bytes),
+                Ok(RuntimeOutput::Stream(bytes)) => {
+                    handshake.observe(&rt, &session, &bytes);
+                    output.extend(bytes);
+                }
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
                 _ => {}
             }
@@ -1816,6 +1847,7 @@ mod tests {
         let (session, stream) = rt.spawn(spec(
             "idle-windows", "cmd", &["/d", "/c", r"echo first & %SystemRoot%\System32\timeout.exe /t 2 /nobreak >nul & %SystemRoot%\System32\timeout.exe /t 2 /nobreak >nul & echo second"],
         )).unwrap();
+        let mut handshake = HostHandshake::default();
         let mut statuses = Vec::new();
         let deadline = Instant::now() + Duration::from_secs(12);
         while Instant::now() < deadline {
@@ -1830,7 +1862,8 @@ mod tests {
                         break;
                     }
                 }
-                Ok(RuntimeOutput::Stream(_)) | Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Ok(RuntimeOutput::Stream(bytes)) => handshake.observe(&rt, &session, &bytes),
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
             }
         }
@@ -1847,8 +1880,21 @@ mod tests {
     #[test]
     fn foreground_process_tracks_job_and_stop_reaps_child_windows() {
         let rt = PtyRuntime::new();
-        let (session, _stream) = rt.spawn(spec("job-stop", "cmd", &["/d", "/q"])).unwrap();
+        let (session, stream) = rt.spawn(spec("job-stop", "cmd", &["/d", "/q"])).unwrap();
         assert_eq!(rt.has_foreground_process(&session).unwrap(), Some(false));
+        let mut handshake = HostHandshake::default();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !handshake.answered && Instant::now() < deadline {
+            if let Ok(RuntimeOutput::Stream(bytes)) =
+                stream.recv_timeout(Duration::from_millis(100))
+            {
+                handshake.observe(&rt, &session, &bytes);
+            }
+        }
+        assert!(
+            handshake.answered,
+            "host never asked for the cursor position"
+        );
         rt.send_bytes(&session, b"ping -n 30 127.0.0.1 >nul\r")
             .unwrap();
         assert!(poll_until(STOP_POLL, Duration::from_secs(5), || {
