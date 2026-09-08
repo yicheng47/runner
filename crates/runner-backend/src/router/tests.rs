@@ -1351,8 +1351,8 @@ fn broadcast_message_nudges_every_slot_except_sender() {
     );
     let bcast = log.append(message("lead", None, "heads up")).unwrap();
     router.handle_event(&bcast);
-    assert_eq!(injector.pushes_for("S-IMPL").len(), 1);
-    assert_eq!(injector.pushes_for("S-REV").len(), 1);
+    assert_eq!(injector.submitted_bodies_for("S-IMPL").len(), 1);
+    assert_eq!(injector.submitted_bodies_for("S-REV").len(), 1);
     assert!(injector.pushes_for("S-LEAD").is_empty());
 }
 
@@ -1377,9 +1377,9 @@ fn human_messages_nudge_the_broadcast_roster_or_target_only() {
             .append(message("human", None, "Message the crew"))
             .unwrap();
         router.handle_event(&broadcast);
-        assert_eq!(injector.pushes_for("S-LEAD").len(), 1);
-        assert_eq!(injector.pushes_for("S-IMPL").len(), 1);
-        assert_eq!(injector.pushes_for("S-REV").len(), 1);
+        assert_eq!(injector.submitted_bodies_for("S-LEAD").len(), 1);
+        assert_eq!(injector.submitted_bodies_for("S-IMPL").len(), 1);
+        assert_eq!(injector.submitted_bodies_for("S-REV").len(), 1);
     }
 
     let (router, injector, log, _dir) = fixture(roster(), sessions);
@@ -1389,7 +1389,7 @@ fn human_messages_nudge_the_broadcast_roster_or_target_only() {
     router.handle_event(&targeted);
     assert!(injector.pushes_for("S-LEAD").is_empty());
     assert!(injector.pushes_for("S-IMPL").is_empty());
-    assert_eq!(injector.pushes_for("S-REV").len(), 1);
+    assert_eq!(injector.submitted_bodies_for("S-REV").len(), 1);
 }
 
 #[test]
