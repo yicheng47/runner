@@ -211,6 +211,11 @@ impl StyledSelect {
         self
     }
 
+    /// How far the open menu can scroll; zero when every option is in view.
+    pub fn menu_scroll_range(&self) -> Pixels {
+        self.menu_scroll.max_offset().height
+    }
+
     pub fn min_menu_width(mut self, width: Pixels) -> Self {
         self.min_menu_width = width;
         self
