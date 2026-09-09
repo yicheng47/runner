@@ -21090,88 +21090,6 @@
               "children": [
                 {
                   "type": "frame",
-                  "id": "LKyyQ",
-                  "name": "row_Default crew",
-                  "width": "fill_container",
-                  "gap": 32,
-                  "padding": [
-                    18,
-                    20
-                  ],
-                  "justifyContent": "space_between",
-                  "alignItems": "center",
-                  "children": [
-                    {
-                      "type": "frame",
-                      "id": "J7N4n",
-                      "name": "lbl",
-                      "width": "fill_container",
-                      "layout": "vertical",
-                      "gap": 4,
-                      "children": [
-                        {
-                          "type": "text",
-                          "id": "AdiBK",
-                          "name": "t",
-                          "fill": "$text-1",
-                          "content": "Default crew",
-                          "fontFamily": "$font-ui",
-                          "fontSize": 14,
-                          "fontWeight": "500"
-                        },
-                        {
-                          "type": "text",
-                          "id": "CxWXo",
-                          "name": "d",
-                          "fill": "$text-2",
-                          "textGrowth": "fixed-width",
-                          "width": "fill_container",
-                          "content": "Pre-selected when starting a new mission.",
-                          "fontFamily": "$font-ui",
-                          "fontSize": 13,
-                          "fontWeight": "normal"
-                        }
-                      ]
-                    },
-                    {
-                      "type": "frame",
-                      "id": "Jk5Id",
-                      "name": "pill",
-                      "fill": "$raised",
-                      "cornerRadius": 8,
-                      "gap": 8,
-                      "padding": [
-                        8,
-                        14
-                      ],
-                      "alignItems": "center",
-                      "children": [
-                        {
-                          "type": "text",
-                          "id": "XPX1O",
-                          "name": "pill_t",
-                          "fill": "$text-1",
-                          "content": "Peer coding crew",
-                          "fontFamily": "$font-ui",
-                          "fontSize": 13,
-                          "fontWeight": "normal"
-                        },
-                        {
-                          "type": "icon",
-                          "id": "qjk91",
-                          "name": "pill_ic",
-                          "width": 14,
-                          "height": 14,
-                          "icon": "chevron-down",
-                          "library": "lucide",
-                          "fill": "$text-2"
-                        }
-                      ]
-                    }
-                  ]
-                },
-                {
-                  "type": "frame",
                   "id": "OYHOY",
                   "name": "hairline",
                   "width": "fill_container",
@@ -28721,6 +28639,42 @@
                   "name": "nav_chat_t",
                   "fill": "#B8B9C0",
                   "content": "Chat",
+                  "fontFamily": "$font-ui",
+                  "fontSize": 14,
+                  "fontWeight": "normal"
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "m8Yga",
+              "name": "nav_missions",
+              "width": "fill_container",
+              "fill": "#15161B00",
+              "cornerRadius": 8,
+              "gap": 10,
+              "padding": [
+                8,
+                10
+              ],
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "icon",
+                  "id": "nJObz",
+                  "name": "nav_missions_ic",
+                  "width": 16,
+                  "height": 16,
+                  "icon": "rocket",
+                  "library": "lucide",
+                  "fill": "$text-2"
+                },
+                {
+                  "type": "text",
+                  "id": "FlsEe",
+                  "name": "nav_missions_t",
+                  "fill": "#B8B9C0",
+                  "content": "Missions",
                   "fontFamily": "$font-ui",
                   "fontSize": 14,
                   "fontWeight": "normal"
@@ -65197,6 +65151,500 @@
                           "fontWeight": "500"
                         }
                       ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "frame",
+      "id": "ez53n",
+      "x": 9600,
+      "y": 14427,
+      "name": "Settings — Missions",
+      "clip": true,
+      "width": 1440,
+      "height": 900,
+      "fill": "$bg",
+      "children": [
+        {
+          "id": "pdbXK",
+          "type": "ref",
+          "ref": "EWVdH",
+          "name": "sidebar",
+          "descendants": {
+            "kcu8l": {
+              "fill": "#15161B00",
+              "strokeWidth": 0
+            },
+            "RMSsH": {
+              "fill": "$text-2"
+            },
+            "aaaYs": {
+              "fill": "#B8B9C0"
+            },
+            "m8Yga": {
+              "fill": "$sidebar-selected",
+              "stroke": "$sidebar-selected-border",
+              "strokeWidth": 1,
+              "strokeAlignment": "inner"
+            },
+            "nJObz": {
+              "fill": "$text-1"
+            },
+            "FlsEe": {
+              "fill": "$text-1"
+            }
+          }
+        },
+        {
+          "type": "frame",
+          "id": "m1PHGN",
+          "name": "content",
+          "width": "fill_container",
+          "height": "fill_container",
+          "layout": "vertical",
+          "padding": [
+            56,
+            160,
+            40,
+            120
+          ],
+          "children": [
+            {
+              "type": "text",
+              "id": "QO7n1",
+              "name": "page_title",
+              "fill": "$text-1",
+              "content": "Missions",
+              "fontFamily": "$font-ui",
+              "fontSize": 30,
+              "fontWeight": "600"
+            },
+            {
+              "type": "frame",
+              "id": "y90a4",
+              "name": "sp",
+              "width": "fill_container",
+              "height": 36
+            },
+            {
+              "type": "text",
+              "id": "Ka7Qc",
+              "name": "sec_Defaults",
+              "fill": "$text-1",
+              "content": "Defaults",
+              "fontFamily": "$font-ui",
+              "fontSize": 16,
+              "fontWeight": "600"
+            },
+            {
+              "type": "frame",
+              "id": "WaS7Y",
+              "name": "sp",
+              "width": "fill_container",
+              "height": 14
+            },
+            {
+              "type": "frame",
+              "id": "zkugY",
+              "name": "card_Defaults",
+              "width": "fill_container",
+              "fill": "$panel",
+              "cornerRadius": 14,
+              "stroke": "$line",
+              "strokeWidth": 1,
+              "strokeAlignment": "inner",
+              "layout": "vertical",
+              "children": [
+                {
+                  "type": "frame",
+                  "id": "L6Jju",
+                  "name": "row_Default crew",
+                  "width": "fill_container",
+                  "gap": 32,
+                  "padding": [
+                    18,
+                    20
+                  ],
+                  "justifyContent": "space_between",
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "EkUGB",
+                      "name": "lbl",
+                      "width": "fill_container",
+                      "layout": "vertical",
+                      "gap": 4,
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "DntXD",
+                          "name": "t",
+                          "fill": "$text-1",
+                          "content": "Default crew",
+                          "fontFamily": "$font-ui",
+                          "fontSize": 14,
+                          "fontWeight": "500"
+                        },
+                        {
+                          "type": "text",
+                          "id": "bK6hR",
+                          "name": "d",
+                          "fill": "$text-2",
+                          "textGrowth": "fixed-width",
+                          "width": "fill_container",
+                          "content": "Pre-selected when starting a new mission.",
+                          "fontFamily": "$font-ui",
+                          "fontSize": 13,
+                          "fontWeight": "normal"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "T9Luw4",
+                      "name": "pill",
+                      "fill": "$raised",
+                      "cornerRadius": 8,
+                      "gap": 8,
+                      "padding": [
+                        8,
+                        14
+                      ],
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "TgOGZ",
+                          "name": "pill_t",
+                          "fill": "$text-1",
+                          "content": "Peer coding crew",
+                          "fontFamily": "$font-ui",
+                          "fontSize": 13,
+                          "fontWeight": "normal"
+                        },
+                        {
+                          "type": "icon",
+                          "id": "IzHbv",
+                          "name": "pill_ic",
+                          "width": 14,
+                          "height": 14,
+                          "icon": "chevron-down",
+                          "library": "lucide",
+                          "fill": "$text-2"
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "y8J92",
+                  "name": "hairline",
+                  "width": "fill_container",
+                  "height": 1,
+                  "fill": "$hairline"
+                },
+                {
+                  "type": "frame",
+                  "id": "gbhW1",
+                  "name": "row_Mission permissions",
+                  "width": "fill_container",
+                  "gap": 32,
+                  "padding": [
+                    18,
+                    20
+                  ],
+                  "justifyContent": "space_between",
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "u2XZD3",
+                      "name": "lbl",
+                      "width": "fill_container",
+                      "layout": "vertical",
+                      "gap": 4,
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "GWTS5",
+                          "name": "t",
+                          "fill": "$text-1",
+                          "content": "Mission permissions",
+                          "fontFamily": "$font-ui",
+                          "fontSize": 14,
+                          "fontWeight": "500"
+                        },
+                        {
+                          "type": "text",
+                          "id": "dNd6K",
+                          "name": "d",
+                          "fill": "$text-2",
+                          "textGrowth": "fixed-width",
+                          "width": "fill_container",
+                          "content": "Applied to every slot when a mission starts. Bypass never prompts — nobody is watching a mission slot to answer. Direct chats keep their runner's own mode.",
+                          "fontFamily": "$font-ui",
+                          "fontSize": 13,
+                          "fontWeight": "normal"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "qevLM",
+                      "name": "pill",
+                      "fill": "$raised",
+                      "cornerRadius": 8,
+                      "gap": 8,
+                      "padding": [
+                        8,
+                        14
+                      ],
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "RnxiZ",
+                          "name": "pill_t",
+                          "fill": "$text-1",
+                          "content": "Bypass",
+                          "fontFamily": "$font-ui",
+                          "fontSize": 13,
+                          "fontWeight": "normal"
+                        },
+                        {
+                          "type": "icon",
+                          "id": "nZzgm",
+                          "name": "pill_ic",
+                          "width": 14,
+                          "height": 14,
+                          "icon": "chevron-down",
+                          "library": "lucide",
+                          "fill": "$text-2"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "B973C",
+              "name": "sp",
+              "width": "fill_container",
+              "height": 36
+            }
+          ]
+        },
+        {
+          "type": "frame",
+          "id": "R9yAtv",
+          "layoutPosition": "absolute",
+          "x": 1044,
+          "y": 304,
+          "name": "spec_permission_select_open",
+          "layout": "vertical",
+          "gap": 6,
+          "children": [
+            {
+              "type": "text",
+              "id": "NHDH5",
+              "name": "lbl",
+              "fill": "$text-3",
+              "content": "OPEN STATE (527)",
+              "fontFamily": "$font-ui",
+              "fontSize": 10,
+              "fontWeight": "600"
+            },
+            {
+              "type": "frame",
+              "id": "Xs5Ej",
+              "name": "menu",
+              "width": 236,
+              "fill": "$panel",
+              "cornerRadius": 8,
+              "stroke": "$line",
+              "strokeWidth": 1,
+              "strokeAlignment": "inner",
+              "effect": {
+                "type": "shadow",
+                "shadowType": "outer",
+                "color": "#00000033",
+                "offset": {
+                  "x": 0,
+                  "y": 10
+                },
+                "blur": 40
+              },
+              "layout": "vertical",
+              "padding": 4,
+              "children": [
+                {
+                  "type": "frame",
+                  "id": "MLS7R",
+                  "name": "opt_Bypass",
+                  "width": "fill_container",
+                  "fill": "$raised",
+                  "cornerRadius": 6,
+                  "layout": "vertical",
+                  "gap": 2,
+                  "padding": [
+                    7,
+                    10
+                  ],
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "kcLyK",
+                      "name": "l",
+                      "width": "fill_container",
+                      "gap": 8,
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "duQPN",
+                          "name": "t",
+                          "fill": "$text-1",
+                          "content": "Bypass",
+                          "fontFamily": "$font-ui",
+                          "fontSize": 13,
+                          "fontWeight": "500"
+                        },
+                        {
+                          "type": "frame",
+                          "id": "T1dIjf",
+                          "name": "flex",
+                          "width": "fill_container",
+                          "height": 1
+                        },
+                        {
+                          "type": "icon",
+                          "id": "NpDuY",
+                          "name": "check",
+                          "width": 14,
+                          "height": 14,
+                          "icon": "check",
+                          "library": "lucide",
+                          "fill": "$accent"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "text",
+                      "id": "pLS2y",
+                      "name": "d",
+                      "fill": "$text-3",
+                      "textGrowth": "fixed-width",
+                      "width": "fill_container",
+                      "content": "Default. No prompts; codex gets full access.",
+                      "fontFamily": "$font-ui",
+                      "fontSize": 11,
+                      "fontWeight": "normal"
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "Y539wZ",
+                  "name": "opt_Auto",
+                  "width": "fill_container",
+                  "fill": "#15161B00",
+                  "cornerRadius": 6,
+                  "layout": "vertical",
+                  "gap": 2,
+                  "padding": [
+                    7,
+                    10
+                  ],
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "u0Vg3",
+                      "name": "l",
+                      "width": "fill_container",
+                      "gap": 8,
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "KEpeJ",
+                          "name": "t",
+                          "fill": "$text-1",
+                          "content": "Auto",
+                          "fontFamily": "$font-ui",
+                          "fontSize": 13,
+                          "fontWeight": "normal"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "text",
+                      "id": "YdcQx",
+                      "name": "d",
+                      "fill": "$text-3",
+                      "textGrowth": "fixed-width",
+                      "width": "fill_container",
+                      "content": "The runtime's classifier decides; may stall on a prompt.",
+                      "fontFamily": "$font-ui",
+                      "fontSize": 11,
+                      "fontWeight": "normal"
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "TOk5W",
+                  "name": "opt_Runner default",
+                  "width": "fill_container",
+                  "fill": "#15161B00",
+                  "cornerRadius": 6,
+                  "layout": "vertical",
+                  "gap": 2,
+                  "padding": [
+                    7,
+                    10
+                  ],
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "R4jEVq",
+                      "name": "l",
+                      "width": "fill_container",
+                      "gap": 8,
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "K0WKEk",
+                          "name": "t",
+                          "fill": "$text-1",
+                          "content": "Runner default",
+                          "fontFamily": "$font-ui",
+                          "fontSize": 13,
+                          "fontWeight": "normal"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "text",
+                      "id": "jtZ0m",
+                      "name": "d",
+                      "fill": "$text-3",
+                      "textGrowth": "fixed-width",
+                      "width": "fill_container",
+                      "content": "Whatever each runner row carries.",
+                      "fontFamily": "$font-ui",
+                      "fontSize": 11,
+                      "fontWeight": "normal"
                     }
                   ]
                 }
