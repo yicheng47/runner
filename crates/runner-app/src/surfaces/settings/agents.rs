@@ -1,9 +1,9 @@
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::rc::Rc;
 
 use gpui::prelude::*;
 use gpui::{
-    div, px, rems, AnyElement, Context, Entity, FontWeight, PathPromptOptions, Render,
+    div, px, rems, AnyElement, Context, Div, Entity, FontWeight, PathPromptOptions, Render,
     SharedString, Subscription, WeakEntity, Window,
 };
 use runner_app::ui::button::spinner;
@@ -11,6 +11,7 @@ use runner_app::ui::{
     BrowseField, Button, ButtonSize, ButtonVariant, FieldValidation, PaneHeader, SelectHandler,
     SelectOption, SettingsCard, SettingsRow, StyledSelect, TextField, Toggle,
 };
+use runner_backend::ops::mcp::{McpClientStatus, McpIntegrationStatus};
 use runner_backend::ops::runtime::RuntimeCatalogEntry;
 use runner_backend::runtime_status::{
     OverrideValidationError, RuntimeCommandSource, RuntimeExecutableStatus, RuntimeRowState,
@@ -42,6 +43,88 @@ struct RuntimePresentation {
     show_reset: bool,
 }
 
+/// The agents whose config `ops/mcp.rs` knows how to write a `runner` entry into.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum McpClient {
+    ClaudeCode,
+    Codex,
+    Trae,
+}
+
+impl McpClient {
+    fn for_runtime(name: &str) -> Option<Self> {
+        match name {
+            "claude-code" => Some(Self::ClaudeCode),
+            "codex" => Some(Self::Codex),
+            "trae" => Some(Self::Trae),
+            _ => None,
+        }
+    }
+
+    fn key(self) -> &'static str {
+        match self {
+            Self::ClaudeCode => "claude_code",
+            Self::Codex => "codex",
+            Self::Trae => "trae",
+        }
+    }
+
+    fn config_file(self) -> &'static str {
+        match self {
+            Self::ClaudeCode => "~/.claude.json",
+            Self::Codex => "~/.codex/config.toml",
+            Self::Trae => "~/.trae/traecli.toml",
+        }
+    }
+
+    fn status(self, status: &McpIntegrationStatus) -> &McpClientStatus {
+        match self {
+            Self::ClaudeCode => &status.claude_code,
+            Self::Codex => &status.codex,
+            Self::Trae => &status.trae,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum McpRowTone {
+    Muted,
+    Accent,
+    Warning,
+    Danger,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum McpRowAction {
+    Register,
+    Unregister,
+}
+
+impl McpRowAction {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Register => "Register",
+            Self::Unregister => "Unregister",
+        }
+    }
+
+    fn variant(self) -> ButtonVariant {
+        match self {
+            Self::Register => ButtonVariant::Tinted,
+            Self::Unregister => ButtonVariant::Outline,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct McpRowPresentation {
+    tone: McpRowTone,
+    status: String,
+    action: McpRowAction,
+    disabled: bool,
+    error: Option<String>,
+}
+
 pub(crate) struct AgentsPane {
     shell: WeakEntity<NativeRoot>,
     app_store: Entity<AppStore>,
@@ -56,6 +139,15 @@ pub(crate) struct AgentsPane {
     validation_drafts: BTreeMap<String, String>,
     saving: HashSet<String>,
     focused: HashSet<String>,
+    mcp_status: Option<McpIntegrationStatus>,
+    mcp_loading: bool,
+    mcp_busy: Option<McpClient>,
+    /// A refresh asked for while a read or write was in flight; runs once that settles.
+    mcp_refresh_pending: bool,
+    /// Bumped by every read and write so a slower, older completion cannot overwrite a newer one.
+    mcp_generation: u64,
+    mcp_errors: BTreeMap<McpClient, String>,
+    mcp_initialized: BTreeSet<String>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -150,10 +242,18 @@ impl AgentsPane {
             }));
             overrides.insert(runtime_name, field);
         }
-        subscriptions.push(cx.observe(&app_store, |this, _, cx| {
+        // The store's defaults pass registers agents behind this pane's back; re-read the
+        // config files whenever it marks another client as initialized.
+        subscriptions.push(cx.observe(&app_store, |this, store, cx| {
             this.sync_default_control(cx);
+            let initialized = &store.read(cx).settings.initialized_mcp_clients;
+            if this.mcp_initialized != *initialized {
+                this.mcp_initialized = initialized.clone();
+                this.refresh_mcp_status(cx);
+            }
             cx.notify();
         }));
+        let mcp_initialized = app_store.read(cx).settings.initialized_mcp_clients.clone();
 
         Self {
             shell,
@@ -169,11 +269,20 @@ impl AgentsPane {
             validation_drafts: BTreeMap::new(),
             saving: HashSet::new(),
             focused: HashSet::new(),
+            mcp_status: None,
+            mcp_loading: false,
+            mcp_busy: None,
+            mcp_refresh_pending: false,
+            mcp_generation: 0,
+            mcp_errors: BTreeMap::new(),
+            mcp_initialized,
             _subscriptions: subscriptions,
         }
     }
 
     pub(crate) fn refresh(&mut self, cx: &mut Context<Self>) {
+        self.mcp_errors.clear();
+        self.refresh_mcp_status(cx);
         if self.loading {
             return;
         }
@@ -206,6 +315,8 @@ impl AgentsPane {
     }
 
     fn refresh_discovery(&mut self, cx: &mut Context<Self>) {
+        self.mcp_errors.clear();
+        self.refresh_mcp_status(cx);
         if self.refreshing
             || self
                 .status
@@ -235,6 +346,89 @@ impl AgentsPane {
                     }
                     Err(error) => this.error = Some(error),
                 }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    fn refresh_mcp_status(&mut self, cx: &mut Context<Self>) {
+        if self.mcp_loading || self.mcp_busy.is_some() {
+            self.mcp_refresh_pending = true;
+            return;
+        }
+        self.mcp_loading = true;
+        self.mcp_generation += 1;
+        let generation = self.mcp_generation;
+        let core = self.app_store.read(cx).core.clone();
+        let task = cx.background_spawn(async move {
+            runner_backend::ops::mcp::mcp_integration_status(&core)
+                .map_err(|error| error.to_string())
+        });
+        cx.spawn(async move |weak, cx| {
+            let result = task.await;
+            let _ = weak.update(cx, |this, cx| {
+                this.mcp_loading = false;
+                if generation == this.mcp_generation {
+                    match result {
+                        Ok(status) => this.mcp_status = Some(status),
+                        Err(error) => this.error = Some(error),
+                    }
+                }
+                this.run_pending_mcp_refresh(cx);
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    fn run_pending_mcp_refresh(&mut self, cx: &mut Context<Self>) {
+        if self.mcp_refresh_pending && !self.mcp_loading && self.mcp_busy.is_none() {
+            self.mcp_refresh_pending = false;
+            self.refresh_mcp_status(cx);
+        }
+    }
+
+    fn set_mcp_integration(&mut self, client: McpClient, enabled: bool, cx: &mut Context<Self>) {
+        if self.mcp_busy.is_some() {
+            return;
+        }
+        // A manual choice takes the client out of the defaults pass for good. The snapshot
+        // moves first so the store observer does not read this write back as a defaults change.
+        self.mcp_initialized.insert(client.key().into());
+        self.app_store.update(cx, |store, store_cx| {
+            store.update_settings(
+                |settings| settings.initialized_mcp_clients.insert(client.key().into()),
+                true,
+                store_cx,
+            );
+        });
+        self.mcp_busy = Some(client);
+        self.mcp_errors.remove(&client);
+        self.mcp_generation += 1;
+        let generation = self.mcp_generation;
+        let core = self.app_store.read(cx).core.clone();
+        let task = cx.background_spawn(async move {
+            runner_backend::ops::mcp::mcp_set_integration(&core, client.key(), enabled)
+                .map_err(|error| error.to_string())?;
+            runner_backend::ops::mcp::mcp_integration_status(&core)
+                .map_err(|error| error.to_string())
+        });
+        cx.spawn(async move |weak, cx| {
+            let result = task.await;
+            let _ = weak.update(cx, |this, cx| {
+                this.mcp_busy = None;
+                if generation == this.mcp_generation {
+                    match result {
+                        Ok(status) => this.mcp_status = Some(status),
+                        Err(error) => {
+                            this.mcp_errors.insert(client, error);
+                        }
+                    }
+                }
+                this.run_pending_mcp_refresh(cx);
                 cx.notify();
             });
         })
@@ -619,7 +813,24 @@ impl AgentsPane {
         presentation.show_reset |= field
             .as_ref()
             .is_some_and(|field| !field.read(cx).text().trim().is_empty());
+        let mcp = McpClient::for_runtime(&runtime.name).map(|client| {
+            let presentation = mcp_row_presentation(
+                client,
+                self.mcp_status.as_ref().map(|status| client.status(status)),
+                self.mcp_busy == Some(client),
+                runtime.state != RuntimeRowState::NotFound,
+            );
+            (client, presentation)
+        });
+        let mcp_error = mcp.as_ref().and_then(|(client, presentation)| {
+            self.mcp_errors
+                .get(client)
+                .cloned()
+                .or_else(|| presentation.error.clone())
+        });
+        let card_selector = format!("AGENT_CARD_{}", runtime.name);
         div()
+            .debug_selector(|| card_selector)
             .flex()
             .flex_col()
             .gap_3()
@@ -665,7 +876,7 @@ impl AgentsPane {
                     .children(presentation.show_reset.then(|| {
                         Button::new(
                             SharedString::from(format!("agent-reset-{}", runtime.name)),
-                            "Reset to auto",
+                            "Reset",
                         )
                         .variant(ButtonVariant::Ghost)
                         .disabled(saving)
@@ -677,51 +888,142 @@ impl AgentsPane {
                     })),
             )
             .children(runtime_defaults_visible(runtime).then(|| {
-                div()
-                    .font_family(theme::UI_MONOSPACE_FONT)
-                    .text_size(rems(11. / 16.))
-                    .line_height(rems(15.4 / 16.))
-                    .text_color(theme::faint())
-                    .child(runtime_defaults_caption(runtime))
+                runtime_property_line(&runtime.name, "MODEL", "Model")
+                    .child(runtime_property_value(runtime_default_value(
+                        runtime.default_model.as_deref(),
+                    )))
+                    .child(div().text_color(theme::muted()).child("·"))
+                    .child(div().text_color(theme::muted()).child("Effort"))
+                    .child(runtime_property_value(runtime_default_value(
+                        runtime.default_effort.as_deref(),
+                    )))
             }))
-            .children(presentation.caption.map(|caption| {
-                div()
-                    .font_family(theme::UI_MONOSPACE_FONT)
-                    .text_size(rems(11. / 16.))
-                    .line_height(rems(15.4 / 16.))
-                    .text_color(if validation.is_some() {
-                        theme::danger()
-                    } else {
-                        theme::faint()
-                    })
-                    .child(caption)
+            .children(mcp.map(|(client, presentation)| {
+                self.render_mcp_line(&runtime.name, client, &presentation, cx)
             }))
+            .children(
+                presentation
+                    .caption
+                    .map(|caption| runtime_caption(caption, validation.is_some())),
+            )
+            .children(mcp_error.map(|error| runtime_caption(error, true)))
+            .into_any_element()
+    }
+
+    fn render_mcp_line(
+        &self,
+        runtime: &str,
+        client: McpClient,
+        presentation: &McpRowPresentation,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let (dot, text) = match presentation.tone {
+            McpRowTone::Muted => (theme::faint(), theme::muted()),
+            McpRowTone::Accent => (theme::accent(), theme::text()),
+            McpRowTone::Warning => (theme::warning(), theme::warning()),
+            McpRowTone::Danger => (theme::danger(), theme::danger()),
+        };
+        let pane = cx.entity();
+        let enable = presentation.action == McpRowAction::Register;
+        runtime_property_line(runtime, "MCP", "Runner MCP")
+            .child(
+                div()
+                    .flex_none()
+                    .size(rems(6. / 16.))
+                    .rounded_full()
+                    .bg(dot),
+            )
+            .child(
+                div()
+                    .min_w(px(0.))
+                    .flex_1()
+                    .whitespace_normal()
+                    .font_family(theme::UI_MONOSPACE_FONT)
+                    .text_color(text)
+                    .child(presentation.status.clone()),
+            )
+            .child(
+                Button::new(
+                    SharedString::from(format!("agent-mcp-{runtime}")),
+                    presentation.action.label(),
+                )
+                .size(ButtonSize::Sm)
+                .radius(6.)
+                .variant(presentation.action.variant())
+                .disabled(presentation.disabled)
+                .on_press(move |_, cx| {
+                    pane.update(cx, |this, pane_cx| {
+                        this.set_mcp_integration(client, enable, pane_cx)
+                    });
+                }),
+            )
             .into_any_element()
     }
 }
 
+fn runtime_property_line(runtime: &str, key: &'static str, label: &'static str) -> Div {
+    let line_selector = format!("AGENT_{key}_LINE_{runtime}");
+    let label_selector = format!("AGENT_{key}_LABEL_{runtime}");
+    div()
+        .debug_selector(|| line_selector)
+        .flex()
+        .items_center()
+        .gap_2()
+        .text_size(rems(11. / 16.))
+        .line_height(rems(15.4 / 16.))
+        .child(
+            div()
+                .debug_selector(|| label_selector)
+                .flex_none()
+                .w(rems(92. / 16.))
+                .text_color(theme::muted())
+                .child(label),
+        )
+}
+
+fn runtime_property_value(value: String) -> Div {
+    div()
+        .font_family(theme::UI_MONOSPACE_FONT)
+        .text_color(theme::text())
+        .child(value)
+}
+
+fn runtime_caption(caption: String, danger: bool) -> Div {
+    div()
+        .font_family(theme::UI_MONOSPACE_FONT)
+        .text_size(rems(11. / 16.))
+        .line_height(rems(15.4 / 16.))
+        .text_color(if danger {
+            theme::danger()
+        } else {
+            theme::faint()
+        })
+        .child(caption)
+}
+
 impl Render for AgentsPane {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let rows = self
+        let cards = self
             .status
             .as_ref()
             .map(|status| {
                 status
                     .runtimes
                     .iter()
-                    .map(|runtime| self.render_runtime_row(runtime, cx))
+                    .map(|runtime| {
+                        SettingsCard::new([self.render_runtime_row(runtime, cx)]).into_any_element()
+                    })
                     .collect::<Vec<_>>()
             })
             .unwrap_or_else(|| {
                 runner_backend::ops::runtime::runtime_list()
                     .into_iter()
                     .map(|_| {
-                        div()
-                            .h(rems(108. / 16.))
+                        SettingsCard::new([div()
+                            .h(rems(160. / 16.))
                             .bg(theme::with_alpha(theme::raised(), 0.2))
-                            .px_5()
-                            .py_4()
-                            .into_any_element()
+                            .into_any_element()])
+                        .into_any_element()
                     })
                     .collect()
             });
@@ -741,13 +1043,13 @@ impl Render for AgentsPane {
             .subtitle("Pre-selected when starting a direct chat in Direct mode.")
             .into_any_element()]))
             .child(self.render_shell_card(cx))
-            .child(SettingsCard::new(rows))
+            .child(div().flex().flex_col().gap_4().children(cards))
             .child(
                 div()
                     .text_size(rems(12. / 16.))
                     .line_height(rems(18. / 16.))
                     .text_color(theme::faint())
-                    .child("Disabled agents stay configured but are hidden from agent pickers. Overrides apply to new sessions that use the agent's default command; runners with a custom command keep it."),
+                    .child("Disabled agents stay configured but are hidden from agent pickers. Overrides apply to new sessions that use the agent's default command; runners with a custom command keep it. Registration writes only the `runner` entry in each agent's config."),
             )
             .children(self.error.clone().map(|error| {
                 div()
@@ -871,18 +1173,107 @@ fn runtime_defaults_visible(runtime: &RuntimeExecutableStatus) -> bool {
     runtime.state != RuntimeRowState::NotFound
 }
 
-fn runtime_defaults_caption(runtime: &RuntimeExecutableStatus) -> String {
-    format!(
-        "Model: {} · Effort: {}",
-        runtime
-            .default_model
-            .as_deref()
-            .unwrap_or("runtime default"),
-        runtime
-            .default_effort
-            .as_deref()
-            .unwrap_or("runtime default")
-    )
+fn runtime_default_value(value: Option<&str>) -> String {
+    value.unwrap_or("runtime default").to_owned()
+}
+
+fn mcp_row_presentation(
+    client: McpClient,
+    status: Option<&McpClientStatus>,
+    busy: bool,
+    installed: bool,
+) -> McpRowPresentation {
+    let mut presentation = mcp_status_presentation(client, status, busy);
+    // Nothing to register for an agent that is not on this machine.
+    presentation.disabled |= !installed;
+    presentation
+}
+
+fn mcp_status_presentation(
+    client: McpClient,
+    status: Option<&McpClientStatus>,
+    busy: bool,
+) -> McpRowPresentation {
+    let Some(status) = status else {
+        return McpRowPresentation {
+            tone: McpRowTone::Muted,
+            status: "Checking".into(),
+            action: McpRowAction::Register,
+            disabled: true,
+            error: None,
+        };
+    };
+    let action = if status.matches_current {
+        McpRowAction::Unregister
+    } else {
+        McpRowAction::Register
+    };
+    if busy {
+        return McpRowPresentation {
+            tone: if status.error.is_some() {
+                McpRowTone::Danger
+            } else if status.matches_current {
+                McpRowTone::Accent
+            } else if status.registered {
+                McpRowTone::Warning
+            } else {
+                McpRowTone::Muted
+            },
+            status: "Updating".into(),
+            action,
+            disabled: true,
+            error: status.error.clone(),
+        };
+    }
+    if let Some(error) = status.error.clone() {
+        return McpRowPresentation {
+            tone: McpRowTone::Danger,
+            status: "Config error".into(),
+            action: McpRowAction::Register,
+            disabled: false,
+            error: Some(error),
+        };
+    }
+    if !status.registered {
+        return McpRowPresentation {
+            tone: McpRowTone::Muted,
+            status: "Not registered".into(),
+            action: McpRowAction::Register,
+            disabled: false,
+            error: None,
+        };
+    }
+    if status.matches_current {
+        return McpRowPresentation {
+            tone: McpRowTone::Accent,
+            status: format!("Registered in {}", client.config_file()),
+            action: McpRowAction::Unregister,
+            disabled: false,
+            error: None,
+        };
+    }
+    McpRowPresentation {
+        tone: McpRowTone::Warning,
+        status: format!(
+            "Registered to another Runner · {}",
+            configured_command(status)
+        ),
+        action: McpRowAction::Register,
+        disabled: false,
+        error: None,
+    }
+}
+
+fn configured_command(status: &McpClientStatus) -> String {
+    let mut command = status
+        .command
+        .clone()
+        .unwrap_or_else(|| "(missing command)".into());
+    for arg in &status.args {
+        command.push(' ');
+        command.push_str(arg);
+    }
+    command
 }
 
 fn runtime_presentation(
@@ -1141,21 +1532,326 @@ mod tests {
         runtime.default_model = Some("claude-fable-5[1m]".into());
         runtime.default_effort = Some("xhigh".into());
         assert_eq!(
-            runtime_defaults_caption(&runtime),
-            "Model: claude-fable-5[1m] · Effort: xhigh"
+            runtime_default_value(runtime.default_model.as_deref()),
+            "claude-fable-5[1m]"
+        );
+        assert_eq!(
+            runtime_default_value(runtime.default_effort.as_deref()),
+            "xhigh"
         );
 
         runtime.default_effort = None;
         assert_eq!(
-            runtime_defaults_caption(&runtime),
-            "Model: claude-fable-5[1m] · Effort: runtime default"
+            runtime_default_value(runtime.default_effort.as_deref()),
+            "runtime default"
+        );
+    }
+
+    fn mcp_status(registered: bool, matches_current: bool, error: Option<&str>) -> McpClientStatus {
+        McpClientStatus {
+            registered,
+            matches_current,
+            command: Some("/other/runner-mcp".into()),
+            args: vec!["--stdio".into()],
+            config_path: "/tmp/config".into(),
+            error: error.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn derives_each_mcp_row_state() {
+        let checking = mcp_row_presentation(McpClient::Codex, None, false, true);
+        assert_eq!(checking.status, "Checking");
+        assert_eq!(checking.tone, McpRowTone::Muted);
+        assert!(checking.disabled);
+
+        let missing = mcp_row_presentation(
+            McpClient::Codex,
+            Some(&mcp_status(false, false, None)),
+            false,
+            true,
+        );
+        assert_eq!(missing.status, "Not registered");
+        assert_eq!(missing.tone, McpRowTone::Muted);
+        assert_eq!(missing.action, McpRowAction::Register);
+        assert!(!missing.disabled);
+        assert_eq!(missing.error, None);
+
+        let current = mcp_row_presentation(
+            McpClient::ClaudeCode,
+            Some(&mcp_status(true, true, None)),
+            false,
+            true,
+        );
+        assert_eq!(current.status, "Registered in ~/.claude.json");
+        assert_eq!(current.tone, McpRowTone::Accent);
+        assert_eq!(current.action, McpRowAction::Unregister);
+        assert!(!current.disabled);
+        assert_eq!(
+            mcp_row_presentation(
+                McpClient::Trae,
+                Some(&mcp_status(true, true, None)),
+                false,
+                true
+            )
+            .status,
+            "Registered in ~/.trae/traecli.toml"
         );
 
-        runtime.default_model = None;
-        assert_eq!(
-            runtime_defaults_caption(&runtime),
-            "Model: runtime default · Effort: runtime default"
+        let other = mcp_row_presentation(
+            McpClient::Codex,
+            Some(&mcp_status(true, false, None)),
+            false,
+            true,
         );
+        assert_eq!(
+            other.status,
+            "Registered to another Runner · /other/runner-mcp --stdio"
+        );
+        assert_eq!(other.tone, McpRowTone::Warning);
+        assert_eq!(other.action, McpRowAction::Register);
+
+        let broken = mcp_row_presentation(
+            McpClient::Codex,
+            Some(&mcp_status(false, false, Some("bad config"))),
+            false,
+            true,
+        );
+        assert_eq!(broken.status, "Config error");
+        assert_eq!(broken.tone, McpRowTone::Danger);
+        assert_eq!(broken.action, McpRowAction::Register);
+        assert!(!broken.disabled);
+        assert_eq!(broken.error.as_deref(), Some("bad config"));
+
+        let updating = mcp_row_presentation(
+            McpClient::Codex,
+            Some(&mcp_status(true, true, None)),
+            true,
+            true,
+        );
+        assert_eq!(updating.status, "Updating");
+        assert_eq!(updating.tone, McpRowTone::Accent);
+        assert_eq!(updating.action, McpRowAction::Unregister);
+        assert!(updating.disabled);
+        let updating_error = mcp_row_presentation(
+            McpClient::Codex,
+            Some(&mcp_status(false, false, Some("bad config"))),
+            true,
+            true,
+        );
+        assert_eq!(updating_error.tone, McpRowTone::Danger);
+        assert_eq!(updating_error.error.as_deref(), Some("bad config"));
+
+        let not_installed = mcp_row_presentation(
+            McpClient::Codex,
+            Some(&mcp_status(false, false, None)),
+            false,
+            false,
+        );
+        assert_eq!(not_installed.status, "Not registered");
+        assert_eq!(not_installed.action, McpRowAction::Register);
+        assert!(not_installed.disabled);
+    }
+
+    fn test_store(path: &std::path::Path, cx: &mut gpui::TestAppContext) -> Entity<AppStore> {
+        use runner_backend::{
+            db, event_bus, events, mcp, router, session, shell_path, windows, AppCore,
+        };
+        use std::sync::{Arc, Mutex, RwLock};
+        let runtime_shell_env = Arc::new(RwLock::new(shell_path::LoginShellEnv::default()));
+        let runtime_discovery =
+            Arc::new(RwLock::new(shell_path::DiscoveryState::startup(None, None)));
+        let core = AppCore {
+            db: Arc::new(db::open_pool(&path.join("runner.db")).unwrap()),
+            app_data_dir: path.into(),
+            sessions: session::SessionManager::new(
+                runtime_shell_env.clone(),
+                runtime_discovery.clone(),
+                Arc::new(session::pty_runtime::PtyRuntime::new()),
+            ),
+            runtime_shell_env,
+            runtime_discovery,
+            buses: event_bus::BusRegistry::new(),
+            routers: router::RouterRegistry::new(),
+            mission_grid_hint: Arc::new(Mutex::new(None)),
+            mcp: Arc::new(mcp::McpHandle::new()),
+            windows: Arc::new(windows::WindowRegistry::new()),
+            events: events::EventChannel::new(),
+            session_event_observer: Default::default(),
+            app_version: "0.0.0-test".into(),
+        };
+        cx.new(|cx| {
+            AppStore::new(
+                core,
+                path.join("settings.json"),
+                AppSettings::default(),
+                None,
+                cx,
+            )
+        })
+    }
+
+    #[test]
+    fn runtime_cards_lay_out_both_property_lines_at_two_rem_sizes() {
+        use gpui::{size, TestAppContext, VisualTestContext};
+
+        struct Host(Entity<AgentsPane>);
+        impl Render for Host {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().size_full().p_6().child(self.0.clone())
+            }
+        }
+
+        let temp = tempfile::tempdir().unwrap();
+        let mut cx = TestAppContext::single();
+        let store = test_store(temp.path(), &mut cx);
+        let host = cx.add_window(|window, cx| {
+            window.resize(size(px(1200.), px(900.)));
+            let pane = cx.new(|cx| AgentsPane::new(WeakEntity::new_invalid(), store, window, cx));
+            pane.update(cx, |pane, cx| {
+                let mut claude = runtime(RuntimeRowState::Detected);
+                claude.name = "claude-code".into();
+                claude.display_name = "Claude Code".into();
+                claude.command = "claude".into();
+                claude.default_model = Some("claude-fable-5[1m]".into());
+                claude.default_effort = Some("xhigh".into());
+                let mut status = status(claude, false);
+                status.runtimes.push(runtime(RuntimeRowState::NotFound));
+                pane.apply_status(status, cx);
+                pane.mcp_status = Some(McpIntegrationStatus {
+                    environment: "Development".into(),
+                    binary_path: String::new(),
+                    endpoint: String::new(),
+                    claude_code: mcp_status(true, true, None),
+                    codex: mcp_status(false, false, None),
+                    trae: mcp_status(true, false, None),
+                });
+            });
+            Host(pane)
+        });
+        cx.run_until_parked();
+        let mut window = VisualTestContext::from_window(host.into(), &cx);
+        for rem in [16., 20.8] {
+            host.update(&mut window, |_, window, _| {
+                window.set_rem_size(px(rem));
+                window.refresh();
+            })
+            .unwrap();
+            window.run_until_parked();
+            let claude = window.debug_bounds("AGENT_CARD_claude-code").unwrap();
+            let codex = window.debug_bounds("AGENT_CARD_codex").unwrap();
+            assert!(
+                claude.bottom() + px(rem) <= codex.top(),
+                "{rem}: {claude:?} {codex:?}"
+            );
+
+            let model = window.debug_bounds("AGENT_MODEL_LINE_claude-code").unwrap();
+            let mcp = window.debug_bounds("AGENT_MCP_LINE_claude-code").unwrap();
+            let model_label = window
+                .debug_bounds("AGENT_MODEL_LABEL_claude-code")
+                .unwrap();
+            let mcp_label = window.debug_bounds("AGENT_MCP_LABEL_claude-code").unwrap();
+            assert!(model.bottom() <= mcp.top(), "{rem}: {model:?} {mcp:?}");
+            assert!(
+                mcp.bottom() <= claude.bottom() && mcp.right() <= claude.right(),
+                "{rem}: {mcp:?} {claude:?}"
+            );
+            assert_eq!(model_label.left(), mcp_label.left(), "{rem}");
+            assert!(
+                (model_label.size.width - px(92. * rem / 16.)).abs() < px(1.),
+                "{rem}: {model_label:?}"
+            );
+            assert!(
+                mcp.size.height >= px(24. * rem / 16.),
+                "{rem}: {mcp:?} should fit the small button"
+            );
+
+            assert!(window.debug_bounds("AGENT_MODEL_LINE_codex").is_none());
+            let codex_mcp = window.debug_bounds("AGENT_MCP_LINE_codex").unwrap();
+            assert!(
+                codex_mcp.bottom() <= codex.bottom(),
+                "{rem}: {codex_mcp:?} {codex:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn mcp_refresh_during_a_refresh_runs_once_more_and_stale_reads_are_ignored() {
+        use gpui::{size, TestAppContext};
+
+        struct Host(Entity<AgentsPane>);
+        impl Render for Host {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().size_full().child(self.0.clone())
+            }
+        }
+
+        let temp = tempfile::tempdir().unwrap();
+        let mut cx = TestAppContext::single();
+        let store = test_store(temp.path(), &mut cx);
+        let host = cx.add_window(|window, cx| {
+            window.resize(size(px(1200.), px(900.)));
+            Host(cx.new(|cx| AgentsPane::new(WeakEntity::new_invalid(), store, window, cx)))
+        });
+        let pane = host.read_with(&cx, |host, _| host.0.clone()).unwrap();
+
+        pane.update(&mut cx, |pane, cx| {
+            pane.refresh_mcp_status(cx);
+            assert!(pane.mcp_loading);
+            assert_eq!(pane.mcp_generation, 1);
+            pane.refresh_mcp_status(cx);
+            assert!(
+                pane.mcp_refresh_pending,
+                "a busy refresh must queue one follow-up"
+            );
+            assert_eq!(pane.mcp_generation, 1);
+        });
+        cx.run_until_parked();
+        pane.read_with(&cx, |pane, _| {
+            assert!(!pane.mcp_loading);
+            assert!(!pane.mcp_refresh_pending);
+            assert_eq!(
+                pane.mcp_generation, 2,
+                "the queued refresh ran after the first"
+            );
+            assert!(pane.mcp_status.is_some());
+        });
+
+        pane.update(&mut cx, |pane, cx| {
+            pane.mcp_status = None;
+            pane.refresh_mcp_status(cx);
+            // A newer write or read started after this one; its completion must not land.
+            pane.mcp_generation += 1;
+        });
+        cx.run_until_parked();
+        pane.read_with(&cx, |pane, _| {
+            assert!(!pane.mcp_loading);
+            assert!(
+                pane.mcp_status.is_none(),
+                "stale completion overwrote newer state"
+            );
+        });
+    }
+
+    #[test]
+    fn mcp_action_maps_to_its_button_label_and_variant() {
+        assert_eq!(McpRowAction::Register.label(), "Register");
+        assert_eq!(McpRowAction::Register.variant(), ButtonVariant::Tinted);
+        assert_eq!(McpRowAction::Unregister.label(), "Unregister");
+        assert_eq!(McpRowAction::Unregister.variant(), ButtonVariant::Outline);
+    }
+
+    #[test]
+    fn only_runtimes_the_mcp_writer_knows_get_a_line() {
+        assert_eq!(
+            McpClient::for_runtime("claude-code"),
+            Some(McpClient::ClaudeCode)
+        );
+        assert_eq!(McpClient::for_runtime("codex"), Some(McpClient::Codex));
+        assert_eq!(McpClient::for_runtime("trae"), Some(McpClient::Trae));
+        assert_eq!(McpClient::for_runtime("gemini"), None);
+        assert_eq!(McpClient::ClaudeCode.key(), "claude_code");
+        assert_eq!(McpClient::Codex.config_file(), "~/.codex/config.toml");
     }
 
     #[test]
