@@ -332,8 +332,8 @@ mod tests {
         assert_eq!(tables.len(), 1);
         assert_eq!(tables.get(0).unwrap().len(), 2);
         assert_eq!(
-            tables.get(0).unwrap()["path"].as_str(),
-            marker_dir.join("SKILL.md").to_str()
+            tables.get(0).unwrap()["path"].as_str().map(Path::new),
+            Some(marker_dir.join("SKILL.md").as_path())
         );
         #[cfg(unix)]
         {
@@ -758,8 +758,10 @@ mod tests {
             let document = text.parse::<toml_edit::DocumentMut>().unwrap();
             assert_eq!(document.len(), 1);
             assert_eq!(
-                document["skills"]["config"][0]["path"].as_str(),
-                path.join("SKILL.md").to_str()
+                document["skills"]["config"][0]["path"]
+                    .as_str()
+                    .map(Path::new),
+                Some(path.join("SKILL.md").as_path())
             );
             assert!(!config_dir.join("skills").exists());
             if custom {
