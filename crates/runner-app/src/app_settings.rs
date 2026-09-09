@@ -196,7 +196,6 @@ pub struct AppSettings {
     pub default_runtime: String,
     pub disabled_agents: BTreeSet<String>,
     pub enabled_agents: BTreeSet<String>,
-    #[cfg(windows)]
     pub initialized_mcp_clients: BTreeSet<String>,
     #[serde(default, deserialize_with = "keymap::deserialize_overrides")]
     pub keymap_overrides: KeymapOverrides,
@@ -235,7 +234,6 @@ impl Default for AppSettings {
             default_runtime: String::new(),
             disabled_agents: BTreeSet::new(),
             enabled_agents: BTreeSet::new(),
-            #[cfg(windows)]
             initialized_mcp_clients: BTreeSet::new(),
             keymap_overrides: KeymapOverrides::new(),
         }
@@ -706,6 +704,18 @@ mod tests {
         }
         let value = serde_json::to_value(AppSettings::default()).unwrap();
         assert!(value.get("appFontFamily").is_none());
+    }
+
+    #[test]
+    fn settings_without_initialized_mcp_clients_decode_to_empty() {
+        let settings: AppSettings = serde_json::from_str(r#"{"appZoom":1.25}"#).unwrap();
+        assert!(settings.initialized_mcp_clients.is_empty());
+        let settings: AppSettings =
+            serde_json::from_str(r#"{"initializedMcpClients":["codex"]}"#).unwrap();
+        assert_eq!(
+            settings.initialized_mcp_clients,
+            ["codex".to_owned()].into_iter().collect()
+        );
     }
 
     #[cfg(windows)]

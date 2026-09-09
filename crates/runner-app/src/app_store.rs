@@ -19,8 +19,7 @@ use runner_terminal::terminal::TerminalBridge;
 
 use crate::app_settings::{AppSettings, TerminalCursorStyle, TerminalFontFamily, TerminalTheme};
 
-#[cfg(windows)]
-mod mcp_defaults_windows;
+mod mcp_defaults;
 
 #[derive(Clone)]
 pub(crate) struct GlobalAppStore(pub(crate) Entity<AppStore>);
@@ -32,7 +31,6 @@ pub(crate) enum StoreRefreshKind {
     Activity,
     Nodes,
     Missions,
-    #[cfg(windows)]
     Runtimes,
     All,
 }
@@ -40,7 +38,6 @@ pub(crate) enum StoreRefreshKind {
 impl StoreRefreshKind {
     pub(crate) fn for_event(event: &AppEvent) -> Option<Self> {
         match event.name {
-            #[cfg(windows)]
             "runtime/changed" => Some(Self::Runtimes),
             "session/status" => Some(Self::Activity),
             "chat/tab-attention-changed" | "chat/layout-changed" => Some(Self::Nodes),
@@ -350,7 +347,6 @@ impl AppStore {
         if let Some(error) = settings_error {
             store.record_error(error);
         } else {
-            #[cfg(windows)]
             store.initialize_mcp_defaults();
         }
         store
@@ -369,7 +365,6 @@ impl AppStore {
     }
 
     pub(crate) fn refresh(&mut self, refresh: StoreRefreshKind, cx: &mut Context<Self>) {
-        #[cfg(windows)]
         if matches!(refresh, StoreRefreshKind::Runtimes | StoreRefreshKind::All) {
             self.initialize_mcp_defaults();
         }
@@ -481,7 +476,6 @@ impl AppStore {
         let terminal_settings = TerminalSettingsSnapshot::from(&self.settings);
         let mission_settings = MissionSettingsSnapshot::from(&self.settings);
         let shell_settings = ShellSettingsSnapshot::from(&self.settings);
-        #[cfg(windows)]
         let agent_settings = (
             self.settings.enabled_agents.clone(),
             self.settings.disabled_agents.clone(),
@@ -495,7 +489,6 @@ impl AppStore {
                 .sessions
                 .set_mission_permission_mode(self.settings.mission_permission_mode);
         }
-        #[cfg(windows)]
         if agent_settings
             != (
                 self.settings.enabled_agents.clone(),
