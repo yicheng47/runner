@@ -61,11 +61,9 @@ Runner checks for Windows updates at startup and every six hours, downloads them
 
 A three-agent crew — two players and a referee — playing a game of tic-tac-toe against each other over the mission feed, from the [`tic-tac-toe`](./examples/tic-tac-toe/) example crew.
 
-<p align="center">
-  <a href="https://www.youtube.com/watch?v=eKXcfxC4m1U">
-    <img src="https://img.youtube.com/vi/eKXcfxC4m1U/maxresdefault.jpg" alt="Runner demo — a three-agent crew playing tic-tac-toe (YouTube)" width="720" />
-  </a>
-</p>
+https://github.com/user-attachments/assets/fb3669a4-010d-42d0-9555-2a3ba3223c75
+
+Also on [YouTube](https://www.youtube.com/watch?v=eKXcfxC4m1U) if the player above does not load.
 
 ## Features
 
