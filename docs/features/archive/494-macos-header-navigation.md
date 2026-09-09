@@ -1,6 +1,6 @@
 # Previous and next page arrows in the macOS header
 
-Tracking issue: [#494](https://github.com/yicheng47/runner/issues/494). Status: implemented on `feat/494-macos-header-navigation`, design signed off 2026-09-08 (`runner.pen` node `YRWg3`); smoke-tested by Jason 2026-09-08. Priority P2.
+Tracking issue: [#494](https://github.com/yicheng47/runner/issues/494). Status: **shipped 2026-09-08 in [#514](https://github.com/yicheng47/runner/pull/514)**, released in 0.8.4; design `runner.pen` node `YRWg3`. Priority P2.
 
 ## Motivation
 

@@ -1,6 +1,6 @@
 # Confirm quit while work is still running
 
-Tracking issue: [#491](https://github.com/yicheng47/runner/issues/491). Status: planned. Priority P2.
+Tracking issue: [#491](https://github.com/yicheng47/runner/issues/491). Status: **closed as not planned 2026-09-07** — Jason chose to make sessions outlive the app (a detached session host, the direction #466 declined), which leaves nothing to confirm at quit; kept as a record. Priority was P2.
 
 ## Motivation
 

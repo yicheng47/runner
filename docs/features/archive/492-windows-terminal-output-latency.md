@@ -1,6 +1,6 @@
 # Ship the Windows Terminal ConPTY and forward Windows output immediately
 
-Tracking issue: [#492](https://github.com/yicheng47/runner/issues/492). Status: implemented on `fix/492-windows-output-cadence` and confirmed live on Windows on 2026-09-08; the macOS check and the commit remain. The first revision's coalescer rewrite is superseded and removed by this one. Priority P1. Windows only; the macOS forwarder is not touched.
+Tracking issue: [#492](https://github.com/yicheng47/runner/issues/492). Status: **shipped 2026-09-08 in [#522](https://github.com/yicheng47/runner/pull/522)**, released in 0.8.4. The first revision's coalescer rewrite is superseded and removed by this one. Priority P1. Windows only; the macOS forwarder is not touched.
 
 ## Motivation
 

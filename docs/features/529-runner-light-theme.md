@@ -35,7 +35,7 @@ Eight color literals live outside `theme.rs` and the terminal element (`surfaces
 - A theme editor or user-defined palettes. Runner Light is one designed theme, like Carbon.
 - Restyling the dark theme. Carbon does not change.
 - Per-surface light overrides (a dark sidebar in a light app). One variant, applied everywhere.
-- Windows chrome recolor beyond what the two `platform_ui/windows.rs` literals need; the header design ([494](./494-macos-header-navigation.md), `design/windows-header.pen`) is separate.
+- Windows chrome recolor beyond what the two `platform_ui/windows.rs` literals need; the header design ([494](./archive/494-macos-header-navigation.md), `design/windows-header.pen`) is separate.
 
 ## Design
 
