@@ -6,7 +6,6 @@ A plan stays here while its work is in flight and moves to [`archive/`](./archiv
 
 ## Active
 
-- [530 — Fold the MCP settings pane into Agents](./530-fold-mcp-pane-into-agents.md) — feature [530](../features/530-fold-mcp-pane-into-agents.md) brief: the MCP-defaults pass on both platforms, one Agents card per runtime with the label/value and `Runner MCP` lines, the MCP pane and nav item deleted.
 - [`local-skills/`](./local-skills/README.md) — feature [73](../features/73-runner-skills.md) implementation program: condensed state and binding decisions, milestone plan, dated impl log.
 - [`gpui-rewrite/`](./gpui-rewrite/) — the GPUI rewrite record; shipped as `v0.6.0` 2026-08-23. What remains is the M6 consolidation queue in [`m6-remainder.md`](./gpui-rewrite/m6-remainder.md), tracked in [#445](https://github.com/yicheng47/runner/issues/445).
 

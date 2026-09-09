@@ -1,6 +1,6 @@
 # 530 — Fold the MCP settings pane into Agents
 
-Tracking issue: [#530](https://github.com/yicheng47/runner/issues/530). Spec: [530](../features/530-fold-mcp-pane-into-agents.md). Feature, P2. Design: `design/runner.pen` `Settings — Agents` (`n1krgH`), committed `eb64a76`. Branch: **`feat/530-fold-mcp-pane-into-agents` already exists and is checked out** — it carries the design and this brief; work on it, do not create another. Phases 2 and 3 of the spec.
+Tracking issue: [#530](https://github.com/yicheng47/runner/issues/530). Spec: [530](../../features/archive/530-fold-mcp-pane-into-agents.md). Feature, P2. Shipped 2026-09-09 in [#534](https://github.com/yicheng47/runner/pull/534) (mission `01M232AEC1M8ST99M0926F6TX3`, claude crew). Design: `design/runner.pen` `Settings — Agents` (`n1krgH`), committed `eb64a76`. Branch: **`feat/530-fold-mcp-pane-into-agents` already exists and is checked out** — it carries the design and this brief; work on it, do not create another. Phases 2 and 3 of the spec.
 
 ## What ships
 
