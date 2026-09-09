@@ -205,6 +205,13 @@ macOS and Windows are developed together on `main`. For dev setup, prereqs, and 
 
 Runner is written and maintained by **Yicheng Wang** (Jason Wang, 王逸成) — [@yicheng47](https://github.com/yicheng47) on GitHub.
 
+## Community
+
+- Bugs and feature requests: [GitHub Issues](https://github.com/yicheng47/runner/issues).
+- 中文用户可以扫码加我微信，备注「runner」，我会拉你进 Runner 用户群。
+
+<img src="assets/wechat_qr.jpg" alt="微信二维码" width="200" />
+
 ## License
 
 GPL-3.0-only. Copyright (C) 2026 Yicheng Wang (Jason Wang). Runner is free software: you can use it for anything, including at work, and redistribute or modify it under the terms of the GNU General Public License v3.0 — modified versions you distribute must stay under the same license (see `LICENSE`). Versions released before 2026-08-22 were published under MIT and remain so.
