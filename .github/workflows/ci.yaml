@@ -35,6 +35,7 @@ jobs:
         with:
           key: ${{ hashFiles('Cargo.toml') }}
           cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Check formatting
         run: cargo fmt --all --check
@@ -80,6 +81,7 @@ jobs:
         with:
           key: ${{ hashFiles('Cargo.toml') }}
           cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Verify Windows installer behavior
         run: ./script/windows/test-installer.ps1
