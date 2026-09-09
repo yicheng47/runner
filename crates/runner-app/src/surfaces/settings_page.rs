@@ -14,9 +14,9 @@ use runner_app::ui::{
 
 use super::*;
 use crate::app_settings::{
-    normalize_zoom, nudge_zoom, FileLinkEditor, TerminalCursorStyle, TerminalFontFamily,
-    TerminalTheme, TERMINAL_FONT_SIZE_MAX, TERMINAL_FONT_SIZE_MIN, TERMINAL_SCROLLBACK_LINES,
-    ZOOM_STEPS,
+    normalize_zoom, nudge_zoom, FileLinkEditor, MissionPermissionMode, TerminalCursorStyle,
+    TerminalFontFamily, TerminalTheme, TERMINAL_FONT_SIZE_MAX, TERMINAL_FONT_SIZE_MIN,
+    TERMINAL_SCROLLBACK_LINES, ZOOM_STEPS,
 };
 use crate::surfaces::app_shell::TITLEBAR_DRAG_HEIGHT;
 use crate::theme::{DarkTheme, LightTheme, ThemeIntent};
@@ -28,6 +28,7 @@ const SETTINGS_SAVE_DELAY_MS: u64 = 300;
 pub(crate) enum SettingsPane {
     #[default]
     General,
+    Missions,
     Appearance,
     Terminal,
     Shortcuts,
@@ -43,6 +44,7 @@ pub(crate) enum SettingsPane {
 impl SettingsPane {
     fn from_route(value: Option<&str>) -> Self {
         match value {
+            Some("missions") => Self::Missions,
             Some("appearance") => Self::Appearance,
             Some("terminal") => Self::Terminal,
             Some("shortcuts") => Self::Shortcuts,
@@ -60,6 +62,7 @@ impl SettingsPane {
     fn key(self) -> &'static str {
         match self {
             Self::General => "general",
+            Self::Missions => "missions",
             Self::Appearance => "appearance",
             Self::Terminal => "terminal",
             Self::Shortcuts => "shortcuts",
@@ -76,6 +79,7 @@ impl SettingsPane {
     fn label(self) -> &'static str {
         match self {
             Self::General => "General",
+            Self::Missions => "Missions",
             Self::Appearance => "Appearance",
             Self::Terminal => "Terminal",
             Self::Shortcuts => "Keyboard shortcuts",
@@ -92,6 +96,7 @@ impl SettingsPane {
     fn icon(self) -> &'static str {
         match self {
             Self::General => "settings.svg",
+            Self::Missions => "rocket.svg",
             Self::Appearance => "sun.svg",
             Self::Terminal => "terminal.svg",
             Self::Shortcuts => "keyboard.svg",
@@ -108,6 +113,7 @@ impl SettingsPane {
 
 const APP_PANES: &[SettingsPane] = &[
     SettingsPane::General,
+    SettingsPane::Missions,
     SettingsPane::Appearance,
     SettingsPane::Terminal,
     SettingsPane::Shortcuts,
@@ -160,6 +166,7 @@ fn alpha(mut color: gpui::Hsla, value: f32) -> gpui::Hsla {
 #[derive(Clone, Copy)]
 enum SettingsSelection {
     DefaultCrew,
+    MissionPermissions,
     LightTheme,
     DarkTheme,
     TerminalTheme,
@@ -179,6 +186,7 @@ pub(crate) struct SettingsState {
     shortcut_conflict: Option<ShortcutConflict>,
     shortcut_recording_focus: FocusHandle,
     default_crew: Entity<StyledSelect>,
+    mission_permissions: Entity<StyledSelect>,
     default_working_dir: Entity<TextField>,
     working_dir_browse_focus: FocusHandle,
     light_theme: Entity<StyledSelect>,
@@ -234,6 +242,20 @@ impl SettingsState {
             settings.default_crew_id.clone(),
             vec![SelectOption::new("", "No default")],
             SettingsSelection::DefaultCrew,
+            cx,
+        );
+        let mission_permissions = settings_select(
+            &root,
+            "settings-mission-permissions",
+            settings.mission_permission_mode.key(),
+            MissionPermissionMode::ALL
+                .into_iter()
+                .map(|mode| {
+                    SelectOption::new(mode.key(), mode.label())
+                        .description(mission_permission_mode_description(mode))
+                })
+                .collect(),
+            SettingsSelection::MissionPermissions,
             cx,
         );
         let light_theme = settings_select(
@@ -354,6 +376,7 @@ impl SettingsState {
             shortcut_conflict: None,
             shortcut_recording_focus: cx.focus_handle(),
             default_crew,
+            mission_permissions,
             default_working_dir,
             working_dir_browse_focus: cx.focus_handle(),
             light_theme,
@@ -386,6 +409,65 @@ impl SettingsState {
 struct ShortcutConflict {
     id: &'static str,
     message: String,
+}
+
+fn missions_settings_pane(
+    default_crew: Entity<StyledSelect>,
+    mission_permissions: Entity<StyledSelect>,
+) -> AnyElement {
+    div()
+        .flex()
+        .flex_col()
+        .gap_5()
+        .debug_selector(|| "SETTINGS_MISSIONS_PANE".into())
+        .child(PaneHeader::new("Missions", ""))
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap(rems(14. / 16.))
+                .child(
+                    div()
+                        .debug_selector(|| "SETTINGS_MISSIONS_DEFAULTS_HEADING".into())
+                        .text_size(rems(1.))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(theme::text())
+                        .child("Defaults"),
+                )
+                .child(
+                    div()
+                        .debug_selector(|| "SETTINGS_MISSIONS_CARD".into())
+                        .child(SettingsCard::new(vec![
+                            SettingsRow::new(
+                                "Default crew",
+                                div()
+                                    .debug_selector(|| "SETTINGS_DEFAULT_CREW".into())
+                                    .child(default_crew),
+                            )
+                            .subtitle("Pre-selected when starting a new mission.")
+                            .into_any_element(),
+                            SettingsRow::new(
+                                "Mission permissions",
+                                div()
+                                    .debug_selector(|| "SETTINGS_MISSION_PERMISSIONS".into())
+                                    .child(mission_permissions),
+                            )
+                            .subtitle(
+                                "Applied to every slot when a mission starts. Bypass never prompts — nobody is watching a mission slot to answer. Direct chats keep their runner's own mode.",
+                            )
+                            .into_any_element(),
+                        ])),
+                ),
+        )
+        .into_any_element()
+}
+
+fn mission_permission_mode_description(mode: MissionPermissionMode) -> &'static str {
+    match mode {
+        MissionPermissionMode::Bypass => "Default. No prompts; codex gets full access.",
+        MissionPermissionMode::Auto => "The runtime's classifier decides; may stall on a prompt.",
+        MissionPermissionMode::RunnerDefault => "Whatever each runner row carries.",
+    }
 }
 
 fn settings_select(
@@ -441,7 +523,7 @@ impl NativeRoot {
             let result = task.await;
             let _ = weak.update(cx, |this, cx| {
                 if this.route != AppRoute::Settings
-                    || this.settings_page.pane != SettingsPane::General
+                    || this.settings_page.pane != SettingsPane::Missions
                 {
                     return;
                 }
@@ -551,7 +633,7 @@ impl NativeRoot {
         }
         self.settings_page.pane = pane;
         match pane {
-            SettingsPane::General => self.refresh_settings_crews(cx),
+            SettingsPane::Missions => self.refresh_settings_crews(cx),
             SettingsPane::Agents => {
                 if self.settings_page.agents.is_none() {
                     let shell = cx.entity().downgrade();
@@ -620,7 +702,10 @@ impl NativeRoot {
                     archived.update(cx, |pane, pane_cx| pane.refresh(pane_cx));
                 }
             }
-            SettingsPane::Appearance | SettingsPane::Terminal | SettingsPane::Shortcuts => {}
+            SettingsPane::General
+            | SettingsPane::Appearance
+            | SettingsPane::Terminal
+            | SettingsPane::Shortcuts => {}
         }
         window.focus(&self.settings_page.focus);
         cx.notify();
@@ -646,6 +731,10 @@ impl NativeRoot {
             SettingsSelection::DefaultCrew => {
                 update_if_changed(&mut settings.default_crew_id, value.to_owned())
             }
+            SettingsSelection::MissionPermissions => MissionPermissionMode::parse(value)
+                .is_some_and(|value| {
+                    update_if_changed(&mut settings.mission_permission_mode, value)
+                }),
             SettingsSelection::LightTheme => parse_light_theme(value)
                 .is_some_and(|value| update_if_changed(&mut settings.light_app_theme, value)),
             SettingsSelection::DarkTheme => parse_dark_theme(value)
@@ -1035,6 +1124,7 @@ impl NativeRoot {
     fn render_settings_pane(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         match self.settings_page.pane {
             SettingsPane::General => Some(self.render_general_settings(cx)),
+            SettingsPane::Missions => Some(self.render_missions_settings(cx)),
             SettingsPane::Appearance => Some(self.render_appearance_settings(cx)),
             SettingsPane::Terminal => Some(self.render_terminal_settings(cx)),
             SettingsPane::Shortcuts => Some(self.render_shortcuts_settings(cx)),
@@ -1557,9 +1647,6 @@ impl NativeRoot {
             .gap_5()
             .child(PaneHeader::new("General", "Defaults and startup behavior."))
             .child(SettingsCard::new(vec![
-                SettingsRow::new("Default crew", self.settings_page.default_crew.clone())
-                    .subtitle("Pre-selected when starting a new mission.")
-                    .into_any_element(),
                 SettingsRow::new(
                     "Default working directory",
                     div().w(rems(280. / 16.)).child(working_dir),
@@ -1604,6 +1691,13 @@ impl NativeRoot {
                     .into_any_element()])),
             )
             .into_any_element()
+    }
+
+    fn render_missions_settings(&self, _cx: &mut Context<Self>) -> AnyElement {
+        missions_settings_pane(
+            self.settings_page.default_crew.clone(),
+            self.settings_page.mission_permissions.clone(),
+        )
     }
 
     fn render_appearance_settings(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -1922,19 +2016,27 @@ mod tests {
             SettingsPane::from_route(Some("not-a-pane")),
             SettingsPane::General
         );
+        assert_eq!(
+            SettingsPane::from_route(Some("missions")),
+            SettingsPane::Missions
+        );
+        assert_eq!(SettingsPane::Missions.key(), "missions");
+        assert_eq!(SettingsPane::Missions.label(), "Missions");
+        assert_eq!(SettingsPane::Missions.icon(), "rocket.svg");
     }
 
     #[test]
     fn nav_search_filters_labels_and_removes_empty_groups() {
         let all = filtered_nav_groups("");
         assert_eq!(all.len(), 3);
-        assert_eq!(all.iter().map(|(_, panes)| panes.len()).sum::<usize>(), 11);
+        assert_eq!(all.iter().map(|(_, panes)| panes.len()).sum::<usize>(), 12);
         assert_eq!(
             all[0],
             (
                 "App",
                 vec![
                     SettingsPane::General,
+                    SettingsPane::Missions,
                     SettingsPane::Appearance,
                     SettingsPane::Terminal,
                     SettingsPane::Shortcuts,
@@ -1969,6 +2071,98 @@ mod tests {
         let archived = filtered_nav_groups("archived");
         assert_eq!(archived, vec![("App", vec![SettingsPane::Archived])]);
         assert!(filtered_nav_groups("no such setting").is_empty());
+    }
+
+    #[test]
+    fn missions_pane_renders_both_rows_at_two_rem_sizes() {
+        use gpui::{size, Render, TestAppContext, VisualTestContext};
+
+        struct PaneHost {
+            default_crew: Entity<StyledSelect>,
+            mission_permissions: Entity<StyledSelect>,
+        }
+        impl Render for PaneHost {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().size_full().p_6().child(missions_settings_pane(
+                    self.default_crew.clone(),
+                    self.mission_permissions.clone(),
+                ))
+            }
+        }
+
+        let mut cx = TestAppContext::single();
+        let host = cx.add_window(|window, cx| {
+            window.resize(size(px(1200.), px(900.)));
+            let noop: SelectHandler = Rc::new(|_, _, _| {});
+            let default_crew = cx.new(|cx| {
+                StyledSelect::new(
+                    "settings-default-crew",
+                    cx.focus_handle(),
+                    "",
+                    vec![SelectOption::new("", "No default")],
+                    noop.clone(),
+                    cx,
+                )
+            });
+            let mission_permissions = cx.new(|cx| {
+                StyledSelect::new(
+                    "settings-mission-permissions",
+                    cx.focus_handle(),
+                    MissionPermissionMode::Auto.key(),
+                    MissionPermissionMode::ALL
+                        .into_iter()
+                        .map(|mode| {
+                            SelectOption::new(mode.key(), mode.label())
+                                .description(mission_permission_mode_description(mode))
+                        })
+                        .collect(),
+                    noop,
+                    cx,
+                )
+            });
+            PaneHost {
+                default_crew,
+                mission_permissions,
+            }
+        });
+        cx.run_until_parked();
+        let mut window = VisualTestContext::from_window(host.into(), &cx);
+        for rem in [16., 20.8] {
+            host.update(&mut window, |_, window, _| window.set_rem_size(px(rem)))
+                .unwrap();
+            window.run_until_parked();
+            let pane = window.debug_bounds("SETTINGS_MISSIONS_PANE").unwrap();
+            let heading = window
+                .debug_bounds("SETTINGS_MISSIONS_DEFAULTS_HEADING")
+                .unwrap();
+            let card = window.debug_bounds("SETTINGS_MISSIONS_CARD").unwrap();
+            let crew = window.debug_bounds("SETTINGS_DEFAULT_CREW").unwrap();
+            let permissions = window.debug_bounds("SETTINGS_MISSION_PERMISSIONS").unwrap();
+            assert!(
+                heading.size.height >= px(rem) && heading.bottom() <= card.top(),
+                "{rem}: {heading:?} {card:?}"
+            );
+            assert!(
+                card.size.width > px(0.) && card.size.width <= pane.size.width,
+                "{rem}: {card:?} {pane:?}"
+            );
+            assert!(
+                crew.bottom() <= permissions.top(),
+                "{rem}: {crew:?} {permissions:?}"
+            );
+            assert!(
+                permissions.bottom() <= card.bottom() && permissions.right() <= card.right(),
+                "{rem}: {permissions:?} {card:?}"
+            );
+            assert!(
+                permissions.size.width > px(rem * 4.) && permissions.size.height >= px(rem * 1.5),
+                "{rem}: {permissions:?}"
+            );
+        }
+        host.update(&mut window, |host, _, cx| {
+            assert_eq!(host.mission_permissions.read(cx).value(), "auto");
+        })
+        .unwrap();
     }
 
     #[test]

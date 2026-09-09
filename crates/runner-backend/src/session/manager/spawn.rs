@@ -588,8 +588,16 @@ impl SessionManager {
         )?;
         let pinned = resolution.pinned;
         let agent_options_overridden = resolution.effective.is_some();
-        let runner =
-            self.resolve_runner_executable(resolution.effective.as_ref().unwrap_or(runner), &pool)?;
+        // Mission slots follow the app-wide permission mode (feature
+        // 527): converge the row's permission flags to the setting,
+        // leaving every other arg alone. Direct chats never pass here.
+        let mut runner = resolution.effective.unwrap_or_else(|| runner.clone());
+        runner.args = router::runtime::apply_mission_permission_mode(
+            &runner.runtime,
+            &runner.args,
+            self.mission_permission_mode(),
+        );
+        let runner = self.resolve_runner_executable(&runner, &pool)?;
 
         // Agent-native session resume: this is a *fresh* session row, so
         // there's no prior key to inherit. The runtime adapter still
@@ -1989,7 +1997,7 @@ impl SessionManager {
         let runner = if let Some(runner_id) = snap.runner_id.as_deref() {
             let conn = pool.get()?;
             let runner = crate::ops::runner::get(&conn, runner_id)?;
-            let runner = match resolve_runtime_override(
+            let mut runner = match resolve_runtime_override(
                 &runner,
                 snap.agent_runtime.as_deref(),
                 snap.agent_model.as_deref(),
@@ -2000,6 +2008,16 @@ impl SessionManager {
                 Some(effective) => effective,
                 None => runner,
             };
+            // Mission slots re-read the app-wide permission mode on
+            // resume (feature 527), so a setting changed while the
+            // slot was down applies to the respawn.
+            if snap.mission_id.is_some() {
+                runner.args = router::runtime::apply_mission_permission_mode(
+                    &runner.runtime,
+                    &runner.args,
+                    self.mission_permission_mode(),
+                );
+            }
             self.resolve_runner_executable(&runner, &pool)?
         } else {
             let runtime = snap.agent_runtime.as_deref().ok_or_else(|| {

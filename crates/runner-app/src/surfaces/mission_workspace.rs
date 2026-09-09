@@ -607,6 +607,10 @@ impl MissionWorkspace {
         self.goal.clone()
     }
 
+    fn permission_mode(&self) -> Option<String> {
+        mission_permission_mode_label(&self.events)
+    }
+
     fn feed_is_near_bottom(&self) -> bool {
         let maximum = f32::from(self.feed_scroll.max_offset().height).max(0.);
         let position = (-f32::from(self.feed_scroll.offset().y)).clamp(0., maximum);
@@ -5804,6 +5808,7 @@ impl MissionWorkspace {
         let crew_root = root.clone();
         let cwd_root = root;
         let goal = self.goal();
+        let permission_mode = self.permission_mode();
         let mut panel = div()
             .id("mission-meta-scroll")
             .flex_1()
@@ -5933,6 +5938,16 @@ impl MissionWorkspace {
                     )
                     .child(crew_name),
             ))
+            .children(permission_mode.map(|mode| {
+                meta_section(
+                    "Permissions",
+                    div()
+                        .id("mission-permission-mode")
+                        .text_size(rems(12. / 16.))
+                        .text_color(theme::text())
+                        .child(mode),
+                )
+            }))
             .child(meta_section(
                 "Started",
                 div()
@@ -6173,6 +6188,22 @@ fn rail_section_label(label: &'static str) -> AnyElement {
         .into_any_element()
 }
 
+/// The permission mode a mission started with, read from the first
+/// `mission_start` signal's payload (feature 527). Missions recorded
+/// before the key existed have no section. Rendered as the spec's
+/// human label: `bypass`, `auto`, or `runner default`.
+fn mission_permission_mode_label(events: &[Event]) -> Option<String> {
+    events
+        .iter()
+        .find(|event| {
+            event.kind == EventKind::Signal
+                && event.signal_type.as_ref().map(|kind| kind.as_str()) == Some("mission_start")
+        })
+        .and_then(|event| event.payload.get("permission_mode"))
+        .and_then(serde_json::Value::as_str)
+        .map(|mode| mode.replace('-', " "))
+}
+
 fn meta_section(label: &'static str, body: impl IntoElement) -> AnyElement {
     div()
         .flex()
@@ -6274,6 +6305,49 @@ fn preferred_terminal_size(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn signal(signal_type: &str, payload: serde_json::Value) -> Event {
+        Event {
+            id: signal_type.into(),
+            ts: Utc::now(),
+            crew_id: "crew".into(),
+            mission_id: "mission".into(),
+            kind: EventKind::Signal,
+            from: "system".into(),
+            to: None,
+            signal_type: Some(runner_backend::model::SignalType::new(signal_type)),
+            payload,
+        }
+    }
+
+    #[test]
+    fn permissions_section_reads_the_recorded_mission_start_mode() {
+        let goal = signal("mission_goal", serde_json::json!({ "text": "Ship it" }));
+        for (recorded, shown) in [
+            ("bypass", "bypass"),
+            ("auto", "auto"),
+            ("runner-default", "runner default"),
+        ] {
+            let start = signal(
+                "mission_start",
+                serde_json::json!({ "title": "t", "cwd": null, "permission_mode": recorded }),
+            );
+            assert_eq!(
+                mission_permission_mode_label(&[start, goal.clone()]),
+                Some(shown.to_owned()),
+                "{recorded}"
+            );
+        }
+
+        // Pre-feature missions recorded no key: no section.
+        let legacy = signal(
+            "mission_start",
+            serde_json::json!({ "title": "t", "cwd": null }),
+        );
+        assert_eq!(mission_permission_mode_label(&[legacy, goal.clone()]), None);
+        assert_eq!(mission_permission_mode_label(&[goal]), None);
+        assert_eq!(mission_permission_mode_label(&[]), None);
+    }
 
     #[test]
     fn slot_overlay_precedence_matches_the_shipped_workspace() {
