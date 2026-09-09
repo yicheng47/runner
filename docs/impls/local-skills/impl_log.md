@@ -4,8 +4,8 @@ Dated record for the local-skills program ([README](README.md), [plan](plan.md))
 
 ## Current state (update with each entry)
 
-- **Landed**: S0 on the canvas (2026-09-09). Nothing merged.
-- **Next**: M1 in mission on `feat/73-skills-pane` (brief `local-skills-m1-skills-pane.md`); land on Jason's word, then the M2 brief. Order: M1 pane → M2 allowlist backend → M3 allowlist app.
+- **Landed**: S0 on the canvas and M1 via PR [#531](https://github.com/yicheng47/runner/pull/531) (2026-09-09).
+- **Next**: the M2 brief (allowlist in the backend), opening with the `-c skills.config=…` probe that decides codex's per-launch route. Order: M1 pane → M2 allowlist backend → M3 allowlist app.
 - **CLI versions verified against**: claude-code 2.1.250 (`skillOverrides` via `--settings` hides skills from the model; leak bugs #54996 / #50631 closed 2026-05-04), codex 0.150.1 (skills present, no per-launch control).
 
 ## 2026-08-28 — program opened
@@ -19,3 +19,7 @@ Design pass with Jason on the canvas, six frames (ids in [plan.md](plan.md)). Th
 ## 2026-09-09 — codex correction mid-mission
 
 Jason's smoke test caught the brief's codex half: Codex 0.153.4 reads `~/.agents/skills` (documented user scope, 28 skills here) **and** the legacy `~/.codex/skills` (11 here) — a headless `codex exec "list every skill"` returned all 39 plus 6 system and the plugin skills — and it has a global off switch, `[[skills.config]] path/enabled` in `~/.codex/config.toml`, the setting the Codex app's skill sheet toggles. Spec §Mechanism gained a "What Codex provides" table; the catalog scans both roots into one list; codex rows carry the toggle; `set_global_enabled` writes the TOML array via `toml_edit`; README decisions 1, 3 and 5 amended; `-c skills.config=…` recorded as the M2 question for a codex per-launch route. Canvas: `Settings — Skills · Codex` and the two root-state frames updated. The correction was posted to mission `01M22AJERV1ZGP91P1Q21YR52Y` as a human message.
+
+## 2026-09-09 — M1 landed
+
+Mission `01M22AJERV1ZGP91P1Q21YR52Y` (`codex peer`) ran nine review rounds in one sitting: the pane, modal and editor; a Preview font fix, Cancel returning to Preview and the metadata scrollbar removal steered from the coder's PTY; the codex correction (two roots, `[[skills.config]]`, per-runtime badges) posted mid-mission; one A–Z order across roots; and two round-trip cleanups found by the smoke test — an emptied `[[skills.config]]` no longer leaves a `[skills]` header (Runner writes implicit parents, so a hand-written header with comments is never touched) and an emptied `skillOverrides` map is removed. `make verify` green; PR #531. Deferred, cosmetic: absolute path where the spec writes `~`, the nav icon shared with Diagnostics, modal focus order, 20 px Preview leading from the shared renderer. CLI versions at landing: claude-code 2.1.250, codex 0.153.4.
