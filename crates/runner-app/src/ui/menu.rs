@@ -179,10 +179,27 @@ fn previous_enabled(items: &[MenuItem], current: usize) -> Option<usize> {
         .or_else(|| enabled_at_or_before(items, items.len().saturating_sub(1)))
 }
 
+/// How wide a popup is: a fixed width, or its content's width between two bounds.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum PopupWidth {
+    Fixed(Pixels),
+    Fit { min: Pixels, max: Pixels },
+}
+
 pub fn popup_layer(
     anchor: Bounds<Pixels>,
     window: &Window,
     width: Pixels,
+    menu: AnyElement,
+    on_dismiss: DismissHandler,
+) -> AnyElement {
+    popup_layer_sized(anchor, window, PopupWidth::Fixed(width), menu, on_dismiss)
+}
+
+pub fn popup_layer_sized(
+    anchor: Bounds<Pixels>,
+    window: &Window,
+    width: PopupWidth,
     menu: AnyElement,
     on_dismiss: DismissHandler,
 ) -> AnyElement {
@@ -193,8 +210,15 @@ pub fn popup_layer(
     let estimated_height = px(280. * zoom);
     let dismiss = Rc::clone(&on_dismiss);
     let dismiss_right = Rc::clone(&on_dismiss);
-    let width = width.min(viewport.width - edge * 2.);
-    let left = anchor.left().min(viewport.width - edge - width).max(edge);
+    let widest = viewport.width - edge * 2.;
+    let (min_width, max_width) = match width {
+        PopupWidth::Fixed(width) => (width.min(widest), width.min(widest)),
+        PopupWidth::Fit { min, max } => (min.min(widest), max.min(widest)),
+    };
+    let left = anchor
+        .left()
+        .min(viewport.width - edge - min_width)
+        .max(edge);
     let space_below = viewport.height - anchor.bottom();
     let flip = space_below < estimated_height && anchor.top() > space_below;
     let top = if flip {
@@ -235,7 +259,10 @@ pub fn popup_layer(
                     .snap_to_window_with_margin(edge)
                     .child(
                         div()
-                            .w(width)
+                            .map(|popup| match width {
+                                PopupWidth::Fixed(_) => popup.w(min_width),
+                                PopupWidth::Fit { .. } => popup.min_w(min_width).max_w(max_width),
+                            })
                             .occlude()
                             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                             .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
