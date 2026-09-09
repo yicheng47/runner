@@ -457,7 +457,10 @@ impl RenderOnce for ConfirmDialog {
             ButtonVariant::Danger => theme::danger(),
             ButtonVariant::Primary => theme::accent(),
             ButtonVariant::Warning => theme::warning(),
-            ButtonVariant::Secondary | ButtonVariant::Ghost => theme::text(),
+            ButtonVariant::Secondary
+            | ButtonVariant::Outline
+            | ButtonVariant::Tinted
+            | ButtonVariant::Ghost => theme::text(),
         };
         div()
             .absolute()
@@ -573,11 +576,24 @@ fn confirm_action_button(
     on_press: PressHandler,
 ) -> AnyElement {
     let click = Rc::clone(&on_press);
-    let bordered = matches!(variant, ButtonVariant::Danger);
+    let bordered = matches!(
+        variant,
+        ButtonVariant::Outline | ButtonVariant::Tinted | ButtonVariant::Danger
+    );
     let (background, foreground, border) = match variant {
         ButtonVariant::Primary => (theme::accent(), theme::accent_ink(), theme::accent()),
         ButtonVariant::Warning => (theme::warning(), theme::bg(), theme::warning()),
         ButtonVariant::Secondary => (theme::raised(), theme::text(), theme::border_strong()),
+        ButtonVariant::Outline => (
+            gpui::transparent_black(),
+            theme::text(),
+            theme::border_strong(),
+        ),
+        ButtonVariant::Tinted => (
+            theme::with_alpha(theme::accent(), 0.1),
+            theme::accent(),
+            theme::with_alpha(theme::accent(), 0.2),
+        ),
         ButtonVariant::Ghost => (
             gpui::transparent_black(),
             theme::muted(),
@@ -614,9 +630,11 @@ fn confirm_action_button(
             style.shadow(vec![BoxShadow {
                 color: theme::with_alpha(
                     match variant {
-                        ButtonVariant::Primary => theme::accent(),
+                        ButtonVariant::Primary | ButtonVariant::Tinted => theme::accent(),
                         ButtonVariant::Warning => theme::warning(),
-                        ButtonVariant::Secondary | ButtonVariant::Ghost => theme::border_strong(),
+                        ButtonVariant::Secondary
+                        | ButtonVariant::Outline
+                        | ButtonVariant::Ghost => theme::border_strong(),
                         ButtonVariant::Danger => theme::danger(),
                     },
                     0.65,
@@ -634,7 +652,10 @@ fn confirm_action_button(
                     ButtonVariant::Primary => theme::with_alpha(theme::accent(), 0.8),
                     ButtonVariant::Warning => theme::with_alpha(theme::warning(), 0.8),
                     ButtonVariant::Secondary => theme::with_alpha(theme::raised(), 0.8),
-                    ButtonVariant::Ghost => theme::with_alpha(theme::raised(), 0.8),
+                    ButtonVariant::Outline | ButtonVariant::Ghost => {
+                        theme::with_alpha(theme::raised(), 0.8)
+                    }
+                    ButtonVariant::Tinted => theme::with_alpha(theme::accent(), 0.2),
                     ButtonVariant::Danger => theme::with_alpha(theme::danger(), 0.2),
                 })
             })
