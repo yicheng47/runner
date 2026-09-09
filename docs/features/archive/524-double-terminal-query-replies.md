@@ -1,6 +1,6 @@
 # Answer each terminal query once
 
-Tracking issue: [#524](https://github.com/yicheng47/runner/issues/524). Status: implemented and verified on Windows on 2026-09-08; the macOS check remains. Priority P1: a 0.8.4 regression on Windows that puts stray text in every Codex and Claude Code composer. Both platforms change; macOS is affected invisibly.
+Tracking issue: [#524](https://github.com/yicheng47/runner/issues/524). Status: **shipped 2026-09-08 in [#526](https://github.com/yicheng47/runner/pull/526)**, released in 0.8.4. Priority P1: a 0.8.4 regression on Windows that puts stray text in every Codex and Claude Code composer. Both platforms change; macOS is affected invisibly.
 
 ## Motivation
 

@@ -1,6 +1,6 @@
 # Windows code signing
 
-Tracking issue: [#497](https://github.com/yicheng47/runner/issues/497). Status: implemented, awaiting the first signed nightly and stable release. Priority P1.
+Tracking issue: [#497](https://github.com/yicheng47/runner/issues/497). Status: **shipped 2026-09-08** as commit `100f1c3` on `main`; 0.8.4 was the first Certum-signed stable release. Priority P1.
 
 ## Motivation
 

@@ -12,7 +12,7 @@ The app must not run a downloaded installer it cannot prove came from Runner's C
 
 - **What is signed.** CI signs the installer bytes with the minisign key already in the repository's secrets (`TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`, key id `596D7429FAE1FE23`), using the same `@tauri-apps/cli signer sign` step `release.yml` already runs for the 0.6.0 bridge. The output is uploaded as a release asset next to the installer: `Runner-Setup-<version>-x64.exe.sig`, the base64-encoded minisign signature text that `signer sign` produces.
 - **What verifies it.** The minisign public key that 0.5.2's `tauri.conf.json` trusted lives in the tree as `packaging/windows-update-public-key` and is compiled into `Runner.exe`. Verification uses the `minisign-verify` crate, the one `tauri-plugin-updater` uses: decode the `.sig` asset, decode the public key, verify the full installer file, and only then rename the download into place. Nothing is ever executed before verification succeeds.
-- **Relation to #497.** Authenticode tells Windows and SmartScreen who published the binary; the minisign signature tells Runner that the bytes are the ones CI built. [#497](../497-windows-code-signing.md) is not a prerequisite. When it ships, the updater adds a second gate, a `WinVerifyTrust` check on the downloaded installer, and the spec records it there.
+- **Relation to #497.** Authenticode tells Windows and SmartScreen who published the binary; the minisign signature tells Runner that the bytes are the ones CI built. [#497](./497-windows-code-signing.md) is not a prerequisite. When it ships, the updater adds a second gate, a `WinVerifyTrust` check on the downloaded installer, and the spec records it there.
 - **SmartScreen.** Files the app writes itself carry no Mark-of-the-Web, and `CreateProcess` does not consult SmartScreen, so an in-app install should not hit the **Windows protected your PC** interstitial that manual downloads hit today. Verification confirms this on a fresh PC rather than assuming it.
 - **Failure is inert.** A release whose installer has no `.sig` is reported the way it is today, notify-only with the browser link. A signature that fails to verify deletes the download, shows a verification error with retry and manual-download actions, and never runs anything. The installed app is untouched in every failure path.
 
@@ -89,7 +89,7 @@ Nothing new is needed: the installer only touches `%LOCALAPPDATA%\Programs\Runne
 ## Non-goals
 
 - macOS changes. Sparkle stays, with its own prompts and the existing macOS Updates pane. The sidebar icon is the only shared element, and it already dispatches per platform: Sparkle's prompt on macOS, this dialog on Windows.
-- Authenticode signing. [#497](../497-windows-code-signing.md) owns it; this feature consumes it when available.
+- Authenticode signing. [#497](./497-windows-code-signing.md) owns it; this feature consumes it when available.
 - Unattended installation or a scheduled restart. Install happens only when the user confirms, every time.
 - Resumable or delta downloads. The installer is tens of megabytes; a restart from zero is fine.
 - In-app channel switching. Nightly and stable stay separate installers.

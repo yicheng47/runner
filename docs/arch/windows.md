@@ -10,7 +10,7 @@ From the repository root, use `.\make.cmd build` to build the app and both CLI s
 
 Development outputs are `target\debug\Runner.exe`, `runner-agent-cli.exe`, `runner-mcp.exe`, `conpty.dll`, and `OpenConsole.exe`; optimized local builds use `target\release`. After Cargo builds, `make.cmd` runs `script/windows/conpty.ps1` to download the pinned, checksum-verified ConPTY package into `target/tools`, verify Microsoft's signatures, and copy the two x64 files beside the executables. Run `.\target\debug\Runner.exe` to launch an existing development build without rebuilding.
 
-Runner ships the Windows Terminal ConPTY because the inbox conhost splits Codex redraws around a delayed cursor repair. The shipped ConPTY delivers whole frames, so Runner can forward output immediately without a Windows-only hold. `portable-pty` loads `conpty.dll` beside the executable; the first PTY spawn logs whether that DLL is present or the inbox conhost is in use. See the [output latency spec](../features/492-windows-terminal-output-latency.md) for measurements and the package pin.
+Runner ships the Windows Terminal ConPTY because the inbox conhost splits Codex redraws around a delayed cursor repair. The shipped ConPTY delivers whole frames, so Runner can forward output immediately without a Windows-only hold. `portable-pty` loads `conpty.dll` beside the executable; the first PTY spawn logs whether that DLL is present or the inbox conhost is in use. See the [output latency spec](../features/archive/492-windows-terminal-output-latency.md) for measurements and the package pin.
 
 Debug builds use `%APPDATA%\com.wycstudios.runner-dev` and a separate MCP pipe. Packaged releases use `%APPDATA%\com.wycstudios.runner`, with logs under its `logs` directory. The per-user installer places application binaries under `%LOCALAPPDATA%\Programs\Runner`; upgrades and uninstall preserve application data.
 
@@ -88,7 +88,7 @@ To preview the update indicator in a development build, set `$env:RUNNER_DEV_UPD
 
 The unsigned Windows port shipped in 0.8.0 and signing followed with [#497](https://github.com/yicheng47/runner/issues/497); these items were not completed by that release:
 
-- Confirm SmartScreen behavior for the signed stable installer on a fresh Windows 11 PC and record the result in the [signing spec](../features/497-windows-code-signing.md).
+- Confirm SmartScreen behavior for the signed stable installer on a fresh Windows 11 PC and record the result in the [signing spec](../features/archive/497-windows-code-signing.md).
 - Complete detailed installed-build lifecycle, crash/relaunch, IME, resize, DPI, path, and update/data-retention acceptance. The [remaining validation checklist](../impls/archive/windows-nightly/impl_log.md#todo) preserves the specific cases and prior results. TRAE remains disabled by default on Windows and native validation is deferred unless requested.
 - Investigate the shutdown `window not found` diagnostic. The separate development-only DXGI debug-interface warning is an optional gpui-ce debug probe and is skipped in release builds.
 - Promote `Rust / Windows` to a required branch check after a week of green merges, planned no earlier than 2026-09-12; inspect current branch protection before changing it.
