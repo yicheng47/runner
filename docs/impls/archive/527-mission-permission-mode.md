@@ -1,6 +1,6 @@
 # 527 — Mission permission mode, bypass by default
 
-Tracking issue: [#527](https://github.com/yicheng47/runner/issues/527). Spec: [527](../features/527-mission-permission-mode.md). Feature, P1. Baseline `main` at `cbf4ea4` (2026-09-09), Runner 0.8.4. Design: `design/runner.pen` frame `Settings — Missions` (`ez53n`). Phases 1 and 2 of the spec; phase 3 (the prompt hook) is not in scope.
+Tracking issue: [#527](https://github.com/yicheng47/runner/issues/527). Spec: [527](../../features/archive/527-mission-permission-mode.md). Feature, P1. Shipped 2026-09-09 in [#532](https://github.com/yicheng47/runner/pull/532) (mission `01M22Y3CWV3PBJFBNRBSW260ZF`, claude crew). Baseline `main` at `cbf4ea4` (2026-09-09), Runner 0.8.4. Design: `design/runner.pen` frame `Settings — Missions` (`ez53n`). Phases 1 and 2 of the spec; phase 3 (the prompt hook) is not in scope.
 
 ## What ships
 

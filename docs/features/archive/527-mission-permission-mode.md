@@ -1,18 +1,18 @@
 # 527 — Mission permission mode, bypass by default
 
-Tracking issue: [#527](https://github.com/yicheng47/runner/issues/527). Status: specced 2026-09-09 (rewritten the same day from a per-mission column to an app setting), P1, designed. Design: `design/runner.pen`, `Settings — Missions` (`ez53n`) — a new pane under Chat in the settings nav (`cmp/SettingsNav` → `nav_missions`), holding `row_Default crew` and `row_Mission permissions` (`gbhW1`) with the select's open state beside it (`spec_permission_select_open`); `Settings — General` (`K8FVAY`) loses Default crew.
+Tracking issue: [#527](https://github.com/yicheng47/runner/issues/527). Status: **shipped 2026-09-09 in [#532](https://github.com/yicheng47/runner/pull/532)** (phases 1 and 2; phase 3, the `permission_prompt` hook signal, stays optional and gets its own issue when felt). Specced 2026-09-09 (rewritten the same day from a per-mission column to an app setting), P1, designed. Design: `design/runner.pen`, `Settings — Missions` (`ez53n`) — a new pane under Chat in the settings nav (`cmp/SettingsNav` → `nav_missions`), holding `row_Default crew` and `row_Mission permissions` (`gbhW1`) with the select's open state beside it (`spec_permission_select_open`); `Settings — General` (`K8FVAY`) loses Default crew.
 
 > Rewritten 2026-09-09. The first draft persisted a mode per mission (`missions.permission_mode`) with a per-slot override (`slots.permission_override`), a Start Mission select, and a migration. Jason's call: the mode is a rule about how missions run, not data about one mission — make it an app setting, default Bypass, no schema change. The first draft stays in git history.
 
 ## Motivation
 
-A permission prompt inside a mission slot is never a real control point. Nobody is watching that PTY, so the prompt is a silent stall: the lead waits on a handoff that never arrives, and the human sees nothing. The byte-flow `IdleDetector` (`crates/runner-backend/src/session/pty_runtime.rs`) reports the stuck slot as idle, which is what a finished slot looks like too. Spec [52](./52-hook-based-session-status.md) closed the hook-based status route, so the feed will not learn to show this.
+A permission prompt inside a mission slot is never a real control point. Nobody is watching that PTY, so the prompt is a silent stall: the lead waits on a handoff that never arrives, and the human sees nothing. The byte-flow `IdleDetector` (`crates/runner-backend/src/session/pty_runtime.rs`) reports the stuck slot as idle, which is what a finished slot looks like too. Spec [52](../52-hook-based-session-status.md) closed the hook-based status route, so the feed will not learn to show this.
 
 Auto mode does not remove the stall. claude-code's `--permission-mode auto` runs a classifier that still stops for a human on some actions; on 2026-09-09 it denied a `git push` twice in one session. codex's `on-request` asks to escalate whenever the sandbox blocks a command. In a direct chat the human answers; in a mission slot nobody does.
 
 Today permission mode is a per-runner property. `ops::runner::create` / `update` write the chosen mode onto the row's `args` at create time through `router::runtime::permission_mode_args` (`crates/runner-backend/src/router/runtime.rs:258`), default Auto (`ops::runner::default_permission_mode`). Missions inherit whatever each runner carries; a slot runtime override starts from the default mode (`session::manager::resolve_runtime_override`, `crates/runner-backend/src/session/manager/mod.rs:1328`). There is no mission-level knob.
 
-The controls that actually protect a crew are elsewhere: worktree isolation ([403](./403-mission-worktree-isolation.md)), the coder/reviewer loop, and the no-commit / no-push rules in the crew prompts. A permission prompt adds nothing to those; it only removes the mission's ability to finish.
+The controls that actually protect a crew are elsewhere: worktree isolation ([403](../403-mission-worktree-isolation.md)), the coder/reviewer loop, and the no-commit / no-push rules in the crew prompts. A permission prompt adds nothing to those; it only removes the mission's ability to finish.
 
 ## Behavior
 
