@@ -33,6 +33,7 @@ pub struct RuntimeDefinition {
     pub display_name: &'static str,
     pub command: &'static str,
     pub native_fork: bool,
+    pub skills_dirs: &'static [&'static str],
 }
 
 const RUNTIME_DEFINITIONS: &[RuntimeDefinition] = &[
@@ -41,18 +42,21 @@ const RUNTIME_DEFINITIONS: &[RuntimeDefinition] = &[
         display_name: "Codex",
         command: "codex",
         native_fork: true,
+        skills_dirs: &[".agents/skills", ".codex/skills"],
     },
     RuntimeDefinition {
         name: "claude-code",
         display_name: "Claude Code",
         command: "claude",
         native_fork: true,
+        skills_dirs: &[".claude/skills"],
     },
     RuntimeDefinition {
         name: "trae",
         display_name: "TRAE CLI",
         command: "traecli",
         native_fork: false,
+        skills_dirs: &[],
     },
 ];
 

@@ -23,6 +23,7 @@ pub mod runtime_defaults;
 pub mod runtime_status;
 pub mod session;
 pub mod shell_path;
+pub mod skills;
 #[cfg(target_os = "macos")]
 pub mod wake;
 pub mod windows;

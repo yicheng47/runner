@@ -37,6 +37,7 @@ pub struct Modal {
     body: AnyElement,
     footer: Option<AnyElement>,
     width: OverlayWidth,
+    height: Option<f32>,
     busy: bool,
     focus_order: Vec<FocusHandle>,
     scroll: Option<(ScrollHandle, Entity<Scrollbar>)>,
@@ -50,6 +51,7 @@ impl Modal {
             body: body.into_any_element(),
             footer: None,
             width: OverlayWidth::Md,
+            height: None,
             busy: false,
             focus_order: Vec::new(),
             scroll: None,
@@ -64,6 +66,11 @@ impl Modal {
 
     pub fn width(mut self, width: OverlayWidth) -> Self {
         self.width = width;
+        self
+    }
+
+    pub fn height(mut self, height: f32) -> Self {
+        self.height = Some(height);
         self
     }
 
@@ -89,6 +96,7 @@ impl RenderOnce for Modal {
         let close_key = Rc::clone(&self.on_close);
         let focus_order = self.focus_order;
         let busy = self.busy;
+        let fixed_height = self.height.is_some();
         let scroll_handle = self.scroll.as_ref().map(|(handle, _)| handle.clone());
         let scrollbar = self.scroll.map(|(_, scrollbar)| scrollbar);
         div()
@@ -131,6 +139,7 @@ impl RenderOnce for Modal {
                     .w_full()
                     .max_w(rems(self.width.pixels() / 16.))
                     .max_h(relative(0.85))
+                    .when_some(self.height, |panel, height| panel.h(rems(height / 16.)))
                     .flex()
                     .flex_col()
                     .overflow_hidden()
@@ -157,11 +166,17 @@ impl RenderOnce for Modal {
                             .relative()
                             .min_h(px(0.))
                             .flex_1()
+                            .when(fixed_height, |body| {
+                                body.flex().flex_col().overflow_hidden()
+                            })
                             .child(
                                 div()
                                     .id("modal-scroll-content")
                                     .size_full()
                                     .overflow_y_scroll()
+                                    .when(fixed_height, |body| {
+                                        body.flex().flex_col().min_h_0().overflow_hidden()
+                                    })
                                     .when_some(scroll_handle, |body, handle| {
                                         body.scrollbar_width(px(0.)).track_scroll(&handle)
                                     })
@@ -724,6 +739,125 @@ fn focus_target_index(len: usize, current: Option<usize>, backwards: bool) -> us
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct DocumentModalTest {
+        editor: Entity<crate::ui::TextField>,
+        scroll: ScrollHandle,
+        editing: bool,
+    }
+
+    impl gpui::Render for DocumentModalTest {
+        fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+            let document = if self.editing {
+                div()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_h_0()
+                    .child(self.editor.clone())
+                    .into_any_element()
+            } else {
+                div()
+                    .id("test-document-scroll")
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .track_scroll(&self.scroll)
+                    .child(div().flex_none().child("Document line\n".repeat(100)))
+                    .into_any_element()
+            };
+            div().size_full().child(
+                Modal::new(
+                    "Skill",
+                    div()
+                        .flex()
+                        .flex_col()
+                        .flex_1()
+                        .min_h_0()
+                        .child(
+                            div()
+                                .h(rems(120. / 16.))
+                                .flex_none()
+                                .child("Description and metadata"),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .flex_1()
+                                .min_h_0()
+                                .debug_selector(|| "DOCUMENT_PANEL".into())
+                                .child(document),
+                        ),
+                    Rc::new(|_, _| {}),
+                )
+                .width(OverlayWidth::Custom(680.))
+                .height(790.)
+                .footer(
+                    div()
+                        .debug_selector(|| "DOCUMENT_FOOTER".into())
+                        .child("Cancel · Save"),
+                ),
+            )
+        }
+    }
+
+    #[test]
+    fn fixed_height_modal_keeps_document_and_editor_above_footer() {
+        use gpui::{TestAppContext, VisualTestContext};
+        for editing in [false, true] {
+            let mut cx = TestAppContext::single();
+            let window = cx.add_window(|_, cx| DocumentModalTest {
+                editor: cx.new(|cx| {
+                    crate::ui::TextField::textarea(
+                        cx.focus_handle(),
+                        "Line\n".repeat(100),
+                        "",
+                        16,
+                        true,
+                    )
+                    .fill_height()
+                    .with_scrollbar(cx)
+                }),
+                scroll: ScrollHandle::new(),
+                editing,
+            });
+            cx.run_until_parked();
+            let mut visual = VisualTestContext::from_window(window.into(), &cx);
+            for rem in [16., 20.8] {
+                window
+                    .update(&mut visual, |_, window, _| window.set_rem_size(px(rem)))
+                    .unwrap();
+                for size in [
+                    gpui::size(px(800.), px(600.)),
+                    gpui::size(px(1440.), px(1000.)),
+                ] {
+                    visual.simulate_resize(size);
+                    visual.run_until_parked();
+                    let document = visual.debug_bounds("DOCUMENT_PANEL").unwrap();
+                    let footer = visual.debug_bounds("DOCUMENT_FOOTER").unwrap();
+                    assert!(
+                        document.size.height > px(40.),
+                        "editing {editing}, rem {rem}: {document:?}"
+                    );
+                    assert!(
+                        document.bottom() <= footer.top(),
+                        "editing {editing}: {document:?} {footer:?}"
+                    );
+                    assert!(footer.bottom() < size.height);
+                    if !editing {
+                        window
+                            .update(&mut visual, |host, _, _| {
+                                assert!(host.scroll.max_offset().height > px(500.))
+                            })
+                            .unwrap();
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn focus_trap_wraps_in_both_directions() {
