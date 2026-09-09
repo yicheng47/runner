@@ -3,6 +3,7 @@ pub(crate) mod agents;
 pub(crate) mod archived;
 pub(crate) mod diagnostics;
 pub(crate) mod mcp;
+pub(crate) mod skills;
 #[cfg(target_os = "macos")]
 pub(crate) mod updates;
 #[cfg(windows)]

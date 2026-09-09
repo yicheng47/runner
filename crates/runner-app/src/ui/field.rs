@@ -468,6 +468,7 @@ pub struct TextField {
     placeholder: SharedString,
     placeholder_as_value: bool,
     monospace: bool,
+    fill_height: bool,
     kind: TextFieldKind,
     disabled: bool,
     validation: FieldValidation,
@@ -500,6 +501,7 @@ impl TextField {
             placeholder: placeholder.into(),
             placeholder_as_value: false,
             monospace,
+            fill_height: false,
             kind: TextFieldKind::Input,
             disabled: false,
             validation: FieldValidation::Valid,
@@ -535,6 +537,18 @@ impl TextField {
     /// to `max_rows`; longer content scrolls as before.
     pub fn auto_grow(mut self, max_rows: u8) -> Self {
         self.auto_grow_rows = Some(max_rows);
+        self
+    }
+
+    pub fn fill_height(mut self) -> Self {
+        self.fill_height = true;
+        self
+    }
+
+    pub fn with_scrollbar(mut self, cx: &mut Context<Self>) -> Self {
+        let owner = cx.entity_id();
+        let handle = self.scroll_handle.clone();
+        self.scrollbar = Some(cx.new(|_| Scrollbar::app(handle, owner)));
         self
     }
 
@@ -1034,7 +1048,10 @@ impl Render for TextField {
             })
             .min_w(px(0.))
             .w_full()
-            .when(auto_grow.is_none(), |input| input.h(rems(height / 16.)))
+            .when(self.fill_height, |input| input.h_full())
+            .when(auto_grow.is_none() && !self.fill_height, |input| {
+                input.h(rems(height / 16.))
+            })
             .when(!self.bare, |input| {
                 input.pl(rems(10. / 16.)).pr(rems(self.right_padding / 16.))
             })

@@ -409,15 +409,17 @@ impl RenderOnce for IconButton {
             .rounded(rems(4. / 16.))
             .bg(background)
             .text_color(foreground)
-            .opacity(if inactive {
-                0.5
-            } else if reveal_on_group_hover.is_some() {
+            .opacity(if reveal_on_group_hover.is_some() {
                 0.
+            } else if inactive {
+                0.5
             } else {
                 1.
             })
             .when_some(reveal_on_group_hover, |button, group| {
-                button.group_hover(group, |style| style.opacity(1.))
+                button.group_hover(group, |style| {
+                    style.opacity(if inactive { 0.5 } else { 1. })
+                })
             })
             .cursor(if inactive {
                 CursorStyle::OperationNotAllowed
