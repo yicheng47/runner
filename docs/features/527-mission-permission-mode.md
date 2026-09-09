@@ -1,6 +1,6 @@
 # 527 — Mission permission mode, bypass by default
 
-Tracking issue: [#527](https://github.com/yicheng47/runner/issues/527). Status: specced 2026-09-09 (rewritten the same day from a per-mission column to an app setting), P1, designed. Design: `design/runner.pen`, `Settings — General` (`K8FVAY`) — the `Missions` block with `row_Mission permissions` (`h68E2`) and the select's open state (`spec_permission_select_open`, `AqWBF`).
+Tracking issue: [#527](https://github.com/yicheng47/runner/issues/527). Status: specced 2026-09-09 (rewritten the same day from a per-mission column to an app setting), P1, designed. Design: `design/runner.pen`, `Settings — Missions` (`ez53n`) — a new pane under Chat in the settings nav (`cmp/SettingsNav` → `nav_missions`), holding `row_Default crew` and `row_Mission permissions` (`gbhW1`) with the select's open state beside it (`spec_permission_select_open`); `Settings — General` (`K8FVAY`) loses Default crew.
 
 > Rewritten 2026-09-09. The first draft persisted a mode per mission (`missions.permission_mode`) with a per-slot override (`slots.permission_override`), a Start Mission select, and a migration. Jason's call: the mode is a rule about how missions run, not data about one mission — make it an app setting, default Bypass, no schema change. The first draft stays in git history.
 
@@ -26,9 +26,9 @@ The controls that actually protect a crew are elsewhere: worktree isolation ([40
 
 The setting is read at spawn time for every slot of every mission, including resume and fork: a slot spawned after the setting changes gets the new mode, a running slot is untouched. There is no per-mission or per-slot value; a runner whose row carries its own permission flags is converged to the setting's mode like any other (the runner's other args are never stripped).
 
-### Settings → General → Missions
+### Settings → Missions
 
-A new **Missions** section between Defaults and Window (per the frame): **Default crew** moves into it from Defaults, and **Mission permissions** sits under it as a `SettingsRow` with a `StyledSelect` (`Bypass` / `Auto` / `Runner default`, the open state shows each option with a one-line description). Subtitle: *"Applied to every slot when a mission starts. Bypass never prompts — nobody is watching a mission slot to answer. Direct chats keep their runner's own mode."* Defaults keeps Default working directory and Open file links in.
+A new **Missions** pane in the settings nav, directly under Chat in the App group (`SettingsPane::Missions`, slug `missions`, a rocket icon). It opens with one card, **Defaults**: **Default crew** moves here from General (it is a mission default — "pre-selected when starting a new mission"), and **Mission permissions** sits under it as a `SettingsRow` with a `StyledSelect` (`Bypass` / `Auto` / `Runner default`; the open state shows each option with a one-line description). Subtitle: *"Applied to every slot when a mission starts. Bypass never prompts — nobody is watching a mission slot to answer. Direct chats keep their runner's own mode."* General keeps Defaults (working directory, file links) and Window. Later mission-wide settings (worktree isolation from 403, auto-archive) land on this pane rather than in General.
 
 ### Runtime mappings
 
@@ -58,12 +58,12 @@ Unchanged. A direct chat has a human in front of it; the runner row's mode stays
 ## Implementation Phases
 
 1. **Setting + spawn.** `mission_permission_mode` on `AppSettings` with serde default Bypass (pre-feature settings files load as Bypass); the value threaded to the backend spawn path the way `default_runtime` / `file_link_editor` are (`AppSettings` → `AppCore` or the spawn input for mission slots), resolved per slot at spawn through `apply_permission_mode`; the codex full-access mapping for mission-slot Bypass; resume and fork spawn through the same path. Tests: each mode's argv per runtime, a runner row with its own flags converging, a runner row with unrelated args keeping them, resume honouring the current setting, pre-feature settings decoding to Bypass.
-2. **UI.** Settings → General: the Missions section per the frame (`SettingsRow` + `StyledSelect`, Default crew moved), saving through the existing debounced settings write; the metadata panel line. A `VisualTestContext` test pins the section at two rem sizes; the settings-nav search test count adjusted if Missions becomes searchable.
+2. **UI.** `SettingsPane::Missions` between Chat and Appearance (`settings_page.rs`: enum, slug, label, icon, the App pane list, route, nav search entry); the pane per the frame — Default crew moved out of General, the permissions `SettingsRow` + `StyledSelect` — saving through the existing debounced settings write; the metadata panel line. A `VisualTestContext` test pins the pane at two rem sizes; the settings-nav search count test adjusted for the new entry.
 3. **Optional, later — permission-prompt signal.** For slots resolved to Auto or Runner default, inject a claude-code `Notification` hook with matcher `permission_prompt` through the `--settings` composer Runner already uses (`router::runtime::claude_settings_args`), posting a needs-you signal to the feed. codex 0.150+ has Claude-compatible hooks; verify before promising it there. Its own issue when felt.
 
 ## Verification
 
-- Fresh settings (no key): Settings → General shows Missions with `Bypass`; start a Peer Coding Crew mission on the runner repo, have the coder run `git push` to a scratch branch and `gh pr view`. No prompt in either slot; the codex slot reaches the network; the metadata panel says `Permissions: bypass`.
+- Fresh settings (no key): Settings → Missions shows Default crew and Mission permissions at `Bypass`; General no longer shows Default crew; start a Peer Coding Crew mission on the runner repo, have the coder run `git push` to a scratch branch and `gh pr view`. No prompt in either slot; the codex slot reaches the network; the metadata panel says `Permissions: bypass`.
 - Switch to Auto, start another mission: the claude slot stops on the push, proving the setting is honoured; the earlier mission's metadata still says bypass.
 - Runner default: a runner whose row carries `--permission-mode plan` spawns with exactly that.
 - Quit and relaunch with auto-resume on: resumed slots carry the flags for the current setting.
