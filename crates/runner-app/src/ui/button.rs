@@ -19,6 +19,10 @@ pub enum ButtonVariant {
     Warning,
     #[default]
     Secondary,
+    /// A bare `border_strong` outline with body text, no fill.
+    Outline,
+    /// The Detected badge's accent tint: 10% fill, 20% border, accent text.
+    Tinted,
     Ghost,
     Danger,
 }
@@ -51,6 +55,7 @@ pub struct Button {
     icon: Option<SharedString>,
     variant: ButtonVariant,
     size: ButtonSize,
+    radius: f32,
     disabled: bool,
     loading: bool,
     focus_handle: Option<FocusHandle>,
@@ -66,6 +71,7 @@ impl Button {
             icon: None,
             variant: ButtonVariant::default(),
             size: ButtonSize::default(),
+            radius: 4.,
             disabled: false,
             loading: false,
             focus_handle: None,
@@ -86,6 +92,12 @@ impl Button {
 
     pub fn size(mut self, size: ButtonSize) -> Self {
         self.size = size;
+        self
+    }
+
+    /// Corner radius in pixels; buttons default to 4.
+    pub fn radius(mut self, radius: f32) -> Self {
+        self.radius = radius;
         self
     }
 
@@ -120,12 +132,25 @@ impl RenderOnce for Button {
         let inactive = self.disabled || self.loading;
         let has_border = matches!(
             self.variant,
-            ButtonVariant::Secondary | ButtonVariant::Danger
+            ButtonVariant::Secondary
+                | ButtonVariant::Outline
+                | ButtonVariant::Tinted
+                | ButtonVariant::Danger
         );
         let (background, foreground, border) = match self.variant {
             ButtonVariant::Primary => (theme::accent(), theme::accent_ink(), theme::accent()),
             ButtonVariant::Warning => (theme::warning(), theme::bg(), theme::warning()),
             ButtonVariant::Secondary => (theme::raised(), theme::text(), theme::border_strong()),
+            ButtonVariant::Outline => (
+                gpui::transparent_black(),
+                theme::text(),
+                theme::border_strong(),
+            ),
+            ButtonVariant::Tinted => (
+                theme::with_alpha(theme::accent(), 0.1),
+                theme::accent(),
+                theme::with_alpha(theme::accent(), 0.2),
+            ),
             ButtonVariant::Ghost => (
                 gpui::transparent_black(),
                 theme::muted(),
@@ -160,7 +185,7 @@ impl RenderOnce for Button {
             .gap(rems(6. / 16.))
             .h(rems(height / 16.))
             .px(rems(horizontal_padding / 16.))
-            .rounded(rems(4. / 16.))
+            .rounded(rems(self.radius / 16.))
             .when(has_border, |button| button.border_1().border_color(border))
             .bg(background)
             .font_weight(FontWeight::MEDIUM)
@@ -182,9 +207,11 @@ impl RenderOnce for Button {
             })
             .focus_visible(|style| {
                 style.shadow(focus_ring(match self.variant {
-                    ButtonVariant::Primary => theme::accent(),
+                    ButtonVariant::Primary | ButtonVariant::Tinted => theme::accent(),
                     ButtonVariant::Warning => theme::warning(),
-                    ButtonVariant::Secondary | ButtonVariant::Ghost => theme::border_strong(),
+                    ButtonVariant::Secondary | ButtonVariant::Outline | ButtonVariant::Ghost => {
+                        theme::border_strong()
+                    }
                     ButtonVariant::Danger => theme::danger(),
                 }))
             });
@@ -386,14 +413,18 @@ impl RenderOnce for IconButton {
             ButtonVariant::Danger => theme::danger(),
             ButtonVariant::Primary => theme::accent_ink(),
             ButtonVariant::Warning => theme::bg(),
-            ButtonVariant::Secondary => theme::text(),
+            ButtonVariant::Secondary | ButtonVariant::Outline => theme::text(),
+            ButtonVariant::Tinted => theme::accent(),
             ButtonVariant::Ghost => theme::faint(),
         };
         let background = match self.variant {
             ButtonVariant::Primary => theme::accent(),
             ButtonVariant::Warning => theme::warning(),
             ButtonVariant::Secondary => theme::raised(),
-            ButtonVariant::Ghost | ButtonVariant::Danger => gpui::transparent_black(),
+            ButtonVariant::Tinted => theme::with_alpha(theme::accent(), 0.1),
+            ButtonVariant::Ghost | ButtonVariant::Outline | ButtonVariant::Danger => {
+                gpui::transparent_black()
+            }
         };
         let mut button = div()
             .id(self.id)
@@ -436,9 +467,11 @@ impl RenderOnce for IconButton {
             })
             .focus_visible(|style| {
                 style.opacity(1.).shadow(focus_ring(match self.variant {
-                    ButtonVariant::Primary => theme::accent(),
+                    ButtonVariant::Primary | ButtonVariant::Tinted => theme::accent(),
                     ButtonVariant::Warning => theme::warning(),
-                    ButtonVariant::Secondary | ButtonVariant::Ghost => theme::border_strong(),
+                    ButtonVariant::Secondary | ButtonVariant::Outline | ButtonVariant::Ghost => {
+                        theme::border_strong()
+                    }
                     ButtonVariant::Danger => theme::danger(),
                 }))
             });

@@ -136,4 +136,24 @@ mod tests {
         assert!(!settings.initialized_mcp_clients.contains("trae"));
         assert!(initialize_client(&mut settings, "trae", &status, || Ok(())).unwrap());
     }
+
+    #[test]
+    fn never_re_registers_a_client_the_user_already_initialized() {
+        let settings: AppSettings =
+            serde_json::from_str(r#"{"initializedMcpClients":["claude_code"]}"#).unwrap();
+        let status = missing_registration();
+        for _ in 0..2 {
+            let mut settings = settings.clone();
+            assert!(
+                !initialize_client(&mut settings, "claude_code", &status, || {
+                    panic!("must not re-register an initialized client")
+                })
+                .unwrap()
+            );
+            assert_eq!(
+                settings.initialized_mcp_clients,
+                ["claude_code".to_owned()].into_iter().collect()
+            );
+        }
+    }
 }

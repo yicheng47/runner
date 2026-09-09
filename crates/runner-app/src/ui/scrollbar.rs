@@ -58,7 +58,9 @@ pub struct ScrollbarMetrics {
 
 impl ScrollbarMetrics {
     fn thumb(self, track_height: f32, min_height: f32) -> Option<(f32, f32)> {
-        if self.viewport <= 0. || self.content <= self.viewport {
+        // Fractional rems leave containers a sub-pixel short of their padded
+        // content; that is rounding, not something to scroll.
+        if self.viewport <= 0. || self.content - self.viewport < 1. {
             return None;
         }
         let height = (track_height * self.viewport / self.content)
@@ -332,5 +334,21 @@ mod tests {
             .thumb(100., 20.),
             None
         );
+    }
+
+    #[test]
+    fn sub_pixel_overflow_from_rounding_shows_no_thumb() {
+        let metrics = ScrollbarMetrics {
+            viewport: 238.,
+            content: 238.4,
+            position: 0.,
+        };
+        assert_eq!(metrics.thumb(238., 20.), None);
+        assert!(ScrollbarMetrics {
+            content: 239.,
+            ..metrics
+        }
+        .thumb(238., 20.)
+        .is_some());
     }
 }

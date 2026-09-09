@@ -2,14 +2,16 @@ use std::rc::Rc;
 
 use gpui::prelude::*;
 use gpui::{
-    canvas, div, px, rems, rgb, svg, App, Bounds, Context, ElementId, Entity, FocusHandle,
-    FontWeight, KeyDownEvent, Pixels, Render, ScrollHandle, SharedString, Window,
+    canvas, div, px, rems, rgb, svg, AlignSelf, App, Bounds, Context, ElementId, Entity,
+    FocusHandle, FontWeight, KeyDownEvent, Pixels, Render, ScrollHandle, SharedString, Window,
 };
 use runner_backend::ops::runtime::RuntimeCatalogEntry;
 
 use crate::theme;
 use crate::ui::app_zoom;
-use crate::ui::menu::{popup_layer, DismissHandler, MenuItem, MenuKey, MenuState};
+use crate::ui::menu::{
+    popup_layer_sized, DismissHandler, MenuItem, MenuKey, MenuState, PopupWidth,
+};
 use crate::ui::scrollbar::Scrollbar;
 
 pub type SelectHandler = Rc<dyn Fn(String, &mut Window, &mut App)>;
@@ -207,6 +209,11 @@ impl StyledSelect {
     pub fn width(mut self, width: Pixels) -> Self {
         self.width = width;
         self
+    }
+
+    /// How far the open menu can scroll; zero when every option is in view.
+    pub fn menu_scroll_range(&self) -> Pixels {
+        self.menu_scroll.max_offset().height
     }
 
     pub fn min_menu_width(mut self, width: Pixels) -> Self {
@@ -491,6 +498,7 @@ impl Render for StyledSelect {
                     let click_entity = select_entity.clone();
                     div()
                         .id(("select-option", index))
+                        .debug_selector(|| format!("STYLED_SELECT_OPTION_{index}"))
                         .w_full()
                         .px(rems(if self.detailed { 10. / 16. } else { 12. / 16. }))
                         .py_2()
@@ -560,9 +568,16 @@ impl Render for StyledSelect {
                         .when(active && !self.detailed, |row| {
                             row.child(
                                 svg()
+                                    .debug_selector(|| "STYLED_SELECT_CHECK".into())
                                     .path("check.svg")
                                     .size(rems(14. / 16.))
                                     .flex_none()
+                                    .map(|mut check| {
+                                        // Stacked rows top-align their items; the check still
+                                        // sits on the row's centre line.
+                                        check.style().align_self = Some(AlignSelf::Center);
+                                        check
+                                    })
                                     .text_color(if option.danger {
                                         theme::danger()
                                     } else {
@@ -579,6 +594,7 @@ impl Render for StyledSelect {
                 });
             let menu = div()
                 .id("styled-select-options")
+                .debug_selector(|| "STYLED_SELECT_MENU".into())
                 .relative()
                 .max_h(rems(260. / 16.))
                 .overflow_hidden()
@@ -594,6 +610,7 @@ impl Render for StyledSelect {
                 .child(
                     div()
                         .id("styled-select-scroll")
+                        .debug_selector(|| "STYLED_SELECT_SCROLL".into())
                         .max_h(rems(260. / 16.))
                         .overflow_y_scroll()
                         .scrollbar_width(px(0.))
@@ -608,13 +625,22 @@ impl Render for StyledSelect {
             let dismiss: DismissHandler = Rc::new(move |_, cx| {
                 dismiss_entity.update(cx, |select, cx| select.close(cx));
             });
-            root = root.child(popup_layer(
-                anchor,
-                window,
-                anchor.size.width.max(self.min_menu_width * zoom),
-                menu,
-                dismiss,
-            ));
+            // Options with descriptions read best on one line each, so the menu grows to
+            // fit them instead of wrapping inside the trigger's width.
+            let min_width = anchor.size.width.max(self.min_menu_width * zoom);
+            let width = if self
+                .options
+                .iter()
+                .any(|option| option.description.is_some())
+            {
+                PopupWidth::Fit {
+                    min: min_width,
+                    max: px(480.) * zoom,
+                }
+            } else {
+                PopupWidth::Fixed(min_width)
+            };
+            root = root.child(popup_layer_sized(anchor, window, width, menu, dismiss));
         }
         root
     }
@@ -681,6 +707,76 @@ mod tests {
         window.simulate_click(trigger.center(), Modifiers::default());
         window.run_until_parked();
         assert!(!select.read_with(&window, |select, _| select.state.is_open()));
+    }
+
+    #[test]
+    fn described_options_fit_on_one_line_with_a_centered_check_and_no_scrollbar() {
+        let mut cx = TestAppContext::single();
+        let window = cx.add_window(|window, cx| {
+            window.resize(gpui::size(px(1200.), px(900.)));
+            let focus_handle = cx.focus_handle();
+            let select = cx.new(|cx| {
+                StyledSelect::new(
+                    "select",
+                    focus_handle,
+                    "bypass",
+                    vec![
+                        SelectOption::new("bypass", "Bypass")
+                            .description("Default. No prompts; codex gets full access."),
+                        SelectOption::new("auto", "Auto").description(
+                            "The runtime's classifier decides; may stall on a prompt.",
+                        ),
+                        SelectOption::new("runner", "Runner default")
+                            .description("Whatever each runner row carries."),
+                    ],
+                    Rc::new(|_, _, _| {}),
+                    cx,
+                )
+            });
+            SelectHost { select }
+        });
+        cx.run_until_parked();
+        let select = window
+            .read_with(&cx, |host, _| host.select.clone())
+            .unwrap();
+        let mut visual = VisualTestContext::from_window(window.into(), &cx);
+        for rem in [16., 20.8] {
+            window
+                .update(&mut visual, |_, window, _| {
+                    window.set_rem_size(px(rem));
+                    window.refresh();
+                })
+                .unwrap();
+            visual.run_until_parked();
+            let trigger = visual.debug_bounds("STYLED_SELECT_TRIGGER").unwrap();
+            visual.simulate_click(trigger.center(), Modifiers::default());
+            visual.run_until_parked();
+
+            let menu = visual.debug_bounds("STYLED_SELECT_MENU").unwrap();
+            let row = visual.debug_bounds("STYLED_SELECT_OPTION_0").unwrap();
+            let check = visual.debug_bounds("STYLED_SELECT_CHECK").unwrap();
+            assert!(
+                menu.size.width > px(240. * rem / 16.) && menu.size.width <= px(480. * rem / 16.),
+                "{rem}: the menu grows to fit the descriptions: {menu:?}"
+            );
+            assert!(
+                row.size.height < px(60. * rem / 16.),
+                "{rem}: a described row stays on two lines: {row:?}"
+            );
+            assert!(
+                (check.center().y - row.center().y).abs() <= px(1.),
+                "{rem}: the check is centered in its row: {check:?} {row:?}"
+            );
+            let max_offset = select.read_with(&visual, |select, _| select.menu_scroll.max_offset());
+            assert_eq!(
+                max_offset.height,
+                px(0.),
+                "{rem}: three options never scroll"
+            );
+
+            visual.simulate_click(trigger.center(), Modifiers::default());
+            visual.run_until_parked();
+        }
     }
 
     fn options() -> Vec<SelectOption> {

@@ -34,7 +34,6 @@ pub(crate) enum SettingsPane {
     Shortcuts,
     Agents,
     Skills,
-    Mcp,
     Updates,
     Diagnostics,
     About,
@@ -48,9 +47,8 @@ impl SettingsPane {
             Some("appearance") => Self::Appearance,
             Some("terminal") => Self::Terminal,
             Some("shortcuts") => Self::Shortcuts,
-            Some("agents") => Self::Agents,
+            Some("agents") | Some("mcp") => Self::Agents,
             Some("skills") => Self::Skills,
-            Some("mcp") => Self::Mcp,
             Some("updates") => Self::Updates,
             Some("diagnostics") => Self::Diagnostics,
             Some("about") => Self::About,
@@ -68,7 +66,6 @@ impl SettingsPane {
             Self::Shortcuts => "shortcuts",
             Self::Agents => "agents",
             Self::Skills => "skills",
-            Self::Mcp => "mcp",
             Self::Updates => "updates",
             Self::Diagnostics => "diagnostics",
             Self::About => "about",
@@ -85,7 +82,6 @@ impl SettingsPane {
             Self::Shortcuts => "Keyboard shortcuts",
             Self::Agents => "Agents",
             Self::Skills => "Skills",
-            Self::Mcp => "MCP",
             Self::Updates => "Updates",
             Self::Diagnostics => "Diagnostics",
             Self::About => "About",
@@ -102,7 +98,6 @@ impl SettingsPane {
             Self::Shortcuts => "keyboard.svg",
             Self::Agents => "bot.svg",
             Self::Skills => "file-text.svg",
-            Self::Mcp => "plug.svg",
             Self::Updates => "refresh-cw.svg",
             Self::Diagnostics => "file-text.svg",
             Self::About => "info.svg",
@@ -113,17 +108,13 @@ impl SettingsPane {
 
 const APP_PANES: &[SettingsPane] = &[
     SettingsPane::General,
-    SettingsPane::Missions,
     SettingsPane::Appearance,
+    SettingsPane::Missions,
     SettingsPane::Terminal,
     SettingsPane::Shortcuts,
     SettingsPane::Archived,
 ];
-const INTEGRATION_PANES: &[SettingsPane] = &[
-    SettingsPane::Agents,
-    SettingsPane::Skills,
-    SettingsPane::Mcp,
-];
+const INTEGRATION_PANES: &[SettingsPane] = &[SettingsPane::Agents, SettingsPane::Skills];
 const SYSTEM_PANES: &[SettingsPane] = &[
     SettingsPane::Updates,
     SettingsPane::Diagnostics,
@@ -196,7 +187,6 @@ pub(crate) struct SettingsState {
     terminal_cursor: Entity<StyledSelect>,
     file_link_editor: Entity<StyledSelect>,
     agents: Option<Entity<settings::agents::AgentsPane>>,
-    mcp: Option<Entity<settings::mcp::McpPane>>,
     skills: Option<Entity<settings::skills::SkillsPane>>,
     updates: Option<Entity<settings::updates::UpdatesPane>>,
     diagnostics: Option<Entity<settings::diagnostics::DiagnosticsPane>>,
@@ -386,7 +376,6 @@ impl SettingsState {
             terminal_cursor,
             file_link_editor,
             agents: None,
-            mcp: None,
             skills: None,
             updates: None,
             diagnostics: None,
@@ -654,16 +643,6 @@ impl NativeRoot {
                 }
                 if let Some(skills) = self.settings_page.skills.clone() {
                     skills.update(cx, |pane, cx| pane.refresh(cx));
-                }
-            }
-            SettingsPane::Mcp => {
-                if self.settings_page.mcp.is_none() {
-                    let app_store = self.app_store.clone();
-                    self.settings_page.mcp =
-                        Some(cx.new(|pane_cx| settings::mcp::McpPane::new(app_store, pane_cx)));
-                }
-                if let Some(mcp) = self.settings_page.mcp.clone() {
-                    mcp.update(cx, |pane, pane_cx| pane.refresh(pane_cx));
                 }
             }
             SettingsPane::Updates => {
@@ -1136,11 +1115,6 @@ impl NativeRoot {
             SettingsPane::Skills => self
                 .settings_page
                 .skills
-                .clone()
-                .map(IntoElement::into_any_element),
-            SettingsPane::Mcp => self
-                .settings_page
-                .mcp
                 .clone()
                 .map(IntoElement::into_any_element),
             SettingsPane::Updates => self
@@ -2029,15 +2003,15 @@ mod tests {
     fn nav_search_filters_labels_and_removes_empty_groups() {
         let all = filtered_nav_groups("");
         assert_eq!(all.len(), 3);
-        assert_eq!(all.iter().map(|(_, panes)| panes.len()).sum::<usize>(), 12);
+        assert_eq!(all.iter().map(|(_, panes)| panes.len()).sum::<usize>(), 11);
         assert_eq!(
             all[0],
             (
                 "App",
                 vec![
                     SettingsPane::General,
-                    SettingsPane::Missions,
                     SettingsPane::Appearance,
+                    SettingsPane::Missions,
                     SettingsPane::Terminal,
                     SettingsPane::Shortcuts,
                     SettingsPane::Archived,
@@ -2049,17 +2023,15 @@ mod tests {
             all[1],
             (
                 "Integrations",
-                vec![
-                    SettingsPane::Agents,
-                    SettingsPane::Skills,
-                    SettingsPane::Mcp
-                ]
+                vec![SettingsPane::Agents, SettingsPane::Skills]
             )
         );
         assert_eq!(
             SettingsPane::from_route(Some("skills")),
             SettingsPane::Skills
         );
+        assert_eq!(SettingsPane::from_route(Some("mcp")), SettingsPane::Agents);
+        assert!(filtered_nav_groups("mcp").is_empty());
         assert_eq!(
             filtered_nav_groups("skills"),
             vec![("Integrations", vec![SettingsPane::Skills])]

@@ -138,7 +138,7 @@ Every pane is a real PTY behind an `alacritty_terminal` grid, drawn by GPUI on t
 
 ### Drive it from your agents (MCP)
 
-Everything above is also an MCP tool. Runner bundles a `runner-mcp` stdio sidecar, and **Settings → MCP** registers it with Claude Code and Codex on both platforms, plus TRAE CLI on macOS. Connected agents assemble crews, start and steer missions (`mission_start`, `mission_feed`, `mission_post_human_signal`), and spin up chats (`session_start_direct`). The compounding trick: your daily driver agent plans a fix, dispatches a coder/reviewer crew, and keeps working — agents dispatching crews of agents, every session still a real PTY you can open and watch.
+Everything above is also an MCP tool. Runner bundles a `runner-mcp` stdio sidecar, and **Settings → Agents** registers it with Claude Code, Codex and TRAE CLI on both platforms. Connected agents assemble crews, start and steer missions (`mission_start`, `mission_feed`, `mission_post_human_signal`), and spin up chats (`session_start_direct`). The compounding trick: your daily driver agent plans a fix, dispatches a coder/reviewer crew, and keeps working — agents dispatching crews of agents, every session still a real PTY you can open and watch.
 
 </td>
 </tr>
