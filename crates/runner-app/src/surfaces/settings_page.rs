@@ -108,8 +108,8 @@ impl SettingsPane {
 
 const APP_PANES: &[SettingsPane] = &[
     SettingsPane::General,
-    SettingsPane::Missions,
     SettingsPane::Appearance,
+    SettingsPane::Missions,
     SettingsPane::Terminal,
     SettingsPane::Shortcuts,
     SettingsPane::Archived,
@@ -2010,8 +2010,8 @@ mod tests {
                 "App",
                 vec![
                     SettingsPane::General,
-                    SettingsPane::Missions,
                     SettingsPane::Appearance,
+                    SettingsPane::Missions,
                     SettingsPane::Terminal,
                     SettingsPane::Shortcuts,
                     SettingsPane::Archived,
