@@ -57,9 +57,15 @@ The Windows installer, app, and CLI sidecars are **Authenticode-signed** with a 
 
 Runner checks for Windows updates at startup and every six hours, downloads them in the background by default, and verifies their minisign signatures. Open the update icon beside Settings or **Settings → Updates → Update**, then choose **Install and restart**. Settings, chats, and missions are retained. Turn off **Automatically download updates** to download only when you choose.
 
-<!-- TODO(demo): add a "## Demo" section here once the new hero video is recorded — a Peer
-     Coding Crew mission on a real repo (mission start from a project → feed + per-slot
-     terminals → coder/reviewer handoffs via the Runner CLI → ask_human surfacing → done). -->
+## Demo
+
+A three-agent crew — two players and a referee — playing a game of tic-tac-toe against each other over the mission feed, from the [`tic-tac-toe`](./examples/tic-tac-toe/) example crew.
+
+<p align="center">
+  <a href="https://www.youtube.com/watch?v=eKXcfxC4m1U">
+    <img src="https://img.youtube.com/vi/eKXcfxC4m1U/maxresdefault.jpg" alt="Runner demo — a three-agent crew playing tic-tac-toe (YouTube)" width="720" />
+  </a>
+</p>
 
 ## Features
 
