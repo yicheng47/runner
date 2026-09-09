@@ -1,6 +1,6 @@
 # 530 — Fold the MCP settings pane into Agents
 
-Tracking: [#530](https://github.com/yicheng47/runner/issues/530). Status: specced 2026-09-09, P2, not scheduled. Design happens on the existing `Settings — Agents` frame (`n1krgH`) in `design/runner.pen` before the app phase.
+Tracking: [#530](https://github.com/yicheng47/runner/issues/530). Status: specced 2026-09-09, P2, **designed 2026-09-09** on the existing `Settings — Agents` frame (`n1krgH`) in `design/runner.pen`: one card per runtime (`card_claude` `AConK`, `card_codex` `N67UH`, `card_trae` `r6iFF`), each block ending in a `props` group with the `Model · Effort` line and the `Runner MCP` line; `cmp/SettingsNav` Integrations is `nav_agents` · `nav_skills`. Jason picked the two-line layout with a button from three drawn alternatives (checkbox sentence, property row with a button, two-line with a button); the alternatives were removed from the canvas.
 
 ## Motivation
 
@@ -18,10 +18,12 @@ The default also differs by platform today. On Windows the app registers Runner 
 
 ### Agents pane
 
-- Each runtime row gains a second caption line under the executable field, in the same faint style as the existing `Model: … · Effort: …` line (feature 65): `Runner MCP: registered in ~/.claude.json` or `Runner MCP: not registered`. One ghost button sits at the row's right edge on that line — **Unregister** in the normal case, since the default pass has already registered the agent, and **Register** for a client the user turned off or whose write failed. The action is the existing `ops/mcp.rs` write; nothing about what is written changes.
-- A failed write reports in the row's existing red validation caption, not in a separate error card.
-- Runtimes without an MCP config file (trae, qoder) get no line, not a disabled one — the same rule the Skills pane applies to its toggle.
-- The **binding directory** becomes a third card at the bottom of the pane, `Runner MCP server`, holding the one field and its caption (*"Directory the client entries point at to launch Runner's MCP server."*). It applies to every registration and changes almost never; if Agents ever feels long it can move to Diagnostics.
+- **One card per runtime.** The single runtimes card with hairlines becomes one `SettingsCard` per runtime, 16 px apart, each holding the block it holds today (header with name, badge, Enabled toggle and command; the executable field with **Browse** and **Reset** — the latter renamed from "Reset to auto").
+- **Label/value lines.** The faint mono `Model: … · Effort: …` caption (feature 65) becomes a label/value line: labels (`Model`, `Effort`) in the UI font at `muted`, values in the mono font at `text`, the label column 92 px wide so the lines below align. The two are separated by a `·`.
+- **Runner MCP line.** A second line in the same shape under it: label `Runner MCP`, a 6 px dot (accent when registered, faint when not), the status in mono — `Registered in ~/.claude.json` at `text`, `Not registered` at `muted`, `Registered to another Runner · <configured command>` at `warning` for an entry that points at a different binary — and at the right edge a small 6 px-radius button: outline **Unregister** (border `border_strong`, text `text`) in the normal case, since the default pass has already registered the agent, and tinted **Register** (10% accent fill, 20% accent border, accent text — the Detected badge's tint) for a client the user turned off, whose write failed, or that points at another Runner (Register replaces the entry). The action is the existing `ops/mcp.rs` write; nothing about what is written changes.
+- A failed write reports in the row's existing red validation caption, which stays the last line of the block, not in a separate error card.
+- Every runtime with an MCP config gets the line: claude-code (`~/.claude.json`), codex (`~/.codex/config.toml`) and trae (`~/.trae/traecli.toml`), which `ops/mcp.rs` already writes. A runtime the writer does not know gets no line, not a disabled one — the same rule the Skills pane applies to its toggle.
+- **The binding directory is not shown.** It is read-only, derived from the MCP socket's location under the app data dir, and only matters when an entry points at another Runner, which the line above already says. The MCP pane's "Current binding" field, its copy button and environment badge, the manual-config snippet card and the shield note all go with the pane.
 - The pane footnote gains one sentence: registration writes only the `runner` entry in each agent's config.
 
 ### Nav
@@ -36,14 +38,13 @@ The default also differs by platform today. On Windows the app registers Runner 
 
 ## Implementation phases
 
-1. **Design** — `Settings — Agents` (`n1krgH`) gains the two caption lines with their buttons and the binding-dir card; `cmp/SettingsNav` drops MCP. No new frame.
-2. **App** — `app_store`: the MCP-defaults pass unconditional on both platforms, module renamed; `surfaces/settings/agents.rs`: the caption line and button per runtime row, the binding-dir card, error routing into the validation caption; `settings_page.rs`: pane, route and nav entry removed, `INTEGRATION_PANES` updated; the MCP pane's tests move to the Agents pane's; the settings-nav search test count adjusted.
+1. **Design** — done 2026-09-09: `Settings — Agents` (`n1krgH`) split into one card per runtime with the label/value `Model · Effort` line, the `Runner MCP` line with its button, a TRAE card, Browse and Reset labels, and the footnote sentence; `cmp/SettingsNav` Integrations reads Agents · Skills (the canvas never had those two entries; MCP removed). No new frame.
+2. **App** — `app_store`: the MCP-defaults pass unconditional on both platforms, module renamed; `surfaces/settings/agents.rs`: one card per runtime, the label/value lines, the `Runner MCP` line and button per runtime row with the four states above, the Reset button relabelled, error routing into the validation caption; `settings_page.rs`: pane, route and nav entry removed, `INTEGRATION_PANES` updated; the MCP pane's state tests (`mcp_row_presentation`) move to the Agents pane's; the settings-nav search test count adjusted. `Settings — MCP` (`N0eIeV`) is deleted from the canvas when this lands.
 3. **Docs** — `docs/arch` references to Settings → MCP repointed at Agents; this spec archives on landing.
 
 ## Verification
 
 - A fresh macOS profile with `claude` and `codex` on PATH registers both at first launch and records them in `initialized_mcp_clients`; Unregister on codex sticks across restarts and a runtime refresh; re-enabling a disabled agent registers it once.
-- Agents shows `Runner MCP` lines for claude-code and codex only; Register writes exactly the `runner` entry (diff `~/.claude.json` / `~/.codex/config.toml` before and after); Unregister removes it and nothing else; a read-only config file surfaces the error in the row's caption.
-- The binding-dir field round-trips and the written entries point at it.
+- Agents shows a `Runner MCP` line on the Claude Code, Codex and TRAE cards; Register writes exactly the `runner` entry (diff `~/.claude.json` / `~/.codex/config.toml` / `~/.trae/traecli.toml` before and after); Unregister removes it and nothing else; a read-only config file surfaces the error in the row's caption; an entry pointing at another binary shows the warning state and Register replaces it.
 - Settings nav search no longer finds MCP; `settings/mcp` routes to Agents.
 - Existing `ops/mcp.rs` tests unchanged.
