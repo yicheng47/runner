@@ -260,7 +260,7 @@ impl SkillsPane {
         let toggle_detail = detail.clone();
         let toggle_runtime = runtime.clone();
         let toggle_path = path.clone();
-        let busy = self.detail.read(cx).busy;
+        let pending = self.detail.read(cx).pending_toggle.as_deref() == Some(entry.path.as_path());
         div()
             .id(("skill-row", index))
             .group("skill-row")
@@ -317,7 +317,7 @@ impl SkillsPane {
                     .tooltip("Edit skill")
                     .reveal_on_group_hover("skill-row")
                     .stop_click_propagation(true)
-                    .disabled(busy || !entry.files.contains(&entry.marker))
+                    .disabled(!entry.files.contains(&entry.marker))
                     .on_press(move |window, cx| {
                         edit_detail.update(cx, |detail, cx| {
                             detail.open(edit_runtime.clone(), edit_path.clone(), true, window, cx)
@@ -327,7 +327,8 @@ impl SkillsPane {
             .child(
                 Toggle::new(("skill-toggle", index), entry.global != GlobalState::Off)
                     .disabled(
-                        busy || (self.runtime == "codex" && !entry.files.contains(&entry.marker)),
+                        pending
+                            || (self.runtime == "codex" && !entry.files.contains(&entry.marker)),
                     )
                     .on_change(move |enabled, _, cx| {
                         cx.stop_propagation();
@@ -471,6 +472,7 @@ pub(crate) struct SkillDetail {
     source: bool,
     confirming: bool,
     busy: bool,
+    pending_toggle: Option<PathBuf>,
     error: Option<String>,
     _subscriptions: Vec<Subscription>,
 }
@@ -523,6 +525,7 @@ impl SkillDetail {
             source: false,
             confirming: false,
             busy: false,
+            pending_toggle: None,
             error: None,
             _subscriptions: vec![interceptor],
         }
@@ -606,6 +609,7 @@ impl SkillDetail {
             return;
         }
         self.busy = true;
+        self.pending_toggle = Some(path.clone());
         self.error = None;
         let core = self.app_store.read(cx).core.clone();
         let task = cx.background_spawn(async move {
@@ -617,6 +621,7 @@ impl SkillDetail {
             let result = task.await;
             let _ = weak.update(cx, |this, cx| {
                 this.busy = false;
+                this.pending_toggle = None;
                 match &result {
                     Ok(catalogs) => {
                         if let Some(skill) = &mut this.skill {
