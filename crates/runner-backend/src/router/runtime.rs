@@ -369,6 +369,97 @@ pub fn apply_permission_mode(runtime: &str, args: &[String], mode: PermissionMod
     out
 }
 
+/// App-wide permission mode for mission slots (feature 527). Read at
+/// spawn time for every mission slot; direct chats keep their runner
+/// row's own mode. `RunnerDefault` leaves the row's args untouched.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    Default,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    schemars::JsonSchema,
+)]
+#[serde(rename_all = "kebab-case")]
+pub enum MissionPermissionMode {
+    #[default]
+    Bypass,
+    Auto,
+    RunnerDefault,
+}
+
+impl MissionPermissionMode {
+    pub const ALL: [Self; 3] = [Self::Bypass, Self::Auto, Self::RunnerDefault];
+
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Bypass => "bypass",
+            Self::Auto => "auto",
+            Self::RunnerDefault => "runner-default",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|mode| mode.key() == value)
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Bypass => "Bypass",
+            Self::Auto => "Auto",
+            Self::RunnerDefault => "Runner default",
+        }
+    }
+}
+
+/// Canonical argv a mission slot gets for the app-wide mode. `None`
+/// means "leave the runner row alone" (`RunnerDefault`); `Some` is
+/// the pair to strip-and-append, empty for runtimes with no
+/// permission concept. codex Bypass differs from the runner-level
+/// mapping: `danger-full-access` instead of `workspace-write`, because
+/// with `--ask-for-approval never` codex cannot ask to leave the
+/// sandbox, so `git push` / `gh` / `cargo` fetches would fail silently
+/// in a slot nobody is watching.
+pub fn mission_permission_mode_args(
+    runtime: &str,
+    mode: MissionPermissionMode,
+) -> Option<Vec<String>> {
+    match mode {
+        MissionPermissionMode::RunnerDefault => None,
+        MissionPermissionMode::Auto => Some(permission_mode_args(runtime, PermissionMode::Auto)),
+        MissionPermissionMode::Bypass if runtime == "codex" => Some(vec![
+            "--ask-for-approval".into(),
+            "never".into(),
+            "--sandbox".into(),
+            "danger-full-access".into(),
+        ]),
+        MissionPermissionMode::Bypass => {
+            Some(permission_mode_args(runtime, PermissionMode::Bypass))
+        }
+    }
+}
+
+/// Converge a mission slot's argv to the app-wide mode: strip the
+/// runtime's permission flags, then append the mode's canonical pair.
+/// `RunnerDefault` returns `args` unchanged.
+pub fn apply_mission_permission_mode(
+    runtime: &str,
+    args: &[String],
+    mode: MissionPermissionMode,
+) -> Vec<String> {
+    match mission_permission_mode_args(runtime, mode) {
+        None => args.to_vec(),
+        Some(extra) => {
+            let mut out = strip_permission_flags(runtime, args);
+            out.extend(extra);
+            out
+        }
+    }
+}
+
 /// Frontend-mirror helper: inspect a runner's stored `args` and
 /// decide which option of the runner-edit form's "Permission mode"
 /// dropdown should render as selected. Probe order is most-aggressive
@@ -1596,6 +1687,170 @@ mod tests {
                 "shell must be a no-op (mode={mode:?})",
             );
         }
+    }
+
+    #[test]
+    fn mission_permission_mode_args_per_runtime() {
+        use MissionPermissionMode as M;
+        assert_eq!(
+            mission_permission_mode_args("claude-code", M::Bypass),
+            Some(vec![
+                "--permission-mode".to_string(),
+                "bypassPermissions".to_string(),
+            ]),
+        );
+        assert_eq!(
+            mission_permission_mode_args("claude-code", M::Auto),
+            Some(vec!["--permission-mode".to_string(), "auto".to_string()]),
+        );
+        // codex Bypass leaves the sandbox: with `never` codex cannot
+        // ask to escalate, so `workspace-write` would fail network
+        // and out-of-tree writes silently in an unwatched slot.
+        assert_eq!(
+            mission_permission_mode_args("codex", M::Bypass),
+            Some(vec![
+                "--ask-for-approval".to_string(),
+                "never".to_string(),
+                "--sandbox".to_string(),
+                "danger-full-access".to_string(),
+            ]),
+        );
+        assert_eq!(
+            mission_permission_mode_args("codex", M::Auto),
+            Some(vec![
+                "--ask-for-approval".to_string(),
+                "on-request".to_string(),
+                "--sandbox".to_string(),
+                "workspace-write".to_string(),
+            ]),
+        );
+        assert_eq!(
+            mission_permission_mode_args("trae", M::Bypass),
+            Some(vec![
+                "--permission-mode".to_string(),
+                "bypass_permissions".to_string(),
+            ]),
+        );
+        assert_eq!(
+            mission_permission_mode_args("trae", M::Auto),
+            Some(vec!["--permission-mode".to_string(), "auto".to_string()]),
+        );
+        for runtime in ["claude-code", "codex", "trae", "shell", "unknown"] {
+            assert_eq!(
+                mission_permission_mode_args(runtime, M::RunnerDefault),
+                None,
+                "{runtime}"
+            );
+        }
+        assert_eq!(
+            mission_permission_mode_args("shell", M::Bypass),
+            Some(vec![])
+        );
+        assert_eq!(
+            mission_permission_mode_args("unknown", M::Auto),
+            Some(vec![])
+        );
+        // The runner-level codex Bypass mapping is untouched.
+        assert_eq!(
+            permission_mode_args("codex", PermissionMode::Bypass),
+            vec![
+                "--ask-for-approval".to_string(),
+                "never".to_string(),
+                "--sandbox".to_string(),
+                "workspace-write".to_string(),
+            ],
+        );
+    }
+
+    #[test]
+    fn apply_mission_permission_mode_converges_a_codex_row() {
+        let row = vec![
+            "--ask-for-approval".to_string(),
+            "on-request".to_string(),
+            "--sandbox".to_string(),
+            "workspace-write".to_string(),
+        ];
+        assert_eq!(
+            apply_mission_permission_mode("codex", &row, MissionPermissionMode::Bypass),
+            vec![
+                "--ask-for-approval".to_string(),
+                "never".to_string(),
+                "--sandbox".to_string(),
+                "danger-full-access".to_string(),
+            ],
+        );
+        assert_eq!(
+            apply_mission_permission_mode("codex", &row, MissionPermissionMode::RunnerDefault),
+            row,
+        );
+    }
+
+    #[test]
+    fn apply_mission_permission_mode_keeps_unrelated_claude_args() {
+        let row = vec![
+            "--permission-mode".to_string(),
+            "plan".to_string(),
+            "--model".to_string(),
+            "opus".to_string(),
+        ];
+        assert_eq!(
+            apply_mission_permission_mode("claude-code", &row, MissionPermissionMode::Bypass),
+            vec![
+                "--model".to_string(),
+                "opus".to_string(),
+                "--permission-mode".to_string(),
+                "bypassPermissions".to_string(),
+            ],
+        );
+        assert_eq!(
+            apply_mission_permission_mode("claude-code", &row, MissionPermissionMode::Auto),
+            vec![
+                "--model".to_string(),
+                "opus".to_string(),
+                "--permission-mode".to_string(),
+                "auto".to_string(),
+            ],
+        );
+        assert_eq!(
+            apply_mission_permission_mode(
+                "claude-code",
+                &row,
+                MissionPermissionMode::RunnerDefault
+            ),
+            row,
+        );
+    }
+
+    #[test]
+    fn apply_mission_permission_mode_leaves_shell_and_unknown_alone() {
+        let row = vec!["--whatever".to_string()];
+        for runtime in ["shell", "aider-future"] {
+            for mode in MissionPermissionMode::ALL {
+                assert_eq!(
+                    apply_mission_permission_mode(runtime, &row, mode),
+                    row,
+                    "{runtime} {mode:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn mission_permission_mode_serde_and_keys() {
+        for mode in MissionPermissionMode::ALL {
+            let json = serde_json::to_string(&mode).unwrap();
+            assert_eq!(json, format!("\"{}\"", mode.key()));
+            assert_eq!(
+                serde_json::from_str::<MissionPermissionMode>(&json).unwrap(),
+                mode
+            );
+            assert_eq!(MissionPermissionMode::parse(mode.key()), Some(mode));
+        }
+        assert_eq!(MissionPermissionMode::parse("plan"), None);
+        assert_eq!(
+            MissionPermissionMode::default(),
+            MissionPermissionMode::Bypass
+        );
     }
 
     #[test]

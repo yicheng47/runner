@@ -353,6 +353,10 @@ impl AppStore {
             #[cfg(windows)]
             store.initialize_mcp_defaults();
         }
+        store
+            .core
+            .sessions
+            .set_mission_permission_mode(store.settings.mission_permission_mode);
         store.refresh_sessions_inner();
         store.refresh_runners_inner();
         store.refresh_crews_inner();
@@ -482,8 +486,14 @@ impl AppStore {
             self.settings.enabled_agents.clone(),
             self.settings.disabled_agents.clone(),
         );
+        let mission_permission_mode = self.settings.mission_permission_mode;
         if !update(&mut self.settings) {
             return false;
+        }
+        if self.settings.mission_permission_mode != mission_permission_mode {
+            self.core
+                .sessions
+                .set_mission_permission_mode(self.settings.mission_permission_mode);
         }
         #[cfg(windows)]
         if agent_settings
