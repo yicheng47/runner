@@ -444,7 +444,7 @@ impl NativeRoot {
         cx.notify();
     }
 
-    fn terminal_start_location(&self, cx: &App) -> (Option<String>, Option<String>) {
+    pub(crate) fn terminal_start_location(&self, cx: &App) -> (Option<String>, Option<String>) {
         let sibling_cwd = self.tabs.active().and_then(|layout| {
             layout
                 .focused_session_id()
@@ -475,7 +475,7 @@ impl NativeRoot {
         (project_id, cwd)
     }
 
-    fn spawn_terminal_in_pane(
+    pub(crate) fn spawn_terminal_in_pane(
         &mut self,
         pane_id: String,
         original: PaneLayout,

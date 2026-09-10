@@ -1119,6 +1119,13 @@ impl NativeRoot {
         })
     }
 
+    fn focused_pane_is_terminal(&self, cx: &App) -> bool {
+        self.active_focused_session_id().is_some_and(|session_id| {
+            self.session_entry(&session_id, cx)
+                .is_some_and(|entry| Runtime::parse(&entry.agent_runtime) == Some(Runtime::Shell))
+        })
+    }
+
     pub(crate) fn active_focused_session_id(&self) -> Option<String> {
         self.tabs
             .active()
@@ -1639,17 +1646,27 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let result = (|| -> Result<()> {
-            let Some(layout) = self.tabs.active_mut() else {
-                return Ok(());
-            };
-            layout.apply_preset(preset);
-            self.persist_active_tab(cx)?;
-            self.reload_tabs(cx)?;
-            self.ensure_active_tab_attached(window, cx)?;
-            Ok(())
-        })();
         self.layout_picker_open = false;
+        let Some(original) = self.tabs.active().cloned() else {
+            cx.notify();
+            return;
+        };
+        let terminal_location = self
+            .focused_pane_is_terminal(cx)
+            .then(|| self.terminal_start_location(cx));
+        let layout = self.tabs.active_mut().expect("active tab was cloned");
+        layout.apply_preset(preset);
+        if let Some((project_id, cwd)) = terminal_location {
+            if layout.focused_session_id().is_none() {
+                let pane_id = layout.focused_pane_id.clone();
+                self.spawn_terminal_in_pane(pane_id, original, project_id, cwd, window, cx);
+                return;
+            }
+        }
+        let result = self
+            .persist_active_tab(cx)
+            .and_then(|_| self.reload_tabs(cx))
+            .and_then(|_| self.ensure_active_tab_attached(window, cx));
         match result {
             Ok(()) => {
                 self.chat_error = None;
