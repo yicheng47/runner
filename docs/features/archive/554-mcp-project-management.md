@@ -1,7 +1,6 @@
 # 554 — Manage projects over MCP
 
-> Tracking issue: [#554](https://github.com/yicheng47/runner/issues/554)
-> Priority: P1.
+Tracking: [#554](https://github.com/yicheng47/runner/issues/554). Status: **shipped 2026-09-10 in [#556](https://github.com/yicheng47/runner/pull/556)** (mission `01M25TDXRPDZTQ30HZ319V72BQ`, codex-crew; brief [554](../../impls/archive/554-mcp-project-management.md)). Specced 2026-09-10, P1. Smoke-tested the same night against the dev app over its stdio bridge: both bad `cwd` forms refused, force-delete killed and archived a live chat, `mission_set_project` kept the mission's `cwd`. Bridge note: `runner-mcp` flattens server errors to `-32603` and folds the structured `data` (the running-member id lists) into the message text.
 
 ## Motivation
 

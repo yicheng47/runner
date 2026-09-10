@@ -1,6 +1,6 @@
 # 554 — Manage projects over MCP
 
-Tracking issue: [#554](https://github.com/yicheng47/runner/issues/554). Spec: [554](../features/554-mcp-project-management.md). Feature, P1. Branch: **`feat/554-mcp-project-management` already exists and is checked out** — it carries the spec and this brief; work on it, do not create another.
+Tracking issue: [#554](https://github.com/yicheng47/runner/issues/554). Spec: [554](../../features/archive/554-mcp-project-management.md). Feature, P1. Shipped 2026-09-10 in [#556](https://github.com/yicheng47/runner/pull/556) (mission `01M25TDXRPDZTQ30HZ319V72BQ`, codex-crew, 23 min launch→PR). Branch: **`feat/554-mcp-project-management` already exists and is checked out** — it carries the spec and this brief; work on it, do not create another.
 
 ## What ships
 
