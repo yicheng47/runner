@@ -9,6 +9,7 @@
 // consumes. The GPUI frontend owns the only terminal model; the backend
 // does not run a second headless emulator.
 
+#[cfg(unix)]
 use crate::model::Runtime;
 use std::collections::HashMap;
 use std::io::{ErrorKind, Read, Write};
