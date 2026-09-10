@@ -178,7 +178,7 @@ impl Render for UpdatesPane {
                                             .gap_2()
                                             .child(
                                                 div()
-                                                    .text_size(rems(1.))
+                                                    .text_size(theme::text_heading())
                                                     .font_weight(FontWeight::BOLD)
                                                     .text_color(theme::text())
                                                     .child("Runner"),
@@ -190,14 +190,14 @@ impl Render for UpdatesPane {
                                                     .px(rems(6. / 16.))
                                                     .py(rems(2. / 16.))
                                                     .font_family(theme::SYSTEM_MONOSPACE_FONT)
-                                                    .text_size(rems(11. / 16.))
+                                                    .text_size(theme::text_meta())
                                                     .text_color(theme::muted())
                                                     .child(installed_version),
                                             ),
                                     )
                                     .children(available_version.map(|version| {
                                         div()
-                                            .text_size(rems(12. / 16.))
+                                            .text_size(theme::text_ui())
                                             .text_color(theme::muted())
                                             .child(format!(
                                                 "Update available: {}",
@@ -206,7 +206,7 @@ impl Render for UpdatesPane {
                                     }))
                                     .children(updater_controls_unavailable.then(|| {
                                         div()
-                                            .text_size(rems(12. / 16.))
+                                            .text_size(theme::text_ui())
                                             .text_color(theme::muted())
                                             .child(
                                                 "Update controls are available in bundled builds.",
@@ -253,7 +253,7 @@ impl Render for UpdatesPane {
                 SettingsRow::new(
                     "Last checked",
                     div()
-                        .text_size(rems(12. / 16.))
+                        .text_size(theme::text_ui())
                         .text_color(theme::muted())
                         .child(last_checked),
                 )

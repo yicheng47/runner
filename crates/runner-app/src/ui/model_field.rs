@@ -240,7 +240,7 @@ impl Render for ModelField {
                                 .child(
                                     div()
                                         .truncate()
-                                        .text_size(rems(14. / 16.))
+                                        .text_size(theme::text_title())
                                         .font_weight(gpui::FontWeight::MEDIUM)
                                         .text_color(foreground)
                                         .child(option.label),
@@ -257,7 +257,7 @@ impl Render for ModelField {
                         )
                         .children(option.description.map(|description| {
                             div()
-                                .text_size(rems(11. / 16.))
+                                .text_size(theme::text_meta())
                                 .text_color(theme::faint())
                                 .child(description)
                         }))

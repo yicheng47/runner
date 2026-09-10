@@ -85,7 +85,7 @@ impl SearchInput {
         let input = cx.new(|input_cx| {
             let mut input =
                 TextField::new(input_cx.focus_handle(), value.clone(), placeholder, false)
-                    .text_size(13.);
+                    .text_size(theme::text_body());
             input.set_bare(true, input_cx);
             input
         });
@@ -265,7 +265,7 @@ impl RenderOnce for Pager {
                             .flex()
                             .items_center()
                             .justify_center()
-                            .text_size(rems(12. / 16.))
+                            .text_size(theme::text_ui())
                             .text_color(theme::faint())
                             .child("…")
                             .into_any_element(),
@@ -297,7 +297,7 @@ impl RenderOnce for Pager {
                                 } else {
                                     FontWeight::NORMAL
                                 })
-                                .text_size(rems(12. / 16.))
+                                .text_size(theme::text_ui())
                                 .text_color(if active {
                                     theme::text()
                                 } else {
@@ -449,7 +449,7 @@ impl RenderOnce for EmptyStateCard {
                 )
                 .child(
                     div()
-                        .text_size(rems(20. / 16.))
+                        .text_size(theme::text_display())
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(theme::text())
                         .child(self.title),
@@ -457,7 +457,7 @@ impl RenderOnce for EmptyStateCard {
                 .child(
                     div()
                         .max_w(rems(384. / 16.))
-                        .text_size(rems(14. / 16.))
+                        .text_size(theme::text_title())
                         .line_height(rems(22. / 16.))
                         .text_color(theme::muted())
                         .child(self.description),
@@ -546,7 +546,7 @@ impl RenderOnce for PaginatedListPage {
     fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
         let body = if self.loading && !self.loaded {
             div()
-                .text_size(rems(14. / 16.))
+                .text_size(theme::text_title())
                 .text_color(theme::muted())
                 .child("Loading…")
                 .into_any_element()
@@ -558,7 +558,7 @@ impl RenderOnce for PaginatedListPage {
                 .bg(theme::with_alpha(theme::danger(), 0.1))
                 .px_3()
                 .py_2()
-                .text_size(rems(14. / 16.))
+                .text_size(theme::text_title())
                 .text_color(theme::danger())
                 .child(format!("Failed to load {}.", self.noun))
                 .into_any_element()
@@ -625,7 +625,7 @@ impl RenderOnce for PaginatedListPage {
                             div()
                                 .flex_none()
                                 .font_family(theme::UI_MONOSPACE_FONT)
-                                .text_size(rems(11. / 16.))
+                                .text_size(theme::text_meta())
                                 .text_color(theme::muted())
                                 .child(format!(
                                     "{} of {} {}",
@@ -667,14 +667,14 @@ impl RenderOnce for PaginatedListPage {
                                     .gap_1()
                                     .child(
                                         div()
-                                            .text_size(rems(24. / 16.))
+                                            .text_size(theme::text_display_lg())
                                             .font_weight(FontWeight::BOLD)
                                             .text_color(theme::text())
                                             .child(self.title),
                                     )
                                     .child(
                                         div()
-                                            .text_size(rems(14. / 16.))
+                                            .text_size(theme::text_title())
                                             .text_color(theme::muted())
                                             .child(self.description),
                                     ),
@@ -689,7 +689,7 @@ impl RenderOnce for PaginatedListPage {
                             .bg(theme::with_alpha(theme::danger(), 0.1))
                             .px_3()
                             .py_2()
-                            .text_size(rems(14. / 16.))
+                            .text_size(theme::text_title())
                             .text_color(theme::danger())
                             .child(error)
                     }))

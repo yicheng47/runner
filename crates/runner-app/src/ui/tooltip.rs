@@ -109,7 +109,7 @@ fn tooltip_content(content: SharedString) -> impl IntoElement {
         .bg(theme::raised())
         .shadow_lg()
         .font_weight(FontWeight::NORMAL)
-        .text_size(rems(11. / 16.))
+        .text_size(theme::text_meta())
         .line_height(rems(15. / 16.))
         .text_color(theme::muted())
         .child(content)

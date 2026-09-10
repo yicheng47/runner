@@ -46,7 +46,7 @@ impl RenderOnce for SettingsHeader {
                     .gap(rems(24. / 16.))
                     .child(
                         div()
-                            .text_size(rems(20. / 16.))
+                            .text_size(theme::text_display())
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(theme::text())
                             .child(self.title),
@@ -55,7 +55,7 @@ impl RenderOnce for SettingsHeader {
             )
             .child(
                 div()
-                    .text_size(rems(13. / 16.))
+                    .text_size(theme::text_body())
                     .text_color(theme::muted())
                     .child(self.subtitle),
             )
@@ -141,14 +141,14 @@ impl RenderOnce for SettingsRow {
                     .gap(rems(2. / 16.))
                     .child(
                         div()
-                            .text_size(rems(13. / 16.))
+                            .text_size(theme::text_body())
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(theme::text())
                             .child(self.label),
                     )
                     .children(self.subtitle.map(|subtitle| {
                         div()
-                            .text_size(rems(11. / 16.))
+                            .text_size(theme::text_meta())
                             .text_color(self.subtitle_color.unwrap_or_else(theme::muted))
                             .child(subtitle)
                     })),

@@ -133,7 +133,7 @@ impl RenderOnce for SessionOverlay {
                             .bg(theme::with_alpha(theme::info(), 0.1))
                             .px_4()
                             .py_2()
-                            .text_size(rems(13. / 16.))
+                            .text_size(theme::text_body())
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(theme::info())
                             .shadow_lg()
@@ -165,7 +165,7 @@ impl RenderOnce for SessionOverlay {
                         .bg(theme::with_alpha(theme::warning(), 0.15))
                         .px_3()
                         .font_family(theme::SYSTEM_MONOSPACE_FONT)
-                        .text_size(rems(13. / 16.))
+                        .text_size(theme::text_body())
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(theme::warning())
                         .child(
@@ -200,7 +200,7 @@ impl RenderOnce for SessionOverlay {
                 let secondary_click = Rc::clone(&secondary);
                 let header = if shell {
                     div()
-                        .text_size(rems(13. / 16.))
+                        .text_size(theme::text_body())
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(theme::text())
                         .child(title)
@@ -219,7 +219,7 @@ impl RenderOnce for SessionOverlay {
                         )
                         .child(
                             div()
-                                .text_size(rems(15. / 16.))
+                                .text_size(theme::text_lead())
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .text_color(theme::text())
                                 .child(title),
@@ -313,7 +313,11 @@ impl RenderOnce for SessionOverlay {
                                     .w_full()
                                     .min_w_0()
                                     .whitespace_normal()
-                                    .text_size(rems(if shell { 12. / 16. } else { 13. / 16. }))
+                                    .text_size(if shell {
+                                        theme::text_ui()
+                                    } else {
+                                        theme::text_body()
+                                    })
                                     .line_height(rems(if shell { 17.4 / 16. } else { 18. / 16. }))
                                     .text_color(theme::muted())
                                     .when(shell, |subtitle| subtitle.text_center())

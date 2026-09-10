@@ -63,11 +63,11 @@ impl NativeRoot {
                 "e.g. Wire up event bus watcher",
                 false,
             )
-            .text_size(13.)
+            .text_size(theme::text_body())
         });
         let goal = cx.new(|input_cx| {
             TextField::textarea(input_cx.focus_handle(), "", "Describe what to do…", 5, true)
-                .text_size(13.)
+                .text_size(theme::text_body())
         });
         let cwd_input = cx.new(|input_cx| {
             TextField::new(
@@ -76,7 +76,7 @@ impl NativeRoot {
                 "Runner default or home directory",
                 true,
             )
-            .text_size(12.)
+            .text_size(theme::text_ui())
         });
         let root = cx.entity();
         let select_root = root.clone();
@@ -391,13 +391,13 @@ impl NativeRoot {
                     .gap(rems(2. / 16.))
                     .child(
                         div()
-                            .text_size(rems(1.))
+                            .text_size(theme::text_heading())
                             .font_weight(FontWeight::SEMIBOLD)
                             .child("Start mission"),
                     )
                     .child(
                         div()
-                            .text_size(rems(12. / 16.))
+                            .text_size(theme::text_ui())
                             .font_weight(FontWeight::NORMAL)
                             .text_color(theme::muted())
                             .child("Spawns a session per slot and opens the mission workspace."),
@@ -429,7 +429,7 @@ impl NativeRoot {
             .children((selected.is_some() && !launchable).then(|| {
                 div()
                     .mt(rems(-14. / 16.))
-                    .text_size(rems(11. / 16.))
+                    .text_size(theme::text_meta())
                     .text_color(theme::warning())
                     .child("This crew has no runners. Add at least one before starting a mission.")
             }))
@@ -495,7 +495,7 @@ impl NativeRoot {
                             .items_center()
                             .gap_2()
                             .cursor_pointer()
-                            .text_size(rems(12. / 16.))
+                            .text_size(theme::text_ui())
                             .font_weight(FontWeight::MEDIUM)
                             .on_click(move |_, _, cx| {
                                 advanced_root.update(cx, |this, cx| {
@@ -530,7 +530,7 @@ impl NativeRoot {
                             .child(div().flex_1().child("Advanced"))
                             .child(
                                 div()
-                                    .text_size(rems(11. / 16.))
+                                    .text_size(theme::text_meta())
                                     .font_weight(FontWeight::NORMAL)
                                     .text_color(theme::faint())
                                     .child("env overrides · per-runner args · attach files"),
@@ -545,7 +545,7 @@ impl NativeRoot {
                             .bg(theme::panel())
                             .px_3()
                             .py_2()
-                            .text_size(rems(11. / 16.))
+                            .text_size(theme::text_meta())
                             .text_color(theme::faint())
                             .child("Reserved for v0.x — custom env, dry-run mode. Inert in v0 MVP.")
                     })),
@@ -557,7 +557,7 @@ impl NativeRoot {
             .child(
                 div()
                     .mr_auto()
-                    .text_size(rems(11. / 16.))
+                    .text_size(theme::text_meta())
                     .text_color(theme::faint())
                     .child(if selected.is_some() {
                         format!(
@@ -715,7 +715,7 @@ fn error_banner(error: String) -> AnyElement {
         .bg(theme::with_alpha(theme::danger(), 0.1))
         .px_3()
         .py_2()
-        .text_size(rems(12. / 16.))
+        .text_size(theme::text_ui())
         .text_color(theme::danger())
         .child(error)
         .into_any_element()

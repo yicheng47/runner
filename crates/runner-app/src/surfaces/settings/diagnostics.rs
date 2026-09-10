@@ -76,7 +76,7 @@ impl Render for DiagnosticsPane {
                     .bg(theme::with_alpha(theme::danger(), 0.08))
                     .px_3()
                     .py_2()
-                    .text_size(rems(12. / 16.))
+                    .text_size(theme::text_ui())
                     .text_color(theme::danger())
                     .child(error)
             }))

@@ -164,8 +164,8 @@ impl RenderOnce for Button {
         };
         let height = self.size.height(has_border);
         let (horizontal_padding, text_size, icon_size) = match self.size {
-            ButtonSize::Sm => (10., 12., 12.),
-            ButtonSize::Md => (12., 14., 14.),
+            ButtonSize::Sm => (10., theme::text_ui(), 12.),
+            ButtonSize::Md => (12., theme::text_title(), 14.),
         };
         let mouse_focus = self.focus_handle.clone();
         let tooltip_focus = self.focus_handle.clone();
@@ -189,7 +189,7 @@ impl RenderOnce for Button {
             .when(has_border, |button| button.border_1().border_color(border))
             .bg(background)
             .font_weight(FontWeight::MEDIUM)
-            .text_size(rems(text_size / 16.))
+            .text_size(text_size)
             .text_color(foreground)
             .opacity(if inactive { 0.5 } else { 1. })
             .cursor(if inactive {

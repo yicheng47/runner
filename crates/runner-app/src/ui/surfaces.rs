@@ -99,7 +99,7 @@ impl RenderOnce for Badge {
                 },
             ))
             .font_weight(FontWeight::MEDIUM)
-            .text_size(rems(10. / 16.))
+            .text_size(theme::text_caption())
             .text_color(color)
             .when(self.dot, |badge| {
                 badge.child(div().size(rems(6. / 16.)).rounded_full().bg(color))
@@ -157,7 +157,7 @@ impl RenderOnce for RuntimeBadge {
             } else {
                 theme::raised()
             })
-            .text_size(rems(10. / 16.))
+            .text_size(theme::text_caption())
             .line_height(rems(15. / 16.))
             .font_weight(FontWeight::MEDIUM)
             .text_color(if self.overridden {
@@ -181,7 +181,7 @@ pub fn pill(label: impl Into<SharedString>, tone: Tone) -> AnyElement {
         .border_color(theme::with_alpha(color, 0.4))
         .bg(theme::with_alpha(color, 0.1))
         .font_weight(FontWeight::SEMIBOLD)
-        .text_size(rems(11. / 16.))
+        .text_size(theme::text_meta())
         .text_color(color)
         .child(label.into())
         .into_any_element()

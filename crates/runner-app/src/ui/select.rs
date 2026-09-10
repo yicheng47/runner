@@ -430,11 +430,11 @@ impl Render for StyledSelect {
                             .child(
                                 div()
                                     .truncate()
-                                    .text_size(rems(if self.detailed {
-                                        13. / 16.
+                                    .text_size(if self.detailed {
+                                        theme::text_body()
                                     } else {
-                                        14. / 16.
-                                    }))
+                                        theme::text_title()
+                                    })
                                     .font_weight(if self.detailed {
                                         FontWeight::SEMIBOLD
                                     } else {
@@ -449,7 +449,7 @@ impl Render for StyledSelect {
                             .children(description.map(|description| {
                                 div()
                                     .truncate()
-                                    .text_size(rems(11. / 16.))
+                                    .text_size(theme::text_meta())
                                     .text_color(theme::muted())
                                     .child(description)
                             })),
@@ -544,11 +544,11 @@ impl Render for StyledSelect {
                                 .child(
                                     div()
                                         .truncate()
-                                        .text_size(rems(if self.detailed {
-                                            13. / 16.
+                                        .text_size(if self.detailed {
+                                            theme::text_body()
                                         } else {
-                                            14. / 16.
-                                        }))
+                                            theme::text_title()
+                                        })
                                         .font_weight(FontWeight::MEDIUM)
                                         .text_color(foreground)
                                         .when(self.monospace, |label| {
@@ -558,7 +558,7 @@ impl Render for StyledSelect {
                                 )
                                 .children(option.description.map(|description| {
                                     div()
-                                        .text_size(rems(11. / 16.))
+                                        .text_size(theme::text_meta())
                                         .text_color(if self.detailed {
                                             theme::muted()
                                         } else {

@@ -53,7 +53,7 @@ impl Render for AboutPane {
                                             .gap_2()
                                             .child(
                                                 div()
-                                                    .text_size(rems(1.))
+                                                    .text_size(theme::text_heading())
                                                     .font_weight(FontWeight::BOLD)
                                                     .text_color(theme::text())
                                                     .child("Runner"),
@@ -65,7 +65,7 @@ impl Render for AboutPane {
                                                     .px(rems(6. / 16.))
                                                     .py(rems(2. / 16.))
                                                     .font_family(theme::SYSTEM_MONOSPACE_FONT)
-                                                    .text_size(rems(11. / 16.))
+                                                    .text_size(theme::text_meta())
                                                     .text_color(theme::muted())
                                                     .child(installed_version),
                                             ),
@@ -73,7 +73,7 @@ impl Render for AboutPane {
                                     .child(
                                         div()
                                             .truncate()
-                                            .text_size(rems(12. / 16.))
+                                            .text_size(theme::text_ui())
                                             .text_color(theme::muted())
                                             .child("Local cockpit for coding agents."),
                                     ),
@@ -102,7 +102,7 @@ impl Render for AboutPane {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .text_size(rems(11. / 16.))
+                    .text_size(theme::text_meta())
                     .text_color(theme::faint())
                     .child("© 2026 wyc studios"),
             )
@@ -148,14 +148,14 @@ fn link_row(
                 )
                 .child(
                     div()
-                        .text_size(rems(13. / 16.))
+                        .text_size(theme::text_body())
                         .text_color(theme::text())
                         .child(label),
                 ),
         )
         .child(if let Some(trailing) = trailing {
             div()
-                .text_size(rems(12. / 16.))
+                .text_size(theme::text_ui())
                 .text_color(theme::faint())
                 .child(trailing)
         } else {

@@ -5,10 +5,61 @@ use serde::{Deserialize, Serialize};
 
 pub use crate::platform_fonts::{SYSTEM_MONOSPACE_FONT, UI_MONOSPACE_FONT};
 
-/// Body copy in the feed: message text, ask prompts. First step of the
-/// type scale; the rest of the sweep is #549.
+/// Type scale. Every text size in the app goes through one of these so the
+/// steps stay in one place and scale with the window's rem size (app zoom).
+/// 9px: avatar initials and the smallest badges.
+pub fn text_micro() -> Rems {
+    rems(9. / 16.)
+}
+
+/// 10px: captions, counters, and timestamps.
+pub fn text_caption() -> Rems {
+    rems(10. / 16.)
+}
+
+/// 11px: secondary metadata next to a row's main text.
+pub fn text_meta() -> Rems {
+    rems(11. / 16.)
+}
+
+/// 12px: dense UI chrome such as rows, chips, and field hints.
+pub fn text_ui() -> Rems {
+    rems(12. / 16.)
+}
+
+/// 13px: body copy such as feed messages, ask prompts, and sidebar rows.
 pub fn text_body() -> Rems {
     rems(13. / 16.)
+}
+
+/// 14px: row titles, form fields, and default buttons.
+pub fn text_title() -> Rems {
+    rems(14. / 16.)
+}
+
+/// 15px: overlay and dialog titles.
+pub fn text_lead() -> Rems {
+    rems(15. / 16.)
+}
+
+/// 16px: section headings and empty-state titles.
+pub fn text_heading() -> Rems {
+    rems(1.)
+}
+
+/// 20px: page titles.
+pub fn text_display() -> Rems {
+    rems(20. / 16.)
+}
+
+/// 24px: hero copy on empty states.
+pub fn text_display_lg() -> Rems {
+    rems(24. / 16.)
+}
+
+/// 30px: single large figures.
+pub fn text_display_xl() -> Rems {
+    rems(30. / 16.)
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

@@ -83,7 +83,7 @@ pub(crate) fn render_terminal_drawer_strip(
                     div()
                         .min_w(px(0.))
                         .truncate()
-                        .text_size(rems(12. / 16.))
+                        .text_size(theme::text_ui())
                         .child(label),
                 )
                 .child(
@@ -181,7 +181,7 @@ impl NativeRoot {
                 div()
                     .min_w(px(0.))
                     .truncate()
-                    .text_size(rems(13. / 16.))
+                    .text_size(theme::text_body())
                     .font_weight(FontWeight::MEDIUM)
                     .child(label),
             )
@@ -246,13 +246,13 @@ impl NativeRoot {
                             .text_center()
                             .child(
                                 div()
-                                    .text_size(rems(13. / 16.))
+                                    .text_size(theme::text_body())
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .child("Session ended — terminal closed"),
                             )
                             .child(
                                 div()
-                                    .text_size(rems(12. / 16.))
+                                    .text_size(theme::text_ui())
                                     .text_color(theme::muted())
                                     .child("This chat was archived. The PTY is gone and the workspace is read-only."),
                             ),
@@ -475,7 +475,7 @@ impl NativeRoot {
                 .bg(theme::with_alpha(theme::danger(), 0.1))
                 .px_3()
                 .py_2()
-                .text_size(rems(14. / 16.))
+                .text_size(theme::text_title())
                 .text_color(theme::danger())
                 .child(error)
         });
@@ -494,14 +494,14 @@ impl NativeRoot {
                 .bg(theme::with_alpha(theme::warning(), 0.1))
                 .px_3()
                 .py_2()
-                .text_size(rems(14. / 16.))
+                .text_size(theme::text_title())
                 .text_color(theme::warning())
                 .child(warning)
                 .child(
                     div()
                         .id("dismiss-chat-warning")
                         .cursor_pointer()
-                        .text_size(rems(12. / 16.))
+                        .text_size(theme::text_ui())
                         .text_color(theme::with_alpha(theme::warning(), 0.8))
                         .hover(|button| button.text_color(theme::warning()))
                         .child("Dismiss")
@@ -980,7 +980,7 @@ impl NativeRoot {
                                                     identity
                                                         .font_family(theme::SYSTEM_MONOSPACE_FONT)
                                                 })
-                                                .text_size(rems(14. / 16.))
+                                                .text_size(theme::text_title())
                                                 .font_weight(FontWeight::SEMIBOLD)
                                                 .text_color(theme::text())
                                                 .child(identity),
@@ -989,7 +989,7 @@ impl NativeRoot {
                                 )
                                 .children(description.map(|description| {
                                     div()
-                                        .text_size(rems(12. / 16.))
+                                        .text_size(theme::text_ui())
                                         .text_color(theme::muted())
                                         .child(description)
                                 }))
@@ -1042,7 +1042,7 @@ impl NativeRoot {
                                 .border_color(theme::border_strong())
                                 .bg(theme::bg())
                                 .p_3()
-                                .text_size(rems(12. / 16.))
+                                .text_size(theme::text_ui())
                                 .line_height(rems(20. / 16.))
                                 .text_color(theme::muted())
                                 .child(prompt),
@@ -1051,7 +1051,7 @@ impl NativeRoot {
                 .into_any_element()
         } else {
             div()
-                .text_xs()
+                .text_size(theme::text_ui())
                 .text_color(theme::faint())
                 .child("Loading chat…")
                 .into_any_element()
@@ -1217,7 +1217,7 @@ impl NativeRoot {
                     .gap(rems(2. / 16.))
                     .child(
                         div()
-                            .text_size(rems(1.))
+                            .text_size(theme::text_heading())
                             .font_weight(FontWeight::SEMIBOLD)
                             .child(if is_group {
                                 "Rename group"
@@ -1229,7 +1229,7 @@ impl NativeRoot {
                     )
                     .child(
                         div()
-                            .text_size(rems(12. / 16.))
+                            .text_size(theme::text_ui())
                             .font_weight(FontWeight::NORMAL)
                             .text_color(theme::muted())
                             .child(if is_group {
@@ -1261,7 +1261,7 @@ impl NativeRoot {
                     .bg(theme::with_alpha(theme::danger(), 0.1))
                     .px_3()
                     .py_2()
-                    .text_xs()
+                    .text_size(theme::text_ui())
                     .text_color(theme::danger())
                     .child(error)
             }))
@@ -1352,7 +1352,7 @@ impl NativeRoot {
             .child(
                 div()
                     .font_family(theme::SYSTEM_MONOSPACE_FONT)
-                    .text_size(rems(10. / 16.))
+                    .text_size(theme::text_caption())
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(theme::faint())
                     .child("LAYOUT"),
@@ -1367,7 +1367,7 @@ impl NativeRoot {
                         div()
                             .w(rems(8. / 16.))
                             .font_family(theme::SYSTEM_MONOSPACE_FONT)
-                            .text_size(rems(11. / 16.))
+                            .text_size(theme::text_meta())
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(theme::muted())
                             .child(count),
@@ -1417,7 +1417,7 @@ impl NativeRoot {
             .child(div().h(rems(1. / 16.)).w_full().bg(theme::border()))
             .child(
                 div()
-                    .text_size(rems(10. / 16.))
+                    .text_size(theme::text_caption())
                     .text_color(theme::faint())
                     .child("Layout is remembered across restarts"),
             )
@@ -1641,7 +1641,7 @@ impl NativeRoot {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .text_size(rems(12. / 16.))
+                    .text_size(theme::text_ui())
                     .text_color(theme::faint())
                     .child("Terminal unavailable")
                     .into_any_element()
@@ -1747,7 +1747,7 @@ impl NativeRoot {
                 .absolute()
                 .inset_0()
                 .bg(terminal_background)
-                .text_size(rems(12. / 16.))
+                .text_size(theme::text_ui())
                 .text_color(theme::faint())
                 .when(matches!(overlay, PaneOverlayState::None), |surface| {
                     surface
@@ -1904,7 +1904,7 @@ impl NativeRoot {
                         .ml_2()
                         .min_w(px(0.))
                         .truncate()
-                        .text_size(rems(12. / 16.))
+                        .text_size(theme::text_ui())
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(if focused {
                             theme::text()
@@ -1962,7 +1962,7 @@ impl NativeRoot {
                     .child(
                         div()
                             .ml_2()
-                            .text_size(rems(12. / 16.))
+                            .text_size(theme::text_ui())
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(theme::faint())
                             .child("Empty"),
@@ -2113,7 +2113,7 @@ impl NativeRoot {
                     .absolute()
                     .inset_0()
                     .bg(terminal_background)
-                    .text_size(rems(12. / 16.))
+                    .text_size(theme::text_ui())
                     .text_color(theme::faint())
                     .when(matches!(overlay, PaneOverlayState::None), |surface| {
                         surface
@@ -2281,7 +2281,7 @@ impl NativeRoot {
                 .p_4()
                 .child(
                     div()
-                        .text_size(rems(13. / 16.))
+                        .text_size(theme::text_body())
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(theme::muted())
                         .child("No session in this pane"),
@@ -2505,7 +2505,7 @@ fn runtime_badge(label: impl Into<SharedString>) -> AnyElement {
         .px(rems(6. / 16.))
         .py(rems(1. / 16.))
         .font_weight(FontWeight::BOLD)
-        .text_size(rems(9. / 16.))
+        .text_size(theme::text_micro())
         .text_color(theme::muted())
         .child(label.to_uppercase())
         .into_any_element()
@@ -2530,7 +2530,7 @@ fn render_pane_header_status(status: DirectChatDisplayStatus) -> AnyElement {
 fn side_panel_label(label: &'static str) -> AnyElement {
     div()
         .font_weight(FontWeight::SEMIBOLD)
-        .text_size(rems(10. / 16.))
+        .text_size(theme::text_caption())
         .text_color(theme::faint())
         .child(label.to_uppercase())
         .into_any_element()
@@ -2560,7 +2560,7 @@ fn side_panel_row(label: &'static str, value: impl IntoElement) -> AnyElement {
         .flex()
         .items_start()
         .gap_3()
-        .text_size(rems(11. / 16.))
+        .text_size(theme::text_meta())
         .child(side_panel_key(label))
         .child(value)
         .into_any_element()

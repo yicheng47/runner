@@ -80,11 +80,11 @@ impl Render for UpdatesPane {
                     .child(img(app_icon_source()).size(rems(56. / 16.)).flex_none().rounded(rems(1.)))
                     .child(div().min_w_0().flex_1().flex().flex_col().gap_1()
                         .child(div().flex().items_center().gap_2()
-                            .child(div().text_size(rems(1.)).font_weight(FontWeight::BOLD).text_color(theme::text()).child("Runner"))
+                            .child(div().text_size(theme::text_heading()).font_weight(FontWeight::BOLD).text_color(theme::text()).child("Runner"))
                             .child(div().rounded_sm().bg(theme::raised()).px(rems(6. / 16.)).py(rems(2. / 16.))
-                                .font_family(theme::SYSTEM_MONOSPACE_FONT).text_size(rems(11. / 16.)).text_color(theme::muted())
+                                .font_family(theme::SYSTEM_MONOSPACE_FONT).text_size(theme::text_meta()).text_color(theme::muted())
                                 .child(runner_app::version::display_version_label())))
-                        .child(div().text_size(rems(12. / 16.)).text_color(theme::muted()).child(status)))
+                        .child(div().text_size(theme::text_ui()).text_color(theme::muted()).child(status)))
                     .child(Button::new("updates-check", if up_to_date { "Check for updates" } else { "Update" })
                         .icon(if up_to_date { "refresh-cw.svg" } else { "circle-arrow-down.svg" })
                         .size(ButtonSize::Sm)
@@ -111,7 +111,7 @@ impl Render for UpdatesPane {
                     }))
                     .subtitle("Downloads are verified before Runner offers to install them. Turn off to be notified only.")
                     .into_any_element(),
-                SettingsRow::new("Last checked", div().text_size(rems(12. / 16.)).text_color(theme::muted()).child(last_checked)).into_any_element(),
+                SettingsRow::new("Last checked", div().text_size(theme::text_ui()).text_color(theme::muted()).child(last_checked)).into_any_element(),
             ]))
     }
 }

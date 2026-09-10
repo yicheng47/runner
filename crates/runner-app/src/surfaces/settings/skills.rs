@@ -193,7 +193,8 @@ impl SkillsPane {
             .width(px(160.))
         });
         let search = cx.new(|cx| {
-            TextField::new(cx.focus_handle(), "", "Search skills…", false).text_size(12.)
+            TextField::new(cx.focus_handle(), "", "Search skills…", false)
+                .text_size(theme::text_ui())
         });
         let detail = cx.new(|cx| SkillDetail::new(app_store.clone(), cx));
         let subscriptions = vec![
@@ -304,7 +305,7 @@ impl SkillsPane {
                             .gap_2()
                             .child(
                                 div()
-                                    .text_size(rems(13. / 16.))
+                                    .text_size(theme::text_body())
                                     .font_weight(FontWeight::MEDIUM)
                                     .child(entry.name.clone()),
                             )
@@ -312,7 +313,7 @@ impl SkillsPane {
                     )
                     .child(
                         div()
-                            .text_size(rems(11. / 16.))
+                            .text_size(theme::text_meta())
                             .text_color(theme::faint())
                             .truncate()
                             .child(first_sentence(&entry.description)),
@@ -401,13 +402,13 @@ impl Render for SkillsPane {
                         .child(
                             div()
                                 .font_family(theme::UI_MONOSPACE_FONT)
-                                .text_size(rems(11. / 16.))
+                                .text_size(theme::text_meta())
                                 .text_color(theme::faint())
                                 .child(catalog_meta(catalog)),
                         )
                         .child(
                             div()
-                                .text_size(rems(11. / 16.))
+                                .text_size(theme::text_meta())
                                 .line_height(rems(1.))
                                 .text_color(theme::faint())
                                 .child(if catalog.runtime == Runtime::ClaudeCode {
@@ -420,7 +421,7 @@ impl Render for SkillsPane {
             })
             .children(self.error.clone().map(|error| {
                 div()
-                    .text_size(rems(12. / 16.))
+                    .text_size(theme::text_ui())
                     .text_color(theme::danger())
                     .child(error)
             }))
@@ -428,7 +429,7 @@ impl Render for SkillsPane {
                 vec![div()
                     .px_4()
                     .py_4()
-                    .text_size(rems(12. / 16.))
+                    .text_size(theme::text_ui())
                     .text_color(theme::faint())
                     .child(empty)
                     .into_any_element()]
@@ -486,7 +487,7 @@ impl SkillDetail {
     fn new(app_store: Entity<AppStore>, cx: &mut Context<Self>) -> Self {
         let editor = cx.new(|cx| {
             TextField::textarea(cx.focus_handle(), "", "", 16, true)
-                .text_size(12.)
+                .text_size(theme::text_ui())
                 .fill_height()
                 .with_scrollbar(cx)
         });
@@ -824,7 +825,7 @@ impl SkillDetail {
             .child(
                 div()
                     .debug_selector(|| "SKILL_DESCRIPTION".into())
-                    .text_size(rems(12. / 16.))
+                    .text_size(theme::text_ui())
                     .line_height(rems(18. / 16.))
                     .text_color(theme::muted())
                     .child(skill.entry.description.clone()),
@@ -841,7 +842,7 @@ impl SkillDetail {
                             .debug_selector(|| "SKILL_PATH".into())
                             .flex_1()
                             .min_w_0()
-                            .text_size(rems(10. / 16.))
+                            .text_size(theme::text_caption())
                             .font_family(theme::UI_MONOSPACE_FONT)
                             .text_color(theme::faint())
                             .child(path_text),
@@ -870,9 +871,9 @@ impl SkillDetail {
                         .py_2()
                         .child(
                             div().flex_1().min_w_0().flex().flex_col().gap_1()
-                                .child(div().text_size(rems(12. / 16.)).child(format!("Enabled in {}", runtime_display_name(skill.runtime.key()))))
+                                .child(div().text_size(theme::text_ui()).child(format!("Enabled in {}", runtime_display_name(skill.runtime.key()))))
                                 .child(
-                                    div().text_size(rems(10. / 16.))
+                                    div().text_size(theme::text_caption())
                                         .line_height(rems(15. / 16.))
                                         .text_color(theme::faint())
                                         .child(if skill.runtime == Runtime::Codex {
@@ -908,7 +909,7 @@ impl SkillDetail {
             .child(
                 div()
                     .flex_1()
-                    .text_size(rems(10. / 16.))
+                    .text_size(theme::text_caption())
                     .text_color(theme::faint())
                     .child(format!(
                         "{} · {} lines",
@@ -961,7 +962,7 @@ impl SkillDetail {
         } else {
             let contents = if let Some(error) = &skill.read_error {
                 div()
-                    .text_size(rems(12. / 16.))
+                    .text_size(theme::text_ui())
                     .text_color(theme::faint())
                     .child(format!(
                         "Cannot read {}: {error}. Reveal the folder to inspect its files.",
@@ -971,7 +972,7 @@ impl SkillDetail {
             } else if self.source {
                 div()
                     .font_family(theme::UI_MONOSPACE_FONT)
-                    .text_size(rems(12. / 16.))
+                    .text_size(theme::text_ui())
                     .line_height(rems(20. / 16.))
                     .child(skill.text.clone())
                     .into_any_element()
@@ -981,11 +982,11 @@ impl SkillDetail {
                     .flex()
                     .flex_col()
                     .gap_3()
-                    .text_size(rems(12. / 16.))
+                    .text_size(theme::text_ui())
                     .text_color(theme::muted())
                     .children(doc.problem.map(|error| {
                         div()
-                            .text_size(rems(11. / 16.))
+                            .text_size(theme::text_meta())
                             .text_color(theme::danger())
                             .child(error)
                     }))
@@ -1002,7 +1003,7 @@ impl SkillDetail {
                                     div()
                                         .flex()
                                         .gap_3()
-                                        .text_size(rems(11. / 16.))
+                                        .text_size(theme::text_meta())
                                         .line_height(rems(1.))
                                         .debug_selector(|| "SKILL_FRONTMATTER_ROW".into())
                                         .child(
@@ -1073,7 +1074,7 @@ impl SkillDetail {
             .children(self.error.clone().map(|error| {
                 div()
                     .flex_none()
-                    .text_size(rems(12. / 16.))
+                    .text_size(theme::text_ui())
                     .text_color(theme::danger())
                     .child(error)
             }))
@@ -1119,7 +1120,7 @@ impl SkillDetail {
                         div()
                             .flex_1()
                             .min_w_0()
-                            .text_size(rems(10. / 16.))
+                            .text_size(theme::text_caption())
                             .text_color(theme::faint())
                             .debug_selector(|| "SKILL_FOOTER_HINT".into())
                             .child(hint),

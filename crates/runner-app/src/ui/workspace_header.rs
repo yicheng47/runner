@@ -81,7 +81,7 @@ impl WorkspaceHeader {
                             .top(rems(1. / 16.))
                             .min_w(px(0.))
                             .truncate()
-                            .text_size(rems(13. / 16.))
+                            .text_size(theme::text_body())
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(theme::text())
                             .child(self.title),
