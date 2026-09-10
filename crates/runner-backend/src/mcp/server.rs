@@ -105,6 +105,8 @@ mod tests {
             "mission_post_human_signal",
             "mission_post_human_message",
             "session_start_direct",
+            "session_resume",
+            "session_restart",
         ]
         .iter()
         .map(|s| s.to_string())

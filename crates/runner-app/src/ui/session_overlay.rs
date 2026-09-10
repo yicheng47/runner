@@ -21,6 +21,7 @@ pub enum SessionOverlayKind {
 enum EndedStyle {
     Chat,
     Shell,
+    Slot,
 }
 
 #[derive(IntoElement)]
@@ -30,8 +31,8 @@ pub struct SessionOverlay {
     label: Option<SharedString>,
     title: Option<SharedString>,
     subtitle: Option<SharedString>,
-    on_resume: Option<PressHandler>,
-    on_archive: Option<PressHandler>,
+    on_primary: Option<PressHandler>,
+    on_secondary: Option<PressHandler>,
     ended_style: EndedStyle,
 }
 
@@ -44,8 +45,8 @@ impl SessionOverlay {
             label: None,
             title: None,
             subtitle: None,
-            on_resume: None,
-            on_archive: None,
+            on_primary: None,
+            on_secondary: None,
             ended_style: EndedStyle::Chat,
         }
     }
@@ -53,8 +54,8 @@ impl SessionOverlay {
     pub fn ended(
         id: impl Into<SharedString>,
         subtitle: impl Into<SharedString>,
-        on_resume: impl Fn(&mut Window, &mut App) + 'static,
-        on_archive: impl Fn(&mut Window, &mut App) + 'static,
+        on_primary: impl Fn(&mut Window, &mut App) + 'static,
+        on_secondary: impl Fn(&mut Window, &mut App) + 'static,
     ) -> Self {
         Self {
             id: id.into(),
@@ -62,8 +63,8 @@ impl SessionOverlay {
             label: None,
             title: None,
             subtitle: Some(subtitle.into()),
-            on_resume: Some(Rc::new(on_resume)),
-            on_archive: Some(Rc::new(on_archive)),
+            on_primary: Some(Rc::new(on_primary)),
+            on_secondary: Some(Rc::new(on_secondary)),
             ended_style: EndedStyle::Chat,
         }
     }
@@ -80,10 +81,16 @@ impl SessionOverlay {
             label: None,
             title: Some("Shell exited".into()),
             subtitle: Some(subtitle.into()),
-            on_resume: Some(Rc::new(on_restart)),
-            on_archive: Some(Rc::new(on_close)),
+            on_primary: Some(Rc::new(on_restart)),
+            on_secondary: Some(Rc::new(on_close)),
             ended_style: EndedStyle::Shell,
         }
+    }
+
+    pub fn slot_stopped(mut self) -> Self {
+        self.ended_style = EndedStyle::Slot;
+        self.title = Some("Slot stopped".into());
+        self
     }
 
     pub fn label(mut self, label: impl Into<SharedString>) -> Self {
@@ -183,13 +190,14 @@ impl RenderOnce for SessionOverlay {
                 )
                 .into_any_element(),
             SessionOverlayKind::Ended => {
-                let resume = self.on_resume.expect("ended overlay resume action");
-                let archive = self.on_archive.expect("ended overlay archive action");
+                let primary = self.on_primary.expect("ended overlay primary action");
+                let secondary = self.on_secondary.expect("ended overlay secondary action");
                 let title = self.title.unwrap_or_else(|| "Chat paused".into());
                 let subtitle = self.subtitle.expect("ended overlay subtitle");
                 let shell = self.ended_style == EndedStyle::Shell;
-                let resume_click = Rc::clone(&resume);
-                let archive_click = Rc::clone(&archive);
+                let slot = self.ended_style == EndedStyle::Slot;
+                let primary_click = Rc::clone(&primary);
+                let secondary_click = Rc::clone(&secondary);
                 let header = if shell {
                     div()
                         .text_size(rems(13. / 16.))
@@ -228,12 +236,12 @@ impl RenderOnce for SessionOverlay {
                             Button::new(SharedString::from(format!("{id}-restart")), "Restart")
                                 .size(ButtonSize::Sm)
                                 .variant(ButtonVariant::Primary)
-                                .on_press(move |window, cx| resume_click(window, cx)),
+                                .on_press(move |window, cx| primary_click(window, cx)),
                         )
                         .child(
                             Button::new(SharedString::from(format!("{id}-close")), "Close")
                                 .size(ButtonSize::Sm)
-                                .on_press(move |window, cx| archive_click(window, cx)),
+                                .on_press(move |window, cx| secondary_click(window, cx)),
                         )
                         .into_any_element()
                 } else {
@@ -243,15 +251,25 @@ impl RenderOnce for SessionOverlay {
                         .items_center()
                         .gap_2()
                         .child(
-                            Button::new(SharedString::from(format!("{id}-resume")), "Resume")
-                                .icon("play.svg")
-                                .variant(ButtonVariant::Primary)
-                                .on_press(move |window, cx| resume_click(window, cx)),
+                            Button::new(
+                                SharedString::from(format!("{id}-resume")),
+                                if slot { "Resume slot" } else { "Resume" },
+                            )
+                            .icon("play.svg")
+                            .variant(ButtonVariant::Primary)
+                            .on_press(move |window, cx| primary_click(window, cx)),
                         )
                         .child(
-                            Button::new(SharedString::from(format!("{id}-archive")), "Archive")
-                                .icon("archive.svg")
-                                .on_press(move |window, cx| archive_click(window, cx)),
+                            Button::new(
+                                SharedString::from(format!("{id}-archive")),
+                                if slot { "Restart slot" } else { "Archive" },
+                            )
+                            .icon(if slot {
+                                "rotate-ccw.svg"
+                            } else {
+                                "archive.svg"
+                            })
+                            .on_press(move |window, cx| secondary_click(window, cx)),
                         )
                         .into_any_element()
                 };
@@ -399,5 +417,33 @@ mod tests {
         assert_eq!(card.size.width, px(380.));
         assert!(card.top() < actions.top());
         assert!(actions.bottom() < card.bottom());
+    }
+    struct SlotStoppedOverlayTest;
+
+    impl Render for SlotStoppedOverlayTest {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().size_full().child(SessionOverlay::ended(
+                "test-slot-stopped",
+                "@worker's PTY is closed; 2 other slots are still running. Resume continues its conversation where it left off. Restart discards it and starts over with the brief, the same first turn a cold start gives the slot.",
+                |_, _| {}, |_, _| {},
+            ).slot_stopped())
+        }
+    }
+
+    #[test]
+    fn stopped_slot_card_wraps_copy_and_keeps_bottom_docked_actions() {
+        let mut cx = TestAppContext::single();
+        let window = cx.add_window(|window, _| {
+            window.set_rem_size(px(20.8));
+            SlotStoppedOverlayTest
+        });
+        cx.run_until_parked();
+        let mut window = VisualTestContext::from_window(window.into(), &cx);
+        let card = window.debug_bounds("SESSION_ENDED_CARD").unwrap();
+        let subtitle = window.debug_bounds("SESSION_ENDED_SUBTITLE").unwrap();
+        let actions = window.debug_bounds("SESSION_ENDED_ACTIONS").unwrap();
+        assert!(subtitle.right() <= card.right());
+        assert!(subtitle.bottom() <= actions.top());
+        assert_eq!(card.bottom() - actions.bottom(), px(27.));
     }
 }

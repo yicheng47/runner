@@ -35,6 +35,11 @@ pub struct StartDirectSessionArgs {
     pub cwd: Option<String>,
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SessionArgs {
+    pub session_id: String,
+}
+
 fn command_error(error: Error) -> ErrorData {
     match error {
         Error::Msg(message) => ErrorData::invalid_request(message, None),
@@ -44,6 +49,38 @@ fn command_error(error: Error) -> ErrorData {
 
 #[tool_router(router = session_router, vis = "pub(crate)")]
 impl RunnerMcpHandler {
+    #[tool(description = "Resume a stopped session, continuing its conversation when available.")]
+    pub async fn session_resume(
+        &self,
+        Parameters(args): Parameters<SessionArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let state = self.state.clone();
+        let output = tokio::task::spawn_blocking(move || {
+            session::session_resume(&state, &args.session_id, None, None)
+        })
+        .await
+        .map_err(|error| ErrorData::internal_error(error.to_string(), None))?
+        .map_err(command_error)?;
+        Ok(CallToolResult::success(vec![Content::json(&output)?]))
+    }
+
+    #[tool(
+        description = "Restart a mission slot with a fresh conversation and its cold-start brief. Reuses the session row and preserves mission messages."
+    )]
+    pub async fn session_restart(
+        &self,
+        Parameters(args): Parameters<SessionArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let state = self.state.clone();
+        let output = tokio::task::spawn_blocking(move || {
+            session::session_restart(&state, &args.session_id, None, None)
+        })
+        .await
+        .map_err(|error| ErrorData::internal_error(error.to_string(), None))?
+        .map_err(command_error)?;
+        Ok(CallToolResult::success(vec![Content::json(&output)?]))
+    }
+
     #[tool(
         description = "Start a direct chat for a runner. A project's cwd is used unless cwd is explicitly provided."
     )]

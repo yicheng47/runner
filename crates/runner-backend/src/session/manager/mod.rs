@@ -483,17 +483,6 @@ pub struct SpawnedSession {
     pub runner_id: Option<String>,
     pub handle: String,
     pub pid: Option<u32>,
-    /// True iff this resume detected a missing claude-code
-    /// conversation file for a lead slot and degraded to a fresh
-    /// spawn. Internal signal: `ops::session::session_resume`
-    /// uses it to ask the router to fire the rich launch prompt
-    /// (the bus's `mission_goal` handler can't, since
-    /// `mission_attach`'s watermark suppresses replay on resume).
-    /// Always false on initial spawn / direct chat / non-lead resume
-    /// — kept off the frontend type since it's not actionable from
-    /// the UI.
-    #[serde(skip)]
-    pub fresh_fallback_lead: bool,
 }
 
 struct SessionHandle {

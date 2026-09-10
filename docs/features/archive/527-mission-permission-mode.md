@@ -8,6 +8,8 @@ Tracking issue: [#527](https://github.com/yicheng47/runner/issues/527). Status: 
 
 A permission prompt inside a mission slot is never a real control point. Nobody is watching that PTY, so the prompt is a silent stall: the lead waits on a handoff that never arrives, and the human sees nothing. The byte-flow `IdleDetector` (`crates/runner-backend/src/session/pty_runtime.rs`) reports the stuck slot as idle, which is what a finished slot looks like too. Spec [52](../52-hook-based-session-status.md) closed the hook-based status route, so the feed will not learn to show this.
 
+[542](../542-slot-restart.md) adds per-slot Stop, Resume, and Restart recovery for a stalled slot without interrupting its siblings; Restart re-sends the cold-start brief and notifies the lead.
+
 Auto mode does not remove the stall. claude-code's `--permission-mode auto` runs a classifier that still stops for a human on some actions; on 2026-09-09 it denied a `git push` twice in one session. codex's `on-request` asks to escalate whenever the sandbox blocks a command. In a direct chat the human answers; in a mission slot nobody does.
 
 Today permission mode is a per-runner property. `ops::runner::create` / `update` write the chosen mode onto the row's `args` at create time through `router::runtime::permission_mode_args` (`crates/runner-backend/src/router/runtime.rs:258`), default Auto (`ops::runner::default_permission_mode`). Missions inherit whatever each runner carries; a slot runtime override starts from the default mode (`session::manager::resolve_runtime_override`, `crates/runner-backend/src/session/manager/mod.rs:1328`). There is no mission-level knob.

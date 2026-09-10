@@ -60474,2012 +60474,6 @@
     },
     {
       "type": "frame",
-      "id": "u8Ln2",
-      "x": 1600,
-      "y": 12513,
-      "name": "Mission workspace — restart confirm (542)",
-      "clip": true,
-      "width": 1440,
-      "height": 900,
-      "fill": "$bg",
-      "children": [
-        {
-          "id": "r34LJ6",
-          "type": "ref",
-          "ref": "N4yXC",
-          "name": "Sidebar",
-          "width": 240,
-          "height": 900
-        },
-        {
-          "type": "frame",
-          "id": "acb4x",
-          "name": "Main",
-          "width": "fill_container",
-          "height": "fill_container",
-          "fill": "$bg",
-          "layout": "vertical",
-          "children": [
-            {
-              "type": "frame",
-              "id": "e50UI",
-              "name": "TabBar",
-              "width": "fill_container",
-              "height": 44,
-              "stroke": "$hairline",
-              "strokeWidth": {
-                "bottom": 1
-              },
-              "strokeAlignment": "inner",
-              "gap": 12,
-              "padding": [
-                0,
-                16
-              ],
-              "alignItems": "center",
-              "children": [
-                {
-                  "type": "frame",
-                  "id": "A7gNUh",
-                  "name": "tb_left",
-                  "width": "fill_container",
-                  "gap": 10,
-                  "alignItems": "center",
-                  "children": [
-                    {
-                      "type": "icon",
-                      "id": "hss3h",
-                      "name": "layout_ic",
-                      "width": 14,
-                      "height": 14,
-                      "icon": "flag",
-                      "library": "lucide",
-                      "fill": "$text-mid"
-                    },
-                    {
-                      "type": "text",
-                      "id": "xBEsX",
-                      "name": "tab_title",
-                      "fill": "$text-hi",
-                      "content": "Wire up event bus watcher",
-                      "fontFamily": "$font-ui",
-                      "fontSize": 13,
-                      "fontWeight": "500"
-                    },
-                    {
-                      "type": "icon",
-                      "id": "x88Zfr",
-                      "name": "kebab",
-                      "width": 14,
-                      "height": 14,
-                      "icon": "ellipsis",
-                      "library": "lucide",
-                      "fill": "$text-low"
-                    },
-                    {
-                      "type": "icon",
-                      "id": "eNxcv",
-                      "name": "stop_all",
-                      "width": 12,
-                      "height": 12,
-                      "icon": "square",
-                      "library": "lucide",
-                      "fill": "#E5484D"
-                    }
-                  ]
-                },
-                {
-                  "type": "frame",
-                  "id": "WLSQQ",
-                  "name": "tb_right",
-                  "gap": 14,
-                  "alignItems": "center",
-                  "children": [
-                    {
-                      "type": "icon",
-                      "id": "VSdF7",
-                      "name": "drawer_ic",
-                      "width": 14,
-                      "height": 14,
-                      "icon": "panel-bottom",
-                      "library": "lucide",
-                      "fill": "$text-mid"
-                    }
-                  ]
-                }
-              ]
-            },
-            {
-              "type": "frame",
-              "id": "J8U4m4",
-              "name": "Body",
-              "width": "fill_container",
-              "height": "fill_container",
-              "layout": "vertical",
-              "children": [
-                {
-                  "type": "frame",
-                  "id": "oEwOv",
-                  "name": "MissionCenter",
-                  "width": "fill_container",
-                  "height": "fill_container",
-                  "layout": "vertical",
-                  "children": [
-                    {
-                      "type": "frame",
-                      "id": "Iy1Xv",
-                      "name": "missionTabStrip",
-                      "width": "fill_container",
-                      "height": 34,
-                      "stroke": "$hairline",
-                      "strokeWidth": {
-                        "bottom": 1
-                      },
-                      "strokeAlignment": "inner",
-                      "gap": 2,
-                      "padding": [
-                        0,
-                        8,
-                        0,
-                        6
-                      ],
-                      "alignItems": "center",
-                      "children": [
-                        {
-                          "type": "frame",
-                          "id": "VzKZp",
-                          "name": "tab_Feed",
-                          "height": "fill_container",
-                          "stroke": "$sidebar-sel-border",
-                          "strokeWidth": {
-                            "bottom": 2
-                          },
-                          "strokeAlignment": "inner",
-                          "layout": "vertical",
-                          "children": [
-                            {
-                              "type": "frame",
-                              "id": "rMptt",
-                              "name": "content",
-                              "height": "fill_container",
-                              "gap": 6,
-                              "padding": [
-                                0,
-                                8
-                              ],
-                              "alignItems": "center",
-                              "children": [
-                                {
-                                  "type": "icon",
-                                  "id": "g7QhU",
-                                  "name": "ic",
-                                  "width": 12,
-                                  "height": 12,
-                                  "icon": "message-square",
-                                  "library": "lucide",
-                                  "fill": "$text-hi"
-                                },
-                                {
-                                  "type": "text",
-                                  "id": "n7gcqw",
-                                  "name": "t",
-                                  "fill": "$text-hi",
-                                  "content": "Feed",
-                                  "fontFamily": "$font-ui",
-                                  "fontSize": 12,
-                                  "fontWeight": "600"
-                                }
-                              ]
-                            }
-                          ]
-                        },
-                        {
-                          "type": "frame",
-                          "id": "hzU91",
-                          "name": "tab_architect",
-                          "height": "fill_container",
-                          "layout": "vertical",
-                          "children": [
-                            {
-                              "type": "frame",
-                              "id": "DjUMK",
-                              "name": "content",
-                              "height": "fill_container",
-                              "gap": 6,
-                              "padding": [
-                                0,
-                                8
-                              ],
-                              "alignItems": "center",
-                              "children": [
-                                {
-                                  "type": "icon",
-                                  "id": "zwQX6",
-                                  "name": "ic",
-                                  "width": 12,
-                                  "height": 12,
-                                  "icon": "terminal",
-                                  "library": "lucide",
-                                  "fill": "$text-low"
-                                },
-                                {
-                                  "type": "text",
-                                  "id": "M1TaR8",
-                                  "name": "t",
-                                  "fill": "$text-mid",
-                                  "content": "@architect",
-                                  "fontFamily": "$font-ui",
-                                  "fontSize": 12,
-                                  "fontWeight": "normal"
-                                }
-                              ]
-                            }
-                          ]
-                        },
-                        {
-                          "type": "frame",
-                          "id": "VreMC",
-                          "name": "tab_impl",
-                          "height": "fill_container",
-                          "layout": "vertical",
-                          "children": [
-                            {
-                              "type": "frame",
-                              "id": "cYgIG",
-                              "name": "content",
-                              "height": "fill_container",
-                              "gap": 6,
-                              "padding": [
-                                0,
-                                8
-                              ],
-                              "alignItems": "center",
-                              "children": [
-                                {
-                                  "type": "icon",
-                                  "id": "S9iNf",
-                                  "name": "ic",
-                                  "width": 12,
-                                  "height": 12,
-                                  "icon": "terminal",
-                                  "library": "lucide",
-                                  "fill": "$text-low"
-                                },
-                                {
-                                  "type": "text",
-                                  "id": "sv1Ph",
-                                  "name": "t",
-                                  "fill": "$text-mid",
-                                  "content": "@impl",
-                                  "fontFamily": "$font-ui",
-                                  "fontSize": 12,
-                                  "fontWeight": "normal"
-                                }
-                              ]
-                            }
-                          ]
-                        },
-                        {
-                          "type": "frame",
-                          "id": "p9BdV",
-                          "name": "tab_reviewer",
-                          "height": "fill_container",
-                          "layout": "vertical",
-                          "children": [
-                            {
-                              "type": "frame",
-                              "id": "y8QeHH",
-                              "name": "content",
-                              "height": "fill_container",
-                              "gap": 6,
-                              "padding": [
-                                0,
-                                8
-                              ],
-                              "alignItems": "center",
-                              "children": [
-                                {
-                                  "type": "icon",
-                                  "id": "B6Ytg",
-                                  "name": "ic",
-                                  "width": 12,
-                                  "height": 12,
-                                  "icon": "terminal",
-                                  "library": "lucide",
-                                  "fill": "$text-low"
-                                },
-                                {
-                                  "type": "text",
-                                  "id": "A0bUP",
-                                  "name": "t",
-                                  "fill": "$text-mid",
-                                  "content": "@reviewer",
-                                  "fontFamily": "$font-ui",
-                                  "fontSize": 12,
-                                  "fontWeight": "normal"
-                                }
-                              ]
-                            }
-                          ]
-                        }
-                      ]
-                    },
-                    {
-                      "type": "frame",
-                      "id": "TArVb",
-                      "name": "feed",
-                      "width": "fill_container",
-                      "height": "fill_container",
-                      "fill": "$panel",
-                      "layout": "vertical",
-                      "gap": 14,
-                      "padding": [
-                        18,
-                        24
-                      ],
-                      "children": [
-                        {
-                          "type": "frame",
-                          "id": "RpCAO",
-                          "name": "row_you",
-                          "width": "fill_container",
-                          "layout": "vertical",
-                          "gap": 4,
-                          "children": [
-                            {
-                              "type": "text",
-                              "id": "Kh2mp",
-                              "name": "who",
-                              "fill": "$text-low",
-                              "content": "you · goal",
-                              "fontFamily": "$font-ui",
-                              "fontSize": 11,
-                              "fontWeight": "600"
-                            },
-                            {
-                              "type": "text",
-                              "id": "A4oSlB",
-                              "name": "body",
-                              "fill": "$text-hi",
-                              "textGrowth": "fixed-width",
-                              "width": "fill_container",
-                              "content": "Wire the notify watcher into the event bus so mission NDJSON appends fan out to every slot without polling.",
-                              "lineHeight": 1.45,
-                              "fontFamily": "$font-ui",
-                              "fontSize": 13,
-                              "fontWeight": "normal"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "frame",
-                          "id": "yss5p",
-                          "name": "row_architect",
-                          "width": "fill_container",
-                          "layout": "vertical",
-                          "gap": 4,
-                          "children": [
-                            {
-                              "type": "text",
-                              "id": "i2Vawd",
-                              "name": "who",
-                              "fill": "$text-low",
-                              "content": "@architect",
-                              "fontFamily": "$font-ui",
-                              "fontSize": 11,
-                              "fontWeight": "600"
-                            },
-                            {
-                              "type": "text",
-                              "id": "o0eQd",
-                              "name": "body",
-                              "fill": "$text-hi",
-                              "textGrowth": "fixed-width",
-                              "width": "fill_container",
-                              "content": "Splitting into three phases: watcher registration, append fan-out, backpressure on slow readers. Dispatching phase 1 to @impl.",
-                              "lineHeight": 1.45,
-                              "fontFamily": "$font-ui",
-                              "fontSize": 13,
-                              "fontWeight": "normal"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "frame",
-                          "id": "c1kQ47",
-                          "name": "row_impl",
-                          "width": "fill_container",
-                          "layout": "vertical",
-                          "gap": 4,
-                          "children": [
-                            {
-                              "type": "text",
-                              "id": "SwVcK",
-                              "name": "who",
-                              "fill": "$text-low",
-                              "content": "@impl",
-                              "fontFamily": "$font-ui",
-                              "fontSize": 11,
-                              "fontWeight": "600"
-                            },
-                            {
-                              "type": "text",
-                              "id": "I6LI1I",
-                              "name": "body",
-                              "fill": "$text-hi",
-                              "textGrowth": "fixed-width",
-                              "width": "fill_container",
-                              "content": "Phase 1 on branch feat/event-bus-watcher. `notify` debounce is 20 ms; tests in crates/runner-core/src/watch.rs. Ready for @reviewer.",
-                              "lineHeight": 1.45,
-                              "fontFamily": "$font-ui",
-                              "fontSize": 13,
-                              "fontWeight": "normal"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "frame",
-                          "id": "vXep5",
-                          "name": "row_reviewer",
-                          "width": "fill_container",
-                          "layout": "vertical",
-                          "gap": 4,
-                          "children": [
-                            {
-                              "type": "text",
-                              "id": "ZUkXl",
-                              "name": "who",
-                              "fill": "$text-low",
-                              "content": "@reviewer",
-                              "fontFamily": "$font-ui",
-                              "fontSize": 11,
-                              "fontWeight": "600"
-                            },
-                            {
-                              "type": "text",
-                              "id": "AOCK9",
-                              "name": "body",
-                              "fill": "$text-hi",
-                              "textGrowth": "fixed-width",
-                              "width": "fill_container",
-                              "content": "Reviewing the working-tree diff. One question on the debounce window — posting findings shortly.",
-                              "lineHeight": 1.45,
-                              "fontFamily": "$font-ui",
-                              "fontSize": 13,
-                              "fontWeight": "normal"
-                            }
-                          ]
-                        }
-                      ]
-                    }
-                  ]
-                }
-              ]
-            }
-          ]
-        },
-        {
-          "type": "frame",
-          "id": "wI98H",
-          "name": "Runners rail",
-          "width": 280,
-          "height": "fill_container",
-          "fill": "#1D1E23",
-          "stroke": "#272930",
-          "strokeWidth": {
-            "left": 1
-          },
-          "strokeAlignment": "inner",
-          "strokeLinejoin": "round",
-          "layout": "vertical",
-          "gap": 12,
-          "padding": [
-            14,
-            20,
-            20,
-            20
-          ],
-          "children": [
-            {
-              "type": "frame",
-              "id": "w0YTAT",
-              "name": "panel_header",
-              "width": "fill_container",
-              "layout": "vertical",
-              "gap": 14,
-              "children": [
-                {
-                  "type": "frame",
-                  "id": "vnVuB",
-                  "name": "panel_topbar",
-                  "width": "fill_container",
-                  "height": 36,
-                  "gap": 2,
-                  "justifyContent": "space_between",
-                  "alignItems": "center",
-                  "children": [
-                    {
-                      "type": "frame",
-                      "id": "FwfTq",
-                      "name": "topbar_left",
-                      "gap": 2,
-                      "alignItems": "center",
-                      "children": [
-                        {
-                          "type": "frame",
-                          "id": "BqrLn",
-                          "name": "btn_runners",
-                          "width": 26,
-                          "height": 26,
-                          "fill": "#272930",
-                          "cornerRadius": 6,
-                          "stroke": "#3A3D45",
-                          "strokeWidth": 1,
-                          "strokeAlignment": "inner",
-                          "justifyContent": "center",
-                          "alignItems": "center",
-                          "children": [
-                            {
-                              "type": "icon",
-                              "id": "U7VgEW",
-                              "width": 14,
-                              "height": 14,
-                              "icon": "users",
-                              "library": "lucide",
-                              "fill": "#E9EAEE"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "frame",
-                          "id": "bHpTd",
-                          "name": "btn_mission",
-                          "width": 26,
-                          "height": 26,
-                          "fill": "#00000000",
-                          "cornerRadius": 6,
-                          "stroke": "#00000000",
-                          "strokeAlignment": "inner",
-                          "justifyContent": "center",
-                          "alignItems": "center",
-                          "children": [
-                            {
-                              "type": "icon",
-                              "id": "DqZ9f",
-                              "width": 14,
-                              "height": 14,
-                              "icon": "info",
-                              "library": "lucide",
-                              "fill": "#9A9BA5"
-                            }
-                          ]
-                        }
-                      ]
-                    },
-                    {
-                      "type": "frame",
-                      "id": "f5w6A",
-                      "name": "topbar_right",
-                      "gap": 2,
-                      "alignItems": "center",
-                      "children": [
-                        {
-                          "type": "frame",
-                          "id": "bz7lO",
-                          "name": "panelCollapse",
-                          "width": 24,
-                          "height": 24,
-                          "cornerRadius": 6,
-                          "justifyContent": "center",
-                          "alignItems": "center",
-                          "children": [
-                            {
-                              "type": "icon",
-                              "id": "ui3Ao",
-                              "width": 14,
-                              "height": 14,
-                              "icon": "panel-right-close",
-                              "library": "lucide",
-                              "fill": "#9A9BA5"
-                            }
-                          ]
-                        }
-                      ]
-                    }
-                  ]
-                },
-                {
-                  "type": "frame",
-                  "id": "f7SMBm",
-                  "name": "topbar_div",
-                  "width": "fill_container",
-                  "height": 1,
-                  "fill": "#272930"
-                },
-                {
-                  "type": "text",
-                  "id": "uJsFS",
-                  "fill": "#5A5C66",
-                  "content": "RUNNER SESSIONS",
-                  "fontFamily": "JetBrains Mono",
-                  "fontSize": 10,
-                  "fontWeight": "600",
-                  "letterSpacing": 1
-                }
-              ]
-            },
-            {
-              "type": "frame",
-              "id": "PgFRg",
-              "name": "Runner card architect",
-              "width": "fill_container",
-              "fill": "$bg",
-              "cornerRadius": 6,
-              "stroke": "$border",
-              "strokeWidth": 1,
-              "layout": "vertical",
-              "gap": 6,
-              "padding": 12,
-              "children": [
-                {
-                  "type": "frame",
-                  "id": "LJziv",
-                  "name": "Card header",
-                  "width": "fill_container",
-                  "justifyContent": "space_between",
-                  "alignItems": "center",
-                  "children": [
-                    {
-                      "type": "frame",
-                      "id": "NVITQ",
-                      "name": "Identity",
-                      "gap": 8,
-                      "alignItems": "center",
-                      "children": [
-                        {
-                          "type": "frame",
-                          "id": "INbWj",
-                          "name": "Avatar wrap",
-                          "width": 25,
-                          "height": 25,
-                          "layout": "none",
-                          "children": [
-                            {
-                              "type": "frame",
-                              "id": "RaYv8",
-                              "x": 0,
-                              "y": 0,
-                              "name": "Avatar",
-                              "clip": true,
-                              "width": 25,
-                              "height": 25,
-                              "fill": "$raised",
-                              "cornerRadius": 6,
-                              "layout": "vertical",
-                              "children": [
-                                {
-                                  "type": "frame",
-                                  "id": "k3Wf0",
-                                  "name": "Pixel row",
-                                  "children": [
-                                    {
-                                      "type": "rectangle",
-                                      "id": "T3kjkZ",
-                                      "name": "Pixel",
-                                      "fill": "#00000000",
-                                      "width": 5,
-                                      "height": 5
-                                    },
-                                    {
-                                      "type": "rectangle",
-                                      "id": "ok3hW",
-                                      "name": "Pixel",
-                                      "fill": "$accent",
-                                      "width": 5,
-                                      "height": 5
-                                    },
-                                    {
-                                      "type": "rectangle",
-                                      "id": "S1CpF",
-                                      "name": "Pixel",
-                                      "fill": "$accent",
-                                      "width": 5,
-                                      "height": 5
-                                    },
-                                    {
-                                      "type": "rectangle",
-                                      "id": "RKDoO",
-                                      "name": "Pixel",
-                                      "fill": "$accent",
-                                      "width": 5,
-                                      "height": 5
-                                    },
-                                    {
-                                      "type": "rectangle",
-                                      "id": "ZuFo2",
-                                      "name": "Pixel",
-                                      "fill": "#00000000",
-                                      "width": 5,
-                                      "height": 5
-                                    }
-                                  ]
-                                },
-                                {
-                                  "type": "frame",
-                                  "id": "UD1J0",
-                                  "name": "Pixel row",
-                                  "children": [
-                                    {
-                                      "type": "rectangle",
-                                      "id": "tquib",
-                                      "name": "Pixel",
-                                      "fill": "$accent",
-                                      "width": 5,
-                                      "height": 5
-                                    },
-                                    {
-                                      "type": "rectangle",
-                                      "id": "aRDvV",
-                                      "name": "Pixel",
-                                      "fill": "#00000000",
-                                      "width": 5,
-                                      "height": 5
-                                    },
-                                    {
-                                      "type": "rectangle",
-                                      "id": "GiMju",
-                                      "name": "Pixel",
-                                      "fill": "$accent",
-                                      "width": 5,
-                                      "height": 5
-                                    },
-                                    {
-                                      "type": "rectangle",
-                                      "id": "x7CYYz",
-                                      "name": "Pixel",
-                                      "fill": "#00000000",
-                                      "width": 5,
-                                      "height": 5
-                                    },
-                                    {
-                                      "type": "rectangle",
-                                      "id": "NDE8O",
-                                      "name": "Pixel",
-                                      "fill": "$accent",
-                                      "width": 5,
-                                      "height": 5
-                                    }
-                                  ]
-                                },
-                                {
-                                  "type": "frame",
-                                  "id": "hp8vE",
-                                  "name": "Pixel row",
-                                  "children": [
-                                    {
-                                      "type": "rectangle",
-                                      "id": "K5dPt",
-                                      "name": "Pixel",
-                                      "fill": "$accent",
-                                      "width": 5,
-                                      "height": 5
-                                    },
-                                    {
-                                      "type": "rectangle",
-                                      "id": "rOqf4",
-                                      "name": "Pixel",
-                                      "fill": "$accent",
-                                      "width": 5,
-                                      "height": 5
-                                    },
-                                    {
-                                      "type": "rectangle",
-                                      "id": "vxeJx",
-                                      "name": "Pixel",
-                                      "fill": "$accent",
-                                      "width": 5,
-                                      "height": 5
-                                    },
-                                    {
-                                      "type": "rectangle",
-                                      "id": "hPFTX",
-                                      "name": "Pixel",
-                                      "fill": "$accent",
-                                      "width": 5,
-                                      "height": 5
-                                    },
-                                    {
-                                      "type": "rectangle",
-                                      "id": "rYJiT",
-                                      "name": "Pixel",
-                                      "fill": "$accent",
-                                      "width": 5,
-                                      "height": 5
-                                    }
-                                  ]
-                                },
-                                {
-                                  "type": "frame",
-                                  "id": "Sc9fz",
-                                  "name": "Pixel row",
-                                  "children": [
-                                    {
-                                      "type": "rectangle",
-                                      "id": "YS6lS",
-                                      "name": "Pixel",
-                                      "fill": "#00000000",
-                                      "width": 5,
-                                      "height": 5
-                                    },
-                                    {
-                                      "type": "rectangle",
-                                      "id": "paUxv",
-                                      "name": "Pixel",
-                                      "fill": "$accent",
-                                      "width": 5,
-                                      "height": 5
-                                    },
-                                    {
-                                      "type": "rectangle",
-                                      "id": "O1CY5b",
-                                      "name": "Pixel",
-                                      "fill": "#00000000",
-                                      "width": 5,
-                                      "height": 5
-                                    },
-                                    {
-                                      "type": "rectangle",
-                                      "id": "LR6lS",
-                                      "name": "Pixel",
-                                      "fill": "$accent",
-                                      "width": 5,
-                                      "height": 5
-                                    },
-                                    {
-                                      "type": "rectangle",
-                                      "id": "ZHR0X",
-                                      "name": "Pixel",
-                                      "fill": "#00000000",
-                                      "width": 5,
-                                      "height": 5
-                                    }
-                                  ]
-                                },
-                                {
-                                  "type": "frame",
-                                  "id": "lHmqU",
-                                  "name": "Pixel row",
-                                  "children": [
-                                    {
-                                      "type": "rectangle",
-                                      "id": "a8BmYG",
-                                      "name": "Pixel",
-                                      "fill": "$accent",
-                                      "width": 5,
-                                      "height": 5
-                                    },
-                                    {
-                                      "type": "rectangle",
-                                      "id": "Z6TUcQ",
-                                      "name": "Pixel",
-                                      "fill": "#00000000",
-                                      "width": 5,
-                                      "height": 5
-                                    },
-                                    {
-                                      "type": "rectangle",
-                                      "id": "b6JU2F",
-                                      "name": "Pixel",
-                                      "fill": "$accent",
-                                      "width": 5,
-                                      "height": 5
-                                    },
-                                    {
-                                      "type": "rectangle",
-                                      "id": "NkXoc",
-                                      "name": "Pixel",
-                                      "fill": "#00000000",
-                                      "width": 5,
-                                      "height": 5
-                                    },
-                                    {
-                                      "type": "rectangle",
-                                      "id": "T1GS5X",
-                                      "name": "Pixel",
-                                      "fill": "$accent",
-                                      "width": 5,
-                                      "height": 5
-                                    }
-                                  ]
-                                }
-                              ]
-                            },
-                            {
-                              "type": "ellipse",
-                              "id": "P9dKm7",
-                              "x": 17,
-                              "y": 17,
-                              "name": "Presence dot",
-                              "fill": "#00FF9C66",
-                              "width": 9,
-                              "height": 9,
-                              "stroke": "#15161B",
-                              "strokeWidth": 2,
-                              "strokeAlignment": "outer"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "text",
-                          "id": "XtzzN",
-                          "name": "Handle",
-                          "fill": "$accent",
-                          "content": "@architect",
-                          "fontFamily": "$font-mono",
-                          "fontSize": 13,
-                          "fontWeight": "600"
-                        },
-                        {
-                          "type": "frame",
-                          "id": "V5CGs1",
-                          "name": "Lead badge",
-                          "fill": "#FFB02033",
-                          "cornerRadius": 3,
-                          "padding": [
-                            1,
-                            5
-                          ],
-                          "children": [
-                            {
-                              "type": "text",
-                              "id": "gicNs",
-                              "name": "Lead label",
-                              "fill": "$warn",
-                              "content": "LEAD",
-                              "fontFamily": "$font-ui",
-                              "fontSize": 9,
-                              "fontWeight": "700",
-                              "letterSpacing": 0.5
-                            }
-                          ]
-                        }
-                      ]
-                    },
-                    {
-                      "type": "frame",
-                      "id": "u1gls",
-                      "name": "Card actions",
-                      "gap": 4,
-                      "alignItems": "center",
-                      "children": [
-                        {
-                          "type": "frame",
-                          "id": "yI0Sm",
-                          "name": "Stop button",
-                          "width": 24,
-                          "height": 24,
-                          "cornerRadius": 4,
-                          "justifyContent": "center",
-                          "alignItems": "center",
-                          "children": [
-                            {
-                              "type": "icon",
-                              "id": "mN9Xt",
-                              "name": "Stop buttonIcon",
-                              "width": 13,
-                              "height": 13,
-                              "icon": "square",
-                              "library": "lucide",
-                              "fill": "#E5484DCC"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "frame",
-                          "id": "j9k6T1",
-                          "name": "Restart button",
-                          "width": 24,
-                          "height": 24,
-                          "cornerRadius": 4,
-                          "justifyContent": "center",
-                          "alignItems": "center",
-                          "children": [
-                            {
-                              "type": "icon",
-                              "id": "SVyUN",
-                              "name": "Restart buttonIcon",
-                              "width": 13,
-                              "height": 13,
-                              "icon": "rotate-ccw",
-                              "library": "lucide",
-                              "fill": "$text-mid"
-                            }
-                          ]
-                        }
-                      ]
-                    }
-                  ]
-                },
-                {
-                  "type": "text",
-                  "id": "RI6zw",
-                  "name": "Status subtitle",
-                  "fill": "$text-mid",
-                  "content": "idle",
-                  "fontFamily": "$font-ui",
-                  "fontSize": 11,
-                  "fontWeight": "normal"
-                },
-                {
-                  "type": "rectangle",
-                  "id": "SqlVj",
-                  "name": "Key divider",
-                  "fill": "#272930A6",
-                  "width": "fill_container",
-                  "height": 1
-                },
-                {
-                  "type": "frame",
-                  "id": "h2S8oH",
-                  "name": "Session key row",
-                  "width": "fill_container",
-                  "gap": 8,
-                  "alignItems": "center",
-                  "children": [
-                    {
-                      "type": "text",
-                      "id": "KfqU2",
-                      "name": "Key label",
-                      "fill": "$text-low",
-                      "content": "session_key",
-                      "fontFamily": "$font-ui",
-                      "fontSize": 10,
-                      "fontWeight": "normal"
-                    },
-                    {
-                      "type": "frame",
-                      "id": "Wl7TB",
-                      "name": "Key spacer",
-                      "width": "fill_container",
-                      "height": 1
-                    },
-                    {
-                      "type": "text",
-                      "id": "CzqbO",
-                      "name": "Key value",
-                      "fill": "$text-mid",
-                      "content": "01KZMR6Z…S61",
-                      "fontFamily": "$font-mono",
-                      "fontSize": 10,
-                      "fontWeight": "normal"
-                    },
-                    {
-                      "type": "icon",
-                      "id": "gZlEP",
-                      "name": "Copy icon",
-                      "width": 11,
-                      "height": 11,
-                      "icon": "copy",
-                      "library": "lucide",
-                      "fill": "$text-low"
-                    }
-                  ]
-                }
-              ]
-            },
-            {
-              "type": "frame",
-              "id": "bmyEZ",
-              "name": "Runner card impl",
-              "width": "fill_container",
-              "fill": "$bg",
-              "cornerRadius": 6,
-              "stroke": "#00FF9C99",
-              "strokeWidth": 1,
-              "layout": "vertical",
-              "gap": 6,
-              "padding": 12,
-              "children": [
-                {
-                  "type": "frame",
-                  "id": "zaeFd",
-                  "name": "Card header",
-                  "width": "fill_container",
-                  "justifyContent": "space_between",
-                  "alignItems": "center",
-                  "children": [
-                    {
-                      "type": "frame",
-                      "id": "x0dZc",
-                      "name": "Identity",
-                      "gap": 8,
-                      "alignItems": "center",
-                      "children": [
-                        {
-                          "type": "frame",
-                          "id": "CFMVL",
-                          "name": "Avatar wrap",
-                          "width": 25,
-                          "height": 25,
-                          "layout": "none",
-                          "children": [
-                            {
-                              "type": "frame",
-                              "id": "P5zVi1",
-                              "x": 0,
-                              "y": 0,
-                              "name": "Avatar",
-                              "clip": true,
-                              "width": 25,
-                              "height": 25,
-                              "fill": "$raised",
-                              "cornerRadius": 6,
-                              "layout": "vertical",
-                              "children": [
-                                {
-                                  "type": "frame",
-                                  "id": "sCztJ",
-                                  "name": "Pixel row",
-                                  "children": [
-                                    {
-                                      "type": "rectangle",
-                                      "id": "IKvKJ",
-                                      "name": "Pixel",
-                                      "fill": "#62D9F5",
-                                      "width": 5,
-                                      "height": 5
-                                    },
-                                    {
-                                      "type": "rectangle",
-                                      "id": "VO5QJ",
-                                      "name": "Pixel",
-                                      "fill": "#00000000",
-                                      "width": 5,
-                                      "height": 5
-                                    },
-                                    {
-                                      "type": "rectangle",
-                                      "id": "Up85G",
-                                      "name": "Pixel",
-                                      "fill": "#62D9F5",
-                                      "width": 5,
-                                      "height": 5
-                                    },
-                                    {
-                                      "type": "rectangle",
-                                      "id": "kIMC9",
-                                      "name": "Pixel",
-                                      "fill": "#00000000",
-                                      "width": 5,
-                                      "height": 5
-                                    },
-                                    {
-                                      "type": "rectangle",
-                                      "id": "bgd0l",
-                                      "name": "Pixel",
-                                      "fill": "#62D9F5",
-                                      "width": 5,
-                                      "height": 5
-                                    }
-                                  ]
-                                },
-                                {
-                                  "type": "frame",
-                                  "id": "H1JPM7",
-                                  "name": "Pixel row",
-                                  "children": [
-                                    {
-                                      "type": "rectangle",
-                                      "id": "UsVBH",
-                                      "name": "Pixel",
-                                      "fill": "#62D9F5",
-                                      "width": 5,
-                                      "height": 5
-                                    },
-                                    {
-                                      "type": "rectangle",
-                                      "id": "SoG27",
-                                      "name": "Pixel",
-                                      "fill": "#62D9F5",
-                                      "width": 5,
-                                      "height": 5
-                                    },
-                                    {
-                                      "type": "rectangle",
-                                      "id": "MCOkw",
-                                      "name": "Pixel",
-                                      "fill": "#00000000",
-                                      "width": 5,
-                                      "height": 5
-                                    },
-                                    {
-                                      "type": "rectangle",
-                                      "id": "Got4V",
-                                      "name": "Pixel",
-                                      "fill": "#62D9F5",
-                                      "width": 5,
-                                      "height": 5
-                                    },
-                                    {
-                                      "type": "rectangle",
-                                      "id": "Vhxn4",
-                                      "name": "Pixel",
-                                      "fill": "#62D9F5",
-                                      "width": 5,
-                                      "height": 5
-                                    }
-                                  ]
-                                },
-                                {
-                                  "type": "frame",
-                                  "id": "TIz6t",
-                                  "name": "Pixel row",
-                                  "children": [
-                                    {
-                                      "type": "rectangle",
-                                      "id": "c6aLFp",
-                                      "name": "Pixel",
-                                      "fill": "#00000000",
-                                      "width": 5,
-                                      "height": 5
-                                    },
-                                    {
-                                      "type": "rectangle",
-                                      "id": "j6bVYw",
-                                      "name": "Pixel",
-                                      "fill": "#62D9F5",
-                                      "width": 5,
-                                      "height": 5
-                                    },
-                                    {
-                                      "type": "rectangle",
-                                      "id": "C72sA7",
-                                      "name": "Pixel",
-                                      "fill": "#62D9F5",
-                                      "width": 5,
-                                      "height": 5
-                                    },
-                                    {
-                                      "type": "rectangle",
-                                      "id": "Y3OeSm",
-                                      "name": "Pixel",
-                                      "fill": "#62D9F5",
-                                      "width": 5,
-                                      "height": 5
-                                    },
-                                    {
-                                      "type": "rectangle",
-                                      "id": "trcQR",
-                                      "name": "Pixel",
-                                      "fill": "#00000000",
-                                      "width": 5,
-                                      "height": 5
-                                    }
-                                  ]
-                                },
-                                {
-                                  "type": "frame",
-                                  "id": "h60Hg",
-                                  "name": "Pixel row",
-                                  "children": [
-                                    {
-                                      "type": "rectangle",
-                                      "id": "h4h6Ny",
-                                      "name": "Pixel",
-                                      "fill": "#62D9F5",
-                                      "width": 5,
-                                      "height": 5
-                                    },
-                                    {
-                                      "type": "rectangle",
-                                      "id": "FTl6a",
-                                      "name": "Pixel",
-                                      "fill": "#62D9F5",
-                                      "width": 5,
-                                      "height": 5
-                                    },
-                                    {
-                                      "type": "rectangle",
-                                      "id": "WahNU",
-                                      "name": "Pixel",
-                                      "fill": "#00000000",
-                                      "width": 5,
-                                      "height": 5
-                                    },
-                                    {
-                                      "type": "rectangle",
-                                      "id": "eS8yL",
-                                      "name": "Pixel",
-                                      "fill": "#62D9F5",
-                                      "width": 5,
-                                      "height": 5
-                                    },
-                                    {
-                                      "type": "rectangle",
-                                      "id": "ISaXa",
-                                      "name": "Pixel",
-                                      "fill": "#62D9F5",
-                                      "width": 5,
-                                      "height": 5
-                                    }
-                                  ]
-                                },
-                                {
-                                  "type": "frame",
-                                  "id": "Nlirz",
-                                  "name": "Pixel row",
-                                  "children": [
-                                    {
-                                      "type": "rectangle",
-                                      "id": "f89uAl",
-                                      "name": "Pixel",
-                                      "fill": "#62D9F5",
-                                      "width": 5,
-                                      "height": 5
-                                    },
-                                    {
-                                      "type": "rectangle",
-                                      "id": "yvge7",
-                                      "name": "Pixel",
-                                      "fill": "#00000000",
-                                      "width": 5,
-                                      "height": 5
-                                    },
-                                    {
-                                      "type": "rectangle",
-                                      "id": "uBZkZ",
-                                      "name": "Pixel",
-                                      "fill": "#62D9F5",
-                                      "width": 5,
-                                      "height": 5
-                                    },
-                                    {
-                                      "type": "rectangle",
-                                      "id": "xp4lW",
-                                      "name": "Pixel",
-                                      "fill": "#00000000",
-                                      "width": 5,
-                                      "height": 5
-                                    },
-                                    {
-                                      "type": "rectangle",
-                                      "id": "kCXTj",
-                                      "name": "Pixel",
-                                      "fill": "#62D9F5",
-                                      "width": 5,
-                                      "height": 5
-                                    }
-                                  ]
-                                }
-                              ]
-                            },
-                            {
-                              "type": "ellipse",
-                              "id": "o9yEh",
-                              "x": 17,
-                              "y": 17,
-                              "name": "Presence dot",
-                              "fill": "#00FF9C",
-                              "width": 9,
-                              "height": 9,
-                              "stroke": "#15161B",
-                              "strokeWidth": 2,
-                              "strokeAlignment": "outer"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "text",
-                          "id": "mlWrH",
-                          "name": "Handle",
-                          "fill": "#62D9F5",
-                          "content": "@impl",
-                          "fontFamily": "$font-mono",
-                          "fontSize": 13,
-                          "fontWeight": "600"
-                        }
-                      ]
-                    },
-                    {
-                      "type": "frame",
-                      "id": "DmBTu",
-                      "name": "Card actions",
-                      "gap": 4,
-                      "alignItems": "center",
-                      "children": [
-                        {
-                          "type": "frame",
-                          "id": "gn7lB",
-                          "name": "Stop button",
-                          "width": 24,
-                          "height": 24,
-                          "cornerRadius": 4,
-                          "justifyContent": "center",
-                          "alignItems": "center",
-                          "children": [
-                            {
-                              "type": "icon",
-                              "id": "W3Weh",
-                              "name": "Stop buttonIcon",
-                              "width": 13,
-                              "height": 13,
-                              "icon": "square",
-                              "library": "lucide",
-                              "fill": "#E5484DCC"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "frame",
-                          "id": "Komp9",
-                          "name": "Restart button",
-                          "width": 24,
-                          "height": 24,
-                          "fill": "#E5484D1A",
-                          "cornerRadius": 4,
-                          "justifyContent": "center",
-                          "alignItems": "center",
-                          "children": [
-                            {
-                              "type": "icon",
-                              "id": "fwOo4",
-                              "name": "Restart buttonIcon",
-                              "width": 13,
-                              "height": 13,
-                              "icon": "rotate-ccw",
-                              "library": "lucide",
-                              "fill": "#E5484D"
-                            }
-                          ]
-                        }
-                      ]
-                    }
-                  ]
-                },
-                {
-                  "type": "text",
-                  "id": "ubl7p",
-                  "name": "Status subtitle",
-                  "fill": "$text-mid",
-                  "content": "busy",
-                  "fontFamily": "$font-ui",
-                  "fontSize": 11,
-                  "fontWeight": "normal"
-                },
-                {
-                  "type": "rectangle",
-                  "id": "SH2Ix",
-                  "name": "Key divider",
-                  "fill": "#272930A6",
-                  "width": "fill_container",
-                  "height": 1
-                },
-                {
-                  "type": "frame",
-                  "id": "z0IC2Z",
-                  "name": "Session key row",
-                  "width": "fill_container",
-                  "gap": 8,
-                  "alignItems": "center",
-                  "children": [
-                    {
-                      "type": "text",
-                      "id": "CaE6G",
-                      "name": "Key label",
-                      "fill": "$text-low",
-                      "content": "session_key",
-                      "fontFamily": "$font-ui",
-                      "fontSize": 10,
-                      "fontWeight": "normal"
-                    },
-                    {
-                      "type": "frame",
-                      "id": "gBd8B",
-                      "name": "Key spacer",
-                      "width": "fill_container",
-                      "height": 1
-                    },
-                    {
-                      "type": "text",
-                      "id": "FU5wx",
-                      "name": "Key value",
-                      "fill": "$text-mid",
-                      "content": "01KZMR71…H4C",
-                      "fontFamily": "$font-mono",
-                      "fontSize": 10,
-                      "fontWeight": "normal"
-                    },
-                    {
-                      "type": "icon",
-                      "id": "TU4sa",
-                      "name": "Copy icon",
-                      "width": 11,
-                      "height": 11,
-                      "icon": "copy",
-                      "library": "lucide",
-                      "fill": "$text-low"
-                    }
-                  ]
-                }
-              ]
-            },
-            {
-              "type": "frame",
-              "id": "IK5VO",
-              "name": "Runner card reviewer",
-              "width": "fill_container",
-              "fill": "$bg",
-              "cornerRadius": 6,
-              "stroke": "$border",
-              "strokeWidth": 1,
-              "layout": "vertical",
-              "gap": 6,
-              "padding": 12,
-              "children": [
-                {
-                  "type": "frame",
-                  "id": "drCm1",
-                  "name": "Card header",
-                  "width": "fill_container",
-                  "justifyContent": "space_between",
-                  "alignItems": "center",
-                  "children": [
-                    {
-                      "type": "frame",
-                      "id": "t32jCX",
-                      "name": "Identity",
-                      "gap": 8,
-                      "alignItems": "center",
-                      "children": [
-                        {
-                          "type": "frame",
-                          "id": "kQmko",
-                          "name": "Avatar wrap",
-                          "width": 25,
-                          "height": 25,
-                          "layout": "none",
-                          "children": [
-                            {
-                              "type": "frame",
-                              "id": "EqFga",
-                              "x": 0,
-                              "y": 0,
-                              "name": "Avatar",
-                              "clip": true,
-                              "width": 25,
-                              "height": 25,
-                              "fill": "$raised",
-                              "cornerRadius": 6,
-                              "layout": "vertical",
-                              "children": [
-                                {
-                                  "type": "frame",
-                                  "id": "zqpjE",
-                                  "name": "Pixel row",
-                                  "children": [
-                                    {
-                                      "type": "rectangle",
-                                      "id": "M6nCv",
-                                      "name": "Pixel",
-                                      "fill": "#C792EA",
-                                      "width": 5,
-                                      "height": 5
-                                    },
-                                    {
-                                      "type": "rectangle",
-                                      "id": "F2Mlg",
-                                      "name": "Pixel",
-                                      "fill": "#C792EA",
-                                      "width": 5,
-                                      "height": 5
-                                    },
-                                    {
-                                      "type": "rectangle",
-                                      "id": "AYPSM",
-                                      "name": "Pixel",
-                                      "fill": "#00000000",
-                                      "width": 5,
-                                      "height": 5
-                                    },
-                                    {
-                                      "type": "rectangle",
-                                      "id": "ioH2Y",
-                                      "name": "Pixel",
-                                      "fill": "#C792EA",
-                                      "width": 5,
-                                      "height": 5
-                                    },
-                                    {
-                                      "type": "rectangle",
-                                      "id": "Q69sf",
-                                      "name": "Pixel",
-                                      "fill": "#C792EA",
-                                      "width": 5,
-                                      "height": 5
-                                    }
-                                  ]
-                                },
-                                {
-                                  "type": "frame",
-                                  "id": "ESNun",
-                                  "name": "Pixel row",
-                                  "children": [
-                                    {
-                                      "type": "rectangle",
-                                      "id": "rNWQB",
-                                      "name": "Pixel",
-                                      "fill": "#C792EA",
-                                      "width": 5,
-                                      "height": 5
-                                    },
-                                    {
-                                      "type": "rectangle",
-                                      "id": "wCuas",
-                                      "name": "Pixel",
-                                      "fill": "#00000000",
-                                      "width": 5,
-                                      "height": 5
-                                    },
-                                    {
-                                      "type": "rectangle",
-                                      "id": "t2dS0M",
-                                      "name": "Pixel",
-                                      "fill": "#C792EA",
-                                      "width": 5,
-                                      "height": 5
-                                    },
-                                    {
-                                      "type": "rectangle",
-                                      "id": "OTK9d",
-                                      "name": "Pixel",
-                                      "fill": "#00000000",
-                                      "width": 5,
-                                      "height": 5
-                                    },
-                                    {
-                                      "type": "rectangle",
-                                      "id": "Tnkxz",
-                                      "name": "Pixel",
-                                      "fill": "#C792EA",
-                                      "width": 5,
-                                      "height": 5
-                                    }
-                                  ]
-                                },
-                                {
-                                  "type": "frame",
-                                  "id": "ieBX4",
-                                  "name": "Pixel row",
-                                  "children": [
-                                    {
-                                      "type": "rectangle",
-                                      "id": "cwtpT",
-                                      "name": "Pixel",
-                                      "fill": "#00000000",
-                                      "width": 5,
-                                      "height": 5
-                                    },
-                                    {
-                                      "type": "rectangle",
-                                      "id": "uf5sP",
-                                      "name": "Pixel",
-                                      "fill": "#C792EA",
-                                      "width": 5,
-                                      "height": 5
-                                    },
-                                    {
-                                      "type": "rectangle",
-                                      "id": "NO0Yg",
-                                      "name": "Pixel",
-                                      "fill": "#C792EA",
-                                      "width": 5,
-                                      "height": 5
-                                    },
-                                    {
-                                      "type": "rectangle",
-                                      "id": "sr4zh",
-                                      "name": "Pixel",
-                                      "fill": "#C792EA",
-                                      "width": 5,
-                                      "height": 5
-                                    },
-                                    {
-                                      "type": "rectangle",
-                                      "id": "F22bzy",
-                                      "name": "Pixel",
-                                      "fill": "#00000000",
-                                      "width": 5,
-                                      "height": 5
-                                    }
-                                  ]
-                                },
-                                {
-                                  "type": "frame",
-                                  "id": "UkJZ3",
-                                  "name": "Pixel row",
-                                  "children": [
-                                    {
-                                      "type": "rectangle",
-                                      "id": "uw3lJ",
-                                      "name": "Pixel",
-                                      "fill": "#C792EA",
-                                      "width": 5,
-                                      "height": 5
-                                    },
-                                    {
-                                      "type": "rectangle",
-                                      "id": "eTJZD",
-                                      "name": "Pixel",
-                                      "fill": "#00000000",
-                                      "width": 5,
-                                      "height": 5
-                                    },
-                                    {
-                                      "type": "rectangle",
-                                      "id": "yFmfx",
-                                      "name": "Pixel",
-                                      "fill": "#C792EA",
-                                      "width": 5,
-                                      "height": 5
-                                    },
-                                    {
-                                      "type": "rectangle",
-                                      "id": "wZFEr",
-                                      "name": "Pixel",
-                                      "fill": "#00000000",
-                                      "width": 5,
-                                      "height": 5
-                                    },
-                                    {
-                                      "type": "rectangle",
-                                      "id": "pRgFa",
-                                      "name": "Pixel",
-                                      "fill": "#C792EA",
-                                      "width": 5,
-                                      "height": 5
-                                    }
-                                  ]
-                                },
-                                {
-                                  "type": "frame",
-                                  "id": "p9emh",
-                                  "name": "Pixel row",
-                                  "children": [
-                                    {
-                                      "type": "rectangle",
-                                      "id": "Buiw8",
-                                      "name": "Pixel",
-                                      "fill": "#C792EA",
-                                      "width": 5,
-                                      "height": 5
-                                    },
-                                    {
-                                      "type": "rectangle",
-                                      "id": "x4A0nb",
-                                      "name": "Pixel",
-                                      "fill": "#C792EA",
-                                      "width": 5,
-                                      "height": 5
-                                    },
-                                    {
-                                      "type": "rectangle",
-                                      "id": "mnHCS",
-                                      "name": "Pixel",
-                                      "fill": "#00000000",
-                                      "width": 5,
-                                      "height": 5
-                                    },
-                                    {
-                                      "type": "rectangle",
-                                      "id": "zTleh",
-                                      "name": "Pixel",
-                                      "fill": "#C792EA",
-                                      "width": 5,
-                                      "height": 5
-                                    },
-                                    {
-                                      "type": "rectangle",
-                                      "id": "c8uYay",
-                                      "name": "Pixel",
-                                      "fill": "#C792EA",
-                                      "width": 5,
-                                      "height": 5
-                                    }
-                                  ]
-                                }
-                              ]
-                            },
-                            {
-                              "type": "ellipse",
-                              "id": "yiDTP",
-                              "x": 17,
-                              "y": 17,
-                              "name": "Presence dot",
-                              "fill": "#5A5C66",
-                              "width": 9,
-                              "height": 9,
-                              "stroke": "#15161B",
-                              "strokeWidth": 2,
-                              "strokeAlignment": "outer"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "text",
-                          "id": "qbwOK",
-                          "name": "Handle",
-                          "fill": "#C792EA",
-                          "content": "@reviewer",
-                          "fontFamily": "$font-mono",
-                          "fontSize": 13,
-                          "fontWeight": "600"
-                        }
-                      ]
-                    },
-                    {
-                      "type": "frame",
-                      "id": "p2SlEx",
-                      "name": "Card actions",
-                      "gap": 4,
-                      "alignItems": "center",
-                      "children": [
-                        {
-                          "type": "frame",
-                          "id": "wVLEU",
-                          "name": "Resume button",
-                          "width": 24,
-                          "height": 24,
-                          "cornerRadius": 4,
-                          "justifyContent": "center",
-                          "alignItems": "center",
-                          "children": [
-                            {
-                              "type": "icon",
-                              "id": "ZblYO",
-                              "name": "Resume buttonIcon",
-                              "width": 13,
-                              "height": 13,
-                              "icon": "play",
-                              "library": "lucide",
-                              "fill": "#00FF9CCC"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "frame",
-                          "id": "gSQ9V",
-                          "name": "Restart button",
-                          "width": 24,
-                          "height": 24,
-                          "cornerRadius": 4,
-                          "justifyContent": "center",
-                          "alignItems": "center",
-                          "children": [
-                            {
-                              "type": "icon",
-                              "id": "E7Crpa",
-                              "name": "Restart buttonIcon",
-                              "width": 13,
-                              "height": 13,
-                              "icon": "rotate-ccw",
-                              "library": "lucide",
-                              "fill": "$text-mid"
-                            }
-                          ]
-                        }
-                      ]
-                    }
-                  ]
-                },
-                {
-                  "type": "text",
-                  "id": "A4e8XP",
-                  "name": "Status subtitle",
-                  "fill": "$text-mid",
-                  "content": "stopped",
-                  "fontFamily": "$font-ui",
-                  "fontSize": 11,
-                  "fontWeight": "normal"
-                },
-                {
-                  "type": "rectangle",
-                  "id": "ii7pY",
-                  "name": "Key divider",
-                  "fill": "#272930A6",
-                  "width": "fill_container",
-                  "height": 1
-                },
-                {
-                  "type": "frame",
-                  "id": "XzhDu",
-                  "name": "Session key row",
-                  "width": "fill_container",
-                  "gap": 8,
-                  "alignItems": "center",
-                  "children": [
-                    {
-                      "type": "text",
-                      "id": "fm3Bq",
-                      "name": "Key label",
-                      "fill": "$text-low",
-                      "content": "session_key",
-                      "fontFamily": "$font-ui",
-                      "fontSize": 10,
-                      "fontWeight": "normal"
-                    },
-                    {
-                      "type": "frame",
-                      "id": "UxOjB",
-                      "name": "Key spacer",
-                      "width": "fill_container",
-                      "height": 1
-                    },
-                    {
-                      "type": "text",
-                      "id": "w9bDYb",
-                      "name": "Key value",
-                      "fill": "$text-mid",
-                      "content": "NULL",
-                      "fontFamily": "$font-mono",
-                      "fontSize": 10,
-                      "fontWeight": "normal"
-                    },
-                    {
-                      "type": "icon",
-                      "id": "eyCAx",
-                      "name": "Copy icon",
-                      "width": 11,
-                      "height": 11,
-                      "icon": "copy",
-                      "library": "lucide",
-                      "fill": "$text-low"
-                    }
-                  ]
-                }
-              ]
-            }
-          ]
-        },
-        {
-          "type": "frame",
-          "id": "E1XCw",
-          "layoutPosition": "absolute",
-          "x": 0,
-          "y": 0,
-          "name": "scrim",
-          "width": 1440,
-          "height": 900,
-          "fill": "#0B0C0FB3",
-          "justifyContent": "center",
-          "alignItems": "center",
-          "children": [
-            {
-              "id": "ghoFI",
-              "type": "ref",
-              "ref": "tK5Xb",
-              "name": "confirm_restart",
-              "descendants": {
-                "CucJL": {
-                  "icon": "rotate-ccw",
-                  "fill": "#F87171"
-                },
-                "igS7I": {
-                  "content": "Restart @impl?"
-                },
-                "FbcRk": {
-                  "content": "Its conversation so far is discarded. It comes back with its brief, the same first turn a cold start gives it, and @architect gets a note that it must re-send anything @impl needs."
-                },
-                "Lw5AS": {
-                  "content": "Restart"
-                }
-              }
-            }
-          ]
-        }
-      ]
-    },
-    {
-      "type": "frame",
       "id": "Te6QB",
       "x": 3200,
       "y": 12513,
@@ -67125,7 +65119,7 @@
                                           "id": "VZ1Ks",
                                           "name": "t",
                                           "fill": "$text-hi",
-                                          "content": "Restart slot…",
+                                          "content": "Restart slot",
                                           "fontFamily": "Inter",
                                           "fontSize": 13,
                                           "fontWeight": "600"
@@ -68668,6 +66662,2012 @@
       "width": 14400,
       "height": 2,
       "fill": "$border"
+    },
+    {
+      "type": "frame",
+      "id": "QcYTg",
+      "x": 1600,
+      "y": 12513,
+      "name": "Mission workspace — restart confirm (542)",
+      "clip": true,
+      "width": 1440,
+      "height": 900,
+      "fill": "$bg",
+      "children": [
+        {
+          "id": "v09jeU",
+          "type": "ref",
+          "ref": "N4yXC",
+          "name": "Sidebar",
+          "width": 240,
+          "height": 900
+        },
+        {
+          "type": "frame",
+          "id": "JXIGs",
+          "name": "Main",
+          "width": "fill_container",
+          "height": "fill_container",
+          "fill": "$bg",
+          "layout": "vertical",
+          "children": [
+            {
+              "type": "frame",
+              "id": "DVuZa",
+              "name": "TabBar",
+              "width": "fill_container",
+              "height": 44,
+              "stroke": "$hairline",
+              "strokeWidth": {
+                "bottom": 1
+              },
+              "strokeAlignment": "inner",
+              "gap": 12,
+              "padding": [
+                0,
+                16
+              ],
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "frame",
+                  "id": "lPCwr",
+                  "name": "tb_left",
+                  "width": "fill_container",
+                  "gap": 10,
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "icon",
+                      "id": "s4OA7G",
+                      "name": "layout_ic",
+                      "width": 14,
+                      "height": 14,
+                      "icon": "flag",
+                      "library": "lucide",
+                      "fill": "$text-mid"
+                    },
+                    {
+                      "type": "text",
+                      "id": "GXnik",
+                      "name": "tab_title",
+                      "fill": "$text-hi",
+                      "content": "Wire up event bus watcher",
+                      "fontFamily": "$font-ui",
+                      "fontSize": 13,
+                      "fontWeight": "500"
+                    },
+                    {
+                      "type": "icon",
+                      "id": "y9gQIU",
+                      "name": "kebab",
+                      "width": 14,
+                      "height": 14,
+                      "icon": "ellipsis",
+                      "library": "lucide",
+                      "fill": "$text-low"
+                    },
+                    {
+                      "type": "icon",
+                      "id": "D8I1TX",
+                      "name": "stop_all",
+                      "width": 12,
+                      "height": 12,
+                      "icon": "square",
+                      "library": "lucide",
+                      "fill": "#E5484D"
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "qLRaJ",
+                  "name": "tb_right",
+                  "gap": 14,
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "icon",
+                      "id": "sxnkB",
+                      "name": "drawer_ic",
+                      "width": 14,
+                      "height": 14,
+                      "icon": "panel-bottom",
+                      "library": "lucide",
+                      "fill": "$text-mid"
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "yohsD",
+              "name": "Body",
+              "width": "fill_container",
+              "height": "fill_container",
+              "layout": "vertical",
+              "children": [
+                {
+                  "type": "frame",
+                  "id": "i8tpZ",
+                  "name": "MissionCenter",
+                  "width": "fill_container",
+                  "height": "fill_container",
+                  "layout": "vertical",
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "y83fmc",
+                      "name": "missionTabStrip",
+                      "width": "fill_container",
+                      "height": 34,
+                      "stroke": "$hairline",
+                      "strokeWidth": {
+                        "bottom": 1
+                      },
+                      "strokeAlignment": "inner",
+                      "gap": 2,
+                      "padding": [
+                        0,
+                        8,
+                        0,
+                        6
+                      ],
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "cjB44",
+                          "name": "tab_Feed",
+                          "height": "fill_container",
+                          "stroke": "$sidebar-sel-border",
+                          "strokeWidth": {
+                            "bottom": 2
+                          },
+                          "strokeAlignment": "inner",
+                          "layout": "vertical",
+                          "children": [
+                            {
+                              "type": "frame",
+                              "id": "VKPDE",
+                              "name": "content",
+                              "height": "fill_container",
+                              "gap": 6,
+                              "padding": [
+                                0,
+                                8
+                              ],
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "icon",
+                                  "id": "D0Tyq",
+                                  "name": "ic",
+                                  "width": 12,
+                                  "height": 12,
+                                  "icon": "message-square",
+                                  "library": "lucide",
+                                  "fill": "$text-hi"
+                                },
+                                {
+                                  "type": "text",
+                                  "id": "g9tAM",
+                                  "name": "t",
+                                  "fill": "$text-hi",
+                                  "content": "Feed",
+                                  "fontFamily": "$font-ui",
+                                  "fontSize": 12,
+                                  "fontWeight": "600"
+                                }
+                              ]
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "Pk49T",
+                          "name": "tab_architect",
+                          "height": "fill_container",
+                          "layout": "vertical",
+                          "children": [
+                            {
+                              "type": "frame",
+                              "id": "u6HYNE",
+                              "name": "content",
+                              "height": "fill_container",
+                              "gap": 6,
+                              "padding": [
+                                0,
+                                8
+                              ],
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "icon",
+                                  "id": "u5PBj",
+                                  "name": "ic",
+                                  "width": 12,
+                                  "height": 12,
+                                  "icon": "terminal",
+                                  "library": "lucide",
+                                  "fill": "$text-low"
+                                },
+                                {
+                                  "type": "text",
+                                  "id": "XvOY9",
+                                  "name": "t",
+                                  "fill": "$text-mid",
+                                  "content": "@architect",
+                                  "fontFamily": "$font-ui",
+                                  "fontSize": 12,
+                                  "fontWeight": "normal"
+                                }
+                              ]
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "AmySa",
+                          "name": "tab_impl",
+                          "height": "fill_container",
+                          "layout": "vertical",
+                          "children": [
+                            {
+                              "type": "frame",
+                              "id": "aNtsf",
+                              "name": "content",
+                              "height": "fill_container",
+                              "gap": 6,
+                              "padding": [
+                                0,
+                                8
+                              ],
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "icon",
+                                  "id": "bqpY4",
+                                  "name": "ic",
+                                  "width": 12,
+                                  "height": 12,
+                                  "icon": "terminal",
+                                  "library": "lucide",
+                                  "fill": "$text-low"
+                                },
+                                {
+                                  "type": "text",
+                                  "id": "zJfZS",
+                                  "name": "t",
+                                  "fill": "$text-mid",
+                                  "content": "@impl",
+                                  "fontFamily": "$font-ui",
+                                  "fontSize": 12,
+                                  "fontWeight": "normal"
+                                }
+                              ]
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "y7c07",
+                          "name": "tab_reviewer",
+                          "height": "fill_container",
+                          "layout": "vertical",
+                          "children": [
+                            {
+                              "type": "frame",
+                              "id": "bzMbr",
+                              "name": "content",
+                              "height": "fill_container",
+                              "gap": 6,
+                              "padding": [
+                                0,
+                                8
+                              ],
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "icon",
+                                  "id": "bXCSs",
+                                  "name": "ic",
+                                  "width": 12,
+                                  "height": 12,
+                                  "icon": "terminal",
+                                  "library": "lucide",
+                                  "fill": "$text-low"
+                                },
+                                {
+                                  "type": "text",
+                                  "id": "wCx41",
+                                  "name": "t",
+                                  "fill": "$text-mid",
+                                  "content": "@reviewer",
+                                  "fontFamily": "$font-ui",
+                                  "fontSize": 12,
+                                  "fontWeight": "normal"
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "eajWx",
+                      "name": "feed",
+                      "width": "fill_container",
+                      "height": "fill_container",
+                      "fill": "$panel",
+                      "layout": "vertical",
+                      "gap": 14,
+                      "padding": [
+                        18,
+                        24
+                      ],
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "heJZT",
+                          "name": "row_you",
+                          "width": "fill_container",
+                          "layout": "vertical",
+                          "gap": 4,
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "X6b1Rw",
+                              "name": "who",
+                              "fill": "$text-low",
+                              "content": "you · goal",
+                              "fontFamily": "$font-ui",
+                              "fontSize": 11,
+                              "fontWeight": "600"
+                            },
+                            {
+                              "type": "text",
+                              "id": "BTdkP",
+                              "name": "body",
+                              "fill": "$text-hi",
+                              "textGrowth": "fixed-width",
+                              "width": "fill_container",
+                              "content": "Wire the notify watcher into the event bus so mission NDJSON appends fan out to every slot without polling.",
+                              "lineHeight": 1.45,
+                              "fontFamily": "$font-ui",
+                              "fontSize": 13,
+                              "fontWeight": "normal"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "j7uF7B",
+                          "name": "row_architect",
+                          "width": "fill_container",
+                          "layout": "vertical",
+                          "gap": 4,
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "txQnD",
+                              "name": "who",
+                              "fill": "$text-low",
+                              "content": "@architect",
+                              "fontFamily": "$font-ui",
+                              "fontSize": 11,
+                              "fontWeight": "600"
+                            },
+                            {
+                              "type": "text",
+                              "id": "Y92Md",
+                              "name": "body",
+                              "fill": "$text-hi",
+                              "textGrowth": "fixed-width",
+                              "width": "fill_container",
+                              "content": "Splitting into three phases: watcher registration, append fan-out, backpressure on slow readers. Dispatching phase 1 to @impl.",
+                              "lineHeight": 1.45,
+                              "fontFamily": "$font-ui",
+                              "fontSize": 13,
+                              "fontWeight": "normal"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "vIG9F",
+                          "name": "row_impl",
+                          "width": "fill_container",
+                          "layout": "vertical",
+                          "gap": 4,
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "T7jQb",
+                              "name": "who",
+                              "fill": "$text-low",
+                              "content": "@impl",
+                              "fontFamily": "$font-ui",
+                              "fontSize": 11,
+                              "fontWeight": "600"
+                            },
+                            {
+                              "type": "text",
+                              "id": "RPClf",
+                              "name": "body",
+                              "fill": "$text-hi",
+                              "textGrowth": "fixed-width",
+                              "width": "fill_container",
+                              "content": "Phase 1 on branch feat/event-bus-watcher. `notify` debounce is 20 ms; tests in crates/runner-core/src/watch.rs. Ready for @reviewer.",
+                              "lineHeight": 1.45,
+                              "fontFamily": "$font-ui",
+                              "fontSize": 13,
+                              "fontWeight": "normal"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "Qeblb",
+                          "name": "row_reviewer",
+                          "width": "fill_container",
+                          "layout": "vertical",
+                          "gap": 4,
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "w6sFDG",
+                              "name": "who",
+                              "fill": "$text-low",
+                              "content": "@reviewer",
+                              "fontFamily": "$font-ui",
+                              "fontSize": 11,
+                              "fontWeight": "600"
+                            },
+                            {
+                              "type": "text",
+                              "id": "Y81Vr",
+                              "name": "body",
+                              "fill": "$text-hi",
+                              "textGrowth": "fixed-width",
+                              "width": "fill_container",
+                              "content": "Reviewing the working-tree diff. One question on the debounce window — posting findings shortly.",
+                              "lineHeight": 1.45,
+                              "fontFamily": "$font-ui",
+                              "fontSize": 13,
+                              "fontWeight": "normal"
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "frame",
+          "id": "A8rfdp",
+          "name": "Runners rail",
+          "width": 280,
+          "height": "fill_container",
+          "fill": "#1D1E23",
+          "stroke": "#272930",
+          "strokeWidth": {
+            "left": 1
+          },
+          "strokeAlignment": "inner",
+          "strokeLinejoin": "round",
+          "layout": "vertical",
+          "gap": 12,
+          "padding": [
+            14,
+            20,
+            20,
+            20
+          ],
+          "children": [
+            {
+              "type": "frame",
+              "id": "bDyYN",
+              "name": "panel_header",
+              "width": "fill_container",
+              "layout": "vertical",
+              "gap": 14,
+              "children": [
+                {
+                  "type": "frame",
+                  "id": "icQar",
+                  "name": "panel_topbar",
+                  "width": "fill_container",
+                  "height": 36,
+                  "gap": 2,
+                  "justifyContent": "space_between",
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "m2KLK7",
+                      "name": "topbar_left",
+                      "gap": 2,
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "sHTHD",
+                          "name": "btn_runners",
+                          "width": 26,
+                          "height": 26,
+                          "fill": "#272930",
+                          "cornerRadius": 6,
+                          "stroke": "#3A3D45",
+                          "strokeWidth": 1,
+                          "strokeAlignment": "inner",
+                          "justifyContent": "center",
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "icon",
+                              "id": "MuUPY",
+                              "width": 14,
+                              "height": 14,
+                              "icon": "users",
+                              "library": "lucide",
+                              "fill": "#E9EAEE"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "JXA7T",
+                          "name": "btn_mission",
+                          "width": 26,
+                          "height": 26,
+                          "fill": "#00000000",
+                          "cornerRadius": 6,
+                          "stroke": "#00000000",
+                          "strokeAlignment": "inner",
+                          "justifyContent": "center",
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "icon",
+                              "id": "qFOGv",
+                              "width": 14,
+                              "height": 14,
+                              "icon": "info",
+                              "library": "lucide",
+                              "fill": "#9A9BA5"
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "suePZ",
+                      "name": "topbar_right",
+                      "gap": 2,
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "U7gTon",
+                          "name": "panelCollapse",
+                          "width": 24,
+                          "height": 24,
+                          "cornerRadius": 6,
+                          "justifyContent": "center",
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "icon",
+                              "id": "lehvg",
+                              "width": 14,
+                              "height": 14,
+                              "icon": "panel-right-close",
+                              "library": "lucide",
+                              "fill": "#9A9BA5"
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "cCCQv",
+                  "name": "topbar_div",
+                  "width": "fill_container",
+                  "height": 1,
+                  "fill": "#272930"
+                },
+                {
+                  "type": "text",
+                  "id": "S3Ua86",
+                  "fill": "#5A5C66",
+                  "content": "RUNNER SESSIONS",
+                  "fontFamily": "JetBrains Mono",
+                  "fontSize": 10,
+                  "fontWeight": "600",
+                  "letterSpacing": 1
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "aNtDJ",
+              "name": "Runner card architect",
+              "width": "fill_container",
+              "fill": "$bg",
+              "cornerRadius": 6,
+              "stroke": "$border",
+              "strokeWidth": 1,
+              "layout": "vertical",
+              "gap": 6,
+              "padding": 12,
+              "children": [
+                {
+                  "type": "frame",
+                  "id": "auWFN",
+                  "name": "Card header",
+                  "width": "fill_container",
+                  "justifyContent": "space_between",
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "I0Q0a",
+                      "name": "Identity",
+                      "gap": 8,
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "H5D84f",
+                          "name": "Avatar wrap",
+                          "width": 25,
+                          "height": 25,
+                          "layout": "none",
+                          "children": [
+                            {
+                              "type": "frame",
+                              "id": "KxRDV",
+                              "x": 0,
+                              "y": 0,
+                              "name": "Avatar",
+                              "clip": true,
+                              "width": 25,
+                              "height": 25,
+                              "fill": "$raised",
+                              "cornerRadius": 6,
+                              "layout": "vertical",
+                              "children": [
+                                {
+                                  "type": "frame",
+                                  "id": "lGFfi",
+                                  "name": "Pixel row",
+                                  "children": [
+                                    {
+                                      "type": "rectangle",
+                                      "id": "ewlsG",
+                                      "name": "Pixel",
+                                      "fill": "#00000000",
+                                      "width": 5,
+                                      "height": 5
+                                    },
+                                    {
+                                      "type": "rectangle",
+                                      "id": "ILUN4",
+                                      "name": "Pixel",
+                                      "fill": "$accent",
+                                      "width": 5,
+                                      "height": 5
+                                    },
+                                    {
+                                      "type": "rectangle",
+                                      "id": "Xu2Fk",
+                                      "name": "Pixel",
+                                      "fill": "$accent",
+                                      "width": 5,
+                                      "height": 5
+                                    },
+                                    {
+                                      "type": "rectangle",
+                                      "id": "SdrvO",
+                                      "name": "Pixel",
+                                      "fill": "$accent",
+                                      "width": 5,
+                                      "height": 5
+                                    },
+                                    {
+                                      "type": "rectangle",
+                                      "id": "cDSv1",
+                                      "name": "Pixel",
+                                      "fill": "#00000000",
+                                      "width": 5,
+                                      "height": 5
+                                    }
+                                  ]
+                                },
+                                {
+                                  "type": "frame",
+                                  "id": "V2qF3e",
+                                  "name": "Pixel row",
+                                  "children": [
+                                    {
+                                      "type": "rectangle",
+                                      "id": "PnVn6",
+                                      "name": "Pixel",
+                                      "fill": "$accent",
+                                      "width": 5,
+                                      "height": 5
+                                    },
+                                    {
+                                      "type": "rectangle",
+                                      "id": "rfFkt",
+                                      "name": "Pixel",
+                                      "fill": "#00000000",
+                                      "width": 5,
+                                      "height": 5
+                                    },
+                                    {
+                                      "type": "rectangle",
+                                      "id": "ReM1M",
+                                      "name": "Pixel",
+                                      "fill": "$accent",
+                                      "width": 5,
+                                      "height": 5
+                                    },
+                                    {
+                                      "type": "rectangle",
+                                      "id": "NptYi",
+                                      "name": "Pixel",
+                                      "fill": "#00000000",
+                                      "width": 5,
+                                      "height": 5
+                                    },
+                                    {
+                                      "type": "rectangle",
+                                      "id": "MFoyX",
+                                      "name": "Pixel",
+                                      "fill": "$accent",
+                                      "width": 5,
+                                      "height": 5
+                                    }
+                                  ]
+                                },
+                                {
+                                  "type": "frame",
+                                  "id": "X5V0k4",
+                                  "name": "Pixel row",
+                                  "children": [
+                                    {
+                                      "type": "rectangle",
+                                      "id": "JRGxq",
+                                      "name": "Pixel",
+                                      "fill": "$accent",
+                                      "width": 5,
+                                      "height": 5
+                                    },
+                                    {
+                                      "type": "rectangle",
+                                      "id": "RkwOk",
+                                      "name": "Pixel",
+                                      "fill": "$accent",
+                                      "width": 5,
+                                      "height": 5
+                                    },
+                                    {
+                                      "type": "rectangle",
+                                      "id": "J52CA",
+                                      "name": "Pixel",
+                                      "fill": "$accent",
+                                      "width": 5,
+                                      "height": 5
+                                    },
+                                    {
+                                      "type": "rectangle",
+                                      "id": "P7onb",
+                                      "name": "Pixel",
+                                      "fill": "$accent",
+                                      "width": 5,
+                                      "height": 5
+                                    },
+                                    {
+                                      "type": "rectangle",
+                                      "id": "KyAGd",
+                                      "name": "Pixel",
+                                      "fill": "$accent",
+                                      "width": 5,
+                                      "height": 5
+                                    }
+                                  ]
+                                },
+                                {
+                                  "type": "frame",
+                                  "id": "Rof3r",
+                                  "name": "Pixel row",
+                                  "children": [
+                                    {
+                                      "type": "rectangle",
+                                      "id": "h8ERM",
+                                      "name": "Pixel",
+                                      "fill": "#00000000",
+                                      "width": 5,
+                                      "height": 5
+                                    },
+                                    {
+                                      "type": "rectangle",
+                                      "id": "WDXlq",
+                                      "name": "Pixel",
+                                      "fill": "$accent",
+                                      "width": 5,
+                                      "height": 5
+                                    },
+                                    {
+                                      "type": "rectangle",
+                                      "id": "o3ud0u",
+                                      "name": "Pixel",
+                                      "fill": "#00000000",
+                                      "width": 5,
+                                      "height": 5
+                                    },
+                                    {
+                                      "type": "rectangle",
+                                      "id": "J4a4M",
+                                      "name": "Pixel",
+                                      "fill": "$accent",
+                                      "width": 5,
+                                      "height": 5
+                                    },
+                                    {
+                                      "type": "rectangle",
+                                      "id": "w6Ynj",
+                                      "name": "Pixel",
+                                      "fill": "#00000000",
+                                      "width": 5,
+                                      "height": 5
+                                    }
+                                  ]
+                                },
+                                {
+                                  "type": "frame",
+                                  "id": "X4QSc",
+                                  "name": "Pixel row",
+                                  "children": [
+                                    {
+                                      "type": "rectangle",
+                                      "id": "HqUZ6",
+                                      "name": "Pixel",
+                                      "fill": "$accent",
+                                      "width": 5,
+                                      "height": 5
+                                    },
+                                    {
+                                      "type": "rectangle",
+                                      "id": "NHk2u",
+                                      "name": "Pixel",
+                                      "fill": "#00000000",
+                                      "width": 5,
+                                      "height": 5
+                                    },
+                                    {
+                                      "type": "rectangle",
+                                      "id": "OGAhu",
+                                      "name": "Pixel",
+                                      "fill": "$accent",
+                                      "width": 5,
+                                      "height": 5
+                                    },
+                                    {
+                                      "type": "rectangle",
+                                      "id": "WSfO4",
+                                      "name": "Pixel",
+                                      "fill": "#00000000",
+                                      "width": 5,
+                                      "height": 5
+                                    },
+                                    {
+                                      "type": "rectangle",
+                                      "id": "Due9C",
+                                      "name": "Pixel",
+                                      "fill": "$accent",
+                                      "width": 5,
+                                      "height": 5
+                                    }
+                                  ]
+                                }
+                              ]
+                            },
+                            {
+                              "type": "ellipse",
+                              "id": "ogy0D",
+                              "x": 17,
+                              "y": 17,
+                              "name": "Presence dot",
+                              "fill": "#00FF9C66",
+                              "width": 9,
+                              "height": 9,
+                              "stroke": "#15161B",
+                              "strokeWidth": 2,
+                              "strokeAlignment": "outer"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "text",
+                          "id": "l7RA3q",
+                          "name": "Handle",
+                          "fill": "$accent",
+                          "content": "@architect",
+                          "fontFamily": "$font-mono",
+                          "fontSize": 13,
+                          "fontWeight": "600"
+                        },
+                        {
+                          "type": "frame",
+                          "id": "Z9Avcl",
+                          "name": "Lead badge",
+                          "fill": "#FFB02033",
+                          "cornerRadius": 3,
+                          "padding": [
+                            1,
+                            5
+                          ],
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "R5YJEX",
+                              "name": "Lead label",
+                              "fill": "$warn",
+                              "content": "LEAD",
+                              "fontFamily": "$font-ui",
+                              "fontSize": 9,
+                              "fontWeight": "700",
+                              "letterSpacing": 0.5
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "OHBPG",
+                      "name": "Card actions",
+                      "gap": 4,
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "tu4wG",
+                          "name": "Stop button",
+                          "width": 24,
+                          "height": 24,
+                          "cornerRadius": 4,
+                          "justifyContent": "center",
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "icon",
+                              "id": "m1pXd",
+                              "name": "Stop buttonIcon",
+                              "width": 13,
+                              "height": 13,
+                              "icon": "square",
+                              "library": "lucide",
+                              "fill": "#E5484DCC"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "qksSM",
+                          "name": "Restart button",
+                          "width": 24,
+                          "height": 24,
+                          "cornerRadius": 4,
+                          "justifyContent": "center",
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "icon",
+                              "id": "aOiFg",
+                              "name": "Restart buttonIcon",
+                              "width": 13,
+                              "height": 13,
+                              "icon": "rotate-ccw",
+                              "library": "lucide",
+                              "fill": "$text-mid"
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "type": "text",
+                  "id": "miwsR",
+                  "name": "Status subtitle",
+                  "fill": "$text-mid",
+                  "content": "idle",
+                  "fontFamily": "$font-ui",
+                  "fontSize": 11,
+                  "fontWeight": "normal"
+                },
+                {
+                  "type": "rectangle",
+                  "id": "E9rr7q",
+                  "name": "Key divider",
+                  "fill": "#272930A6",
+                  "width": "fill_container",
+                  "height": 1
+                },
+                {
+                  "type": "frame",
+                  "id": "VsBWW",
+                  "name": "Session key row",
+                  "width": "fill_container",
+                  "gap": 8,
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "L4mLz",
+                      "name": "Key label",
+                      "fill": "$text-low",
+                      "content": "session_key",
+                      "fontFamily": "$font-ui",
+                      "fontSize": 10,
+                      "fontWeight": "normal"
+                    },
+                    {
+                      "type": "frame",
+                      "id": "BsvyR",
+                      "name": "Key spacer",
+                      "width": "fill_container",
+                      "height": 1
+                    },
+                    {
+                      "type": "text",
+                      "id": "bzox7",
+                      "name": "Key value",
+                      "fill": "$text-mid",
+                      "content": "01KZMR6Z…S61",
+                      "fontFamily": "$font-mono",
+                      "fontSize": 10,
+                      "fontWeight": "normal"
+                    },
+                    {
+                      "type": "icon",
+                      "id": "L07HH",
+                      "name": "Copy icon",
+                      "width": 11,
+                      "height": 11,
+                      "icon": "copy",
+                      "library": "lucide",
+                      "fill": "$text-low"
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "H1Gxp1",
+              "name": "Runner card impl",
+              "width": "fill_container",
+              "fill": "$bg",
+              "cornerRadius": 6,
+              "stroke": "#00FF9C99",
+              "strokeWidth": 1,
+              "layout": "vertical",
+              "gap": 6,
+              "padding": 12,
+              "children": [
+                {
+                  "type": "frame",
+                  "id": "xLRD8",
+                  "name": "Card header",
+                  "width": "fill_container",
+                  "justifyContent": "space_between",
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "JYDBM",
+                      "name": "Identity",
+                      "gap": 8,
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "JnxAB",
+                          "name": "Avatar wrap",
+                          "width": 25,
+                          "height": 25,
+                          "layout": "none",
+                          "children": [
+                            {
+                              "type": "frame",
+                              "id": "gLILX",
+                              "x": 0,
+                              "y": 0,
+                              "name": "Avatar",
+                              "clip": true,
+                              "width": 25,
+                              "height": 25,
+                              "fill": "$raised",
+                              "cornerRadius": 6,
+                              "layout": "vertical",
+                              "children": [
+                                {
+                                  "type": "frame",
+                                  "id": "VqZBd",
+                                  "name": "Pixel row",
+                                  "children": [
+                                    {
+                                      "type": "rectangle",
+                                      "id": "xoORK",
+                                      "name": "Pixel",
+                                      "fill": "#62D9F5",
+                                      "width": 5,
+                                      "height": 5
+                                    },
+                                    {
+                                      "type": "rectangle",
+                                      "id": "J5fv6V",
+                                      "name": "Pixel",
+                                      "fill": "#00000000",
+                                      "width": 5,
+                                      "height": 5
+                                    },
+                                    {
+                                      "type": "rectangle",
+                                      "id": "B3py4C",
+                                      "name": "Pixel",
+                                      "fill": "#62D9F5",
+                                      "width": 5,
+                                      "height": 5
+                                    },
+                                    {
+                                      "type": "rectangle",
+                                      "id": "LAS1a",
+                                      "name": "Pixel",
+                                      "fill": "#00000000",
+                                      "width": 5,
+                                      "height": 5
+                                    },
+                                    {
+                                      "type": "rectangle",
+                                      "id": "zRRd9",
+                                      "name": "Pixel",
+                                      "fill": "#62D9F5",
+                                      "width": 5,
+                                      "height": 5
+                                    }
+                                  ]
+                                },
+                                {
+                                  "type": "frame",
+                                  "id": "miq1f",
+                                  "name": "Pixel row",
+                                  "children": [
+                                    {
+                                      "type": "rectangle",
+                                      "id": "ahgtn",
+                                      "name": "Pixel",
+                                      "fill": "#62D9F5",
+                                      "width": 5,
+                                      "height": 5
+                                    },
+                                    {
+                                      "type": "rectangle",
+                                      "id": "F25bhM",
+                                      "name": "Pixel",
+                                      "fill": "#62D9F5",
+                                      "width": 5,
+                                      "height": 5
+                                    },
+                                    {
+                                      "type": "rectangle",
+                                      "id": "M0AdZV",
+                                      "name": "Pixel",
+                                      "fill": "#00000000",
+                                      "width": 5,
+                                      "height": 5
+                                    },
+                                    {
+                                      "type": "rectangle",
+                                      "id": "qifWw",
+                                      "name": "Pixel",
+                                      "fill": "#62D9F5",
+                                      "width": 5,
+                                      "height": 5
+                                    },
+                                    {
+                                      "type": "rectangle",
+                                      "id": "WwobJ",
+                                      "name": "Pixel",
+                                      "fill": "#62D9F5",
+                                      "width": 5,
+                                      "height": 5
+                                    }
+                                  ]
+                                },
+                                {
+                                  "type": "frame",
+                                  "id": "O9TfL",
+                                  "name": "Pixel row",
+                                  "children": [
+                                    {
+                                      "type": "rectangle",
+                                      "id": "Q0Mdq",
+                                      "name": "Pixel",
+                                      "fill": "#00000000",
+                                      "width": 5,
+                                      "height": 5
+                                    },
+                                    {
+                                      "type": "rectangle",
+                                      "id": "N4IUu",
+                                      "name": "Pixel",
+                                      "fill": "#62D9F5",
+                                      "width": 5,
+                                      "height": 5
+                                    },
+                                    {
+                                      "type": "rectangle",
+                                      "id": "ZO8s8",
+                                      "name": "Pixel",
+                                      "fill": "#62D9F5",
+                                      "width": 5,
+                                      "height": 5
+                                    },
+                                    {
+                                      "type": "rectangle",
+                                      "id": "m11VN",
+                                      "name": "Pixel",
+                                      "fill": "#62D9F5",
+                                      "width": 5,
+                                      "height": 5
+                                    },
+                                    {
+                                      "type": "rectangle",
+                                      "id": "UgnSO",
+                                      "name": "Pixel",
+                                      "fill": "#00000000",
+                                      "width": 5,
+                                      "height": 5
+                                    }
+                                  ]
+                                },
+                                {
+                                  "type": "frame",
+                                  "id": "TyHjX",
+                                  "name": "Pixel row",
+                                  "children": [
+                                    {
+                                      "type": "rectangle",
+                                      "id": "STTuR",
+                                      "name": "Pixel",
+                                      "fill": "#62D9F5",
+                                      "width": 5,
+                                      "height": 5
+                                    },
+                                    {
+                                      "type": "rectangle",
+                                      "id": "U7B0WI",
+                                      "name": "Pixel",
+                                      "fill": "#62D9F5",
+                                      "width": 5,
+                                      "height": 5
+                                    },
+                                    {
+                                      "type": "rectangle",
+                                      "id": "K68WD",
+                                      "name": "Pixel",
+                                      "fill": "#00000000",
+                                      "width": 5,
+                                      "height": 5
+                                    },
+                                    {
+                                      "type": "rectangle",
+                                      "id": "u0EjF",
+                                      "name": "Pixel",
+                                      "fill": "#62D9F5",
+                                      "width": 5,
+                                      "height": 5
+                                    },
+                                    {
+                                      "type": "rectangle",
+                                      "id": "p8Hq9",
+                                      "name": "Pixel",
+                                      "fill": "#62D9F5",
+                                      "width": 5,
+                                      "height": 5
+                                    }
+                                  ]
+                                },
+                                {
+                                  "type": "frame",
+                                  "id": "QN1wI",
+                                  "name": "Pixel row",
+                                  "children": [
+                                    {
+                                      "type": "rectangle",
+                                      "id": "CFmh1",
+                                      "name": "Pixel",
+                                      "fill": "#62D9F5",
+                                      "width": 5,
+                                      "height": 5
+                                    },
+                                    {
+                                      "type": "rectangle",
+                                      "id": "m87GE4",
+                                      "name": "Pixel",
+                                      "fill": "#00000000",
+                                      "width": 5,
+                                      "height": 5
+                                    },
+                                    {
+                                      "type": "rectangle",
+                                      "id": "P0QLb",
+                                      "name": "Pixel",
+                                      "fill": "#62D9F5",
+                                      "width": 5,
+                                      "height": 5
+                                    },
+                                    {
+                                      "type": "rectangle",
+                                      "id": "D9FNC0",
+                                      "name": "Pixel",
+                                      "fill": "#00000000",
+                                      "width": 5,
+                                      "height": 5
+                                    },
+                                    {
+                                      "type": "rectangle",
+                                      "id": "TWxnp",
+                                      "name": "Pixel",
+                                      "fill": "#62D9F5",
+                                      "width": 5,
+                                      "height": 5
+                                    }
+                                  ]
+                                }
+                              ]
+                            },
+                            {
+                              "type": "ellipse",
+                              "id": "HF0tM",
+                              "x": 17,
+                              "y": 17,
+                              "name": "Presence dot",
+                              "fill": "#00FF9C",
+                              "width": 9,
+                              "height": 9,
+                              "stroke": "#15161B",
+                              "strokeWidth": 2,
+                              "strokeAlignment": "outer"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "text",
+                          "id": "Ja3N6",
+                          "name": "Handle",
+                          "fill": "#62D9F5",
+                          "content": "@impl",
+                          "fontFamily": "$font-mono",
+                          "fontSize": 13,
+                          "fontWeight": "600"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "y0MM3",
+                      "name": "Card actions",
+                      "gap": 4,
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "OMRJ7",
+                          "name": "Stop button",
+                          "width": 24,
+                          "height": 24,
+                          "cornerRadius": 4,
+                          "justifyContent": "center",
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "icon",
+                              "id": "UgEYV",
+                              "name": "Stop buttonIcon",
+                              "width": 13,
+                              "height": 13,
+                              "icon": "square",
+                              "library": "lucide",
+                              "fill": "#E5484DCC"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "E43ll",
+                          "name": "Restart button",
+                          "width": 24,
+                          "height": 24,
+                          "fill": "#E5484D1A",
+                          "cornerRadius": 4,
+                          "justifyContent": "center",
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "icon",
+                              "id": "RKFfv",
+                              "name": "Restart buttonIcon",
+                              "width": 13,
+                              "height": 13,
+                              "icon": "rotate-ccw",
+                              "library": "lucide",
+                              "fill": "#E5484D"
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "type": "text",
+                  "id": "hyJgh",
+                  "name": "Status subtitle",
+                  "fill": "$text-mid",
+                  "content": "busy",
+                  "fontFamily": "$font-ui",
+                  "fontSize": 11,
+                  "fontWeight": "normal"
+                },
+                {
+                  "type": "rectangle",
+                  "id": "gpXML",
+                  "name": "Key divider",
+                  "fill": "#272930A6",
+                  "width": "fill_container",
+                  "height": 1
+                },
+                {
+                  "type": "frame",
+                  "id": "z4tUv",
+                  "name": "Session key row",
+                  "width": "fill_container",
+                  "gap": 8,
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "ZLIAA",
+                      "name": "Key label",
+                      "fill": "$text-low",
+                      "content": "session_key",
+                      "fontFamily": "$font-ui",
+                      "fontSize": 10,
+                      "fontWeight": "normal"
+                    },
+                    {
+                      "type": "frame",
+                      "id": "nE2Qx",
+                      "name": "Key spacer",
+                      "width": "fill_container",
+                      "height": 1
+                    },
+                    {
+                      "type": "text",
+                      "id": "D59wpD",
+                      "name": "Key value",
+                      "fill": "$text-mid",
+                      "content": "01KZMR71…H4C",
+                      "fontFamily": "$font-mono",
+                      "fontSize": 10,
+                      "fontWeight": "normal"
+                    },
+                    {
+                      "type": "icon",
+                      "id": "T33lyH",
+                      "name": "Copy icon",
+                      "width": 11,
+                      "height": 11,
+                      "icon": "copy",
+                      "library": "lucide",
+                      "fill": "$text-low"
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "vJCy4",
+              "name": "Runner card reviewer",
+              "width": "fill_container",
+              "fill": "$bg",
+              "cornerRadius": 6,
+              "stroke": "$border",
+              "strokeWidth": 1,
+              "layout": "vertical",
+              "gap": 6,
+              "padding": 12,
+              "children": [
+                {
+                  "type": "frame",
+                  "id": "jbn3L",
+                  "name": "Card header",
+                  "width": "fill_container",
+                  "justifyContent": "space_between",
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "rooSb",
+                      "name": "Identity",
+                      "gap": 8,
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "vUfDW",
+                          "name": "Avatar wrap",
+                          "width": 25,
+                          "height": 25,
+                          "layout": "none",
+                          "children": [
+                            {
+                              "type": "frame",
+                              "id": "z1ITlU",
+                              "x": 0,
+                              "y": 0,
+                              "name": "Avatar",
+                              "clip": true,
+                              "width": 25,
+                              "height": 25,
+                              "fill": "$raised",
+                              "cornerRadius": 6,
+                              "layout": "vertical",
+                              "children": [
+                                {
+                                  "type": "frame",
+                                  "id": "Hp5CT",
+                                  "name": "Pixel row",
+                                  "children": [
+                                    {
+                                      "type": "rectangle",
+                                      "id": "dCrYb",
+                                      "name": "Pixel",
+                                      "fill": "#C792EA",
+                                      "width": 5,
+                                      "height": 5
+                                    },
+                                    {
+                                      "type": "rectangle",
+                                      "id": "FZAGT",
+                                      "name": "Pixel",
+                                      "fill": "#C792EA",
+                                      "width": 5,
+                                      "height": 5
+                                    },
+                                    {
+                                      "type": "rectangle",
+                                      "id": "G3ue0E",
+                                      "name": "Pixel",
+                                      "fill": "#00000000",
+                                      "width": 5,
+                                      "height": 5
+                                    },
+                                    {
+                                      "type": "rectangle",
+                                      "id": "p0MD6X",
+                                      "name": "Pixel",
+                                      "fill": "#C792EA",
+                                      "width": 5,
+                                      "height": 5
+                                    },
+                                    {
+                                      "type": "rectangle",
+                                      "id": "D2TW8",
+                                      "name": "Pixel",
+                                      "fill": "#C792EA",
+                                      "width": 5,
+                                      "height": 5
+                                    }
+                                  ]
+                                },
+                                {
+                                  "type": "frame",
+                                  "id": "IMzPn",
+                                  "name": "Pixel row",
+                                  "children": [
+                                    {
+                                      "type": "rectangle",
+                                      "id": "z5ahfE",
+                                      "name": "Pixel",
+                                      "fill": "#C792EA",
+                                      "width": 5,
+                                      "height": 5
+                                    },
+                                    {
+                                      "type": "rectangle",
+                                      "id": "EmBB7",
+                                      "name": "Pixel",
+                                      "fill": "#00000000",
+                                      "width": 5,
+                                      "height": 5
+                                    },
+                                    {
+                                      "type": "rectangle",
+                                      "id": "dUbas",
+                                      "name": "Pixel",
+                                      "fill": "#C792EA",
+                                      "width": 5,
+                                      "height": 5
+                                    },
+                                    {
+                                      "type": "rectangle",
+                                      "id": "u83tpD",
+                                      "name": "Pixel",
+                                      "fill": "#00000000",
+                                      "width": 5,
+                                      "height": 5
+                                    },
+                                    {
+                                      "type": "rectangle",
+                                      "id": "ypiTZ",
+                                      "name": "Pixel",
+                                      "fill": "#C792EA",
+                                      "width": 5,
+                                      "height": 5
+                                    }
+                                  ]
+                                },
+                                {
+                                  "type": "frame",
+                                  "id": "Xjx1R",
+                                  "name": "Pixel row",
+                                  "children": [
+                                    {
+                                      "type": "rectangle",
+                                      "id": "fsXU5",
+                                      "name": "Pixel",
+                                      "fill": "#00000000",
+                                      "width": 5,
+                                      "height": 5
+                                    },
+                                    {
+                                      "type": "rectangle",
+                                      "id": "RwSaL",
+                                      "name": "Pixel",
+                                      "fill": "#C792EA",
+                                      "width": 5,
+                                      "height": 5
+                                    },
+                                    {
+                                      "type": "rectangle",
+                                      "id": "FythW",
+                                      "name": "Pixel",
+                                      "fill": "#C792EA",
+                                      "width": 5,
+                                      "height": 5
+                                    },
+                                    {
+                                      "type": "rectangle",
+                                      "id": "XhYcE",
+                                      "name": "Pixel",
+                                      "fill": "#C792EA",
+                                      "width": 5,
+                                      "height": 5
+                                    },
+                                    {
+                                      "type": "rectangle",
+                                      "id": "v113v",
+                                      "name": "Pixel",
+                                      "fill": "#00000000",
+                                      "width": 5,
+                                      "height": 5
+                                    }
+                                  ]
+                                },
+                                {
+                                  "type": "frame",
+                                  "id": "h3FYEM",
+                                  "name": "Pixel row",
+                                  "children": [
+                                    {
+                                      "type": "rectangle",
+                                      "id": "FRHzY",
+                                      "name": "Pixel",
+                                      "fill": "#C792EA",
+                                      "width": 5,
+                                      "height": 5
+                                    },
+                                    {
+                                      "type": "rectangle",
+                                      "id": "ZOUIo",
+                                      "name": "Pixel",
+                                      "fill": "#00000000",
+                                      "width": 5,
+                                      "height": 5
+                                    },
+                                    {
+                                      "type": "rectangle",
+                                      "id": "LFsJm",
+                                      "name": "Pixel",
+                                      "fill": "#C792EA",
+                                      "width": 5,
+                                      "height": 5
+                                    },
+                                    {
+                                      "type": "rectangle",
+                                      "id": "b3Fco",
+                                      "name": "Pixel",
+                                      "fill": "#00000000",
+                                      "width": 5,
+                                      "height": 5
+                                    },
+                                    {
+                                      "type": "rectangle",
+                                      "id": "OvX1z",
+                                      "name": "Pixel",
+                                      "fill": "#C792EA",
+                                      "width": 5,
+                                      "height": 5
+                                    }
+                                  ]
+                                },
+                                {
+                                  "type": "frame",
+                                  "id": "w62n8",
+                                  "name": "Pixel row",
+                                  "children": [
+                                    {
+                                      "type": "rectangle",
+                                      "id": "pH9lU",
+                                      "name": "Pixel",
+                                      "fill": "#C792EA",
+                                      "width": 5,
+                                      "height": 5
+                                    },
+                                    {
+                                      "type": "rectangle",
+                                      "id": "gvwRm",
+                                      "name": "Pixel",
+                                      "fill": "#C792EA",
+                                      "width": 5,
+                                      "height": 5
+                                    },
+                                    {
+                                      "type": "rectangle",
+                                      "id": "P28ZwR",
+                                      "name": "Pixel",
+                                      "fill": "#00000000",
+                                      "width": 5,
+                                      "height": 5
+                                    },
+                                    {
+                                      "type": "rectangle",
+                                      "id": "dXKdL",
+                                      "name": "Pixel",
+                                      "fill": "#C792EA",
+                                      "width": 5,
+                                      "height": 5
+                                    },
+                                    {
+                                      "type": "rectangle",
+                                      "id": "Dpx4H",
+                                      "name": "Pixel",
+                                      "fill": "#C792EA",
+                                      "width": 5,
+                                      "height": 5
+                                    }
+                                  ]
+                                }
+                              ]
+                            },
+                            {
+                              "type": "ellipse",
+                              "id": "h8zPBB",
+                              "x": 17,
+                              "y": 17,
+                              "name": "Presence dot",
+                              "fill": "#5A5C66",
+                              "width": 9,
+                              "height": 9,
+                              "stroke": "#15161B",
+                              "strokeWidth": 2,
+                              "strokeAlignment": "outer"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "text",
+                          "id": "wyIYv",
+                          "name": "Handle",
+                          "fill": "#C792EA",
+                          "content": "@reviewer",
+                          "fontFamily": "$font-mono",
+                          "fontSize": 13,
+                          "fontWeight": "600"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "XcUFT",
+                      "name": "Card actions",
+                      "gap": 4,
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "ANyas",
+                          "name": "Resume button",
+                          "width": 24,
+                          "height": 24,
+                          "cornerRadius": 4,
+                          "justifyContent": "center",
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "icon",
+                              "id": "Gg8nn",
+                              "name": "Resume buttonIcon",
+                              "width": 13,
+                              "height": 13,
+                              "icon": "play",
+                              "library": "lucide",
+                              "fill": "#00FF9CCC"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "CVjAH",
+                          "name": "Restart button",
+                          "width": 24,
+                          "height": 24,
+                          "cornerRadius": 4,
+                          "justifyContent": "center",
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "icon",
+                              "id": "A8lfvS",
+                              "name": "Restart buttonIcon",
+                              "width": 13,
+                              "height": 13,
+                              "icon": "rotate-ccw",
+                              "library": "lucide",
+                              "fill": "$text-mid"
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "type": "text",
+                  "id": "Tn0qt",
+                  "name": "Status subtitle",
+                  "fill": "$text-mid",
+                  "content": "stopped",
+                  "fontFamily": "$font-ui",
+                  "fontSize": 11,
+                  "fontWeight": "normal"
+                },
+                {
+                  "type": "rectangle",
+                  "id": "eEuir",
+                  "name": "Key divider",
+                  "fill": "#272930A6",
+                  "width": "fill_container",
+                  "height": 1
+                },
+                {
+                  "type": "frame",
+                  "id": "srz3x",
+                  "name": "Session key row",
+                  "width": "fill_container",
+                  "gap": 8,
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "Jo5i3",
+                      "name": "Key label",
+                      "fill": "$text-low",
+                      "content": "session_key",
+                      "fontFamily": "$font-ui",
+                      "fontSize": 10,
+                      "fontWeight": "normal"
+                    },
+                    {
+                      "type": "frame",
+                      "id": "R1Noj",
+                      "name": "Key spacer",
+                      "width": "fill_container",
+                      "height": 1
+                    },
+                    {
+                      "type": "text",
+                      "id": "auTxj",
+                      "name": "Key value",
+                      "fill": "$text-mid",
+                      "content": "NULL",
+                      "fontFamily": "$font-mono",
+                      "fontSize": 10,
+                      "fontWeight": "normal"
+                    },
+                    {
+                      "type": "icon",
+                      "id": "Y3r6Un",
+                      "name": "Copy icon",
+                      "width": 11,
+                      "height": 11,
+                      "icon": "copy",
+                      "library": "lucide",
+                      "fill": "$text-low"
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "frame",
+          "id": "fWkvB",
+          "layoutPosition": "absolute",
+          "x": 0,
+          "y": 0,
+          "name": "scrim",
+          "width": 1440,
+          "height": 900,
+          "fill": "#0B0C0FB3",
+          "justifyContent": "center",
+          "alignItems": "center",
+          "children": [
+            {
+              "id": "T9ldRh",
+              "type": "ref",
+              "ref": "tK5Xb",
+              "name": "confirm_restart",
+              "descendants": {
+                "CucJL": {
+                  "icon": "rotate-ccw",
+                  "fill": "#F87171"
+                },
+                "igS7I": {
+                  "content": "Restart @impl?"
+                },
+                "FbcRk": {
+                  "content": "Its conversation so far is discarded. @impl comes back with its brief, the same first turn a cold start gives it, and @architect gets a note that it must re-send anything @impl needs."
+                },
+                "Lw5AS": {
+                  "content": "Restart"
+                }
+              }
+            }
+          ]
+        }
+      ]
     }
   ],
   "variables": {

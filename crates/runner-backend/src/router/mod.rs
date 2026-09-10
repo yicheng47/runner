@@ -47,15 +47,6 @@ pub trait StdinInjector: Send + Sync + 'static {
     /// `\r` becomes Enter, anything else is a literal byte stream.
     fn inject(&self, session_id: &str, bytes: &[u8]) -> Result<()>;
 
-    /// Paste-and-submit for mission lead launch prompts. Writes the
-    /// body to the agent's input, waits a short render gap, then
-    /// submits with Enter. Earlier versions verified the paste
-    /// landed by capturing the pane post-paste — that verification
-    /// path was tmux-shaped and went away with the runtime
-    /// migration (docs/impls/archive/0011); `PtyRuntime` does not expose the
-    /// GPUI terminal model for capture. Callers MUST NOT sleep before calling.
-    fn inject_paste_with_verify(&self, session_id: &str, body: &[u8]) -> Result<()>;
-
     /// Snapshot used by diagnostics/tests. Delivery uses the atomic
     /// reservation below so a keystroke cannot race a separate query.
     fn input_quiescent(&self, session_id: &str) -> bool;
@@ -102,10 +93,6 @@ impl RouterUiNotifier for ChannelRouterUiNotifier {
 impl StdinInjector for SessionManager {
     fn inject(&self, session_id: &str, bytes: &[u8]) -> Result<()> {
         SessionManager::inject_stdin(self, session_id, bytes)
-    }
-
-    fn inject_paste_with_verify(&self, session_id: &str, body: &[u8]) -> Result<()> {
-        SessionManager::inject_paste(self, session_id, body)
     }
 
     fn input_quiescent(&self, session_id: &str) -> bool {
@@ -183,7 +170,7 @@ pub(crate) struct LaunchInputs {
     allowed_signals: Vec<SignalType>,
     /// `crew.system_prompt_addendum` snapshot at mount/resume time
     /// (Layer 2 of the system-prompt stack, #54). Used by
-    /// `fire_lead_launch_prompt` on the resume fresh-fallback so the
+    /// the fresh-respawn composer so the
     /// relaunched lead sees the same composed prompt the first spawn
     /// got. `None` / empty → no splice.
     crew_addendum: Option<String>,
@@ -340,25 +327,7 @@ impl Router {
         injector: Arc<dyn StdinInjector>,
         ui_notifier: Arc<dyn RouterUiNotifier>,
     ) -> Result<Arc<Self>> {
-        let lead = roster
-            .iter()
-            .find(|m| m.slot.lead)
-            .map(|m| LeadRow {
-                handle: m.slot.slot_handle.clone(),
-                display_name: m.runner.display_name.clone(),
-                system_prompt: m.runner.system_prompt.clone(),
-            })
-            .ok_or_else(|| {
-                crate::error::Error::msg(format!("router mount: crew {crew_id} has no lead slot"))
-            })?;
-        let roster_rows = roster
-            .iter()
-            .map(|m| RosterRow {
-                handle: m.slot.slot_handle.clone(),
-                display_name: m.runner.display_name.clone(),
-                lead: m.slot.lead,
-            })
-            .collect();
+        let launch = LaunchInputs::new(crew_name, roster, allowed_signals, crew_addendum)?;
 
         Ok(Arc::new_cyclic(|weak_self| Self {
             mission_id,
@@ -366,13 +335,7 @@ impl Router {
             log,
             injector,
             ui_notifier,
-            launch: LaunchInputs {
-                crew_name,
-                lead,
-                roster: roster_rows,
-                allowed_signals,
-                crew_addendum,
-            },
+            launch,
             state: Mutex::new(RouterState::default()),
             reconciliation_clock: Mutex::new(None),
             weak_self: weak_self.clone(),
@@ -1251,153 +1214,45 @@ impl Router {
         });
     }
 
-    /// Lead launch-prompt injection: routes through the verified
-    /// paste-and-submit primitive (`inject_paste_with_verify`) so
-    /// the body lands as one bracketed paste and Enter only fires
-    /// once the pane confirms the paste rendered. Used for the
-    /// lead's `mission_goal`-driven launch prompt and the
-    /// resume-fresh-fallback path; both spawn a fresh agent that
-    /// races us to bind raw-mode input.
-    ///
-    /// `delay` controls only thread-vs-inline execution:
-    /// non-zero spawns a thread; zero (cfg(test)) runs inline.
-    /// **The verified primitive owns pre-paste readiness waiting**
-    /// — this method does NOT sleep before calling it, otherwise
-    /// the lead path would stack `delay` on top of the verify
-    /// loop's own initial_wait. The legacy outer-sleep budget
-    /// (`LEAD_LAUNCH_PROMPT_DELAY`) is therefore vestigial post
-    /// 0005-first-prompt-readback and should be removed once the
-    /// constant has no other readers.
-    ///
-    /// Resolves the handle → session_id at schedule time. Mission
-    /// boot is the only caller and the lead's session is fully
-    /// registered before this fires, so the snapshot is stable.
-    pub(crate) fn inject_and_submit_delayed(
-        &self,
-        handle: &str,
-        body: Vec<u8>,
-        delay: std::time::Duration,
-    ) {
-        let session_id = {
-            let state = self.state.lock().unwrap();
-            state.session_by_handle.get(handle).cloned()
-        };
-        let Some(session_id) = session_id else {
-            self.warn(format!(
-                "router: no live session for handle @{handle} (delayed submit)"
-            ));
-            return;
-        };
-        self.synthesize_wake_busy(handle);
-        if body.is_empty() {
-            return;
-        }
-
-        // Zero-delay path: run inline. Under `cfg(test)`
-        // (LEAD_LAUNCH_PROMPT_DELAY = ZERO) the verified primitive's
-        // own durations are also zero, so this stays a synchronous
-        // millisecond no-op and existing `pushes_for(...)`
-        // assertions still observe one body push.
-        if delay.is_zero() {
-            if let Err(e) = self.injector.inject_paste_with_verify(&session_id, &body) {
-                log::error!("inline verified-paste to {session_id} failed: {e}");
-            }
-            return;
-        }
-        let injector = Arc::clone(&self.injector);
-        std::thread::spawn(move || {
-            // No outer sleep — the verified primitive owns the
-            // readiness budget (initial_wait + render_wait). Stacking
-            // `delay` here would push the lead launch prompt past
-            // 4s before the first paste even tries.
-            if let Err(e) = injector.inject_paste_with_verify(&session_id, &body) {
-                log::error!("delayed verified-paste to {session_id} failed: {e}");
-            }
-        });
-    }
-
     pub(crate) fn launch(&self) -> &LaunchInputs {
         &self.launch
     }
 
-    /// Read the latest `mission_goal` text from the event log. Used by
-    /// `fire_lead_launch_prompt` after a fresh-fallback resume — the
-    /// bus's mission_goal handler can't replay (mission_attach's
-    /// watermark suppresses it), so we have to compose the launch
-    /// prompt ourselves and need the goal payload to feed into it.
-    /// Returns an empty string if no goal is found, mirroring the
-    /// handler's `unwrap_or("")` defensive read.
-    fn latest_mission_goal_text(&self) -> String {
-        let (entries, _skipped) = match self.log.read_from_lossy(0) {
-            Ok(out) => out,
-            Err(_) => return String::new(),
+    pub(crate) fn record_slot_restart(
+        &self,
+        handle: &str,
+        session_id: &str,
+        prior_agent_session_key: Option<&str>,
+    ) -> Result<()> {
+        self.log.append(EventDraft::signal(
+            &self.crew_id,
+            &self.mission_id,
+            "human",
+            SignalType::new("slot_restarted"),
+            serde_json::json!({"handle": handle, "session_id": session_id,
+                "prior_agent_session_key": prior_agent_session_key}),
+        ))?;
+        let text = format!("@{handle} was restarted by the human and starts over with only its brief. Nothing it was told in this mission survives; re-send the task, branch, and anything else it needs.");
+        let recipients: Vec<&str> = if handle == self.launch.lead().handle() {
+            self.launch
+                .roster()
+                .iter()
+                .map(|slot| slot.handle())
+                .filter(|other| *other != handle)
+                .collect()
+        } else {
+            vec![self.launch.lead().handle()]
         };
-        for entry in entries.iter().rev() {
-            let ev = &entry.event;
-            if !matches!(ev.kind, EventKind::Signal) {
-                continue;
-            }
-            let Some(t) = ev.signal_type.as_ref() else {
-                continue;
-            };
-            if t.as_str() == "mission_goal" {
-                return ev
-                    .payload
-                    .get("text")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-            }
+        for recipient in recipients {
+            self.log.append(EventDraft::message(
+                &self.crew_id,
+                &self.mission_id,
+                "runner",
+                Some(recipient.to_string()),
+                &text,
+            ))?;
         }
-        String::new()
-    }
-
-    /// Compose + inject the lead's launch prompt manually. Same prompt
-    /// the bus's `mission_goal` handler would build, but we call this
-    /// directly when the resume path detects a missing claude-code
-    /// conversation file for a lead slot: the bus can't replay
-    /// `mission_goal` on resume (the `mission_attach` watermark
-    /// suppresses it), so without this call the lead's freshly-spawned
-    /// agent would come up with no system context. Reuses
-    /// `inject_and_submit_delayed`'s 2.5s budget so claude-code's TUI
-    /// has time to boot before the bytes land.
-    pub fn fire_lead_launch_prompt(&self) {
-        // Build the prompt body the same way `handlers::mission_goal`
-        // does — single source of truth lives in
-        // `router::prompt::compose_launch_prompt`, kept in sync via
-        // the shared LaunchInputs view.
-        let goal = self.latest_mission_goal_text();
-        let lead_row = self.launch.lead();
-        let roster_entries: Vec<crate::router::prompt::RosterEntry> = self
-            .launch
-            .roster()
-            .iter()
-            .map(|r| crate::router::prompt::RosterEntry {
-                handle: r.handle(),
-                display_name: r.display_name(),
-                lead: r.is_lead(),
-            })
-            .collect();
-        let prompt = crate::router::prompt::compose_launch_prompt(
-            &crate::router::prompt::LaunchPromptInput {
-                lead: crate::router::prompt::LeadView {
-                    handle: lead_row.handle(),
-                    display_name: lead_row.display_name(),
-                    system_prompt: lead_row.system_prompt(),
-                },
-                crew_name: self.launch.crew_name(),
-                mission_goal: &goal,
-                roster: &roster_entries,
-                allowed_signals: self.launch.allowed_signals(),
-                crew_addendum: self.launch.crew_addendum(),
-            },
-        );
-        let body = prompt.trim_end_matches(['\n', '\r']).as_bytes().to_vec();
-        self.inject_and_submit_delayed(
-            lead_row.handle(),
-            body,
-            std::time::Duration::from_millis(2500),
-        );
+        Ok(())
     }
 
     pub(crate) fn record_pending_ask(&self, question_id: String, asker: String) {
@@ -1544,6 +1399,89 @@ impl SessionDeliveryListener for Router {
 }
 
 impl LaunchInputs {
+    pub(crate) fn new(
+        crew_name: String,
+        roster: &[SlotWithRunner],
+        allowed_signals: Vec<SignalType>,
+        crew_addendum: Option<String>,
+    ) -> Result<Self> {
+        let lead = roster
+            .iter()
+            .find(|m| m.slot.lead)
+            .map(|m| LeadRow {
+                handle: m.slot.slot_handle.clone(),
+                display_name: m.runner.display_name.clone(),
+                system_prompt: m.runner.system_prompt.clone(),
+            })
+            .ok_or_else(|| crate::error::Error::msg("mission crew has no lead slot"))?;
+        let roster_rows = roster
+            .iter()
+            .map(|m| RosterRow {
+                handle: m.slot.slot_handle.clone(),
+                display_name: m.runner.display_name.clone(),
+                lead: m.slot.lead,
+            })
+            .collect();
+
+        Ok(Self {
+            crew_name,
+            lead,
+            roster: roster_rows,
+            allowed_signals,
+            crew_addendum,
+        })
+    }
+
+    pub(crate) fn first_turn(&self, log: &EventLog) -> String {
+        let goal = Self::latest_mission_goal_text(log);
+        let roster: Vec<crate::router::prompt::RosterEntry> = self
+            .roster()
+            .iter()
+            .map(|slot| crate::router::prompt::RosterEntry {
+                handle: slot.handle(),
+                display_name: slot.display_name(),
+                lead: slot.is_lead(),
+            })
+            .collect();
+        crate::router::prompt::compose_launch_prompt(&crate::router::prompt::LaunchPromptInput {
+            lead: crate::router::prompt::LeadView {
+                handle: self.lead().handle(),
+                display_name: self.lead().display_name(),
+                system_prompt: self.lead().system_prompt(),
+            },
+            crew_name: self.crew_name(),
+            mission_goal: &goal,
+            roster: &roster,
+            allowed_signals: self.allowed_signals(),
+            crew_addendum: self.crew_addendum(),
+        })
+    }
+
+    fn latest_mission_goal_text(log: &EventLog) -> String {
+        let (entries, _skipped) = match log.read_from_lossy(0) {
+            Ok(out) => out,
+            Err(_) => return String::new(),
+        };
+        for entry in entries.iter().rev() {
+            let ev = &entry.event;
+            if !matches!(ev.kind, EventKind::Signal) {
+                continue;
+            }
+            let Some(t) = ev.signal_type.as_ref() else {
+                continue;
+            };
+            if t.as_str() == "mission_goal" {
+                return ev
+                    .payload
+                    .get("text")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+            }
+        }
+        String::new()
+    }
+
     pub(crate) fn crew_name(&self) -> &str {
         &self.crew_name
     }

@@ -343,6 +343,12 @@ Reader thread (blocking):
 
 The first-turn body (persona, brief, launch prompt) is delivered through the runtime adapter in `router/runtime.rs`: as a positional argument for runtimes that accept one, otherwise as a verified paste after the TUI is ready. Claude Code's `--append-system-prompt` is SDK-only (requires `-p`), so interactive claude sessions get their brief as a first user turn. Resumed conversations suppress it.
 
+Every fresh mission-slot spawn carries the cold-start first turn: `compose_launch_prompt` for the lead (brief, crew conventions, roster, and latest mission goal), or `compose_worker_first_turn` for a worker (coordination preamble, crew conventions, and brief). This includes Restart and a manual Resume that falls back to fresh because a Claude conversation file is missing or Codex/TRAE has no captured key. A genuine conversation resume sends no first turn. Fresh Codex/TRAE respawns receive a new capture marker; Windows batch wrappers queue the same body through the existing first-turn delivery fallback.
+
+A mission slot has three lifecycle actions ([542](../features/542-slot-restart.md)): **Stop** synchronously kills and reaps only its PTY, leaving the mission and sibling slots running; **Resume** respawns its existing row and asks the agent CLI to restore its conversation; **Restart** kills a running PTY and respawns the same row as a fresh conversation with its cold-start first turn. Restart replaces the agent key while retaining the Runner session id, router mapping, tabs, and mission event history. Resume and Restart share a per-session claim so concurrent requests cannot spawn twice or kill an in-flight respawn. Both accept current pane dimensions ahead of the persisted size, including when a stopped pane was resized. A mission slot only resumes or restarts while its mission is running and unarchived.
+
+Restart records a human `slot_restarted` signal followed by a `runner` message asking the lead to re-send the slot's task and context. If the lead is restarted, each other slot receives the note instead. The existing message router nudges the recipients' inboxes. A notification append failure leaves the successful restart intact and emits a session warning so the human knows to re-send context. Rail controls act immediately; the stopped-slot pane offers **Resume slot** and **Restart slot** while siblings are live. When all slots are stopped, the mission-wide **Resume** and **Archive** card remains. Only header **Stop all slots** asks for confirmation and names the running slot count ("Stop all N running slots?", or "Stop the running slot?" for one).
+
 ### 5.4 Native wiring and human takeover
 
 - The terminal element renders the session's `Term` from the registry; a pane that mounts late simply paints the grid as it is — there is no history fetch.
@@ -560,7 +566,7 @@ Direct-chat sessions don't get the bundled CLI on PATH — there is no bus, no r
 
 ### 9.5 External control: MCP, not the CLI
 
-Outside agents and tools operate Runner itself through the MCP server the app hosts on `$APPDATA/mcp.sock` (bridged from stdio by `runner-mcp`): `crew_*`, `runner_*`, `slot_*`, `project_*`, `mission_*` (start, stop, archive, reset, status, feed, post human message/signal, pin, rename) and `session_start_direct`. This is how a Claude Code session drives a crew mission from the outside — the loop the rewrite itself was built with.
+Outside agents and tools operate Runner itself through the MCP server the app hosts on `$APPDATA/mcp.sock` (bridged from stdio by `runner-mcp`): `crew_*`, `runner_*`, `slot_*`, `project_*`, `mission_*` (start, stop, archive, reset, status, feed, post human message/signal, pin, rename) and `session_start_direct`, `session_resume`, and `session_restart`. This is how a Claude Code session drives a crew mission from the outside — the loop the rewrite itself was built with.
 
 ## 10. Data model
 
