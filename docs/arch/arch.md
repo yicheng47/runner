@@ -566,7 +566,7 @@ Direct-chat sessions don't get the bundled CLI on PATH — there is no bus, no r
 
 ### 9.5 External control: MCP, not the CLI
 
-Outside agents and tools operate Runner itself through the MCP server the app hosts on `$APPDATA/mcp.sock` (bridged from stdio by `runner-mcp`): `crew_*`, `runner_*`, `slot_*`, `project_*`, `mission_*` (start, stop, archive, reset, status, feed, post human message/signal, pin, rename) and `session_start_direct`, `session_resume`, and `session_restart`. This is how a Claude Code session drives a crew mission from the outside — the loop the rewrite itself was built with.
+Outside agents and tools operate Runner itself through the MCP server the app hosts on `$APPDATA/mcp.sock` (bridged from stdio by `runner-mcp`): `crew_*`, `runner_*`, `slot_*`, `project_*` (including `project_create`, `project_rename`, and `project_delete`), `mission_set_project`, `mission_*` (start, stop, archive, reset, status, feed, post human message/signal, pin, rename) and `session_start_direct`, `session_resume`, and `session_restart`. This is how a Claude Code session drives a crew mission from the outside — the loop the rewrite itself was built with.
 
 ## 10. Data model
 

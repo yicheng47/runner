@@ -8,10 +8,11 @@ use runner_core::model::{Event, EventKind::Signal};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::mcp::server::RunnerMcpHandler;
 use crate::model::{Crew, Mission, SessionStatus, Timestamp};
-use crate::ops::{crew, mission, session};
+use crate::ops::{crew, mission, node, project, session};
+use crate::repo;
 
 const DEFAULT_FEED_LIMIT: usize = 50;
 const MAX_FEED_LIMIT: usize = 500;
@@ -44,6 +45,15 @@ pub struct MissionRenameArgs {
     pub id: String,
     /// New mission title. The backend trims and rejects empty values.
     pub title: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct MissionSetProjectArgs {
+    /// Mission ID.
+    pub mission_id: String,
+    /// Destination project ID. Null or omitted unfiles the mission; its cwd is unchanged.
+    #[serde(default)]
+    pub project_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Default, Deserialize, JsonSchema)]
@@ -245,6 +255,13 @@ impl EventProjection {
 
 fn mcp_error(e: impl std::fmt::Display) -> ErrorData {
     ErrorData::internal_error(e.to_string(), None)
+}
+
+fn command_error(error: Error) -> ErrorData {
+    match error {
+        Error::Msg(message) => ErrorData::invalid_request(message, None),
+        other => ErrorData::internal_error(other.to_string(), None),
+    }
 }
 
 fn mission_feed_from_entries(
@@ -508,6 +525,52 @@ impl RunnerMcpHandler {
         Ok(CallToolResult::success(vec![Content::json(&mission)?]))
     }
 
+    #[tool(
+        description = "Move a mission into a project, or unfile it with a null or omitted project_id. Appends in the destination and preserves cwd and pinning."
+    )]
+    pub async fn mission_set_project(
+        &self,
+        Parameters(MissionSetProjectArgs {
+            mission_id,
+            project_id,
+        }): Parameters<MissionSetProjectArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let (mission_node, target_id, order) = {
+            let conn = self.state.db.get().map_err(mcp_error)?;
+            let mission = mission::get(&conn, &mission_id).map_err(command_error)?;
+            let mission_node =
+                repo::node::find_by_ref(&conn, repo::node::NodeType::Mission, &mission_id)
+                    .map_err(mcp_error)?
+                    .ok_or_else(|| {
+                        ErrorData::invalid_request(
+                            format!("mission node not found: {mission_id}"),
+                            None,
+                        )
+                    })?;
+            let target_id = match project_id {
+                Some(id) => {
+                    project::get(&conn, &id).map_err(command_error)?;
+                    Some(
+                        repo::node::ensure_project_node(&conn, &id)
+                            .map_err(mcp_error)?
+                            .id,
+                    )
+                }
+                None => None,
+            };
+            if mission_node.parent_id == target_id {
+                return Ok(CallToolResult::success(vec![Content::json(&mission)?]));
+            }
+            let order = node::append_order(&conn, target_id.as_deref(), &mission_node.id)
+                .map_err(command_error)?;
+            (mission_node, target_id, order)
+        };
+        node::node_move(&self.state, mission_node.id, target_id, order).map_err(command_error)?;
+        let conn = self.state.db.get().map_err(mcp_error)?;
+        let mission = mission::get(&conn, &mission_id).map_err(command_error)?;
+        Ok(CallToolResult::success(vec![Content::json(&mission)?]))
+    }
+
     #[tool(description = "Post a human-originated signal into a mission feed.")]
     pub async fn mission_post_human_signal(
         &self,
@@ -544,6 +607,223 @@ mod tests {
     use rusqlite::params;
     use std::fs::OpenOptions;
     use std::io::Write;
+
+    use crate::repo::node::{NodeRow, NodeType};
+    use crate::test_support::test_core;
+    use crate::AppCore;
+
+    fn seed_project_mission(state: &AppCore, id: &str, project_id: Option<&str>) -> NodeRow {
+        let conn = state.db.get().unwrap();
+        conn.execute(
+            "INSERT OR IGNORE INTO crews (id, name, created_at, updated_at)
+             VALUES ('crew', 'Crew', '2026-09-10T00:00:00Z', '2026-09-10T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO missions (id, crew_id, title, status, started_at, cwd, project_id)
+             VALUES (?1, 'crew', 'Mission', 'aborted', '2026-09-10T00:00:00Z', '/original', ?2)",
+            params![id, project_id],
+        )
+        .unwrap();
+        repo::node::ensure_mission_node(&conn, id, project_id).unwrap()
+    }
+
+    fn result_json(result: CallToolResult) -> serde_json::Value {
+        serde_json::from_str(&result.content[0].as_text().unwrap().text).unwrap()
+    }
+
+    #[tokio::test]
+    async fn mission_set_project_round_trips_and_appends_in_mixed_scopes() {
+        let handler = RunnerMcpHandler::new(test_core());
+        let moved = seed_project_mission(&handler.state, "moved", None);
+        let project =
+            project::project_create(&handler.state, "Project".into(), "/project".into()).unwrap();
+        seed_project_mission(&handler.state, "root-sibling", None);
+        let project_sibling =
+            seed_project_mission(&handler.state, "project-sibling", Some(&project.id));
+        let pinned_sibling =
+            seed_project_mission(&handler.state, "pinned-sibling", Some(&project.id));
+        {
+            let conn = handler.state.db.get().unwrap();
+            repo::node::set_pinned(&conn, &pinned_sibling.id, true).unwrap();
+            for parent_id in [None, project_sibling.parent_id.as_deref()] {
+                repo::node::create_tab(&conn, parent_id, "Tab", 7, "{}").unwrap();
+            }
+        }
+        for project_id in [Some(project.id.clone()), None] {
+            let target_parent = project_id.as_ref().and(project_sibling.parent_id.clone());
+            let mut expected: Vec<String> = {
+                let conn = handler.state.db.get().unwrap();
+                repo::node::list(&conn)
+                    .unwrap()
+                    .into_iter()
+                    .filter(|row| {
+                        row.parent_id == target_parent
+                            && row.pinned_position.is_none()
+                            && row.id != moved.id
+                    })
+                    .map(|row| row.id)
+                    .collect()
+            };
+            expected.push(moved.id.clone());
+            let mut events = handler.state.events.subscribe();
+            let result = result_json(
+                handler
+                    .mission_set_project(Parameters(MissionSetProjectArgs {
+                        mission_id: "moved".into(),
+                        project_id: project_id.clone(),
+                    }))
+                    .await
+                    .unwrap(),
+            );
+            let conn = handler.state.db.get().unwrap();
+            let mission = repo::mission::get(&conn, "moved").unwrap().unwrap();
+            assert_eq!(result, serde_json::json!(mission));
+            assert_eq!(mission.project_id, project_id);
+            assert_eq!(mission.cwd.as_deref(), Some("/original"));
+            let node = repo::node::get(&conn, &moved.id).unwrap().unwrap();
+            assert_eq!(node.parent_id, target_parent);
+            let children: Vec<_> = repo::node::list(&conn)
+                .unwrap()
+                .into_iter()
+                .filter(|row| row.parent_id == target_parent && row.pinned_position.is_none())
+                .collect();
+            assert_eq!(
+                children
+                    .iter()
+                    .map(|row| row.id.clone())
+                    .collect::<Vec<_>>(),
+                expected
+            );
+            assert_eq!(node.position, children.len() as i64 - 1);
+            assert_eq!(events.try_recv().unwrap().name, "chat/layout-changed");
+            assert_eq!(events.try_recv().unwrap().name, "mission/changed");
+            assert!(events.try_recv().is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn mission_set_project_preserves_pinned_order_and_cwd() {
+        let handler = RunnerMcpHandler::new(test_core());
+        let moved = seed_project_mission(&handler.state, "moved", None);
+        let project =
+            project::project_create(&handler.state, "Project".into(), "/project".into()).unwrap();
+        let sibling = seed_project_mission(&handler.state, "sibling", Some(&project.id));
+        let pin = {
+            let conn = handler.state.db.get().unwrap();
+            repo::node::set_pinned(&conn, &sibling.id, true).unwrap();
+            repo::node::set_pinned(&conn, &moved.id, true).unwrap();
+            repo::node::get(&conn, &moved.id)
+                .unwrap()
+                .unwrap()
+                .pinned_position
+        };
+        let unpinned = seed_project_mission(&handler.state, "unpinned", Some(&project.id));
+        for project_id in [Some(project.id.clone()), None] {
+            let target_parent = project_id.as_ref().and(sibling.parent_id.clone());
+            let result = result_json(
+                handler
+                    .mission_set_project(Parameters(MissionSetProjectArgs {
+                        mission_id: "moved".into(),
+                        project_id: project_id.clone(),
+                    }))
+                    .await
+                    .unwrap(),
+            );
+            assert_eq!(result["project_id"], serde_json::json!(project_id));
+            assert_eq!(result["cwd"], "/original");
+            let conn = handler.state.db.get().unwrap();
+            let node = repo::node::get(&conn, &moved.id).unwrap().unwrap();
+            assert_eq!(node.parent_id, target_parent);
+            assert_eq!(node.pinned_position, pin);
+            assert_eq!(node.position, moved.position);
+            let pinned: Vec<_> = repo::node::list(&conn)
+                .unwrap()
+                .into_iter()
+                .filter(|row| row.pinned_position.is_some())
+                .map(|row| row.id)
+                .collect();
+            assert_eq!(pinned, vec![sibling.id.clone(), moved.id.clone()]);
+            let unpinned = repo::node::get(&conn, &unpinned.id).unwrap().unwrap();
+            assert_eq!(unpinned.parent_id, sibling.parent_id);
+            assert_eq!(unpinned.position, 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn mission_set_project_same_container_is_a_no_op() {
+        let handler = RunnerMcpHandler::new(test_core());
+        let project =
+            project::project_create(&handler.state, "Project".into(), "/project".into()).unwrap();
+        for (id, project_id) in [("root", None), ("filed", Some(project.id.clone()))] {
+            seed_project_mission(&handler.state, id, project_id.as_deref());
+            seed_project_mission(
+                &handler.state,
+                &format!("{id}-sibling"),
+                project_id.as_deref(),
+            );
+            let (before, nodes) = {
+                let conn = handler.state.db.get().unwrap();
+                (
+                    repo::mission::get(&conn, id).unwrap().unwrap(),
+                    repo::node::list(&conn).unwrap(),
+                )
+            };
+            let mut events = handler.state.events.subscribe();
+            let result = result_json(
+                handler
+                    .mission_set_project(Parameters(MissionSetProjectArgs {
+                        mission_id: id.into(),
+                        project_id,
+                    }))
+                    .await
+                    .unwrap(),
+            );
+            assert_eq!(result, serde_json::json!(before));
+            let conn = handler.state.db.get().unwrap();
+            assert_eq!(repo::node::list(&conn).unwrap(), nodes);
+            assert!(events.try_recv().is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn mission_set_project_rejects_missing_mission_node_or_project() {
+        let handler = RunnerMcpHandler::new(test_core());
+        let node = seed_project_mission(&handler.state, "no-node", None);
+        seed_project_mission(&handler.state, "valid", None);
+        {
+            let conn = handler.state.db.get().unwrap();
+            repo::node::delete(&conn, &node.id).unwrap();
+        }
+        let mut events = handler.state.events.subscribe();
+        for (id, project_id, message) in [
+            ("missing", None, "mission not found: missing"),
+            ("no-node", None, "mission node not found: no-node"),
+            (
+                "valid",
+                Some("missing".into()),
+                "project not found: missing",
+            ),
+        ] {
+            let error = handler
+                .mission_set_project(Parameters(MissionSetProjectArgs {
+                    mission_id: id.into(),
+                    project_id,
+                }))
+                .await
+                .unwrap_err();
+            assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_REQUEST);
+            assert_eq!(error.message, message);
+        }
+        let conn = handler.state.db.get().unwrap();
+        assert!(repo::node::find_by_ref(&conn, NodeType::Mission, "valid")
+            .unwrap()
+            .unwrap()
+            .parent_id
+            .is_none());
+        assert!(events.try_recv().is_err());
+    }
 
     fn signal(from: &str, ty: &str, payload: serde_json::Value) -> EventDraft {
         EventDraft::signal("crew", "mission", from, SignalType::new(ty), payload)
