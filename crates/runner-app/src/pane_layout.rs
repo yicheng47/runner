@@ -351,7 +351,7 @@ impl PaneLayout {
                 .name
                 .as_deref()
                 .map(str::trim)
-                .filter(|name| !name.is_empty())
+                .filter(|name| !name.is_empty() && persisted.preset != PresetKind::Single)
                 .map(str::to_owned),
             position: row.position,
             preset: persisted.preset,
@@ -889,6 +889,34 @@ fn valid_sizes(sizes: [f32; 2]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{PaneLayout, PresetKind, SplitOrientation};
+    use runner_backend::repo::node::{NodeRow, NodeType};
+
+    fn tab_row(name: Option<&str>, layout: &PaneLayout) -> NodeRow {
+        NodeRow {
+            id: "tab-1".into(),
+            parent_id: None,
+            position: 0,
+            node_type: NodeType::Tab,
+            name: name.map(str::to_owned),
+            ref_id: None,
+            layout: Some(layout.serialize().unwrap()),
+            pinned_position: None,
+            last_completed_at: None,
+            last_viewed_at: None,
+            created_at: "2026-09-10T00:00:00Z".into(),
+        }
+    }
+
+    #[test]
+    fn single_pane_tabs_take_their_name_from_the_session_not_the_node() {
+        let single = PaneLayout::fresh(PresetKind::Single, Some("shell"), &["shell".into()]);
+        let loaded = PaneLayout::from_node_row(&tab_row(Some("build"), &single)).unwrap();
+        assert_eq!(loaded.name, None);
+
+        let grouped = PaneLayout::fresh(PresetKind::Cols2, Some("shell"), &["shell".into()]);
+        let loaded = PaneLayout::from_node_row(&tab_row(Some("build"), &grouped)).unwrap();
+        assert_eq!(loaded.name.as_deref(), Some("build"));
+    }
 
     #[test]
     fn closing_a_pane_only_removes_it_from_the_tab_layout() {
