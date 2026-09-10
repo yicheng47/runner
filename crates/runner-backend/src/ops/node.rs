@@ -131,6 +131,28 @@ pub fn node_mission_layout_set(state: &AppCore, node_id: &str, layout: String) -
     Ok(row)
 }
 
+pub(crate) fn append_order(
+    conn: &rusqlite::Connection,
+    parent_id: Option<&str>,
+    moved_id: &str,
+) -> Result<Vec<String>> {
+    let moved = repo::node::get(conn, moved_id)?
+        .ok_or_else(|| Error::msg(format!("node not found: {moved_id}")))?;
+    let mut order: Vec<String> = repo::node::list(conn)?
+        .into_iter()
+        .filter(|row| {
+            row.parent_id.as_deref() == parent_id
+                && row.pinned_position.is_none()
+                && row.id != moved_id
+        })
+        .map(|row| row.id)
+        .collect();
+    if moved.pinned_position.is_none() {
+        order.push(moved_id.to_owned());
+    }
+    Ok(order)
+}
+
 /// The unified reparent/reposition op behind every sidebar drag.
 /// `ordered_ids` is the complete new ordering of the destination scope's
 /// unpinned children (the moved node included when it is unpinned). Crossing
@@ -496,83 +518,12 @@ pub fn mark_direct_sessions_viewed(state: &AppCore, session_ids: &[String]) -> R
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
-    use std::sync::Arc;
-
     use chrono::{DateTime, FixedOffset, Utc};
     use tokio::sync::broadcast;
 
     use super::*;
-    use crate::db;
-    use crate::event_bus::BusRegistry;
     use crate::events::AppEvent;
-    use crate::mcp::McpHandle;
-    use crate::router::RouterRegistry;
-    use crate::session::runtime::{
-        OutputStream, RuntimeError, RuntimeResult, RuntimeSession, SessionRuntime, SessionStatus,
-        SpawnSpec,
-    };
-    use crate::session::SessionManager;
-    use crate::shell_path::LoginShellEnv;
-    use crate::windows::WindowRegistry;
-
-    struct InertRuntime;
-
-    impl SessionRuntime for InertRuntime {
-        fn spawn(&self, _spec: SpawnSpec) -> RuntimeResult<(RuntimeSession, OutputStream)> {
-            Err(RuntimeError::Msg("unused test runtime".into()))
-        }
-
-        fn stop(&self, _session: &RuntimeSession) -> RuntimeResult<()> {
-            Err(RuntimeError::Msg("unused test runtime".into()))
-        }
-
-        fn send_bytes(&self, _session: &RuntimeSession, _bytes: &[u8]) -> RuntimeResult<()> {
-            Err(RuntimeError::Msg("unused test runtime".into()))
-        }
-
-        fn send_key(&self, _session: &RuntimeSession, _key: &str) -> RuntimeResult<()> {
-            Err(RuntimeError::Msg("unused test runtime".into()))
-        }
-
-        fn resize(&self, _session: &RuntimeSession, _cols: u16, _rows: u16) -> RuntimeResult<()> {
-            Err(RuntimeError::Msg("unused test runtime".into()))
-        }
-
-        fn status(&self, _session: &RuntimeSession) -> RuntimeResult<Option<SessionStatus>> {
-            Err(RuntimeError::Msg("unused test runtime".into()))
-        }
-    }
-
-    fn test_core_in(app_data_dir: PathBuf) -> AppCore {
-        let runtime_shell_env = Arc::new(std::sync::RwLock::new(LoginShellEnv::default()));
-        let runtime_discovery = Arc::new(std::sync::RwLock::new(
-            crate::shell_path::DiscoveryState::startup(None, None),
-        ));
-        AppCore {
-            db: Arc::new(db::open_in_memory().unwrap()),
-            app_data_dir,
-            sessions: SessionManager::new(
-                Arc::clone(&runtime_shell_env),
-                Arc::clone(&runtime_discovery),
-                Arc::new(InertRuntime),
-            ),
-            runtime_shell_env,
-            runtime_discovery,
-            buses: BusRegistry::new(),
-            routers: RouterRegistry::new(),
-            mission_grid_hint: Arc::new(std::sync::Mutex::new(None)),
-            mcp: Arc::new(McpHandle::new()),
-            windows: Arc::new(WindowRegistry::new()),
-            events: EventChannel::new(),
-            session_event_observer: Default::default(),
-            app_version: "0.0.0-test".into(),
-        }
-    }
-
-    fn test_core() -> AppCore {
-        test_core_in(PathBuf::new())
-    }
+    use crate::test_support::{test_core, test_core_in};
 
     fn create_tab(state: &AppCore, session_ids: &[&str]) -> NodeRow {
         let layout = serde_json::json!({
@@ -865,7 +816,8 @@ mod tests {
             &project.id,
         ))
         .unwrap();
-        assert_eq!(archived, vec!["s1".to_string()]);
+        assert_eq!(archived.archived_session_ids, vec!["s1".to_string()]);
+        assert_eq!(archived.archived_mission_ids, vec!["m1".to_string()]);
 
         let conn = state.db.get().unwrap();
         assert!(crate::repo::project::get(&conn, &project.id)

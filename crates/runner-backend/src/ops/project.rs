@@ -1,4 +1,5 @@
 use crate::error::{Error, Result};
+use crate::model::{MissionStatus, SessionStatus};
 use crate::repo;
 use crate::repo::project::ProjectRow;
 use crate::session::manager::{SessionEvents, SessionUpdatedEvent};
@@ -22,6 +23,44 @@ pub fn list(conn: &rusqlite::Connection) -> Result<Vec<ProjectRow>> {
 
 pub fn get(conn: &rusqlite::Connection, id: &str) -> Result<ProjectRow> {
     repo::project::get(conn, id)?.ok_or_else(|| Error::msg(format!("project not found: {id}")))
+}
+
+#[derive(Debug, Default, serde::Serialize)]
+pub(crate) struct LiveMembers {
+    pub session_ids: Vec<String>,
+    pub mission_ids: Vec<String>,
+}
+
+pub(crate) fn live_members(conn: &rusqlite::Connection, id: &str) -> Result<LiveMembers> {
+    get(conn, id)?;
+    let Some(node) = repo::node::find_by_ref(conn, repo::node::NodeType::Project, id)? else {
+        return Ok(LiveMembers::default());
+    };
+    let children = crate::ops::node::container_children(conn, &node.id)?;
+    let mut session_ids = Vec::new();
+    for session_id in children.session_ids {
+        if repo::session::get_row(conn, &session_id)?
+            .is_some_and(|row| row.status == SessionStatus::Running)
+        {
+            session_ids.push(session_id);
+        }
+    }
+    let mission_ids = children
+        .missions
+        .into_iter()
+        .filter(|(_, status)| *status == MissionStatus::Running)
+        .map(|(id, _)| id)
+        .collect();
+    Ok(LiveMembers {
+        session_ids,
+        mission_ids,
+    })
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct ProjectDeleteOutcome {
+    pub archived_mission_ids: Vec<String>,
+    pub archived_session_ids: Vec<String>,
 }
 
 pub(crate) fn resolve_cwd(
@@ -70,8 +109,8 @@ pub fn project_rename(state: &AppCore, id: String, name: String) -> Result<Proje
 /// terminals. Missions archive first as complete self-consistent operations;
 /// member tabs and the project node and row then change in one transaction. The
 /// project row's ON DELETE SET NULL unbinds the archived rows' pointers, so
-/// restored items come back unfiled. Returns archived chat ids for event fanout.
-pub(crate) async fn project_delete_impl(state: &AppCore, id: &str) -> Result<Vec<String>> {
+/// restored items come back unfiled. Returns archived member ids for event fanout.
+pub(crate) async fn project_delete_impl(state: &AppCore, id: &str) -> Result<ProjectDeleteOutcome> {
     let (project_node, children) = {
         let conn = state.db.get()?;
         if repo::project::get(&conn, id)?.is_none() {
@@ -117,10 +156,13 @@ pub(crate) async fn project_delete_impl(state: &AppCore, id: &str) -> Result<Vec
     for session_id in archived_ids.iter().chain(&deleted_ids) {
         state.sessions.forget_session_state(session_id);
     }
-    Ok(archived_ids)
+    Ok(ProjectDeleteOutcome {
+        archived_mission_ids: children.missions.into_iter().map(|(id, _)| id).collect(),
+        archived_session_ids: archived_ids,
+    })
 }
 
-pub async fn project_delete(state: &AppCore, id: String) -> Result<()> {
+pub async fn project_delete(state: &AppCore, id: String) -> Result<ProjectDeleteOutcome> {
     let result = project_delete_impl(state, &id).await;
     // Mission archives commit one by one BEFORE the final transaction,
     // so even a failed delete may have durably archived children —
@@ -131,14 +173,14 @@ pub async fn project_delete(state: &AppCore, id: String) -> Result<()> {
     state
         .events
         .emit("chat/layout-changed", &serde_json::json!({}));
-    let archived_ids = result?;
-    for session_id in &archived_ids {
+    let outcome = result?;
+    for session_id in &outcome.archived_session_ids {
         state.session_events().archived(&SessionUpdatedEvent {
             session_id: session_id.clone(),
             mission_id: None,
         });
     }
-    Ok(())
+    Ok(outcome)
 }
 
 #[cfg(test)]
