@@ -206,6 +206,9 @@ enum SidebarRenameTarget {
     Tab {
         node_id: String,
         original: String,
+        // Single-pane tabs carry their name on the session, the way the pane
+        // header renames them; grouped tabs name the tab node.
+        session_id: Option<String>,
     },
     Project {
         project_id: String,
@@ -1121,9 +1124,19 @@ impl Sidebar {
         self._rename_focus_subscription = None;
         let next = rename.input.read(cx).text().trim().to_owned();
         let result = match rename.target {
-            SidebarRenameTarget::Tab { node_id, original } => {
+            SidebarRenameTarget::Tab {
+                node_id,
+                original,
+                session_id,
+            } => {
                 if next == original.trim() {
                     Ok(())
+                } else if let Some(session_id) = session_id {
+                    runner_backend::ops::session::session_rename(
+                        self.core(cx),
+                        &session_id,
+                        Some(next),
+                    )
                 } else {
                     runner_backend::ops::node::node_rename(self.core(cx), node_id, next).map(drop)
                 }
@@ -1238,6 +1251,12 @@ impl Sidebar {
                     .map(|member| member.session_id.clone())
             })
             .flatten();
+        let rename_session = (!multi_pane).then(|| members.first()).flatten();
+        let rename_original = rename_session.map_or_else(
+            || layout.name.clone().unwrap_or_default(),
+            |member| member.title.clone().unwrap_or_default(),
+        );
+        let rename_session_id = rename_session.map(|member| member.session_id.clone());
         let tab_session_ids = layout.all_session_ids();
         let fork_target = sidebar_fork_menu_target(&layout, &members);
         let fork_pending = fork_target.as_ref().is_some_and(|target| {
@@ -1251,7 +1270,8 @@ impl Sidebar {
         let entries = tab_menu_entries(
             &node.id,
             node.pinned_position.is_some(),
-            layout.name.unwrap_or_default(),
+            rename_original,
+            rename_session_id,
             archive_all,
             fork_target,
             fork_pending,
@@ -1371,7 +1391,9 @@ impl Sidebar {
             }
             SidebarMenuAction::Rename(target) => {
                 let (value, placeholder) = match &target {
-                    SidebarRenameTarget::Tab { original, node_id } => {
+                    SidebarRenameTarget::Tab {
+                        original, node_id, ..
+                    } => {
                         let placeholder = self
                             .shell
                             .upgrade()
@@ -3436,6 +3458,7 @@ fn tab_menu_entries(
     node_id: &str,
     pinned: bool,
     original: String,
+    rename_session_id: Option<String>,
     archive_all: bool,
     fork_target: Option<SidebarForkMenuTarget>,
     fork_pending: bool,
@@ -3460,6 +3483,7 @@ fn tab_menu_entries(
             SidebarMenuAction::Rename(SidebarRenameTarget::Tab {
                 node_id: node_id.to_owned(),
                 original,
+                session_id: rename_session_id,
             }),
         ),
     ];
@@ -4443,6 +4467,7 @@ mod tests {
             "tab-1",
             false,
             "My tab".into(),
+            None,
             false,
             None,
             false,
@@ -4452,6 +4477,27 @@ mod tests {
         );
         assert_eq!(menu_labels(&tab_entries), ["Pin", "Rename tab", "Archive"]);
         assert!(tab_entries[2].0.destructive);
+
+        let single_pane_entries = tab_menu_entries(
+            "tab-1",
+            false,
+            "build".into(),
+            Some("shell".into()),
+            false,
+            None,
+            false,
+            Vec::new(),
+            vec!["shell".into()],
+            Some("shell".into()),
+        );
+        assert_eq!(
+            single_pane_entries[1].1,
+            SidebarMenuAction::Rename(SidebarRenameTarget::Tab {
+                node_id: "tab-1".into(),
+                original: "build".into(),
+                session_id: Some("shell".into()),
+            })
+        );
         assert_eq!(
             tab_entries
                 .iter()
@@ -4465,6 +4511,7 @@ mod tests {
                 SidebarMenuAction::Rename(SidebarRenameTarget::Tab {
                     node_id: "tab-1".into(),
                     original: "My tab".into(),
+                    session_id: None,
                 }),
                 SidebarMenuAction::ArchiveTab {
                     tab_id: "tab-1".into(),
@@ -4477,6 +4524,7 @@ mod tests {
             "tab-1",
             false,
             "My tab".into(),
+            None,
             true,
             None,
             false,
@@ -4494,6 +4542,7 @@ mod tests {
             "tab-1",
             false,
             "Mixed tab".into(),
+            None,
             true,
             None,
             false,
@@ -4513,6 +4562,7 @@ mod tests {
             "tab-1",
             false,
             "Terminal".into(),
+            None,
             false,
             None,
             false,
@@ -4654,6 +4704,7 @@ mod tests {
             "tab-1",
             false,
             "Codex".into(),
+            None,
             false,
             Some(target.clone()),
             false,
@@ -4672,6 +4723,7 @@ mod tests {
             "tab-1",
             false,
             "Codex".into(),
+            None,
             false,
             Some(target),
             true,
@@ -4693,6 +4745,7 @@ mod tests {
             "tab-1",
             false,
             "Waiting".into(),
+            None,
             false,
             Some(waiting_target),
             false,
@@ -4716,6 +4769,7 @@ mod tests {
             "tab-1",
             false,
             "Trae".into(),
+            None,
             false,
             Some(trae_target),
             false,
