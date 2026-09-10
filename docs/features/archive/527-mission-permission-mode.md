@@ -34,7 +34,7 @@ A new **Missions** pane in the settings nav, directly under Chat in the App grou
 
 Applied through the existing `router::runtime::apply_permission_mode` (strip the runtime's permission flags, append the canonical pair), so a runner row carrying its own flags converges to one shape.
 
-- claude-code Bypass: `--permission-mode bypassPermissions` (unchanged).
+- claude-code Bypass: `--permission-mode bypassPermissions` (unchanged). Claude Code's first-use consent dialog for this mode is acknowledged in the spawn's `--settings` JSON since [541](../541-bypass-never-prompts.md).
 - trae Bypass: `--permission-mode bypass_permissions` (unchanged).
 - **codex Bypass for mission slots: `--ask-for-approval never --sandbox danger-full-access`.** Today's codex Bypass pair keeps `--sandbox workspace-write`. With `never`, codex does not ask to escalate out of the sandbox, so a command that needs the network or writes outside the tree (`cargo` fetching crates, `gh pr create`, `git push`) fails silently. The runner-level Bypass mapping (direct chats, a human watching) is left as is.
 - shell and unknown runtimes: no-op, as today.

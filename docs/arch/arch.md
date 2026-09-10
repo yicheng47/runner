@@ -131,7 +131,7 @@ A runner has two identifying fields:
 
 Keeping these separate means renaming a runner for the UI doesn't break briefs or historical events.
 
-Runtime argv is composed by the adapter in `router/runtime.rs`, not stored: the permission mode (`--permission-mode` / codex `--ask-for-approval` + `--sandbox`), model and effort flags, codex's `--add-dir` grant for the mission directory, the first-turn body, and — for claude-code — one compact `--settings {"tui":"fullscreen"}` pair that selects Claude Code's alternate-screen renderer unless the runner's own args already pass `--settings`. Runner owns the renderer for the sessions it spawns; `--settings` outranks the user's `~/.claude/settings.json`.
+Runtime argv is composed by the adapter in `router/runtime.rs`, not stored: the permission mode (`--permission-mode` / codex `--ask-for-approval` + `--sandbox`), model and effort flags, codex's `--add-dir` grant for the mission directory, the first-turn body, and — for claude-code — one compact `--settings` JSON that selects Claude Code's alternate-screen renderer (`"tui":"fullscreen"`), installs the `/clear` rekey hook, and, when the effective mode is Bypass, acknowledges Claude Code's bypass consent dialog (`"skipDangerousModePermissionPrompt":true`) so a mission slot never waits on it, unless the runner's own args already pass `--settings`. Runner owns the renderer for the sessions it spawns; `--settings` outranks the user's `~/.claude/settings.json`.
 
 ### 3.3 Crew — *a configured team, composed of slots*
 

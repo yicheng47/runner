@@ -1,7 +1,7 @@
 # 540 — GitHub Copilot CLI runtime
 
 > Tracking issue: [#540](https://github.com/yicheng47/runner/issues/540)
-> Priority: P1.
+> Priority: P3 (was P1; parked 2026-09-10 — [539](./539-pi-runtime.md)'s pi runtime reaches Copilot models through its `github-copilot/*` provider, which covers the Copilot-seat case that motivated this spec; revisit only if someone wants GitHub's Copilot CLI agent itself, with its custom agents and plan mode, rather than its models).
 
 ## Motivation
 
