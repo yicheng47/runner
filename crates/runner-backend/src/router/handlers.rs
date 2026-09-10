@@ -18,14 +18,6 @@ use runner_core::model::Event;
 
 use super::{Router, RunnerStatus};
 
-// Note: `LEAD_LAUNCH_PROMPT_DELAY` and the launch-prompt composition
-// imports lived here previously. The mission_goal handler no longer
-// drives launch-prompt delivery — that path moved to spawn-time
-// positional argv in `ops::mission::mission_start` per
-// `docs/impls/archive/0007-spawn-time-prompt-delivery.md`. The resume-fresh-
-// fallback (`Router::fire_lead_launch_prompt`) keeps the paste path
-// alive but composes the prompt and selects its own delay internally.
-
 /// Strip any trailing `\n`/`\r` so the body can be handed to
 /// `Router::inject_and_submit` cleanly — the trailing carriage
 /// return arrives as a separate stdin chunk, on a small delay, so
@@ -46,11 +38,6 @@ pub(super) fn mission_goal(router: &Router, event: &Event) {
     // agent reads it during process init, before the TUI binds raw
     // input, so the post-spawn paste race this handler used to
     // work around is gone.
-    //
-    // The resume-fresh-fallback path (`Router::fire_lead_launch_prompt`)
-    // is unchanged — it still composes the prompt locally and routes
-    // through `inject_and_submit_delayed` for paste-and-verify
-    // delivery on a freshly-respawned-without-context lead.
     //
     // This handler intentionally stays subscribed (bus initial replay
     // still surfaces the `mission_goal` event for UI consumers and

@@ -632,12 +632,11 @@ pub fn session_pin(state: &AppCore, session_id: &str, pinned: bool) -> Result<()
     Ok(())
 }
 
-/// Respawn an existing direct-chat session row. Reuses the row's id and
+/// Respawn an existing session row. Reuses the row's id and
 /// `agent_session_key` so the agent CLI continues the prior conversation
 /// (claude-code: `--resume <uuid>`; codex: `codex resume <uuid>` once the
 /// key-capture path lands). See `SessionManager::resume` for the detailed
-/// contract — refused for running rows, mission-scoped rows, and archived
-/// rows.
+/// contract — refused for running and archived rows.
 pub fn session_resume(
     state: &AppCore,
     session_id: &str,
@@ -660,22 +659,47 @@ pub fn session_resume(
             emitter,
         )
         .map_err(|e| Error::msg(format!("session_resume: {e}")))?;
-    // Fresh-fallback for a lead slot: the prior claude-code conversation
-    // file was missing, so the resume degraded to a `--session-id` fresh
-    // spawn. The bus's mission_goal handler is suppressed on resume by
-    // `mission_attach`'s reconstruction watermark, so without this call
-    // the lead's fresh agent comes up with no system context. Fire the
-    // launch prompt manually through the registered router.
-    if spawned.fresh_fallback_lead {
-        if let Some(mission_id) = spawned.mission_id.as_deref() {
-            if let Some(router) = state.routers.get(mission_id) {
-                router.fire_lead_launch_prompt();
-            }
-        }
-    }
     state.events.emit(
         "session/updated",
         &crate::session::manager::SessionUpdatedEvent {
+            session_id: session_id.to_string(),
+            mission_id: spawned.mission_id.clone(),
+        },
+    );
+    Ok(spawned)
+}
+
+pub fn session_restart(state: &AppCore, session_id: &str) -> Result<SpawnedSession> {
+    let row = {
+        let conn = state.db.get()?;
+        repo::session::get_row(&conn, session_id)?
+            .ok_or_else(|| Error::msg(format!("session not found: {session_id}")))?
+    };
+    let mission_id = row
+        .mission_id
+        .as_deref()
+        .ok_or_else(|| Error::msg("only mission slots can be restarted"))?;
+    let router = state
+        .routers
+        .get(mission_id)
+        .ok_or_else(|| Error::msg("mission router is not mounted"))?;
+    let spawned = state
+        .sessions
+        .restart(
+            session_id,
+            &state.app_data_dir,
+            state.db.clone(),
+            Arc::new(state.session_events()),
+        )
+        .map_err(|error| Error::msg(format!("session_restart: {error}")))?;
+    router.record_slot_restart(
+        &spawned.handle,
+        session_id,
+        row.agent_session_key.as_deref(),
+    )?;
+    state.events.emit(
+        "session/updated",
+        &SessionUpdatedEvent {
             session_id: session_id.to_string(),
             mission_id: spawned.mission_id.clone(),
         },

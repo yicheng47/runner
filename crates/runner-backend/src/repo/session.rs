@@ -232,6 +232,7 @@ pub fn resume_in_place(
     id: &str,
     started_at: Timestamp,
     assigned_key: Option<&str>,
+    fresh: bool,
     cols: u16,
     rows: u16,
 ) -> rusqlite::Result<usize> {
@@ -241,11 +242,11 @@ pub fn resume_in_place(
                 pid = NULL,
                 started_at = ?2,
                 stopped_at = NULL,
-                agent_session_key = COALESCE(?3, agent_session_key),
+                agent_session_key = CASE WHEN ?6 THEN ?3 ELSE COALESCE(?3, agent_session_key) END,
                 last_cols = ?4,
                 last_rows = ?5
           WHERE id = ?1",
-        rusqlite::params![id, started_at.to_rfc3339(), assigned_key, cols, rows],
+        rusqlite::params![id, started_at.to_rfc3339(), assigned_key, cols, rows, fresh],
     )
 }
 

@@ -732,7 +732,7 @@ pub fn first_turn_argv(runtime: Option<Runtime>, body: Option<&str>) -> Vec<Stri
 /// onto a resumed conversation would inject a duplicate user turn.
 /// Resume paths rely on the agent CLI's own session resume to restore
 /// context; the rare resume-fresh-fallback case is handled by
-/// `Router::fire_lead_launch_prompt` via paste delivery instead.
+/// the shared fresh-respawn first-turn path instead.
 #[allow(clippy::too_many_arguments)]
 pub fn trailing_runtime_args(
     runtime: Option<Runtime>,
@@ -944,6 +944,19 @@ fn is_uuid(s: &str) -> bool {
     uuid::Uuid::parse_str(s).is_ok()
 }
 
+#[cfg(test)]
+thread_local! {
+    static CONVERSATION_HOME: std::cell::RefCell<Option<std::path::PathBuf>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn with_conversation_home<T>(home: &Path, run: impl FnOnce() -> T) -> T {
+    let prior = CONVERSATION_HOME.with_borrow_mut(|value| value.replace(home.to_owned()));
+    let result = run();
+    CONVERSATION_HOME.with_borrow_mut(|value| *value = prior);
+    result
+}
+
 /// Check an agent conversation path using that CLI's project-directory encoder.
 fn conversation_file_exists(
     agent_dir: &str,
@@ -956,8 +969,12 @@ fn conversation_file_exists(
     // directory. The encoders are exercised directly below.
     #[cfg(test)]
     {
-        let _ = (agent_dir, cwd, uuid, encode_project_dir);
-        true
+        CONVERSATION_HOME.with_borrow(|home| match (home.as_deref(), cwd) {
+            (Some(home), Some(cwd)) => {
+                conversation_file_exists_at(home, agent_dir, cwd, uuid, encode_project_dir)
+            }
+            _ => true,
+        })
     }
     #[cfg(not(test))]
     {

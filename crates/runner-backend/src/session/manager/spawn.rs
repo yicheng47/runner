@@ -978,21 +978,6 @@ impl SessionManager {
         }
 
         emit_runner_activity(&pool, &runner, events.as_ref());
-        let missing_first_turn = matches!(
-            Runtime::parse(runner.runtime.as_str()),
-            Some(Runtime::ClaudeCode | Runtime::Codex | Runtime::Trae)
-        ) && !plan.resuming
-            && !first_turn_delivered_via_argv;
-        #[cfg(windows)]
-        let missing_first_turn =
-            missing_first_turn && !crate::session::launch::is_windows_batch(&runner.command);
-        if missing_first_turn {
-            log::warn!(
-                "first-turn argv not delivered for {session_id} (runtime {}); skipping post-spawn injection",
-                runner.runtime,
-            );
-        }
-
         log::info!(
             "session spawn: mission={} session={} runner={} runtime_session={}",
             mission.id,
@@ -1078,7 +1063,6 @@ impl SessionManager {
             // when the manager needs it; the SpawnedSession field is
             // informational and the frontend doesn't rely on it.
             pid: None,
-            fresh_fallback_lead: false,
         })
     }
 
@@ -1451,7 +1435,6 @@ impl SessionManager {
             runner_id: persisted_runner_id.map(str::to_string),
             handle: runner.handle.clone(),
             pid: None,
-            fresh_fallback_lead: false,
         })
     }
 
@@ -1772,7 +1755,6 @@ impl SessionManager {
                     runner_id: source.runner_id,
                     handle: runner.handle,
                     pid: None,
-                    fresh_fallback_lead: false,
                 })
             }
             headless @ router::runtime::ForkPlan::Headless { .. } => {
@@ -1915,7 +1897,16 @@ impl SessionManager {
         pool: Arc<DbPool>,
         events: Arc<dyn SessionEvents>,
     ) -> Result<SpawnedSession> {
-        self.resume_with_fresh_fallback(session_id, cols, rows, app_data_dir, pool, events, true)
+        self.resume_with_fresh_fallback(
+            session_id,
+            cols,
+            rows,
+            app_data_dir,
+            pool,
+            events,
+            true,
+            false,
+        )
     }
 
     /// Launch-time resume shares the normal resume path but refuses the
@@ -1930,7 +1921,35 @@ impl SessionManager {
         pool: Arc<DbPool>,
         events: Arc<dyn SessionEvents>,
     ) -> Result<SpawnedSession> {
-        self.resume_with_fresh_fallback(session_id, cols, rows, app_data_dir, pool, events, false)
+        self.resume_with_fresh_fallback(
+            session_id,
+            cols,
+            rows,
+            app_data_dir,
+            pool,
+            events,
+            false,
+            false,
+        )
+    }
+
+    pub fn restart(
+        self: &Arc<Self>,
+        session_id: &str,
+        app_data_dir: &Path,
+        pool: Arc<DbPool>,
+        events: Arc<dyn SessionEvents>,
+    ) -> Result<SpawnedSession> {
+        self.resume_with_fresh_fallback(
+            session_id,
+            None,
+            None,
+            app_data_dir,
+            pool,
+            events,
+            true,
+            true,
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1943,6 +1962,7 @@ impl SessionManager {
         pool: Arc<DbPool>,
         events: Arc<dyn SessionEvents>,
         allow_fresh_fallback: bool,
+        fresh: bool,
     ) -> Result<SpawnedSession> {
         // Atomically claim this session id for the resume. If another
         // resume is already in flight (e.g. two fast clicks, two
@@ -1972,7 +1992,7 @@ impl SessionManager {
             let conn = pool.get()?;
             let row = crate::repo::session::get_row(&conn, session_id)?
                 .ok_or_else(|| Error::msg(format!("session not found: {session_id}")))?;
-            if matches!(row.status, crate::model::SessionStatus::Running) {
+            if !fresh && matches!(row.status, crate::model::SessionStatus::Running) {
                 return Err(Error::msg(format!(
                     "session {session_id} is already running — attach instead"
                 )));
@@ -1981,6 +2001,9 @@ impl SessionManager {
                 return Err(Error::msg(format!(
                     "session {session_id} is archived — un-archive before resuming"
                 )));
+            }
+            if fresh && (row.mission_id.is_none() || row.slot_id.is_none()) {
+                return Err(Error::msg("only mission slots can be restarted"));
             }
             row
         };
@@ -2002,6 +2025,11 @@ impl SessionManager {
                 (Some(mid), Some(sid)) => {
                     let conn = pool.get()?;
                     let mission = crate::ops::mission::get(&conn, mid)?;
+                    if mission.archived_at.is_some()
+                        || mission.status != crate::model::MissionStatus::Running
+                    {
+                        return Err(Error::msg("mission is not running"));
+                    }
                     let (slot_handle, lead): (String, i64) = conn
                         .query_row(
                             "SELECT slot_handle, lead FROM slots WHERE id = ?1",
@@ -2084,7 +2112,6 @@ impl SessionManager {
             snap.cwd.as_deref(),
             snap.runner_id.as_ref().and(runner.working_dir.as_deref()),
         );
-        let is_lead_slot = mission_ctx.as_ref().is_some_and(|c| c.lead);
         let conversation_missing = match (
             Runtime::parse(&runner.runtime),
             snap.agent_session_key.as_deref(),
@@ -2103,16 +2130,10 @@ impl SessionManager {
                 "session {session_id} conversation is unavailable; resume it manually to start fresh"
             )));
         }
-        let fresh_fallback_lead = conversation_missing && is_lead_slot;
-        let effective_prior_key = match (
-            Runtime::parse(&runner.runtime),
-            snap.agent_session_key.as_deref(),
-        ) {
-            (Some(Runtime::ClaudeCode), Some(_)) if conversation_missing => None,
-            (
-                Some(Runtime::ClaudeCode | Runtime::Codex | Runtime::Trae | Runtime::Shell) | None,
-                k,
-            ) => k,
+        let effective_prior_key = if fresh || conversation_missing {
+            None
+        } else {
+            snap.agent_session_key.as_deref()
         };
         let plan =
             router::runtime::resume_plan(Runtime::parse(&runner.runtime), effective_prior_key);
@@ -2227,20 +2248,54 @@ impl SessionManager {
         let mission_bus_dir = mission_ctx.as_ref().map(|ctx| {
             runner_core::event_log::path::mission_dir(app_data_dir, &ctx.crew_id, &ctx.mission_id)
         });
-        // Resume never delivers a first-turn via argv: a real resume
-        // restores prior context via the agent CLI's own session
-        // resume, and the rare fresh-fallback case routes its launch
-        // prompt through paste-and-verify via the caller in
-        // `ops::session::session_resume`. `first_turn = None`
-        // here so the argv path stays inert.
-        let _ = Self::apply_runtime_args(
+        let first_turn = if !plan.resuming {
+            if let Some(ctx) = mission_ctx.as_ref() {
+                let conn = pool.get()?;
+                let crew = crate::ops::crew::get(&conn, &ctx.crew_id)?;
+                let body = if ctx.lead {
+                    let roster = crate::ops::slot::list(&conn, &ctx.crew_id)?;
+                    let launch = router::LaunchInputs::new(
+                        crew.name,
+                        &roster,
+                        crate::ops::mission::all_known_signals(),
+                        crew.system_prompt_addendum,
+                    )?;
+                    let log = open_mission_event_log(app_data_dir, &ctx.crew_id, &ctx.mission_id)
+                        .ok_or_else(|| Error::msg("mission event log unavailable"))?;
+                    launch.first_turn(&log)
+                } else {
+                    router::prompt::compose_worker_first_turn(
+                        runner.system_prompt.as_deref(),
+                        crew.system_prompt_addendum.as_deref(),
+                    )
+                };
+                crate::ops::mission::ensure_first_turn_fits(&ctx.slot_handle, &body)?;
+                Some(body)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        // A new marker prevents the reused row from capturing its previous rollout.
+        let marker_id = ulid::Ulid::new().to_string();
+        let (first_turn, codex_prompt_marker) = Self::codex_capture_prompt_marker(
+            Runtime::parse(&runner.runtime),
+            &marker_id,
+            first_turn,
+        );
+        let first_turn_delivered_via_argv = Self::apply_runtime_args(
             &mut spec,
             &runner,
             &plan,
             app_data_dir,
-            None,
+            first_turn.as_deref(),
             mission_bus_dir.as_deref(),
         );
+
+        if fresh && matches!(snap.status, crate::model::SessionStatus::Running) {
+            self.kill(session_id)?;
+        }
 
         let started_at_dt = Utc::now();
         let started_at = started_at_dt.to_rfc3339();
@@ -2253,19 +2308,18 @@ impl SessionManager {
                 session_id,
                 started_at_dt,
                 plan.assigned_key.as_deref(),
+                !plan.resuming,
                 initial_size.0,
                 initial_size.1,
             )?;
         }
 
-        // No gate on the resume path: `claude --resume <uuid>` /
-        // `--session-id <uuid>` loads the local conversation file and
-        // puts up the TUI without touching the network until the
-        // user's next turn. No proactive OAuth refresh at resume
-        // means no concurrent refresh-token race, so Resume-all over
-        // N stopped slots can spawn as fast as the runtime allows.
-        // See issue #171.
+        if !plan.resuming {
+            self.enter_claude_launch_gate(session_id, Runtime::parse(&runner.runtime));
+        }
         let spawn_started_at_dt = Utc::now();
+        #[cfg(windows)]
+        let first_turn_deadline = Instant::now() + WINDOWS_FIRST_TURN_TIMEOUT;
         self.seed_codex_project_trust(
             session_id,
             Runtime::parse(&runner.runtime),
@@ -2329,7 +2383,7 @@ impl SessionManager {
                         started_at: spawn_started_at_dt,
                         row_started_at: started_at.clone(),
                         spawn_pid,
-                        prompt_marker: None,
+                        prompt_marker: codex_prompt_marker.clone(),
                         pool: Arc::clone(&pool),
                         events: Arc::clone(&events),
                     })
@@ -2366,6 +2420,18 @@ impl SessionManager {
             &pool,
             events.as_ref(),
         );
+        if first_turn_delivered_via_argv {
+            self.arm_completion(session_id);
+        }
+        #[cfg(windows)]
+        self.queue_windows_batch_first_turn(
+            session_id,
+            &runner,
+            &plan,
+            first_turn.as_deref(),
+            first_turn_deadline,
+        );
+
         if let Some(notice) = shell_cwd_notice.as_deref() {
             self.ingest_output_chunk(
                 session_id,
@@ -2405,37 +2471,6 @@ impl SessionManager {
             emit_runner_activity(&pool, &runner, events.as_ref());
         }
 
-        // First-turn warning for fresh claude-code / codex spawns.
-        // `plan.resuming` is true on any resume against a real
-        // prior_key — those skip naturally (the agent already has its
-        // system context). For mission resume, the lead always
-        // suppresses the worker preamble: when the lead's
-        // conversation file is missing and the resume degrades to a
-        // fresh spawn, the *launch prompt* (composed by the router
-        // with crew / roster / goal context) is the right thing to
-        // inject — the ops::session::session_resume caller fires
-        // that path when it sees `fresh_fallback_lead = true` on the
-        // returned SpawnedSession. For direct-chat resume there's no
-        // slot/lead concept; if that degrades to fresh and argv
-        // delivery was unavailable, we log the skipped injection.
-        if matches!(
-            Runtime::parse(runner.runtime.as_str()),
-            Some(Runtime::ClaudeCode | Runtime::Codex | Runtime::Trae)
-        ) && !plan.resuming
-        {
-            if mission_ctx.is_some() {
-                log::warn!(
-                    "first-turn argv not delivered for {session_id} (runtime {}); skipping post-spawn injection",
-                    runner.runtime,
-                );
-            } else {
-                log::warn!(
-                    "first-turn argv not delivered for direct chat {session_id} (runtime {}); skipping post-spawn injection",
-                    runner.runtime,
-                );
-            }
-        }
-
         // Return the slot's in-mission identity for mission rows so the
         // frontend (and the router, which keys on slot_handle) sees the
         // identity the resumed PTY actually stamps onto its events.
@@ -2449,7 +2484,6 @@ impl SessionManager {
             runner_id: snap.runner_id.clone(),
             handle: resumed_handle,
             pid: None,
-            fresh_fallback_lead,
         })
     }
 

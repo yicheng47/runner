@@ -75,7 +75,7 @@ fn now() -> Timestamp {
 
 /// Full set of known signal types as `Vec<SignalType>`, the shape the
 /// router + launch-prompt composer take.
-fn all_known_signals() -> Vec<SignalType> {
+pub(crate) fn all_known_signals() -> Vec<SignalType> {
     KnownSignalType::ALL
         .iter()
         .map(|k| SignalType::new(k.as_str()))
@@ -158,7 +158,7 @@ fn validate_mission_goal(goal: &str) -> Result<()> {
 /// the spawn boundary. Otherwise `first_turn_argv` silently drops the
 /// entire first turn in release builds (empty argv) and trips a
 /// `debug_assert!` in debug. See #247.
-fn ensure_first_turn_fits(slot_handle: &str, body: &str) -> Result<()> {
+pub(crate) fn ensure_first_turn_fits(slot_handle: &str, body: &str) -> Result<()> {
     let max = crate::router::runtime::FIRST_TURN_ARGV_MAX_BYTES;
     if body.len() > max {
         return Err(Error::msg(format!(
