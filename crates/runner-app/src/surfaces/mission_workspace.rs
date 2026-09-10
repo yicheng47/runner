@@ -1,3 +1,4 @@
+use runner_backend::model::Runtime;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::process::Command;
 use std::rc::Rc;
@@ -3501,7 +3502,7 @@ impl MissionWorkspace {
             .map(|session_id| {
                 self.drawer_session_entry(session_id, cx)
                     .map(default_session_label)
-                    .unwrap_or_else(|| "shell".into())
+                    .unwrap_or_else(|| Runtime::Shell.to_string())
             })
             .collect::<Vec<_>>();
         let root = cx.entity();

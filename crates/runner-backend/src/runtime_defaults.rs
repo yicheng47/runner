@@ -1,3 +1,4 @@
+use crate::model::Runtime;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -10,12 +11,12 @@ const CODEX_CONFIG_RELATIVE_PATH: &str = ".codex/config.toml";
 const CLAUDE_SETTINGS_RELATIVE_PATH: &str = ".claude/settings.json";
 const TRAE_CONFIG_RELATIVE_PATH: &str = ".trae/traecli.toml";
 
-pub fn runtime_defaults(runtime: &str, home: &Path) -> RuntimeDefaults {
+pub fn runtime_defaults(runtime: Runtime, home: &Path) -> RuntimeDefaults {
     match runtime {
-        "codex" => toml_defaults(&codex_config_path(home)),
-        "claude-code" => json_defaults(&claude_settings_path(home)),
-        "trae" => toml_defaults(&trae_config_path(home)),
-        _ => RuntimeDefaults::default(),
+        Runtime::Codex => toml_defaults(&codex_config_path(home)),
+        Runtime::ClaudeCode => json_defaults(&claude_settings_path(home)),
+        Runtime::Trae => toml_defaults(&trae_config_path(home)),
+        Runtime::Shell => RuntimeDefaults::default(),
     }
 }
 
@@ -106,7 +107,7 @@ mod tests {
             "model = \" gpt-5.6-sol \"\nmodel_reasoning_effort = \"xhigh\"\n",
         );
         assert_eq!(
-            runtime_defaults("codex", home.path()),
+            runtime_defaults(Runtime::Codex, home.path()),
             RuntimeDefaults {
                 model: Some("gpt-5.6-sol".into()),
                 effort: Some("xhigh".into()),
@@ -123,7 +124,7 @@ mod tests {
             "model = \"gpt-5.6-terra\"\nmodel_reasoning_effort = \"high\"\nprofile = \"work\"\n\n[profiles.work]\nmodel = \"gpt-5.6-sol\"\n",
         );
         assert_eq!(
-            runtime_defaults("codex", home.path()),
+            runtime_defaults(Runtime::Codex, home.path()),
             RuntimeDefaults {
                 model: Some("gpt-5.6-sol".into()),
                 effort: Some("high".into()),
@@ -136,7 +137,7 @@ mod tests {
             "model = \"gpt-5.6-terra\"\nmodel_reasoning_effort = \"high\"\nprofile = \"work\"\nprofiles = { work = { model = \"gpt-5.6-luna\" } }\n",
         );
         assert_eq!(
-            runtime_defaults("codex", home.path()),
+            runtime_defaults(Runtime::Codex, home.path()),
             RuntimeDefaults {
                 model: Some("gpt-5.6-luna".into()),
                 effort: Some("high".into()),
@@ -153,7 +154,7 @@ mod tests {
             "model = \"claude-fable-5[1m]\"\nmodel_reasoning_effort = \"max\"\n",
         );
         assert_eq!(
-            runtime_defaults("trae", home.path()),
+            runtime_defaults(Runtime::Trae, home.path()),
             RuntimeDefaults {
                 model: Some("claude-fable-5[1m]".into()),
                 effort: Some("max".into()),
@@ -170,7 +171,7 @@ mod tests {
             r#"{"model":"claude-fable-5[1m]","effortLevel":" xhigh "}"#,
         );
         assert_eq!(
-            runtime_defaults("claude-code", home.path()),
+            runtime_defaults(Runtime::ClaudeCode, home.path()),
             RuntimeDefaults {
                 model: Some("claude-fable-5[1m]".into()),
                 effort: Some("xhigh".into()),
@@ -182,7 +183,7 @@ mod tests {
     fn missing_file_returns_unknown_defaults() {
         let home = tempfile::tempdir().unwrap();
         assert_eq!(
-            runtime_defaults("codex", home.path()),
+            runtime_defaults(Runtime::Codex, home.path()),
             RuntimeDefaults::default()
         );
     }
@@ -193,11 +194,11 @@ mod tests {
         write(home.path(), CODEX_CONFIG_RELATIVE_PATH, "model = [");
         write(home.path(), CLAUDE_SETTINGS_RELATIVE_PATH, "{");
         assert_eq!(
-            runtime_defaults("codex", home.path()),
+            runtime_defaults(Runtime::Codex, home.path()),
             RuntimeDefaults::default()
         );
         assert_eq!(
-            runtime_defaults("claude-code", home.path()),
+            runtime_defaults(Runtime::ClaudeCode, home.path()),
             RuntimeDefaults::default()
         );
     }
@@ -211,7 +212,7 @@ mod tests {
             "model = 5\nmodel_reasoning_effort = \"high\"\n",
         );
         assert_eq!(
-            runtime_defaults("codex", home.path()),
+            runtime_defaults(Runtime::Codex, home.path()),
             RuntimeDefaults {
                 model: None,
                 effort: Some("high".into()),
@@ -220,10 +221,10 @@ mod tests {
     }
 
     #[test]
-    fn unknown_runtime_returns_unknown_defaults() {
+    fn shell_runtime_has_no_agent_defaults() {
         let home = tempfile::tempdir().unwrap();
         assert_eq!(
-            runtime_defaults("other", home.path()),
+            runtime_defaults(Runtime::Shell, home.path()),
             RuntimeDefaults::default()
         );
     }

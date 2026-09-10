@@ -6,6 +6,7 @@ use runner_app::ui::{
     ButtonVariant, Modal, OverlayWidth, SessionControlVariant, SessionOverlay, SessionOverlayKind,
     Tooltip,
 };
+use runner_backend::model::Runtime;
 
 use crate::surfaces::chat_lifecycle::{
     ended_subtitle, resolve_pane_overlay, shell_exited_subtitle, PaneOverlayState, TransitionKind,
@@ -42,7 +43,10 @@ pub(crate) fn render_terminal_drawer_strip(
         .enumerate()
         .map(|(index, session_id)| {
             let active = active_id == Some(session_id.as_str());
-            let label = labels.get(index).cloned().unwrap_or_else(|| "shell".into());
+            let label = labels
+                .get(index)
+                .cloned()
+                .unwrap_or_else(|| Runtime::Shell.to_string());
             let activate = Rc::clone(&activate);
             let close = Rc::clone(&close);
             let activate_id = session_id.clone();
@@ -325,7 +329,7 @@ impl NativeRoot {
             .cloned();
         let focused_shell = focused_entry
             .as_ref()
-            .is_some_and(|entry| entry.agent_runtime == "shell");
+            .is_some_and(|entry| Runtime::parse(&entry.agent_runtime) == Some(Runtime::Shell));
         let terminal_only = self.active_tab_is_terminal_only(cx);
         let focused_secondary = focused_session_id
             .as_deref()
@@ -342,8 +346,9 @@ impl NativeRoot {
         let lifecycle_busy = session_ids
             .iter()
             .filter(|session_id| {
-                self.session_entry(session_id, cx)
-                    .is_some_and(|entry| entry.agent_runtime != "shell")
+                self.session_entry(session_id, cx).is_some_and(|entry| {
+                    Runtime::parse(&entry.agent_runtime) != Some(Runtime::Shell)
+                })
             })
             .any(|session_id| self.session_lifecycle_disabled(session_id, cx));
         self.configure_chat_action_menu(&layout, lifecycle_busy, cx);
@@ -668,8 +673,9 @@ impl NativeRoot {
         let chat_session_ids = session_ids
             .iter()
             .filter(|session_id| {
-                self.session_entry(session_id, cx)
-                    .is_some_and(|entry| entry.agent_runtime != "shell")
+                self.session_entry(session_id, cx).is_some_and(|entry| {
+                    Runtime::parse(&entry.agent_runtime) != Some(Runtime::Shell)
+                })
             })
             .cloned()
             .collect::<Vec<_>>();
@@ -720,7 +726,7 @@ impl NativeRoot {
                     session_id: session_id.clone(),
                     current,
                 });
-                if entry.agent_runtime != "shell" {
+                if Runtime::parse(&entry.agent_runtime) != Some(Runtime::Shell) {
                     let archive_all = !layout.drawer_shells().is_empty();
                     items.push(
                         UiMenuItem::new(if archive_all {
@@ -814,7 +820,7 @@ impl NativeRoot {
                 .map(|entry| entry.status)?;
             let shell = self
                 .session_entry(&session_id, cx)
-                .is_some_and(|entry| entry.agent_runtime == "shell");
+                .is_some_and(|entry| Runtime::parse(&entry.agent_runtime) == Some(Runtime::Shell));
             if any_resuming {
                 Some(
                     SessionControl::new("resume-chat-header", SessionControlKind::Resuming)
@@ -1193,7 +1199,7 @@ impl NativeRoot {
         let is_shell = match &modal.target {
             ChatRenameTarget::Session { session_id, .. } => self
                 .session_entry(session_id, cx)
-                .is_some_and(|entry| entry.agent_runtime == "shell"),
+                .is_some_and(|entry| Runtime::parse(&entry.agent_runtime) == Some(Runtime::Shell)),
             ChatRenameTarget::Tab { .. } => false,
         };
         let submitting = modal.submitting;
@@ -1555,9 +1561,9 @@ impl NativeRoot {
                                         );
                                     }
                                 }
-                                2 if this
-                                    .session_entry(&session_id, cx)
-                                    .is_some_and(|entry| entry.agent_runtime != "shell") =>
+                                2 if this.session_entry(&session_id, cx).is_some_and(|entry| {
+                                    Runtime::parse(&entry.agent_runtime) != Some(Runtime::Shell)
+                                }) =>
                                 {
                                     this.archive_chat_sessions(vec![session_id], window, cx)
                                 }
@@ -1595,7 +1601,7 @@ impl NativeRoot {
             .map(|session_id| {
                 self.session_entry(session_id, cx)
                     .map(default_session_label)
-                    .unwrap_or_else(|| "shell".into())
+                    .unwrap_or_else(|| Runtime::Shell.to_string())
             })
             .collect::<Vec<_>>();
         let activate_root = cx.entity();
@@ -2154,20 +2160,22 @@ impl NativeRoot {
                         )
                         .into_any_element(),
                     ),
-                    PaneOverlayState::Resuming => Some(if entry.agent_runtime == "shell" {
-                        SessionOverlay::transition(
-                            format!("resuming-{session_id}"),
-                            SessionOverlayKind::Resuming,
-                        )
-                        .label("Restarting terminal…")
-                        .into_any_element()
-                    } else {
-                        SessionOverlay::transition(
-                            format!("resuming-{session_id}"),
-                            SessionOverlayKind::Resuming,
-                        )
-                        .into_any_element()
-                    }),
+                    PaneOverlayState::Resuming => Some(
+                        if Runtime::parse(&entry.agent_runtime) == Some(Runtime::Shell) {
+                            SessionOverlay::transition(
+                                format!("resuming-{session_id}"),
+                                SessionOverlayKind::Resuming,
+                            )
+                            .label("Restarting terminal…")
+                            .into_any_element()
+                        } else {
+                            SessionOverlay::transition(
+                                format!("resuming-{session_id}"),
+                                SessionOverlayKind::Resuming,
+                            )
+                            .into_any_element()
+                        },
+                    ),
                     PaneOverlayState::Starting => {
                         let overlay = SessionOverlay::transition(
                             format!("starting-{session_id}"),
@@ -2185,7 +2193,7 @@ impl NativeRoot {
                         resumable,
                         exit_code,
                     } => {
-                        if entry.agent_runtime == "shell" {
+                        if Runtime::parse(&entry.agent_runtime) == Some(Runtime::Shell) {
                             let restart_root = cx.entity();
                             let close_root = restart_root.clone();
                             let restart_id = session_id.clone();
@@ -2387,18 +2395,18 @@ fn split_panes_tooltip(overrides: &keymap::KeymapOverrides) -> String {
 
 fn pane_identity_icon(runtime: Option<&str>) -> &'static str {
     match runtime {
-        Some("shell") => "square-terminal.svg",
+        Some(runtime) if Runtime::parse(runtime) == Some(Runtime::Shell) => "square-terminal.svg",
         Some(_) => "terminal.svg",
         None => "square-dashed.svg",
     }
 }
 
 fn pane_identity_shows_status(runtime: &str) -> bool {
-    runtime != "shell"
+    Runtime::parse(runtime) != Some(Runtime::Shell)
 }
 
 fn starting_overlay_label(runtime: &str, fork_materializing: bool) -> Option<&'static str> {
-    if runtime == "shell" {
+    if Runtime::parse(runtime) == Some(Runtime::Shell) {
         Some("Starting terminal…")
     } else if fork_materializing {
         Some("Forking chat…")
@@ -2422,7 +2430,9 @@ fn header_fork_state(
     focused: Option<&DirectSessionEntry>,
     focused_secondary: bool,
 ) -> HeaderForkState {
-    let Some(entry) = focused.filter(|entry| entry.agent_runtime != "shell") else {
+    let Some(entry) =
+        focused.filter(|entry| Runtime::parse(&entry.agent_runtime) != Some(Runtime::Shell))
+    else {
         return HeaderForkState::Hidden;
     };
     if focused_secondary {
@@ -2438,7 +2448,7 @@ fn header_fork_state(
 }
 
 fn pane_close_behavior(runtime: Option<&str>) -> PaneCloseBehavior {
-    if runtime == Some("shell") {
+    if runtime == Some(Runtime::Shell.key()) {
         PaneCloseBehavior::CloseTerminal
     } else {
         PaneCloseBehavior::LayoutOnly
@@ -2477,7 +2487,7 @@ fn pane_action_items_for(
             .icon("pencil.svg")
             .disabled(disabled),
     ];
-    if runtime != "shell" {
+    if Runtime::parse(runtime) != Some(Runtime::Shell) {
         items.push(
             UiMenuItem::new("Archive chat")
                 .icon("archive.svg")

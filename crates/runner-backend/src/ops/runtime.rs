@@ -1,3 +1,4 @@
+use crate::model::Runtime;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -9,7 +10,7 @@ use crate::AppCore;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct RuntimeDefinition {
-    pub name: String,
+    pub name: Runtime,
     pub display_name: String,
     pub command: String,
     pub native_fork: bool,
@@ -24,7 +25,7 @@ pub struct RuntimeCatalogOption {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct RuntimeCatalogEntry {
-    pub name: String,
+    pub name: Runtime,
     pub display_name: String,
     pub command: String,
     pub native_fork: bool,
@@ -41,7 +42,7 @@ pub fn runtime_list() -> Vec<RuntimeDefinition> {
     crate::router::runtime::runtime_definitions()
         .iter()
         .map(|runtime| RuntimeDefinition {
-            name: runtime.name.to_string(),
+            name: runtime.name,
             display_name: runtime.display_name.to_string(),
             command: runtime.command.to_string(),
             native_fork: runtime.native_fork,
@@ -59,7 +60,7 @@ pub fn runtime_status_list(state: &AppCore) -> Result<RuntimeStatusResponse> {
 
 pub fn runtime_set_override(
     state: &AppCore,
-    runtime: &str,
+    runtime: Runtime,
     path: &str,
 ) -> std::result::Result<RuntimeStatusResponse, OverrideValidationError> {
     let path = path.trim();
@@ -70,10 +71,11 @@ pub fn runtime_set_override(
         });
     }
     if path.is_empty() {
-        crate::db::set_runtime_override(&state.db, runtime, None).map_err(persistence_error)?;
+        crate::db::set_runtime_override(&state.db, runtime.key(), None)
+            .map_err(persistence_error)?;
     } else {
         crate::runtime_status::validate_override(runtime, path)?;
-        crate::db::set_runtime_override(&state.db, runtime, Some(path))
+        crate::db::set_runtime_override(&state.db, runtime.key(), Some(path))
             .map_err(persistence_error)?;
         log::info!("runtime override saved: runtime={runtime} path={path}");
     }
@@ -81,11 +83,11 @@ pub fn runtime_set_override(
     runtime_status_list(state).map_err(persistence_error)
 }
 
-pub fn runtime_clear_override(state: &AppCore, runtime: &str) -> Result<RuntimeStatusResponse> {
+pub fn runtime_clear_override(state: &AppCore, runtime: Runtime) -> Result<RuntimeStatusResponse> {
     if crate::router::runtime::runtime_definition(runtime).is_none() {
         return Err(Error::msg(format!("unknown runtime: {runtime}")));
     }
-    crate::db::set_runtime_override(&state.db, runtime, None)?;
+    crate::db::set_runtime_override(&state.db, runtime.key(), None)?;
     log::info!("runtime override cleared: runtime={runtime}");
     state.events.emit("runtime/changed", &());
     runtime_status_list(state)
@@ -142,7 +144,7 @@ pub fn filter_selectable_runtime_catalog(
             let enabled = enabled_agents
                 .as_ref()
                 .map_or(runtime.default_enabled, |agents| {
-                    agents.contains(runtime.name.as_str())
+                    agents.contains(runtime.name.key())
                 });
             enabled && runtime.available
         })
@@ -218,10 +220,10 @@ fn runtime_catalog_options() -> Vec<RuntimeCatalogEntry> {
 
     vec![
         RuntimeCatalogEntry {
-            name: "codex".into(),
+            name: Runtime::Codex,
             display_name: "Codex".into(),
             command: "codex".into(),
-            native_fork: crate::router::runtime::supports_native_fork("codex"),
+            native_fork: crate::router::runtime::supports_native_fork(Some(Runtime::Codex)),
             description: "OpenAI Codex CLI".into(),
             default_enabled: true,
             available: false,
@@ -264,10 +266,10 @@ fn runtime_catalog_options() -> Vec<RuntimeCatalogEntry> {
             efforts: codex_efforts,
         },
         RuntimeCatalogEntry {
-            name: "claude-code".into(),
+            name: Runtime::ClaudeCode,
             display_name: "Claude Code".into(),
             command: "claude".into(),
-            native_fork: crate::router::runtime::supports_native_fork("claude-code"),
+            native_fork: crate::router::runtime::supports_native_fork(Some(Runtime::ClaudeCode)),
             description: "Anthropic Claude Code CLI".into(),
             default_enabled: true,
             available: false,
@@ -283,10 +285,10 @@ fn runtime_catalog_options() -> Vec<RuntimeCatalogEntry> {
             efforts: claude_efforts,
         },
         RuntimeCatalogEntry {
-            name: "trae".into(),
+            name: Runtime::Trae,
             display_name: "TRAE CLI".into(),
             command: "traecli".into(),
-            native_fork: crate::router::runtime::supports_native_fork("trae"),
+            native_fork: crate::router::runtime::supports_native_fork(Some(Runtime::Trae)),
             description: "TRAE CLI".into(),
             default_enabled: cfg!(target_os = "macos"),
             available: false,
@@ -315,9 +317,9 @@ mod tests {
         assert_eq!(
             catalog
                 .iter()
-                .map(|runtime| runtime.name.as_str())
+                .map(|runtime| runtime.name)
                 .collect::<Vec<_>>(),
-            ["codex", "claude-code", "trae"]
+            [Runtime::Codex, Runtime::ClaudeCode, Runtime::Trae]
         );
         assert!(catalog[0].default_enabled);
         assert!(catalog[1].default_enabled);
@@ -362,32 +364,31 @@ mod tests {
         let mut catalog = runtime_catalog_options();
         assert!(filter_selectable_runtime_catalog(catalog.clone(), None).is_empty());
         assert!(
-            filter_selectable_runtime_catalog(catalog.clone(), Some(&["trae".to_string()]))
-                .is_empty()
+            filter_selectable_runtime_catalog(catalog.clone(), Some(&["trae".into()])).is_empty()
         );
         for runtime in &mut catalog {
             runtime.available = true;
         }
         let expected = if cfg!(target_os = "macos") {
-            vec!["codex", "claude-code", "trae"]
+            vec![Runtime::Codex, Runtime::ClaudeCode, Runtime::Trae]
         } else {
-            vec!["codex", "claude-code"]
+            vec![Runtime::Codex, Runtime::ClaudeCode]
         };
         assert_eq!(
             filter_selectable_runtime_catalog(catalog.clone(), None)
                 .iter()
-                .map(|runtime| runtime.name.as_str())
+                .map(|runtime| runtime.name)
                 .collect::<Vec<_>>(),
             expected
         );
 
-        let enabled = vec!["trae".to_string()];
+        let enabled = vec!["trae".into()];
         assert_eq!(
             filter_selectable_runtime_catalog(catalog, Some(&enabled))
                 .iter()
-                .map(|runtime| runtime.name.as_str())
+                .map(|runtime| runtime.name)
                 .collect::<Vec<_>>(),
-            ["trae"]
+            [Runtime::Trae]
         );
     }
 }

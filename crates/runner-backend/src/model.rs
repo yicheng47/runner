@@ -140,6 +140,63 @@ pub enum SessionStatus {
     Crashed,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+#[schemars(inline)]
+pub enum Runtime {
+    ClaudeCode,
+    Codex,
+    Trae,
+    Shell,
+}
+
+impl Runtime {
+    pub const ALL: [Self; 4] = [Self::ClaudeCode, Self::Codex, Self::Trae, Self::Shell];
+
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::ClaudeCode => "claude-code",
+            Self::Codex => "codex",
+            Self::Trae => "trae",
+            Self::Shell => "shell",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|runtime| runtime.key() == value)
+    }
+}
+
+impl std::fmt::Display for Runtime {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.key())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Runtime;
+
+    #[test]
+    fn runtime_wire_names_round_trip() {
+        for (runtime, key) in [
+            (Runtime::ClaudeCode, "claude-code"),
+            (Runtime::Codex, "codex"),
+            (Runtime::Trae, "trae"),
+            (Runtime::Shell, "shell"),
+        ] {
+            let json = format!("\"{key}\"");
+            assert_eq!(serde_json::to_string(&runtime).unwrap(), json);
+            assert_eq!(serde_json::from_str::<Runtime>(&json).unwrap(), runtime);
+            assert_eq!(Runtime::parse(key), Some(runtime));
+            assert_eq!(runtime.key(), key);
+            assert_eq!(runtime.to_string(), key);
+        }
+        assert_eq!(Runtime::parse("aider-future"), None);
+        assert!(serde_json::from_str::<Runtime>("\"aider-future\"").is_err());
+    }
+}
+
 // A PTY run. `mission_id` is None for "direct chat" sessions that
 // the user opened from the Runners page without starting a mission.
 // `slot_id` is set for mission sessions (it's the slot they

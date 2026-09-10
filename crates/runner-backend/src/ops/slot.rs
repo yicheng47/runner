@@ -18,6 +18,7 @@
 //     unique by the schema.
 //   - `slot_handle` is unique within a crew (schema-enforced).
 
+use crate::model::Runtime;
 use std::collections::HashMap;
 
 use chrono::Utc;
@@ -55,7 +56,7 @@ pub struct UpdateSlotInput {
     /// (back to the runner's own runtime), pass a registry runtime
     /// name to override. Validated against the runtime registry.
     #[serde(default, deserialize_with = "double_option")]
-    pub runtime_override: Option<Option<String>>,
+    pub runtime_override: Option<Option<Runtime>>,
     /// Per-slot model. Omit to preserve, pass `null` or blank to
     /// inherit, or pass a model name to override.
     #[serde(default, deserialize_with = "double_option")]
@@ -72,11 +73,12 @@ pub struct UpdateSlotInput {
 /// "preserve". Any present value — including `null` — lands here and
 /// wraps in `Some`; only a missing key falls through to
 /// `#[serde(default)]`.
-fn double_option<'de, D>(deserializer: D) -> Result<Option<Option<String>>, D::Error>
+fn double_option<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
 where
     D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
 {
-    Option::<String>::deserialize(deserializer).map(Some)
+    Option::<T>::deserialize(deserializer).map(Some)
 }
 
 /// Normalize + validate a runtime-override value against the runtime
@@ -86,12 +88,15 @@ fn validate_runtime_override(value: Option<&str>) -> Result<Option<String>> {
     let Some(name) = value.map(str::trim).filter(|s| !s.is_empty()) else {
         return Ok(None);
     };
-    if crate::router::runtime::runtime_definition(name).is_none() {
+    if Runtime::parse(name)
+        .and_then(crate::router::runtime::runtime_definition)
+        .is_none()
+    {
         return Err(Error::msg(format!(
             "unknown runtime '{name}' — valid runtimes: {}",
             crate::router::runtime::runtime_definitions()
                 .iter()
-                .map(|r| r.name)
+                .map(|r| r.name.key())
                 .collect::<Vec<_>>()
                 .join(", ")
         )));
@@ -295,7 +300,7 @@ pub fn update(
     };
     let runtime_override = input
         .runtime_override
-        .map(|v| validate_runtime_override(v.as_deref()))
+        .map(|v| validate_runtime_override(v.map(Runtime::key)))
         .transpose()?;
     let model_override = input
         .model_override
@@ -496,10 +501,10 @@ pub struct CreateSlotInput {
     pub crew_id: String,
     pub runner_id: String,
     pub slot_handle: String,
-    /// Optional per-slot engine choice. Omit (or blank) for the
+    /// Optional per-slot engine choice. Omit (or null) for the
     /// "Runner default" behavior; otherwise a runtime registry name.
     #[serde(default)]
-    pub runtime_override: Option<String>,
+    pub runtime_override: Option<Runtime>,
     /// Optional model pinned to the selected runtime. Blank or omitted
     /// inherits from the runner template.
     #[serde(default)]
@@ -513,7 +518,7 @@ pub fn slot_create(state: &AppCore, input: CreateSlotInput) -> Result<SlotWithRu
         &input.crew_id,
         &input.runner_id,
         &input.slot_handle,
-        input.runtime_override.as_deref(),
+        input.runtime_override.map(Runtime::key),
         input.model_override.as_deref(),
     )
 }
@@ -583,7 +588,7 @@ mod tests {
             runner::CreateRunnerInput {
                 handle: handle.into(),
                 display_name: format!("{handle} display"),
-                runtime: "shell".into(),
+                runtime: crate::model::Runtime::Shell,
                 command: "sh".into(),
                 args: vec![],
                 working_dir: None,
@@ -979,7 +984,7 @@ mod tests {
             &mut conn,
             &s.slot.id,
             UpdateSlotInput {
-                runtime_override: Some(Some("codex".into())),
+                runtime_override: Some(Some(Runtime::Codex)),
                 ..Default::default()
             },
         )
@@ -1110,6 +1115,24 @@ mod tests {
     }
 
     #[test]
+    fn slot_json_inputs_reject_unknown_runtime_overrides() {
+        for runtime in ["codex", "aider-future"] {
+            let input = serde_json::json!({
+                "crew_id": "crew", "runner_id": "runner", "slot_handle": "agent",
+                "runtime_override": runtime
+            });
+            assert_eq!(
+                serde_json::from_value::<CreateSlotInput>(input.clone()).is_ok(),
+                runtime == "codex"
+            );
+            assert_eq!(
+                serde_json::from_value::<UpdateSlotInput>(input).is_ok(),
+                runtime == "codex"
+            );
+        }
+    }
+
+    #[test]
     fn update_slot_input_wire_shape_distinguishes_missing_null_and_value() {
         // IPC/MCP callers speak JSON. The three wire shapes must map
         // to the three actions: missing key = preserve, explicit
@@ -1127,7 +1150,7 @@ mod tests {
 
         let set: UpdateSlotInput =
             serde_json::from_str(r#"{"runtime_override": "codex"}"#).unwrap();
-        assert_eq!(set.runtime_override, Some(Some("codex".into())));
+        assert_eq!(set.runtime_override, Some(Some(Runtime::Codex)));
 
         let model_null: UpdateSlotInput =
             serde_json::from_str(r#"{"model_override": null}"#).unwrap();
@@ -1180,7 +1203,7 @@ mod tests {
             &b.slot.id,
             UpdateSlotInput {
                 slot_handle: Some("alpha".into()),
-                runtime_override: Some(Some("codex".into())),
+                runtime_override: Some(Some(Runtime::Codex)),
                 ..Default::default()
             },
         )
@@ -1197,7 +1220,7 @@ mod tests {
     }
 
     #[test]
-    fn update_rejects_unknown_runtime_override() {
+    fn update_rejects_shell_runtime_override() {
         let pool = pool();
         let mut conn = pool.get().unwrap();
         let c = seed_crew(&conn, "A");
@@ -1207,7 +1230,7 @@ mod tests {
             &mut conn,
             &s.slot.id,
             UpdateSlotInput {
-                runtime_override: Some(Some("aider-future".into())),
+                runtime_override: Some(Some(Runtime::Shell)),
                 ..Default::default()
             },
         )

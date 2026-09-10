@@ -1697,6 +1697,71 @@ Talking to the human:
     }
 
     #[test]
+    fn stored_runtime_names_remain_readable_and_unchanged_without_a_migration() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        run_migrations_up_to(&mut conn, 20).unwrap();
+        insert_crew(&conn, "c1");
+        for (index, runtime) in ["qoder", "Runtime-Needle", "shell"].into_iter().enumerate() {
+            let id = index.to_string();
+            insert_runner(&conn, &id, &id).unwrap();
+            insert_slot(&conn, &id, "c1", &id, &id, index as i64, 0).unwrap();
+            conn.execute(
+                "UPDATE runners SET runtime = ?1 WHERE id = ?2",
+                params![runtime, id],
+            )
+            .unwrap();
+            conn.execute(
+                "UPDATE slots SET runtime_override = ?1 WHERE id = ?2",
+                params![runtime, id],
+            )
+            .unwrap();
+            conn.execute("INSERT INTO sessions (id, runner_id, status, agent_runtime, runtime) VALUES (?1, ?1, 'stopped', ?2, 'native-pty')", params![id, runtime]).unwrap();
+        }
+
+        run_migrations(&mut conn).unwrap();
+        for (index, runtime) in ["qoder", "Runtime-Needle", "shell"].into_iter().enumerate() {
+            let id = index.to_string();
+            let runner = crate::repo::runner::get(&conn, &id).unwrap().unwrap();
+            assert_eq!(runner.runtime, runtime);
+            crate::repo::runner::update(&conn, &crate::repo::runner::RunnerRow::from(&runner))
+                .unwrap();
+            let updated = crate::ops::runner::update(
+                &conn,
+                &id,
+                crate::ops::runner::UpdateRunnerInput {
+                    display_name: Some("Renamed".into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            assert_eq!(updated.runtime, runtime);
+            let slot = crate::repo::slot::get(&conn, &id).unwrap().unwrap();
+            assert_eq!(slot.runtime_override.as_deref(), Some(runtime));
+            let session = crate::repo::session::get_row(&conn, &id).unwrap().unwrap();
+            assert_eq!(session.agent_runtime.as_deref(), Some(runtime));
+            assert_eq!(session.runtime.as_deref(), Some("native-pty"));
+            assert_eq!(
+                crate::repo::session::effective_runtime(&conn, &id)
+                    .unwrap()
+                    .as_deref(),
+                Some(runtime)
+            );
+            assert_eq!(
+                crate::repo::runner::get(&conn, &id)
+                    .unwrap()
+                    .unwrap()
+                    .runtime,
+                runtime
+            );
+        }
+        let version: i64 = conn
+            .query_row("SELECT MAX(version) FROM _migrations", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 20);
+    }
+
+    #[test]
     fn sessions_has_runtime_size_and_resume_columns_after_migration() {
         // Defensive: keep the legacy runtime columns present for
         // existing databases. New PTY-runtime writes use only

@@ -28,6 +28,7 @@
 // the user disabled rollouts), the row keeps a NULL key and codex
 // continues to spawn fresh on every resume — same as today, no worse.
 
+use crate::model::Runtime;
 use std::collections::HashSet;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -63,12 +64,12 @@ fn claimed_rollouts() -> &'static Mutex<HashSet<PathBuf>> {
     SET.get_or_init(|| Mutex::new(HashSet::new()))
 }
 
-pub fn sessions_root_for(runtime: &str) -> Option<PathBuf> {
+pub fn sessions_root_for(runtime: Option<Runtime>) -> Option<PathBuf> {
     let home = runner_core::app_paths::home_dir()?;
     match runtime {
-        "codex" => Some(home.join(".codex").join("sessions")),
-        "trae" => Some(home.join(".trae").join("cli").join("sessions")),
-        _ => None,
+        Some(Runtime::Codex) => Some(home.join(".codex").join("sessions")),
+        Some(Runtime::Trae) => Some(home.join(".trae").join("cli").join("sessions")),
+        Some(Runtime::ClaudeCode) | Some(Runtime::Shell) | None => None,
     }
 }
 
@@ -668,14 +669,14 @@ mod tests {
     fn sessions_root_for_maps_codex_lineage_layouts() {
         let home = runner_core::app_paths::home_dir().expect("tests require a home directory");
         assert_eq!(
-            sessions_root_for("codex"),
+            sessions_root_for(Some(Runtime::Codex)),
             Some(home.join(".codex").join("sessions")),
         );
         assert_eq!(
-            sessions_root_for("trae"),
+            sessions_root_for(Some(Runtime::Trae)),
             Some(home.join(".trae").join("cli").join("sessions")),
         );
-        assert_eq!(sessions_root_for("shell"), None);
+        assert_eq!(sessions_root_for(Some(Runtime::Shell)), None);
     }
 
     #[test]

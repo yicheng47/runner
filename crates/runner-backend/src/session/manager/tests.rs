@@ -1,4 +1,5 @@
 use super::*;
+use crate::model::Runtime;
 
 // These tests don't touch the GPUI frontend — they hit the PTY layer directly. We
 // build a minimal `Runner` row, skip the DB (the SessionManager writes
@@ -2244,7 +2245,7 @@ fn direct_spawn_ignores_the_mission_permission_mode() {
 #[test]
 fn trae_first_turn_gets_capture_prompt_marker() {
     let (first_turn, marker) = SessionManager::codex_capture_prompt_marker(
-        "trae",
+        Some(Runtime::Trae),
         "session-id",
         Some("first turn".to_string()),
     );
@@ -5312,16 +5313,16 @@ fn enter_claude_launch_gate_records_timestamp_only_for_claude_code() {
     assert!(mgr.claude_launch_gate.lock().unwrap().is_none());
 
     // Shell / codex / empty string: state stays None.
-    mgr.enter_claude_launch_gate("s1", "shell");
-    mgr.enter_claude_launch_gate("s2", "codex");
-    mgr.enter_claude_launch_gate("s3", "");
+    mgr.enter_claude_launch_gate("s1", Some(Runtime::Shell));
+    mgr.enter_claude_launch_gate("s2", Some(Runtime::Codex));
+    mgr.enter_claude_launch_gate("s3", Runtime::parse(""));
     assert!(
         mgr.claude_launch_gate.lock().unwrap().is_none(),
         "non-claude runtimes must not advance the gate"
     );
 
     // claude-code stamps the field.
-    mgr.enter_claude_launch_gate("s4", "claude-code");
+    mgr.enter_claude_launch_gate("s4", Some(Runtime::ClaudeCode));
     assert!(
         mgr.claude_launch_gate.lock().unwrap().is_some(),
         "claude-code spawn must advance the gate"
@@ -5336,7 +5337,7 @@ fn enter_claude_launch_gate_first_claude_does_not_sleep() {
     // cold start should take << 100ms here.
     let mgr = mgr_with_fake(None, fake_runtime());
     let started = Instant::now();
-    mgr.enter_claude_launch_gate("first", "claude-code");
+    mgr.enter_claude_launch_gate("first", Some(Runtime::ClaudeCode));
     let elapsed = started.elapsed();
     assert!(
         elapsed < ci_scaled_budget(Duration::from_millis(100)),
@@ -5375,7 +5376,7 @@ fn spawn_argv_injects_runtime_settings_for_fresh_and_resume() {
 
     let fresh = compose(
         "claude-code",
-        router::runtime::resume_plan("claude-code", None),
+        router::runtime::resume_plan(Some(Runtime::ClaudeCode), None),
     );
     let settings = fresh
         .windows(2)
@@ -5389,18 +5390,24 @@ fn spawn_argv_injects_runtime_settings_for_fresh_and_resume() {
     let prior = uuid::Uuid::new_v4().to_string();
     let resumed = compose(
         "claude-code",
-        router::runtime::resume_plan("claude-code", Some(&prior)),
+        router::runtime::resume_plan(Some(Runtime::ClaudeCode), Some(&prior)),
     );
     assert!(resumed.windows(2).any(|pair| pair[0] == "--settings"));
 
-    let codex = compose("codex", router::runtime::resume_plan("codex", None));
+    let codex = compose(
+        "codex",
+        router::runtime::resume_plan(Some(Runtime::Codex), None),
+    );
     assert!(!codex.iter().any(|arg| arg == "--settings"));
     assert!(codex
         .windows(2)
         .any(|args| args == ["-c", "check_for_update_on_startup=false"]));
     assert_eq!(codex.last().map(String::as_str), Some("first turn"));
 
-    let resumed = compose("codex", router::runtime::resume_plan("codex", Some(&prior)));
+    let resumed = compose(
+        "codex",
+        router::runtime::resume_plan(Some(Runtime::Codex), Some(&prior)),
+    );
     assert_eq!(&resumed[..2], &["resume", prior.as_str()]);
     assert!(resumed
         .windows(2)
@@ -5408,7 +5415,10 @@ fn spawn_argv_injects_runtime_settings_for_fresh_and_resume() {
     assert!(!resumed.iter().any(|arg| arg == "first turn"));
 
     for runtime in ["claude-code", "trae"] {
-        let args = compose(runtime, router::runtime::resume_plan(runtime, None));
+        let args = compose(
+            runtime,
+            router::runtime::resume_plan(Runtime::parse(runtime), None),
+        );
         assert!(!args
             .iter()
             .any(|arg| arg.contains("check_for_update_on_startup")));
@@ -6130,7 +6140,7 @@ fn runtime_override_helper_resets_engine_fields_and_keeps_persona() {
     assert_eq!(
         effective.args,
         router::runtime::apply_permission_mode(
-            "claude-code",
+            Some(Runtime::ClaudeCode),
             &[],
             crate::ops::runner::default_permission_mode(),
         ),
@@ -6919,7 +6929,7 @@ fn headless_fork_rejects_nonzero_exit_and_kills_timed_out_process_group() {
     let source_key = uuid::Uuid::new_v4().to_string();
     let fork_key = uuid::Uuid::new_v4().to_string();
     let event = format!(r#"{{"type":"thread.started","thread_id":"{fork_key}"}}"#);
-    let plan = router::runtime::fork_plan("codex", &source_key, "fork note").unwrap();
+    let plan = router::runtime::fork_plan(Some(Runtime::Codex), &source_key, "fork note").unwrap();
     let (_materializer, command, _capture_path) = fork_materializer(&event, 7);
     let codex_home = tempfile::tempdir().unwrap();
     let mut env = std::collections::BTreeMap::new();
@@ -6962,7 +6972,8 @@ fn headless_fork_rejects_nonzero_exit_and_kills_timed_out_process_group() {
         shell_path: None,
         initial_size: None,
     };
-    let codex_plan = router::runtime::fork_plan("codex", &source_key, "Source").unwrap();
+    let codex_plan =
+        router::runtime::fork_plan(Some(Runtime::Codex), &source_key, "Source").unwrap();
     let started = Instant::now();
     let error =
         super::spawn::run_headless_fork(&missing_rollout_spec, &codex_plan, Duration::from_secs(3))

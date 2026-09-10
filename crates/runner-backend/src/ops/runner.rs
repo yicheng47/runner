@@ -9,6 +9,7 @@
 // Lead/position invariants are per-crew and live in crew_runner.rs. This
 // module only owns the runner rows themselves.
 
+use crate::model::Runtime;
 use std::collections::HashMap;
 
 use chrono::Utc;
@@ -27,7 +28,7 @@ use crate::{
 pub struct CreateRunnerInput {
     pub handle: String,
     pub display_name: String,
-    pub runtime: String,
+    pub runtime: Runtime,
     pub command: String,
     #[serde(default)]
     pub args: Vec<String>,
@@ -69,7 +70,7 @@ pub(crate) fn default_permission_mode() -> crate::router::runtime::PermissionMod
 #[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
 pub struct UpdateRunnerInput {
     pub display_name: Option<String>,
-    pub runtime: Option<String>,
+    pub runtime: Option<Runtime>,
     pub command: Option<String>,
     pub args: Option<Vec<String>>,
     pub working_dir: Option<Option<String>>,
@@ -259,7 +260,7 @@ pub fn create(conn: &Connection, input: CreateRunnerInput) -> Result<Runner> {
     // without a permission concept (the helper returns input
     // unchanged for shell/unknown).
     let args = crate::router::runtime::apply_permission_mode(
-        &input.runtime,
+        Some(input.runtime),
         &input.args,
         input.permission_mode,
     );
@@ -270,7 +271,7 @@ pub fn create(conn: &Connection, input: CreateRunnerInput) -> Result<Runner> {
             id: id.clone(),
             handle: input.handle,
             display_name: input.display_name,
-            runtime: input.runtime,
+            runtime: input.runtime.to_string(),
             command: input.command,
             args_json: Some(args),
             working_dir: input.working_dir,
@@ -304,7 +305,10 @@ pub fn update(conn: &Connection, id: &str, input: UpdateRunnerInput) -> Result<R
     // we can strip the old runtime's bypass flags when the patch
     // changes runtime alongside the toggle.
     let prior_runtime = existing.runtime.clone();
-    let runtime = input.runtime.unwrap_or(existing.runtime);
+    let runtime = input
+        .runtime
+        .map(|runtime| runtime.to_string())
+        .unwrap_or(existing.runtime);
     let runtime_changed = prior_runtime != runtime;
     let command = input.command.unwrap_or(existing.command);
     // Compose the new args from the user-provided list (or the
@@ -320,11 +324,14 @@ pub fn update(conn: &Connection, id: &str, input: UpdateRunnerInput) -> Result<R
         Some(mode) => {
             let base = input.args.unwrap_or(existing.args);
             let cleared = if runtime_changed {
-                crate::router::runtime::strip_permission_flags(&prior_runtime, &base)
+                crate::router::runtime::strip_permission_flags(
+                    Runtime::parse(&prior_runtime),
+                    &base,
+                )
             } else {
                 base
             };
-            crate::router::runtime::apply_permission_mode(&runtime, &cleared, mode)
+            crate::router::runtime::apply_permission_mode(Runtime::parse(&runtime), &cleared, mode)
         }
         None => input.args.unwrap_or(existing.args),
     };
@@ -634,7 +641,7 @@ mod tests {
             CreateRunnerInput {
                 handle: handle.into(),
                 display_name: format!("{handle} display"),
-                runtime: "shell".into(),
+                runtime: crate::model::Runtime::Shell,
                 command: "sh".into(),
                 args: vec![],
                 working_dir: None,
@@ -660,6 +667,54 @@ mod tests {
     }
 
     #[test]
+    fn runtime_json_inputs_reject_unknown_names() {
+        let input = serde_json::json!({
+            "handle": "agent", "display_name": "Agent", "command": "custom-cli",
+            "runtime": "aider-future"
+        });
+        assert!(serde_json::from_value::<CreateRunnerInput>(input).is_err());
+        assert!(
+            serde_json::from_value::<UpdateRunnerInput>(serde_json::json!({
+                "runtime": "aider-future"
+            }))
+            .is_err()
+        );
+        assert!(
+            serde_json::from_value::<crate::mcp::tools::session::StartDirectSessionArgs>(
+                serde_json::json!({
+                    "runner_id": "agent",
+                    "runtime": "aider-future"
+                })
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn get_and_list_keep_runtime_json_strings() {
+        let pool = ctx();
+        let conn = pool.get().unwrap();
+        let runner = make(&conn, "agent");
+        update(
+            &conn,
+            &runner.id,
+            UpdateRunnerInput {
+                runtime: Some(Runtime::Codex),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            serde_json::to_value(get(&conn, &runner.id).unwrap()).unwrap()["runtime"],
+            "codex"
+        );
+        assert_eq!(
+            serde_json::to_value(list(&conn).unwrap()).unwrap()[0]["runtime"],
+            "codex"
+        );
+    }
+
+    #[test]
     fn list_returns_all_runners_alphabetical() {
         let pool = ctx();
         let conn = pool.get().unwrap();
@@ -680,7 +735,7 @@ mod tests {
             CreateRunnerInput {
                 handle: "handle-needle".into(),
                 display_name: "Display Needle".into(),
-                runtime: "Runtime-Needle".into(),
+                runtime: Runtime::Codex,
                 command: "/bin/command-needle".into(),
                 args: vec!["--args-needle".into()],
                 working_dir: Some("/tmp/working-dir-needle".into()),
@@ -690,6 +745,11 @@ mod tests {
                 effort: Some("effort-needle".into()),
                 permission_mode: PermissionMode::Auto,
             },
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE runners SET runtime = 'Runtime-Needle' WHERE id = ?1",
+            [&runner.id],
         )
         .unwrap();
         make(&conn, "decoy");
@@ -792,7 +852,7 @@ mod tests {
             CreateRunnerInput {
                 handle: "shared".into(),
                 display_name: "Dup".into(),
-                runtime: "shell".into(),
+                runtime: crate::model::Runtime::Shell,
                 command: "sh".into(),
                 args: vec![],
                 working_dir: None,
@@ -854,7 +914,7 @@ mod tests {
             &conn,
             &r.id,
             UpdateRunnerInput {
-                runtime: Some("codex".into()),
+                runtime: Some(crate::model::Runtime::Codex),
                 command: Some("codex".into()),
                 ..Default::default()
             },
@@ -1037,7 +1097,7 @@ mod tests {
             CreateRunnerInput {
                 handle: "codex-tester".into(),
                 display_name: "C".into(),
-                runtime: "codex".into(),
+                runtime: crate::model::Runtime::Codex,
                 command: "codex".into(),
                 args: vec!["--debug".into()],
                 working_dir: None,
@@ -1070,7 +1130,7 @@ mod tests {
             CreateRunnerInput {
                 handle: "claude-tester".into(),
                 display_name: "Claude".into(),
-                runtime: "claude-code".into(),
+                runtime: crate::model::Runtime::ClaudeCode,
                 command: "claude".into(),
                 args: vec![],
                 working_dir: None,
@@ -1100,7 +1160,7 @@ mod tests {
             CreateRunnerInput {
                 handle: "trae-tester".into(),
                 display_name: "TRAE".into(),
-                runtime: "trae".into(),
+                runtime: crate::model::Runtime::Trae,
                 command: "traecli".into(),
                 args: vec!["--debug".into()],
                 working_dir: None,
@@ -1149,7 +1209,7 @@ mod tests {
             CreateRunnerInput {
                 handle: "paranoid".into(),
                 display_name: "P".into(),
-                runtime: "codex".into(),
+                runtime: crate::model::Runtime::Codex,
                 command: "codex".into(),
                 args: vec!["--debug".into()],
                 working_dir: None,
@@ -1180,7 +1240,7 @@ mod tests {
             CreateRunnerInput {
                 handle: "explicit".into(),
                 display_name: "E".into(),
-                runtime: "claude-code".into(),
+                runtime: crate::model::Runtime::ClaudeCode,
                 command: "claude".into(),
                 args: vec!["--dangerously-skip-permissions".into()],
                 working_dir: None,
@@ -1213,7 +1273,7 @@ mod tests {
             CreateRunnerInput {
                 handle: "shell-tester".into(),
                 display_name: "Sh".into(),
-                runtime: "shell".into(),
+                runtime: crate::model::Runtime::Shell,
                 command: "/bin/sh".into(),
                 args: vec!["-c".into(), "echo hi".into()],
                 working_dir: None,
@@ -1240,7 +1300,7 @@ mod tests {
             CreateRunnerInput {
                 handle: "codex-rt".into(),
                 display_name: "C".into(),
-                runtime: "codex".into(),
+                runtime: crate::model::Runtime::Codex,
                 command: "codex".into(),
                 args: vec!["--debug".into()],
                 working_dir: None,
@@ -1322,7 +1382,7 @@ mod tests {
             CreateRunnerInput {
                 handle: "claude-rt".into(),
                 display_name: "C".into(),
-                runtime: "claude-code".into(),
+                runtime: crate::model::Runtime::ClaudeCode,
                 command: "claude".into(),
                 args: vec!["--mcp-debug".into()],
                 working_dir: None,
@@ -1385,7 +1445,7 @@ mod tests {
             CreateRunnerInput {
                 handle: "preserve".into(),
                 display_name: "P".into(),
-                runtime: "codex".into(),
+                runtime: crate::model::Runtime::Codex,
                 command: "codex".into(),
                 args: vec!["--debug".into()],
                 working_dir: None,
@@ -1427,7 +1487,7 @@ mod tests {
             CreateRunnerInput {
                 handle: "switcher".into(),
                 display_name: "S".into(),
-                runtime: "claude-code".into(),
+                runtime: crate::model::Runtime::ClaudeCode,
                 command: "claude".into(),
                 args: vec![],
                 working_dir: None,
@@ -1454,7 +1514,7 @@ mod tests {
             &conn,
             &r.id,
             UpdateRunnerInput {
-                runtime: Some("codex".into()),
+                runtime: Some(crate::model::Runtime::Codex),
                 command: Some("codex".into()),
                 permission_mode: Some(PermissionMode::Bypass),
                 ..Default::default()
@@ -1501,7 +1561,7 @@ mod tests {
             CreateRunnerInput {
                 handle: "too-long".into(),
                 display_name: "T".into(),
-                runtime: "claude-code".into(),
+                runtime: crate::model::Runtime::ClaudeCode,
                 command: "claude".into(),
                 args: vec![],
                 working_dir: None,

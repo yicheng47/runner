@@ -1,3 +1,4 @@
+use crate::model::Runtime;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
@@ -49,7 +50,7 @@ pub struct ShellDiscoveryStatus {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct RuntimeExecutableStatus {
-    pub name: String,
+    pub name: Runtime,
     pub display_name: String,
     pub command: String,
     pub default_model: Option<String>,
@@ -116,7 +117,7 @@ pub fn status_list(
                 .unwrap_or_default();
             let detected_path =
                 find_executable(runtime.command, &path).map(|path| path.display().to_string());
-            let override_path = overrides.get(runtime.name).cloned();
+            let override_path = overrides.get(runtime.name.key()).cloned();
             let invalid_reason = override_path
                 .as_deref()
                 .and_then(|path| validate_executable_path(Path::new(path)).err())
@@ -151,7 +152,7 @@ pub fn status_list(
                 RuntimeRowState::NotFound
             };
             RuntimeExecutableStatus {
-                name: runtime.name.to_string(),
+                name: runtime.name,
                 display_name: runtime.display_name.to_string(),
                 command: runtime.command.to_string(),
                 default_model: defaults.model,
@@ -183,7 +184,7 @@ pub fn status_list(
 }
 
 pub fn effective_runtime_command(
-    runtime: &str,
+    runtime: Runtime,
     pool: &DbPool,
     shell_env: &SharedShellEnv,
     discovery: &SharedDiscoveryState,
@@ -201,14 +202,14 @@ pub fn effective_runtime_command(
 }
 
 fn effective_runtime_command_on_path(
-    runtime: &str,
+    runtime: Runtime,
     overrides: &std::collections::BTreeMap<String, String>,
     path: &str,
     checking: bool,
 ) -> Result<EffectiveRuntimeCommand> {
     let definition = runtime_definition(runtime)
         .ok_or_else(|| Error::msg(format!("unknown runtime: {runtime}")))?;
-    if let Some(path) = overrides.get(runtime) {
+    if let Some(path) = overrides.get(runtime.key()) {
         if validate_executable_path(Path::new(path)).is_ok() {
             log::info!(
                 "runtime executable: runtime={} source=override command={}",
@@ -250,17 +251,17 @@ fn effective_runtime_command_on_path(
     Err(runtime_not_found_error(runtime))
 }
 
-pub fn runtime_not_found_error(runtime: &str) -> Error {
+pub fn runtime_not_found_error(runtime: Runtime) -> Error {
     let name = runtime_definition(runtime)
         .map(|definition| definition.display_name)
-        .unwrap_or(runtime);
+        .unwrap_or(runtime.key());
     Error::msg(format!(
         "{name} executable was not found. Open Settings → Agents to refresh discovery or set an override."
     ))
 }
 
 pub fn validate_override(
-    runtime: &str,
+    runtime: Runtime,
     path: &str,
 ) -> std::result::Result<(), OverrideValidationError> {
     if runtime_definition(runtime).is_none() {
@@ -506,15 +507,15 @@ mod tests {
                 .runtimes
                 .iter()
                 .map(|runtime| (
-                    runtime.name.as_str(),
+                    runtime.name,
                     runtime.display_name.as_str(),
                     runtime.command.as_str(),
                 ))
                 .collect::<Vec<_>>(),
             vec![
-                ("codex", "Codex", "codex"),
-                ("claude-code", "Claude Code", "claude"),
-                ("trae", "TRAE CLI", "traecli"),
+                (Runtime::Codex, "Codex", "codex"),
+                (Runtime::ClaudeCode, "Claude Code", "claude"),
+                (Runtime::Trae, "TRAE CLI", "traecli"),
             ],
         );
     }
@@ -594,17 +595,17 @@ mod tests {
     fn override_validation_rejects_relative_missing_directory_and_non_executable_paths() {
         let dir = tempfile::tempdir().unwrap();
         assert_eq!(
-            validate_override("codex", "codex").unwrap_err().code,
+            validate_override(Runtime::Codex, "codex").unwrap_err().code,
             "not_absolute"
         );
         assert_eq!(
-            validate_override("codex", "/definitely/missing/codex")
+            validate_override(Runtime::Codex, "/definitely/missing/codex")
                 .unwrap_err()
                 .code,
             "not_found"
         );
         assert_eq!(
-            validate_override("codex", dir.path().to_str().unwrap())
+            validate_override(Runtime::Codex, dir.path().to_str().unwrap())
                 .unwrap_err()
                 .code,
             "not_file"
@@ -612,7 +613,7 @@ mod tests {
         let file = dir.path().join("codex");
         std::fs::write(&file, "#!/bin/sh\n").unwrap();
         assert_eq!(
-            validate_override("codex", file.to_str().unwrap())
+            validate_override(Runtime::Codex, file.to_str().unwrap())
                 .unwrap_err()
                 .code,
             "not_executable"
@@ -633,16 +634,21 @@ mod tests {
         }));
         let discovery = completed_discovery();
 
-        db::set_runtime_override(&pool, "codex", Some(override_path.to_str().unwrap())).unwrap();
+        db::set_runtime_override(
+            &pool,
+            Runtime::Codex.key(),
+            Some(override_path.to_str().unwrap()),
+        )
+        .unwrap();
         assert_eq!(
-            effective_runtime_command("codex", &pool, &shell_env, &discovery)
+            effective_runtime_command(Runtime::Codex, &pool, &shell_env, &discovery)
                 .unwrap()
                 .command,
             override_path.display().to_string()
         );
         std::fs::remove_file(&override_path).unwrap();
         assert_eq!(
-            effective_runtime_command("codex", &pool, &shell_env, &discovery)
+            effective_runtime_command(Runtime::Codex, &pool, &shell_env, &discovery)
                 .unwrap()
                 .command,
             detected.display().to_string()
@@ -657,7 +663,7 @@ mod tests {
     fn pending_probe_allows_catalog_but_completed_missing_probe_errors() {
         assert_eq!(
             effective_runtime_command_on_path(
-                "codex",
+                Runtime::Codex,
                 &Default::default(),
                 "/definitely/missing",
                 true,
@@ -667,7 +673,7 @@ mod tests {
             "codex"
         );
         let error = effective_runtime_command_on_path(
-            "codex",
+            Runtime::Codex,
             &Default::default(),
             "/definitely/missing",
             false,

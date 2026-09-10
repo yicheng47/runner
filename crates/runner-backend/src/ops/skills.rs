@@ -1,3 +1,4 @@
+use crate::model::Runtime;
 use std::io::Write;
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
@@ -33,7 +34,7 @@ pub fn skill_catalogs(_core: &AppCore) -> Vec<SkillCatalog> {
 
 pub fn set_global_enabled(
     _core: &AppCore,
-    runtime: &str,
+    runtime: Runtime,
     path: &Path,
     enabled: bool,
 ) -> Result<SkillCatalog> {
@@ -46,15 +47,20 @@ pub fn set_global_enabled(
     )
 }
 
-pub fn read_skill(_core: &AppCore, runtime: &str, path: &Path) -> Result<String> {
+pub fn read_skill(_core: &AppCore, runtime: Runtime, path: &Path) -> Result<String> {
     read_skill_at(&home_dir()?, codex_home().as_deref(), runtime, path)
 }
 
-pub fn save_skill(_core: &AppCore, runtime: &str, path: &Path, text: &str) -> Result<SkillEntry> {
+pub fn save_skill(
+    _core: &AppCore,
+    runtime: Runtime,
+    path: &Path,
+    text: &str,
+) -> Result<SkillEntry> {
     save_skill_at(&home_dir()?, codex_home().as_deref(), runtime, path, text)
 }
 
-fn catalog_at(home: &Path, codex_home: Option<&Path>, runtime: &str) -> Result<SkillCatalog> {
+fn catalog_at(home: &Path, codex_home: Option<&Path>, runtime: Runtime) -> Result<SkillCatalog> {
     skill_catalog(runtime, home, codex_home)
         .ok_or_else(|| Error::msg(format!("runtime {runtime} has no skills catalog")))
 }
@@ -71,14 +77,14 @@ fn find_entry(catalog: &SkillCatalog, path: &Path) -> Result<SkillEntry> {
 fn set_global_enabled_at(
     home: &Path,
     codex_home: Option<&Path>,
-    runtime: &str,
+    runtime: Runtime,
     skill_path: &Path,
     enabled: bool,
 ) -> Result<SkillCatalog> {
-    if runtime == "codex" {
+    if runtime == Runtime::Codex {
         return set_codex_enabled_at(home, codex_home, skill_path, enabled);
     }
-    if runtime != "claude-code" {
+    if runtime != Runtime::ClaudeCode {
         return Err(Error::msg(
             "global skill on/off is only supported for Claude Code and Codex",
         ));
@@ -119,7 +125,7 @@ fn set_codex_enabled_at(
     skill_path: &Path,
     enabled: bool,
 ) -> Result<SkillCatalog> {
-    let catalog = catalog_at(home, codex_home, "codex")?;
+    let catalog = catalog_at(home, codex_home, Runtime::Codex)?;
     let entry = find_entry(&catalog, skill_path)?;
     if !entry.files.contains(&entry.marker) {
         return Err(Error::msg("skill has no marker file"));
@@ -232,13 +238,13 @@ fn set_codex_enabled_at(
     options
         .open(&path)?
         .write_all(document.to_string().as_bytes())?;
-    catalog_at(home, codex_home, "codex")
+    catalog_at(home, codex_home, Runtime::Codex)
 }
 
 fn read_skill_at(
     home: &Path,
     codex_home: Option<&Path>,
-    runtime: &str,
+    runtime: Runtime,
     path: &Path,
 ) -> Result<String> {
     let entry = find_entry(&catalog_at(home, codex_home, runtime)?, path)?;
@@ -251,7 +257,7 @@ fn read_skill_at(
 fn save_skill_at(
     home: &Path,
     codex_home: Option<&Path>,
-    runtime: &str,
+    runtime: Runtime,
     path: &Path,
     text: &str,
 ) -> Result<SkillEntry> {
@@ -300,7 +306,7 @@ mod tests {
         set_global_enabled_at(
             home.path(),
             None,
-            "codex",
+            Runtime::Codex,
             &home.path().join(".codex/skills/demo"),
             true,
         )
@@ -309,7 +315,7 @@ mod tests {
         assert!(set_global_enabled_at(
             home.path(),
             None,
-            "codex",
+            Runtime::Codex,
             &home.path().join(".codex/skills/unknown"),
             false
         )
@@ -318,7 +324,7 @@ mod tests {
         let catalog = set_global_enabled_at(
             home.path(),
             None,
-            "codex",
+            Runtime::Codex,
             &home.path().join(".codex/skills/demo"),
             false,
         )
@@ -346,7 +352,7 @@ mod tests {
         set_global_enabled_at(
             home.path(),
             None,
-            "codex",
+            Runtime::Codex,
             &home.path().join(".codex/skills/demo"),
             false,
         )
@@ -355,7 +361,7 @@ mod tests {
         let catalog = set_global_enabled_at(
             home.path(),
             None,
-            "codex",
+            Runtime::Codex,
             &home.path().join(".codex/skills/demo"),
             true,
         )
@@ -389,10 +395,10 @@ mod tests {
                 use std::os::unix::fs::PermissionsExt;
                 std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o640)).unwrap();
             }
-            let catalog = set_global_enabled_at(home.path(), None, "codex", &home.path().join(".codex/skills/demo"), false).unwrap();
+            let catalog = set_global_enabled_at(home.path(), None, Runtime::Codex, &home.path().join(".codex/skills/demo"), false).unwrap();
             assert_eq!(catalog.entries[0].global, GlobalState::Off);
             assert_eq!(std::fs::read_to_string(&config).unwrap(), original.replace("enabled   = true", "enabled   = false"));
-            let catalog = set_global_enabled_at(home.path(), None, "codex", &home.path().join(".codex/skills/demo"), true).unwrap();
+            let catalog = set_global_enabled_at(home.path(), None, Runtime::Codex, &home.path().join(".codex/skills/demo"), true).unwrap();
             assert_eq!(catalog.entries[0].global, GlobalState::On);
             let removed = std::fs::read_to_string(&config).unwrap();
             let document = removed.parse::<toml_edit::DocumentMut>().unwrap();
@@ -428,9 +434,9 @@ mod tests {
             "",
         ] {
             std::fs::write(&config, original).unwrap();
-            let off = set_global_enabled_at(home.path(), None, "codex", &skill_path, false).unwrap();
+            let off = set_global_enabled_at(home.path(), None, Runtime::Codex, &skill_path, false).unwrap();
             assert_eq!(off.entries[0].global, GlobalState::Off);
-            let on = set_global_enabled_at(home.path(), None, "codex", &skill_path, true).unwrap();
+            let on = set_global_enabled_at(home.path(), None, Runtime::Codex, &skill_path, true).unwrap();
             assert_eq!(on.entries[0].global, GlobalState::On);
             assert_eq!(std::fs::read(&config).unwrap(), original.as_bytes(), "{original}");
         }
@@ -450,7 +456,7 @@ mod tests {
             ("model = 'default'\n[skills]\nconfig = [{ path = MARKER, enabled = false }]\nextra = 'keep'\n", "model = 'default'\n[skills]\nextra = 'keep'\n"),
         ] {
             std::fs::write(&config, template.replace("MARKER", &marker)).unwrap();
-            set_global_enabled_at(home.path(), None, "codex", &skill_path, true).unwrap();
+            set_global_enabled_at(home.path(), None, Runtime::Codex, &skill_path, true).unwrap();
             assert_eq!(std::fs::read_to_string(&config).unwrap(), expected);
         }
     }
@@ -472,7 +478,8 @@ mod tests {
         ] {
             std::fs::write(&config, &original).unwrap();
             let catalog =
-                set_global_enabled_at(home.path(), None, "codex", &skill_path, false).unwrap();
+                set_global_enabled_at(home.path(), None, Runtime::Codex, &skill_path, false)
+                    .unwrap();
             assert_eq!(catalog.entries[0].global, GlobalState::Off);
             let written = std::fs::read_to_string(&config).unwrap();
             assert_eq!(
@@ -485,14 +492,15 @@ mod tests {
             assert!(written.contains(unrelated));
             assert!(written.ends_with(siblings));
             let catalog =
-                set_global_enabled_at(home.path(), None, "codex", &skill_path, true).unwrap();
+                set_global_enabled_at(home.path(), None, Runtime::Codex, &skill_path, true)
+                    .unwrap();
             assert_eq!(catalog.entries[0].global, GlobalState::On);
             assert_eq!(
                 std::fs::read_to_string(&config).unwrap(),
                 format!("{named}{unrelated}{siblings}")
             );
             std::fs::write(&config, &original).unwrap();
-            set_global_enabled_at(home.path(), None, "codex", &skill_path, true).unwrap();
+            set_global_enabled_at(home.path(), None, Runtime::Codex, &skill_path, true).unwrap();
             assert_eq!(
                 std::fs::read_to_string(&config).unwrap(),
                 format!("{named}{unrelated}{siblings}")
@@ -512,21 +520,24 @@ mod tests {
             );
             std::fs::write(&config, &original).unwrap();
             assert_eq!(
-                catalog_at(home.path(), None, "codex").unwrap().entries[0].global,
+                catalog_at(home.path(), None, Runtime::Codex)
+                    .unwrap()
+                    .entries[0]
+                    .global,
                 GlobalState::On
             );
             assert_eq!(
-                set_global_enabled_at(home.path(), None, "codex", &skill_path, false)
+                set_global_enabled_at(home.path(), None, Runtime::Codex, &skill_path, false)
                     .unwrap()
                     .entries[0]
                     .global,
                 GlobalState::Off
             );
             assert!(std::fs::read_to_string(&config).unwrap().starts_with(other));
-            set_global_enabled_at(home.path(), None, "codex", &skill_path, true).unwrap();
+            set_global_enabled_at(home.path(), None, Runtime::Codex, &skill_path, true).unwrap();
             assert_eq!(std::fs::read_to_string(&config).unwrap(), other);
             std::fs::write(&config, &original).unwrap();
-            set_global_enabled_at(home.path(), None, "codex", &skill_path, true).unwrap();
+            set_global_enabled_at(home.path(), None, Runtime::Codex, &skill_path, true).unwrap();
             assert_eq!(std::fs::read_to_string(&config).unwrap(), other);
         }
     }
@@ -546,14 +557,14 @@ mod tests {
                 assert!(set_global_enabled_at(
                     home.path(),
                     None,
-                    "codex",
+                    Runtime::Codex,
                     &home.path().join(".codex/skills/demo"),
                     enabled
                 )
                 .is_err());
                 assert_eq!(std::fs::read_to_string(&config).unwrap(), original);
             }
-            assert!(skill_catalog("codex", home.path(), None).is_some());
+            assert!(skill_catalog(Runtime::Codex, home.path(), None).is_some());
         }
         let custom = home.path().join("custom-codex");
         std::fs::create_dir_all(custom.join("skills/demo")).unwrap();
@@ -593,14 +604,17 @@ mod tests {
         set_global_enabled_at(
             home.path(),
             None,
-            "claude-code",
+            Runtime::ClaudeCode,
             &home.path().join(".claude/skills/demo"),
             false,
         )
         .unwrap();
         let claude_off = std::fs::read_to_string(&claude_config).unwrap();
         assert_eq!(
-            catalog_at(home.path(), None, "codex").unwrap().entries[0].global,
+            catalog_at(home.path(), None, Runtime::Codex)
+                .unwrap()
+                .entries[0]
+                .global,
             GlobalState::On
         );
         let alias = home.path().join(".codex/skills/demo/SKILL.md");
@@ -610,13 +624,16 @@ mod tests {
         );
         std::fs::write(&codex_config, &original).unwrap();
         assert_eq!(
-            catalog_at(home.path(), None, "codex").unwrap().entries[0].global,
+            catalog_at(home.path(), None, Runtime::Codex)
+                .unwrap()
+                .entries[0]
+                .global,
             GlobalState::Off
         );
         set_global_enabled_at(
             home.path(),
             None,
-            "codex",
+            Runtime::Codex,
             &home.path().join(".codex/skills/demo"),
             true,
         )
@@ -628,7 +645,7 @@ mod tests {
         set_global_enabled_at(
             home.path(),
             None,
-            "codex",
+            Runtime::Codex,
             &home.path().join(".codex/skills/demo"),
             false,
         )
@@ -641,18 +658,21 @@ mod tests {
         set_global_enabled_at(
             home.path(),
             None,
-            "claude-code",
+            Runtime::ClaudeCode,
             &home.path().join(".claude/skills/demo"),
             true,
         )
         .unwrap();
         assert_eq!(std::fs::read_to_string(&codex_config).unwrap(), codex_off);
         assert_eq!(
-            catalog_at(home.path(), None, "codex").unwrap().entries[0].global,
+            catalog_at(home.path(), None, Runtime::Codex)
+                .unwrap()
+                .entries[0]
+                .global,
             GlobalState::Off
         );
         assert_eq!(
-            catalog_at(home.path(), None, "claude-code")
+            catalog_at(home.path(), None, Runtime::ClaudeCode)
                 .unwrap()
                 .entries[0]
                 .global,
@@ -676,26 +696,28 @@ mod tests {
             std::fs::write(path.join("SKILL.md"), text).unwrap();
         }
         assert_eq!(
-            read_skill_at(home.path(), None, "codex", &agents).unwrap(),
+            read_skill_at(home.path(), None, Runtime::Codex, &agents).unwrap(),
             "# Agents\r\n"
         );
         assert_eq!(
-            read_skill_at(home.path(), None, "codex", &legacy).unwrap(),
+            read_skill_at(home.path(), None, Runtime::Codex, &legacy).unwrap(),
             "# Legacy\n"
         );
         let replacement = "---\nname: renamed\n---\n# Changed\r\n";
-        let changed = save_skill_at(home.path(), None, "codex", &agents, replacement).unwrap();
+        let changed =
+            save_skill_at(home.path(), None, Runtime::Codex, &agents, replacement).unwrap();
         assert_eq!(changed.path, agents);
         assert_eq!(changed.name, "renamed");
         assert_eq!(
-            read_skill_at(home.path(), None, "codex", &agents).unwrap(),
+            read_skill_at(home.path(), None, Runtime::Codex, &agents).unwrap(),
             replacement
         );
         assert_eq!(
-            read_skill_at(home.path(), None, "codex", &legacy).unwrap(),
+            read_skill_at(home.path(), None, Runtime::Codex, &legacy).unwrap(),
             "# Legacy\n"
         );
-        let catalog = set_global_enabled_at(home.path(), None, "codex", &legacy, false).unwrap();
+        let catalog =
+            set_global_enabled_at(home.path(), None, Runtime::Codex, &legacy, false).unwrap();
         assert_eq!(
             catalog
                 .entries
@@ -704,12 +726,14 @@ mod tests {
                 .collect::<Vec<_>>(),
             [(&legacy, &GlobalState::Off), (&agents, &GlobalState::On)]
         );
-        let catalog = set_global_enabled_at(home.path(), None, "codex", &agents, false).unwrap();
+        let catalog =
+            set_global_enabled_at(home.path(), None, Runtime::Codex, &agents, false).unwrap();
         assert!(catalog
             .entries
             .iter()
             .all(|entry| entry.global == GlobalState::Off));
-        let catalog = set_global_enabled_at(home.path(), None, "codex", &legacy, true).unwrap();
+        let catalog =
+            set_global_enabled_at(home.path(), None, Runtime::Codex, &legacy, true).unwrap();
         assert_eq!(
             catalog
                 .entries
@@ -725,9 +749,11 @@ mod tests {
             home.path().join("outside"),
             agents.join("../demo"),
         ] {
-            assert!(read_skill_at(home.path(), None, "codex", &invalid).is_err());
-            assert!(save_skill_at(home.path(), None, "codex", &invalid, "bad").is_err());
-            assert!(set_global_enabled_at(home.path(), None, "codex", &invalid, false).is_err());
+            assert!(read_skill_at(home.path(), None, Runtime::Codex, &invalid).is_err());
+            assert!(save_skill_at(home.path(), None, Runtime::Codex, &invalid, "bad").is_err());
+            assert!(
+                set_global_enabled_at(home.path(), None, Runtime::Codex, &invalid, false).is_err()
+            );
         }
         assert_eq!(std::fs::read_to_string(&config).unwrap(), before);
         assert_eq!(
@@ -749,10 +775,11 @@ mod tests {
             std::fs::write(path.join("SKILL.md"), "# Agents\n").unwrap();
             let config_dir = home.path().join(if custom { "custom" } else { ".codex" });
             let codex_home = custom.then_some(config_dir.as_path());
-            set_global_enabled_at(home.path(), codex_home, "codex", &path, true).unwrap();
+            set_global_enabled_at(home.path(), codex_home, Runtime::Codex, &path, true).unwrap();
             assert!(!config_dir.exists());
             let catalog =
-                set_global_enabled_at(home.path(), codex_home, "codex", &path, false).unwrap();
+                set_global_enabled_at(home.path(), codex_home, Runtime::Codex, &path, false)
+                    .unwrap();
             assert_eq!(catalog.entries[0].global, GlobalState::Off);
             let text = std::fs::read_to_string(config_dir.join("config.toml")).unwrap();
             let document = text.parse::<toml_edit::DocumentMut>().unwrap();
@@ -781,7 +808,7 @@ mod tests {
             .join(std::ffi::OsString::from_vec(vec![0xff]));
         std::fs::create_dir_all(&path).unwrap();
         std::fs::write(path.join("SKILL.md"), "# Skill").unwrap();
-        assert!(set_global_enabled_at(home.path(), None, "codex", &path, false).is_err());
+        assert!(set_global_enabled_at(home.path(), None, Runtime::Codex, &path, false).is_err());
         assert!(!home.path().join(".codex").exists());
         assert_eq!(
             std::fs::read_to_string(path.join("SKILL.md")).unwrap(),
@@ -798,7 +825,7 @@ mod tests {
         let catalog = set_global_enabled_at(
             home.path(),
             None,
-            "claude-code",
+            Runtime::ClaudeCode,
             &home.path().join(".claude/skills/demo"),
             false,
         )
@@ -814,7 +841,7 @@ mod tests {
         let catalog = set_global_enabled_at(
             home.path(),
             None,
-            "claude-code",
+            Runtime::ClaudeCode,
             &home.path().join(".claude/skills/demo"),
             true,
         )
@@ -840,7 +867,7 @@ mod tests {
         set_global_enabled_at(
             home.path(),
             None,
-            "claude-code",
+            Runtime::ClaudeCode,
             &home.path().join(".claude/skills/demo"),
             false,
         )
@@ -852,7 +879,7 @@ mod tests {
         set_global_enabled_at(
             home.path(),
             None,
-            "claude-code",
+            Runtime::ClaudeCode,
             &home.path().join(".claude/skills/demo"),
             true,
         )
@@ -873,11 +900,11 @@ mod tests {
             "{}",
         ] {
             std::fs::write(&path, original).unwrap();
-            let off = set_global_enabled_at(home.path(), None, "claude-code", &skill_path, false).unwrap();
+            let off = set_global_enabled_at(home.path(), None, Runtime::ClaudeCode, &skill_path, false).unwrap();
             assert_eq!(off.entries[0].global, GlobalState::Off);
             let written: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
             assert_eq!(written["skillOverrides"]["demo"], "off");
-            let on = set_global_enabled_at(home.path(), None, "claude-code", &skill_path, true).unwrap();
+            let on = set_global_enabled_at(home.path(), None, Runtime::ClaudeCode, &skill_path, true).unwrap();
             assert_eq!(on.entries[0].global, GlobalState::On);
             let restored = std::fs::read_to_string(&path).unwrap();
             assert_eq!(restored, format!("{}\n", original.strip_suffix('\n').unwrap_or(original)));
@@ -893,7 +920,7 @@ mod tests {
         set_global_enabled_at(
             home.path(),
             None,
-            "claude-code",
+            Runtime::ClaudeCode,
             &home.path().join(".claude/skills/demo"),
             false,
         )
@@ -908,7 +935,7 @@ mod tests {
         set_global_enabled_at(
             home.path(),
             None,
-            "claude-code",
+            Runtime::ClaudeCode,
             &home.path().join(".claude/skills/demo"),
             true,
         )
@@ -920,13 +947,13 @@ mod tests {
         assert!(set_global_enabled_at(
             home.path(),
             None,
-            "codex",
+            Runtime::Codex,
             &home.path().join(".codex/skills/demo"),
             false
         )
         .is_err());
         assert!(!home.path().join(".codex").exists());
-        for runtime in ["qoder", "trae", "unknown"] {
+        for runtime in [Runtime::Trae, Runtime::Shell] {
             assert!(set_global_enabled_at(
                 home.path(),
                 None,
@@ -952,7 +979,7 @@ mod tests {
             assert!(set_global_enabled_at(
                 home.path(),
                 None,
-                "claude-code",
+                Runtime::ClaudeCode,
                 &home.path().join(".claude/skills/demo"),
                 false
             )
@@ -969,7 +996,7 @@ mod tests {
             read_skill_at(
                 home.path(),
                 None,
-                "claude-code",
+                Runtime::ClaudeCode,
                 &home.path().join(".claude/skills/demo")
             )
             .unwrap(),
@@ -979,7 +1006,7 @@ mod tests {
         let entry = save_skill_at(
             home.path(),
             None,
-            "claude-code",
+            Runtime::ClaudeCode,
             &home.path().join(".claude/skills/demo"),
             text,
         )
@@ -995,7 +1022,7 @@ mod tests {
             read_skill_at(
                 home.path(),
                 None,
-                "claude-code",
+                Runtime::ClaudeCode,
                 &home.path().join(".claude/skills/demo")
             )
             .unwrap(),
@@ -1015,7 +1042,7 @@ mod tests {
         let entry = save_skill_at(
             home.path(),
             None,
-            "claude-code",
+            Runtime::ClaudeCode,
             &home.path().join(".claude/skills/demo"),
             "legacy edit",
         )
@@ -1032,7 +1059,7 @@ mod tests {
             assert!(save_skill_at(
                 home.path(),
                 None,
-                "claude-code",
+                Runtime::ClaudeCode,
                 &home.path().join(".claude/skills").join(name),
                 "bad"
             )
@@ -1043,7 +1070,7 @@ mod tests {
         assert!(save_skill_at(
             home.path(),
             None,
-            "claude-code",
+            Runtime::ClaudeCode,
             &home.path().join(".claude/skills/missing"),
             "bad"
         )
@@ -1062,7 +1089,7 @@ mod tests {
         let entry = save_skill_at(
             home.path(),
             None,
-            "claude-code",
+            Runtime::ClaudeCode,
             &home.path().join(".claude/skills/demo"),
             "through the link",
         )
@@ -1081,7 +1108,7 @@ mod tests {
         let result = save_skill_at(
             home.path(),
             None,
-            "claude-code",
+            Runtime::ClaudeCode,
             &home.path().join(".claude/skills/demo"),
             "forbidden",
         );
@@ -1097,14 +1124,14 @@ mod tests {
         assert!(read_skill_at(
             home.path(),
             None,
-            "claude-code",
+            Runtime::ClaudeCode,
             &home.path().join(".claude/skills/demo")
         )
         .is_err());
         assert!(save_skill_at(
             home.path(),
             None,
-            "claude-code",
+            Runtime::ClaudeCode,
             &home.path().join(".claude/skills/demo"),
             "bad"
         )
@@ -1121,7 +1148,7 @@ mod tests {
         let other = path.with_file_name("other");
         std::fs::create_dir_all(&other).unwrap();
         std::fs::write(other.join("SKILL.md"), "---\nname: demo\n---\n").unwrap();
-        save_skill_at(home.path(), None, "claude-code", &other, "chosen").unwrap();
+        save_skill_at(home.path(), None, Runtime::ClaudeCode, &other, "chosen").unwrap();
         assert_eq!(
             std::fs::read_to_string(path.join("SKILL.md")).unwrap(),
             "# Original\r\n"
@@ -1130,6 +1157,13 @@ mod tests {
             std::fs::read_to_string(other.join("SKILL.md")).unwrap(),
             "chosen"
         );
-        assert!(save_skill_at(home.path(), None, "claude-code", Path::new("demo"), "bad").is_err());
+        assert!(save_skill_at(
+            home.path(),
+            None,
+            Runtime::ClaudeCode,
+            Path::new("demo"),
+            "bad"
+        )
+        .is_err());
     }
 }

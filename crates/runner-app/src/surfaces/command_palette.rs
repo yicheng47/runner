@@ -1,3 +1,4 @@
+use runner_backend::model::Runtime;
 use std::rc::Rc;
 
 use gpui::prelude::*;
@@ -94,7 +95,7 @@ fn chat_search_text(
 }
 
 fn session_palette_kind(runtime: &str) -> PaletteKind {
-    if runtime == "shell" {
+    if Runtime::parse(runtime) == Some(Runtime::Shell) {
         PaletteKind::Terminal
     } else {
         PaletteKind::Chat
