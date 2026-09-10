@@ -165,7 +165,6 @@ const MIGRATIONS: &[(i64, &str)] = &[
         20,
         include_str!("../migrations/0020_slot_effort_override.sql"),
     ),
-    (21, include_str!("../migrations/0021_runtime_names.sql")),
 ];
 
 // Default-data seed: ships the Peer coding starter crew on first launch.
@@ -1695,97 +1694,6 @@ Talking to the human:
             )
             .unwrap();
         assert_eq!(overridden.as_deref(), Some("xhigh"));
-    }
-
-    #[test]
-    fn migration_0021_normalizes_unknown_runtime_names() {
-        let mut conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
-        run_migrations_up_to(&mut conn, 20).unwrap();
-        insert_crew(&conn, "c1");
-
-        let cases = [
-            (
-                "qoder",
-                "shell",
-                Some("qoder"),
-                None,
-                Some("qoder"),
-                Some("shell"),
-            ),
-            (
-                "arbitrary",
-                "shell",
-                Some("arbitrary"),
-                None,
-                Some("arbitrary"),
-                Some("shell"),
-            ),
-            (
-                "claude-code",
-                "claude-code",
-                Some("claude-code"),
-                Some("claude-code"),
-                Some("claude-code"),
-                Some("claude-code"),
-            ),
-            (
-                "codex",
-                "codex",
-                Some("codex"),
-                Some("codex"),
-                Some("codex"),
-                Some("codex"),
-            ),
-            (
-                "trae",
-                "trae",
-                Some("trae"),
-                Some("trae"),
-                Some("trae"),
-                Some("trae"),
-            ),
-            (
-                "shell",
-                "shell",
-                Some("shell"),
-                None,
-                Some("shell"),
-                Some("shell"),
-            ),
-            ("shell", "shell", None, None, None, None),
-        ];
-        for (i, (runtime, _, slot_runtime, _, agent_runtime, _)) in cases.iter().enumerate() {
-            let id = i.to_string();
-            insert_runner(&conn, &id, &id).unwrap();
-            insert_slot(&conn, &id, "c1", &id, &id, i as i64, 0).unwrap();
-            conn.execute("UPDATE runners SET runtime = ?1, command = 'custom-cli', args_json = '[\"--custom\"]', system_prompt = 'persona' WHERE id = ?2", params![runtime, id]).unwrap();
-            conn.execute(
-                "UPDATE slots SET runtime_override = ?1 WHERE id = ?2",
-                params![slot_runtime, id],
-            )
-            .unwrap();
-            conn.execute("INSERT INTO sessions (id, runner_id, status, agent_runtime, runtime, runtime_socket, runtime_session, runtime_window, runtime_pane) VALUES (?1, ?1, 'stopped', ?2, 'native-pty', 'socket', 'session', 'window', 'pane')", params![id, agent_runtime]).unwrap();
-        }
-
-        run_migrations(&mut conn).unwrap();
-
-        for (i, (_, runtime, _, slot_runtime, _, agent_runtime)) in cases.iter().enumerate() {
-            let id = i.to_string();
-            let row: (String, Option<String>, Option<String>) = conn.query_row(
-                "SELECT r.runtime, s.runtime_override, session.agent_runtime FROM runners r JOIN slots s ON s.runner_id = r.id JOIN sessions session ON session.runner_id = r.id WHERE r.id = ?1",
-                [&id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            ).unwrap();
-            assert_eq!(
-                (row.0.as_str(), row.1.as_deref(), row.2.as_deref()),
-                (*runtime, *slot_runtime, *agent_runtime)
-            );
-            let preserved: bool = conn.query_row(
-                "SELECT r.handle = ?1 AND r.command = 'custom-cli' AND r.args_json = '[\"--custom\"]' AND r.system_prompt = 'persona' AND s.runtime = 'native-pty' AND s.runtime_socket = 'socket' AND s.runtime_session = 'session' AND s.runtime_window = 'window' AND s.runtime_pane = 'pane' FROM runners r JOIN sessions s ON s.runner_id = r.id WHERE r.id = ?1",
-                [&id], |row| row.get(0),
-            ).unwrap();
-            assert!(preserved);
-        }
     }
 
     #[test]

@@ -8,28 +8,17 @@ Runtime identity is a bare string everywhere. On the baseline, outside test file
 
 ## What ships
 
-Three commits on one feature branch:
+Jason revised the scope on 2026-09-10: no database migration. Runtime names stay strings in persisted records; the enum formalizes known runtimes in code. Legacy and arbitrary names remain readable and unchanged. Parsing a name is fallible, and an unrecognized name retains the baseline behavior rather than being coerced to `Shell`.
 
-1. A migration that normalizes runtime names already in user databases, so the strict type in commit 2 never meets a value it cannot decode.
-2. A `Runtime` enum in `runner-backend` — `ClaudeCode`, `Codex`, `Trae`, `Shell` — with the wire names unchanged (`claude-code`, `codex`, `trae`, `shell`). Model fields, ops inputs, the router adapter, spawn, skills, runtime status and defaults, the MCP tool args, and the app surfaces dispatch on the enum. Strings survive only at the boundaries listed in section 2. The one intentional behavior change: runner create/update and the direct-session MCP tool reject an unknown runtime name at the JSON boundary instead of persisting it.
-3. The one arch line that promised unknown rows stay readable, rewritten to describe the migration.
-
-Tests, `make clippy`, and `make fmt` stay green after each commit.
+The original migration commit is followed by a removal commit; do not amend or rebase. Then commit the code conversion and the architecture description separately. Run `cargo test --workspace`, `make clippy`, and `make fmt` before each commit. No push, PR, or merge.
 
 ## Where it touches
 
-### 1. Migration `0021_runtime_names.sql`
+### 1. Preserve database compatibility
 
-Facts to build on: the Qoder runtime was dropped in `add02aa` (2026-08-28) with no data migration, so colleague databases may still hold `runners.runtime = 'qoder'` and `sessions.agent_runtime = 'qoder'` rows; `docs/arch/arch.md` §3.2 currently says those rows "stay readable but cannot spawn". Runner create (`ops/runner.rs::create`) never validated `runtime`, so any string could have been persisted; a test on the baseline even inserts `"Runtime-Needle"`. Both databases on the author's machine hold only the four known names in `runners.runtime`, `slots.runtime_override`, and `sessions.agent_runtime` (checked 2026-09-10).
+Do not add migration `0021` or normalize existing runtime names. Keep database-backed models and query outputs string-valued, including `runners.runtime`, `slots.runtime_override`, and `sessions.agent_runtime`. Existing unknown values must round-trip unchanged. `sessions.runtime` remains the independent PTY discriminator.
 
-The migration, registered in `db.rs` next to `0020`:
-
-- `runners.runtime` not in the four known names → `'shell'`. Every wildcard arm on the baseline already treats an unknown name exactly like `shell`: `resolve_runner_executable` returns the runner untouched when `runtime_definition` finds nothing, and every `model_effort_args` / `permission_mode_args` / `system_prompt_args` helper returns empty. So the row keeps spawning its `command` verbatim, as it did; the runner keeps its handle, persona, and args, and the user can pick a real agent runtime in the edit form. The only visible difference is the sidebar showing the shell icon instead of the raw name.
-- `slots.runtime_override` not in the three agent names → `NULL` (fall back to the runner's own runtime). `shell` was never a valid override — `validate_runtime_override` rejects it — so it is normalized too.
-- `sessions.agent_runtime` non-NULL and not in the four known names → `'shell'`.
-- `sessions.runtime` is the PTY discriminator (`native-pty`), not the agent kind. Do not touch it. Same for `runtime_socket` / `runtime_session` / `runtime_window` / `runtime_pane`.
-
-Test: seed a connection at migration 20 with one row per affected column carrying `'qoder'`, run the migrations, assert the rewritten values. Follow the existing migration-test pattern in `db.rs`.
+Test that retired and arbitrary runtime names remain readable and retain their raw values through runner, slot, and session reads and writes. Test the existing unsupported-runtime dispatch behavior as well as all four known names.
 
 ### 2. The `Runtime` enum and every consumer
 
@@ -41,9 +30,9 @@ Test: seed a connection at migration 20 with one row per affected column carryin
 
 **The registry.** `router::runtime::RuntimeDefinition.name` becomes `Runtime`. `runtime_definition(Runtime) -> Option<RuntimeDefinition>` stays `Option` and returns `None` for `Shell`: the three-entry catalog is the list of *agents* the UI can select for a runner or slot, skills have catalogs for, and executable discovery tracks; `shell` is a runtime a session can be (direct terminals, the drawer) but not an agent. Every place that gates on `runtime_definition(..).is_none()` today (slot override validation, `runtime_set_override`, `runtime_clear_override`, skills' `catalog_at`, the resume path) keeps its meaning without a rewrite. `runtime_display_name` and `supports_native_fork` take `Runtime`.
 
-**The rule for every other site.** A struct field, function parameter, or local that names an agent runtime becomes `Runtime` (or `Option<Runtime>` where it was `Option<String>`). Strings remain only where the value is persisted or parsed as text:
+**The rule for every other site.** Known-runtime catalogs and internal dispatch use `Runtime`. Database-backed models and compatibility entry points retain raw strings; convert them with `Runtime::parse` where they reach typed dispatch. Preserve `None` explicitly for an unknown name, without coercion to a known runtime. Strings also remain at text boundaries:
 
-- SQLite columns — through `serde_rusqlite` (`from_row` / `to_params_named`) exactly as `SessionStatus` already crosses, no hand-written mapping. Where a repo function binds the value with `rusqlite::params!` (e.g. `repo::slot::set_runtime_override`), bind `runtime.key()`. The `COALESCE(s.runtime_override, r.runtime)` queries in `repo/crew.rs` and `repo/session.rs` are unchanged SQL; their decoded field becomes `Runtime`.
+- SQLite columns and decoded database-backed models remain `String` / `Option<String>`. Keep the existing SQL and serialization unchanged; no strict enum decoding of stored values. The `COALESCE` queries in `repo/crew.rs` and `repo/session.rs` keep their string-valued outputs.
 - MCP JSON — `CreateRunnerInput.runtime`, `UpdateRunnerInput.runtime`, `UpdateSlotInput.runtime_override`, `CreateSlotInput.runtime_override`, `StartDirectSessionArgs.runtime` become the enum; serde does the rejection. The `Runner`, `Slot`, `CrewMemberPreview`, `SessionRow`, `DirectSessionEntry` outputs serialize to the same strings as before.
 - Settings JSON — `enabled_agents`, `disabled_agents`, `initialized_mcp_clients` in `app_settings.rs` and the `runtime_overrides` map in `db.rs` stay `String` collections; lookups pass `runtime.key()`. `is_agent_enabled` may take `Runtime`.
 - `SelectOption` values in the app — the select widget is string-keyed. Build options from `runtime.key()`; on change, `Runtime::parse(value)`, and treat `None` as no-op (the options come from the catalog, so it cannot happen).
@@ -54,13 +43,13 @@ Test: seed a connection at migration 20 with one row per affected column carryin
 
 **Not this runtime.** `repo::session::Session.runtime` and `session::runtime::RuntimeSession.runtime` are the PTY discriminator (`"native-pty"`). `runtime_status`'s shell discovery, `runtime_shell_env`, and `direct_chat_path` are about the login shell, not `Runtime::Shell`. Strings named `runtime` in those places stay strings.
 
-**Tests.** Test files (`tests.rs`, `tests/`, `#[cfg(test)]` blocks) are updated to use the enum. Tests that exercised made-up names — `"Runtime-Needle"` in `ops/runner.rs`, `"aider-future"` in `ops/slot.rs`, `"qoder"` / `"unknown"` in `skills.rs` and `ops/skills.rs` — are rewritten to what still holds: the slot-override test asserts `Shell` is rejected as an override, the skills tests assert `Trae` and `Shell` have no catalog, and a new test asserts that `serde_json::from_value::<CreateRunnerInput>` with `"runtime": "aider-future"` fails. The `runner_get`/`runner_list` MCP JSON shape gets one assertion that `runtime` still serializes as `"codex"`.
+**Tests.** Keep tests of legacy and arbitrary persisted names, including `"Runtime-Needle"` search exclusions and unsupported-runtime behavior. Update internal typed-runtime tests to use the enum. Test `Shell` as an invalid agent override and `Trae` / `Shell` as runtimes without skills catalogs. Assert that new runtime names are validated at the JSON boundary while existing stored names remain unchanged. The `runner_get`/`runner_list` MCP JSON shape gets one assertion that `runtime` still serializes as `"codex"`.
 
 **Optional, only if it falls out.** `ops::runtime::RuntimeDefinition` is a `String` copy of `router::runtime::RuntimeDefinition` for the app; once both carry `Runtime` the copy may be pointless. Collapse it only if the five app callers of `runtime_list()` get simpler, not as a separate refactor.
 
 ### 3. Docs
 
-`docs/arch/arch.md` §3.2: replace the sentence "`qoder` rows from before v0.6.7 stay readable but cannot spawn" with what is true after commit 1 (migration `0021` rewrites unknown runtime names to `shell`), and name the `Runtime` enum as the identity type. No other doc edits.
+`docs/arch/arch.md` §3.2: describe `Runtime` as the code-level identity for known runtimes and the string database boundary. State that existing names remain untouched and readable; do not claim a migration exists.
 
 ## Rules of the road
 
@@ -69,11 +58,11 @@ Test: seed a connection at migration 20 with one row per affected column carryin
 - Do not launch the Runner app (`make run`) — the human smoke-tests. Verify with `cargo test --workspace`, `make clippy`, `make fmt`.
 - Follow existing patterns; no new modules, traits, or helpers beyond the enum and its `key` / `parse` / `Display`. No `From<&str>` that panics, no lossy `unwrap_or(Runtime::Shell)` shims — a parse that can fail returns `Option` or an error.
 - Do not move code between files; do not split `router/runtime.rs` or the surfaces. File splits are their own passes.
-- The `rusqlite`-level `FromSql` / `ToSql` impls are not needed; serde_rusqlite covers the rows. Do not add them.
+- The `rusqlite`-level `FromSql` / `ToSql` impls are not needed; database rows remain strings. Do not add them.
 
 ## Verification
 
-Per commit: `cargo test --workspace`, `make clippy`, `make fmt`, all green. After commit 2, `grep -rn --include='*.rs' '"codex"\|"claude-code"\|"trae"\|"shell"' crates cli` outside test code should return only: the four `key()` strings in `model.rs`, `RUNTIME_DEFINITIONS`' `command` values (`"codex"`, `"claude"`, `"traecli"`), the `'codex'` inside `db.rs`'s seed `INSERT` SQL, the settings-JSON keys in `app_store/mcp_defaults.rs` and `app_settings.rs`, and the migration. The handoff lists every remaining literal with its reason, the migration test's before/after rows, and every test that was rewritten rather than mechanically updated. Reviewer checks the diff for accidental behavior change first (a `_` arm that used to cover `trae` or `shell` and now names only one of them is the thing to look for), then the remaining-literal list.
+Per commit: `cargo test --workspace`, `make clippy`, `make fmt`, all green. After commit 2, `grep -rn --include='*.rs' '"codex"\|"claude-code"\|"trae"\|"shell"' crates cli` outside test code should return only: the four `key()` strings in `model.rs`, `RUNTIME_DEFINITIONS`' `command` values (`"codex"`, `"claude"`, `"traecli"`), the `'codex'` inside `db.rs`'s seed `INSERT` SQL, the settings-JSON keys in `app_store/mcp_defaults.rs` and `app_settings.rs`, and other textual boundaries that retain raw names. The handoff lists every remaining literal with its reason, the compatibility tests showing unchanged stored names, and every test that was rewritten rather than mechanically updated. Reviewer checks the diff for accidental behavior change first (a `_` arm that used to cover `trae` or `shell` and now names only one of them is the thing to look for), then the remaining-literal list.
 
 ## Non-goals
 

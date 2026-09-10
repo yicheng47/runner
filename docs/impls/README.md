@@ -6,7 +6,7 @@ A plan stays here while its work is in flight and moves to [`archive/`](./archiv
 
 ## Active
 
-- [`538-runtime-enum.md`](./538-runtime-enum.md) — issue [#538](https://github.com/yicheng47/runner/issues/538): replace bare runtime name strings with a `Runtime` enum; migration for stray names, then one mechanical type change, then the arch line.
+- [`538-runtime-enum.md`](./538-runtime-enum.md) — issue [#538](https://github.com/yicheng47/runner/issues/538): replace bare runtime name strings with a `Runtime` enum; code-level runtime identity with string database compatibility and no migration.
 - [`local-skills/`](./local-skills/README.md) — feature [73](../features/73-runner-skills.md) implementation program: condensed state and binding decisions, milestone plan, dated impl log.
 - [`gpui-rewrite/`](./gpui-rewrite/) — the GPUI rewrite record; shipped as `v0.6.0` 2026-08-23. What is still open from the M6 consolidation queue is in [`m6-remainder.md`](./gpui-rewrite/m6-remainder.md); [#445](https://github.com/yicheng47/runner/issues/445) closed 2026-08-27 once the queued items landed.
 
