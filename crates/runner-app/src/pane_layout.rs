@@ -959,6 +959,9 @@ mod tests {
             assert_eq!(layout.session_ids(), ["chat"]);
             assert_eq!(layout.root.leaves().len(), 2);
             assert!(layout.focused_session_id().is_none());
+
+            layout.apply_preset(PresetKind::Single);
+            assert_eq!(layout.focused_session_id(), Some("chat"));
         }
     }
 
