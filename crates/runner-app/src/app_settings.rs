@@ -184,7 +184,6 @@ pub struct AppSettings {
     pub chat_panel_width: f32,
     pub mission_rail_open: bool,
     pub mission_rail_width: f32,
-    pub mission_rail_view: String,
     pub last_mission_terminal_ids: BTreeMap<String, String>,
     pub default_crew_id: String,
     pub default_working_dir: String,
@@ -222,7 +221,6 @@ impl Default for AppSettings {
             chat_panel_width: CHAT_PANEL_DEFAULT,
             mission_rail_open: true,
             mission_rail_width: MISSION_RAIL_DEFAULT,
-            mission_rail_view: "runners".into(),
             last_mission_terminal_ids: BTreeMap::new(),
             default_crew_id: String::new(),
             default_working_dir: String::new(),
@@ -267,9 +265,6 @@ impl AppSettings {
         self.sidebar_width = normalize_sidebar_width(self.sidebar_width);
         self.chat_panel_width = normalize_chat_panel_width(self.chat_panel_width);
         self.mission_rail_width = normalize_mission_rail_width(self.mission_rail_width);
-        if !matches!(self.mission_rail_view.as_str(), "runners" | "meta") {
-            self.mission_rail_view = "runners".into();
-        }
         self.last_mission_terminal_ids
             .retain(|mission_id, session_id| !mission_id.is_empty() && !session_id.is_empty());
         self.default_crew_id = self.default_crew_id.trim().to_owned();
@@ -484,7 +479,6 @@ mod tests {
         let mut settings = AppSettings {
             mission_rail_open: false,
             mission_rail_width: 412.,
-            mission_rail_view: "meta".into(),
             ..AppSettings::default()
         };
         settings
@@ -493,17 +487,14 @@ mod tests {
         let value = serde_json::to_value(&settings).unwrap();
         assert_eq!(value["missionRailOpen"], false);
         assert_eq!(value["missionRailWidth"], 412.);
-        assert_eq!(value["missionRailView"], "meta");
         assert_eq!(value["lastMissionTerminalIds"]["mission"], "session");
 
         settings.mission_rail_width = f32::NAN;
-        settings.mission_rail_view = "unknown".into();
         settings
             .last_mission_terminal_ids
             .insert(String::new(), String::new());
         settings.normalize();
         assert_eq!(settings.mission_rail_width, MISSION_RAIL_DEFAULT);
-        assert_eq!(settings.mission_rail_view, "runners");
         assert_eq!(settings.last_mission_terminal_ids.len(), 1);
     }
 

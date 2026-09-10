@@ -58,23 +58,6 @@ enum MissionRailView {
     Meta,
 }
 
-impl MissionRailView {
-    fn from_setting(value: &str) -> Self {
-        if value == "meta" {
-            Self::Meta
-        } else {
-            Self::Runners
-        }
-    }
-
-    fn setting(self) -> &'static str {
-        match self {
-            Self::Runners => "runners",
-            Self::Meta => "meta",
-        }
-    }
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum MissionTransitionKind {
     Starting,
@@ -163,6 +146,14 @@ fn slot_controls(status: SessionStatus) -> [SessionControlKind; 2] {
         },
         SessionControlKind::Restart,
     ]
+}
+
+fn restart_confirm_body(handle: &str, lead_handle: &str, is_lead: bool) -> String {
+    if is_lead {
+        format!("Its conversation so far is discarded. @{handle} comes back with the launch prompt, the same first turn a cold start gives it, and the other slots get a note that it starts over.")
+    } else {
+        format!("Its conversation so far is discarded. @{handle} comes back with its brief, the same first turn a cold start gives it, and @{lead_handle} gets a note that it must re-send anything @{handle} needs.")
+    }
 }
 
 fn stop_all_title(running_count: usize) -> String {
@@ -276,7 +267,6 @@ pub(crate) struct MissionWorkspace {
     askers_by_question: HashMap<String, String>,
     resolved_asks: HashMap<String, String>,
     pending_ask_choices: HashMap<String, String>,
-    expanded_signal_payloads: HashSet<String>,
     submitting_asks: HashSet<String>,
     feed_scroll: ScrollHandle,
     feed_was_near_bottom: bool,
@@ -300,6 +290,7 @@ pub(crate) struct MissionWorkspace {
     slot_actions: HashSet<String>,
     slot_exit_codes: HashMap<String, Option<i32>>,
     stop_all_confirm: bool,
+    restart_confirm: Option<String>,
     stopping: bool,
     resuming: bool,
     archiving: bool,
@@ -479,7 +470,6 @@ impl MissionWorkspace {
             askers_by_question: HashMap::new(),
             resolved_asks: HashMap::new(),
             pending_ask_choices: HashMap::new(),
-            expanded_signal_payloads: HashSet::new(),
             submitting_asks: HashSet::new(),
             feed_scroll: ScrollHandle::new(),
             feed_was_near_bottom: true,
@@ -503,6 +493,7 @@ impl MissionWorkspace {
             slot_actions: HashSet::new(),
             slot_exit_codes: HashMap::new(),
             stop_all_confirm: false,
+            restart_confirm: None,
             stopping: false,
             resuming: false,
             archiving: false,
@@ -543,7 +534,6 @@ impl MissionWorkspace {
         self.askers_by_question.clear();
         self.resolved_asks.clear();
         self.pending_ask_choices.clear();
-        self.expanded_signal_payloads.clear();
         self.submitting_asks.clear();
         self.feed_scroll = ScrollHandle::new();
         self.feed_was_near_bottom = true;
@@ -564,6 +554,7 @@ impl MissionWorkspace {
         self.slot_actions.clear();
         self.slot_exit_codes.clear();
         self.stop_all_confirm = false;
+        self.restart_confirm = None;
         self.stopping = false;
         self.resuming = false;
         self.archiving = false;
@@ -1187,10 +1178,7 @@ impl MissionWorkspace {
             self.core(cx).windows.mark_blurred(&self.window_label);
         }
         self.core(cx).broadcast_focus_map();
-        let generation = self.prepare_mission(
-            mission_id.clone(),
-            MissionRailView::from_setting(&self.settings(cx).mission_rail_view),
-        );
+        let generation = self.prepare_mission(mission_id.clone(), MissionRailView::Runners);
         self.composer_input.update(cx, |input, input_cx| {
             input.reset("", input_cx);
             input.set_disabled(false, input_cx);
@@ -1774,7 +1762,7 @@ impl MissionWorkspace {
     }
 
     fn focus_active_mission_terminal(&self, window: &mut Window, cx: &App) {
-        if self.rename_modal.is_some() || self.stop_all_confirm {
+        if self.rename_modal.is_some() || self.stop_all_confirm || self.restart_confirm.is_some() {
             return;
         }
         let MissionTab::Session(session_id) = &self.active_tab else {
@@ -2653,6 +2641,90 @@ impl MissionWorkspace {
             });
         })
         .detach();
+    }
+
+    fn request_slot_action(
+        &mut self,
+        session_id: &str,
+        action: SessionControlKind,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if action == SessionControlKind::Restart {
+            self.open_restart_confirm(session_id, window, cx);
+        } else {
+            self.act_on_slot(session_id, action, window, cx);
+        }
+    }
+
+    fn open_restart_confirm(
+        &mut self,
+        session_id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.stopping
+            || self.resuming
+            || self.archiving
+            || !mission_slot_actions_available(
+                self.mission.as_ref().map(|mission| mission.status),
+                self.archived(),
+                self.secondary_state(cx).secondary,
+            )
+            || self.slot_actions.contains(session_id)
+            || self.transitions.contains_key(session_id)
+        {
+            return;
+        }
+        self.restart_confirm = Some(session_id.to_owned());
+        self.root_focus.focus(window);
+        cx.notify();
+    }
+
+    fn render_restart_confirm(&self, cx: &mut Context<Self>) -> AnyElement {
+        let session_id = self.restart_confirm.clone().unwrap_or_default();
+        let target = self
+            .sessions
+            .iter()
+            .find(|session| session.session.id == session_id);
+        let handle = target
+            .map(|session| session.handle.clone())
+            .unwrap_or_default();
+        let lead_handle = self
+            .sessions
+            .iter()
+            .find(|session| session.lead)
+            .map(|session| session.handle.clone())
+            .unwrap_or_default();
+        let confirm = cx.entity();
+        let cancel = confirm.clone();
+        let restart_id = session_id.clone();
+        runner_app::ui::ConfirmDialog::new(
+            format!("Restart @{handle}?"),
+            restart_confirm_body(
+                &handle,
+                &lead_handle,
+                target.is_some_and(|session| session.lead),
+            ),
+            "Restart",
+            "Restarting…",
+            false,
+            Rc::new(move |window, cx| {
+                confirm.update(cx, |this, cx| {
+                    this.restart_confirm = None;
+                    this.act_on_slot(&restart_id, SessionControlKind::Restart, window, cx);
+                })
+            }),
+            Rc::new(move |window, cx| {
+                cancel.update(cx, |this, cx| {
+                    this.restart_confirm = None;
+                    this.focus_active_mission_terminal(window, cx);
+                    cx.notify();
+                })
+            }),
+        )
+        .icon("rotate-ccw.svg")
+        .into_any_element()
     }
 
     fn act_on_slot(
@@ -3568,6 +3640,9 @@ impl MissionWorkspace {
         }
         if self.stop_all_confirm {
             overlays.push(self.render_stop_all_confirm(cx));
+        }
+        if self.restart_confirm.is_some() {
+            overlays.push(self.render_restart_confirm(cx));
         }
         overlays
     }
@@ -4831,7 +4906,7 @@ impl MissionWorkspace {
             FeedBlock::MessageGroup { author, events } => self
                 .render_mission_message_group(author, events, cx)
                 .into_any_element(),
-            FeedBlock::Signal(event) => self.render_mission_signal_row(event, cx),
+            FeedBlock::Signal(event) => self.render_mission_signal_row(event),
             FeedBlock::AskCard(event) => self.render_mission_ask_card(event, cx),
         }
     }
@@ -4909,7 +4984,7 @@ impl MissionWorkspace {
                             .flex()
                             .flex_col()
                             .gap_1()
-                            .text_size(rems(13. / 16.))
+                            .text_size(theme::text_body())
                             .text_color(theme::text())
                             .children(events.into_iter().filter_map(|event| {
                                 let text = message_text(&event);
@@ -4929,9 +5004,8 @@ impl MissionWorkspace {
             .into_any_element()
     }
 
-    fn render_mission_signal_row(&self, event: Event, cx: &mut Context<Self>) -> AnyElement {
+    fn render_mission_signal_row(&self, event: Event) -> AnyElement {
         let event_id = event.id.clone();
-        let toggle_id = event_id.clone();
         let signal = event
             .signal_type
             .as_ref()
@@ -4939,8 +5013,6 @@ impl MissionWorkspace {
             .unwrap_or("?");
         let warning = signal == "mission_warning";
         let restart_summary = slot_restart_signal_summary(&event);
-        let expanded = self.expanded_signal_payloads.contains(&event_id);
-        let root = cx.entity();
         let payload = if signal == "ask_lead" {
             event
                 .payload
@@ -4959,139 +5031,101 @@ impl MissionWorkspace {
             serde_json::to_string_pretty(&event.payload)
                 .unwrap_or_else(|_| event.payload.to_string())
         };
+        let avatar_seed = if event.from == "human" {
+            "human".to_owned()
+        } else {
+            event.from.clone()
+        };
         div()
             .id(SharedString::from(format!("mission-signal-{event_id}")))
-            .pl(rems(63. / 16.))
-            .pr_4()
+            .px_4()
             .flex()
-            .flex_col()
+            .items_start()
+            .gap_3()
+            .child(RunnerAvatar::new(avatar_seed, 35.))
             .child(
                 div()
-                    .id(SharedString::from(format!(
-                        "mission-signal-toggle-{toggle_id}"
-                    )))
                     .min_w(px(0.))
+                    .flex_1()
                     .flex()
-                    .items_center()
-                    .gap_1()
-                    .cursor_pointer()
-                    .text_size(rems(11. / 16.))
-                    .on_click(move |_, _, cx| {
-                        root.update(cx, |this, cx| {
-                            if !this.expanded_signal_payloads.remove(&event_id) {
-                                this.expanded_signal_payloads.insert(event_id.clone());
-                            }
-                            cx.notify();
-                        });
-                    })
-                    .child(
-                        svg()
-                            .path("zap.svg")
-                            .size(rems(12. / 16.))
-                            .flex_none()
-                            .text_color(if warning {
-                                theme::danger()
-                            } else {
-                                theme::faint()
-                            }),
-                    )
-                    .child(
-                        div()
-                            .flex_none()
-                            .font_family(theme::UI_MONOSPACE_FONT)
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(runner_app::ui::hue_for_seed(&event.from).color())
-                            .child(if signal == "slot_restarted" && event.from == "human" {
-                                "you ·".into()
-                            } else {
-                                format!("@{}", event.from)
-                            }),
-                    )
+                    .flex_col()
                     .child(
                         div()
                             .min_w(px(0.))
-                            .truncate()
-                            .text_color(if warning {
-                                theme::danger()
-                            } else {
-                                theme::faint()
-                            })
-                            .child(if let Some(summary) = restart_summary {
-                                summary
-                            } else if warning {
-                                format!("warning · {}", format_event_time(&event))
-                            } else {
-                                format!(
-                                    "signal · {signal}{} · {}",
-                                    event
-                                        .to
-                                        .as_ref()
-                                        .map(|to| format!(" → @{to}"))
-                                        .unwrap_or_default(),
-                                    format_event_time(&event)
-                                )
-                            }),
-                    )
-                    .child(
-                        div()
-                            .ml_auto()
-                            .flex_none()
                             .flex()
                             .items_center()
-                            .gap_1()
-                            .text_size(rems(10. / 16.))
-                            .text_color(if warning {
-                                theme::danger()
-                            } else {
-                                theme::faint()
-                            })
-                            .child(if warning { "details" } else { "payload" })
+                            .gap_2()
+                            .text_size(rems(11. / 16.))
                             .child(
-                                svg()
+                                div()
                                     .flex_none()
-                                    .path(if expanded {
-                                        "chevron-up.svg"
-                                    } else {
-                                        "chevron-down.svg"
-                                    })
-                                    .size(rems(12. / 16.))
+                                    .font_family(theme::UI_MONOSPACE_FONT)
+                                    .text_size(rems(13. / 16.))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(runner_app::ui::hue_for_seed(&event.from).color())
+                                    .child(
+                                        if signal == "slot_restarted" && event.from == "human" {
+                                            "you".to_owned()
+                                        } else {
+                                            format!("@{}", event.from)
+                                        },
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .min_w(px(0.))
+                                    .truncate()
                                     .text_color(if warning {
                                         theme::danger()
                                     } else {
                                         theme::faint()
+                                    })
+                                    .child(if let Some(summary) = restart_summary {
+                                        format!("· {summary}")
+                                    } else if warning {
+                                        format!("· warning · {}", format_event_time(&event))
+                                    } else {
+                                        format!(
+                                            "· signal · {signal}{} · {}",
+                                            event
+                                                .to
+                                                .as_ref()
+                                                .map(|to| format!(" → @{to}"))
+                                                .unwrap_or_default(),
+                                            format_event_time(&event)
+                                        )
                                     }),
                             ),
+                    )
+                    .child(
+                        div()
+                            .mt_2()
+                            .rounded_md()
+                            .border_1()
+                            .border_color(if warning {
+                                theme::with_alpha(theme::danger(), 0.3)
+                            } else {
+                                theme::border()
+                            })
+                            .bg(if warning {
+                                theme::with_alpha(theme::danger(), 0.05)
+                            } else {
+                                theme::bg()
+                            })
+                            .p_3()
+                            .when(!warning, |payload| {
+                                payload.font_family(theme::UI_MONOSPACE_FONT)
+                            })
+                            .text_size(rems(12. / 16.))
+                            .line_height(rems(17. / 16.))
+                            .text_color(if warning {
+                                theme::danger()
+                            } else {
+                                theme::muted()
+                            })
+                            .child(payload),
                     ),
             )
-            .children(expanded.then(|| {
-                div()
-                    .mt_2()
-                    .ml(rems(18. / 16.))
-                    .rounded_md()
-                    .border_1()
-                    .border_color(if warning {
-                        theme::with_alpha(theme::danger(), 0.3)
-                    } else {
-                        theme::border()
-                    })
-                    .bg(if warning {
-                        theme::with_alpha(theme::danger(), 0.05)
-                    } else {
-                        theme::bg()
-                    })
-                    .p_3()
-                    .when(!warning, |payload| {
-                        payload.font_family(theme::UI_MONOSPACE_FONT)
-                    })
-                    .text_size(rems(12. / 16.))
-                    .line_height(rems(17. / 16.))
-                    .text_color(if warning {
-                        theme::danger()
-                    } else {
-                        theme::muted()
-                    })
-                    .child(payload)
-            }))
             .into_any_element()
     }
 
@@ -5125,10 +5159,10 @@ impl MissionWorkspace {
             .payload
             .get("on_behalf_of")
             .and_then(serde_json::Value::as_str);
-        let chain = on_behalf.map_or_else(
-            || "→ you".to_owned(),
-            |handle| format!("@{handle} → @{asker} → you"),
-        );
+        let chain = match on_behalf {
+            Some(handle) if handle != asker => format!("@{handle} → @{asker} → you"),
+            _ => "→ you".to_owned(),
+        };
         let resolved = self.resolved_asks.get(&question_id).cloned();
         let pending_choice = self.pending_ask_choices.get(&question_id).cloned();
         let submitting = self.submitting_asks.contains(&question_id);
@@ -5259,6 +5293,8 @@ impl MissionWorkspace {
                             .border_color(theme::with_alpha(theme::warning(), 0.6))
                             .bg(theme::with_alpha(theme::warning(), 0.1))
                             .p_4()
+                            .text_size(theme::text_body())
+                            .text_color(theme::text())
                             .child(if prompt.is_empty() {
                                 div()
                                     .text_size(rems(13. / 16.))
@@ -5624,7 +5660,7 @@ impl MissionWorkspace {
             },
             move |window, cx| {
                 restart.update(cx, |this, cx| {
-                    this.act_on_slot(&restart_id, SessionControlKind::Restart, window, cx)
+                    this.request_slot_action(&restart_id, SessionControlKind::Restart, window, cx)
                 })
             },
         )
@@ -5801,14 +5837,6 @@ impl MissionWorkspace {
 
     fn set_mission_rail_view(&mut self, view: MissionRailView, cx: &mut Context<Self>) {
         self.rail_view = view;
-        self.update_app_settings(cx, true, |settings| {
-            let value = view.setting().to_owned();
-            if settings.mission_rail_view == value {
-                return false;
-            }
-            settings.mission_rail_view = value;
-            true
-        });
         cx.notify();
     }
 
@@ -5899,7 +5927,7 @@ impl MissionWorkspace {
                             .lifecycle_disabled(disabled)
                             .on_press(move |window, cx| {
                                 action_root.update(cx, |this, cx| {
-                                    this.act_on_slot(&target, action, window, cx)
+                                    this.request_slot_action(&target, action, window, cx)
                                 })
                             })
                         }),

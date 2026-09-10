@@ -196,9 +196,7 @@ impl RenderOnce for SessionControl {
                     .flex_none()
                     .path(icon)
                     .size(rems(icon_size / 16.))
-                    .when(self.kind != SessionControlKind::Restart, |icon| {
-                        icon.text_color(icon_color)
-                    })
+                    .text_color(icon_color)
                     .into_any_element()
             }),
         };

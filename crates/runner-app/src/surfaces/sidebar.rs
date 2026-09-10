@@ -2681,7 +2681,7 @@ impl Sidebar {
                 NodeType::Mission,
                 &summary.mission.id,
                 None,
-                ("flag.svg", summary.all_sessions_live),
+                ("flag.svg", summary.any_session_live),
                 attention,
                 shortcut_index,
                 active,
@@ -2729,7 +2729,7 @@ impl Sidebar {
                 false,
             )
             .children(node.pinned_position.is_some().then(pin_indicator))
-            .child(sidebar_icon("flag.svg", summary.all_sessions_live))
+            .child(sidebar_icon("flag.svg", summary.any_session_live))
             .child(sidebar_row_label(label.clone(), active, false))
             .child(trailing)
             .on_click(cx.listener(move |this, _, window, cx| {

@@ -180,7 +180,6 @@ struct MissionSettingsSnapshot {
 impl From<&AppSettings> for MissionSettingsSnapshot {
     fn from(settings: &AppSettings) -> Self {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        settings.mission_rail_view.hash(&mut hasher);
         settings.last_mission_terminal_ids.hash(&mut hasher);
         Self {
             rail_open: settings.mission_rail_open,
@@ -851,7 +850,6 @@ mod tests {
         let before = AppSettings::default();
         let mut after = before.clone();
         after.mission_rail_width += 1.;
-        after.mission_rail_view = "meta".into();
         after
             .last_mission_terminal_ids
             .insert("mission".into(), "session".into());

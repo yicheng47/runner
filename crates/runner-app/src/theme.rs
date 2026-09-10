@@ -1,9 +1,15 @@
 use std::sync::atomic::{AtomicU8, Ordering};
 
-use gpui::{rgb, Hsla};
+use gpui::{rems, rgb, Hsla, Rems};
 use serde::{Deserialize, Serialize};
 
 pub use crate::platform_fonts::{SYSTEM_MONOSPACE_FONT, UI_MONOSPACE_FONT};
+
+/// Body copy in the feed: message text, ask prompts. First step of the
+/// type scale; the rest of the sweep is #549.
+pub fn text_body() -> Rems {
+    rems(13. / 16.)
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
