@@ -2916,7 +2916,7 @@ fn permission_mode_description(runtime: &str, mode: PermissionMode) -> &'static 
         }
         (Some(Runtime::ClaudeCode), PermissionMode::AcceptEdits) => "Auto-accept file edits and common filesystem commands; still ask for shell, network, and writes outside the workspace. Available on every plan.",
         (Some(Runtime::ClaudeCode), PermissionMode::Auto) => "Real auto with a server-side classifier. Requires Max / Team / Enterprise / API plan + a supported model (Opus 4.7 on Max). Not available on Pro.",
-        (Some(Runtime::ClaudeCode), PermissionMode::Bypass) => "Skip every check. Triggers a one-time consent dialog the first time per user account.",
+        (Some(Runtime::ClaudeCode), PermissionMode::Bypass) => "Skip every check. Runner accepts Claude Code's bypass disclaimer for the sessions it spawns; a runner that passes its own --settings still sees the dialog.",
         (Some(Runtime::Codex), PermissionMode::Default) => {
             "Codex's built-in approval cadence (untrusted commands)."
         }

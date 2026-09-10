@@ -186,7 +186,7 @@ pub fn claude_settings_args(
     let temp_path = crate::session::launch::shell_quote(&temp_path.to_string_lossy());
     let drop_path = crate::session::launch::shell_quote(&drop_path.to_string_lossy());
     let hook_command = format!("cat > {temp_path} && mv {temp_path} {drop_path}");
-    let settings = serde_json::json!({
+    let mut settings = serde_json::json!({
         "tui": "fullscreen",
         "hooks": {
             "SessionStart": [{
@@ -197,6 +197,13 @@ pub fn claude_settings_args(
             }],
         },
     });
+    // Claude Code gates `--permission-mode bypassPermissions` behind a
+    // first-use consent dialog. Nobody is watching a Bypass spawn to
+    // answer it (that is what Bypass means here), so acknowledge it in
+    // the per-process flag settings rather than in the user's config.
+    if infer_permission_mode(runtime, runner_args) == PermissionMode::Bypass {
+        settings["skipDangerousModePermissionPrompt"] = serde_json::Value::Bool(true);
+    }
     vec![
         "--settings".into(),
         serde_json::to_string(&settings).expect("Claude settings must serialize"),
@@ -1139,6 +1146,56 @@ mod tests {
         );
         assert_ne!(args[1], other[1]);
         assert!(other[1].contains("runner-session-two.json"));
+    }
+
+    #[test]
+    fn claude_settings_acknowledge_bypass_only_for_bypass_spawns() {
+        let app_data_dir = Path::new("/tmp/runner-app-data");
+        let settings_for = |runner_args: &[String]| {
+            let args = claude_settings_args(
+                Some(Runtime::ClaudeCode),
+                runner_args,
+                app_data_dir,
+                "runner-session",
+            );
+            serde_json::from_str::<serde_json::Value>(&args[1]).unwrap()
+        };
+
+        for bypass_args in [
+            vec!["--permission-mode".to_string(), "bypassPermissions".into()],
+            vec!["--dangerously-skip-permissions".to_string()],
+            apply_mission_permission_mode(
+                Some(Runtime::ClaudeCode),
+                &["--verbose".to_string()],
+                MissionPermissionMode::Bypass,
+            ),
+        ] {
+            let settings = settings_for(&bypass_args);
+            assert_eq!(
+                settings["skipDangerousModePermissionPrompt"],
+                serde_json::Value::Bool(true),
+                "bypass args must acknowledge the consent dialog: {bypass_args:?}"
+            );
+            assert_eq!(settings["tui"], "fullscreen");
+            assert!(settings["hooks"]["SessionStart"].is_array());
+        }
+
+        for other_args in [
+            vec![],
+            vec!["--permission-mode".to_string(), "auto".into()],
+            vec!["--permission-mode".to_string(), "acceptEdits".into()],
+            apply_mission_permission_mode(
+                Some(Runtime::ClaudeCode),
+                &["--permission-mode".to_string(), "bypassPermissions".into()],
+                MissionPermissionMode::Auto,
+            ),
+        ] {
+            let settings = settings_for(&other_args);
+            assert!(
+                settings.get("skipDangerousModePermissionPrompt").is_none(),
+                "non-bypass args must not acknowledge the dialog: {other_args:?}"
+            );
+        }
     }
 
     #[test]
