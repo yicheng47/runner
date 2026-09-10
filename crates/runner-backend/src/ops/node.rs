@@ -1,6 +1,7 @@
 // Sidebar node-tree commands (feature 44). One tree query feeds every
 // sidebar section; one reparent/reposition op backs every drag.
 
+use crate::model::Runtime;
 use chrono::Utc;
 use serde::Deserialize;
 
@@ -424,7 +425,8 @@ pub(crate) fn record_session_completion(
     session_id: &str,
 ) -> Result<()> {
     let mut conn = db.get()?;
-    if repo::session::effective_runtime(&conn, session_id)?.as_deref() == Some("shell") {
+    if repo::session::effective_runtime(&conn, session_id)?.as_deref() == Some(Runtime::Shell.key())
+    {
         return Ok(());
     }
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
@@ -435,7 +437,7 @@ pub(crate) fn record_session_completion(
     };
     let mut member_ids = Vec::new();
     for id in repo::node::session_ids(&tab) {
-        if repo::session::effective_runtime(&tx, &id)?.as_deref() != Some("shell") {
+        if repo::session::effective_runtime(&tx, &id)?.as_deref() != Some(Runtime::Shell.key()) {
             member_ids.push(id);
         }
     }

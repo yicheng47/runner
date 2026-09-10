@@ -63,13 +63,17 @@ enum Client {
 
 impl Client {
     fn parse(raw: &str) -> Result<Self> {
-        match raw {
-            "claude_code" => Ok(Self::ClaudeCode),
-            "codex" => Ok(Self::Codex),
-            "trae" => Ok(Self::Trae),
-            other => Err(Error::msg(format!(
-                "unknown MCP client: {other:?} (expected claude_code, codex, or trae)"
-            ))),
+        if raw == "claude_code" {
+            return Ok(Self::ClaudeCode);
+        }
+        match crate::model::Runtime::parse(raw) {
+            Some(crate::model::Runtime::Codex) => Ok(Self::Codex),
+            Some(crate::model::Runtime::Trae) => Ok(Self::Trae),
+            Some(crate::model::Runtime::ClaudeCode | crate::model::Runtime::Shell) | None => {
+                Err(Error::msg(format!(
+                    "unknown MCP client: {raw:?} (expected claude_code, codex, or trae)"
+                )))
+            }
         }
     }
 }

@@ -25,11 +25,12 @@
 // handler already owns prompt composition; the runtime adapter is the
 // related "how do we hand prompts and identity to a real CLI" piece.
 
+use crate::model::Runtime;
 use std::path::Path;
 
 #[derive(Debug, Clone, Copy, serde::Serialize)]
 pub struct RuntimeDefinition {
-    pub name: &'static str,
+    pub name: Runtime,
     pub display_name: &'static str,
     pub command: &'static str,
     pub native_fork: bool,
@@ -38,21 +39,21 @@ pub struct RuntimeDefinition {
 
 const RUNTIME_DEFINITIONS: &[RuntimeDefinition] = &[
     RuntimeDefinition {
-        name: "codex",
+        name: Runtime::Codex,
         display_name: "Codex",
         command: "codex",
         native_fork: true,
         skills_dirs: &[".agents/skills", ".codex/skills"],
     },
     RuntimeDefinition {
-        name: "claude-code",
+        name: Runtime::ClaudeCode,
         display_name: "Claude Code",
         command: "claude",
         native_fork: true,
         skills_dirs: &[".claude/skills"],
     },
     RuntimeDefinition {
-        name: "trae",
+        name: Runtime::Trae,
         display_name: "TRAE CLI",
         command: "traecli",
         native_fork: false,
@@ -64,7 +65,7 @@ pub fn runtime_definitions() -> &'static [RuntimeDefinition] {
     RUNTIME_DEFINITIONS
 }
 
-pub fn runtime_definition(name: &str) -> Option<RuntimeDefinition> {
+pub fn runtime_definition(name: Runtime) -> Option<RuntimeDefinition> {
     RUNTIME_DEFINITIONS
         .iter()
         .copied()
@@ -72,13 +73,16 @@ pub fn runtime_definition(name: &str) -> Option<RuntimeDefinition> {
 }
 
 pub fn runtime_display_name(name: &str) -> String {
-    runtime_definition(name)
+    Runtime::parse(name)
+        .and_then(runtime_definition)
         .map(|runtime| runtime.display_name.to_string())
         .unwrap_or_else(|| name.to_string())
 }
 
-pub fn supports_native_fork(runtime: &str) -> bool {
-    runtime_definition(runtime).is_some_and(|definition| definition.native_fork)
+pub fn supports_native_fork(runtime: Option<Runtime>) -> bool {
+    runtime
+        .and_then(runtime_definition)
+        .is_some_and(|definition| definition.native_fork)
 }
 
 /// Compute the extra args (in declaration order) to append after the
@@ -119,7 +123,11 @@ pub fn supports_native_fork(runtime: &str) -> bool {
 /// shell / unknown runtimes: no equivalent flags — degrade silently
 /// so the runner row's preference is recorded but the spawn
 /// doesn't reject on unknown args.
-pub fn model_effort_args(runtime: &str, model: Option<&str>, effort: Option<&str>) -> Vec<String> {
+pub fn model_effort_args(
+    runtime: Option<Runtime>,
+    model: Option<&str>,
+    effort: Option<&str>,
+) -> Vec<String> {
     fn trim_some(v: Option<&str>) -> Option<&str> {
         v.map(str::trim).filter(|s| !s.is_empty())
     }
@@ -129,7 +137,7 @@ pub fn model_effort_args(runtime: &str, model: Option<&str>, effort: Option<&str
         return Vec::new();
     }
     match runtime {
-        "claude-code" => {
+        Some(Runtime::ClaudeCode) => {
             let mut out = Vec::new();
             if let Some(m) = model {
                 out.push("--model".into());
@@ -141,7 +149,7 @@ pub fn model_effort_args(runtime: &str, model: Option<&str>, effort: Option<&str
             }
             out
         }
-        "codex" | "trae" => {
+        Some(Runtime::Codex) | Some(Runtime::Trae) => {
             let mut out = Vec::new();
             if let Some(m) = model {
                 out.push("--model".into());
@@ -156,18 +164,17 @@ pub fn model_effort_args(runtime: &str, model: Option<&str>, effort: Option<&str
             }
             out
         }
-        // shell / unknown
-        _ => Vec::new(),
+        Some(Runtime::Shell) | None => Vec::new(),
     }
 }
 
 pub fn claude_settings_args(
-    runtime: &str,
+    runtime: Option<Runtime>,
     runner_args: &[String],
     app_data_dir: &Path,
     runner_session_id: &str,
 ) -> Vec<String> {
-    if runtime != "claude-code"
+    if runtime != Some(Runtime::ClaudeCode)
         || runner_args
             .iter()
             .any(|arg| arg == "--settings" || arg.starts_with("--settings="))
@@ -255,48 +262,57 @@ pub enum PermissionMode {
 /// onto the row's `args` column at *create* time, not at spawn time
 /// — so an existing row stays stable even if the form's recommended
 /// default shifts.
-pub fn permission_mode_args(runtime: &str, mode: PermissionMode) -> Vec<String> {
+pub fn permission_mode_args(runtime: Option<Runtime>, mode: PermissionMode) -> Vec<String> {
     match (runtime, mode) {
-        (_, PermissionMode::Default) => Vec::new(),
+        (None, _) => Vec::new(),
+        (
+            Some(Runtime::ClaudeCode)
+            | Some(Runtime::Codex)
+            | Some(Runtime::Trae)
+            | Some(Runtime::Shell),
+            PermissionMode::Default,
+        ) => Vec::new(),
         // claude-code: `--permission-mode <value>` for every
         // non-Default mode. The flag value differs from the enum
         // variant casing (acceptEdits, bypassPermissions) because
         // that's what claude-code's CLI accepts.
-        ("claude-code", PermissionMode::AcceptEdits) => {
+        (Some(Runtime::ClaudeCode), PermissionMode::AcceptEdits) => {
             vec!["--permission-mode".into(), "acceptEdits".into()]
         }
-        ("claude-code", PermissionMode::Auto) => {
+        (Some(Runtime::ClaudeCode), PermissionMode::Auto) => {
             vec!["--permission-mode".into(), "auto".into()]
         }
-        ("claude-code", PermissionMode::Bypass) => {
+        (Some(Runtime::ClaudeCode), PermissionMode::Bypass) => {
             vec!["--permission-mode".into(), "bypassPermissions".into()]
         }
-        ("trae", PermissionMode::Auto) => {
+        (Some(Runtime::Trae), PermissionMode::Auto) => {
             vec!["--permission-mode".into(), "auto".into()]
         }
-        ("trae", PermissionMode::Bypass) => {
+        (Some(Runtime::Trae), PermissionMode::Bypass) => {
             vec!["--permission-mode".into(), "bypass_permissions".into()]
         }
         // codex: `--ask-for-approval <cadence> --sandbox
         // workspace-write` pair for both Auto and Bypass. AcceptEdits
         // returns empty (codex has no equivalent) so a user who
         // somehow lands AcceptEdits on a codex row reads as Default.
-        ("codex", PermissionMode::AcceptEdits) | ("trae", PermissionMode::AcceptEdits) => {
-            Vec::new()
-        }
-        ("codex", PermissionMode::Auto) => vec![
+        (Some(Runtime::Codex), PermissionMode::AcceptEdits)
+        | (Some(Runtime::Trae), PermissionMode::AcceptEdits) => Vec::new(),
+        (Some(Runtime::Codex), PermissionMode::Auto) => vec![
             "--ask-for-approval".into(),
             "on-request".into(),
             "--sandbox".into(),
             "workspace-write".into(),
         ],
-        ("codex", PermissionMode::Bypass) => vec![
+        (Some(Runtime::Codex), PermissionMode::Bypass) => vec![
             "--ask-for-approval".into(),
             "never".into(),
             "--sandbox".into(),
             "workspace-write".into(),
         ],
-        _ => Vec::new(),
+        (
+            Some(Runtime::Shell),
+            PermissionMode::AcceptEdits | PermissionMode::Auto | PermissionMode::Bypass,
+        ) => Vec::new(),
     }
 }
 
@@ -316,16 +332,16 @@ pub fn permission_mode_args(runtime: &str, mode: PermissionMode) -> Vec<String> 
 ///     strip set so legacy rows that still carry the deprecated flag
 ///     get cleaned up the next time the user touches their row).
 ///   - trae: `--permission-mode <value>` (value-bearing).
-pub fn strip_permission_flags(runtime: &str, args: &[String]) -> Vec<String> {
+pub fn strip_permission_flags(runtime: Option<Runtime>, args: &[String]) -> Vec<String> {
     // (flag_name, takes_value)
     let keys: &[(&str, bool)] = match runtime {
-        "codex" => &[("--ask-for-approval", true), ("--sandbox", true)],
-        "claude-code" => &[
+        Some(Runtime::Codex) => &[("--ask-for-approval", true), ("--sandbox", true)],
+        Some(Runtime::ClaudeCode) => &[
             ("--dangerously-skip-permissions", false),
             ("--permission-mode", true),
         ],
-        "trae" => &[("--permission-mode", true)],
-        _ => &[],
+        Some(Runtime::Trae) => &[("--permission-mode", true)],
+        Some(Runtime::Shell) | None => &[],
     };
     if keys.is_empty() {
         return args.to_vec();
@@ -363,7 +379,11 @@ pub fn strip_permission_flags(runtime: &str, args: &[String]) -> Vec<String> {
 /// control. Strips any prior occurrence of the runtime's permission
 /// flags, then appends the canonical args for the chosen mode. No-op
 /// for runtimes without a permission concept (shell / unknown).
-pub fn apply_permission_mode(runtime: &str, args: &[String], mode: PermissionMode) -> Vec<String> {
+pub fn apply_permission_mode(
+    runtime: Option<Runtime>,
+    args: &[String],
+    mode: PermissionMode,
+) -> Vec<String> {
     let mut out = strip_permission_flags(runtime, args);
     out.extend(permission_mode_args(runtime, mode));
     out
@@ -424,13 +444,13 @@ impl MissionPermissionMode {
 /// sandbox, so `git push` / `gh` / `cargo` fetches would fail silently
 /// in a slot nobody is watching.
 pub fn mission_permission_mode_args(
-    runtime: &str,
+    runtime: Option<Runtime>,
     mode: MissionPermissionMode,
 ) -> Option<Vec<String>> {
     match mode {
         MissionPermissionMode::RunnerDefault => None,
         MissionPermissionMode::Auto => Some(permission_mode_args(runtime, PermissionMode::Auto)),
-        MissionPermissionMode::Bypass if runtime == "codex" => Some(vec![
+        MissionPermissionMode::Bypass if runtime == Some(Runtime::Codex) => Some(vec![
             "--ask-for-approval".into(),
             "never".into(),
             "--sandbox".into(),
@@ -446,7 +466,7 @@ pub fn mission_permission_mode_args(
 /// runtime's permission flags, then append the mode's canonical pair.
 /// `RunnerDefault` returns `args` unchanged.
 pub fn apply_mission_permission_mode(
-    runtime: &str,
+    runtime: Option<Runtime>,
     args: &[String],
     mode: MissionPermissionMode,
 ) -> Vec<String> {
@@ -483,7 +503,7 @@ pub fn apply_mission_permission_mode(
 /// management). Keep it `pub` so it's discoverable from a
 /// `runtime::` module search.
 #[allow(dead_code)]
-pub fn infer_permission_mode(runtime: &str, args: &[String]) -> PermissionMode {
+pub fn infer_permission_mode(runtime: Option<Runtime>, args: &[String]) -> PermissionMode {
     if mode_pair_matches(runtime, args, PermissionMode::Bypass) {
         return PermissionMode::Bypass;
     }
@@ -497,12 +517,12 @@ pub fn infer_permission_mode(runtime: &str, args: &[String]) -> PermissionMode {
 }
 
 #[allow(dead_code)]
-fn mode_pair_matches(runtime: &str, args: &[String], mode: PermissionMode) -> bool {
+fn mode_pair_matches(runtime: Option<Runtime>, args: &[String], mode: PermissionMode) -> bool {
     // Legacy shape: pre-rename claude-code rows used a standalone
     // `--dangerously-skip-permissions` flag for Bypass. Read it as
     // Bypass so the dropdown loads the right initial value. Strip
     // helper still cleans it up on save.
-    if runtime == "claude-code"
+    if runtime == Some(Runtime::ClaudeCode)
         && mode == PermissionMode::Bypass
         && legacy_bypass_present(runtime, args)
     {
@@ -531,28 +551,42 @@ fn mode_pair_matches(runtime: &str, args: &[String], mode: PermissionMode) -> bo
 /// the right mode in their UI.
 #[allow(dead_code)]
 fn mode_match_pairs(
-    runtime: &str,
+    runtime: Option<Runtime>,
     mode: PermissionMode,
 ) -> &'static [(&'static str, Option<&'static str>)] {
     match (runtime, mode) {
-        ("claude-code", PermissionMode::AcceptEdits) => {
+        (None, _) => &[],
+        (Some(Runtime::ClaudeCode), PermissionMode::AcceptEdits) => {
             &[("--permission-mode", Some("acceptEdits"))]
         }
-        ("claude-code", PermissionMode::Auto) => &[("--permission-mode", Some("auto"))],
-        ("claude-code", PermissionMode::Bypass) => {
+        (Some(Runtime::ClaudeCode), PermissionMode::Auto) => &[("--permission-mode", Some("auto"))],
+        (Some(Runtime::ClaudeCode), PermissionMode::Bypass) => {
             &[("--permission-mode", Some("bypassPermissions"))]
         }
-        ("trae", PermissionMode::Auto) => &[("--permission-mode", Some("auto"))],
-        ("trae", PermissionMode::Bypass) => &[("--permission-mode", Some("bypass_permissions"))],
-        ("codex", PermissionMode::Auto) => &[
+        (Some(Runtime::Trae), PermissionMode::Auto) => &[("--permission-mode", Some("auto"))],
+        (Some(Runtime::Trae), PermissionMode::Bypass) => {
+            &[("--permission-mode", Some("bypass_permissions"))]
+        }
+        (Some(Runtime::Codex), PermissionMode::Auto) => &[
             ("--ask-for-approval", Some("on-request")),
             ("--sandbox", Some("workspace-write")),
         ],
-        ("codex", PermissionMode::Bypass) => &[
+        (Some(Runtime::Codex), PermissionMode::Bypass) => &[
             ("--ask-for-approval", Some("never")),
             ("--sandbox", Some("workspace-write")),
         ],
-        _ => &[],
+        (
+            Some(Runtime::ClaudeCode)
+            | Some(Runtime::Codex)
+            | Some(Runtime::Trae)
+            | Some(Runtime::Shell),
+            PermissionMode::Default,
+        )
+        | (
+            Some(Runtime::Codex) | Some(Runtime::Trae) | Some(Runtime::Shell),
+            PermissionMode::AcceptEdits,
+        )
+        | (Some(Runtime::Shell), PermissionMode::Auto | PermissionMode::Bypass) => &[],
     }
 }
 
@@ -564,8 +598,9 @@ fn mode_match_pairs(
 /// `Bypass` for the dropdown's initial value. Layered as a check
 /// inside `mode_pair_matches` for `claude-code` + `Bypass` only.
 #[allow(dead_code)]
-fn legacy_bypass_present(runtime: &str, args: &[String]) -> bool {
-    runtime == "claude-code" && args.iter().any(|a| a == "--dangerously-skip-permissions")
+fn legacy_bypass_present(runtime: Option<Runtime>, args: &[String]) -> bool {
+    runtime == Some(Runtime::ClaudeCode)
+        && args.iter().any(|a| a == "--dangerously-skip-permissions")
 }
 
 /// `--flag <expected>` (separated) OR `--flag=<expected>` (equals)
@@ -600,7 +635,7 @@ fn flag_value_matches(args: &[String], flag: &str, expected: Option<&str>) -> bo
 /// runner's configured `args` so the child receives `system_prompt` via the
 /// runtime's native flag. Returns an empty Vec when no prompt is set or
 /// when the runtime has no native system-prompt flag.
-pub fn system_prompt_args(runtime: &str, system_prompt: Option<&str>) -> Vec<String> {
+pub fn system_prompt_args(runtime: Option<Runtime>, system_prompt: Option<&str>) -> Vec<String> {
     let prompt = match system_prompt {
         Some(p) if !p.trim().is_empty() => p,
         _ => return Vec::new(),
@@ -613,13 +648,13 @@ pub fn system_prompt_args(runtime: &str, system_prompt: Option<&str>) -> Vec<Str
         // launches. Passing them in interactive mode is silently
         // dropped. Workaround: call sites fold persona/brief text
         // into a first user turn instead.
-        "claude-code" => Vec::new(),
+        Some(Runtime::ClaudeCode) => Vec::new(),
         // codex has no system-prompt flag (we tried `--instructions` and
         // it's rejected; `~/.codex/config.toml` doesn't expose one
         // either). First-turn delivery is handled separately.
-        "codex" => Vec::new(),
+        Some(Runtime::Codex) => Vec::new(),
         // shell / unknown — no prompt mechanism.
-        _ => Vec::new(),
+        Some(Runtime::Trae) | Some(Runtime::Shell) | None => Vec::new(),
     }
 }
 
@@ -652,7 +687,7 @@ pub const FIRST_TURN_ARGV_MAX_BYTES: usize = 32 * 1024;
 /// persist-time validation upstream. Release builds silently truncate
 /// the argv to empty to fail safe.
 ///
-pub fn first_turn_argv(runtime: &str, body: Option<&str>) -> Vec<String> {
+pub fn first_turn_argv(runtime: Option<Runtime>, body: Option<&str>) -> Vec<String> {
     let body = match body {
         Some(s) if !s.trim().is_empty() => s,
         _ => return Vec::new(),
@@ -667,8 +702,10 @@ pub fn first_turn_argv(runtime: &str, body: Option<&str>) -> Vec<String> {
         return Vec::new();
     }
     match runtime {
-        "claude-code" | "codex" | "trae" => vec![body.to_string()],
-        _ => Vec::new(),
+        Some(Runtime::ClaudeCode) | Some(Runtime::Codex) | Some(Runtime::Trae) => {
+            vec![body.to_string()]
+        }
+        Some(Runtime::Shell) | None => Vec::new(),
     }
 }
 
@@ -691,7 +728,7 @@ pub fn first_turn_argv(runtime: &str, body: Option<&str>) -> Vec<String> {
 /// `Router::fire_lead_launch_prompt` via paste delivery instead.
 #[allow(clippy::too_many_arguments)]
 pub fn trailing_runtime_args(
-    runtime: &str,
+    runtime: Option<Runtime>,
     runner_args: &[String],
     app_data_dir: &Path,
     runner_session_id: &str,
@@ -702,7 +739,7 @@ pub fn trailing_runtime_args(
     first_turn: Option<&str>,
 ) -> Vec<String> {
     let mut out = model_effort_args(runtime, model, effort);
-    if runtime == "codex" {
+    if runtime == Some(Runtime::Codex) {
         out.extend(["-c".into(), "check_for_update_on_startup=false".into()]);
     }
     out.extend(claude_settings_args(
@@ -722,10 +759,17 @@ pub fn trailing_runtime_args(
 /// operations. Codex's `workspace-write` sandbox only allows writes under the
 /// workspace by default, while `runner signal/msg` appends to the mission log
 /// under app data. Scope the grant to the single mission directory.
-pub fn mission_bus_sandbox_args(runtime: &str, mission_dir: Option<&Path>) -> Vec<String> {
+pub fn mission_bus_sandbox_args(
+    runtime: Option<Runtime>,
+    mission_dir: Option<&Path>,
+) -> Vec<String> {
     match (runtime, mission_dir) {
-        ("codex", Some(dir)) => vec!["--add-dir".into(), dir.to_string_lossy().to_string()],
-        _ => Vec::new(),
+        (Some(Runtime::Codex), Some(dir)) => {
+            vec!["--add-dir".into(), dir.to_string_lossy().to_string()]
+        }
+        (None, _)
+        | (Some(Runtime::Codex), None)
+        | (Some(Runtime::ClaudeCode) | Some(Runtime::Trae) | Some(Runtime::Shell), _) => Vec::new(),
     }
 }
 
@@ -784,9 +828,9 @@ impl ResumePlan {
 /// scope: direct chats look up the most recent session for the same
 /// `runner_id` with `mission_id IS NULL`; mission spawns look up the most
 /// recent session for the same `(mission_id, runner_id)`.
-pub fn resume_plan(runtime: &str, prior_key: Option<&str>) -> ResumePlan {
+pub fn resume_plan(runtime: Option<Runtime>, prior_key: Option<&str>) -> ResumePlan {
     match runtime {
-        "claude-code" => match prior_key {
+        Some(Runtime::ClaudeCode) => match prior_key {
             Some(k) if is_uuid(k) => ResumePlan {
                 // `--resume <uuid>` is required on resume. We tried
                 // `--session-id <uuid>` previously, but claude-code
@@ -821,7 +865,7 @@ pub fn resume_plan(runtime: &str, prior_key: Option<&str>) -> ResumePlan {
                 }
             }
         },
-        "codex" | "trae" => match prior_key {
+        Some(Runtime::Codex) | Some(Runtime::Trae) => match prior_key {
             Some(k) if is_uuid(k) => ResumePlan {
                 // `codex resume <uuid>` is a subcommand prefix. The caller
                 // places these args ahead of any user-supplied args.
@@ -834,7 +878,7 @@ pub fn resume_plan(runtime: &str, prior_key: Option<&str>) -> ResumePlan {
         },
         // shell / unknown — no resume concept. Custom wrappers can be wired
         // up later.
-        _ => ResumePlan::fresh(),
+        Some(Runtime::Shell) | None => ResumePlan::fresh(),
     }
 }
 
@@ -847,12 +891,16 @@ pub enum ForkPlan {
     },
 }
 
-pub fn fork_plan(runtime: &str, source_key: &str, source_label: &str) -> Option<ForkPlan> {
+pub fn fork_plan(
+    runtime: Option<Runtime>,
+    source_key: &str,
+    source_label: &str,
+) -> Option<ForkPlan> {
     if !is_uuid(source_key) {
         return None;
     }
     match runtime {
-        "claude-code" => {
+        Some(Runtime::ClaudeCode) => {
             let id = uuid::Uuid::new_v4().to_string();
             Some(ForkPlan::Direct(ResumePlan {
                 args: vec![
@@ -867,7 +915,7 @@ pub fn fork_plan(runtime: &str, source_key: &str, source_label: &str) -> Option<
                 resuming: true,
             }))
         }
-        "codex" => {
+        Some(Runtime::Codex) => {
             let note = format!("This chat was forked from '{source_label}'.");
             Some(ForkPlan::Headless {
                 args: vec![
@@ -881,7 +929,7 @@ pub fn fork_plan(runtime: &str, source_key: &str, source_label: &str) -> Option<
                 source_key: source_key.to_string(),
             })
         }
-        _ => None,
+        Some(Runtime::Trae) | Some(Runtime::Shell) | None => None,
     }
 }
 
@@ -989,7 +1037,7 @@ mod tests {
                     claude_code_project_dir,
                 );
                 assert!(exists, "saved Claude transcript must be found for {cwd}");
-                let plan = resume_plan("claude-code", exists.then_some(prior.as_str()));
+                let plan = resume_plan(Some(Runtime::ClaudeCode), exists.then_some(prior.as_str()));
                 assert!(plan.resuming);
                 assert_eq!(plan.args, ["--resume", prior.as_str()]);
             }
@@ -1009,7 +1057,7 @@ mod tests {
         // interactive TUI ignores it. The argv path returns empty,
         // and call sites fold the prompt into first-turn delivery
         // instead.
-        let args = system_prompt_args("claude-code", Some("be helpful"));
+        let args = system_prompt_args(Some(Runtime::ClaudeCode), Some("be helpful"));
         assert!(args.is_empty());
     }
 
@@ -1018,7 +1066,7 @@ mod tests {
         // Codex has no dedicated system-prompt flag. Persona/brief
         // delivery is handled through first-turn plumbing, not
         // `system_prompt_args`.
-        let args = system_prompt_args("codex", Some("be helpful"));
+        let args = system_prompt_args(Some(Runtime::Codex), Some("be helpful"));
         assert!(
             args.is_empty(),
             "codex has no native system_prompt argv flag: {args:?}",
@@ -1027,32 +1075,37 @@ mod tests {
 
     #[test]
     fn codex_runtime_omits_argv_when_prompt_is_blank() {
-        assert!(system_prompt_args("codex", None).is_empty());
-        assert!(system_prompt_args("codex", Some("")).is_empty());
-        assert!(system_prompt_args("codex", Some("   ")).is_empty());
+        assert!(system_prompt_args(Some(Runtime::Codex), None).is_empty());
+        assert!(system_prompt_args(Some(Runtime::Codex), Some("")).is_empty());
+        assert!(system_prompt_args(Some(Runtime::Codex), Some("   ")).is_empty());
     }
 
     #[test]
     fn shell_runtime_omits_flag() {
-        assert!(system_prompt_args("shell", Some("ignored")).is_empty());
+        assert!(system_prompt_args(Some(Runtime::Shell), Some("ignored")).is_empty());
     }
 
     #[test]
     fn missing_or_blank_prompt_omits_flag() {
-        assert!(system_prompt_args("claude-code", None).is_empty());
-        assert!(system_prompt_args("claude-code", Some("")).is_empty());
-        assert!(system_prompt_args("claude-code", Some("   ")).is_empty());
+        assert!(system_prompt_args(Some(Runtime::ClaudeCode), None).is_empty());
+        assert!(system_prompt_args(Some(Runtime::ClaudeCode), Some("")).is_empty());
+        assert!(system_prompt_args(Some(Runtime::ClaudeCode), Some("   ")).is_empty());
     }
 
     #[test]
     fn unknown_runtime_degrades_to_no_flag() {
-        assert!(system_prompt_args("aider-future", Some("hi")).is_empty());
+        assert!(system_prompt_args(Runtime::parse("aider-future"), Some("hi")).is_empty());
     }
 
     #[test]
     fn claude_settings_injects_fullscreen_and_per_spawn_session_start_hook() {
         let app_data_dir = Path::new("/tmp/runner app-data");
-        let args = claude_settings_args("claude-code", &[], app_data_dir, "runner-session-one");
+        let args = claude_settings_args(
+            Some(Runtime::ClaudeCode),
+            &[],
+            app_data_dir,
+            "runner-session-one",
+        );
         assert_eq!(args.len(), 2);
         assert_eq!(args[0], "--settings");
         assert_eq!(args.iter().filter(|arg| *arg == "--settings").count(), 1);
@@ -1078,7 +1131,12 @@ mod tests {
             "command"
         );
 
-        let other = claude_settings_args("claude-code", &[], app_data_dir, "runner-session-two");
+        let other = claude_settings_args(
+            Some(Runtime::ClaudeCode),
+            &[],
+            app_data_dir,
+            "runner-session-two",
+        );
         assert_ne!(args[1], other[1]);
         assert!(other[1].contains("runner-session-two.json"));
     }
@@ -1090,7 +1148,7 @@ mod tests {
             vec!["--settings=custom.json".into()],
         ] {
             assert!(claude_settings_args(
-                "claude-code",
+                Some(Runtime::ClaudeCode),
                 &runner_args,
                 Path::new("/tmp/runner-app-data"),
                 "runner-session"
@@ -1103,7 +1161,7 @@ mod tests {
     fn claude_settings_do_not_leak_to_other_runtimes() {
         for runtime in ["codex", "shell"] {
             assert!(claude_settings_args(
-                runtime,
+                Runtime::parse(runtime),
                 &[],
                 Path::new("/tmp/runner-app-data"),
                 "runner-session"
@@ -1114,7 +1172,7 @@ mod tests {
 
     #[test]
     fn claude_code_fresh_self_assigns_session_id() {
-        let plan = resume_plan("claude-code", None);
+        let plan = resume_plan(Some(Runtime::ClaudeCode), None);
         assert!(!plan.resuming);
         assert!(!plan.prepend);
         assert_eq!(plan.args.len(), 2);
@@ -1131,7 +1189,7 @@ mod tests {
         // it as fresh-only. Fresh-spawn first-turn delivery ensures
         // the conversation file exists before any resume attempt.
         let prior = uuid::Uuid::new_v4().to_string();
-        let plan = resume_plan("claude-code", Some(&prior));
+        let plan = resume_plan(Some(Runtime::ClaudeCode), Some(&prior));
         assert!(plan.resuming);
         assert!(!plan.prepend);
         assert_eq!(plan.args, vec!["--resume", &prior]);
@@ -1142,14 +1200,14 @@ mod tests {
     fn claude_code_falls_back_to_fresh_on_invalid_prior_key() {
         // A non-UUID prior key would crash claude-code's --resume parser.
         // Treat it as missing and start fresh.
-        let plan = resume_plan("claude-code", Some("not-a-uuid"));
+        let plan = resume_plan(Some(Runtime::ClaudeCode), Some("not-a-uuid"));
         assert!(!plan.resuming);
         assert_eq!(plan.args[0], "--session-id");
     }
 
     #[test]
     fn codex_fresh_returns_empty_plan() {
-        let plan = resume_plan("codex", None);
+        let plan = resume_plan(Some(Runtime::Codex), None);
         assert!(plan.args.is_empty());
         assert!(plan.assigned_key.is_none());
         assert!(!plan.resuming);
@@ -1158,7 +1216,7 @@ mod tests {
     #[test]
     fn codex_resume_uses_subcommand_prefix() {
         let prior = uuid::Uuid::new_v4().to_string();
-        let plan = resume_plan("codex", Some(&prior));
+        let plan = resume_plan(Some(Runtime::Codex), Some(&prior));
         assert!(plan.resuming);
         assert!(plan.prepend, "codex resume is a subcommand, must prepend");
         assert_eq!(plan.args, vec!["resume", &prior]);
@@ -1166,7 +1224,7 @@ mod tests {
 
     #[test]
     fn trae_fresh_returns_empty_plan() {
-        let plan = resume_plan("trae", None);
+        let plan = resume_plan(Some(Runtime::Trae), None);
         assert!(plan.args.is_empty());
         assert!(plan.assigned_key.is_none());
         assert!(!plan.resuming);
@@ -1175,7 +1233,7 @@ mod tests {
     #[test]
     fn trae_resume_uses_subcommand_prefix() {
         let prior = "019fa1b9-a133-7841-b4dd-730d376ab1d1".to_string();
-        let plan = resume_plan("trae", Some(&prior));
+        let plan = resume_plan(Some(Runtime::Trae), Some(&prior));
         assert!(plan.resuming);
         assert!(plan.prepend, "trae resume is a subcommand, must prepend");
         assert_eq!(plan.args, vec!["resume", &prior]);
@@ -1184,7 +1242,7 @@ mod tests {
 
     #[test]
     fn unknown_runtime_returns_empty_resume_plan() {
-        let plan = resume_plan("aider-future", Some("anything"));
+        let plan = resume_plan(Runtime::parse("aider-future"), Some("anything"));
         assert!(plan.args.is_empty());
         assert!(plan.assigned_key.is_none());
         assert!(!plan.resuming);
@@ -1192,10 +1250,10 @@ mod tests {
 
     #[test]
     fn native_fork_capability_comes_from_runtime_definition() {
-        assert!(supports_native_fork("claude-code"));
-        assert!(supports_native_fork("codex"));
-        assert!(!supports_native_fork("trae"));
-        assert!(!supports_native_fork("aider-future"));
+        assert!(supports_native_fork(Some(Runtime::ClaudeCode)));
+        assert!(supports_native_fork(Some(Runtime::Codex)));
+        assert!(!supports_native_fork(Some(Runtime::Trae)));
+        assert!(!supports_native_fork(Runtime::parse("aider-future")));
     }
 
     #[test]
@@ -1204,7 +1262,7 @@ mod tests {
         for definition in runtime_definitions() {
             assert_eq!(
                 definition.native_fork,
-                fork_plan(definition.name, source, "Source").is_some(),
+                fork_plan(Some(definition.name), source, "Source").is_some(),
                 "runtime {}",
                 definition.name,
             );
@@ -1214,7 +1272,7 @@ mod tests {
     #[test]
     fn claude_code_fork_assigns_a_new_session_key() {
         let source = "019fa1b9-a133-7841-b4dd-730d376ab1d1";
-        let plan = fork_plan("claude-code", source, "Source").unwrap();
+        let plan = fork_plan(Some(Runtime::ClaudeCode), source, "Source").unwrap();
         let ForkPlan::Direct(plan) = plan else {
             panic!("claude-code must spawn its fork directly")
         };
@@ -1237,7 +1295,7 @@ mod tests {
     #[test]
     fn codex_fork_executes_headlessly_and_reads_thread_started() {
         let source = "019fa1b9-a133-7841-b4dd-730d376ab1d1";
-        let plan = fork_plan("codex", source, "Source").unwrap();
+        let plan = fork_plan(Some(Runtime::Codex), source, "Source").unwrap();
         let ForkPlan::Headless { args, source_key } = plan else {
             panic!("codex must materialize its fork headlessly")
         };
@@ -1258,14 +1316,18 @@ mod tests {
     #[test]
     fn unsupported_or_invalid_fork_returns_none() {
         let source = "019fa1b9-a133-7841-b4dd-730d376ab1d1";
-        assert!(fork_plan("trae", source, "note").is_none());
-        assert!(fork_plan("aider-future", source, "note").is_none());
-        assert!(fork_plan("codex", "not-a-uuid", "note").is_none());
+        assert!(fork_plan(Some(Runtime::Trae), source, "note").is_none());
+        assert!(fork_plan(Runtime::parse("aider-future"), source, "note").is_none());
+        assert!(fork_plan(Some(Runtime::Codex), "not-a-uuid", "note").is_none());
     }
 
     #[test]
     fn claude_code_emits_model_and_effort_flags() {
-        let args = model_effort_args("claude-code", Some("claude-opus-4-7"), Some("xhigh"));
+        let args = model_effort_args(
+            Some(Runtime::ClaudeCode),
+            Some("claude-opus-4-7"),
+            Some("xhigh"),
+        );
         assert_eq!(
             args,
             vec![
@@ -1283,7 +1345,7 @@ mod tests {
         // dedicated reasoning-effort flag; the canonical wiring is via
         // its `-c key=value` config-override flag using the same
         // `model_reasoning_effort` key as `~/.codex/config.toml`.
-        let args = model_effort_args("codex", Some("gpt-5-codex"), Some("high"));
+        let args = model_effort_args(Some(Runtime::Codex), Some("gpt-5-codex"), Some("high"));
         assert!(
             args.windows(2)
                 .any(|w| w[0] == "--model" && w[1] == "gpt-5-codex"),
@@ -1298,7 +1360,7 @@ mod tests {
 
     #[test]
     fn trae_emits_model_and_reasoning_effort_override() {
-        let args = model_effort_args("trae", Some("trae-model"), Some("High"));
+        let args = model_effort_args(Some(Runtime::Trae), Some("trae-model"), Some("High"));
         assert_eq!(
             args,
             vec![
@@ -1312,7 +1374,7 @@ mod tests {
 
     #[test]
     fn codex_emits_only_model_when_effort_unset() {
-        let args = model_effort_args("codex", Some("gpt-5-codex"), None);
+        let args = model_effort_args(Some(Runtime::Codex), Some("gpt-5-codex"), None);
         assert_eq!(args, vec!["--model".to_string(), "gpt-5-codex".to_string()]);
     }
 
@@ -1323,7 +1385,7 @@ mod tests {
         // expected one of 'none', 'minimal', 'low', 'medium', 'high',
         // 'xhigh'`. Rows often store the level title-cased ("High"),
         // so the codex branch normalises before forwarding.
-        let args = model_effort_args("codex", Some("gpt-5-codex"), Some("High"));
+        let args = model_effort_args(Some(Runtime::Codex), Some("gpt-5-codex"), Some("High"));
         assert!(
             args.windows(2)
                 .any(|w| w[0] == "-c" && w[1] == "model_reasoning_effort=high"),
@@ -1333,7 +1395,7 @@ mod tests {
 
     #[test]
     fn codex_lowercases_mixed_case_effort() {
-        let args = model_effort_args("codex", None, Some("XHIGH"));
+        let args = model_effort_args(Some(Runtime::Codex), None, Some("XHIGH"));
         assert!(
             args.windows(2)
                 .any(|w| w[0] == "-c" && w[1] == "model_reasoning_effort=xhigh"),
@@ -1345,12 +1407,12 @@ mod tests {
     fn codex_mission_bus_sandbox_args_grants_only_mission_dir() {
         let dir = std::path::PathBuf::from("/tmp/runner/crews/c/missions/m");
         assert_eq!(
-            mission_bus_sandbox_args("codex", Some(&dir)),
+            mission_bus_sandbox_args(Some(Runtime::Codex), Some(&dir)),
             vec!["--add-dir".to_string(), dir.to_string_lossy().to_string()],
         );
-        assert!(mission_bus_sandbox_args("codex", None).is_empty());
-        assert!(mission_bus_sandbox_args("claude-code", Some(&dir)).is_empty());
-        assert!(mission_bus_sandbox_args("shell", Some(&dir)).is_empty());
+        assert!(mission_bus_sandbox_args(Some(Runtime::Codex), None).is_empty());
+        assert!(mission_bus_sandbox_args(Some(Runtime::ClaudeCode), Some(&dir)).is_empty());
+        assert!(mission_bus_sandbox_args(Some(Runtime::Shell), Some(&dir)).is_empty());
     }
 
     #[test]
@@ -1359,7 +1421,7 @@ mod tests {
         // insensitive (accepts `High`), so we forward the row's
         // value verbatim rather than risk regressing already-shipped
         // behavior. Only the codex branch normalises.
-        let args = model_effort_args("claude-code", None, Some("High"));
+        let args = model_effort_args(Some(Runtime::ClaudeCode), None, Some("High"));
         assert!(
             args.windows(2)
                 .any(|w| w[0] == "--effort" && w[1] == "High"),
@@ -1374,7 +1436,7 @@ mod tests {
         // reach the spawned CLI.
         for plan_resuming in [false, true] {
             let args = trailing_runtime_args(
-                "codex",
+                Some(Runtime::Codex),
                 &[],
                 Path::new("/tmp/runner-app-data"),
                 "runner-session",
@@ -1406,21 +1468,23 @@ mod tests {
     #[test]
     fn permission_mode_args_per_runtime() {
         // Default → no flags for any runtime / any mode.
-        assert!(permission_mode_args("claude-code", PermissionMode::Default).is_empty());
-        assert!(permission_mode_args("codex", PermissionMode::Default).is_empty());
-        assert!(permission_mode_args("trae", PermissionMode::Default).is_empty());
+        assert!(
+            permission_mode_args(Some(Runtime::ClaudeCode), PermissionMode::Default).is_empty()
+        );
+        assert!(permission_mode_args(Some(Runtime::Codex), PermissionMode::Default).is_empty());
+        assert!(permission_mode_args(Some(Runtime::Trae), PermissionMode::Default).is_empty());
         // claude-code: AcceptEdits / Auto / Bypass each emit
         // `--permission-mode <value>` with a runtime-specific value.
         assert_eq!(
-            permission_mode_args("claude-code", PermissionMode::AcceptEdits),
+            permission_mode_args(Some(Runtime::ClaudeCode), PermissionMode::AcceptEdits),
             vec!["--permission-mode".to_string(), "acceptEdits".to_string()],
         );
         assert_eq!(
-            permission_mode_args("claude-code", PermissionMode::Auto),
+            permission_mode_args(Some(Runtime::ClaudeCode), PermissionMode::Auto),
             vec!["--permission-mode".to_string(), "auto".to_string()],
         );
         assert_eq!(
-            permission_mode_args("claude-code", PermissionMode::Bypass),
+            permission_mode_args(Some(Runtime::ClaudeCode), PermissionMode::Bypass),
             vec![
                 "--permission-mode".to_string(),
                 "bypassPermissions".to_string(),
@@ -1429,9 +1493,9 @@ mod tests {
         // codex: AcceptEdits has no equivalent (returns empty);
         // Auto uses on-request (on-failure is deprecated per
         // `codex --help`); Bypass uses never.
-        assert!(permission_mode_args("codex", PermissionMode::AcceptEdits).is_empty());
+        assert!(permission_mode_args(Some(Runtime::Codex), PermissionMode::AcceptEdits).is_empty());
         assert_eq!(
-            permission_mode_args("codex", PermissionMode::Auto),
+            permission_mode_args(Some(Runtime::Codex), PermissionMode::Auto),
             vec![
                 "--ask-for-approval".to_string(),
                 "on-request".to_string(),
@@ -1440,7 +1504,7 @@ mod tests {
             ],
         );
         assert_eq!(
-            permission_mode_args("codex", PermissionMode::Bypass),
+            permission_mode_args(Some(Runtime::Codex), PermissionMode::Bypass),
             vec![
                 "--ask-for-approval".to_string(),
                 "never".to_string(),
@@ -1448,13 +1512,13 @@ mod tests {
                 "workspace-write".to_string(),
             ],
         );
-        assert!(permission_mode_args("trae", PermissionMode::AcceptEdits).is_empty());
+        assert!(permission_mode_args(Some(Runtime::Trae), PermissionMode::AcceptEdits).is_empty());
         assert_eq!(
-            permission_mode_args("trae", PermissionMode::Auto),
+            permission_mode_args(Some(Runtime::Trae), PermissionMode::Auto),
             vec!["--permission-mode".to_string(), "auto".to_string()],
         );
         assert_eq!(
-            permission_mode_args("trae", PermissionMode::Bypass),
+            permission_mode_args(Some(Runtime::Trae), PermissionMode::Bypass),
             vec![
                 "--permission-mode".to_string(),
                 "bypass_permissions".to_string(),
@@ -1467,15 +1531,15 @@ mod tests {
             PermissionMode::Auto,
             PermissionMode::Bypass,
         ] {
-            assert!(permission_mode_args("shell", mode).is_empty());
-            assert!(permission_mode_args("aider-future", mode).is_empty());
+            assert!(permission_mode_args(Some(Runtime::Shell), mode).is_empty());
+            assert!(permission_mode_args(Runtime::parse("aider-future"), mode).is_empty());
         }
     }
 
     #[test]
     fn apply_permission_mode_codex_appends_auto_pair() {
         let user = vec!["--debug".to_string(), "-v".to_string()];
-        let out = apply_permission_mode("codex", &user, PermissionMode::Auto);
+        let out = apply_permission_mode(Some(Runtime::Codex), &user, PermissionMode::Auto);
         assert_eq!(
             out,
             vec![
@@ -1493,7 +1557,7 @@ mod tests {
     #[test]
     fn apply_permission_mode_codex_appends_bypass_pair() {
         let user = vec!["--debug".to_string()];
-        let out = apply_permission_mode("codex", &user, PermissionMode::Bypass);
+        let out = apply_permission_mode(Some(Runtime::Codex), &user, PermissionMode::Bypass);
         assert_eq!(
             out,
             vec![
@@ -1518,7 +1582,7 @@ mod tests {
             "--sandbox".to_string(),
             "workspace-write".to_string(),
         ];
-        let out = apply_permission_mode("codex", &user, PermissionMode::AcceptEdits);
+        let out = apply_permission_mode(Some(Runtime::Codex), &user, PermissionMode::AcceptEdits);
         assert_eq!(
             out,
             vec!["--debug".to_string()],
@@ -1539,7 +1603,7 @@ mod tests {
             "--debug".to_string(),
             "--sandbox=read-only".to_string(),
         ];
-        let out = apply_permission_mode("codex", &user, PermissionMode::Bypass);
+        let out = apply_permission_mode(Some(Runtime::Codex), &user, PermissionMode::Bypass);
         assert_eq!(
             out,
             vec![
@@ -1561,14 +1625,14 @@ mod tests {
             "--sandbox".to_string(),
             "workspace-write".to_string(),
         ];
-        let out = apply_permission_mode("codex", &user, PermissionMode::Default);
+        let out = apply_permission_mode(Some(Runtime::Codex), &user, PermissionMode::Default);
         assert_eq!(out, vec!["--debug".to_string()]);
     }
 
     #[test]
     fn apply_permission_mode_trae_round_trips_auto_to_default() {
         let user = vec!["--debug".to_string()];
-        let auto = apply_permission_mode("trae", &user, PermissionMode::Auto);
+        let auto = apply_permission_mode(Some(Runtime::Trae), &user, PermissionMode::Auto);
         assert_eq!(
             auto,
             vec![
@@ -1577,9 +1641,12 @@ mod tests {
                 "auto".to_string(),
             ],
         );
-        assert_eq!(infer_permission_mode("trae", &auto), PermissionMode::Auto);
         assert_eq!(
-            apply_permission_mode("trae", &auto, PermissionMode::Default),
+            infer_permission_mode(Some(Runtime::Trae), &auto),
+            PermissionMode::Auto
+        );
+        assert_eq!(
+            apply_permission_mode(Some(Runtime::Trae), &auto, PermissionMode::Default),
             user,
         );
     }
@@ -1604,7 +1671,7 @@ mod tests {
             ),
         ] {
             let user = vec!["--mcp-debug".to_string()];
-            let out = apply_permission_mode("claude-code", &user, mode);
+            let out = apply_permission_mode(Some(Runtime::ClaudeCode), &user, mode);
             let mut want = vec!["--mcp-debug".to_string()];
             want.extend(expected_extra);
             assert_eq!(out, want, "mode={mode:?}");
@@ -1617,7 +1684,11 @@ mod tests {
         // in the middle. Each transition must end with the canonical
         // args for the chosen mode, never an accumulation.
         let mut args = vec!["--mcp-debug".to_string()];
-        args = apply_permission_mode("claude-code", &args, PermissionMode::AcceptEdits);
+        args = apply_permission_mode(
+            Some(Runtime::ClaudeCode),
+            &args,
+            PermissionMode::AcceptEdits,
+        );
         assert_eq!(
             args,
             vec![
@@ -1626,7 +1697,7 @@ mod tests {
                 "acceptEdits".to_string(),
             ],
         );
-        args = apply_permission_mode("claude-code", &args, PermissionMode::Auto);
+        args = apply_permission_mode(Some(Runtime::ClaudeCode), &args, PermissionMode::Auto);
         assert_eq!(
             args,
             vec![
@@ -1636,7 +1707,7 @@ mod tests {
             ],
             "cycling to Auto must replace the prior --permission-mode value, not stack",
         );
-        args = apply_permission_mode("claude-code", &args, PermissionMode::Bypass);
+        args = apply_permission_mode(Some(Runtime::ClaudeCode), &args, PermissionMode::Bypass);
         assert_eq!(
             args,
             vec![
@@ -1645,7 +1716,7 @@ mod tests {
                 "bypassPermissions".to_string(),
             ],
         );
-        args = apply_permission_mode("claude-code", &args, PermissionMode::Default);
+        args = apply_permission_mode(Some(Runtime::ClaudeCode), &args, PermissionMode::Default);
         assert_eq!(args, vec!["--mcp-debug".to_string()]);
     }
 
@@ -1660,7 +1731,7 @@ mod tests {
             "--mcp-debug".to_string(),
             "--dangerously-skip-permissions".to_string(),
         ];
-        let out = apply_permission_mode("claude-code", &user, PermissionMode::Bypass);
+        let out = apply_permission_mode(Some(Runtime::ClaudeCode), &user, PermissionMode::Bypass);
         assert_eq!(
             out,
             vec![
@@ -1682,7 +1753,7 @@ mod tests {
             PermissionMode::Bypass,
         ] {
             assert_eq!(
-                apply_permission_mode("shell", &user, mode),
+                apply_permission_mode(Some(Runtime::Shell), &user, mode),
                 user,
                 "shell must be a no-op (mode={mode:?})",
             );
@@ -1693,21 +1764,21 @@ mod tests {
     fn mission_permission_mode_args_per_runtime() {
         use MissionPermissionMode as M;
         assert_eq!(
-            mission_permission_mode_args("claude-code", M::Bypass),
+            mission_permission_mode_args(Some(Runtime::ClaudeCode), M::Bypass),
             Some(vec![
                 "--permission-mode".to_string(),
                 "bypassPermissions".to_string(),
             ]),
         );
         assert_eq!(
-            mission_permission_mode_args("claude-code", M::Auto),
+            mission_permission_mode_args(Some(Runtime::ClaudeCode), M::Auto),
             Some(vec!["--permission-mode".to_string(), "auto".to_string()]),
         );
         // codex Bypass leaves the sandbox: with `never` codex cannot
         // ask to escalate, so `workspace-write` would fail network
         // and out-of-tree writes silently in an unwatched slot.
         assert_eq!(
-            mission_permission_mode_args("codex", M::Bypass),
+            mission_permission_mode_args(Some(Runtime::Codex), M::Bypass),
             Some(vec![
                 "--ask-for-approval".to_string(),
                 "never".to_string(),
@@ -1716,7 +1787,7 @@ mod tests {
             ]),
         );
         assert_eq!(
-            mission_permission_mode_args("codex", M::Auto),
+            mission_permission_mode_args(Some(Runtime::Codex), M::Auto),
             Some(vec![
                 "--ask-for-approval".to_string(),
                 "on-request".to_string(),
@@ -1725,34 +1796,34 @@ mod tests {
             ]),
         );
         assert_eq!(
-            mission_permission_mode_args("trae", M::Bypass),
+            mission_permission_mode_args(Some(Runtime::Trae), M::Bypass),
             Some(vec![
                 "--permission-mode".to_string(),
                 "bypass_permissions".to_string(),
             ]),
         );
         assert_eq!(
-            mission_permission_mode_args("trae", M::Auto),
+            mission_permission_mode_args(Some(Runtime::Trae), M::Auto),
             Some(vec!["--permission-mode".to_string(), "auto".to_string()]),
         );
         for runtime in ["claude-code", "codex", "trae", "shell", "unknown"] {
             assert_eq!(
-                mission_permission_mode_args(runtime, M::RunnerDefault),
+                mission_permission_mode_args(Runtime::parse(runtime), M::RunnerDefault),
                 None,
                 "{runtime}"
             );
         }
         assert_eq!(
-            mission_permission_mode_args("shell", M::Bypass),
+            mission_permission_mode_args(Some(Runtime::Shell), M::Bypass),
             Some(vec![])
         );
         assert_eq!(
-            mission_permission_mode_args("unknown", M::Auto),
+            mission_permission_mode_args(Runtime::parse("unknown"), M::Auto),
             Some(vec![])
         );
         // The runner-level codex Bypass mapping is untouched.
         assert_eq!(
-            permission_mode_args("codex", PermissionMode::Bypass),
+            permission_mode_args(Some(Runtime::Codex), PermissionMode::Bypass),
             vec![
                 "--ask-for-approval".to_string(),
                 "never".to_string(),
@@ -1771,7 +1842,11 @@ mod tests {
             "workspace-write".to_string(),
         ];
         assert_eq!(
-            apply_mission_permission_mode("codex", &row, MissionPermissionMode::Bypass),
+            apply_mission_permission_mode(
+                Some(Runtime::Codex),
+                &row,
+                MissionPermissionMode::Bypass
+            ),
             vec![
                 "--ask-for-approval".to_string(),
                 "never".to_string(),
@@ -1780,7 +1855,11 @@ mod tests {
             ],
         );
         assert_eq!(
-            apply_mission_permission_mode("codex", &row, MissionPermissionMode::RunnerDefault),
+            apply_mission_permission_mode(
+                Some(Runtime::Codex),
+                &row,
+                MissionPermissionMode::RunnerDefault
+            ),
             row,
         );
     }
@@ -1794,7 +1873,11 @@ mod tests {
             "opus".to_string(),
         ];
         assert_eq!(
-            apply_mission_permission_mode("claude-code", &row, MissionPermissionMode::Bypass),
+            apply_mission_permission_mode(
+                Some(Runtime::ClaudeCode),
+                &row,
+                MissionPermissionMode::Bypass
+            ),
             vec![
                 "--model".to_string(),
                 "opus".to_string(),
@@ -1803,7 +1886,11 @@ mod tests {
             ],
         );
         assert_eq!(
-            apply_mission_permission_mode("claude-code", &row, MissionPermissionMode::Auto),
+            apply_mission_permission_mode(
+                Some(Runtime::ClaudeCode),
+                &row,
+                MissionPermissionMode::Auto
+            ),
             vec![
                 "--model".to_string(),
                 "opus".to_string(),
@@ -1813,7 +1900,7 @@ mod tests {
         );
         assert_eq!(
             apply_mission_permission_mode(
-                "claude-code",
+                Some(Runtime::ClaudeCode),
                 &row,
                 MissionPermissionMode::RunnerDefault
             ),
@@ -1827,7 +1914,7 @@ mod tests {
         for runtime in ["shell", "aider-future"] {
             for mode in MissionPermissionMode::ALL {
                 assert_eq!(
-                    apply_mission_permission_mode(runtime, &row, mode),
+                    apply_mission_permission_mode(Runtime::parse(runtime), &row, mode),
                     row,
                     "{runtime} {mode:?}"
                 );
@@ -1862,7 +1949,7 @@ mod tests {
             "workspace-write".to_string(),
         ];
         assert_eq!(
-            infer_permission_mode("codex", &args),
+            infer_permission_mode(Some(Runtime::Codex), &args),
             PermissionMode::Bypass,
         );
     }
@@ -1876,7 +1963,7 @@ mod tests {
             "--sandbox=workspace-write".to_string(),
         ];
         assert_eq!(
-            infer_permission_mode("codex", &args),
+            infer_permission_mode(Some(Runtime::Codex), &args),
             PermissionMode::Bypass,
         );
     }
@@ -1888,7 +1975,10 @@ mod tests {
             "on-request".to_string(),
             "--sandbox=workspace-write".to_string(),
         ];
-        assert_eq!(infer_permission_mode("codex", &args), PermissionMode::Auto);
+        assert_eq!(
+            infer_permission_mode(Some(Runtime::Codex), &args),
+            PermissionMode::Auto
+        );
     }
 
     #[test]
@@ -1897,7 +1987,7 @@ mod tests {
         // pair fully matches → default.
         let args = vec!["--sandbox=workspace-write".to_string()];
         assert_eq!(
-            infer_permission_mode("codex", &args),
+            infer_permission_mode(Some(Runtime::Codex), &args),
             PermissionMode::Default,
         );
     }
@@ -1915,7 +2005,7 @@ mod tests {
             "--sandbox=workspace-write".to_string(),
         ];
         assert_eq!(
-            infer_permission_mode("codex", &args),
+            infer_permission_mode(Some(Runtime::Codex), &args),
             PermissionMode::Default,
         );
     }
@@ -1923,27 +2013,33 @@ mod tests {
     #[test]
     fn infer_permission_mode_claude_code_each_state() {
         assert_eq!(
-            infer_permission_mode("claude-code", &["--mcp-debug".into()]),
+            infer_permission_mode(Some(Runtime::ClaudeCode), &["--mcp-debug".into()]),
             PermissionMode::Default,
         );
         assert_eq!(
             infer_permission_mode(
-                "claude-code",
+                Some(Runtime::ClaudeCode),
                 &["--permission-mode".into(), "acceptEdits".into()],
             ),
             PermissionMode::AcceptEdits,
         );
         assert_eq!(
-            infer_permission_mode("claude-code", &["--permission-mode=acceptEdits".into()]),
+            infer_permission_mode(
+                Some(Runtime::ClaudeCode),
+                &["--permission-mode=acceptEdits".into()]
+            ),
             PermissionMode::AcceptEdits,
         );
         assert_eq!(
-            infer_permission_mode("claude-code", &["--permission-mode".into(), "auto".into()],),
+            infer_permission_mode(
+                Some(Runtime::ClaudeCode),
+                &["--permission-mode".into(), "auto".into()],
+            ),
             PermissionMode::Auto,
         );
         assert_eq!(
             infer_permission_mode(
-                "claude-code",
+                Some(Runtime::ClaudeCode),
                 &["--permission-mode".into(), "bypassPermissions".into()],
             ),
             PermissionMode::Bypass,
@@ -1958,7 +2054,7 @@ mod tests {
         // bypassPermissions`.
         let args = vec!["--dangerously-skip-permissions".to_string()];
         assert_eq!(
-            infer_permission_mode("claude-code", &args),
+            infer_permission_mode(Some(Runtime::ClaudeCode), &args),
             PermissionMode::Bypass,
         );
     }
@@ -1976,7 +2072,7 @@ mod tests {
             "--dangerously-skip-permissions".to_string(),
         ];
         assert_eq!(
-            infer_permission_mode("claude-code", &args),
+            infer_permission_mode(Some(Runtime::ClaudeCode), &args),
             PermissionMode::Bypass,
         );
     }
@@ -1985,11 +2081,11 @@ mod tests {
     fn infer_permission_mode_unsupported_runtime_default() {
         let args = vec!["--whatever".to_string()];
         assert_eq!(
-            infer_permission_mode("shell", &args),
+            infer_permission_mode(Some(Runtime::Shell), &args),
             PermissionMode::Default,
         );
         assert_eq!(
-            infer_permission_mode("aider-future", &args),
+            infer_permission_mode(Runtime::parse("aider-future"), &args),
             PermissionMode::Default,
         );
     }
@@ -2000,7 +2096,7 @@ mod tests {
         // — the user mid-typed), strip just the flag and don't panic
         // on the missing pair.
         let user = vec!["--debug".to_string(), "--ask-for-approval".to_string()];
-        let out = strip_permission_flags("codex", &user);
+        let out = strip_permission_flags(Some(Runtime::Codex), &user);
         assert_eq!(out, vec!["--debug".to_string()]);
     }
 
@@ -2015,7 +2111,7 @@ mod tests {
             "--debug".to_string(),
             "--dangerously-skip-permissions".to_string(),
         ];
-        let out = strip_permission_flags("claude-code", &user);
+        let out = strip_permission_flags(Some(Runtime::ClaudeCode), &user);
         assert_eq!(out, vec!["--debug".to_string()]);
     }
 
@@ -2026,7 +2122,7 @@ mod tests {
         // `plan_resuming` flag has no effect — the trailing args
         // are just the model/effort pair.
         let fresh = trailing_runtime_args(
-            "claude-code",
+            Some(Runtime::ClaudeCode),
             &[],
             Path::new("/tmp/runner-app-data"),
             "runner-session",
@@ -2037,7 +2133,7 @@ mod tests {
             None,
         );
         let resuming = trailing_runtime_args(
-            "claude-code",
+            Some(Runtime::ClaudeCode),
             &[],
             Path::new("/tmp/runner-app-data"),
             "runner-session",
@@ -2068,7 +2164,7 @@ mod tests {
         for runtime in ["claude-code", "codex", "trae"] {
             let body = "You are the architect. Goal: ship 0007.";
             let args = trailing_runtime_args(
-                runtime,
+                Runtime::parse(runtime),
                 &[],
                 Path::new("/tmp/runner-app-data"),
                 "runner-session",
@@ -2091,7 +2187,7 @@ mod tests {
         for runtime in ["claude-code", "codex", "trae"] {
             let body = "You are the architect. Goal: ship 0007.";
             let args = trailing_runtime_args(
-                runtime,
+                Runtime::parse(runtime),
                 &[],
                 Path::new("/tmp/runner-app-data"),
                 "runner-session",
@@ -2119,9 +2215,9 @@ mod tests {
 
     #[test]
     fn first_turn_argv_empty_for_blank_or_unsupported_runtime() {
-        assert!(first_turn_argv("claude-code", Some("   \n  ")).is_empty());
-        assert!(first_turn_argv("claude-code", None).is_empty());
-        assert!(first_turn_argv("shell", Some("body")).is_empty());
-        assert!(first_turn_argv("unknown", Some("body")).is_empty());
+        assert!(first_turn_argv(Some(Runtime::ClaudeCode), Some("   \n  ")).is_empty());
+        assert!(first_turn_argv(Some(Runtime::ClaudeCode), None).is_empty());
+        assert!(first_turn_argv(Some(Runtime::Shell), Some("body")).is_empty());
+        assert!(first_turn_argv(Runtime::parse("unknown"), Some("body")).is_empty());
     }
 }

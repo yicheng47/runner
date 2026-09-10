@@ -1,3 +1,4 @@
+use runner_backend::model::Runtime;
 use std::path::PathBuf;
 use std::rc::Rc;
 
@@ -160,7 +161,7 @@ fn badges(entry: &SkillEntry) -> AnyElement {
 pub(crate) struct SkillsPane {
     app_store: Entity<AppStore>,
     catalogs: Vec<SkillCatalog>,
-    runtime: String,
+    runtime: Runtime,
     runtime_select: Entity<StyledSelect>,
     search: Entity<TextField>,
     loading: bool,
@@ -176,11 +177,14 @@ impl SkillsPane {
             StyledSelect::new(
                 "skills-runtime",
                 cx.focus_handle(),
-                "claude-code",
+                Runtime::ClaudeCode.key(),
                 Vec::new(),
                 Rc::new(move |value, _, cx| {
                     let _ = weak.update(cx, |this, cx| {
-                        this.runtime = value.to_owned();
+                        let Some(runtime) = Runtime::parse(&value) else {
+                            return;
+                        };
+                        this.runtime = runtime;
                         cx.notify();
                     });
                 }),
@@ -209,7 +213,7 @@ impl SkillsPane {
         Self {
             app_store,
             catalogs: Vec::new(),
-            runtime: "claude-code".into(),
+            runtime: Runtime::ClaudeCode,
             runtime_select,
             search,
             loading: false,
@@ -235,7 +239,10 @@ impl SkillsPane {
                         catalogs
                             .iter()
                             .map(|c| {
-                                SelectOption::new(&c.runtime, runtime_display_name(&c.runtime))
+                                SelectOption::new(
+                                    c.runtime.key(),
+                                    runtime_display_name(c.runtime.key()),
+                                )
                             })
                             .collect(),
                         cx,
@@ -253,12 +260,12 @@ impl SkillsPane {
     fn row(&self, entry: &SkillEntry, index: usize, cx: &Context<Self>) -> AnyElement {
         let detail = self.detail.clone();
         let edit_detail = detail.clone();
-        let runtime = self.runtime.clone();
-        let edit_runtime = runtime.clone();
+        let runtime = self.runtime;
+        let edit_runtime = runtime;
         let path = entry.path.clone();
         let edit_path = path.clone();
         let toggle_detail = detail.clone();
-        let toggle_runtime = runtime.clone();
+        let toggle_runtime = runtime;
         let toggle_path = path.clone();
         let pending = self.detail.read(cx).pending_toggle.as_deref() == Some(entry.path.as_path());
         div()
@@ -280,7 +287,7 @@ impl SkillsPane {
             .hover(|row| row.bg(theme::raised()))
             .on_click(move |_, window, cx| {
                 detail.update(cx, |detail, cx| {
-                    detail.open(runtime.clone(), path.clone(), false, window, cx)
+                    detail.open(runtime, path.clone(), false, window, cx)
                 })
             })
             .child(
@@ -320,7 +327,7 @@ impl SkillsPane {
                     .disabled(!entry.files.contains(&entry.marker))
                     .on_press(move |window, cx| {
                         edit_detail.update(cx, |detail, cx| {
-                            detail.open(edit_runtime.clone(), edit_path.clone(), true, window, cx)
+                            detail.open(edit_runtime, edit_path.clone(), true, window, cx)
                         })
                     }),
             )
@@ -328,17 +335,13 @@ impl SkillsPane {
                 Toggle::new(("skill-toggle", index), entry.global != GlobalState::Off)
                     .disabled(
                         pending
-                            || (self.runtime == "codex" && !entry.files.contains(&entry.marker)),
+                            || (self.runtime == Runtime::Codex
+                                && !entry.files.contains(&entry.marker)),
                     )
                     .on_change(move |enabled, _, cx| {
                         cx.stop_propagation();
                         toggle_detail.update(cx, |detail, cx| {
-                            detail.set_enabled(
-                                toggle_runtime.clone(),
-                                toggle_path.clone(),
-                                enabled,
-                                cx,
-                            )
+                            detail.set_enabled(toggle_runtime, toggle_path.clone(), enabled, cx)
                         });
                     }),
             )
@@ -407,7 +410,7 @@ impl Render for SkillsPane {
                                 .text_size(rems(11. / 16.))
                                 .line_height(rems(1.))
                                 .text_color(theme::faint())
-                                .child(if catalog.runtime == "claude-code" {
+                                .child(if catalog.runtime == Runtime::ClaudeCode {
                                     CLAUDE_CAPTION
                                 } else {
                                     CODEX_CAPTION
@@ -438,14 +441,14 @@ impl Render for SkillsPane {
 struct CatalogUpdate(Result<Vec<SkillCatalog>, String>);
 
 struct OpenSkill {
-    runtime: String,
+    runtime: Runtime,
     entry: SkillEntry,
     text: String,
     read_error: Option<String>,
 }
 
 impl OpenSkill {
-    fn from_read(runtime: String, entry: SkillEntry, result: Result<String, String>) -> Self {
+    fn from_read(runtime: Runtime, entry: SkillEntry, result: Result<String, String>) -> Self {
         let (text, read_error) = match result {
             Ok(text) => (text, None),
             Err(error) => (String::new(), Some(error)),
@@ -533,7 +536,7 @@ impl SkillDetail {
 
     fn open(
         &mut self,
-        runtime: String,
+        runtime: Runtime,
         path: PathBuf,
         editing: bool,
         window: &mut Window,
@@ -554,7 +557,7 @@ impl SkillDetail {
                 .and_then(|c| c.entries.iter().find(|e| e.path == path))
                 .cloned()
                 .ok_or_else(|| "Skill is no longer in the catalog".to_owned())?;
-            let read = skills::read_skill(&core, &runtime, &path).map_err(|e| e.to_string());
+            let read = skills::read_skill(&core, runtime, &path).map_err(|e| e.to_string());
             Ok::<_, String>((OpenSkill::from_read(runtime, entry, read), catalogs))
         });
         cx.spawn_in(window, async move |weak, cx| {
@@ -600,7 +603,7 @@ impl SkillDetail {
 
     fn set_enabled(
         &mut self,
-        runtime: String,
+        runtime: Runtime,
         path: PathBuf,
         enabled: bool,
         cx: &mut Context<Self>,
@@ -613,7 +616,7 @@ impl SkillDetail {
         self.error = None;
         let core = self.app_store.read(cx).core.clone();
         let task = cx.background_spawn(async move {
-            skills::set_global_enabled(&core, &runtime, &path, enabled)
+            skills::set_global_enabled(&core, runtime, &path, enabled)
                 .map_err(|e| e.to_string())?;
             Ok::<_, String>(skills::skill_catalogs(&core))
         });
@@ -718,7 +721,7 @@ impl SkillDetail {
         let Some(skill) = &self.skill else {
             return;
         };
-        let runtime = skill.runtime.clone();
+        let runtime = skill.runtime;
         let path = skill.entry.path.clone();
         let text = self.editor.read(cx).text().to_owned();
         let core = self.app_store.read(cx).core.clone();
@@ -728,7 +731,7 @@ impl SkillDetail {
             .update(cx, |editor, cx| editor.set_disabled(true, cx));
         let task = cx.background_spawn(async move {
             let entry =
-                skills::save_skill(&core, &runtime, &path, &text).map_err(|e| e.to_string())?;
+                skills::save_skill(&core, runtime, &path, &text).map_err(|e| e.to_string())?;
             Ok::<_, String>((
                 OpenSkill {
                     runtime,
@@ -805,7 +808,7 @@ impl SkillDetail {
             None => path.display().to_string(),
         };
         let toggle_owner = owner.clone();
-        let runtime = skill.runtime.clone();
+        let runtime = skill.runtime;
         let toggle_path = skill.entry.path.clone();
         let overview = div()
             .id("skill-overview")
@@ -867,12 +870,12 @@ impl SkillDetail {
                         .py_2()
                         .child(
                             div().flex_1().min_w_0().flex().flex_col().gap_1()
-                                .child(div().text_size(rems(12. / 16.)).child(format!("Enabled in {}", runtime_display_name(&skill.runtime))))
+                                .child(div().text_size(rems(12. / 16.)).child(format!("Enabled in {}", runtime_display_name(skill.runtime.key()))))
                                 .child(
                                     div().text_size(rems(10. / 16.))
                                         .line_height(rems(15. / 16.))
                                         .text_color(theme::faint())
-                                        .child(if skill.runtime == "codex" {
+                                        .child(if skill.runtime == Runtime::Codex {
                                             "Applies to new Codex sessions. Writes only this skill’s [[skills.config]] entry in Codex config.toml; Claude Code is unchanged."
                                         } else {
                                             "Applies to every new Claude Code session, inside Runner or not. Writes only skillOverrides in ~/.claude/settings.json."
@@ -881,9 +884,9 @@ impl SkillDetail {
                         )
                         .child(
                             Toggle::new("skill-detail-toggle", skill.entry.global != GlobalState::Off)
-                                .disabled(self.busy || (skill.runtime == "codex" && !skill.entry.files.contains(&skill.entry.marker)))
+                                .disabled(self.busy || (skill.runtime == Runtime::Codex && !skill.entry.files.contains(&skill.entry.marker)))
                                 .on_change(move |enabled, _, cx| {
-                                    toggle_owner.update(cx, |this, cx| this.set_enabled(runtime.clone(), toggle_path.clone(), enabled, cx));
+                                    toggle_owner.update(cx, |this, cx| this.set_enabled(runtime, toggle_path.clone(), enabled, cx));
                                 }),
                         ),
             );
@@ -1268,7 +1271,7 @@ mod tests {
                 missing.files.clear();
                 missing.problem = Some("no SKILL.md".into());
                 let skill = OpenSkill::from_read(
-                    "claude-code".into(),
+                    Runtime::ClaudeCode,
                     missing,
                     Err("skill has no marker file".into()),
                 );
@@ -1294,7 +1297,7 @@ mod tests {
             host.0.update(cx, |pane, cx| {
                 pane.error = Some("another error".into());
                 let skill =
-                    OpenSkill::from_read("claude-code".into(), entry(), Ok("# Fresh file".into()));
+                    OpenSkill::from_read(Runtime::ClaudeCode, entry(), Ok("# Fresh file".into()));
                 pane.detail.update(cx, |detail, cx| {
                     detail.finish_open(Ok((skill, Vec::new())), false, window, cx)
                 });
@@ -1320,22 +1323,22 @@ mod tests {
         let host = cx.add_window(|_, cx| SkillsTestHost(cx.new(|cx| SkillsPane::new(store, cx))));
         let mut visual = gpui::VisualTestContext::from_window(host.into(), &cx);
         for (runtime, global) in [
-            ("claude-code", GlobalState::Off),
-            ("codex", GlobalState::On),
+            (Runtime::ClaudeCode, GlobalState::Off),
+            (Runtime::Codex, GlobalState::On),
         ] {
             host.update(&mut visual, |host, window, cx| {
                 host.0.update(cx, |pane, cx| {
-                    pane.runtime = runtime.into();
+                    pane.runtime = runtime;
                     let mut selected = entry();
                     selected.global = global.clone();
                     let catalog = SkillCatalog {
-                        runtime: runtime.into(),
+                        runtime,
                         roots: vec!["/skills".into()],
                         root_exists: true,
                         entries: vec![selected.clone()],
                     };
                     let skill =
-                        OpenSkill::from_read(runtime.into(), selected, Ok("# Shared skill".into()));
+                        OpenSkill::from_read(runtime, selected, Ok("# Shared skill".into()));
                     pane.detail.update(cx, |detail, cx| {
                         detail.finish_open(Ok((skill, vec![catalog])), false, window, cx);
                     });
@@ -1372,7 +1375,7 @@ mod tests {
                 let detail = host.0.read(cx).detail.clone();
                 detail.update(cx, |detail, cx| {
                     let skill = OpenSkill::from_read(
-                        "claude-code".into(),
+                        Runtime::ClaudeCode,
                         entry(),
                         Ok("# Saved skill".into()),
                     );
@@ -1435,7 +1438,7 @@ mod tests {
                 long.description = "Inspect local skills and their descriptions, edit the selected document, and preserve all other files. ".repeat(14);
                 long.symlink = Some(std::path::PathBuf::from(format!("/Users/test/{}/skills/long-description", "project workspace/".repeat(12))));
                 let text = format!("---\ndescription: {}\n---\n{}", long.description, "Document paragraph.\n\n".repeat(100));
-                let skill = OpenSkill::from_read("claude-code".into(), long, Ok(text));
+                let skill = OpenSkill::from_read(Runtime::ClaudeCode, long, Ok(text));
                 let detail = host.0.read(cx).detail.clone();
                 detail.update(cx, |detail, cx| detail.finish_open(Ok((skill, Vec::new())), editing, window, cx));
             }).unwrap();
@@ -1550,10 +1553,10 @@ mod tests {
         .unwrap();
         for (runtime, expected) in [
             (
-                "claude-code",
+                Runtime::ClaudeCode,
                 vec!["manual", "hidden", "symlink", "name-only", "problem"],
             ),
-            ("codex", vec!["symlink", "problem"]),
+            (Runtime::Codex, vec!["symlink", "problem"]),
         ] {
             let catalog =
                 runner_backend::skills::skill_catalog(runtime, home.path(), None).unwrap();
@@ -1571,7 +1574,8 @@ mod tests {
             "policy:\n  allow_implicit_invocation: false\n",
         )
         .unwrap();
-        let catalog = runner_backend::skills::skill_catalog("codex", home.path(), None).unwrap();
+        let catalog =
+            runner_backend::skills::skill_catalog(Runtime::Codex, home.path(), None).unwrap();
         let badges = skill_badges(&catalog.entries[0]);
         assert_eq!(
             badges
@@ -1607,14 +1611,14 @@ mod tests {
     #[test]
     fn meta_line_counts_off_states_for_both_runtimes() {
         let mut catalog = SkillCatalog {
-            runtime: "claude-code".into(),
+            runtime: Runtime::ClaudeCode,
             roots: vec!["/skills".into()],
             root_exists: true,
             entries: vec![entry(), entry()],
         };
         catalog.entries[1].global = GlobalState::Off;
         assert_eq!(catalog_meta(&catalog), "/skills · 2 skills · 1 off");
-        catalog.runtime = "codex".into();
+        catalog.runtime = Runtime::Codex;
         assert_eq!(catalog_meta(&catalog), "/skills · 2 skills · 1 off");
         catalog.entries.clear();
         assert_eq!(catalog_meta(&catalog), "/skills · 0 skills");

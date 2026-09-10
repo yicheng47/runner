@@ -1547,7 +1547,7 @@ mod tests {
             CreateRunnerInput {
                 handle: handle.into(),
                 display_name: handle.into(),
-                runtime: "shell".into(),
+                runtime: crate::model::Runtime::Shell,
                 command: "/bin/sh".into(),
                 args: vec![],
                 working_dir: None,

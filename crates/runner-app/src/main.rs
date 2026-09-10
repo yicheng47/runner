@@ -12,6 +12,7 @@ mod surfaces;
 mod terminal;
 mod window_state;
 
+use runner_backend::model::Runtime;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -243,8 +244,9 @@ fn close_window_or_pane(this: &mut NativeRoot, window: &mut Window, cx: &mut Con
                         .find(|leaf| leaf.id == pane_id)
                         .and_then(|leaf| leaf.session_id.as_deref())
                         .filter(|session_id| {
-                            this.session_entry(session_id, cx)
-                                .is_some_and(|entry| entry.agent_runtime == "shell")
+                            this.session_entry(session_id, cx).is_some_and(|entry| {
+                                Runtime::parse(&entry.agent_runtime) == Some(Runtime::Shell)
+                            })
                         })
                         .map(str::to_owned)
                 });

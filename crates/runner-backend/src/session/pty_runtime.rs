@@ -9,6 +9,8 @@
 // consumes. The GPUI frontend owns the only terminal model; the backend
 // does not run a second headless emulator.
 
+#[cfg(unix)]
+use crate::model::Runtime;
 use std::collections::HashMap;
 use std::io::{ErrorKind, Read, Write};
 use std::path::PathBuf;
@@ -1104,7 +1106,8 @@ fn command_line_matches_recorded_agent(
         .filter(|command| !command.trim().is_empty())
         .or_else(|| {
             runtime.and_then(|runtime| {
-                crate::router::runtime::runtime_definition(runtime)
+                Runtime::parse(runtime)
+                    .and_then(crate::router::runtime::runtime_definition)
                     .map(|definition| definition.command)
             })
         });

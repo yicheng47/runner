@@ -13,6 +13,7 @@
 // stay authoritative for domain membership, so reparenting across a
 // project boundary writes the pointer through (see `move_and_reorder`).
 
+use crate::model::Runtime;
 use std::collections::HashSet;
 
 use chrono::Utc;
@@ -823,7 +824,8 @@ pub fn delete_container_tabs_and_archive(
     let mut archived_ids = Vec::new();
     let mut deleted_ids = Vec::new();
     for id in &session_ids {
-        let shell = crate::repo::session::effective_runtime(tx, id)?.as_deref() == Some("shell");
+        let shell = crate::repo::session::effective_runtime(tx, id)?.as_deref()
+            == Some(Runtime::Shell.key());
         let updated = if shell {
             tx.execute(
                 "DELETE FROM sessions

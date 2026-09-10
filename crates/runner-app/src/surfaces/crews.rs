@@ -2031,7 +2031,7 @@ impl NativeRoot {
             crew_id: crew_id.clone(),
             runner_id,
             slot_handle: handle,
-            runtime_override: trimmed_option(&form.runtime_override),
+            runtime_override: runner_backend::model::Runtime::parse(&form.runtime_override),
             model_override: (!form.runtime_override.is_empty())
                 .then(|| trimmed_option(form.model_override.read(cx).text()))
                 .flatten(),
@@ -3187,7 +3187,7 @@ fn add_slot_runtime_options(
         SelectOption::new("", default).description("Use the runtime configured on the runner.")
     ];
     options.extend(runtimes.iter().map(|runtime| {
-        SelectOption::new(runtime.name.clone(), runtime.display_name.clone())
+        SelectOption::new(runtime.name.to_string(), runtime.display_name.clone())
             .description(runtime.description.clone())
     }));
     options
@@ -3199,7 +3199,7 @@ fn runtime_models<'a>(
 ) -> &'a [RuntimeCatalogOption] {
     runtimes
         .iter()
-        .find(|runtime| runtime.name == name)
+        .find(|runtime| runtime.name.key() == name)
         .map(|runtime| runtime.models.as_slice())
         .unwrap_or_default()
 }
@@ -3296,7 +3296,7 @@ fn slot_command_summary(slot: &SlotWithRunner) -> String {
     {
         let command = runner_backend::ops::runtime::runtime_list()
             .into_iter()
-            .find(|entry| entry.name == runtime)
+            .find(|entry| entry.name.key() == runtime)
             .map(|entry| entry.command)
             .unwrap_or_else(|| runtime.to_owned());
         let mut overrides = Vec::new();

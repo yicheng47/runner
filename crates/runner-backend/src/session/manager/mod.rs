@@ -16,6 +16,7 @@
 // Startup cleanup demotes stale running DB rows to stopped; user-facing
 // resume respawns a fresh PTY with the same session row id.
 
+use crate::model::Runtime;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -1370,12 +1371,13 @@ pub(crate) fn resolve_runtime_override(
     }
     let mut effective = runner.clone();
     if let Some(name) = runtime_override.filter(|name| *name != runner.runtime.as_str()) {
-        let def = router::runtime::runtime_definition(name)
+        let def = Runtime::parse(name)
+            .and_then(router::runtime::runtime_definition)
             .ok_or_else(|| Error::msg(format!("unknown runtime: {name}")))?;
         effective.runtime = def.name.to_string();
         effective.command = def.command.to_string();
         effective.args = router::runtime::apply_permission_mode(
-            def.name,
+            Some(def.name),
             &[],
             crate::ops::runner::default_permission_mode(),
         );
@@ -1406,18 +1408,18 @@ pub(crate) fn runtime_direct_runner(
     if runtime.is_empty() {
         return Err(Error::msg("runtime is required"));
     }
-    let registry = router::runtime::runtime_definition(runtime);
+    let registry = Runtime::parse(runtime).and_then(router::runtime::runtime_definition);
     let command = command
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .or_else(|| registry.map(|r| r.command))
         .ok_or_else(|| Error::msg(format!("unknown runtime: {runtime}")))?;
     let now = Utc::now();
-    let args = if runtime == "shell" {
+    let args = if Runtime::parse(runtime) == Some(Runtime::Shell) {
         crate::shell_path::shell_login_args(command)
     } else {
         router::runtime::apply_permission_mode(
-            runtime,
+            Runtime::parse(runtime),
             &[],
             crate::ops::runner::default_permission_mode(),
         )

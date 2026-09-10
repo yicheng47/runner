@@ -1,5 +1,6 @@
 //! Native sidebar: durable node tree, project containers, tab rows, and attention.
 
+use runner_backend::model::Runtime;
 use std::path::Path;
 
 use super::*;
@@ -67,7 +68,9 @@ fn archive_session_plan(
         .iter()
         .map(|id| {
             let entry = sessions.iter().find(|session| session.session_id == *id);
-            let operation = if entry.is_some_and(|session| session.agent_runtime == "shell") {
+            let operation = if entry.is_some_and(|session| {
+                Runtime::parse(&session.agent_runtime) == Some(Runtime::Shell)
+            }) {
                 ArchiveSessionOperation::CloseTerminal
             } else {
                 ArchiveSessionOperation::ArchiveChat {
@@ -1231,7 +1234,7 @@ impl Sidebar {
             .then(|| {
                 members
                     .iter()
-                    .find(|member| member.agent_runtime == "shell")
+                    .find(|member| Runtime::parse(&member.agent_runtime) == Some(Runtime::Shell))
                     .map(|member| member.session_id.clone())
             })
             .flatten();
@@ -1254,7 +1257,7 @@ impl Sidebar {
             fork_pending,
             members
                 .into_iter()
-                .filter(|member| member.agent_runtime != "shell")
+                .filter(|member| Runtime::parse(&member.agent_runtime) != Some(Runtime::Shell))
                 .map(|member| member.session_id)
                 .collect(),
             tab_session_ids,
@@ -3506,7 +3509,7 @@ fn sidebar_tab_icon(pane_count: usize, single_runtime: Option<&str>) -> &'static
         "columns-3.svg"
     } else if pane_count > 1 {
         "columns-2.svg"
-    } else if single_runtime == Some("shell") {
+    } else if single_runtime == Some(Runtime::Shell.key()) {
         "square-terminal.svg"
     } else {
         "message-square.svg"
@@ -3919,7 +3922,7 @@ fn sidebar_fork_menu_target(
     }
     let entry = members
         .first()
-        .filter(|entry| entry.agent_runtime != "shell")?;
+        .filter(|entry| Runtime::parse(&entry.agent_runtime) != Some(Runtime::Shell))?;
     let disabled_reason = if !entry.native_fork {
         Some("Forking needs claude-code or codex")
     } else if !entry.forkable {
@@ -4071,7 +4074,7 @@ fn default_session_label_parts(
     handle: Option<&str>,
     display_name: &str,
 ) -> String {
-    if runtime == "shell" {
+    if Runtime::parse(runtime) == Some(Runtime::Shell) {
         return std::path::Path::new(command)
             .file_name()
             .and_then(|name| name.to_str())

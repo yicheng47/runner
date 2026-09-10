@@ -1,3 +1,4 @@
+use runner_backend::model::Runtime;
 use runner_backend::ops::mcp::{mcp_integration_status, mcp_set_integration, McpClientStatus};
 use runner_backend::ops::runtime::runtime_catalog;
 
@@ -16,15 +17,15 @@ impl AppStore {
             let catalog: Vec<_> = runtime_catalog(&self.core)?
                 .into_iter()
                 .filter(|runtime| {
-                    let client = if runtime.name == "claude-code" {
+                    let client = if runtime.name == Runtime::ClaudeCode {
                         "claude_code"
                     } else {
-                        runtime.name.as_str()
+                        runtime.name.key()
                     };
                     runtime.available
                         && self
                             .settings
-                            .is_agent_enabled(&runtime.name, runtime.default_enabled)
+                            .is_agent_enabled(runtime.name, runtime.default_enabled)
                         && !self.settings.initialized_mcp_clients.contains(client)
                 })
                 .collect();
@@ -37,11 +38,11 @@ impl AppStore {
             }
             let mut changed = false;
             for runtime in catalog {
-                let (client, client_status) = match runtime.name.as_str() {
-                    "claude-code" => ("claude_code", &status.claude_code),
-                    "codex" => ("codex", &status.codex),
-                    "trae" => ("trae", &status.trae),
-                    _ => continue,
+                let (client, client_status) = match runtime.name {
+                    Runtime::ClaudeCode => ("claude_code", &status.claude_code),
+                    Runtime::Codex => ("codex", &status.codex),
+                    Runtime::Trae => ("trae", &status.trae),
+                    Runtime::Shell => continue,
                 };
                 match initialize_client(&mut self.settings, client, client_status, || {
                     mcp_set_integration(&self.core, client, true)

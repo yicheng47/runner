@@ -1,3 +1,4 @@
+use crate::model::Runtime;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
@@ -26,7 +27,7 @@ pub struct SkillEntry {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SkillCatalog {
-    pub runtime: String,
+    pub runtime: Runtime,
     pub roots: Vec<PathBuf>,
     pub root_exists: bool,
     pub entries: Vec<SkillEntry>,
@@ -198,7 +199,7 @@ fn codex_global_state(document: &toml_edit::DocumentMut, entry: &SkillEntry) -> 
 }
 
 pub fn skill_catalog(
-    runtime: &str,
+    runtime: Runtime,
     home: &Path,
     codex_home: Option<&Path>,
 ) -> Option<SkillCatalog> {
@@ -221,14 +222,14 @@ pub fn skill_catalog(
     let config_dir = codex_home
         .map(Path::to_path_buf)
         .unwrap_or_else(|| home.join(".codex"));
-    let codex_overrides = (runtime == "codex")
+    let codex_overrides = (runtime == Runtime::Codex)
         .then(|| {
             std::fs::read_to_string(config_dir.join("config.toml"))
                 .ok()
                 .and_then(|text| text.parse::<toml_edit::DocumentMut>().ok())
         })
         .flatten();
-    let overrides = if runtime == "claude-code" {
+    let overrides = if runtime == Runtime::ClaudeCode {
         std::fs::read_to_string(home.join(".claude/settings.json"))
             .ok()
             .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
@@ -237,7 +238,7 @@ pub fn skill_catalog(
         None
     };
     let mut catalog = SkillCatalog {
-        runtime: runtime.into(),
+        runtime,
         root_exists: roots.iter().any(|root| root.is_dir()),
         roots,
         entries: Vec::new(),
@@ -332,7 +333,7 @@ fn codex_manual(text: &str) -> bool {
     manual
 }
 
-fn read_entry(path: &Path, marker: &str, runtime: &str) -> SkillEntry {
+fn read_entry(path: &Path, marker: &str, runtime: Runtime) -> SkillEntry {
     let mut files: Vec<_> = std::fs::read_dir(path)
         .into_iter()
         .flatten()
@@ -380,13 +381,13 @@ fn read_entry(path: &Path, marker: &str, runtime: &str) -> SkillEntry {
             path.canonicalize()
                 .unwrap_or_else(|_| path.parent().unwrap_or(path).join(target))
         }),
-        manual: if runtime == "codex" {
+        manual: if runtime == Runtime::Codex {
             std::fs::read_to_string(path.join("agents/openai.yaml"))
                 .is_ok_and(|text| codex_manual(&text))
         } else {
             value("disable-model-invocation") == Some("true")
         },
-        hidden: runtime == "claude-code" && value("user-invocable") == Some("false"),
+        hidden: runtime == Runtime::ClaudeCode && value("user-invocable") == Some("false"),
         problem: match (document.problem, marker == "skill.md") {
             (Some(problem), true) => Some(format!("legacy skill.md; {problem}")),
             (None, true) => Some("legacy skill.md".into()),
@@ -413,7 +414,7 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         let path = write(home.path(), "folder", "SKILL.md", "---\nname: ../../my-skill\ndescription: 'First sentence. More.'\ndisable-model-invocation: true\nuser-invocable: false\nignored: [anything]\n---\n# Body\n");
         std::fs::write(path.join("script.py"), "pass").unwrap();
-        let catalog = skill_catalog("claude-code", home.path(), None).unwrap();
+        let catalog = skill_catalog(Runtime::ClaudeCode, home.path(), None).unwrap();
         let entry = &catalog.entries[0];
         assert_eq!(entry.name, "my-skill");
         assert_eq!(entry.description, "First sentence. More.");
@@ -463,7 +464,7 @@ mod tests {
             r#"{"skillOverrides":{"demo":"user-invocable-only"}}"#,
         )
         .unwrap();
-        let catalog = skill_catalog("codex", home.path(), None).unwrap();
+        let catalog = skill_catalog(Runtime::Codex, home.path(), None).unwrap();
         assert!(!catalog.entries[0].manual);
         assert!(!catalog.entries[0].hidden);
         assert_eq!(catalog.entries[0].global, GlobalState::On);
@@ -476,7 +477,7 @@ mod tests {
                 std::fs::create_dir_all(path.join("agents")).unwrap();
                 std::fs::write(path.join("agents/openai.yaml"), policy).unwrap();
             }
-            let catalog = skill_catalog("codex", home.path(), None).unwrap();
+            let catalog = skill_catalog(Runtime::Codex, home.path(), None).unwrap();
             assert_eq!(
                 catalog.entries[0].manual,
                 policy.contains("allow_implicit_invocation: false")
@@ -484,7 +485,7 @@ mod tests {
             assert!(!catalog.entries[0].hidden);
             assert_eq!(catalog.entries[0].global, GlobalState::On);
             assert!(catalog.entries[0].problem.is_none());
-            let catalog = skill_catalog("claude-code", home.path(), None).unwrap();
+            let catalog = skill_catalog(Runtime::ClaudeCode, home.path(), None).unwrap();
             assert!(catalog.entries[0].manual && catalog.entries[0].hidden);
             assert_eq!(
                 catalog.entries[0].global,
@@ -497,10 +498,15 @@ mod tests {
             "policy:\n  allow_implicit_invocation: false\n",
         )
         .unwrap();
-        let catalog = skill_catalog("claude-code", home.path(), None).unwrap();
+        let catalog = skill_catalog(Runtime::ClaudeCode, home.path(), None).unwrap();
         assert!(!catalog.entries[0].manual && !catalog.entries[0].hidden);
         std::fs::write(codex.join("agents/openai.yaml"), [0xff]).unwrap();
-        assert!(!skill_catalog("codex", home.path(), None).unwrap().entries[0].manual);
+        assert!(
+            !skill_catalog(Runtime::Codex, home.path(), None)
+                .unwrap()
+                .entries[0]
+                .manual
+        );
     }
 
     #[test]
@@ -513,7 +519,7 @@ mod tests {
         write(home.path(), ".hidden", "SKILL.md", "");
         write(home.path(), "bundle/skills/embedded", "SKILL.md", "");
         std::fs::write(home.path().join(".claude/skills/plain.txt"), "").unwrap();
-        let catalog = skill_catalog("claude-code", home.path(), None).unwrap();
+        let catalog = skill_catalog(Runtime::ClaudeCode, home.path(), None).unwrap();
         assert_eq!(
             catalog
                 .entries
@@ -541,7 +547,7 @@ mod tests {
             "Skill.md",
             "---\nname: not-a-skill\n---\n",
         );
-        let catalog = skill_catalog("claude-code", home.path(), None).unwrap();
+        let catalog = skill_catalog(Runtime::ClaudeCode, home.path(), None).unwrap();
         assert_eq!(catalog.entries[0].name, "mixed");
         assert_eq!(catalog.entries[0].problem.as_deref(), Some("no SKILL.md"));
     }
@@ -558,7 +564,7 @@ mod tests {
             r#"{"skillOverrides":{"on":"on","off":"off","other":"name-only"}}"#,
         )
         .unwrap();
-        let entries = skill_catalog("claude-code", home.path(), None)
+        let entries = skill_catalog(Runtime::ClaudeCode, home.path(), None)
             .unwrap()
             .entries;
         assert_eq!(
@@ -571,7 +577,7 @@ mod tests {
             ]
         );
         std::fs::write(&path, "{broken").unwrap();
-        assert!(skill_catalog("claude-code", home.path(), None)
+        assert!(skill_catalog(Runtime::ClaudeCode, home.path(), None)
             .unwrap()
             .entries
             .iter()
@@ -582,7 +588,7 @@ mod tests {
     fn roots_and_unsupported_runtimes() {
         let home = tempfile::tempdir().unwrap();
         let custom = tempfile::tempdir().unwrap();
-        let empty = skill_catalog("codex", home.path(), None).unwrap();
+        let empty = skill_catalog(Runtime::Codex, home.path(), None).unwrap();
         assert_eq!(
             empty.roots,
             [
@@ -593,7 +599,7 @@ mod tests {
         assert!(!empty.root_exists && empty.entries.is_empty());
         std::fs::create_dir_all(custom.path().join("skills/demo")).unwrap();
         std::fs::write(custom.path().join("skills/demo/SKILL.md"), "").unwrap();
-        let catalog = skill_catalog("codex", home.path(), Some(custom.path())).unwrap();
+        let catalog = skill_catalog(Runtime::Codex, home.path(), Some(custom.path())).unwrap();
         assert_eq!(
             catalog.roots,
             [
@@ -611,12 +617,12 @@ mod tests {
             ),
         )
         .unwrap();
-        let catalog = skill_catalog("codex", home.path(), Some(custom.path())).unwrap();
+        let catalog = skill_catalog(Runtime::Codex, home.path(), Some(custom.path())).unwrap();
         assert_eq!(catalog.entries[0].global, GlobalState::Off);
         std::fs::write(custom.path().join("config.toml"), "invalid = [").unwrap();
-        let catalog = skill_catalog("codex", home.path(), Some(custom.path())).unwrap();
+        let catalog = skill_catalog(Runtime::Codex, home.path(), Some(custom.path())).unwrap();
         assert_eq!(catalog.entries[0].global, GlobalState::On);
-        for runtime in ["qoder", "trae", "unknown"] {
+        for runtime in [Runtime::Trae, Runtime::Shell] {
             assert!(skill_catalog(runtime, home.path(), None).is_none());
         }
     }
@@ -643,7 +649,7 @@ mod tests {
                 .unwrap();
             }
         }
-        let catalog = skill_catalog("codex", home.path(), None).unwrap();
+        let catalog = skill_catalog(Runtime::Codex, home.path(), None).unwrap();
         assert_eq!(catalog.roots, [agents.clone(), legacy.clone()]);
         assert!(catalog.root_exists);
         assert_eq!(
@@ -664,7 +670,7 @@ mod tests {
                 &format!("---\nname: {}\n---\n", entry.name),
             );
         }
-        let claude = skill_catalog("claude-code", home.path(), None).unwrap();
+        let claude = skill_catalog(Runtime::ClaudeCode, home.path(), None).unwrap();
         assert_eq!(
             claude
                 .entries
@@ -678,12 +684,12 @@ mod tests {
                 .collect::<Vec<_>>()
         );
         let custom = home.path().join("custom-codex");
-        let catalog = skill_catalog("codex", home.path(), Some(&custom)).unwrap();
+        let catalog = skill_catalog(Runtime::Codex, home.path(), Some(&custom)).unwrap();
         assert_eq!(catalog.roots, [agents.clone(), custom.join("skills")]);
         assert!(catalog.root_exists);
         assert_eq!(catalog.entries.len(), 2);
         std::fs::rename(&agents, home.path().join("moved-agents")).unwrap();
-        let catalog = skill_catalog("codex", home.path(), None).unwrap();
+        let catalog = skill_catalog(Runtime::Codex, home.path(), None).unwrap();
         assert!(catalog.root_exists);
         assert_eq!(
             catalog
@@ -693,7 +699,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["apple", "demo"]
         );
-        let catalog = skill_catalog("codex", home.path(), Some(&custom)).unwrap();
+        let catalog = skill_catalog(Runtime::Codex, home.path(), Some(&custom)).unwrap();
         assert!(!catalog.root_exists);
         assert!(catalog.entries.is_empty());
     }
@@ -719,7 +725,10 @@ mod tests {
             )
             .unwrap();
             assert_eq!(
-                skill_catalog("codex", home.path(), None).unwrap().entries[0].global,
+                skill_catalog(Runtime::Codex, home.path(), None)
+                    .unwrap()
+                    .entries[0]
+                    .global,
                 if enabled == "enabled = false" {
                     GlobalState::Off
                 } else {
@@ -743,7 +752,7 @@ mod tests {
         symlink(&root, root.join("loop")).unwrap();
         symlink("self", root.join("self")).unwrap();
         symlink("missing", root.join("broken")).unwrap();
-        let catalog = skill_catalog("claude-code", home.path(), None).unwrap();
+        let catalog = skill_catalog(Runtime::ClaudeCode, home.path(), None).unwrap();
         assert_eq!(catalog.entries.len(), 1);
         assert_eq!(
             catalog.entries[0].symlink,
@@ -776,7 +785,7 @@ mod tests {
             ),
         )
         .unwrap();
-        let catalog = skill_catalog("codex", home.path(), None).unwrap();
+        let catalog = skill_catalog(Runtime::Codex, home.path(), None).unwrap();
         assert_eq!(catalog.entries.len(), 2);
         for (index, root) in roots.iter().enumerate() {
             assert_eq!(catalog.entries[index].path, root.join("demo"));

@@ -1,3 +1,4 @@
+use runner_backend::model::Runtime;
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
@@ -151,7 +152,7 @@ pub(crate) fn direct_tab_attention_state<'a>(
     let mut has_chat = false;
     let mut any_chat_running_busy = false;
     for (runtime, running_busy) in members {
-        if runtime != "shell" {
+        if Runtime::parse(runtime) != Some(Runtime::Shell) {
             has_chat = true;
             any_chat_running_busy |= running_busy;
         }

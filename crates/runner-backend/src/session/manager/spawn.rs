@@ -1,4 +1,5 @@
 use super::*;
+use crate::model::Runtime;
 
 use std::io::{BufRead, BufReader, Read};
 use std::process::{Command, Stdio};
@@ -293,7 +294,9 @@ fn delete_failed_fork(pool: &DbPool, session_id: &str) -> Result<()> {
 
 impl SessionManager {
     fn resolve_runner_executable(&self, runner: &Runner, pool: &DbPool) -> Result<Runner> {
-        let Some(definition) = router::runtime::runtime_definition(&runner.runtime) else {
+        let Some(definition) =
+            Runtime::parse(&runner.runtime).and_then(router::runtime::runtime_definition)
+        else {
             return Ok(runner.clone());
         };
         if runner.command != definition.command {
@@ -318,14 +321,15 @@ impl SessionManager {
         effort: Option<&str>,
         pool: &DbPool,
     ) -> Result<Runner> {
-        if runtime == "shell" {
+        if Runtime::parse(runtime) == Some(Runtime::Shell) {
             let command = recorded_command
                 .map(str::trim)
                 .filter(|command| !command.is_empty())
                 .ok_or_else(|| Error::msg("shell session missing agent_command"))?;
-            return runtime_direct_runner("shell", Some(command), None, None);
+            return runtime_direct_runner(Runtime::Shell.key(), Some(command), None, None);
         }
-        let definition = router::runtime::runtime_definition(runtime)
+        let definition = Runtime::parse(runtime)
+            .and_then(router::runtime::runtime_definition)
             .ok_or_else(|| Error::msg(format!("unknown runtime: {runtime}")))?;
         let recorded = recorded_command
             .map(str::trim)
@@ -366,8 +370,8 @@ impl SessionManager {
     /// queue up correctly: B arrives mid-A-sleep → blocks on mutex
     /// → after A wakes and updates `last`, B observes A's
     /// just-recorded timestamp and waits its own full grace.
-    pub(super) fn enter_claude_launch_gate(&self, session_id: &str, runtime: &str) {
-        if runtime != "claude-code" {
+    pub(super) fn enter_claude_launch_gate(&self, session_id: &str, runtime: Option<Runtime>) {
+        if runtime != Some(Runtime::ClaudeCode) {
             return;
         }
         let mut last = self
@@ -385,8 +389,13 @@ impl SessionManager {
         *last = Some(Instant::now());
     }
 
-    fn seed_codex_project_trust(&self, session_id: &str, runtime: &str, cwd: Option<&Path>) {
-        if runtime != "codex" {
+    fn seed_codex_project_trust(
+        &self,
+        session_id: &str,
+        runtime: Option<Runtime>,
+        cwd: Option<&Path>,
+    ) {
+        if runtime != Some(Runtime::Codex) {
             return;
         }
         let Some(cwd) = cwd else {
@@ -441,7 +450,7 @@ impl SessionManager {
         for (k, v) in extra_env {
             env.insert(k, v);
         }
-        if runner.runtime == "claude-code" {
+        if Runtime::parse(&runner.runtime) == Some(Runtime::ClaudeCode) {
             env.insert("CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY".into(), "1".into());
             env.insert("DISABLE_INSTALLATION_CHECKS".into(), "1".into());
         }
@@ -490,7 +499,7 @@ impl SessionManager {
         } else {
             first_turn
         };
-        if runner.runtime == "claude-code" {
+        if Runtime::parse(&runner.runtime) == Some(Runtime::ClaudeCode) {
             let _ = std::fs::remove_file(crate::session::claude_rekey::drop_path(
                 app_data_dir,
                 &spec.session_id,
@@ -504,14 +513,15 @@ impl SessionManager {
             composed.append(&mut spec.args);
             composed.extend(plan.args.iter().cloned());
         }
-        let first_turn_for_argv = router::runtime::first_turn_argv(&runner.runtime, first_turn);
+        let first_turn_for_argv =
+            router::runtime::first_turn_argv(Runtime::parse(&runner.runtime), first_turn);
         let delivered_via_argv = !first_turn_for_argv.is_empty();
         composed.extend(router::runtime::mission_bus_sandbox_args(
-            &runner.runtime,
+            Runtime::parse(&runner.runtime),
             mission_bus_dir,
         ));
         for extra in router::runtime::trailing_runtime_args(
-            &runner.runtime,
+            Runtime::parse(&runner.runtime),
             &runner.args,
             app_data_dir,
             &spec.session_id,
@@ -528,11 +538,11 @@ impl SessionManager {
     }
 
     pub(super) fn codex_capture_prompt_marker(
-        runtime: &str,
+        runtime: Option<Runtime>,
         session_id: &str,
         first_turn: Option<String>,
     ) -> (Option<String>, Option<String>) {
-        if !matches!(runtime, "codex" | "trae") {
+        if !matches!(runtime, Some(Runtime::Codex | Runtime::Trae)) {
             return (first_turn, None);
         }
         let Some(first_turn) = first_turn else {
@@ -593,7 +603,7 @@ impl SessionManager {
         // leaving every other arg alone. Direct chats never pass here.
         let mut runner = resolution.effective.unwrap_or_else(|| runner.clone());
         runner.args = router::runtime::apply_mission_permission_mode(
-            &runner.runtime,
+            Runtime::parse(&runner.runtime),
             &runner.args,
             self.mission_permission_mode(),
         );
@@ -603,7 +613,7 @@ impl SessionManager {
         // there's no prior key to inherit. The runtime adapter still
         // self-assigns a UUID for claude-code (`--session-id <uuid>`) so
         // a future `SessionManager::resume` can hand it back.
-        let plan = router::runtime::resume_plan(&runner.runtime, None);
+        let plan = router::runtime::resume_plan(Runtime::parse(&runner.runtime), None);
 
         // Working directory: mission cwd if set, else runner override, else
         // inherit parent's. The mission-level cwd is what the operator typed
@@ -649,8 +659,11 @@ impl SessionManager {
         }
 
         let session_id = ulid::Ulid::new().to_string();
-        let (first_turn, codex_prompt_marker) =
-            Self::codex_capture_prompt_marker(&runner.runtime, &session_id, first_turn);
+        let (first_turn, codex_prompt_marker) = Self::codex_capture_prompt_marker(
+            Runtime::parse(&runner.runtime),
+            &session_id,
+            first_turn,
+        );
         let mut spec = self.base_spawn_spec(
             session_id.clone(),
             &runner,
@@ -788,7 +801,7 @@ impl SessionManager {
         // race the OAuth refresh-token rotation. No-op for other
         // runtimes; zero-wait for the first claude through. See
         // `enter_claude_launch_gate` + issue #171.
-        self.enter_claude_launch_gate(&session_id, &runner.runtime);
+        self.enter_claude_launch_gate(&session_id, Runtime::parse(&runner.runtime));
 
         // Post-gate cancellation: covers a Stop that fires while we
         // were asleep in the gate. The wake-up still races with the
@@ -823,7 +836,11 @@ impl SessionManager {
             }
         }
         let initial_size = spec.initial_size;
-        self.seed_codex_project_trust(&session_id, &runner.runtime, spec.cwd.as_deref());
+        self.seed_codex_project_trust(
+            &session_id,
+            Runtime::parse(&runner.runtime),
+            spec.cwd.as_deref(),
+        );
         let (rt_session, output) = self
             .runtime
             .spawn(spec)
@@ -879,26 +896,28 @@ impl SessionManager {
             );
         }
 
-        let codex_capture =
-            if matches!(runner.runtime.as_str(), "codex" | "trae") && plan.assigned_key.is_none() {
-                crate::session::codex_capture::sessions_root_for(&runner.runtime).and_then(
-                    |sessions_root| {
-                        resolved_cwd.clone().map(|cwd| CodexCaptureContext {
-                            mission_id: Some(mission.id.clone()),
-                            sessions_root,
-                            spawn_cwd: cwd,
-                            started_at: spawn_started_at_dt,
-                            row_started_at: row_started_at.clone(),
-                            spawn_pid,
-                            prompt_marker: codex_prompt_marker.clone(),
-                            pool: Arc::clone(&pool),
-                            events: Arc::clone(&events),
-                        })
-                    },
-                )
-            } else {
-                None
-            };
+        let codex_capture = if matches!(
+            Runtime::parse(runner.runtime.as_str()),
+            Some(Runtime::Codex | Runtime::Trae)
+        ) && plan.assigned_key.is_none()
+        {
+            crate::session::codex_capture::sessions_root_for(Runtime::parse(&runner.runtime))
+                .and_then(|sessions_root| {
+                    resolved_cwd.clone().map(|cwd| CodexCaptureContext {
+                        mission_id: Some(mission.id.clone()),
+                        sessions_root,
+                        spawn_cwd: cwd,
+                        started_at: spawn_started_at_dt,
+                        row_started_at: row_started_at.clone(),
+                        spawn_pid,
+                        prompt_marker: codex_prompt_marker.clone(),
+                        pool: Arc::clone(&pool),
+                        events: Arc::clone(&events),
+                    })
+                })
+        } else {
+            None
+        };
 
         let spawn_emit_ctx = open_mission_event_log(&app_data_dir, &mission.crew_id, &mission.id)
             .map(|event_log| ForwarderEmitCtx {
@@ -959,10 +978,11 @@ impl SessionManager {
         }
 
         emit_runner_activity(&pool, &runner, events.as_ref());
-        let missing_first_turn =
-            matches!(runner.runtime.as_str(), "claude-code" | "codex" | "trae")
-                && !plan.resuming
-                && !first_turn_delivered_via_argv;
+        let missing_first_turn = matches!(
+            Runtime::parse(runner.runtime.as_str()),
+            Some(Runtime::ClaudeCode | Runtime::Codex | Runtime::Trae)
+        ) && !plan.resuming
+            && !first_turn_delivered_via_argv;
         #[cfg(windows)]
         let missing_first_turn =
             missing_first_turn && !crate::session::launch::is_windows_batch(&runner.command);
@@ -1187,7 +1207,7 @@ impl SessionManager {
         // Agent-native session resume: `spawn_direct` always opens a *new*
         // chat. The runtime adapter self-assigns a fresh
         // `agent_session_key` (claude-code) or leaves it NULL (codex).
-        let plan = router::runtime::resume_plan(&runner.runtime, None);
+        let plan = router::runtime::resume_plan(Runtime::parse(&runner.runtime), None);
 
         // Reject explicitly missing folders before portable-pty can substitute another cwd.
         let resolved_cwd = resolve_spawn_cwd(cwd, runner.working_dir.as_deref());
@@ -1205,15 +1225,18 @@ impl SessionManager {
         // Direct chats are off-bus: RUNNER_HANDLE is the runner template's
         // own handle, no slot/mission env vars.
         let mut direct_env: BTreeMap<String, String> = BTreeMap::new();
-        if runner.runtime != "shell" {
+        if Runtime::parse(&runner.runtime) != Some(Runtime::Shell) {
             direct_env.insert("RUNNER_HANDLE".into(), runner.handle.clone());
         }
 
         let initial_size = Some(cols.zip(rows).unwrap_or(DEFAULT_PTY_SIZE));
 
         let session_id = ulid::Ulid::new().to_string();
-        let (first_turn, codex_prompt_marker) =
-            Self::codex_capture_prompt_marker(&runner.runtime, &session_id, first_turn);
+        let (first_turn, codex_prompt_marker) = Self::codex_capture_prompt_marker(
+            Runtime::parse(&runner.runtime),
+            &session_id,
+            first_turn,
+        );
         let started_at_dt = Utc::now();
         let started_at = started_at_dt.to_rfc3339();
 
@@ -1268,7 +1291,7 @@ impl SessionManager {
         // also fresh claude-code spawns and proactively refresh the
         // OAuth token, so a rapid burst of new chats can race. See
         // `enter_claude_launch_gate` + issue #171.
-        self.enter_claude_launch_gate(&session_id, &runner.runtime);
+        self.enter_claude_launch_gate(&session_id, Runtime::parse(&runner.runtime));
 
         // Post-gate row check: `runner_delete` can cascade through
         // `sessions.runner_id` while we were asleep in the gate. The
@@ -1283,7 +1306,11 @@ impl SessionManager {
         let spawn_started_at_dt = Utc::now();
         #[cfg(windows)]
         let first_turn_deadline = Instant::now() + WINDOWS_FIRST_TURN_TIMEOUT;
-        self.seed_codex_project_trust(&session_id, &runner.runtime, spec.cwd.as_deref());
+        self.seed_codex_project_trust(
+            &session_id,
+            Runtime::parse(&runner.runtime),
+            spec.cwd.as_deref(),
+        );
         let (rt_session, output) = match self.runtime.spawn(spec) {
             Ok(p) => p,
             Err(e) => {
@@ -1322,26 +1349,28 @@ impl SessionManager {
             );
         }
 
-        let codex_capture =
-            if matches!(runner.runtime.as_str(), "codex" | "trae") && plan.assigned_key.is_none() {
-                crate::session::codex_capture::sessions_root_for(&runner.runtime).and_then(
-                    |sessions_root| {
-                        resolved_cwd.clone().map(|cwd| CodexCaptureContext {
-                            mission_id: None,
-                            sessions_root,
-                            spawn_cwd: cwd,
-                            started_at: spawn_started_at_dt,
-                            row_started_at: started_at.clone(),
-                            spawn_pid,
-                            prompt_marker: codex_prompt_marker.clone(),
-                            pool: Arc::clone(&pool),
-                            events: Arc::clone(&events),
-                        })
-                    },
-                )
-            } else {
-                None
-            };
+        let codex_capture = if matches!(
+            Runtime::parse(runner.runtime.as_str()),
+            Some(Runtime::Codex | Runtime::Trae)
+        ) && plan.assigned_key.is_none()
+        {
+            crate::session::codex_capture::sessions_root_for(Runtime::parse(&runner.runtime))
+                .and_then(|sessions_root| {
+                    resolved_cwd.clone().map(|cwd| CodexCaptureContext {
+                        mission_id: None,
+                        sessions_root,
+                        spawn_cwd: cwd,
+                        started_at: spawn_started_at_dt,
+                        row_started_at: started_at.clone(),
+                        spawn_pid,
+                        prompt_marker: codex_prompt_marker.clone(),
+                        pool: Arc::clone(&pool),
+                        events: Arc::clone(&events),
+                    })
+                })
+        } else {
+            None
+        };
 
         self.install_handle(
             &session_id,
@@ -1401,10 +1430,11 @@ impl SessionManager {
         if emit_activity {
             emit_runner_activity(&pool, &runner, events.as_ref());
         }
-        let missing_first_turn =
-            matches!(runner.runtime.as_str(), "claude-code" | "codex" | "trae")
-                && !plan.resuming
-                && !first_turn_delivered_via_argv;
+        let missing_first_turn = matches!(
+            Runtime::parse(runner.runtime.as_str()),
+            Some(Runtime::ClaudeCode | Runtime::Codex | Runtime::Trae)
+        ) && !plan.resuming
+            && !first_turn_delivered_via_argv;
         #[cfg(windows)]
         let missing_first_turn =
             missing_first_turn && !crate::session::launch::is_windows_batch(&runner.command);
@@ -1434,8 +1464,10 @@ impl SessionManager {
         first_turn: Option<&str>,
         deadline: Instant,
     ) {
-        if matches!(runner.runtime.as_str(), "claude-code" | "codex" | "trae")
-            && !plan.resuming
+        if matches!(
+            Runtime::parse(runner.runtime.as_str()),
+            Some(Runtime::ClaudeCode | Runtime::Codex | Runtime::Trae)
+        ) && !plan.resuming
             && crate::session::launch::is_windows_batch(&runner.command)
         {
             if let Some(body) = first_turn.filter(|body| !body.trim().is_empty()) {
@@ -1506,7 +1538,7 @@ impl SessionManager {
                     "runtime-only session {source_session_id} missing agent_runtime"
                 ))
             })?;
-        if !router::runtime::supports_native_fork(&effective_runtime) {
+        if !router::runtime::supports_native_fork(Runtime::parse(&effective_runtime)) {
             return Err(Error::msg(format!(
                 "runtime {effective_runtime} does not support native fork"
             )));
@@ -1559,16 +1591,17 @@ impl SessionManager {
                     runner.display_name.clone()
                 }
             });
-        let plan = router::runtime::fork_plan(&runner.runtime, source_key, &source_label)
-            .ok_or_else(|| {
-                Error::msg(format!(
-                    "could not build fork plan for runtime {}",
-                    runner.runtime
-                ))
-            })?;
+        let plan =
+            router::runtime::fork_plan(Runtime::parse(&runner.runtime), source_key, &source_label)
+                .ok_or_else(|| {
+                    Error::msg(format!(
+                        "could not build fork plan for runtime {}",
+                        runner.runtime
+                    ))
+                })?;
 
         let mut direct_env = BTreeMap::new();
-        if runner.runtime != "shell" {
+        if Runtime::parse(&runner.runtime) != Some(Runtime::Shell) {
             direct_env.insert("RUNNER_HANDLE".into(), runner.handle.clone());
         }
         let initial_size = Some(cols.zip(rows).unwrap_or(DEFAULT_PTY_SIZE));
@@ -1622,7 +1655,7 @@ impl SessionManager {
         // as a fresh chat. This is a no-op for Codex; its visible phase-2
         // process is an ordinary resume and remains deliberately ungated.
         let gate_started_at = Instant::now();
-        self.enter_claude_launch_gate(&session_id, &runner.runtime);
+        self.enter_claude_launch_gate(&session_id, Runtime::parse(&runner.runtime));
         let gate_elapsed = gate_started_at.elapsed();
         if !Self::session_row_exists(&pool, &session_id) {
             return Err(Error::msg(format!(
@@ -1743,7 +1776,11 @@ impl SessionManager {
                 })
             }
             headless @ router::runtime::ForkPlan::Headless { .. } => {
-                self.seed_codex_project_trust(&session_id, &runner.runtime, spec.cwd.as_deref());
+                self.seed_codex_project_trust(
+                    &session_id,
+                    Runtime::parse(&runner.runtime),
+                    spec.cwd.as_deref(),
+                );
                 let materialize_started_at = Instant::now();
                 let fork_key = match run_headless_fork(&spec, &headless, FORK_MATERIALIZE_TIMEOUT) {
                     Ok(key) => key,
@@ -2013,7 +2050,7 @@ impl SessionManager {
             // slot was down applies to the respawn.
             if snap.mission_id.is_some() {
                 runner.args = router::runtime::apply_mission_permission_mode(
-                    &runner.runtime,
+                    Runtime::parse(&runner.runtime),
                     &runner.args,
                     self.mission_permission_mode(),
                 );
@@ -2048,27 +2085,41 @@ impl SessionManager {
             snap.runner_id.as_ref().and(runner.working_dir.as_deref()),
         );
         let is_lead_slot = mission_ctx.as_ref().is_some_and(|c| c.lead);
-        let conversation_missing =
-            match (runner.runtime.as_str(), snap.agent_session_key.as_deref()) {
-                ("claude-code", Some(key)) => !router::runtime::claude_code_conversation_exists(
+        let conversation_missing = match (
+            Runtime::parse(&runner.runtime),
+            snap.agent_session_key.as_deref(),
+        ) {
+            (Some(Runtime::ClaudeCode), Some(key)) => {
+                !router::runtime::claude_code_conversation_exists(
                     resolved_cwd_for_check.as_deref(),
                     key,
-                ),
-                _ => false,
-            };
+                )
+            }
+            (Some(Runtime::ClaudeCode), None)
+            | (Some(Runtime::Codex | Runtime::Trae | Runtime::Shell) | None, _) => false,
+        };
         if conversation_missing && !allow_fresh_fallback {
             return Err(Error::msg(format!(
                 "session {session_id} conversation is unavailable; resume it manually to start fresh"
             )));
         }
         let fresh_fallback_lead = conversation_missing && is_lead_slot;
-        let effective_prior_key = match (runner.runtime.as_str(), snap.agent_session_key.as_deref())
-        {
-            ("claude-code", Some(_)) if conversation_missing => None,
-            (_, k) => k,
+        let effective_prior_key = match (
+            Runtime::parse(&runner.runtime),
+            snap.agent_session_key.as_deref(),
+        ) {
+            (Some(Runtime::ClaudeCode), Some(_)) if conversation_missing => None,
+            (
+                Some(Runtime::ClaudeCode | Runtime::Codex | Runtime::Trae | Runtime::Shell) | None,
+                k,
+            ) => k,
         };
-        let plan = router::runtime::resume_plan(&runner.runtime, effective_prior_key);
-        if !allow_fresh_fallback && !plan.resuming && runner.runtime != "shell" {
+        let plan =
+            router::runtime::resume_plan(Runtime::parse(&runner.runtime), effective_prior_key);
+        if !allow_fresh_fallback
+            && !plan.resuming
+            && Runtime::parse(&runner.runtime) != Some(Runtime::Shell)
+        {
             return Err(Error::msg(format!(
                 "session {session_id} cannot resume its prior conversation; resume it manually to start fresh"
             )));
@@ -2079,35 +2130,36 @@ impl SessionManager {
         // Shells are safe to relaunch at a fallback directory because a human
         // remains at the prompt, so resolve that fallback before portable-pty
         // can silently substitute HOME.
-        let (resolved_cwd, shell_cwd_notice) = if runner.runtime == "shell" {
-            let project_cwd = match snap.project_id.as_deref() {
-                Some(project_id) => {
-                    let conn = pool.get()?;
-                    crate::repo::project::get(&conn, project_id)?.map(|project| project.cwd)
+        let (resolved_cwd, shell_cwd_notice) =
+            if Runtime::parse(&runner.runtime) == Some(Runtime::Shell) {
+                let project_cwd = match snap.project_id.as_deref() {
+                    Some(project_id) => {
+                        let conn = pool.get()?;
+                        crate::repo::project::get(&conn, project_id)?.map(|project| project.cwd)
+                    }
+                    None => None,
+                };
+                let home = runner_core::app_paths::home_dir();
+                let (cwd, notice) = resolve_shell_resume_cwd(
+                    snap.cwd.as_deref(),
+                    project_cwd.as_deref(),
+                    home.as_deref(),
+                )?;
+                (Some(cwd), notice)
+            } else {
+                let cwd = resolved_cwd_for_check;
+                if mission_ctx.is_none() {
+                    if let Some(missing_cwd) = cwd
+                        .as_deref()
+                        .filter(|cwd| !cwd.is_empty() && !Path::new(cwd).is_dir())
+                    {
+                        return Err(Error::msg(format!(
+                            "working directory does not exist: {missing_cwd}"
+                        )));
+                    }
                 }
-                None => None,
+                (cwd, None)
             };
-            let home = runner_core::app_paths::home_dir();
-            let (cwd, notice) = resolve_shell_resume_cwd(
-                snap.cwd.as_deref(),
-                project_cwd.as_deref(),
-                home.as_deref(),
-            )?;
-            (Some(cwd), notice)
-        } else {
-            let cwd = resolved_cwd_for_check;
-            if mission_ctx.is_none() {
-                if let Some(missing_cwd) = cwd
-                    .as_deref()
-                    .filter(|cwd| !cwd.is_empty() && !Path::new(cwd).is_dir())
-                {
-                    return Err(Error::msg(format!(
-                        "working directory does not exist: {missing_cwd}"
-                    )));
-                }
-            }
-            (cwd, None)
-        };
 
         // Refresh the per-slot runner shim before composing PATH —
         // mission cwd may have been edited since the last spawn.
@@ -2149,7 +2201,7 @@ impl SessionManager {
             if let Some(wd) = ctx.mission_cwd.as_deref() {
                 env_extra.insert("MISSION_CWD".into(), wd.to_string());
             }
-        } else if runner.runtime != "shell" {
+        } else if Runtime::parse(&runner.runtime) != Some(Runtime::Shell) {
             env_extra.insert("RUNNER_HANDLE".into(), runner.handle.clone());
         }
 
@@ -2214,7 +2266,11 @@ impl SessionManager {
         // N stopped slots can spawn as fast as the runtime allows.
         // See issue #171.
         let spawn_started_at_dt = Utc::now();
-        self.seed_codex_project_trust(session_id, &runner.runtime, spec.cwd.as_deref());
+        self.seed_codex_project_trust(
+            session_id,
+            Runtime::parse(&runner.runtime),
+            spec.cwd.as_deref(),
+        );
         let (rt_session, output) = match self.runtime.spawn(spec) {
             Ok(p) => p,
             Err(e) => {
@@ -2259,26 +2315,28 @@ impl SessionManager {
             );
         }
 
-        let codex_capture =
-            if matches!(runner.runtime.as_str(), "codex" | "trae") && plan.assigned_key.is_none() {
-                crate::session::codex_capture::sessions_root_for(&runner.runtime).and_then(
-                    |sessions_root| {
-                        resolved_cwd.clone().map(|cwd| CodexCaptureContext {
-                            mission_id: snap.mission_id.clone(),
-                            sessions_root,
-                            spawn_cwd: cwd,
-                            started_at: spawn_started_at_dt,
-                            row_started_at: started_at.clone(),
-                            spawn_pid,
-                            prompt_marker: None,
-                            pool: Arc::clone(&pool),
-                            events: Arc::clone(&events),
-                        })
-                    },
-                )
-            } else {
-                None
-            };
+        let codex_capture = if matches!(
+            Runtime::parse(runner.runtime.as_str()),
+            Some(Runtime::Codex | Runtime::Trae)
+        ) && plan.assigned_key.is_none()
+        {
+            crate::session::codex_capture::sessions_root_for(Runtime::parse(&runner.runtime))
+                .and_then(|sessions_root| {
+                    resolved_cwd.clone().map(|cwd| CodexCaptureContext {
+                        mission_id: snap.mission_id.clone(),
+                        sessions_root,
+                        spawn_cwd: cwd,
+                        started_at: spawn_started_at_dt,
+                        row_started_at: started_at.clone(),
+                        spawn_pid,
+                        prompt_marker: None,
+                        pool: Arc::clone(&pool),
+                        events: Arc::clone(&events),
+                    })
+                })
+        } else {
+            None
+        };
 
         let resume_emit_ctx = mission_ctx.as_ref().and_then(|ctx| {
             open_mission_event_log(app_data_dir, &ctx.crew_id, &ctx.mission_id).map(|event_log| {
@@ -2360,7 +2418,11 @@ impl SessionManager {
         // returned SpawnedSession. For direct-chat resume there's no
         // slot/lead concept; if that degrades to fresh and argv
         // delivery was unavailable, we log the skipped injection.
-        if matches!(runner.runtime.as_str(), "claude-code" | "codex" | "trae") && !plan.resuming {
+        if matches!(
+            Runtime::parse(runner.runtime.as_str()),
+            Some(Runtime::ClaudeCode | Runtime::Codex | Runtime::Trae)
+        ) && !plan.resuming
+        {
             if mission_ctx.is_some() {
                 log::warn!(
                     "first-turn argv not delivered for {session_id} (runtime {}); skipping post-spawn injection",

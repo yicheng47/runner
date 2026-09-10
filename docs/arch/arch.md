@@ -122,7 +122,7 @@ A mission is a container. Everything in the runtime column is either the contain
 
 ### 3.2 Runner — *one configured agent*
 
-A reusable template: handle, display name, runtime (`claude-code | codex | trae` today, plus a bare shell; `qoder` rows from before v0.6.7 stay readable but cannot spawn), command + args, working dir, system prompt (persona), env, optional model and effort. **Top-level, not nested under a crew.** The same runner template can be used by many crews simultaneously, and can also be the subject of standalone direct-chat sessions.
+A reusable template: handle, display name, runtime, command + args, working dir, system prompt (persona), env, optional model and effort. Known runtimes use the `Runtime` enum in code (`ClaudeCode`, `Codex`, `Trae`, `Shell`); SQLite runtime names remain plain strings, and legacy or arbitrary names, including `qoder` rows from before v0.6.7, stay unchanged and readable without a migration. Dispatch parses those names while preserving the existing behavior for unknown runtimes. **Top-level, not nested under a crew.** The same runner template can be used by many crews simultaneously, and can also be the subject of standalone direct-chat sessions.
 
 A runner has two identifying fields:
 

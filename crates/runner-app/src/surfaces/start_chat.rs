@@ -1,3 +1,5 @@
+#[cfg(test)]
+use runner_backend::model::Runtime;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -124,15 +126,19 @@ impl StartChatModal {
     }
 
     fn selected_runtime(&self) -> Option<&RuntimeCatalogEntry> {
-        self.runtime_name
-            .as_deref()
-            .and_then(|name| self.runtimes.iter().find(|runtime| runtime.name == name))
+        self.runtime_name.as_deref().and_then(|name| {
+            self.runtimes
+                .iter()
+                .find(|runtime| runtime.name.key() == name)
+        })
     }
 
     fn override_runtime(&self) -> Option<&RuntimeCatalogEntry> {
-        self.runner_runtime_override
-            .as_deref()
-            .and_then(|name| self.runtimes.iter().find(|runtime| runtime.name == name))
+        self.runner_runtime_override.as_deref().and_then(|name| {
+            self.runtimes
+                .iter()
+                .find(|runtime| runtime.name.key() == name)
+        })
     }
 
     fn active_runtime(&self) -> Option<&RuntimeCatalogEntry> {
@@ -664,9 +670,9 @@ impl NativeRoot {
             });
         let runtime_name = runtimes
             .iter()
-            .find(|runtime| runtime.name == self.settings(cx).default_runtime)
+            .find(|runtime| runtime.name.key() == self.settings(cx).default_runtime)
             .or_else(|| runtimes.first())
-            .map(|runtime| runtime.name.clone());
+            .map(|runtime| runtime.name.to_string());
         let title = match mode {
             ChatMode::Runner => runner_id
                 .as_deref()
@@ -681,7 +687,7 @@ impl NativeRoot {
                 .unwrap_or_default(),
             ChatMode::Runtime => runtime_name
                 .as_deref()
-                .and_then(|name| runtimes.iter().find(|runtime| runtime.name == name))
+                .and_then(|name| runtimes.iter().find(|runtime| runtime.name.key() == name))
                 .map(|runtime| default_title_for_runtime(&runtime.display_name))
                 .unwrap_or_default(),
         };
@@ -842,19 +848,24 @@ impl NativeRoot {
 
         if catalog_loaded {
             modal.runtimes = runtimes;
-            if modal
-                .runner_runtime_override
-                .as_ref()
-                .is_some_and(|name| !modal.runtimes.iter().any(|runtime| runtime.name == *name))
-            {
+            if modal.runner_runtime_override.as_ref().is_some_and(|name| {
+                !modal
+                    .runtimes
+                    .iter()
+                    .any(|runtime| runtime.name.key() == name.as_str())
+            }) {
                 modal.runner_runtime_override = None;
             }
-            if modal
-                .runtime_name
-                .as_ref()
-                .is_none_or(|name| !modal.runtimes.iter().any(|runtime| runtime.name == *name))
-            {
-                modal.runtime_name = modal.runtimes.first().map(|runtime| runtime.name.clone());
+            if modal.runtime_name.as_ref().is_none_or(|name| {
+                !modal
+                    .runtimes
+                    .iter()
+                    .any(|runtime| runtime.name.key() == name.as_str())
+            }) {
+                modal.runtime_name = modal
+                    .runtimes
+                    .first()
+                    .map(|runtime| runtime.name.to_string());
             }
             if modal.runtime_name != previous_runtime
                 || modal.runner_runtime_override != previous_override
@@ -898,9 +909,9 @@ impl NativeRoot {
         let runtime_name = modal
             .runtimes
             .iter()
-            .find(|runtime| runtime.name == default_runtime)
+            .find(|runtime| runtime.name.key() == default_runtime)
             .or_else(|| modal.runtimes.first())
-            .map(|runtime| runtime.name.clone());
+            .map(|runtime| runtime.name.to_string());
         if modal.runtime_name == runtime_name {
             return;
         }
@@ -1132,9 +1143,7 @@ impl NativeRoot {
         let request = build_start_request(
             modal.mode,
             modal.selected_runner().map(|runner| runner.id.as_str()),
-            modal
-                .selected_runtime()
-                .map(|runtime| runtime.name.as_str()),
+            modal.selected_runtime().map(|runtime| runtime.name.key()),
             modal.runner_runtime_override.as_deref(),
             model,
             effort,
@@ -1654,7 +1663,7 @@ fn runner_options(runners: &[Runner]) -> Vec<SelectOption> {
 fn runtime_options(runtimes: &[RuntimeCatalogEntry]) -> Vec<SelectOption> {
     runtimes
         .iter()
-        .map(|runtime| SelectOption::new(runtime.name.clone(), runtime.display_name.clone()))
+        .map(|runtime| SelectOption::new(runtime.name.to_string(), runtime.display_name.clone()))
         .collect()
 }
 
@@ -1814,8 +1823,8 @@ pub(crate) fn load_selectable_runtimes(
         Ok(catalog) => {
             let enabled = catalog
                 .iter()
-                .filter(|runtime| settings.is_agent_enabled(&runtime.name, runtime.default_enabled))
-                .map(|runtime| runtime.name.clone())
+                .filter(|runtime| settings.is_agent_enabled(runtime.name, runtime.default_enabled))
+                .map(|runtime| runtime.name.to_string())
                 .collect::<Vec<_>>();
             (
                 filter_selectable_runtime_catalog(catalog, Some(&enabled)),
@@ -1838,12 +1847,12 @@ fn summarize_runner(runner: &Runner) -> String {
 fn runtime_display_name(runtimes: &[RuntimeCatalogEntry], name: &str) -> String {
     runtimes
         .iter()
-        .find(|runtime| runtime.name == name)
+        .find(|runtime| runtime.name.key() == name)
         .map(|runtime| runtime.display_name.clone())
         .or_else(|| {
             runner_backend::ops::runtime::runtime_list()
                 .into_iter()
-                .find(|runtime| runtime.name == name)
+                .find(|runtime| runtime.name.key() == name)
                 .map(|runtime| runtime.display_name)
         })
         .unwrap_or_else(|| name.to_owned())
@@ -1905,7 +1914,7 @@ fn effort_options_for_runtime<'a>(
 ) -> &'a [RuntimeCatalogOption] {
     runtimes
         .iter()
-        .find(|runtime| runtime.name == name)
+        .find(|runtime| runtime.name.key() == name)
         .map(|runtime| runtime.efforts.as_slice())
         .unwrap_or_default()
 }
@@ -2082,7 +2091,7 @@ mod tests {
 
     fn runtime(name: &str, efforts: &[&str]) -> RuntimeCatalogEntry {
         RuntimeCatalogEntry {
-            name: name.into(),
+            name: Runtime::parse(name).unwrap(),
             display_name: name.into(),
             command: name.into(),
             native_fork: matches!(name, "codex" | "claude-code"),

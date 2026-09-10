@@ -1,4 +1,5 @@
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use runner_backend::model::Runtime;
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
 
 use gpui::prelude::*;
@@ -52,20 +53,20 @@ enum McpClient {
 }
 
 impl McpClient {
-    fn for_runtime(name: &str) -> Option<Self> {
+    fn for_runtime(name: Runtime) -> Option<Self> {
         match name {
-            "claude-code" => Some(Self::ClaudeCode),
-            "codex" => Some(Self::Codex),
-            "trae" => Some(Self::Trae),
-            _ => None,
+            Runtime::ClaudeCode => Some(Self::ClaudeCode),
+            Runtime::Codex => Some(Self::Codex),
+            Runtime::Trae => Some(Self::Trae),
+            Runtime::Shell => None,
         }
     }
 
     fn key(self) -> &'static str {
         match self {
             Self::ClaudeCode => "claude_code",
-            Self::Codex => "codex",
-            Self::Trae => "trae",
+            Self::Codex => Runtime::Codex.key(),
+            Self::Trae => Runtime::Trae.key(),
         }
     }
 
@@ -134,11 +135,11 @@ pub(crate) struct AgentsPane {
     loading: bool,
     refreshing: bool,
     default_runtime: Entity<StyledSelect>,
-    overrides: BTreeMap<String, Entity<TextField>>,
-    validation: BTreeMap<String, String>,
-    validation_drafts: BTreeMap<String, String>,
-    saving: HashSet<String>,
-    focused: HashSet<String>,
+    overrides: HashMap<Runtime, Entity<TextField>>,
+    validation: HashMap<Runtime, String>,
+    validation_drafts: HashMap<Runtime, String>,
+    saving: HashSet<Runtime>,
+    focused: HashSet<Runtime>,
     mcp_status: Option<McpIntegrationStatus>,
     mcp_loading: bool,
     mcp_busy: Option<McpClient>,
@@ -174,13 +175,13 @@ impl AgentsPane {
             )
         });
 
-        let mut overrides = BTreeMap::new();
+        let mut overrides = HashMap::new();
         let mut subscriptions = Vec::new();
         for runtime in runner_backend::ops::runtime::runtime_list() {
-            let runtime_name = runtime.name.clone();
+            let runtime_name = runtime.name;
             let enter_shell = shell.clone();
             let escape_pane = cx.weak_entity();
-            let escape_name = runtime_name.clone();
+            let escape_name = runtime_name;
             let field = cx.new(|input_cx| {
                 TextField::new(
                     input_cx.focus_handle(),
@@ -201,10 +202,10 @@ impl AgentsPane {
                         }
                         "escape" => {
                             let pane = escape_pane.clone();
-                            let runtime = escape_name.clone();
+                            let runtime = escape_name;
                             window.defer(cx, move |_, cx| {
                                 let _ = pane.update(cx, |this, pane_cx| {
-                                    this.discard_override(&runtime, pane_cx)
+                                    this.discard_override(runtime, pane_cx)
                                 });
                             });
                             true
@@ -214,17 +215,17 @@ impl AgentsPane {
                 }))
             });
             let focus = field.read(cx).focus_handle();
-            let focus_runtime = runtime_name.clone();
+            let focus_runtime = runtime_name;
             subscriptions.push(cx.on_focus_in(&focus, window, move |this, _, cx| {
-                this.focused.insert(focus_runtime.clone());
+                this.focused.insert(focus_runtime);
                 cx.notify();
             }));
-            let blur_runtime = runtime_name.clone();
+            let blur_runtime = runtime_name;
             subscriptions.push(cx.on_focus_out(&focus, window, move |this, _, _, cx| {
                 this.focused.remove(&blur_runtime);
-                this.commit_override(&blur_runtime, cx);
+                this.commit_override(blur_runtime, cx);
             }));
-            let draft_runtime = runtime_name.clone();
+            let draft_runtime = runtime_name;
             subscriptions.push(cx.observe(&field, move |this, field, cx| {
                 let draft = field.read(cx).text().to_owned();
                 if this
@@ -265,8 +266,8 @@ impl AgentsPane {
             refreshing: false,
             default_runtime,
             overrides,
-            validation: BTreeMap::new(),
-            validation_drafts: BTreeMap::new(),
+            validation: HashMap::new(),
+            validation_drafts: HashMap::new(),
             saving: HashSet::new(),
             focused: HashSet::new(),
             mcp_status: None,
@@ -465,9 +466,9 @@ impl AgentsPane {
             });
             if sync_value {
                 if let Some(error) = runtime.invalid_reason.clone() {
-                    self.validation.insert(runtime.name.clone(), error);
+                    self.validation.insert(runtime.name, error);
                     self.validation_drafts.insert(
-                        runtime.name.clone(),
+                        runtime.name,
                         runtime.override_path.clone().unwrap_or_default(),
                     );
                 } else {
@@ -510,10 +511,17 @@ impl AgentsPane {
     }
 
     fn set_default_runtime(&mut self, value: String, cx: &mut Context<Self>) {
-        let value = value.trim().to_owned();
+        let runtime = if value.is_empty() {
+            None
+        } else {
+            let Some(runtime) = Runtime::parse(&value) else {
+                return;
+            };
+            Some(runtime)
+        };
         let changed = self.app_store.update(cx, |store, store_cx| {
             store.update_settings(
-                |settings| update_default_runtime(settings, &value),
+                |settings| update_default_runtime(settings, runtime),
                 true,
                 store_cx,
             )
@@ -530,10 +538,10 @@ impl AgentsPane {
         }
     }
 
-    fn set_enabled(&mut self, runtime: String, enabled: bool, cx: &mut Context<Self>) {
+    fn set_enabled(&mut self, runtime: Runtime, enabled: bool, cx: &mut Context<Self>) {
         let changed = self.app_store.update(cx, |store, store_cx| {
             store.update_settings(
-                |settings| update_agent_enabled_preferences(settings, &runtime, enabled),
+                |settings| update_agent_enabled_preferences(settings, runtime, enabled),
                 true,
                 store_cx,
             )
@@ -556,23 +564,23 @@ impl AgentsPane {
 
     fn set_validation(
         &mut self,
-        runtime: &str,
+        runtime: Runtime,
         validation: Option<String>,
         cx: &mut Context<Self>,
     ) {
         if let Some(validation) = validation.clone() {
-            self.validation.insert(runtime.to_owned(), validation);
+            self.validation.insert(runtime, validation);
             let draft = self
                 .overrides
-                .get(runtime)
+                .get(&runtime)
                 .map(|field| field.read(cx).text().to_owned())
                 .unwrap_or_default();
-            self.validation_drafts.insert(runtime.to_owned(), draft);
+            self.validation_drafts.insert(runtime, draft);
         } else {
-            self.validation.remove(runtime);
-            self.validation_drafts.remove(runtime);
+            self.validation.remove(&runtime);
+            self.validation_drafts.remove(&runtime);
         }
-        if let Some(field) = self.overrides.get(runtime).cloned() {
+        if let Some(field) = self.overrides.get(&runtime).cloned() {
             field.update(cx, |field, field_cx| {
                 field.set_validation(
                     validation.map(FieldValidation::error).unwrap_or_default(),
@@ -582,11 +590,11 @@ impl AgentsPane {
         }
     }
 
-    fn commit_override(&mut self, runtime: &str, cx: &mut Context<Self>) {
-        if self.saving.contains(runtime) {
+    fn commit_override(&mut self, runtime: Runtime, cx: &mut Context<Self>) {
+        if self.saving.contains(&runtime) {
             return;
         }
-        let Some(field) = self.overrides.get(runtime).cloned() else {
+        let Some(field) = self.overrides.get(&runtime).cloned() else {
             return;
         };
         let draft = field.read(cx).text().trim().to_owned();
@@ -607,18 +615,18 @@ impl AgentsPane {
             );
             return;
         }
-        self.saving.insert(runtime.to_owned());
+        self.saving.insert(runtime);
         self.set_validation(runtime, None, cx);
         field.update(cx, |field, field_cx| field.set_disabled(true, field_cx));
         let core = self.app_store.read(cx).core.clone();
-        let runtime_name = runtime.to_owned();
-        let task_runtime = runtime_name.clone();
+        let runtime_name = runtime;
+        let task_runtime = runtime_name;
         let task = cx.background_spawn(async move {
             if draft.is_empty() {
-                runner_backend::ops::runtime::runtime_clear_override(&core, &task_runtime)
+                runner_backend::ops::runtime::runtime_clear_override(&core, task_runtime)
                     .map_err(|error| error.to_string())
             } else {
-                runner_backend::ops::runtime::runtime_set_override(&core, &task_runtime, &draft)
+                runner_backend::ops::runtime::runtime_set_override(&core, task_runtime, &draft)
                     .map_err(|error| override_validation_error_message(&error))
             }
         });
@@ -634,7 +642,7 @@ impl AgentsPane {
                         this.apply_status(status, cx);
                         this.error = None;
                     }
-                    Err(error) => this.set_validation(&runtime_name, Some(error), cx),
+                    Err(error) => this.set_validation(runtime_name, Some(error), cx),
                 }
                 cx.notify();
             });
@@ -643,7 +651,7 @@ impl AgentsPane {
         cx.notify();
     }
 
-    fn discard_override(&mut self, runtime: &str, cx: &mut Context<Self>) {
+    fn discard_override(&mut self, runtime: Runtime, cx: &mut Context<Self>) {
         let current = self
             .status
             .as_ref()
@@ -652,14 +660,14 @@ impl AgentsPane {
             .and_then(|row| row.override_path.clone())
             .unwrap_or_default();
         let validation = current.and_then(|row| row.invalid_reason.clone());
-        if let Some(field) = self.overrides.get(runtime).cloned() {
+        if let Some(field) = self.overrides.get(&runtime).cloned() {
             field.update(cx, |field, field_cx| field.reset(value, field_cx));
         }
         self.set_validation(runtime, validation, cx);
         cx.notify();
     }
 
-    fn browse_override(&mut self, runtime: String, cx: &mut Context<Self>) {
+    fn browse_override(&mut self, runtime: Runtime, cx: &mut Context<Self>) {
         if self.saving.contains(&runtime) {
             return;
         }
@@ -671,7 +679,7 @@ impl AgentsPane {
             .as_ref()
             .and_then(|status| status.runtimes.iter().find(|row| row.name == runtime))
             .map(|row| row.display_name.clone())
-            .unwrap_or_else(|| runtime.clone());
+            .unwrap_or_else(|| runtime.to_string());
         let selected = cx.prompt_for_paths(PathPromptOptions {
             files: true,
             directories: false,
@@ -690,11 +698,11 @@ impl AgentsPane {
                             field.update(cx, |field, field_cx| {
                                 field.reset(path.to_string_lossy().into_owned(), field_cx)
                             });
-                            this.commit_override(&runtime, cx);
+                            this.commit_override(runtime, cx);
                         }
                     }
                     Ok(None) => {}
-                    Err(error) => this.set_validation(&runtime, Some(error), cx),
+                    Err(error) => this.set_validation(runtime, Some(error), cx),
                 }
                 cx.notify();
             });
@@ -702,14 +710,14 @@ impl AgentsPane {
         .detach();
     }
 
-    fn reset_override(&mut self, runtime: String, cx: &mut Context<Self>) {
+    fn reset_override(&mut self, runtime: Runtime, cx: &mut Context<Self>) {
         if self.saving.contains(&runtime) {
             return;
         }
         if let Some(field) = self.overrides.get(&runtime).cloned() {
             field.update(cx, |field, field_cx| field.reset("", field_cx));
         }
-        self.commit_override(&runtime, cx);
+        self.commit_override(runtime, cx);
     }
 
     fn render_shell_card(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -782,19 +790,19 @@ impl AgentsPane {
             saving,
         );
         let enabled =
-            runtime_default_enabled(&self.catalog, &runtime.name).is_some_and(|default_enabled| {
+            runtime_default_enabled(&self.catalog, runtime.name).is_some_and(|default_enabled| {
                 self.app_store
                     .read(cx)
                     .settings
-                    .is_agent_enabled(&runtime.name, default_enabled)
+                    .is_agent_enabled(runtime.name, default_enabled)
             });
         let pane = cx.entity();
         let toggle_pane = pane.clone();
         let browse_pane = pane.clone();
         let reset_pane = pane;
-        let toggle_runtime = runtime.name.clone();
-        let browse_runtime = runtime.name.clone();
-        let reset_runtime = runtime.name.clone();
+        let toggle_runtime = runtime.name;
+        let browse_runtime = runtime.name;
+        let reset_runtime = runtime.name;
         let field = self.overrides.get(&runtime.name).cloned();
         let browse_id = SharedString::from(format!("agent-browse-{}", runtime.name));
         let browse_field = field.clone().map(|field| {
@@ -803,7 +811,7 @@ impl AgentsPane {
                 saving,
                 Rc::new(move |_, cx| {
                     browse_pane.update(cx, |this, pane_cx| {
-                        this.browse_override(browse_runtime.clone(), pane_cx)
+                        this.browse_override(browse_runtime, pane_cx)
                     });
                 }),
             )
@@ -813,7 +821,7 @@ impl AgentsPane {
         presentation.show_reset |= field
             .as_ref()
             .is_some_and(|field| !field.read(cx).text().trim().is_empty());
-        let mcp = McpClient::for_runtime(&runtime.name).map(|client| {
+        let mcp = McpClient::for_runtime(runtime.name).map(|client| {
             let presentation = mcp_row_presentation(
                 client,
                 self.mcp_status.as_ref().map(|status| client.status(status)),
@@ -847,7 +855,7 @@ impl AgentsPane {
                             .font_weight(FontWeight::SEMIBOLD)
                             .child(runtime.display_name.clone()),
                     )
-                    .child(runtime_badge(&runtime.name, &presentation))
+                    .child(runtime_badge(runtime.name, &presentation))
                     .child(div().min_w(px(0.)).flex_1())
                     .child(
                         div()
@@ -862,7 +870,7 @@ impl AgentsPane {
                         )
                         .on_change(move |enabled, _, cx| {
                             toggle_pane.update(cx, |this, pane_cx| {
-                                this.set_enabled(toggle_runtime.clone(), enabled, pane_cx)
+                                this.set_enabled(toggle_runtime, enabled, pane_cx)
                             });
                         }),
                     ),
@@ -882,13 +890,13 @@ impl AgentsPane {
                         .disabled(saving)
                         .on_press(move |_, cx| {
                             reset_pane.update(cx, |this, pane_cx| {
-                                this.reset_override(reset_runtime.clone(), pane_cx)
+                                this.reset_override(reset_runtime, pane_cx)
                             });
                         })
                     })),
             )
             .children(runtime_defaults_visible(runtime).then(|| {
-                runtime_property_line(&runtime.name, "MODEL", "Model")
+                runtime_property_line(runtime.name, "MODEL", "Model")
                     .child(runtime_property_value(runtime_default_value(
                         runtime.default_model.as_deref(),
                     )))
@@ -899,7 +907,7 @@ impl AgentsPane {
                     )))
             }))
             .children(mcp.map(|(client, presentation)| {
-                self.render_mcp_line(&runtime.name, client, &presentation, cx)
+                self.render_mcp_line(runtime.name, client, &presentation, cx)
             }))
             .children(
                 presentation
@@ -912,7 +920,7 @@ impl AgentsPane {
 
     fn render_mcp_line(
         &self,
-        runtime: &str,
+        runtime: Runtime,
         client: McpClient,
         presentation: &McpRowPresentation,
         cx: &mut Context<Self>,
@@ -961,7 +969,7 @@ impl AgentsPane {
     }
 }
 
-fn runtime_property_line(runtime: &str, key: &'static str, label: &'static str) -> Div {
+fn runtime_property_line(runtime: Runtime, key: &'static str, label: &'static str) -> Div {
     let line_selector = format!("AGENT_{key}_LINE_{runtime}");
     let label_selector = format!("AGENT_{key}_LABEL_{runtime}");
     div()
@@ -1078,7 +1086,7 @@ impl Render for AgentsPane {
     }
 }
 
-fn runtime_default_enabled(catalog: &[RuntimeCatalogEntry], name: &str) -> Option<bool> {
+fn runtime_default_enabled(catalog: &[RuntimeCatalogEntry], name: Runtime) -> Option<bool> {
     catalog
         .iter()
         .find(|runtime| runtime.name == name)
@@ -1096,10 +1104,10 @@ fn available_runtime_options(
             runtime.effective_source,
             Some(RuntimeCommandSource::Detected | RuntimeCommandSource::Override)
         );
-        let enabled = runtime_default_enabled(catalog, &runtime.name)
-            .is_some_and(|default| settings.is_agent_enabled(&runtime.name, default));
+        let enabled = runtime_default_enabled(catalog, runtime.name)
+            .is_some_and(|default| settings.is_agent_enabled(runtime.name, default));
         (available && enabled)
-            .then(|| SelectOption::new(runtime.name.clone(), runtime.display_name.clone()))
+            .then(|| SelectOption::new(runtime.name.key(), runtime.display_name.clone()))
     }));
     options
 }
@@ -1112,10 +1120,14 @@ fn reconcile_default_runtime(
     if settings.default_runtime.is_empty() {
         return false;
     }
-    let enabled = runtime_default_enabled(catalog, &settings.default_runtime)
-        .is_some_and(|default| settings.is_agent_enabled(&settings.default_runtime, default));
+    let enabled = Runtime::parse(&settings.default_runtime)
+        .and_then(|runtime| {
+            runtime_default_enabled(catalog, runtime)
+                .map(|default| settings.is_agent_enabled(runtime, default))
+        })
+        .unwrap_or(false);
     let available = status.runtimes.iter().any(|runtime| {
-        runtime.name == settings.default_runtime
+        runtime.name.key() == settings.default_runtime
             && matches!(
                 runtime.effective_source,
                 Some(RuntimeCommandSource::Detected | RuntimeCommandSource::Override)
@@ -1131,7 +1143,7 @@ fn reconcile_default_runtime(
 
 fn update_agent_enabled_preferences(
     settings: &mut AppSettings,
-    runtime: &str,
+    runtime: Runtime,
     enabled: bool,
 ) -> bool {
     let before = (
@@ -1140,12 +1152,12 @@ fn update_agent_enabled_preferences(
         settings.enabled_agents.clone(),
     );
     if enabled {
-        settings.disabled_agents.remove(runtime);
-        settings.enabled_agents.insert(runtime.to_owned());
+        settings.disabled_agents.remove(runtime.key());
+        settings.enabled_agents.insert(runtime.to_string());
     } else {
-        settings.disabled_agents.insert(runtime.to_owned());
-        settings.enabled_agents.remove(runtime);
-        if settings.default_runtime == runtime {
+        settings.disabled_agents.insert(runtime.to_string());
+        settings.enabled_agents.remove(runtime.key());
+        if settings.default_runtime == runtime.key() {
             settings.default_runtime.clear();
         }
     }
@@ -1157,11 +1169,11 @@ fn update_agent_enabled_preferences(
         )
 }
 
-fn update_default_runtime(settings: &mut AppSettings, runtime: &str) -> bool {
-    if settings.default_runtime == runtime {
+fn update_default_runtime(settings: &mut AppSettings, runtime: Option<Runtime>) -> bool {
+    if settings.default_runtime == runtime.map(Runtime::key).unwrap_or_default() {
         return false;
     }
-    settings.default_runtime = runtime.to_owned();
+    settings.default_runtime = runtime.map(Runtime::key).unwrap_or_default().to_owned();
     true
 }
 
@@ -1354,7 +1366,7 @@ fn runtime_presentation(
     }
 }
 
-fn runtime_badge(runtime: &str, presentation: &RuntimePresentation) -> AnyElement {
+fn runtime_badge(runtime: Runtime, presentation: &RuntimePresentation) -> AnyElement {
     let (background, foreground) = match presentation.tone {
         BadgeTone::Accent => (theme::with_alpha(theme::accent(), 0.1), theme::accent()),
         BadgeTone::Neutral => (theme::with_alpha(theme::text(), 0.05), theme::text()),
@@ -1466,7 +1478,7 @@ mod tests {
 
     fn runtime(state: RuntimeRowState) -> RuntimeExecutableStatus {
         RuntimeExecutableStatus {
-            name: "codex".into(),
+            name: Runtime::Codex,
             display_name: "Codex".into(),
             command: "codex".into(),
             default_model: None,
@@ -1710,7 +1722,7 @@ mod tests {
             let pane = cx.new(|cx| AgentsPane::new(WeakEntity::new_invalid(), store, window, cx));
             pane.update(cx, |pane, cx| {
                 let mut claude = runtime(RuntimeRowState::Detected);
-                claude.name = "claude-code".into();
+                claude.name = Runtime::ClaudeCode;
                 claude.display_name = "Claude Code".into();
                 claude.command = "claude".into();
                 claude.default_model = Some("claude-fable-5[1m]".into());
@@ -1844,12 +1856,15 @@ mod tests {
     #[test]
     fn only_runtimes_the_mcp_writer_knows_get_a_line() {
         assert_eq!(
-            McpClient::for_runtime("claude-code"),
+            McpClient::for_runtime(Runtime::ClaudeCode),
             Some(McpClient::ClaudeCode)
         );
-        assert_eq!(McpClient::for_runtime("codex"), Some(McpClient::Codex));
-        assert_eq!(McpClient::for_runtime("trae"), Some(McpClient::Trae));
-        assert_eq!(McpClient::for_runtime("gemini"), None);
+        assert_eq!(
+            McpClient::for_runtime(Runtime::Codex),
+            Some(McpClient::Codex)
+        );
+        assert_eq!(McpClient::for_runtime(Runtime::Trae), Some(McpClient::Trae));
+        assert_eq!(McpClient::for_runtime(Runtime::Shell), None);
         assert_eq!(McpClient::ClaudeCode.key(), "claude_code");
         assert_eq!(McpClient::Codex.config_file(), "~/.codex/config.toml");
     }
@@ -1875,28 +1890,28 @@ mod tests {
         };
         assert!(update_agent_enabled_preferences(
             &mut settings,
-            "codex",
+            Runtime::Codex,
             false
         ));
-        assert!(settings.disabled_agents.contains("codex"));
-        assert!(!settings.enabled_agents.contains("codex"));
+        assert!(settings.disabled_agents.contains(Runtime::Codex.key()));
+        assert!(!settings.enabled_agents.contains(Runtime::Codex.key()));
         assert!(settings.default_runtime.is_empty());
         assert!(update_agent_enabled_preferences(
             &mut settings,
-            "codex",
+            Runtime::Codex,
             true
         ));
-        assert!(!settings.disabled_agents.contains("codex"));
-        assert!(settings.enabled_agents.contains("codex"));
-        assert!(update_default_runtime(&mut settings, "codex"));
+        assert!(!settings.disabled_agents.contains(Runtime::Codex.key()));
+        assert!(settings.enabled_agents.contains(Runtime::Codex.key()));
+        assert!(update_default_runtime(&mut settings, Some(Runtime::Codex)));
         assert_eq!(settings.default_runtime, "codex");
-        assert!(!update_default_runtime(&mut settings, "codex"));
+        assert!(!update_default_runtime(&mut settings, Some(Runtime::Codex)));
     }
 
     #[test]
     fn unavailable_default_waits_for_discovery_then_clears() {
         let catalog = vec![RuntimeCatalogEntry {
-            name: "codex".into(),
+            name: Runtime::Codex,
             display_name: "Codex".into(),
             command: "codex".into(),
             native_fork: true,

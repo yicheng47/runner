@@ -18,7 +18,7 @@ pub struct StartDirectSessionArgs {
     /// while the runner's persona (system prompt, working dir, env)
     /// carries over.
     #[serde(default)]
-    pub runtime: Option<String>,
+    pub runtime: Option<crate::model::Runtime>,
     /// Optional model for the overridden runtime. Only meaningful with
     /// `runtime`; omit for the engine's own default.
     #[serde(default)]
@@ -55,7 +55,7 @@ impl RunnerMcpHandler {
         let output = session::session_start_direct_impl(
             &app_state,
             args.runner_id,
-            args.runtime,
+            args.runtime.map(|runtime| runtime.to_string()),
             args.model,
             args.effort,
             args.project_id,

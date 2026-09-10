@@ -3,6 +3,7 @@
 //! split resizing.
 use super::*;
 use crate::*;
+use runner_backend::model::Runtime;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum PaneRenameChange {
@@ -23,7 +24,9 @@ fn pane_rename_change(original: &str, value: &str) -> PaneRenameChange {
 
 fn fork_confirmation(entry: Option<&DirectSessionEntry>) -> Option<ForkConfirm> {
     entry
-        .filter(|entry| entry.agent_runtime != "shell" && entry.forkable)
+        .filter(|entry| {
+            Runtime::parse(&entry.agent_runtime) != Some(Runtime::Shell) && entry.forkable
+        })
         .map(|entry| ForkConfirm {
             session_id: entry.session_id.clone(),
             pending: false,
@@ -683,9 +686,9 @@ impl NativeRoot {
         };
         let placeholder = match &target {
             ChatRenameTarget::Session { session_id, .. }
-                if self
-                    .session_entry(session_id, cx)
-                    .is_some_and(|entry| entry.agent_runtime == "shell") =>
+                if self.session_entry(session_id, cx).is_some_and(|entry| {
+                    Runtime::parse(&entry.agent_runtime) == Some(Runtime::Shell)
+                }) =>
             {
                 "Terminal name"
             }
@@ -1109,8 +1112,9 @@ impl NativeRoot {
             layout.root.leaves().len() == 1
                 && layout.session_ids().len() == 1
                 && layout.session_ids().first().is_some_and(|session_id| {
-                    self.session_entry(session_id, cx)
-                        .is_some_and(|entry| entry.agent_runtime == "shell")
+                    self.session_entry(session_id, cx).is_some_and(|entry| {
+                        Runtime::parse(&entry.agent_runtime) == Some(Runtime::Shell)
+                    })
                 })
         })
     }

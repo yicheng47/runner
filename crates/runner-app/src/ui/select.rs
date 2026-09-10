@@ -1,3 +1,5 @@
+#[cfg(test)]
+use runner_backend::model::Runtime;
 use std::rc::Rc;
 
 use gpui::prelude::*;
@@ -653,7 +655,7 @@ pub fn runtime_select_options(catalog: &[RuntimeCatalogEntry]) -> Vec<SelectOpti
         .iter()
         .filter(|runtime| runtime.available)
         .map(|runtime| {
-            SelectOption::new(runtime.name.clone(), runtime.display_name.clone())
+            SelectOption::new(runtime.name.key(), runtime.display_name.clone())
                 .description(runtime.description.clone())
         })
         .collect()
@@ -821,7 +823,7 @@ mod tests {
     #[test]
     fn runtime_select_hides_unavailable_catalog_entries() {
         let mut catalog = vec![RuntimeCatalogEntry {
-            name: "codex".into(),
+            name: Runtime::Codex,
             display_name: "Codex".into(),
             command: "codex".into(),
             native_fork: true,

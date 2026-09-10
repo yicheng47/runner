@@ -1517,7 +1517,7 @@ mod tests {
             runner_backend::ops::runner::CreateRunnerInput {
                 handle: "probe".into(),
                 display_name: "Probe".into(),
-                runtime: "shell".into(),
+                runtime: runner_backend::model::Runtime::Shell,
                 command: "probe".into(),
                 args: Vec::new(),
                 working_dir: None,

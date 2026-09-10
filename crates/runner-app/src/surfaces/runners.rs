@@ -1,3 +1,4 @@
+use runner_backend::model::Runtime;
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::Duration;
@@ -187,9 +188,9 @@ impl NativeRoot {
                 let next_runtime = form
                     .runtimes
                     .iter()
-                    .find(|runtime| runtime.name == form.runtime)
+                    .find(|runtime| runtime.name.key() == form.runtime)
                     .or_else(|| form.runtimes.first())
-                    .map(|runtime| runtime.name.clone())
+                    .map(|runtime| runtime.name.to_string())
                     .unwrap_or_default();
                 if next_runtime != form.runtime {
                     form.runtime.clone_from(&next_runtime);
@@ -286,7 +287,7 @@ impl NativeRoot {
             crate::surfaces::start_chat::load_selectable_runtimes(self.core(cx), self.settings(cx));
         let runtime = runtimes
             .first()
-            .map(|runtime| runtime.name.clone())
+            .map(|runtime| runtime.name.to_string())
             .unwrap_or_default();
         let command = runtime_entry(&runtimes, &runtime)
             .map(|runtime| runtime.command.clone())
@@ -491,8 +492,11 @@ impl NativeRoot {
         let visible_args = if slot.is_some() {
             String::new()
         } else {
-            runner_backend::router::runtime::strip_permission_flags(&runner.runtime, &runner.args)
-                .join(" ")
+            runner_backend::router::runtime::strip_permission_flags(
+                Runtime::parse(&runner.runtime),
+                &runner.args,
+            )
+            .join(" ")
         };
         let args = cx.new(|input_cx| {
             TextField::new(input_cx.focus_handle(), visible_args, "--mcp-debug", true)
@@ -585,7 +589,10 @@ impl NativeRoot {
         let permission_mode = if slot.is_some() {
             PermissionMode::Default
         } else {
-            runner_backend::router::runtime::infer_permission_mode(&runner.runtime, &runner.args)
+            runner_backend::router::runtime::infer_permission_mode(
+                Runtime::parse(&runner.runtime),
+                &runner.args,
+            )
         };
         let permission_root = root.clone();
         let permission_select = cx.new(|select_cx| {
@@ -691,6 +698,9 @@ impl NativeRoot {
     }
 
     fn select_create_runner_runtime(&mut self, runtime: String, cx: &mut Context<Self>) {
+        if Runtime::parse(&runtime).is_none() {
+            return;
+        }
         let Some(form) = self.runner_surfaces.create.as_mut() else {
             return;
         };
@@ -777,12 +787,15 @@ impl NativeRoot {
         if !create_runner_can_submit(form) {
             return;
         }
+        let Some(runtime) = Runtime::parse(&form.runtime) else {
+            return;
+        };
         form.submitting = true;
         form.error = None;
         let input = CreateRunnerInput {
             handle: form.handle.read(cx).text().to_owned(),
             display_name: form.display_name.read(cx).text().trim().to_owned(),
-            runtime: form.runtime.clone(),
+            runtime,
             command: form.command.read(cx).text().trim().to_owned(),
             args: split_args(form.args.read(cx).text()),
             working_dir: trimmed_option(form.working_dir.read(cx).text()),
@@ -1034,6 +1047,9 @@ impl NativeRoot {
     }
 
     fn select_runner_edit_runtime(&mut self, value: String, cx: &mut Context<Self>) {
+        if !value.is_empty() && Runtime::parse(&value).is_none() {
+            return;
+        }
         let Some(form) = self.runner_surfaces.edit.as_mut() else {
             return;
         };
@@ -1217,7 +1233,9 @@ impl NativeRoot {
         let edits_slot = form.slot.is_some();
         let update = UpdateRunnerInput {
             display_name: Some(form.display_name.read(cx).text().trim().to_owned()),
-            runtime: (!edits_slot).then(|| form.runtime.clone()),
+            runtime: (!edits_slot)
+                .then(|| Runtime::parse(&form.runtime))
+                .flatten(),
             command: (!edits_slot).then(|| form.command.read(cx).text().trim().to_owned()),
             args: (!edits_slot).then(|| split_args(form.args.read(cx).text())),
             working_dir: Some(trimmed_option(form.working_dir.read(cx).text())),
@@ -1233,10 +1251,11 @@ impl NativeRoot {
                 slot.slot.id.clone(),
                 runner_backend::ops::slot::UpdateSlotInput {
                     slot_handle: None,
-                    runtime_override: Some(form.runtime_pinned.then(|| form.runtime.clone())),
+                    runtime_override: None,
                     model_override: Some(trimmed_option(form.model.read(cx).text())),
                     effort_override: Some(trimmed_option(&form.effort)),
                 },
+                form.runtime_pinned.then(|| form.runtime.clone()),
                 slot.slot.crew_id.clone(),
             )
         });
@@ -1245,13 +1264,20 @@ impl NativeRoot {
         let task = cx.background_spawn(async move {
             runner_backend::ops::runner::runner_update(&core, &runner_id, update)
                 .map_err(|error| error.to_string())?;
-            let crew_id = if let Some((slot_id, update, crew_id)) = slot_update {
-                runner_backend::ops::slot::slot_update(&core, &slot_id, update)
-                    .map_err(|error| error.to_string())?;
-                Some(crew_id)
-            } else {
-                None
-            };
+            let crew_id =
+                if let Some((slot_id, mut update, runtime_override, crew_id)) = slot_update {
+                    update.runtime_override = Some(
+                        runner_backend::ops::slot::validate_runtime_override(
+                            runtime_override.as_deref(),
+                        )
+                        .map_err(|error| error.to_string())?,
+                    );
+                    runner_backend::ops::slot::slot_update(&core, &slot_id, update)
+                        .map_err(|error| error.to_string())?;
+                    Some(crew_id)
+                } else {
+                    None
+                };
             Ok::<_, String>(crew_id)
         });
         cx.spawn_in(window, async move |weak, cx| {
@@ -2691,7 +2717,7 @@ fn resolve_runner_edit(
     } else {
         runner_backend::ops::runtime::runtime_list()
             .into_iter()
-            .find(|runtime| runtime.name == layers.runtime)
+            .find(|runtime| runtime.name.key() == layers.runtime)
             .map(|runtime| runtime.command)
             .unwrap_or_else(|| runner.command.clone())
     };
@@ -2705,11 +2731,14 @@ fn resolve_runner_edit(
 }
 
 fn ensure_runtime_present(core: &AppCore, runtimes: &mut Vec<RuntimeCatalogEntry>, name: &str) {
-    if runtimes.iter().any(|runtime| runtime.name == name) {
+    if runtimes.iter().any(|runtime| runtime.name.key() == name) {
         return;
     }
     if let Ok(catalog) = runner_backend::ops::runtime::runtime_catalog(core) {
-        if let Some(runtime) = catalog.into_iter().find(|runtime| runtime.name == name) {
+        if let Some(runtime) = catalog
+            .into_iter()
+            .find(|runtime| runtime.name.key() == name)
+        {
             runtimes.push(runtime);
         }
     }
@@ -2719,7 +2748,7 @@ fn runtime_entry<'a>(
     runtimes: &'a [RuntimeCatalogEntry],
     name: &str,
 ) -> Option<&'a RuntimeCatalogEntry> {
-    runtimes.iter().find(|runtime| runtime.name == name)
+    runtimes.iter().find(|runtime| runtime.name.key() == name)
 }
 
 fn runtime_models<'a>(
@@ -2779,11 +2808,11 @@ fn runner_edit_runtime_options(
             .iter()
             .filter(|runtime| {
                 runtime.available
-                    || runtime.name == runner.runtime
-                    || runtime.name == current_runtime
+                    || runtime.name.key() == runner.runtime
+                    || runtime.name.key() == current_runtime
             })
             .map(|runtime| {
-                SelectOption::new(runtime.name.clone(), runtime.display_name.clone())
+                SelectOption::new(runtime.name.to_string(), runtime.display_name.clone())
                     .description(runtime.description.clone())
             }),
     );
@@ -2825,19 +2854,19 @@ fn effort_options(
 }
 
 fn permission_modes(runtime: &str) -> &'static [PermissionMode] {
-    match runtime {
-        "claude-code" => &[
+    match Runtime::parse(runtime) {
+        Some(Runtime::ClaudeCode) => &[
             PermissionMode::Default,
             PermissionMode::AcceptEdits,
             PermissionMode::Auto,
             PermissionMode::Bypass,
         ],
-        "codex" | "trae" => &[
+        Some(Runtime::Codex) | Some(Runtime::Trae) => &[
             PermissionMode::Default,
             PermissionMode::Auto,
             PermissionMode::Bypass,
         ],
-        _ => &[],
+        Some(Runtime::Shell) | None => &[],
     }
 }
 
@@ -2881,26 +2910,26 @@ fn permission_mode_label(mode: PermissionMode) -> &'static str {
 }
 
 fn permission_mode_description(runtime: &str, mode: PermissionMode) -> &'static str {
-    match (runtime, mode) {
-        ("claude-code", PermissionMode::Default) => {
+    match (Runtime::parse(runtime), mode) {
+        (Some(Runtime::ClaudeCode), PermissionMode::Default) => {
             "Ask for every tool, shell command, and write."
         }
-        ("claude-code", PermissionMode::AcceptEdits) => "Auto-accept file edits and common filesystem commands; still ask for shell, network, and writes outside the workspace. Available on every plan.",
-        ("claude-code", PermissionMode::Auto) => "Real auto with a server-side classifier. Requires Max / Team / Enterprise / API plan + a supported model (Opus 4.7 on Max). Not available on Pro.",
-        ("claude-code", PermissionMode::Bypass) => "Skip every check. Triggers a one-time consent dialog the first time per user account.",
-        ("codex", PermissionMode::Default) => {
+        (Some(Runtime::ClaudeCode), PermissionMode::AcceptEdits) => "Auto-accept file edits and common filesystem commands; still ask for shell, network, and writes outside the workspace. Available on every plan.",
+        (Some(Runtime::ClaudeCode), PermissionMode::Auto) => "Real auto with a server-side classifier. Requires Max / Team / Enterprise / API plan + a supported model (Opus 4.7 on Max). Not available on Pro.",
+        (Some(Runtime::ClaudeCode), PermissionMode::Bypass) => "Skip every check. Triggers a one-time consent dialog the first time per user account.",
+        (Some(Runtime::Codex), PermissionMode::Default) => {
             "Codex's built-in approval cadence (untrusted commands)."
         }
-        ("codex", PermissionMode::Auto) => "Auto-run in the workspace and ask only when the model decides approval is needed (`--ask-for-approval on-request`).",
-        ("codex", PermissionMode::Bypass) => "Never ask while keeping Codex's workspace-write sandbox (`--ask-for-approval never`).",
-        ("trae", PermissionMode::Default) => "TRAE CLI's built-in approval cadence.",
-        ("trae", PermissionMode::Auto) => {
+        (Some(Runtime::Codex), PermissionMode::Auto) => "Auto-run in the workspace and ask only when the model decides approval is needed (`--ask-for-approval on-request`).",
+        (Some(Runtime::Codex), PermissionMode::Bypass) => "Never ask while keeping Codex's workspace-write sandbox (`--ask-for-approval never`).",
+        (Some(Runtime::Trae), PermissionMode::Default) => "TRAE CLI's built-in approval cadence.",
+        (Some(Runtime::Trae), PermissionMode::Auto) => {
             "Use TRAE CLI's native auto-reviewer (`--permission-mode auto`)."
         }
-        ("trae", PermissionMode::Bypass) => {
+        (Some(Runtime::Trae), PermissionMode::Bypass) => {
             "Bypass TRAE CLI permission prompts (`--permission-mode bypass_permissions`)."
         }
-        _ => "",
+        (Some(Runtime::Codex | Runtime::Trae), PermissionMode::AcceptEdits) | (Some(Runtime::Shell) | None, _) => "",
     }
 }
 
@@ -3180,12 +3209,28 @@ fn detail_metadata_row(
 mod tests {
     use super::*;
 
+    #[test]
+    fn legacy_slot_pins_reach_validation_as_raw_names() {
+        for name in ["qoder", "Runtime-Needle"] {
+            let layers = resolve_slot_runtime_layers("codex", Some(name), None, None);
+            assert!(layers.runtime_pinned);
+            assert_eq!(layers.runtime, name);
+            let raw_override = layers.runtime_pinned.then_some(layers.runtime.as_str());
+            let error =
+                runner_backend::ops::slot::validate_runtime_override(raw_override).unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                format!("unknown runtime '{name}' — valid runtimes: codex, claude-code, trae")
+            );
+        }
+    }
+
     fn runtime_with_defaults(
         default_model: Option<&str>,
         default_effort: Option<&str>,
     ) -> RuntimeCatalogEntry {
         RuntimeCatalogEntry {
-            name: "codex".into(),
+            name: Runtime::Codex,
             display_name: "Codex".into(),
             command: "codex".into(),
             native_fork: true,

@@ -1,3 +1,4 @@
+use runner_backend::model::Runtime;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -281,11 +282,11 @@ impl AppSettings {
         keymap::normalize_overrides(&mut self.keymap_overrides);
     }
 
-    pub fn is_agent_enabled(&self, name: &str, default_enabled: bool) -> bool {
-        if self.disabled_agents.contains(name) {
+    pub fn is_agent_enabled(&self, name: Runtime, default_enabled: bool) -> bool {
+        if self.disabled_agents.contains(name.key()) {
             return false;
         }
-        default_enabled || self.enabled_agents.contains(name)
+        default_enabled || self.enabled_agents.contains(name.key())
     }
 }
 
@@ -664,12 +665,12 @@ mod tests {
     #[test]
     fn agent_enablement_preserves_shipped_defaults_and_explicit_overrides() {
         let mut settings = AppSettings::default();
-        assert!(settings.is_agent_enabled("codex", true));
-        assert!(!settings.is_agent_enabled("trae", false));
+        assert!(settings.is_agent_enabled(Runtime::Codex, true));
+        assert!(!settings.is_agent_enabled(Runtime::Trae, false));
         settings.enabled_agents.insert("trae".into());
-        assert!(settings.is_agent_enabled("trae", false));
+        assert!(settings.is_agent_enabled(Runtime::Trae, false));
         settings.disabled_agents.insert("codex".into());
-        assert!(!settings.is_agent_enabled("codex", true));
+        assert!(!settings.is_agent_enabled(Runtime::Codex, true));
     }
 
     #[test]
