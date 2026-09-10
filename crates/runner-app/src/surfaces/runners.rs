@@ -787,12 +787,15 @@ impl NativeRoot {
         if !create_runner_can_submit(form) {
             return;
         }
+        let Some(runtime) = Runtime::parse(&form.runtime) else {
+            return;
+        };
         form.submitting = true;
         form.error = None;
         let input = CreateRunnerInput {
             handle: form.handle.read(cx).text().to_owned(),
             display_name: form.display_name.read(cx).text().trim().to_owned(),
-            runtime: Runtime::parse(&form.runtime).expect("submittable runtime"),
+            runtime,
             command: form.command.read(cx).text().trim().to_owned(),
             args: split_args(form.args.read(cx).text()),
             working_dir: trimmed_option(form.working_dir.read(cx).text()),
@@ -1248,14 +1251,11 @@ impl NativeRoot {
                 slot.slot.id.clone(),
                 runner_backend::ops::slot::UpdateSlotInput {
                     slot_handle: None,
-                    runtime_override: if form.runtime_pinned {
-                        Runtime::parse(&form.runtime).map(Some)
-                    } else {
-                        Some(None)
-                    },
+                    runtime_override: None,
                     model_override: Some(trimmed_option(form.model.read(cx).text())),
                     effort_override: Some(trimmed_option(&form.effort)),
                 },
+                form.runtime_pinned.then(|| form.runtime.clone()),
                 slot.slot.crew_id.clone(),
             )
         });
@@ -1264,13 +1264,20 @@ impl NativeRoot {
         let task = cx.background_spawn(async move {
             runner_backend::ops::runner::runner_update(&core, &runner_id, update)
                 .map_err(|error| error.to_string())?;
-            let crew_id = if let Some((slot_id, update, crew_id)) = slot_update {
-                runner_backend::ops::slot::slot_update(&core, &slot_id, update)
-                    .map_err(|error| error.to_string())?;
-                Some(crew_id)
-            } else {
-                None
-            };
+            let crew_id =
+                if let Some((slot_id, mut update, runtime_override, crew_id)) = slot_update {
+                    update.runtime_override = Some(
+                        runner_backend::ops::slot::validate_runtime_override(
+                            runtime_override.as_deref(),
+                        )
+                        .map_err(|error| error.to_string())?,
+                    );
+                    runner_backend::ops::slot::slot_update(&core, &slot_id, update)
+                        .map_err(|error| error.to_string())?;
+                    Some(crew_id)
+                } else {
+                    None
+                };
             Ok::<_, String>(crew_id)
         });
         cx.spawn_in(window, async move |weak, cx| {
@@ -3201,6 +3208,22 @@ fn detail_metadata_row(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_slot_pins_reach_validation_as_raw_names() {
+        for name in ["qoder", "Runtime-Needle"] {
+            let layers = resolve_slot_runtime_layers("codex", Some(name), None, None);
+            assert!(layers.runtime_pinned);
+            assert_eq!(layers.runtime, name);
+            let raw_override = layers.runtime_pinned.then_some(layers.runtime.as_str());
+            let error =
+                runner_backend::ops::slot::validate_runtime_override(raw_override).unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                format!("unknown runtime '{name}' — valid runtimes: codex, claude-code, trae")
+            );
+        }
+    }
 
     fn runtime_with_defaults(
         default_model: Option<&str>,

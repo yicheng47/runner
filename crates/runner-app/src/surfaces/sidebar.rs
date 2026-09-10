@@ -4079,7 +4079,7 @@ fn default_session_label_parts(
             .file_name()
             .and_then(|name| name.to_str())
             .filter(|name| !name.is_empty())
-            .unwrap_or(Runtime::Shell.key())
+            .unwrap_or("shell")
             .to_owned();
     }
     handle

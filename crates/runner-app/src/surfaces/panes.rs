@@ -43,10 +43,7 @@ pub(crate) fn render_terminal_drawer_strip(
         .enumerate()
         .map(|(index, session_id)| {
             let active = active_id == Some(session_id.as_str());
-            let label = labels
-                .get(index)
-                .cloned()
-                .unwrap_or_else(|| Runtime::Shell.to_string());
+            let label = labels.get(index).cloned().unwrap_or_else(|| "shell".into());
             let activate = Rc::clone(&activate);
             let close = Rc::clone(&close);
             let activate_id = session_id.clone();
@@ -1601,7 +1598,7 @@ impl NativeRoot {
             .map(|session_id| {
                 self.session_entry(session_id, cx)
                     .map(default_session_label)
-                    .unwrap_or_else(|| Runtime::Shell.to_string())
+                    .unwrap_or_else(|| "shell".into())
             })
             .collect::<Vec<_>>();
         let activate_root = cx.entity();

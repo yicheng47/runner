@@ -54,7 +54,8 @@ pub struct UpdateSlotInput {
     pub slot_handle: Option<String>,
     /// Per-slot engine choice. Omit to preserve, pass `null` to clear
     /// (back to the runner's own runtime), pass a registry runtime
-    /// name to override. Validated against the runtime registry.
+    /// name to override. Only agent runtimes are accepted; shell is not
+    /// a valid slot override.
     #[serde(default, deserialize_with = "double_option")]
     pub runtime_override: Option<Option<Runtime>>,
     /// Per-slot model. Omit to preserve, pass `null` or blank to
@@ -84,14 +85,13 @@ where
 /// Normalize + validate a runtime-override value against the runtime
 /// registry. Blank (after trim) collapses to None — the "Runner
 /// default" sentinel.
-fn validate_runtime_override(value: Option<&str>) -> Result<Option<String>> {
+pub fn validate_runtime_override(value: Option<&str>) -> Result<Option<Runtime>> {
     let Some(name) = value.map(str::trim).filter(|s| !s.is_empty()) else {
         return Ok(None);
     };
-    if Runtime::parse(name)
-        .and_then(crate::router::runtime::runtime_definition)
-        .is_none()
-    {
+    let Some(runtime) = Runtime::parse(name)
+        .filter(|runtime| crate::router::runtime::runtime_definition(*runtime).is_some())
+    else {
         return Err(Error::msg(format!(
             "unknown runtime '{name}' — valid runtimes: {}",
             crate::router::runtime::runtime_definitions()
@@ -100,8 +100,8 @@ fn validate_runtime_override(value: Option<&str>) -> Result<Option<String>> {
                 .collect::<Vec<_>>()
                 .join(", ")
         )));
-    }
-    Ok(Some(name.to_string()))
+    };
+    Ok(Some(runtime))
 }
 
 fn normalize_override_value(value: Option<&str>) -> Option<String> {
@@ -228,7 +228,8 @@ pub fn create(
     if slot_handle.is_empty() {
         return Err(Error::msg("slot_handle must not be empty"));
     }
-    let runtime_override = validate_runtime_override(runtime_override)?;
+    let runtime_override =
+        validate_runtime_override(runtime_override)?.map(|runtime| runtime.to_string());
     let model_override = normalize_override_value(model_override);
 
     let id = new_id();
@@ -301,7 +302,8 @@ pub fn update(
     let runtime_override = input
         .runtime_override
         .map(|v| validate_runtime_override(v.map(Runtime::key)))
-        .transpose()?;
+        .transpose()?
+        .map(|runtime| runtime.map(|runtime| runtime.to_string()));
     let model_override = input
         .model_override
         .map(|value| normalize_override_value(value.as_deref()));
@@ -502,7 +504,8 @@ pub struct CreateSlotInput {
     pub runner_id: String,
     pub slot_handle: String,
     /// Optional per-slot engine choice. Omit (or null) for the
-    /// "Runner default" behavior; otherwise a runtime registry name.
+    /// "Runner default" behavior; otherwise an agent runtime registry name.
+    /// Shell is not a valid slot override.
     #[serde(default)]
     pub runtime_override: Option<Runtime>,
     /// Optional model pinned to the selected runtime. Blank or omitted
@@ -1217,6 +1220,25 @@ mod tests {
             b_after.slot.runtime_override, None,
             "runtime change must roll back with the failed handle update",
         );
+    }
+
+    #[test]
+    fn raw_runtime_override_validation_preserves_inherit_and_rejects_unknown_names() {
+        for value in [None, Some(""), Some("  ")] {
+            assert_eq!(validate_runtime_override(value).unwrap(), None);
+        }
+        assert_eq!(
+            validate_runtime_override(Some(" codex ")).unwrap(),
+            Some(Runtime::Codex)
+        );
+        for name in ["qoder", "Runtime-Needle", "shell"] {
+            assert_eq!(
+                validate_runtime_override(Some(name))
+                    .unwrap_err()
+                    .to_string(),
+                format!("unknown runtime '{name}' — valid runtimes: codex, claude-code, trae")
+            );
+        }
     }
 
     #[test]
