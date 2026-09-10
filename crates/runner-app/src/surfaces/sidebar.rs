@@ -24,8 +24,6 @@ use runner_app::ui::{
 use runner_backend::ops::mission::{MissionActivityState, MissionSummary};
 use runner_backend::repo::node::{NodeRow, NodeType};
 
-const SIDEBAR_ROW_FONT_SIZE: f32 = 13.;
-
 // Shared with the layout probe so the production flex constraints stay under test.
 fn sidebar_scroll_frame() -> gpui::Div {
     div().relative().min_h(px(0.)).flex_1().flex().flex_col()
@@ -264,7 +262,7 @@ impl Render for SidebarNodeDrag {
             .border_color(theme::sidebar_selected_border())
             .bg(theme::sidebar_selected())
             .shadow_lg()
-            .text_size(rems(SIDEBAR_ROW_FONT_SIZE / 16.))
+            .text_size(theme::text_body())
             .text_color(theme::text())
             .child(self.label.clone())
     }
@@ -1100,7 +1098,7 @@ impl Sidebar {
     ) {
         let input = cx.new(|input_cx| {
             TextField::new(input_cx.focus_handle(), value, placeholder, false)
-                .text_size(SIDEBAR_ROW_FONT_SIZE)
+                .text_size(theme::text_body())
         });
         input.update(cx, |field, input_cx| {
             field.set_bare(true, input_cx);
@@ -1605,10 +1603,11 @@ impl NativeRoot {
         let name = project_name_from_path(&cwd);
         let cwd_input = cx.new(|input_cx| {
             working_dir_text_field(input_cx.focus_handle(), cwd, "/Users/you/projects/runner")
-                .text_size(12.)
+                .text_size(theme::text_ui())
         });
         let name_input = cx.new(|input_cx| {
-            TextField::new(input_cx.focus_handle(), name, "runner", false).text_size(13.)
+            TextField::new(input_cx.focus_handle(), name, "runner", false)
+                .text_size(theme::text_body())
         });
         let watched_name = name_input.clone();
         self._project_cwd_subscription =
@@ -2248,7 +2247,7 @@ impl Sidebar {
                                 .child(
                                     div()
                                         .min_w(px(0.))
-                                        .text_size(rems(10. / 16.))
+                                        .text_size(theme::text_caption())
                                         .font_weight(FontWeight::SEMIBOLD)
                                         .child("RECENTS"),
                                 )
@@ -2462,7 +2461,7 @@ impl Sidebar {
                     .hover(|header| header.text_color(theme::muted()))
                     .child(
                         div()
-                            .text_size(rems(10. / 16.))
+                            .text_size(theme::text_caption())
                             .font_weight(FontWeight::SEMIBOLD)
                             .child(label),
                     )
@@ -3337,13 +3336,13 @@ impl NativeRoot {
                     .gap(rems(2. / 16.))
                     .child(
                         div()
-                            .text_size(rems(1.))
+                            .text_size(theme::text_heading())
                             .font_weight(FontWeight::SEMIBOLD)
                             .child("Start project"),
                     )
                     .child(
                         div()
-                            .text_xs()
+                            .text_size(theme::text_ui())
                             .font_weight(FontWeight::NORMAL)
                             .text_color(theme::muted())
                             .child("Add a named working directory to the sidebar."),
@@ -3371,7 +3370,7 @@ impl NativeRoot {
                     .bg(theme::with_alpha(theme::danger(), 0.1))
                     .px_3()
                     .py_2()
-                    .text_xs()
+                    .text_size(theme::text_ui())
                     .text_color(theme::danger())
                     .child(error.clone())
             }))
@@ -3651,7 +3650,7 @@ fn section_title(label: &'static str) -> AnyElement {
     div()
         .px_5()
         .pb_2()
-        .text_size(rems(10. / 16.))
+        .text_size(theme::text_caption())
         .font_weight(FontWeight::SEMIBOLD)
         .text_color(theme::faint())
         .child(label)
@@ -3689,7 +3688,7 @@ fn workspace_new_chat_row(
             div()
                 .min_w(px(0.))
                 .flex_1()
-                .text_size(rems(14. / 16.))
+                .text_size(theme::text_title())
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(theme::muted())
                 .child("New chat"),
@@ -3697,7 +3696,7 @@ fn workspace_new_chat_row(
         .children(shortcut.map(|shortcut| {
             div()
                 .flex_none()
-                .text_size(rems(11. / 16.))
+                .text_size(theme::text_meta())
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(theme::faint())
                 .child(shortcut)
@@ -3783,7 +3782,7 @@ fn workspace_row(
         })
         .when(active, |row| row.bg(theme::sidebar_selected()).shadow_sm())
         .cursor_pointer()
-        .text_sm()
+        .text_size(theme::text_title())
         .font_weight(if active {
             FontWeight::SEMIBOLD
         } else {
@@ -3830,7 +3829,7 @@ fn empty_sidebar_label(label: &'static str) -> AnyElement {
     div()
         .px(rems(10. / 16.))
         .py_1()
-        .text_size(rems(SIDEBAR_ROW_FONT_SIZE / 16.))
+        .text_size(theme::text_body())
         .text_color(theme::faint())
         .child(label)
         .into_any_element()
@@ -3872,7 +3871,7 @@ fn sidebar_row_shell(
             )
         })
         .cursor_pointer()
-        .text_size(rems(SIDEBAR_ROW_FONT_SIZE / 16.))
+        .text_size(theme::text_body())
         .text_color(if selected {
             theme::text()
         } else {
@@ -4009,7 +4008,7 @@ fn tab_shortcut_pill(index: u8, selected: bool) -> AnyElement {
         .bg(theme::raised())
         .font_family(theme::UI_MONOSPACE_FONT)
         .font_weight(FontWeight::MEDIUM)
-        .text_size(rems(10. / 16.))
+        .text_size(theme::text_caption())
         .text_color(if selected {
             theme::text()
         } else {

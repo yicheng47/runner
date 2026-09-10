@@ -703,12 +703,13 @@ impl NativeRoot {
             &self.settings(cx).default_working_dir,
         );
         let title_input = cx.new(|input_cx| {
-            TextField::new(input_cx.focus_handle(), title, "e.g. quick-debug", false).text_size(13.)
+            TextField::new(input_cx.focus_handle(), title, "e.g. quick-debug", false)
+                .text_size(theme::text_body())
         });
         let (project_id, project_cwd) = project_start_scope(project.as_ref());
         let cwd_input = cx.new(|input_cx| {
             working_dir_text_field(input_cx.focus_handle(), project_cwd, cwd_placeholder)
-                .text_size(12.)
+                .text_size(theme::text_ui())
         });
         let model_input = cx.new(|input_cx| {
             TextField::new(input_cx.focus_handle(), "", "default", false).placeholder_as_value(true)
@@ -1312,7 +1313,7 @@ impl NativeRoot {
                         .when(modal.runners.is_empty(), |field| {
                             field.child(
                                 div()
-                                    .text_size(rems(11. / 16.))
+                                    .text_size(theme::text_meta())
                                     .text_color(theme::warning())
                                     .child("No runners yet. Create one from the runner page first."),
                             )
@@ -1358,7 +1359,7 @@ impl NativeRoot {
                                 div()
                                     .flex()
                                     .items_center()
-                                    .text_size(rems(11. / 16.))
+                                    .text_size(theme::text_meta())
                                     .text_color(theme::warning())
                                     .when(modal.agents_checking, |message| {
                                         message.child("Detecting agents…")
@@ -1388,7 +1389,7 @@ impl NativeRoot {
                         })
                         .children(modal.agents_error.clone().map(|error| {
                             div()
-                                .text_size(rems(11. / 16.))
+                                .text_size(theme::text_meta())
                                 .text_color(theme::danger())
                                 .child(error)
                         })),
@@ -1422,7 +1423,7 @@ impl NativeRoot {
                     .bg(theme::with_alpha(theme::danger(), 0.1))
                     .px_3()
                     .py_2()
-                    .text_size(rems(12. / 16.))
+                    .text_size(theme::text_ui())
                     .text_color(theme::danger())
                     .child(SharedString::from(error.clone()))
             }))
@@ -1496,14 +1497,14 @@ impl NativeRoot {
                     .gap(rems(2. / 16.))
                     .child(
                         div()
-                            .text_size(rems(1.))
+                            .text_size(theme::text_heading())
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(theme::text())
                             .child("Start a chat"),
                     )
                     .child(
                         div()
-                            .text_size(rems(12. / 16.))
+                            .text_size(theme::text_ui())
                             .font_weight(FontWeight::NORMAL)
                             .text_color(theme::muted())
                             .child("Spawns a direct PTY in the selected directory."),
@@ -1596,7 +1597,7 @@ impl NativeRoot {
             .justify_center()
             .h(rems(30. / 16.))
             .rounded_md()
-            .text_xs()
+            .text_size(theme::text_ui())
             .font_weight(FontWeight::SEMIBOLD)
             .on_mouse_down(MouseButton::Left, move |_, window, _| {
                 click_focus.focus(window);

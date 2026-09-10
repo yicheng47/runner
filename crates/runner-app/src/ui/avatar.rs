@@ -157,7 +157,7 @@ pub fn lead_badge() -> AnyElement {
         .px(rems(6. / 16.))
         .py(rems(1. / 16.))
         .font_weight(FontWeight::BOLD)
-        .text_size(rems(9. / 16.))
+        .text_size(theme::text_micro())
         .text_color(theme::warning())
         .child("LEAD")
         .into_any_element()

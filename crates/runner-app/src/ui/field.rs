@@ -7,8 +7,8 @@ use gpui::{
     canvas, div, point, px, rems, svg, AnyElement, App, Bounds, BoxShadow, ClipboardItem, Context,
     CursorStyle, ElementId, ElementInputHandler, Entity, EntityInputHandler, FocusHandle,
     Focusable, FontWeight, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, Pixels, Point, Render, RenderOnce, ScrollHandle, SharedString, UTF16Selection,
-    Window, WrappedLine,
+    MouseUpEvent, Pixels, Point, Rems, Render, RenderOnce, ScrollHandle, SharedString,
+    UTF16Selection, Window, WrappedLine,
 };
 use unicode_segmentation::UnicodeSegmentation as _;
 
@@ -473,7 +473,7 @@ pub struct TextField {
     disabled: bool,
     validation: FieldValidation,
     bare: bool,
-    text_size: f32,
+    text_size: Rems,
     right_padding: f32,
     hover_border: bool,
     disabled_cursor_not_allowed: bool,
@@ -506,7 +506,7 @@ impl TextField {
             disabled: false,
             validation: FieldValidation::Valid,
             bare: false,
-            text_size: 14.,
+            text_size: theme::text_title(),
             right_padding: 10.,
             hover_border: false,
             disabled_cursor_not_allowed: false,
@@ -594,7 +594,7 @@ impl TextField {
         }
     }
 
-    pub fn text_size(mut self, text_size: f32) -> Self {
+    pub fn text_size(mut self, text_size: Rems) -> Self {
         self.text_size = text_size;
         self
     }
@@ -1092,7 +1092,7 @@ impl Render for TextField {
             .on_mouse_move(cx.listener(Self::on_mouse_move))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
-            .text_size(rems(self.text_size / 16.))
+            .text_size(self.text_size)
             .when(multiline, |input| input.line_height(rems(20. / 16.)))
             .text_color(theme::text())
             .when(self.monospace, |input| {
@@ -1217,7 +1217,7 @@ impl RenderOnce for Label {
             } else {
                 FontWeight::MEDIUM
             })
-            .text_size(rems(12. / 16.))
+            .text_size(theme::text_ui())
             .text_color(if self.emphasized {
                 theme::text()
             } else {
@@ -1288,7 +1288,7 @@ impl FieldError {
 impl RenderOnce for FieldError {
     fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
         div()
-            .text_size(rems(12. / 16.))
+            .text_size(theme::text_ui())
             .text_color(theme::danger())
             .child(self.message)
     }
@@ -1367,7 +1367,7 @@ impl RenderOnce for Field {
             .child(self.child)
             .children(self.subtitle.map(|subtitle| {
                 div()
-                    .text_size(rems(11. / 16.))
+                    .text_size(theme::text_meta())
                     .text_color(theme::faint())
                     .child(subtitle)
             }))

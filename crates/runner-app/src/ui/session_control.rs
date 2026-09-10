@@ -227,7 +227,7 @@ impl RenderOnce for SessionControl {
                     .bg(background)
             })
             .font_weight(FontWeight::SEMIBOLD)
-            .text_size(rems(11. / 16.))
+            .text_size(theme::text_meta())
             .text_color(if header {
                 match self.kind {
                     SessionControlKind::Resume => theme::with_alpha(theme::accent(), 0.8),

@@ -481,14 +481,14 @@ impl Render for PopoverMenu {
                             .flex_col()
                             .child(
                                 div()
-                                    .text_size(rems(13. / 16.))
+                                    .text_size(theme::text_body())
                                     .font_weight(FontWeight::NORMAL)
                                     .text_color(foreground)
                                     .child(item.label),
                             )
                             .children(item.description.map(|description| {
                                 div()
-                                    .text_size(rems(11. / 16.))
+                                    .text_size(theme::text_meta())
                                     .text_color(theme::faint())
                                     .child(description)
                             })),
@@ -496,7 +496,7 @@ impl Render for PopoverMenu {
                     .children(item.shortcut.map(|shortcut| {
                         div()
                             .flex_none()
-                            .text_size(rems(11. / 16.))
+                            .text_size(theme::text_meta())
                             .text_color(theme::faint())
                             .child(shortcut)
                     }))
@@ -705,14 +705,14 @@ impl Render for ContextMenu {
                         .flex_col()
                         .child(
                             div()
-                                .text_size(rems(13. / 16.))
+                                .text_size(theme::text_body())
                                 .font_weight(FontWeight::NORMAL)
                                 .text_color(foreground)
                                 .child(item.label),
                         )
                         .children(item.description.map(|description| {
                             div()
-                                .text_size(rems(11. / 16.))
+                                .text_size(theme::text_meta())
                                 .text_color(theme::faint())
                                 .child(description)
                         })),
@@ -720,7 +720,7 @@ impl Render for ContextMenu {
                 .children(item.shortcut.map(|shortcut| {
                     div()
                         .flex_none()
-                        .text_size(rems(11. / 16.))
+                        .text_size(theme::text_meta())
                         .text_color(theme::faint())
                         .child(shortcut)
                 }))

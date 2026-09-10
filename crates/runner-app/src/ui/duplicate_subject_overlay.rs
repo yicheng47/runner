@@ -110,7 +110,7 @@ impl RenderOnce for DuplicateSubjectOverlay {
                                     .debug_selector(|| "DUPLICATE_SUBJECT_TITLE".into())
                                     .whitespace_normal()
                                     .text_center()
-                                    .text_size(rems(15. / 16.))
+                                    .text_size(theme::text_lead())
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .child("Open in another window"),
                             )
@@ -121,7 +121,7 @@ impl RenderOnce for DuplicateSubjectOverlay {
                                     .debug_selector(|| "DUPLICATE_SUBJECT_SUBTITLE".into())
                                     .whitespace_normal()
                                     .text_center()
-                                    .text_size(rems(13. / 16.))
+                                    .text_size(theme::text_body())
                                     .line_height(rems(20. / 16.))
                                     .text_color(theme::muted())
                                     .child(format!("Another window is already driving this {noun}. Only one window can own the terminal at a time, so this view is read-only until you focus it here.")),
@@ -147,7 +147,7 @@ impl RenderOnce for DuplicateSubjectOverlay {
                                     .bg(theme::accent())
                                     .px(rems(14. / 16.))
                                     .py(rems(8. / 16.))
-                                    .text_size(rems(13. / 16.))
+                                    .text_size(theme::text_body())
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(theme::accent_ink())
                                     .opacity(if self.can_focus { 1. } else { 0.5 })
@@ -184,7 +184,7 @@ impl RenderOnce for DuplicateSubjectOverlay {
                                     .id(stay_id)
                                     .tab_index(0)
                                     .cursor_pointer()
-                                    .text_size(rems(13. / 16.))
+                                    .text_size(theme::text_body())
                                     .text_color(theme::muted())
                                     .hover(|button| {
                                         button.text_color(theme::text()).underline()

@@ -80,7 +80,7 @@ impl ArchivedPane {
     ) -> Self {
         let search = cx.new(|input_cx| {
             let mut input = TextField::new(input_cx.focus_handle(), "", "Search archived…", false)
-                .text_size(13.);
+                .text_size(theme::text_body());
             input.set_bare(true, input_cx);
             input
         });
@@ -343,7 +343,7 @@ impl ArchivedPane {
                     })
                     .px(rems(10. / 16.))
                     .py(rems(5. / 16.))
-                    .text_size(rems(12. / 16.))
+                    .text_size(theme::text_ui())
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(if active {
                         theme::text()
@@ -399,7 +399,7 @@ impl ArchivedPane {
                     .min_w_0()
                     .flex_1()
                     .truncate()
-                    .text_size(rems(13. / 16.))
+                    .text_size(theme::text_body())
                     .font_weight(FontWeight::MEDIUM)
                     .child(item.title),
             )
@@ -409,14 +409,14 @@ impl ArchivedPane {
                     .flex_none()
                     .truncate()
                     .font_family(theme::UI_MONOSPACE_FONT)
-                    .text_size(rems(11. / 16.))
+                    .text_size(theme::text_meta())
                     .text_color(theme::faint())
                     .child(cwd)
             }))
             .child(
                 div()
                     .flex_none()
-                    .text_size(rems(11. / 16.))
+                    .text_size(theme::text_meta())
                     .text_color(theme::faint())
                     .child(format_timestamp(item.archived_at, Local::now())),
             )
@@ -491,13 +491,13 @@ impl Render for ArchivedPane {
                     .child(
                         div()
                             .mt_1()
-                            .text_size(rems(13. / 16.))
+                            .text_size(theme::text_body())
                             .font_weight(FontWeight::MEDIUM)
                             .child("Nothing archived yet"),
                     )
                     .child(
                         div()
-                            .text_size(rems(12. / 16.))
+                            .text_size(theme::text_ui())
                             .text_color(theme::muted())
                             .child(
                                 "Archive a chat or mission from the sidebar and it will land here.",
@@ -511,7 +511,7 @@ impl Render for ArchivedPane {
                     .px_4()
                     .py_6()
                     .text_center()
-                    .text_size(rems(12. / 16.))
+                    .text_size(theme::text_ui())
                     .text_color(theme::faint())
                     .child("No archived items match.")
                     .into_any_element()])
@@ -586,7 +586,7 @@ impl Render for ArchivedPane {
                     .bg(theme::with_alpha(theme::danger(), 0.1))
                     .px_4()
                     .py_3()
-                    .text_size(rems(12. / 16.))
+                    .text_size(theme::text_ui())
                     .text_color(theme::danger())
                     .child(error)
             }))

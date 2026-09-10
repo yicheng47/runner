@@ -221,7 +221,7 @@ impl CommandPaletteState {
         let input = cx.new(move |input_cx| {
             let key_palette = palette.clone();
             let mut input = TextField::new(input_cx.focus_handle(), "", "Search…", false)
-                .text_size(14.)
+                .text_size(theme::text_title())
                 .key_interceptor(Rc::new(move |event, window, cx| {
                     key_palette.update(cx, |palette, palette_cx| {
                         palette.on_input_key_down(event, window, palette_cx)
@@ -464,7 +464,7 @@ impl Render for CommandPaletteState {
                                 div()
                                     .min_w(px(0.))
                                     .truncate()
-                                    .text_size(rems(13. / 16.))
+                                    .text_size(theme::text_body())
                                     .font_weight(FontWeight::MEDIUM)
                                     .text_color(theme::text())
                                     .child(item.label),
@@ -474,7 +474,7 @@ impl Render for CommandPaletteState {
                         div()
                             .flex_none()
                             .font_family(theme::SYSTEM_MONOSPACE_FONT)
-                            .text_size(rems(11. / 16.))
+                            .text_size(theme::text_meta())
                             .text_color(theme::faint())
                             .child(item.kind.label()),
                     )
@@ -486,7 +486,7 @@ impl Render for CommandPaletteState {
                 .px_3()
                 .py_6()
                 .text_center()
-                .text_size(rems(12. / 16.))
+                .text_size(theme::text_ui())
                 .text_color(theme::faint())
                 .child(if self.query.trim().is_empty() {
                     "No commands, missions, chats, runners, or crews yet."
@@ -510,7 +510,7 @@ impl Render for CommandPaletteState {
                         .px(rems(10. / 16.))
                         .py(rems(6. / 16.))
                         .font_family(theme::SYSTEM_MONOSPACE_FONT)
-                        .text_size(rems(10. / 16.))
+                        .text_size(theme::text_caption())
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(theme::faint())
                         .child("RECENTS")
@@ -576,7 +576,7 @@ impl Render for CommandPaletteState {
                                     .px(rems(6. / 16.))
                                     .py(px(1.))
                                     .font_family(theme::SYSTEM_MONOSPACE_FONT)
-                                    .text_size(rems(10. / 16.))
+                                    .text_size(theme::text_caption())
                                     .font_weight(FontWeight::MEDIUM)
                                     .text_color(theme::faint())
                                     .child("esc"),

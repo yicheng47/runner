@@ -156,7 +156,7 @@ impl RenderOnce for Modal {
                             .py(rems(1.))
                             .border_b_1()
                             .border_color(theme::border())
-                            .text_size(rems(14. / 16.))
+                            .text_size(theme::text_title())
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(theme::text())
                             .child(self.title),
@@ -315,7 +315,7 @@ impl RenderOnce for Drawer {
                             .py(rems(1.))
                             .border_b_1()
                             .border_color(theme::border())
-                            .text_size(rems(14. / 16.))
+                            .text_size(theme::text_title())
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(theme::text())
                             .child(self.title),
@@ -522,7 +522,7 @@ impl RenderOnce for ConfirmDialog {
                                     .w(rems((420. - 2. * 22. - 15. - 10.) / 16.))
                                     .whitespace_normal()
                                     .debug_selector(|| "CONFIRM_DIALOG_TITLE".into())
-                                    .text_size(rems(15. / 16.))
+                                    .text_size(theme::text_lead())
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(theme::text())
                                     .child(self.title),
@@ -532,7 +532,7 @@ impl RenderOnce for ConfirmDialog {
                         div()
                             .w(rems((420. - 2. * 22.) / 16.))
                             .whitespace_normal()
-                            .text_size(rems(13. / 16.))
+                            .text_size(theme::text_body())
                             .line_height(rems(20. / 16.))
                             .text_color(theme::muted())
                             .debug_selector(|| "CONFIRM_DIALOG_BODY".into())
@@ -618,7 +618,7 @@ fn confirm_action_button(
         .px(rems(14. / 16.))
         .py(rems(6. / 16.))
         .font_weight(FontWeight::MEDIUM)
-        .text_size(rems(12. / 16.))
+        .text_size(theme::text_ui())
         .text_color(foreground)
         .opacity(if disabled { 0.6 } else { 1. })
         .cursor(if disabled {

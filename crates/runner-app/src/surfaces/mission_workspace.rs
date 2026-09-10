@@ -351,7 +351,7 @@ impl MissionWorkspace {
                 false,
             )
             .auto_grow(12)
-            .text_size(13.)
+            .text_size(theme::text_body())
             .key_interceptor(Rc::new(move |event, window, cx| {
                 let key = event.keystroke.key.clone();
                 let shift = event.keystroke.modifiers.shift;
@@ -3087,7 +3087,7 @@ impl MissionWorkspace {
                 "Mission name",
                 false,
             )
-            .text_size(13.)
+            .text_size(theme::text_body())
         });
         input.update(cx, |input, input_cx| input.select_all(input_cx));
         let input_focus = input.read(cx).focus_handle();
@@ -3789,13 +3789,13 @@ impl MissionWorkspace {
                     .text_center()
                     .child(
                         div()
-                            .text_size(rems(14. / 16.))
+                            .text_size(theme::text_title())
                             .font_weight(FontWeight::SEMIBOLD)
                             .child("Mission unavailable"),
                     )
                     .child(
                         div()
-                            .text_size(rems(12. / 16.))
+                            .text_size(theme::text_ui())
                             .text_color(theme::muted())
                             .child("Runner couldn't attach this mission."),
                     )
@@ -3865,7 +3865,7 @@ impl MissionWorkspace {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .text_size(rems(12. / 16.))
+                    .text_size(theme::text_ui())
                     .text_color(theme::faint())
                     .child("Terminal unavailable")
                     .into_any_element()
@@ -3990,7 +3990,7 @@ impl MissionWorkspace {
                 .absolute()
                 .inset_0()
                 .bg(terminal_background)
-                .text_size(rems(12. / 16.))
+                .text_size(theme::text_ui())
                 .text_color(theme::faint())
                 .when(
                     matches!(overlay, chat_lifecycle::PaneOverlayState::None),
@@ -4253,7 +4253,7 @@ impl MissionWorkspace {
                             gpui::transparent_black()
                         })
                         .cursor_pointer()
-                        .text_size(rems(13. / 16.))
+                        .text_size(theme::text_body())
                         .text_color(if active {
                             theme::text()
                         } else {
@@ -4331,7 +4331,7 @@ impl MissionWorkspace {
         let rows = if blocks.is_empty() {
             vec![div()
                 .px_4()
-                .text_size(rems(12. / 16.))
+                .text_size(theme::text_ui())
                 .text_color(theme::faint())
                 .child("No events yet.")
                 .into_any_element()]
@@ -4395,7 +4395,7 @@ impl MissionWorkspace {
                             .py_1()
                             .rounded_full()
                             .bg(theme::accent())
-                            .text_size(rems(12. / 16.))
+                            .text_size(theme::text_ui())
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(theme::accent_ink())
                             .shadow_md()
@@ -4580,7 +4580,7 @@ impl MissionWorkspace {
                     .py(rems(2. / 16.))
                     .cursor_pointer()
                     .font_family(theme::UI_MONOSPACE_FONT)
-                    .text_size(rems(12. / 16.))
+                    .text_size(theme::text_ui())
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(theme::accent())
                     .on_click(move |_, window, cx| {
@@ -4606,7 +4606,7 @@ impl MissionWorkspace {
                         CursorStyle::OperationNotAllowed
                     })
                     .font_weight(FontWeight::SEMIBOLD)
-                    .text_size(rems(12. / 16.))
+                    .text_size(theme::text_ui())
                     .text_color(theme::accent_ink())
                     .on_click(move |_, window, cx| {
                         send_root.update(cx, |this, cx| {
@@ -4662,7 +4662,7 @@ impl MissionWorkspace {
                         div()
                             .flex_none()
                             .font_family(theme::UI_MONOSPACE_FONT)
-                            .text_size(rems(12. / 16.))
+                            .text_size(theme::text_ui())
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(theme::accent())
                             .child(format!("@{}", entry.handle)),
@@ -4672,7 +4672,7 @@ impl MissionWorkspace {
                             .min_w(px(0.))
                             .flex_1()
                             .truncate()
-                            .text_size(rems(11. / 16.))
+                            .text_size(theme::text_meta())
                             .text_color(theme::muted())
                             .child(format!("{} · {}", entry.role, entry.runtime)),
                     )
@@ -4680,7 +4680,7 @@ impl MissionWorkspace {
                         div()
                             .ml_auto()
                             .font_family(theme::UI_MONOSPACE_FONT)
-                            .text_size(rems(10. / 16.))
+                            .text_size(theme::text_caption())
                             .text_color(theme::faint())
                             .child("↵")
                     }))
@@ -4701,7 +4701,7 @@ impl MissionWorkspace {
                         .px_2()
                         .pt_1()
                         .pb(rems(2. / 16.))
-                        .text_size(rems(10. / 16.))
+                        .text_size(theme::text_caption())
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(theme::faint())
                         .child("ROSTER"),
@@ -4890,7 +4890,7 @@ impl MissionWorkspace {
                 .child(
                     div()
                         .flex_none()
-                        .text_size(rems(10. / 16.))
+                        .text_size(theme::text_caption())
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(theme::faint())
                         .child(format!("MISSION STARTED · {}", format_event_time(&event))),
@@ -4942,13 +4942,13 @@ impl MissionWorkspace {
                             .flex()
                             .items_center()
                             .gap_2()
-                            .text_size(rems(11. / 16.))
+                            .text_size(theme::text_meta())
                             .text_color(theme::faint())
                             .child(
                                 div()
                                     .truncate()
                                     .font_family(theme::UI_MONOSPACE_FONT)
-                                    .text_size(rems(13. / 16.))
+                                    .text_size(theme::text_body())
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(runner_app::ui::hue_for_seed(&author).color())
                                     .child(if human {
@@ -4963,7 +4963,7 @@ impl MissionWorkspace {
                                     .bg(theme::raised())
                                     .px_1()
                                     .py(rems(2. / 16.))
-                                    .text_size(rems(9. / 16.))
+                                    .text_size(theme::text_micro())
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(theme::muted())
                                     .child("GOAL")
@@ -4972,7 +4972,7 @@ impl MissionWorkspace {
                                 div()
                                     .truncate()
                                     .font_family(theme::UI_MONOSPACE_FONT)
-                                    .text_size(rems(11. / 16.))
+                                    .text_size(theme::text_meta())
                                     .text_color(theme::muted())
                                     .child(format!("→ @{target}"))
                             }))
@@ -5055,12 +5055,12 @@ impl MissionWorkspace {
                             .flex()
                             .items_center()
                             .gap_2()
-                            .text_size(rems(11. / 16.))
+                            .text_size(theme::text_meta())
                             .child(
                                 div()
                                     .flex_none()
                                     .font_family(theme::UI_MONOSPACE_FONT)
-                                    .text_size(rems(13. / 16.))
+                                    .text_size(theme::text_body())
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(runner_app::ui::hue_for_seed(&event.from).color())
                                     .child(
@@ -5116,7 +5116,7 @@ impl MissionWorkspace {
                             .when(!warning, |payload| {
                                 payload.font_family(theme::UI_MONOSPACE_FONT)
                             })
-                            .text_size(rems(12. / 16.))
+                            .text_size(theme::text_ui())
                             .line_height(rems(17. / 16.))
                             .text_color(if warning {
                                 theme::danger()
@@ -5204,7 +5204,7 @@ impl MissionWorkspace {
                     } else {
                         1.
                     })
-                    .text_size(rems(12. / 16.))
+                    .text_size(theme::text_ui())
                     .font_weight(if index == 0 {
                         FontWeight::SEMIBOLD
                     } else {
@@ -5252,7 +5252,7 @@ impl MissionWorkspace {
                                 div()
                                     .truncate()
                                     .font_family(theme::UI_MONOSPACE_FONT)
-                                    .text_size(rems(13. / 16.))
+                                    .text_size(theme::text_body())
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(runner_app::ui::hue_for_seed(&asker).color())
                                     .child(format!("@{asker}")),
@@ -5264,7 +5264,7 @@ impl MissionWorkspace {
                                     .bg(theme::with_alpha(theme::warning(), 0.1))
                                     .px_1()
                                     .py(rems(2. / 16.))
-                                    .text_size(rems(9. / 16.))
+                                    .text_size(theme::text_micro())
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(theme::warning())
                                     .child("NEEDS YOUR INPUT"),
@@ -5273,14 +5273,14 @@ impl MissionWorkspace {
                                 div()
                                     .truncate()
                                     .font_family(theme::UI_MONOSPACE_FONT)
-                                    .text_size(rems(11. / 16.))
+                                    .text_size(theme::text_meta())
                                     .text_color(theme::muted())
                                     .child(chain),
                             )
                             .child(
                                 div()
                                     .flex_none()
-                                    .text_size(rems(11. / 16.))
+                                    .text_size(theme::text_meta())
                                     .text_color(theme::faint())
                                     .child(format_event_time(&event)),
                             ),
@@ -5297,7 +5297,7 @@ impl MissionWorkspace {
                             .text_color(theme::text())
                             .child(if prompt.is_empty() {
                                 div()
-                                    .text_size(rems(13. / 16.))
+                                    .text_size(theme::text_body())
                                     .text_color(theme::faint())
                                     .child("(no prompt)")
                                     .into_any_element()
@@ -5308,7 +5308,7 @@ impl MissionWorkspace {
                             .children(resolved.map(|choice| {
                                 div()
                                     .mt_1()
-                                    .text_size(rems(11. / 16.))
+                                    .text_size(theme::text_meta())
                                     .text_color(theme::faint())
                                     .child(format!("answered: {choice}"))
                             })),
@@ -5561,7 +5561,7 @@ impl MissionWorkspace {
             .bg(theme::panel())
             .px_3()
             .py_2()
-            .text_size(rems(12. / 16.))
+            .text_size(theme::text_ui())
             .shadow_lg()
             .child(
                 svg()
@@ -5600,7 +5600,7 @@ impl MissionWorkspace {
                     .px_2()
                     .py_1()
                     .cursor_pointer()
-                    .text_size(rems(11. / 16.))
+                    .text_size(theme::text_meta())
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(theme::warning())
                     .hover(|button| button.bg(theme::with_alpha(theme::warning(), 0.15)))
@@ -5615,7 +5615,7 @@ impl MissionWorkspace {
                     .child(
                         div()
                             .font_family(theme::SYSTEM_MONOSPACE_FONT)
-                            .text_size(rems(10. / 16.))
+                            .text_size(theme::text_caption())
                             .font_weight(FontWeight::NORMAL)
                             .child("↵"),
                     )
@@ -5869,7 +5869,7 @@ impl MissionWorkspace {
             return list
                 .child(
                     div()
-                        .text_size(rems(12. / 16.))
+                        .text_size(theme::text_ui())
                         .text_color(theme::faint())
                         .child("No runner sessions yet."),
                 )
@@ -6000,7 +6000,7 @@ impl MissionWorkspace {
                                             .min_w(px(0.))
                                             .truncate()
                                             .font_family(theme::UI_MONOSPACE_FONT)
-                                            .text_size(rems(13. / 16.))
+                                            .text_size(theme::text_body())
                                             .font_weight(FontWeight::SEMIBOLD)
                                             .text_color(
                                                 runner_app::ui::hue_for_seed(&session.handle)
@@ -6017,7 +6017,7 @@ impl MissionWorkspace {
                     )
                     .child(
                         div()
-                            .text_size(rems(11. / 16.))
+                            .text_size(theme::text_meta())
                             .text_color(theme::muted())
                             .child(subtitle),
                     )
@@ -6028,7 +6028,7 @@ impl MissionWorkspace {
                             .gap_2()
                             .border_t_1()
                             .border_color(theme::with_alpha(theme::border(), 0.7))
-                            .text_size(rems(10. / 16.))
+                            .text_size(theme::text_caption())
                             .line_height(rems(14. / 16.))
                             .child(
                                 div()
@@ -6132,7 +6132,7 @@ impl MissionWorkspace {
                             .min_w(px(0.))
                             .flex_1()
                             .font_family(theme::SYSTEM_MONOSPACE_FONT)
-                            .text_size(rems(11. / 16.))
+                            .text_size(theme::text_meta())
                             .text_color(theme::muted())
                             .child(mission.id.clone()),
                     )
@@ -6142,19 +6142,19 @@ impl MissionWorkspace {
                 "Goal",
                 match goal {
                     Some(goal) if !goal.is_empty() => div()
-                        .text_size(rems(12. / 16.))
+                        .text_size(theme::text_ui())
                         .line_height(rems(18. / 16.))
                         .text_color(theme::text())
                         .child(goal)
                         .into_any_element(),
                     Some(_) => div()
-                        .text_size(rems(12. / 16.))
+                        .text_size(theme::text_ui())
                         .italic()
                         .text_color(theme::faint())
                         .child("No goal set.")
                         .into_any_element(),
                     None => div()
-                        .text_size(rems(12. / 16.))
+                        .text_size(theme::text_ui())
                         .italic()
                         .text_color(theme::faint())
                         .child("Loading…")
@@ -6166,7 +6166,7 @@ impl MissionWorkspace {
             mission.cwd.clone().map_or_else(
                 || {
                     div()
-                        .text_size(rems(12. / 16.))
+                        .text_size(theme::text_ui())
                         .italic()
                         .text_color(theme::faint())
                         .child("No cwd set.")
@@ -6192,7 +6192,7 @@ impl MissionWorkspace {
                             .py_2()
                             .cursor_pointer()
                             .font_family(theme::SYSTEM_MONOSPACE_FONT)
-                            .text_size(rems(11. / 16.))
+                            .text_size(theme::text_meta())
                             .text_color(theme::text())
                             .hover(|button| button.border_color(theme::border_strong()))
                             .on_click(move |_, _, cx| {
@@ -6221,7 +6221,7 @@ impl MissionWorkspace {
                     .items_center()
                     .gap_2()
                     .cursor_pointer()
-                    .text_size(rems(12. / 16.))
+                    .text_size(theme::text_ui())
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(theme::accent())
                     .hover(|link| link.underline())
@@ -6244,7 +6244,7 @@ impl MissionWorkspace {
                     "Permissions",
                     div()
                         .id("mission-permission-mode")
-                        .text_size(rems(12. / 16.))
+                        .text_size(theme::text_ui())
                         .text_color(theme::text())
                         .child(mode),
                 )
@@ -6255,7 +6255,7 @@ impl MissionWorkspace {
                     .flex()
                     .items_center()
                     .gap_2()
-                    .text_size(rems(12. / 16.))
+                    .text_size(theme::text_ui())
                     .child(
                         svg()
                             .flex_none()
@@ -6284,7 +6284,7 @@ impl MissionWorkspace {
             .justify_between()
             .child(
                 div()
-                    .text_size(rems(1.))
+                    .text_size(theme::text_heading())
                     .font_weight(FontWeight::SEMIBOLD)
                     .child("Rename mission"),
             )
@@ -6310,7 +6310,7 @@ impl MissionWorkspace {
                     .bg(theme::with_alpha(theme::danger(), 0.1))
                     .px_3()
                     .py_2()
-                    .text_size(rems(12. / 16.))
+                    .text_size(theme::text_ui())
                     .text_color(theme::danger())
                     .child(error)
             }))
@@ -6387,14 +6387,14 @@ fn mission_notice(
         .bg(theme::with_alpha(tone, 0.1))
         .px_3()
         .py_2()
-        .text_size(rems(13. / 16.))
+        .text_size(theme::text_body())
         .text_color(tone)
         .child(div().flex_1().child(text))
         .child(
             div()
                 .id(SharedString::from(format!("dismiss-mission-{id}")))
                 .cursor_pointer()
-                .text_size(rems(11. / 16.))
+                .text_size(theme::text_meta())
                 .opacity(0.8)
                 .hover(|button| button.opacity(1.))
                 .on_click(move |_, window, cx| on_dismiss(window, cx))
@@ -6421,7 +6421,7 @@ fn mission_tab(
             gpui::transparent_black()
         })
         .cursor_pointer()
-        .text_size(rems(13. / 16.))
+        .text_size(theme::text_body())
         .text_color(if active {
             theme::text()
         } else {
@@ -6482,7 +6482,7 @@ fn rail_view_button(
 fn rail_section_label(label: &'static str) -> AnyElement {
     div()
         .pt_5()
-        .text_size(rems(10. / 16.))
+        .text_size(theme::text_caption())
         .font_weight(FontWeight::SEMIBOLD)
         .text_color(theme::faint())
         .child(tracked_uppercase(label))
@@ -6512,7 +6512,7 @@ fn meta_section(label: &'static str, body: impl IntoElement) -> AnyElement {
         .gap_1()
         .child(
             div()
-                .text_size(rems(10. / 16.))
+                .text_size(theme::text_caption())
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(theme::faint())
                 .child(tracked_uppercase(label)),

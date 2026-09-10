@@ -451,7 +451,11 @@ fn render_block(
             }))
             .into_any_element(),
         MarkdownBlock::Heading(level, text) => div()
-            .text_size(rems(if level == 1 { 14. / 16. } else { 13. / 16. }))
+            .text_size(if level == 1 {
+                theme::text_title()
+            } else {
+                theme::text_body()
+            })
             .font_weight(FontWeight::SEMIBOLD)
             .text_color(if level == 3 {
                 theme::muted()
@@ -515,7 +519,7 @@ fn render_block(
             .px_3()
             .py_2()
             .font_family(theme::UI_MONOSPACE_FONT)
-            .text_size(rems(12. / 16.))
+            .text_size(theme::text_ui())
             .line_height(rems(19. / 16.))
             .whitespace_nowrap()
             .child(render_plain_line(
@@ -615,7 +619,7 @@ fn render_table_row(
                 })
                 .px_2()
                 .py_1()
-                .text_size(rems(12. / 16.))
+                .text_size(theme::text_ui())
                 .text_color(if heading {
                     theme::text()
                 } else {

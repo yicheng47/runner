@@ -189,7 +189,7 @@ impl AgentsPane {
                     format!("Auto — {} not found on PATH", runtime.command),
                     true,
                 )
-                .text_size(11.)
+                .text_size(theme::text_meta())
                 .key_interceptor(Rc::new(move |event, window, cx| {
                     match event.keystroke.key.as_str() {
                         "enter" => {
@@ -745,14 +745,14 @@ impl AgentsPane {
                     .flex_col()
                     .child(
                         div()
-                            .text_size(rems(13. / 16.))
+                            .text_size(theme::text_body())
                             .font_weight(FontWeight::SEMIBOLD)
                             .child("Shell environment"),
                     )
                     .child(
                         div()
                             .mt(rems(2. / 16.))
-                            .text_size(rems(12. / 16.))
+                            .text_size(theme::text_ui())
                             .line_height(rems(17.4 / 16.))
                             .text_color(theme::muted())
                             .child(shell_description(
@@ -851,7 +851,7 @@ impl AgentsPane {
                     .gap(rems(10. / 16.))
                     .child(
                         div()
-                            .text_size(rems(13. / 16.))
+                            .text_size(theme::text_body())
                             .font_weight(FontWeight::SEMIBOLD)
                             .child(runtime.display_name.clone()),
                     )
@@ -859,7 +859,7 @@ impl AgentsPane {
                     .child(div().min_w(px(0.)).flex_1())
                     .child(
                         div()
-                            .text_size(rems(11. / 16.))
+                            .text_size(theme::text_meta())
                             .text_color(theme::faint())
                             .child(if enabled { "Enabled" } else { "Disabled" }),
                     )
@@ -977,7 +977,7 @@ fn runtime_property_line(runtime: Runtime, key: &'static str, label: &'static st
         .flex()
         .items_center()
         .gap_2()
-        .text_size(rems(11. / 16.))
+        .text_size(theme::text_meta())
         .line_height(rems(15.4 / 16.))
         .child(
             div()
@@ -999,7 +999,7 @@ fn runtime_property_value(value: String) -> Div {
 fn runtime_caption(caption: String, danger: bool) -> Div {
     div()
         .font_family(theme::UI_MONOSPACE_FONT)
-        .text_size(rems(11. / 16.))
+        .text_size(theme::text_meta())
         .line_height(rems(15.4 / 16.))
         .text_color(if danger {
             theme::danger()
@@ -1054,7 +1054,7 @@ impl Render for AgentsPane {
             .child(div().flex().flex_col().gap_4().children(cards))
             .child(
                 div()
-                    .text_size(rems(12. / 16.))
+                    .text_size(theme::text_ui())
                     .line_height(rems(18. / 16.))
                     .text_color(theme::faint())
                     .child("Disabled agents stay configured but are hidden from agent pickers. Overrides apply to new sessions that use the agent's default command; runners with a custom command keep it. Registration writes only the `runner` entry in each agent's config."),
@@ -1071,7 +1071,7 @@ impl Render for AgentsPane {
                     .bg(theme::with_alpha(theme::danger(), 0.1))
                     .px_4()
                     .py_3()
-                    .text_size(rems(12. / 16.))
+                    .text_size(theme::text_ui())
                     .text_color(theme::danger())
                     .child(div().min_w(px(0.)).child(error))
                     .child(
@@ -1382,7 +1382,7 @@ fn runtime_badge(runtime: Runtime, presentation: &RuntimePresentation) -> AnyEle
         .bg(background)
         .px_2()
         .py(rems(2. / 16.))
-        .text_size(rems(10. / 16.))
+        .text_size(theme::text_caption())
         .font_weight(FontWeight::MEDIUM)
         .text_color(foreground)
         .child(if presentation.spinning {

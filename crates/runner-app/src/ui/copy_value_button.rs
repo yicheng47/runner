@@ -125,7 +125,7 @@ impl Render for CopyValueButton {
                     .bg(theme::raised())
                     .px(rems(10. / 16.))
                     .font_weight(gpui::FontWeight::MEDIUM)
-                    .text_size(rems(12. / 16.))
+                    .text_size(theme::text_ui())
                     .text_color(theme::muted())
             })
             .when(!labeled, |button| {

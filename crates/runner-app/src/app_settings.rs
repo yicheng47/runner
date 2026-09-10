@@ -15,7 +15,9 @@ use crate::theme::{DarkTheme, LightTheme, ThemeIntent};
 pub const SIDEBAR_MIN: f32 = 200.;
 pub const SIDEBAR_MAX: f32 = 480.;
 pub const SIDEBAR_DEFAULT: f32 = 240.;
-pub const ZOOM_STEPS: [f32; 8] = [0.8, 0.9, 1., 1.1, 1.2, 1.3, 1.4, 1.5];
+pub const ZOOM_STEPS: [f32; 15] = [
+    0.6, 0.7, 0.8, 0.9, 1., 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.7, 1.8, 1.9, 2.,
+];
 pub const TERMINAL_FONT_SIZE_MIN: u16 = 10;
 pub const TERMINAL_FONT_SIZE_MAX: u16 = 20;
 pub const TERMINAL_FONT_SIZE_DEFAULT: u16 = 13;
@@ -318,7 +320,7 @@ pub fn nudge_zoom(current: f32, direction: i8) -> f32 {
     let index = ZOOM_STEPS
         .iter()
         .position(|step| *step == normalized)
-        .unwrap_or(2);
+        .unwrap_or(4);
     match direction.cmp(&0) {
         std::cmp::Ordering::Greater => ZOOM_STEPS[(index + 1).min(ZOOM_STEPS.len() - 1)],
         std::cmp::Ordering::Less => ZOOM_STEPS[index.saturating_sub(1)],
@@ -430,12 +432,13 @@ mod tests {
     #[test]
     fn zoom_values_snap_and_nudge_within_the_shipped_domain() {
         assert_eq!(normalize_zoom(1.16), 1.2);
-        assert_eq!(normalize_zoom(99.), 1.5);
+        assert_eq!(normalize_zoom(99.), 2.);
+        assert_eq!(normalize_zoom(0.01), 0.6);
         assert_eq!(normalize_zoom(-1.), 1.);
         assert_eq!(normalize_zoom(f32::NAN), 1.);
         assert_eq!(nudge_zoom(1., 1), 1.1);
-        assert_eq!(nudge_zoom(0.8, -1), 0.8);
-        assert_eq!(nudge_zoom(1.5, 1), 1.5);
+        assert_eq!(nudge_zoom(0.6, -1), 0.6);
+        assert_eq!(nudge_zoom(2., 1), 2.);
         assert_eq!(nudge_zoom(1.3, 0), 1.);
     }
 

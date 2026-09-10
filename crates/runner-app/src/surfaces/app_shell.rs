@@ -330,7 +330,7 @@ impl NativeRoot {
             .child(
                 div()
                     .flex_1()
-                    .text_base()
+                    .text_size(theme::text_heading())
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(theme::text())
                     .child("Runner"),
@@ -645,7 +645,7 @@ impl NativeRoot {
                             blur_radius: px(24. * self.settings(cx).app_zoom),
                             spread_radius: px(0.),
                         }])
-                        .text_sm()
+                        .text_size(theme::text_title())
                         .text_color(text)
                         .child(
                             div()

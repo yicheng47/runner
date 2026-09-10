@@ -208,13 +208,13 @@ impl SettingsState {
     ) -> Self {
         let search = cx.new(|input_cx| {
             let mut input = TextField::new(input_cx.focus_handle(), "", "Search settings…", false)
-                .text_size(13.);
+                .text_size(theme::text_body());
             input.set_bare(true, input_cx);
             input
         });
         let shortcut_search = cx.new(|input_cx| {
             let mut input = TextField::new(input_cx.focus_handle(), "", "Search shortcuts", false)
-                .text_size(13.);
+                .text_size(theme::text_body());
             input.set_bare(true, input_cx);
             input
         });
@@ -418,7 +418,7 @@ fn missions_settings_pane(
                 .child(
                     div()
                         .debug_selector(|| "SETTINGS_MISSIONS_DEFAULTS_HEADING".into())
-                        .text_size(rems(1.))
+                        .text_size(theme::text_heading())
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(theme::text())
                         .child("Defaults"),
@@ -807,7 +807,7 @@ impl NativeRoot {
             vec![div()
                 .px(rems(10. / 16.))
                 .py_1()
-                .text_size(rems(12. / 16.))
+                .text_size(theme::text_ui())
                 .text_color(theme::faint())
                 .child("No matching settings.")
                 .into_any_element()]
@@ -981,7 +981,7 @@ impl NativeRoot {
                     .text_color(theme::muted())
                     .group_hover("settings-back", |icon| icon.text_color(theme::text())),
             )
-            .child(div().text_size(rems(13. / 16.)).child("Back to app"))
+            .child(div().text_size(theme::text_body()).child("Back to app"))
             .on_click(cx.listener(|this, _, window, cx| {
                 this.leave_settings(window, cx);
             }))
@@ -1003,7 +1003,7 @@ impl NativeRoot {
                 div()
                     .px(rems(10. / 16.))
                     .pb_1()
-                    .text_size(rems(10. / 16.))
+                    .text_size(theme::text_caption())
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(theme::faint())
                     .child(label.to_uppercase()),
@@ -1049,7 +1049,7 @@ impl NativeRoot {
             } else {
                 FontWeight::NORMAL
             })
-            .text_size(rems(14. / 16.))
+            .text_size(theme::text_title())
             .text_color(if active {
                 theme::text()
             } else {
@@ -1193,7 +1193,7 @@ impl NativeRoot {
             });
         let content = if rows.is_empty() {
             div()
-                .text_size(rems(12. / 16.))
+                .text_size(theme::text_ui())
                 .text_color(theme::faint())
                 .child(format!(
                     "No shortcuts match “{}”.",
@@ -1267,20 +1267,20 @@ impl NativeRoot {
             .gap(rems(2. / 16.))
             .child(
                 div()
-                    .text_size(rems(13. / 16.))
+                    .text_size(theme::text_body())
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(theme::text())
                     .child(entry.title),
             )
             .child(
                 div()
-                    .text_size(rems(11. / 16.))
+                    .text_size(theme::text_meta())
                     .text_color(theme::muted())
                     .child(entry.description),
             )
             .children(conflict.map(|message| {
                 div()
-                    .text_size(rems(11. / 16.))
+                    .text_size(theme::text_meta())
                     .text_color(theme::danger())
                     .child(message)
             }));
@@ -1313,7 +1313,7 @@ impl NativeRoot {
                         .border_1()
                         .border_color(theme::border_strong())
                         .bg(theme::bg())
-                        .text_size(rems(12. / 16.))
+                        .text_size(theme::text_ui())
                         .text_color(theme::muted())
                         .child("Press keys…")
                         .on_key_down(move |event: &KeyDownEvent, window, cx| {
@@ -1568,7 +1568,7 @@ impl NativeRoot {
             56.,
             div()
                 .font_family(theme::SYSTEM_MONOSPACE_FONT)
-                .text_size(rems(12. / 16.))
+                .text_size(theme::text_ui())
                 .font_weight(FontWeight::MEDIUM)
                 .child(format!(
                     "{}%",
@@ -1642,7 +1642,7 @@ impl NativeRoot {
                     .child(
                         div()
                             .px_1()
-                            .text_size(rems(11. / 16.))
+                            .text_size(theme::text_meta())
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(theme::faint())
                             .child("STARTUP"),
@@ -1739,7 +1739,7 @@ impl NativeRoot {
                         } else {
                             gpui::transparent_black()
                         })
-                        .text_size(rems(12. / 16.))
+                        .text_size(theme::text_ui())
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(foreground)
                         .cursor(CursorStyle::PointingHand)
@@ -1796,13 +1796,13 @@ impl NativeRoot {
                 .font_family(theme::SYSTEM_MONOSPACE_FONT)
                 .child(
                     div()
-                        .text_size(rems(12. / 16.))
+                        .text_size(theme::text_ui())
                         .font_weight(FontWeight::MEDIUM)
                         .child(size.to_string()),
                 )
                 .child(
                     div()
-                        .text_size(rems(10. / 16.))
+                        .text_size(theme::text_caption())
                         .text_color(theme::faint())
                         .child("px"),
                 ),
@@ -1847,7 +1847,7 @@ fn shortcut_chip(label: String, editable: bool) -> gpui::Div {
         .border_color(theme::border())
         .bg(theme::raised())
         .font_family(theme::SYSTEM_MONOSPACE_FONT)
-        .text_size(rems(11. / 16.))
+        .text_size(theme::text_meta())
         .line_height(rems(14. / 16.))
         .text_color(theme::muted())
         .when(editable, |chip| {

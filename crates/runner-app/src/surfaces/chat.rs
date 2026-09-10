@@ -697,7 +697,7 @@ impl NativeRoot {
         };
         let input = cx.new(|input_cx| {
             runner_app::ui::TextField::new(input_cx.focus_handle(), original, placeholder, false)
-                .text_size(13.)
+                .text_size(theme::text_body())
         });
         input.update(cx, |input, input_cx| input.select_all(input_cx));
         let input_focus = input.read(cx).focus_handle();
@@ -803,7 +803,7 @@ impl NativeRoot {
                 placeholder,
                 false,
             )
-            .text_size(12.)
+            .text_size(theme::text_ui())
         });
         input.update(cx, |field, input_cx| {
             field.set_bare(true, input_cx);

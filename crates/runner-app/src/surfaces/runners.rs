@@ -293,20 +293,23 @@ impl NativeRoot {
             .map(|runtime| runtime.command.clone())
             .unwrap_or_default();
         let handle = cx.new(|input_cx| {
-            TextField::new(input_cx.focus_handle(), "", "architect", true).text_size(14.)
+            TextField::new(input_cx.focus_handle(), "", "architect", true)
+                .text_size(theme::text_title())
         });
         handle.update(cx, |input, input_cx| input.set_bare(true, input_cx));
         let display_name = cx.new(|input_cx| {
-            TextField::new(input_cx.focus_handle(), "", "Architect", false).text_size(14.)
+            TextField::new(input_cx.focus_handle(), "", "Architect", false)
+                .text_size(theme::text_title())
         });
         let command = cx.new(|input_cx| {
-            let mut input =
-                TextField::new(input_cx.focus_handle(), command, "", true).text_size(14.);
+            let mut input = TextField::new(input_cx.focus_handle(), command, "", true)
+                .text_size(theme::text_title());
             input.set_disabled(true, input_cx);
             input
         });
         let args = cx.new(|input_cx| {
-            TextField::new(input_cx.focus_handle(), "", "--mcp-debug", true).text_size(14.)
+            TextField::new(input_cx.focus_handle(), "", "--mcp-debug", true)
+                .text_size(theme::text_title())
         });
         let model = cx.new(|input_cx| {
             TextField::new(input_cx.focus_handle(), "", "default", true).placeholder_as_value(true)
@@ -323,7 +326,8 @@ impl NativeRoot {
         });
         let default_working_dir = self.settings(cx).default_working_dir.clone();
         let working_dir = cx.new(|input_cx| {
-            working_dir_text_field(input_cx.focus_handle(), default_working_dir, "").text_size(13.)
+            working_dir_text_field(input_cx.focus_handle(), default_working_dir, "")
+                .text_size(theme::text_body())
         });
         let system_prompt = cx.new(|input_cx| {
             TextField::textarea(
@@ -333,7 +337,7 @@ impl NativeRoot {
                 5,
                 true,
             )
-            .text_size(13.)
+            .text_size(theme::text_body())
         });
         let root = cx.entity();
         let runtime_root = root.clone();
@@ -524,7 +528,7 @@ impl NativeRoot {
                 runner.working_dir.clone().unwrap_or_default(),
                 "",
             )
-            .text_size(13.)
+            .text_size(theme::text_body())
         });
         let system_prompt = cx.new(|input_cx| {
             TextField::textarea(
@@ -534,7 +538,7 @@ impl NativeRoot {
                 6,
                 true,
             )
-            .text_size(13.)
+            .text_size(theme::text_body())
         });
         let root = cx.entity();
         let runtime_root = root.clone();
@@ -868,13 +872,13 @@ impl NativeRoot {
                     .gap(rems(2. / 16.))
                     .child(
                         div()
-                            .text_size(rems(1.))
+                            .text_size(theme::text_heading())
                             .font_weight(FontWeight::SEMIBOLD)
                             .child("New runner"),
                     )
                     .child(
                         div()
-                            .text_size(rems(12. / 16.))
+                            .text_size(theme::text_ui())
                             .font_weight(FontWeight::NORMAL)
                             .text_color(theme::muted())
                             .child("Reusable across crews and chats."),
@@ -903,7 +907,7 @@ impl NativeRoot {
             .bg(theme::bg())
             .px(rems(10. / 16.))
             .py(rems(6. / 16.))
-            .text_size(rems(14. / 16.))
+            .text_size(theme::text_title())
             .child(
                 div()
                     .pr_1()
@@ -943,7 +947,7 @@ impl NativeRoot {
                     )
                     .children(form.agents_error.clone().map(|error| {
                         div()
-                            .text_size(rems(11. / 16.))
+                            .text_size(theme::text_meta())
                             .text_color(theme::danger())
                             .child(error)
                     })),
@@ -1351,7 +1355,7 @@ impl NativeRoot {
                             .px(rems(6. / 16.))
                             .py(rems(2. / 16.))
                             .font_family(theme::UI_MONOSPACE_FONT)
-                            .text_size(rems(12. / 16.))
+                            .text_size(theme::text_ui())
                             .font_weight(FontWeight::NORMAL)
                             .text_color(theme::muted())
                             .child(format!("@{}", form.runner.handle)),
@@ -1417,7 +1421,7 @@ impl NativeRoot {
                     )
                     .children(form.agents_error.clone().map(|error| {
                         div()
-                            .text_size(rems(11. / 16.))
+                            .text_size(theme::text_meta())
                             .text_color(theme::danger())
                             .child(error)
                     })),
@@ -1827,14 +1831,14 @@ impl NativeRoot {
             )
             .child(
                 div()
-                    .text_size(rems(14. / 16.))
+                    .text_size(theme::text_title())
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(theme::text())
                     .child(format!("No runners match \"{query}\"")),
             )
             .child(
                 div()
-                    .text_size(rems(12. / 16.))
+                    .text_size(theme::text_ui())
                     .line_height(rems(19. / 16.))
                     .text_color(theme::muted())
                     .child("Search checks handles and names."),
@@ -1974,7 +1978,7 @@ impl NativeRoot {
                                     .child(
                                         div()
                                             .font_family(theme::UI_MONOSPACE_FONT)
-                                            .text_size(rems(1.))
+                                            .text_size(theme::text_heading())
                                             .font_weight(FontWeight::SEMIBOLD)
                                             .text_color(theme::text())
                                             .child(format!("@{}", item.runner.handle)),
@@ -1982,7 +1986,7 @@ impl NativeRoot {
                                     .child(
                                         div()
                                             .font_family(theme::UI_MONOSPACE_FONT)
-                                            .text_size(rems(11. / 16.))
+                                            .text_size(theme::text_meta())
                                             .text_color(theme::faint())
                                             .child(item.runner.runtime.clone()),
                                     )
@@ -2006,7 +2010,7 @@ impl NativeRoot {
                                             .rounded_sm()
                                             .px(rems(6. / 16.))
                                             .py(rems(2. / 16.))
-                                            .text_size(rems(11. / 16.))
+                                            .text_size(theme::text_meta())
                                             .line_height(rems(1.))
                                             .font_weight(FontWeight::MEDIUM)
                                             .text_color(theme::accent())
@@ -2071,7 +2075,7 @@ impl NativeRoot {
                                     .mt_1()
                                     .max_h(rems(38. / 16.))
                                     .overflow_hidden()
-                                    .text_size(rems(12. / 16.))
+                                    .text_size(theme::text_ui())
                                     .text_color(theme::muted())
                                     .child(item.runner.display_name.clone()),
                             )
@@ -2080,7 +2084,7 @@ impl NativeRoot {
                                     .mt(rems(6. / 16.))
                                     .truncate()
                                     .font_family(theme::UI_MONOSPACE_FONT)
-                                    .text_size(rems(11. / 16.))
+                                    .text_size(theme::text_meta())
                                     .text_color(theme::faint())
                                     .child(format!("$ {command}")),
                             ),
@@ -2091,7 +2095,7 @@ impl NativeRoot {
                             .flex()
                             .items_center()
                             .gap_2()
-                            .text_size(rems(12. / 16.))
+                            .text_size(theme::text_ui())
                             .child(
                                 div()
                                     .text_color(if live {
@@ -2147,7 +2151,7 @@ impl NativeRoot {
         });
         let body = if detail.loading {
             div()
-                .text_size(rems(14. / 16.))
+                .text_size(theme::text_title())
                 .text_color(theme::muted())
                 .child("Loading…")
                 .into_any_element()
@@ -2166,7 +2170,7 @@ impl NativeRoot {
                 .bg(theme::with_alpha(theme::danger(), 0.1))
                 .px_3()
                 .py_2()
-                .text_size(rems(14. / 16.))
+                .text_size(theme::text_title())
                 .text_color(theme::danger())
                 .child(format!("Runner @{handle} not found."))
                 .into_any_element()
@@ -2199,7 +2203,7 @@ impl NativeRoot {
                                     .flex()
                                     .items_center()
                                     .gap_2()
-                                    .text_size(rems(14. / 16.))
+                                    .text_size(theme::text_title())
                                     .text_color(theme::muted())
                                     .child(
                                         div()
@@ -2232,7 +2236,7 @@ impl NativeRoot {
                                     .child(
                                         div()
                                             .font_family(theme::UI_MONOSPACE_FONT)
-                                            .text_size(rems(1.))
+                                            .text_size(theme::text_heading())
                                             .font_weight(FontWeight::SEMIBOLD)
                                             .text_color(theme::text())
                                             .child(format!("@{handle}")),
@@ -2282,7 +2286,7 @@ impl NativeRoot {
                     )
                     .children(runner.as_ref().map(|runner| {
                         div()
-                            .text_size(rems(14. / 16.))
+                            .text_size(theme::text_title())
                             .text_color(theme::muted())
                             .child(runner.display_name.clone())
                     }))
@@ -2302,7 +2306,7 @@ impl NativeRoot {
         let root = cx.entity();
         let crew_rows = if crews.is_empty() {
             div()
-                .text_size(rems(14. / 16.))
+                .text_size(theme::text_title())
                 .text_color(theme::faint())
                 .italic()
                 .child("Not in any crew yet. Add it to one from Crew Detail.")
@@ -2323,7 +2327,7 @@ impl NativeRoot {
                         .border_b_1()
                         .border_color(theme::border())
                         .py_2()
-                        .text_size(rems(14. / 16.))
+                        .text_size(theme::text_title())
                         .child(
                             div()
                                 .flex()
@@ -2341,7 +2345,7 @@ impl NativeRoot {
                                         .bg(theme::with_alpha(theme::accent(), 0.1))
                                         .px(rems(6. / 16.))
                                         .py(rems(2. / 16.))
-                                        .text_size(rems(10. / 16.))
+                                        .text_size(theme::text_caption())
                                         .font_weight(FontWeight::SEMIBOLD)
                                         .text_color(theme::accent())
                                         .child("LEAD")
@@ -2352,7 +2356,7 @@ impl NativeRoot {
                                 .id(SharedString::from(format!("open-runner-crew-{}", crew_id)))
                                 .tab_index(0)
                                 .cursor_pointer()
-                                .text_size(rems(12. / 16.))
+                                .text_size(theme::text_ui())
                                 .text_color(theme::accent())
                                 .hover(|text| text.underline())
                                 .focus_visible(|text| text.underline())
@@ -2399,14 +2403,14 @@ impl NativeRoot {
                         if let Some(prompt) = runner.system_prompt.clone() {
                             div()
                                 .font_family(theme::UI_MONOSPACE_FONT)
-                                .text_size(rems(12. / 16.))
+                                .text_size(theme::text_ui())
                                 .line_height(rems(19.5 / 16.))
                                 .text_color(theme::text())
                                 .child(prompt)
                                 .into_any_element()
                         } else {
                             div()
-                                .text_size(rems(14. / 16.))
+                                .text_size(theme::text_title())
                                 .italic()
                                 .text_color(theme::faint())
                                 .child("No system prompt set.")
@@ -2421,7 +2425,7 @@ impl NativeRoot {
                             .flex()
                             .flex_col()
                             .gap_1()
-                            .text_size(rems(12. / 16.))
+                            .text_size(theme::text_ui())
                             .text_color(theme::muted())
                             .child("Working directory")
                             .child(
@@ -2432,13 +2436,13 @@ impl NativeRoot {
                                     .bg(theme::bg())
                                     .p(rems(6. / 16.))
                                     .font_family(theme::UI_MONOSPACE_FONT)
-                                    .text_size(rems(12. / 16.))
+                                    .text_size(theme::text_ui())
                                     .text_color(theme::faint())
                                     .child(runner.working_dir.clone().unwrap_or_else(|| "—".into())),
                             )
                             .child(
                                 div()
-                                    .text_size(rems(11. / 16.))
+                                    .text_size(theme::text_meta())
                                     .text_color(theme::faint())
                                     .child("Inherits the runner's working directory. Click Edit to change it, or override per-chat from the chat itself."),
                             ),
@@ -2472,7 +2476,7 @@ impl NativeRoot {
                                     .border_t_1()
                                     .border_color(theme::border())
                                     .pt_3()
-                                    .text_size(rems(12. / 16.))
+                                    .text_size(theme::text_ui())
                                     .child(detail_row("In crews", crew_count.to_string()))
                                     .child(detail_row("Last seen", last_seen)),
                             ),
@@ -3084,7 +3088,7 @@ fn error_banner(error: String) -> AnyElement {
         .bg(theme::with_alpha(theme::danger(), 0.1))
         .px_3()
         .py_2()
-        .text_size(rems(14. / 16.))
+        .text_size(theme::text_title())
         .text_color(theme::danger())
         .child(error)
         .into_any_element()
@@ -3111,14 +3115,14 @@ fn detail_card(
                 .gap(rems(2. / 16.))
                 .child(
                     div()
-                        .text_size(rems(14. / 16.))
+                        .text_size(theme::text_title())
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(theme::text())
                         .child(title),
                 )
                 .children(subtitle.map(|subtitle| {
                     div()
-                        .text_size(rems(11. / 16.))
+                        .text_size(theme::text_meta())
                         .text_color(theme::faint())
                         .child(subtitle)
                 })),
@@ -3140,7 +3144,7 @@ fn big_stat(label: &'static str, value: i64, accent: bool) -> AnyElement {
         .p_3()
         .child(
             div()
-                .text_size(rems(30. / 16.))
+                .text_size(theme::text_display_xl())
                 .font_weight(FontWeight::BOLD)
                 .line_height(rems(30. / 16.))
                 .text_color(if accent {
@@ -3152,7 +3156,7 @@ fn big_stat(label: &'static str, value: i64, accent: bool) -> AnyElement {
         )
         .child(
             div()
-                .text_size(rems(10. / 16.))
+                .text_size(theme::text_caption())
                 .text_color(theme::faint())
                 .child(label.to_uppercase()),
         )
@@ -3187,7 +3191,7 @@ fn detail_metadata_row(
         .items_start()
         .justify_between()
         .gap_3()
-        .text_size(rems(12. / 16.))
+        .text_size(theme::text_ui())
         .child(div().flex_none().text_color(theme::faint()).child(label))
         .child(
             div()
@@ -3197,7 +3201,9 @@ fn detail_metadata_row(
                     value.font_family(theme::UI_MONOSPACE_FONT)
                 })
                 .when(subtle, |value| {
-                    value.text_size(rems(10. / 16.)).text_color(theme::faint())
+                    value
+                        .text_size(theme::text_caption())
+                        .text_color(theme::faint())
                 })
                 .when(!subtle, |value| value.text_color(theme::text()))
                 .child(value),

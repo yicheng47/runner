@@ -321,7 +321,7 @@ impl UpdateDialog {
                                         div()
                                             .w_full()
                                             .whitespace_normal()
-                                            .text_size(rems(14. / 16.))
+                                            .text_size(theme::text_title())
                                             .font_weight(FontWeight::SEMIBOLD)
                                             .child(content.title),
                                     )
@@ -329,7 +329,7 @@ impl UpdateDialog {
                                         div()
                                             .w_full()
                                             .whitespace_normal()
-                                            .text_size(rems(11. / 16.))
+                                            .text_size(theme::text_meta())
                                             .text_color(theme::muted())
                                             .child(content.subtitle),
                                     ),
@@ -339,7 +339,7 @@ impl UpdateDialog {
                         div()
                             .w(rems(376. / 16.))
                             .whitespace_normal()
-                            .text_size(rems(12. / 16.))
+                            .text_size(theme::text_ui())
                             .line_height(rems(18. / 16.))
                             .text_color(theme::muted())
                             .debug_selector(|| "UPDATE_DIALOG_BODY".into())
@@ -372,7 +372,7 @@ impl UpdateDialog {
                             .child(
                                 div()
                                     .font_family(theme::SYSTEM_MONOSPACE_FONT)
-                                    .text_size(rems(11. / 16.))
+                                    .text_size(theme::text_meta())
                                     .text_color(theme::muted())
                                     .child(progress_caption(received, total)),
                             )
