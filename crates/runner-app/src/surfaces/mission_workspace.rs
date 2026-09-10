@@ -137,6 +137,23 @@ fn is_concurrent_resume_error(error: &str) -> bool {
     .any(|fragment| error.contains(fragment))
 }
 
+fn mission_slot_actions_available(
+    status: Option<MissionStatus>,
+    archived: bool,
+    secondary: bool,
+) -> bool {
+    status == Some(MissionStatus::Running) && !archived && !secondary
+}
+
+fn stopped_slot_description(handle: &str, others: usize) -> String {
+    let others = if others == 1 {
+        "1 other slot is".into()
+    } else {
+        format!("{others} other slots are")
+    };
+    format!("@{handle}'s PTY is closed; {others} still running. Resume continues its conversation where it left off. Restart discards it and starts over with the brief, the same first turn a cold start gives the slot.")
+}
+
 fn slot_controls(status: SessionStatus) -> [SessionControlKind; 2] {
     [
         if status == SessionStatus::Running {
@@ -148,8 +165,12 @@ fn slot_controls(status: SessionStatus) -> [SessionControlKind; 2] {
     ]
 }
 
-fn stop_all_title(slot_count: usize) -> String {
-    format!("Stop all {slot_count} slots?")
+fn stop_all_title(running_count: usize) -> String {
+    if running_count == 1 {
+        "Stop the running slot?".into()
+    } else {
+        format!("Stop all {running_count} running slots?")
+    }
 }
 
 const STOP_ALL_BODY: &str = "Every slot's PTY is killed and whatever turn it is on is cut off. The mission stays open; each slot can be resumed with its conversation, or restarted with its brief.";
@@ -2354,6 +2375,7 @@ impl MissionWorkspace {
                             self.slot_exit_codes.remove(session_id);
                             let existing = self.transitions.get_mut(session_id).map(|transition| {
                                 transition.baseline_seq = 0;
+                                transition.started_at = Instant::now();
                                 transition.kind
                             });
                             if let Some(kind) = transition_to_begin_on_spawn(existing) {
@@ -2643,8 +2665,11 @@ impl MissionWorkspace {
         if self.stopping
             || self.resuming
             || self.archiving
-            || self.archived()
-            || self.secondary_state(cx).secondary
+            || !mission_slot_actions_available(
+                self.mission.as_ref().map(|mission| mission.status),
+                self.archived(),
+                self.secondary_state(cx).secondary,
+            )
             || self.slot_actions.contains(session_id)
             || self.transitions.contains_key(session_id)
         {
@@ -2685,9 +2710,13 @@ impl MissionWorkspace {
                     Some(size.1),
                 )
                 .map(|_| ()),
-                SessionControlKind::Restart => {
-                    runner_backend::ops::session::session_restart(&core, &task_target).map(|_| ())
-                }
+                SessionControlKind::Restart => runner_backend::ops::session::session_restart(
+                    &core,
+                    &task_target,
+                    Some(size.0),
+                    Some(size.1),
+                )
+                .map(|_| ()),
                 _ => unreachable!(),
             };
             result.map_err(|error| error.to_string())
@@ -2733,7 +2762,12 @@ impl MissionWorkspace {
         let confirm = cx.entity();
         let cancel = confirm.clone();
         runner_app::ui::ConfirmDialog::new(
-            stop_all_title(self.sessions.len()),
+            stop_all_title(
+                self.sessions
+                    .iter()
+                    .filter(|session| session.session.status == SessionStatus::Running)
+                    .count(),
+            ),
             STOP_ALL_BODY,
             "Stop all",
             "Stopping…",
@@ -5558,6 +5592,13 @@ impl MissionWorkspace {
         session: &SessionRow,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        if !mission_slot_actions_available(
+            self.mission.as_ref().map(|mission| mission.status),
+            self.archived(),
+            self.secondary,
+        ) {
+            return div().into_any_element();
+        }
         let others = self
             .sessions
             .iter()
@@ -5575,10 +5616,20 @@ impl MissionWorkspace {
         let restart_id = resume_id.clone();
         SessionOverlay::ended(
             format!("slot-stopped-{resume_id}"),
-            format!("@{}'s PTY is closed; {others} other slots are still running. Resume continues its conversation where it left off. Restart discards it and starts over with the brief, the same first turn a cold start gives the slot.", session.handle),
-            move |window, cx| resume.update(cx, |this, cx| this.act_on_slot(&resume_id, SessionControlKind::Resume, window, cx)),
-            move |window, cx| restart.update(cx, |this, cx| this.act_on_slot(&restart_id, SessionControlKind::Restart, window, cx)),
-        ).slot_stopped().into_any_element()
+            stopped_slot_description(&session.handle, others),
+            move |window, cx| {
+                resume.update(cx, |this, cx| {
+                    this.act_on_slot(&resume_id, SessionControlKind::Resume, window, cx)
+                })
+            },
+            move |window, cx| {
+                restart.update(cx, |this, cx| {
+                    this.act_on_slot(&restart_id, SessionControlKind::Restart, window, cx)
+                })
+            },
+        )
+        .slot_stopped()
+        .into_any_element()
     }
 
     fn render_mission_paused_overlay(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -5823,7 +5874,12 @@ impl MissionWorkspace {
                 || self.archiving
                 || self.slot_actions.contains(&session_id)
                 || self.transitions.contains_key(&session_id);
-            let controls = (!self.archived() && !self.secondary).then(|| {
+            let controls = mission_slot_actions_available(
+                self.mission.as_ref().map(|mission| mission.status),
+                self.archived(),
+                self.secondary,
+            )
+            .then(|| {
                 div().flex().items_center().gap_1().children(
                     slot_controls(session.session.status)
                         .into_iter()
@@ -5836,6 +5892,10 @@ impl MissionWorkspace {
                             )
                             .variant(SessionControlVariant::Header)
                             .header_size(24.)
+                            .restarting(
+                                self.transition_kind(&session_id)
+                                    == Some(MissionTransitionKind::Restarting),
+                            )
                             .lifecycle_disabled(disabled)
                             .on_press(move |window, cx| {
                                 action_root.update(cx, |this, cx| {
@@ -6753,8 +6813,9 @@ mod tests {
 
     #[test]
     fn stop_all_confirm_names_the_slot_count_and_preserves_recovery_copy() {
-        assert_eq!(stop_all_title(3), "Stop all 3 slots?");
-        assert_eq!(stop_all_title(2), "Stop all 2 slots?");
+        assert_eq!(stop_all_title(3), "Stop all 3 running slots?");
+        assert_eq!(stop_all_title(2), "Stop all 2 running slots?");
+        assert_eq!(stop_all_title(1), "Stop the running slot?");
         assert_eq!(STOP_ALL_BODY, "Every slot's PTY is killed and whatever turn it is on is cut off. The mission stays open; each slot can be resumed with its conversation, or restarted with its brief.");
     }
 
@@ -6771,5 +6832,38 @@ mod tests {
         assert!(
             slot_restart_signal_summary(&signal("mission_goal", serde_json::json!({}))).is_none()
         );
+    }
+    #[test]
+    fn stopped_slot_copy_agrees_with_live_sibling_count() {
+        assert!(stopped_slot_description("worker", 1)
+            .starts_with("@worker's PTY is closed; 1 other slot is still running."));
+        assert!(stopped_slot_description("worker", 2)
+            .starts_with("@worker's PTY is closed; 2 other slots are still running."));
+    }
+
+    #[test]
+    fn completed_and_archived_missions_offer_no_slot_actions() {
+        assert!(mission_slot_actions_available(
+            Some(MissionStatus::Running),
+            false,
+            false
+        ));
+        for status in [
+            None,
+            Some(MissionStatus::Completed),
+            Some(MissionStatus::Aborted),
+        ] {
+            assert!(!mission_slot_actions_available(status, false, false));
+        }
+        assert!(!mission_slot_actions_available(
+            Some(MissionStatus::Running),
+            true,
+            false
+        ));
+        assert!(!mission_slot_actions_available(
+            Some(MissionStatus::Running),
+            false,
+            true
+        ));
     }
 }

@@ -47,15 +47,6 @@ pub trait StdinInjector: Send + Sync + 'static {
     /// `\r` becomes Enter, anything else is a literal byte stream.
     fn inject(&self, session_id: &str, bytes: &[u8]) -> Result<()>;
 
-    /// Paste-and-submit for mission lead launch prompts. Writes the
-    /// body to the agent's input, waits a short render gap, then
-    /// submits with Enter. Earlier versions verified the paste
-    /// landed by capturing the pane post-paste — that verification
-    /// path was tmux-shaped and went away with the runtime
-    /// migration (docs/impls/archive/0011); `PtyRuntime` does not expose the
-    /// GPUI terminal model for capture. Callers MUST NOT sleep before calling.
-    fn inject_paste_with_verify(&self, session_id: &str, body: &[u8]) -> Result<()>;
-
     /// Snapshot used by diagnostics/tests. Delivery uses the atomic
     /// reservation below so a keystroke cannot race a separate query.
     fn input_quiescent(&self, session_id: &str) -> bool;
@@ -102,10 +93,6 @@ impl RouterUiNotifier for ChannelRouterUiNotifier {
 impl StdinInjector for SessionManager {
     fn inject(&self, session_id: &str, bytes: &[u8]) -> Result<()> {
         SessionManager::inject_stdin(self, session_id, bytes)
-    }
-
-    fn inject_paste_with_verify(&self, session_id: &str, body: &[u8]) -> Result<()> {
-        SessionManager::inject_paste(self, session_id, body)
     }
 
     fn input_quiescent(&self, session_id: &str) -> bool {

@@ -37,6 +37,7 @@ pub struct SessionControl {
     stop_icon_danger: bool,
     lifecycle_disabled: bool,
     header_size: f32,
+    restarting: bool,
     focus_handle: Option<FocusHandle>,
     on_press: Option<PressHandler>,
 }
@@ -53,6 +54,7 @@ impl SessionControl {
             stop_icon_danger: true,
             lifecycle_disabled: false,
             header_size: 28.,
+            restarting: false,
             focus_handle: None,
             on_press: None,
         }
@@ -98,6 +100,11 @@ impl SessionControl {
         self
     }
 
+    pub fn restarting(mut self, restarting: bool) -> Self {
+        self.restarting = restarting;
+        self
+    }
+
     pub fn on_press(mut self, handler: impl Fn(&mut Window, &mut App) + 'static) -> Self {
         self.on_press = Some(Rc::new(handler));
         self
@@ -125,7 +132,8 @@ impl RenderOnce for SessionControl {
         let tooltip = self.title.clone().or_else(|| header.then(|| label.clone()));
         let tooltip_focus = self.focus_handle.clone();
         let tooltip_id = (self.id.clone(), "tooltip");
-        let automatically_disabled = self.kind == SessionControlKind::Resuming;
+        let restarting = self.kind == SessionControlKind::Restart && self.restarting;
+        let automatically_disabled = self.kind == SessionControlKind::Resuming || restarting;
         let disabled = self.lifecycle_disabled || automatically_disabled;
         let icon: Option<SharedString> = match self.kind {
             SessionControlKind::Resume => Some("play.svg".into()),
@@ -232,6 +240,11 @@ impl RenderOnce for SessionControl {
             } else {
                 foreground
             })
+            .when(restarting, |control| {
+                control
+                    .bg(theme::with_alpha(theme::danger(), 0.1))
+                    .text_color(theme::danger())
+            })
             .opacity(if self.lifecycle_disabled { 0.5 } else { 1. })
             .cursor(if disabled {
                 CursorStyle::OperationNotAllowed
@@ -260,9 +273,10 @@ impl RenderOnce for SessionControl {
                     .bg(theme::with_alpha(theme::accent(), 0.1))
                     .text_color(theme::accent()),
                 SessionControlKind::Resume => control.border_color(theme::accent()),
-                SessionControlKind::Stop | SessionControlKind::Restart if header => control
+                SessionControlKind::Stop if header => control
                     .bg(theme::with_alpha(theme::danger(), 0.1))
                     .text_color(theme::danger()),
+                SessionControlKind::Restart if header => control.bg(theme::raised()),
                 _ => control.border_color(theme::border_strong()),
             });
             if self.kind == SessionControlKind::Restart {
@@ -362,7 +376,7 @@ mod tests {
     }
     struct SlotControlHost {
         kind: SessionControlKind,
-        disabled: bool,
+        restarting: bool,
         card_clicks: Rc<Cell<usize>>,
         action_clicks: Rc<Cell<usize>>,
     }
@@ -383,7 +397,7 @@ mod tests {
                             SessionControl::new("slot-action", self.kind)
                                 .variant(SessionControlVariant::Header)
                                 .header_size(24.)
-                                .lifecycle_disabled(self.disabled)
+                                .restarting(self.restarting)
                                 .on_press(move |_, _| action.set(action.get() + 1)),
                         ),
                 )
@@ -402,7 +416,7 @@ mod tests {
             let action = Rc::new(Cell::new(0));
             let window = cx.add_window(|_, _| SlotControlHost {
                 kind,
-                disabled: false,
+                restarting: false,
                 card_clicks: card.clone(),
                 action_clicks: action.clone(),
             });
@@ -418,5 +432,22 @@ mod tests {
             window.run_until_parked();
             assert_eq!(card.get(), 1);
         }
+    }
+    #[test]
+    fn restarting_slot_control_cannot_start_a_second_action() {
+        let mut cx = TestAppContext::single();
+        let action = Rc::new(Cell::new(0));
+        let window = cx.add_window(|_, _| SlotControlHost {
+            kind: SessionControlKind::Restart,
+            restarting: true,
+            card_clicks: Rc::new(Cell::new(0)),
+            action_clicks: action.clone(),
+        });
+        cx.run_until_parked();
+        let mut window = VisualTestContext::from_window(window.into(), &cx);
+        let bounds = window.debug_bounds("SLOT_CONTROL").unwrap();
+        window.simulate_click(bounds.center(), Modifiers::default());
+        window.run_until_parked();
+        assert_eq!(action.get(), 0);
     }
 }

@@ -669,7 +669,12 @@ pub fn session_resume(
     Ok(spawned)
 }
 
-pub fn session_restart(state: &AppCore, session_id: &str) -> Result<SpawnedSession> {
+pub fn session_restart(
+    state: &AppCore,
+    session_id: &str,
+    cols: Option<u16>,
+    rows: Option<u16>,
+) -> Result<SpawnedSession> {
     let row = {
         let conn = state.db.get()?;
         repo::session::get_row(&conn, session_id)?
@@ -687,16 +692,30 @@ pub fn session_restart(state: &AppCore, session_id: &str) -> Result<SpawnedSessi
         .sessions
         .restart(
             session_id,
+            cols,
+            rows,
             &state.app_data_dir,
             state.db.clone(),
             Arc::new(state.session_events()),
         )
         .map_err(|error| Error::msg(format!("session_restart: {error}")))?;
-    router.record_slot_restart(
+    if let Err(error) = router.record_slot_restart(
         &spawned.handle,
         session_id,
         row.agent_session_key.as_deref(),
-    )?;
+    ) {
+        let message = format!("@{} restarted, but its restart notification could not be recorded. Tell the crew to re-send its task and context. {error}", spawned.handle);
+        log::warn!("session_restart: {message}");
+        state.events.emit(
+            "session/warning",
+            &crate::session::manager::WarningEvent {
+                session_id: session_id.to_owned(),
+                mission_id: spawned.mission_id.clone(),
+                kind: "slot_restart_notification_failed".into(),
+                message,
+            },
+        );
+    }
     state.events.emit(
         "session/updated",
         &SessionUpdatedEvent {

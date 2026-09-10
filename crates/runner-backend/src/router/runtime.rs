@@ -679,11 +679,8 @@ pub const FIRST_TURN_ARGV_MAX_BYTES: usize = 32 * 1024;
 /// the agent CLI reads as its first user turn at process spawn.
 ///
 /// claude-code, codex, and trae accept a positional `[PROMPT]` argument.
-/// Delivering
-/// the first turn at spawn-time eliminates the post-spawn paste race
-/// the original `inject_paste_with_verify` machinery was working
-/// around: if the child starts, the prompt is already part of its
-/// argv.
+/// Delivering the first turn at spawn-time avoids racing the TUI's
+/// readiness: if the child starts, the prompt is already part of its argv.
 ///
 /// Returns empty when:
 ///   - the body is None or blank,

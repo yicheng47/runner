@@ -1933,17 +1933,20 @@ impl SessionManager {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn restart(
         self: &Arc<Self>,
         session_id: &str,
+        cols: Option<u16>,
+        rows: Option<u16>,
         app_data_dir: &Path,
         pool: Arc<DbPool>,
         events: Arc<dyn SessionEvents>,
     ) -> Result<SpawnedSession> {
         self.resume_with_fresh_fallback(
             session_id,
-            None,
-            None,
+            cols,
+            rows,
             app_data_dir,
             pool,
             events,

@@ -21,24 +21,10 @@ use crate::error::Result;
 use crate::model::{Runner, Slot, SlotWithRunner};
 use crate::session::manager::InputState;
 
-/// Discriminator on each recorded push so tests can assert which
-/// primitive the router used: raw byte injection (`inject`) for
-/// already-running-agent paths, vs verified paste-and-submit
-/// (`inject_paste_with_verify`) for fresh-spawn launch prompts.
-/// Existing `pushes_for` / `all_pushes` helpers project the kind
-/// away, so existing body-content assertions stay valid.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum InjectKind {
-    Raw,
-    PasteVerified,
-}
-
-/// Records every `inject` / `inject_paste_with_verify` call so
-/// handler outputs can be asserted.
 struct RecordingInjector {
     status_log: Arc<EventLog>,
     activity: Mutex<HashMap<String, super::RunnerStatus>>,
-    pushes: Mutex<Vec<(String, InjectKind, Vec<u8>)>>,
+    pushes: Mutex<Vec<(String, Vec<u8>)>>,
     blocked_events: Mutex<Vec<DeliveryBlockedEvent>>,
     /// Optional `dead_session` set simulating a stopped or crashed PTY.
     dead: Mutex<Vec<String>>,
@@ -77,8 +63,8 @@ impl RecordingInjector {
             .lock()
             .unwrap()
             .iter()
-            .filter(|(s, _, _)| s == session_id)
-            .map(|(_, _, bytes)| String::from_utf8_lossy(bytes).into_owned())
+            .filter(|(s, _)| s == session_id)
+            .map(|(_, bytes)| String::from_utf8_lossy(bytes).into_owned())
             .collect()
     }
 
@@ -87,35 +73,7 @@ impl RecordingInjector {
             .lock()
             .unwrap()
             .iter()
-            .map(|(s, _, b)| (s.clone(), String::from_utf8_lossy(b).into_owned()))
-            .collect()
-    }
-
-    /// Pushes for `session_id` recorded specifically via the
-    /// verified-paste primitive. Used by the lead-launch-prompt test
-    /// to confirm the routing didn't fall back to raw stdin.
-    #[allow(dead_code)]
-    fn paste_pushes_for(&self, session_id: &str) -> Vec<String> {
-        self.pushes
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|(s, k, _)| s == session_id && *k == InjectKind::PasteVerified)
-            .map(|(_, _, bytes)| String::from_utf8_lossy(bytes).into_owned())
-            .collect()
-    }
-
-    /// Pushes for `session_id` recorded specifically via the raw
-    /// primitive. Used to confirm the verified path didn't *also*
-    /// fall through to raw stdin.
-    #[allow(dead_code)]
-    fn raw_pushes_for(&self, session_id: &str) -> Vec<String> {
-        self.pushes
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|(s, k, _)| s == session_id && *k == InjectKind::Raw)
-            .map(|(_, _, bytes)| String::from_utf8_lossy(bytes).into_owned())
+            .map(|(s, b)| (s.clone(), String::from_utf8_lossy(b).into_owned()))
             .collect()
     }
 
@@ -124,10 +82,8 @@ impl RecordingInjector {
             .lock()
             .unwrap()
             .iter()
-            .filter(|(s, kind, bytes)| {
-                s == session_id && *kind == InjectKind::Raw && bytes.as_slice() != b"\r"
-            })
-            .map(|(_, _, bytes)| String::from_utf8_lossy(bytes).into_owned())
+            .filter(|(s, bytes)| s == session_id && bytes.as_slice() != b"\r")
+            .map(|(_, bytes)| String::from_utf8_lossy(bytes).into_owned())
             .collect()
     }
 
@@ -246,21 +202,7 @@ impl StdinInjector for RecordingInjector {
         self.pushes
             .lock()
             .unwrap()
-            .push((session_id.to_string(), InjectKind::Raw, bytes.to_vec()));
-        Ok(())
-    }
-
-    fn inject_paste_with_verify(&self, session_id: &str, body: &[u8]) -> Result<()> {
-        if self.dead.lock().unwrap().iter().any(|d| d == session_id) {
-            return Err(crate::error::Error::msg(format!(
-                "test: session {session_id} is dead"
-            )));
-        }
-        self.pushes.lock().unwrap().push((
-            session_id.to_string(),
-            InjectKind::PasteVerified,
-            body.to_vec(),
-        ));
+            .push((session_id.to_string(), bytes.to_vec()));
         Ok(())
     }
 
@@ -367,7 +309,7 @@ impl StdinInjector for RecordingInjector {
         self.pushes
             .lock()
             .unwrap()
-            .push((session_id.to_string(), InjectKind::Raw, bytes.to_vec()));
+            .push((session_id.to_string(), bytes.to_vec()));
         Ok(true)
     }
 
@@ -1331,7 +1273,7 @@ fn blocked_empty_body_does_not_flush_a_stray_enter() {
 
     router.inject_and_submit("impl", b"").unwrap();
     wait_until(Duration::from_millis(250), || {
-        injector.raw_pushes_for("S-IMPL") == ["\r"]
+        injector.pushes_for("S-IMPL") == ["\r"]
     });
 }
 
@@ -1476,11 +1418,6 @@ fn mission_goal_handler_no_longer_injects_launch_prompt() {
         injector.pushes_for("S-LEAD").is_empty(),
         "mission_goal handler must not inject the launch prompt — \
          that path moved to spawn-time argv (#88)"
-    );
-    assert!(
-        injector.paste_pushes_for("S-LEAD").is_empty(),
-        "mission_goal handler must not paste the launch prompt — \
-         spawn-time argv is the delivery path now (#88)"
     );
     // Workers were never targeted by `mission_goal` and still aren't.
     assert!(injector.pushes_for("S-IMPL").is_empty());
@@ -2114,7 +2051,6 @@ fn fresh_mission_start_does_not_call_reconstruct() {
         injector.pushes_for("S-LEAD").is_empty(),
         "mission_goal handler must not inject the launch prompt (#88)"
     );
-    assert!(injector.paste_pushes_for("S-LEAD").is_empty());
 }
 
 #[test]

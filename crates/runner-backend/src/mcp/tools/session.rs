@@ -72,11 +72,12 @@ impl RunnerMcpHandler {
         Parameters(args): Parameters<SessionArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         let state = self.state.clone();
-        let output =
-            tokio::task::spawn_blocking(move || session::session_restart(&state, &args.session_id))
-                .await
-                .map_err(|error| ErrorData::internal_error(error.to_string(), None))?
-                .map_err(command_error)?;
+        let output = tokio::task::spawn_blocking(move || {
+            session::session_restart(&state, &args.session_id, None, None)
+        })
+        .await
+        .map_err(|error| ErrorData::internal_error(error.to_string(), None))?
+        .map_err(command_error)?;
         Ok(CallToolResult::success(vec![Content::json(&output)?]))
     }
 
