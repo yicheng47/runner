@@ -2,7 +2,7 @@
 
 ## Status
 
-Planned. Tracks issue [#220](https://github.com/yicheng47/runner/issues/220) / spec [29](../features/29-runner-crew-list-pagination-search.md). Design: `design/runner-crew-list-search.pen` (screens: Runners default / filtered / no matches, Crews page 2, plus the "Pager — windowing states" reference strip).
+Planned. Tracks issue [#220](https://github.com/yicheng47/runner/issues/220) / spec [29](../../features/archive/29-runner-crew-list-pagination-search.md). Design: `design/runner-crew-list-search.pen` (screens: Runners default / filtered / no matches, Crews page 2, plus the "Pager — windowing states" reference strip).
 
 ## Problem
 

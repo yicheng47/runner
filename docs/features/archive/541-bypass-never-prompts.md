@@ -2,10 +2,11 @@
 
 > Tracking issue: [#541](https://github.com/yicheng47/runner/issues/541) (bug)
 > Priority: P1.
+> Status: **shipped 2026-09-10 in [#544](https://github.com/yicheng47/runner/pull/544)**; archived 2026-09-10.
 
 ## Motivation
 
-Since [527](./archive/527-mission-permission-mode.md) shipped on 2026-09-09, every mission slot spawns with its runtime's bypass flags by default. For claude-code that is `--permission-mode bypassPermissions`, and Claude Code 2.1.267 answers it on first use with a consent dialog ("WARNING: Claude Code running in Bypass Permissions mode … By proceeding, you accept all responsibility") before the TUI takes its first turn. Runner does nothing about it: no preseed, no detection, no feed signal. The slot sits on the dialog, the byte-flow idle detector reports it idle, and the mission stalls silently — the exact failure 527 set out to remove.
+Since [527](./527-mission-permission-mode.md) shipped on 2026-09-09, every mission slot spawns with its runtime's bypass flags by default. For claude-code that is `--permission-mode bypassPermissions`, and Claude Code 2.1.267 answers it on first use with a consent dialog ("WARNING: Claude Code running in Bypass Permissions mode … By proceeding, you accept all responsibility") before the TUI takes its first turn. Runner does nothing about it: no preseed, no detection, no feed signal. The slot sits on the dialog, the byte-flow idle detector reports it idle, and the mission stalls silently — the exact failure 527 set out to remove.
 
 Observed on 2026-09-10 in the first `538 runtime enum` mission (`01M24HHTKXC17P5VF94V8N59T4`, codex peer crew): the codex coder posted its first message 24 s after start, the claude-code reviewer flapped busy/idle for ~80 s with no output, and the human found the dialog in the pane and archived the mission. Accepting it wrote `skipDangerousModePermissionPrompt: true` into `~/.claude/settings.json`, so it will not recur on this machine, but every colleague's first Bypass mission hits the same wall.
 
@@ -15,7 +16,7 @@ How Claude Code decides, read from the 2.1.267 binary:
 - `flagSettings` is the `--settings <file-or-json>` command-line layer, which Runner already uses: `claude_settings_args` in `crates/runner-backend/src/router/runtime.rs` passes `--settings {"tui":"fullscreen","hooks":{…}}` on every claude-code spawn whose runner args do not carry their own `--settings`.
 - An enterprise `policySettings.permissions.disableBypassPermissionsMode: "disable"` forbids bypass outright; Claude Code then reports "Bypass permissions mode was disabled by settings" and runs without it. Runner cannot and should not override that.
 
-codex needs nothing: the mission Bypass pair (`--ask-for-approval never --sandbox danger-full-access`) started the coder without a prompt in the same mission, and the workspace trust dialog is already preseeded by [0045](../impls/archive/0045-codex-trust-preseed.md). TRAE's `--permission-mode bypass_permissions` is unverified (not installed on the author's machine).
+codex needs nothing: the mission Bypass pair (`--ask-for-approval never --sandbox danger-full-access`) started the coder without a prompt in the same mission, and the workspace trust dialog is already preseeded by [0045](../../impls/archive/0045-codex-trust-preseed.md). TRAE's `--permission-mode bypass_permissions` is unverified (not installed on the author's machine).
 
 ## Scope
 

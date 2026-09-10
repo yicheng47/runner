@@ -6,9 +6,9 @@ Tracking issue: [#527](https://github.com/yicheng47/runner/issues/527). Status: 
 
 ## Motivation
 
-A permission prompt inside a mission slot is never a real control point. Nobody is watching that PTY, so the prompt is a silent stall: the lead waits on a handoff that never arrives, and the human sees nothing. The byte-flow `IdleDetector` (`crates/runner-backend/src/session/pty_runtime.rs`) reports the stuck slot as idle, which is what a finished slot looks like too. Spec [52](../52-hook-based-session-status.md) closed the hook-based status route, so the feed will not learn to show this.
+A permission prompt inside a mission slot is never a real control point. Nobody is watching that PTY, so the prompt is a silent stall: the lead waits on a handoff that never arrives, and the human sees nothing. The byte-flow `IdleDetector` (`crates/runner-backend/src/session/pty_runtime.rs`) reports the stuck slot as idle, which is what a finished slot looks like too. Spec [52](./52-hook-based-session-status.md) closed the hook-based status route, so the feed will not learn to show this.
 
-[542](../542-slot-restart.md) adds per-slot Stop, Resume, and Restart recovery for a stalled slot without interrupting its siblings; Restart re-sends the cold-start brief and notifies the lead.
+[542](./542-slot-restart.md) adds per-slot Stop, Resume, and Restart recovery for a stalled slot without interrupting its siblings; Restart re-sends the cold-start brief and notifies the lead.
 
 Auto mode does not remove the stall. claude-code's `--permission-mode auto` runs a classifier that still stops for a human on some actions; on 2026-09-09 it denied a `git push` twice in one session. codex's `on-request` asks to escalate whenever the sandbox blocks a command. In a direct chat the human answers; in a mission slot nobody does.
 
@@ -36,7 +36,7 @@ A new **Missions** pane in the settings nav, directly under Chat in the App grou
 
 Applied through the existing `router::runtime::apply_permission_mode` (strip the runtime's permission flags, append the canonical pair), so a runner row carrying its own flags converges to one shape.
 
-- claude-code Bypass: `--permission-mode bypassPermissions` (unchanged). Claude Code's first-use consent dialog for this mode is acknowledged in the spawn's `--settings` JSON since [541](../541-bypass-never-prompts.md).
+- claude-code Bypass: `--permission-mode bypassPermissions` (unchanged). Claude Code's first-use consent dialog for this mode is acknowledged in the spawn's `--settings` JSON since [541](./541-bypass-never-prompts.md).
 - trae Bypass: `--permission-mode bypass_permissions` (unchanged).
 - **codex Bypass for mission slots: `--ask-for-approval never --sandbox danger-full-access`.** Today's codex Bypass pair keeps `--sandbox workspace-write`. With `never`, codex does not ask to escalate out of the sandbox, so a command that needs the network or writes outside the tree (`cargo` fetching crates, `gh pr create`, `git push`) fails silently. The runner-level Bypass mapping (direct chats, a human watching) is left as is.
 - shell and unknown runtimes: no-op, as today.

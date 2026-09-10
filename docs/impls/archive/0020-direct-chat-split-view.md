@@ -2,7 +2,7 @@
 
 ## Status
 
-In progress for issue [#245](https://github.com/yicheng47/runner/issues/245), spec [docs/features/34-direct-chat-split-view.md](../features/34-direct-chat-split-view.md). This doc was originally written for mission split ([#166](https://github.com/yicheng47/runner/issues/166), spec 19); that scope is deferred and #166 is closed. The layout-picker interaction survives; the surface is now the direct chat.
+In progress for issue [#245](https://github.com/yicheng47/runner/issues/245), spec [docs/features/34-direct-chat-split-view.md](../../features/archive/34-direct-chat-split-view.md). This doc was originally written for mission split ([#166](https://github.com/yicheng47/runner/issues/166), spec 19); that scope is deferred and #166 is closed. The layout-picker interaction survives; the surface is now the direct chat.
 
 ## Problem
 
@@ -118,4 +118,4 @@ Mocked in `design/runner-mvp-design.pen`:
 
 ## References
 
-- Issue [#245](https://github.com/yicheng47/runner/issues/245); spec [docs/features/34-direct-chat-split-view.md](../features/34-direct-chat-split-view.md); deferred predecessor [#166](https://github.com/yicheng47/runner/issues/166) / spec 19; design+planning PR [#244](https://github.com/yicheng47/runner/pull/244); TradingView layout picker (interaction reference).
+- Issue [#245](https://github.com/yicheng47/runner/issues/245); spec [docs/features/34-direct-chat-split-view.md](../../features/archive/34-direct-chat-split-view.md); deferred predecessor [#166](https://github.com/yicheng47/runner/issues/166) / spec 19; design+planning PR [#244](https://github.com/yicheng47/runner/pull/244); TradingView layout picker (interaction reference).

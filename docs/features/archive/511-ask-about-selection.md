@@ -1,6 +1,6 @@
 # Ask about a selection — a side thread forked from a chat
 
-Tracking issue: [#511](https://github.com/yicheng47/runner/issues/511). Status: planned. Priority P2.
+Tracking issue: [#511](https://github.com/yicheng47/runner/issues/511). Status: dropped — closed as not planned on 2026-09-10; Runner is not going to support this. Priority P2.
 
 ## Motivation
 

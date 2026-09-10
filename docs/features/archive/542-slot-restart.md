@@ -2,6 +2,7 @@
 
 > Tracking issue: [#542](https://github.com/yicheng47/runner/issues/542) (bug)
 > Priority: P1.
+> Status: **shipped 2026-09-10 in [#550](https://github.com/yicheng47/runner/pull/550)**; archived 2026-09-10.
 > Design: `design/runner.pen`, MISSIONS row "mission — per-slot stop / resume / restart, stop-all confirm (542)" (`m4FND`): `Mission workspace — slot actions (542)` (`S2Rwi0`), `restart confirm (542)` (`QcYTg`), `slot restarted (542)` (`Te6QB`), `slot stopped · per-slot card (542)` (`ZcePX`), `stop all confirm (542)` (`njeOD`). Signed off 2026-09-10.
 
 ## Motivation

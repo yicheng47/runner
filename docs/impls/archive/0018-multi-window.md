@@ -2,7 +2,7 @@
 
 ## Status
 
-In progress for issue [#122](https://github.com/yicheng47/runner/issues/122). Implements feature spec [docs/features/12-multi-window.md](../features/12-multi-window.md).
+In progress for issue [#122](https://github.com/yicheng47/runner/issues/122). Implements feature spec [docs/features/12-multi-window.md](../../features/archive/12-multi-window.md).
 
 ## Problem
 

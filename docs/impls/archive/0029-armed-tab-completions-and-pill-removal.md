@@ -2,7 +2,7 @@
 
 ## Status
 
-Planned. Tracks issue [#296](https://github.com/yicheng47/runner/issues/296) / spec [39](../features/39-chat-working-unread-indicators.md). No design gate: the sidebar indicator is unchanged and the topbar change is a removal.
+Planned. Tracks issue [#296](https://github.com/yicheng47/runner/issues/296) / spec [39](../../features/archive/39-chat-working-unread-indicators.md). No design gate: the sidebar indicator is unchanged and the topbar change is a removal.
 
 ## Problem
 

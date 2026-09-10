@@ -1,6 +1,6 @@
 # 538 — Replace bare runtime name strings with a `Runtime` enum
 
-Tracking issue: [#538](https://github.com/yicheng47/runner/issues/538). Chore, P2. Baseline `main` at `23626c5` (2026-09-09). Consolidation-shaped like [478 pass 1](./archive/478-consolidation-pass-1.md): one mission, one PR, one commit per numbered section, no behavior change beyond the one named below. Scheduled by the M6 audit ([m6-remainder](./gpui-rewrite/m6-remainder.md), "one mechanical commit at or after cutover"); the cutover landed 2026-08-23.
+Tracking issue: [#538](https://github.com/yicheng47/runner/issues/538). Shipped 2026-09-10 in [#543](https://github.com/yicheng47/runner/pull/543); archived 2026-09-10. Chore, P2. Baseline `main` at `23626c5` (2026-09-09). Consolidation-shaped like [478 pass 1](./478-consolidation-pass-1.md): one mission, one PR, one commit per numbered section, no behavior change beyond the one named below. Scheduled by the M6 audit ([m6-remainder](../gpui-rewrite/m6-remainder.md), "one mechanical commit at or after cutover"); the cutover landed 2026-08-23.
 
 ## Why
 
@@ -66,4 +66,4 @@ Per commit: `cargo test --workspace`, `make clippy`, `make fmt`, all green. Afte
 
 ## Non-goals
 
-Adding a variant: feature [539](../features/539-pi-runtime.md) adds `pi` and is sequenced after this lands precisely so the compiler, not grep, finds every arm it must cover. An `Error` enum (the audit's sibling item), file splits, renaming `runtime_override` columns, changing the MCP tool schemas beyond what the enum's `JsonSchema` derive produces, adding a runtime, a `Default` runtime, README or product-doc edits, and anything in `docs/impls/archive/` or `docs/features/archive/`.
+Adding a variant: feature [539](../../features/539-pi-runtime.md) adds `pi` and is sequenced after this lands precisely so the compiler, not grep, finds every arm it must cover. An `Error` enum (the audit's sibling item), file splits, renaming `runtime_override` columns, changing the MCP tool schemas beyond what the enum's `JsonSchema` derive produces, adding a runtime, a `Default` runtime, README or product-doc edits, and anything in `docs/impls/archive/` or `docs/features/archive/`.

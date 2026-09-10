@@ -43,7 +43,7 @@ The dialog is the 420 px card the confirms use: app icon, a title naming the ver
 - **Up to date**: no dialog; the hero's button checks. Checking is that button spinning, not a state of its own.
 - **Available**: "Runner <version> is available", **View downloads** and **Download**. When the release has no `.sig`, the same dialog explains that this release cannot be installed from Runner and offers only **View downloads**; that is today's behavior in a dialog, not a separate state.
 - **Downloading**: progress bar with received/total and percent, **Cancel**. The signature check is the last moment of the bar, not a state.
-- **Ready**: "Runner <version> is ready to install", body "Runner closes, the installer runs, and Runner reopens on the new version.", **Later** and **Install and restart**. No running-work warning: quitting stamps sessions for auto-resume exactly as ⌘Q does today, and [#491](../491-confirm-quit-running-work.md) was closed on 2026-09-07 in favor of a detached session host, after which nothing is interrupted at all.
+- **Ready**: "Runner <version> is ready to install", body "Runner closes, the installer runs, and Runner reopens on the new version.", **Later** and **Install and restart**. No running-work warning: quitting stamps sessions for auto-resume exactly as ⌘Q does today, and [#491](./491-confirm-quit-running-work.md) was closed on 2026-09-07 in favor of a detached session host, after which nothing is interrupted at all.
 - **Failed**: one state whose body names what failed (download, signature, or installer), with **View downloads** and **Retry**; after an installer failure the primary is **Install and restart** again.
 
 There is no separate confirm dialog: **Install and restart** inside the Ready dialog is the one action that quits, and reaching it takes two deliberate clicks (open the dialog, press the button), the same as Sparkle's prompt on macOS.
@@ -93,7 +93,7 @@ Nothing new is needed: the installer only touches `%LOCALAPPDATA%\Programs\Runne
 - Unattended installation or a scheduled restart. Install happens only when the user confirms, every time.
 - Resumable or delta downloads. The installer is tens of megabytes; a restart from zero is fine.
 - In-app channel switching. Nightly and stable stay separate installers.
-- Portable ZIP updates, Windows ARM64, CLI self-updates ([#475](https://github.com/yicheng47/runner/issues/475)), and a session host ([#466](../466-sessions-outlive-the-app.md)).
+- Portable ZIP updates, Windows ARM64, CLI self-updates ([#475](https://github.com/yicheng47/runner/issues/475)), and a session host ([#466](./466-sessions-outlive-the-app.md)).
 
 ## Design
 

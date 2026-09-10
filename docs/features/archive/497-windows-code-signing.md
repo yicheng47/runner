@@ -4,7 +4,7 @@ Tracking issue: [#497](https://github.com/yicheng47/runner/issues/497). Status: 
 
 ## Motivation
 
-Every Windows download of Runner 0.8.0 and 0.8.1 is an unsigned Inno Setup installer. Windows SmartScreen stops it with **Windows protected your PC**, and the user has to find **More info → Run anyway** before the installer will run. The README, the GitHub release notes, and `script/nightly-release-notes.md` all tell people to click through that wall. That is acceptable for a nightly tested on one PC and not for a stable release: it reads as untrustworthy, some managed machines have the override disabled, and [#493](https://github.com/yicheng47/runner/issues/493) cannot verify a downloaded installer without a signature to check. Stage 4b of the [archived Windows port plan](../impls/archive/windows-nightly/plan.md#phase-4--windows-installer-and-upgrades-remaining) deferred signing; this spec is that stage.
+Every Windows download of Runner 0.8.0 and 0.8.1 is an unsigned Inno Setup installer. Windows SmartScreen stops it with **Windows protected your PC**, and the user has to find **More info → Run anyway** before the installer will run. The README, the GitHub release notes, and `script/nightly-release-notes.md` all tell people to click through that wall. That is acceptable for a nightly tested on one PC and not for a stable release: it reads as untrustworthy, some managed machines have the override disabled, and [#493](https://github.com/yicheng47/runner/issues/493) cannot verify a downloaded installer without a signature to check. Stage 4b of the [archived Windows port plan](../../impls/archive/windows-nightly/plan.md#phase-4--windows-installer-and-upgrades-remaining) deferred signing; this spec is that stage.
 
 ## Scope
 
