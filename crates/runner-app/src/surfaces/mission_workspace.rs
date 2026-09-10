@@ -79,6 +79,7 @@ impl MissionRailView {
 enum MissionTransitionKind {
     Starting,
     Resuming,
+    Restarting,
 }
 
 #[derive(Clone, Copy)]
@@ -107,7 +108,10 @@ fn resolve_slot_overlay(
         SlotOverlayState::Archiving
     } else if transition == Some(MissionTransitionKind::Resuming) {
         SlotOverlayState::Resuming
-    } else if transition == Some(MissionTransitionKind::Starting) {
+    } else if matches!(
+        transition,
+        Some(MissionTransitionKind::Starting | MissionTransitionKind::Restarting)
+    ) {
         SlotOverlayState::Starting
     } else if status != SessionStatus::Running {
         SlotOverlayState::Stopped
@@ -131,6 +135,60 @@ fn is_concurrent_resume_error(error: &str) -> bool {
     ]
     .iter()
     .any(|fragment| error.contains(fragment))
+}
+
+fn slot_controls(status: SessionStatus) -> [SessionControlKind; 2] {
+    [
+        if status == SessionStatus::Running {
+            SessionControlKind::Stop
+        } else {
+            SessionControlKind::Resume
+        },
+        SessionControlKind::Restart,
+    ]
+}
+
+fn stop_all_title(slot_count: usize) -> String {
+    format!("Stop all {slot_count} slots?")
+}
+
+const STOP_ALL_BODY: &str = "Every slot's PTY is killed and whatever turn it is on is cut off. The mission stays open; each slot can be resumed with its conversation, or restarted with its brief.";
+
+fn slot_status_label(
+    status: SessionStatus,
+    activity: Option<SessionActivityState>,
+    restarting: bool,
+    exit_code: Option<i32>,
+) -> String {
+    if restarting {
+        return "starting · fresh conversation".into();
+    }
+    let label = match status {
+        SessionStatus::Stopped => "stopped",
+        SessionStatus::Crashed => "crashed",
+        SessionStatus::Running if activity == Some(SessionActivityState::Idle) => "idle",
+        SessionStatus::Running if activity == Some(SessionActivityState::Busy) => "busy",
+        SessionStatus::Running => "running",
+    };
+    if status != SessionStatus::Running {
+        if let Some(code) = exit_code {
+            return format!("{label} · exit {code}");
+        }
+    }
+    label.into()
+}
+
+fn slot_restart_signal_summary(event: &Event) -> Option<String> {
+    (event.signal_type.as_ref().map(|kind| kind.as_str()) == Some("slot_restarted")).then(|| {
+        format!(
+            "signal · slot_restarted → @{} · fresh conversation, brief re-sent",
+            event
+                .payload
+                .get("handle")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("?")
+        )
+    })
 }
 
 fn mission_drawer_available(archived: bool, secondary: bool) -> bool {
@@ -218,6 +276,9 @@ pub(crate) struct MissionWorkspace {
     delivery_blocked: HashMap<String, DeliveryBlocked>,
     transitions: HashMap<String, MissionTransition>,
     next_transition_generation: u64,
+    slot_actions: HashSet<String>,
+    slot_exit_codes: HashMap<String, Option<i32>>,
+    stop_all_confirm: bool,
     stopping: bool,
     resuming: bool,
     archiving: bool,
@@ -418,6 +479,9 @@ impl MissionWorkspace {
             delivery_blocked: HashMap::new(),
             transitions: HashMap::new(),
             next_transition_generation: 0,
+            slot_actions: HashSet::new(),
+            slot_exit_codes: HashMap::new(),
+            stop_all_confirm: false,
             stopping: false,
             resuming: false,
             archiving: false,
@@ -476,6 +540,9 @@ impl MissionWorkspace {
         self.last_measured_terminal_size = None;
         self.delivery_blocked.clear();
         self.transitions.clear();
+        self.slot_actions.clear();
+        self.slot_exit_codes.clear();
+        self.stop_all_confirm = false;
         self.stopping = false;
         self.resuming = false;
         self.archiving = false;
@@ -521,7 +588,7 @@ impl MissionWorkspace {
     }
 
     fn lifecycle_busy(&self) -> bool {
-        self.stopping || self.resuming || self.archiving
+        self.stopping || self.resuming || self.archiving || !self.slot_actions.is_empty()
     }
 
     fn secondary_state(&self, cx: &App) -> runner_backend::ops::window::SecondaryState {
@@ -1602,6 +1669,9 @@ impl MissionWorkspace {
                     if transition.generation != generation {
                         return true;
                     }
+                    if this.slot_actions.contains(&tracked_id) {
+                        return false;
+                    }
                     let now = Instant::now();
                     let activity = this
                         .attached
@@ -1612,7 +1682,7 @@ impl MissionWorkspace {
                             MissionTransitionKind::Starting => {
                                 chat_lifecycle::TransitionKind::Starting
                             }
-                            MissionTransitionKind::Resuming => {
+                            MissionTransitionKind::Resuming | MissionTransitionKind::Restarting => {
                                 chat_lifecycle::TransitionKind::Resuming
                             }
                         },
@@ -1683,7 +1753,7 @@ impl MissionWorkspace {
     }
 
     fn focus_active_mission_terminal(&self, window: &mut Window, cx: &App) {
-        if self.rename_modal.is_some() {
+        if self.rename_modal.is_some() || self.stop_all_confirm {
             return;
         }
         let MissionTab::Session(session_id) = &self.active_tab else {
@@ -2247,7 +2317,21 @@ impl MissionWorkspace {
                         if let Some(session_id) = session_id.as_deref() {
                             self.attached.remove(session_id);
                             self.delivery_blocked.remove(session_id);
-                            self.transitions.remove(session_id);
+                            if self.transition_kind(session_id)
+                                != Some(MissionTransitionKind::Restarting)
+                            {
+                                self.transitions.remove(session_id);
+                            }
+                            if mission_event {
+                                self.slot_exit_codes.insert(
+                                    session_id.to_owned(),
+                                    event
+                                        .payload
+                                        .get("exit_code")
+                                        .and_then(serde_json::Value::as_i64)
+                                        .and_then(|code| i32::try_from(code).ok()),
+                                );
+                            }
                             self.closing_drawer_shells.remove(session_id);
                             if drawer_event {
                                 let exit_code = event
@@ -2267,6 +2351,7 @@ impl MissionWorkspace {
                             self.attached.remove(session_id);
                             self.delivery_blocked.remove(session_id);
                             self.drawer_exit_codes.remove(session_id);
+                            self.slot_exit_codes.remove(session_id);
                             let existing = self.transitions.get_mut(session_id).map(|transition| {
                                 transition.baseline_seq = 0;
                                 transition.kind
@@ -2546,6 +2631,129 @@ impl MissionWorkspace {
             });
         })
         .detach();
+    }
+
+    fn act_on_slot(
+        &mut self,
+        session_id: &str,
+        action: SessionControlKind,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.stopping
+            || self.resuming
+            || self.archiving
+            || self.archived()
+            || self.secondary_state(cx).secondary
+            || self.slot_actions.contains(session_id)
+            || self.transitions.contains_key(session_id)
+        {
+            return;
+        }
+        let Some(mission_id) = self.mission_id.clone() else {
+            return;
+        };
+        self.slot_actions.insert(session_id.to_owned());
+        let generation = self.generation;
+        if action != SessionControlKind::Stop {
+            self.begin_mission_transition(
+                session_id,
+                if action == SessionControlKind::Restart {
+                    MissionTransitionKind::Restarting
+                } else {
+                    MissionTransitionKind::Resuming
+                },
+                None,
+                window,
+                cx,
+            );
+        }
+        let core = self.core(cx).clone();
+        let target = session_id.to_owned();
+        let size = self.current_mission_terminal_size(window, cx);
+        cx.notify();
+        let task_target = target.clone();
+        let task = cx.background_spawn(async move {
+            let result = match action {
+                SessionControlKind::Stop => {
+                    runner_backend::ops::session::session_kill(&core, &task_target)
+                }
+                SessionControlKind::Resume => runner_backend::ops::session::session_resume(
+                    &core,
+                    &task_target,
+                    Some(size.0),
+                    Some(size.1),
+                )
+                .map(|_| ()),
+                SessionControlKind::Restart => {
+                    runner_backend::ops::session::session_restart(&core, &task_target).map(|_| ())
+                }
+                _ => unreachable!(),
+            };
+            result.map_err(|error| error.to_string())
+        });
+        cx.spawn_in(window, async move |weak, cx| {
+            let result = task.await;
+            let _ = weak.update_in(cx, |this, window, cx| {
+                if !this.is_current(&mission_id, generation) {
+                    return;
+                }
+                this.slot_actions.remove(&target);
+                if let Err(error) = result {
+                    this.transitions.remove(&target);
+                    if !is_concurrent_resume_error(&error) {
+                        this.error = Some(action_failure(
+                            match action {
+                                SessionControlKind::Stop => "stop the slot",
+                                SessionControlKind::Restart => "restart the slot",
+                                _ => "resume the slot",
+                            },
+                            error,
+                        ));
+                    }
+                }
+                this.refresh_open_mission(window, cx);
+                this.refresh_store(StoreRefreshKind::All, cx);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn open_stop_all_confirm(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.lifecycle_busy() || self.secondary_state(cx).secondary {
+            return;
+        }
+        self.stop_all_confirm = true;
+        self.root_focus.focus(window);
+        cx.notify();
+    }
+
+    fn render_stop_all_confirm(&self, cx: &mut Context<Self>) -> AnyElement {
+        let confirm = cx.entity();
+        let cancel = confirm.clone();
+        runner_app::ui::ConfirmDialog::new(
+            stop_all_title(self.sessions.len()),
+            STOP_ALL_BODY,
+            "Stop all",
+            "Stopping…",
+            false,
+            Rc::new(move |window, cx| {
+                confirm.update(cx, |this, cx| {
+                    this.stop_all_confirm = false;
+                    this.stop_open_mission(window, cx);
+                })
+            }),
+            Rc::new(move |window, cx| {
+                cancel.update(cx, |this, cx| {
+                    this.stop_all_confirm = false;
+                    this.focus_active_mission_terminal(window, cx);
+                    cx.notify();
+                })
+            }),
+        )
+        .icon("square.svg")
+        .into_any_element()
     }
 
     fn stop_open_mission(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -3324,6 +3532,9 @@ impl MissionWorkspace {
         if self.rename_modal.is_some() {
             overlays.push(self.render_mission_rename_modal(cx));
         }
+        if self.stop_all_confirm {
+            overlays.push(self.render_stop_all_confirm(cx));
+        }
         overlays
     }
 
@@ -3354,12 +3565,13 @@ impl MissionWorkspace {
                                     .update(cx, |this, cx| this.resume_open_mission(window, cx));
                             })
                     }))
-                    .children((all_live && !busy).then(|| {
+                    .children((self.any_session_live() && !busy).then(|| {
                         SessionControl::new("mission-stop", SessionControlKind::Stop)
                             .variant(SessionControlVariant::Header)
-                            .title("Kill every slot PTY; mission stays running so you can Resume")
+                            .title("Stop all slots")
                             .on_press(move |window, cx| {
-                                stop_root.update(cx, |this, cx| this.stop_open_mission(window, cx));
+                                stop_root
+                                    .update(cx, |this, cx| this.open_stop_all_confirm(window, cx));
                             })
                     }))
             })
@@ -3571,6 +3783,7 @@ impl MissionWorkspace {
         let session_id = entry.session_id.clone();
         let transition = self.transition_kind(&session_id).map(|kind| match kind {
             MissionTransitionKind::Starting => chat_lifecycle::TransitionKind::Starting,
+            MissionTransitionKind::Restarting => chat_lifecycle::TransitionKind::Resuming,
             MissionTransitionKind::Resuming => chat_lifecycle::TransitionKind::Resuming,
         });
         let overlay = chat_lifecycle::resolve_pane_overlay(
@@ -3861,7 +4074,8 @@ impl MissionWorkspace {
             .is_some_and(|mission| mission.status == MissionStatus::Running);
         let can_compose = mission_running && !self.archived() && !self.secondary;
         let paused = mission_running
-            && !self.all_sessions_live()
+            && !self.any_session_live()
+            && self.slot_actions.is_empty()
             && !self.resuming
             && !self.archiving
             && !self.secondary;
@@ -4690,6 +4904,7 @@ impl MissionWorkspace {
             .map(|kind| kind.as_str())
             .unwrap_or("?");
         let warning = signal == "mission_warning";
+        let restart_summary = slot_restart_signal_summary(&event);
         let expanded = self.expanded_signal_payloads.contains(&event_id);
         let root = cx.entity();
         let payload = if signal == "ask_lead" {
@@ -4752,7 +4967,11 @@ impl MissionWorkspace {
                             .font_family(theme::UI_MONOSPACE_FONT)
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(runner_app::ui::hue_for_seed(&event.from).color())
-                            .child(format!("@{}", event.from)),
+                            .child(if signal == "slot_restarted" && event.from == "human" {
+                                "you ·".into()
+                            } else {
+                                format!("@{}", event.from)
+                            }),
                     )
                     .child(
                         div()
@@ -4763,7 +4982,9 @@ impl MissionWorkspace {
                             } else {
                                 theme::faint()
                             })
-                            .child(if warning {
+                            .child(if let Some(summary) = restart_summary {
+                                summary
+                            } else if warning {
                                 format!("warning · {}", format_event_time(&event))
                             } else {
                                 format!(
@@ -5115,7 +5336,7 @@ impl MissionWorkspace {
                     ))
                     .into_any_element(),
                 SlotOverlayState::Stopped => pane
-                    .child(self.render_mission_paused_overlay(cx))
+                    .child(self.render_stopped_slot_overlay(&session, cx))
                     .into_any_element(),
                 SlotOverlayState::Archiving => pane.into_any_element(),
                 SlotOverlayState::None => pane
@@ -5241,7 +5462,7 @@ impl MissionWorkspace {
                 SharedString::from(format!("mission-starting-{session_id}")),
                 SessionOverlayKind::Starting,
             )),
-            SlotOverlayState::Stopped => pane.child(self.render_mission_paused_overlay(cx)),
+            SlotOverlayState::Stopped => pane.child(self.render_stopped_slot_overlay(&session, cx)),
             SlotOverlayState::Archiving | SlotOverlayState::None => pane,
         };
         pane.into_any_element()
@@ -5332,18 +5553,41 @@ impl MissionWorkspace {
             .into_any_element()
     }
 
+    fn render_stopped_slot_overlay(
+        &self,
+        session: &SessionRow,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let others = self
+            .sessions
+            .iter()
+            .filter(|other| {
+                other.session.id != session.session.id
+                    && other.session.status == SessionStatus::Running
+            })
+            .count();
+        if others == 0 {
+            return self.render_mission_paused_overlay(cx);
+        }
+        let resume = cx.entity();
+        let restart = resume.clone();
+        let resume_id = session.session.id.clone();
+        let restart_id = resume_id.clone();
+        SessionOverlay::ended(
+            format!("slot-stopped-{resume_id}"),
+            format!("@{}'s PTY is closed; {others} other slots are still running. Resume continues its conversation where it left off. Restart discards it and starts over with the brief, the same first turn a cold start gives the slot.", session.handle),
+            move |window, cx| resume.update(cx, |this, cx| this.act_on_slot(&resume_id, SessionControlKind::Resume, window, cx)),
+            move |window, cx| restart.update(cx, |this, cx| this.act_on_slot(&restart_id, SessionControlKind::Restart, window, cx)),
+        ).slot_stopped().into_any_element()
+    }
+
     fn render_mission_paused_overlay(&self, cx: &mut Context<Self>) -> AnyElement {
-        let any_live = self.any_session_live();
         let root = cx.entity();
         let resume_root = root.clone();
         let archive_root = root;
         SessionOverlay::ended(
             "mission-paused",
-            if any_live {
-                "One or more slots are paused. Resume the mission to respawn every paused slot — partial-mission states aren't a valid run."
-            } else {
-                "All slots are paused. Resume to respawn every slot and pick up the conversation — the event log is preserved."
-            },
+            "All slots are paused. Resume to respawn every slot and pick up the conversation — the event log is preserved.",
             move |window, cx| {
                 resume_root.update(cx, |this, cx| this.resume_open_mission(window, cx));
             },
@@ -5559,12 +5803,6 @@ impl MissionWorkspace {
             let open_root = root.clone();
             let card_key_id = session_id.clone();
             let card_key_root = root.clone();
-            let button_open_id = session_id.clone();
-            let button_key_id = session_id.clone();
-            let button_open_root = root.clone();
-            let button_key_root = root.clone();
-            let terminal_group =
-                SharedString::from(format!("mission-runner-open-terminal-{session_id}"));
             let activity = statuses.get(&session.handle).copied();
             let presence = match session.session.status {
                 SessionStatus::Crashed => RunnerPresence::Crashed,
@@ -5574,13 +5812,39 @@ impl MissionWorkspace {
                 }
                 SessionStatus::Running => RunnerPresence::Busy,
             };
-            let subtitle = match session.session.status {
-                SessionStatus::Crashed => "crashed",
-                SessionStatus::Stopped => "stopped",
-                SessionStatus::Running if activity == Some(SessionActivityState::Idle) => "idle",
-                SessionStatus::Running if activity == Some(SessionActivityState::Busy) => "busy",
-                SessionStatus::Running => "running",
-            };
+            let subtitle = slot_status_label(
+                session.session.status,
+                activity,
+                self.transition_kind(&session_id) == Some(MissionTransitionKind::Restarting),
+                self.slot_exit_codes.get(&session_id).copied().flatten(),
+            );
+            let disabled = self.stopping
+                || self.resuming
+                || self.archiving
+                || self.slot_actions.contains(&session_id)
+                || self.transitions.contains_key(&session_id);
+            let controls = (!self.archived() && !self.secondary).then(|| {
+                div().flex().items_center().gap_1().children(
+                    slot_controls(session.session.status)
+                        .into_iter()
+                        .map(|action| {
+                            let action_root = root.clone();
+                            let target = session_id.clone();
+                            SessionControl::new(
+                                SharedString::from(format!("slot-{action:?}-{session_id}")),
+                                action,
+                            )
+                            .variant(SessionControlVariant::Header)
+                            .header_size(24.)
+                            .lifecycle_disabled(disabled)
+                            .on_press(move |window, cx| {
+                                action_root.update(cx, |this, cx| {
+                                    this.act_on_slot(&target, action, window, cx)
+                                })
+                            })
+                        }),
+                )
+            });
             let copy = self.session_key_copies.get(&session_id).cloned();
             let active = selected == Some(session_id.as_str());
             list = list.child(
@@ -5661,58 +5925,7 @@ impl MissionWorkspace {
                                             .then(runner_app::ui::lead_badge),
                                     ),
                             )
-                            .child(Tooltip::new(
-                                SharedString::from(format!(
-                                    "mission-runner-open-terminal-tooltip-{session_id}"
-                                )),
-                                "Open PTY",
-                                div()
-                                    .id(terminal_group.clone())
-                                    .group(terminal_group.clone())
-                                    .tab_index(0)
-                                    .size(rems(24. / 16.))
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .rounded_sm()
-                                    .border_1()
-                                    .border_color(theme::border())
-                                    .text_color(theme::faint())
-                                    .cursor_pointer()
-                                    .hover(|button| button.border_color(theme::border_strong()))
-                                    .focus_visible(|button| {
-                                        button.border_color(theme::border_strong())
-                                    })
-                                    .on_click(move |_, window, cx| {
-                                        cx.stop_propagation();
-                                        button_open_root.update(cx, |this, cx| {
-                                            this.select_mission_session(&button_open_id, window, cx)
-                                        });
-                                    })
-                                    .on_key_down(move |event: &KeyDownEvent, window, cx| {
-                                        if matches!(event.keystroke.key.as_str(), "enter" | "space")
-                                        {
-                                            cx.stop_propagation();
-                                            button_key_root.update(cx, |this, cx| {
-                                                this.select_mission_session(
-                                                    &button_key_id,
-                                                    window,
-                                                    cx,
-                                                )
-                                            });
-                                        }
-                                    })
-                                    .child(
-                                        svg()
-                                            .flex_none()
-                                            .path("terminal.svg")
-                                            .size(rems(12. / 16.))
-                                            .text_color(theme::faint())
-                                            .group_hover(terminal_group, |icon| {
-                                                icon.text_color(theme::text())
-                                            }),
-                                    ),
-                            )),
+                            .children(controls),
                     )
                     .child(
                         div()
@@ -6476,6 +6689,87 @@ mod tests {
         assert_eq!(
             mission_tab_in_direction(&tabs, &MissionTab::Session("closed".into()), -1),
             Some(MissionTab::Feed)
+        );
+    }
+    #[test]
+    fn slot_rail_actions_match_status() {
+        assert_eq!(
+            slot_controls(SessionStatus::Running),
+            [SessionControlKind::Stop, SessionControlKind::Restart]
+        );
+        for status in [SessionStatus::Stopped, SessionStatus::Crashed] {
+            assert_eq!(
+                slot_controls(status),
+                [SessionControlKind::Resume, SessionControlKind::Restart]
+            );
+        }
+    }
+
+    #[test]
+    fn restarting_preserves_its_transition_and_fresh_label() {
+        assert_eq!(
+            transition_to_begin_on_spawn(Some(MissionTransitionKind::Restarting)),
+            None
+        );
+        for status in [SessionStatus::Stopped, SessionStatus::Running] {
+            assert_eq!(
+                resolve_slot_overlay(false, Some(MissionTransitionKind::Restarting), status),
+                SlotOverlayState::Starting
+            );
+            assert_eq!(
+                slot_status_label(status, Some(SessionActivityState::Idle), true, Some(0)),
+                "starting · fresh conversation"
+            );
+        }
+        assert_eq!(
+            slot_status_label(
+                SessionStatus::Stopped,
+                Some(SessionActivityState::Busy),
+                false,
+                Some(143)
+            ),
+            "stopped · exit 143"
+        );
+        assert_eq!(
+            slot_status_label(
+                SessionStatus::Running,
+                Some(SessionActivityState::Idle),
+                false,
+                Some(143)
+            ),
+            "idle"
+        );
+    }
+
+    #[test]
+    fn concurrent_restart_errors_match_the_backend_contract() {
+        assert!(is_concurrent_resume_error(
+            "session_restart: session abc is already being resumed"
+        ));
+        assert!(!is_concurrent_resume_error(
+            "session_restart: mission router is not mounted"
+        ));
+    }
+
+    #[test]
+    fn stop_all_confirm_names_the_slot_count_and_preserves_recovery_copy() {
+        assert_eq!(stop_all_title(3), "Stop all 3 slots?");
+        assert_eq!(stop_all_title(2), "Stop all 2 slots?");
+        assert_eq!(STOP_ALL_BODY, "Every slot's PTY is killed and whatever turn it is on is cut off. The mission stays open; each slot can be resumed with its conversation, or restarted with its brief.");
+    }
+
+    #[test]
+    fn slot_restarted_feed_row_uses_payload_handle_and_describes_fresh_brief() {
+        let event = signal(
+            "slot_restarted",
+            serde_json::json!({"handle": "worker", "session_id": "sid", "prior_agent_session_key": "old"}),
+        );
+        assert_eq!(
+            slot_restart_signal_summary(&event).as_deref(),
+            Some("signal · slot_restarted → @worker · fresh conversation, brief re-sent")
+        );
+        assert!(
+            slot_restart_signal_summary(&signal("mission_goal", serde_json::json!({}))).is_none()
         );
     }
 }

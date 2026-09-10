@@ -21,6 +21,7 @@ pub enum SessionOverlayKind {
 enum EndedStyle {
     Chat,
     Shell,
+    Slot,
 }
 
 #[derive(IntoElement)]
@@ -84,6 +85,12 @@ impl SessionOverlay {
             on_archive: Some(Rc::new(on_close)),
             ended_style: EndedStyle::Shell,
         }
+    }
+
+    pub fn slot_stopped(mut self) -> Self {
+        self.ended_style = EndedStyle::Slot;
+        self.title = Some("Slot stopped".into());
+        self
     }
 
     pub fn label(mut self, label: impl Into<SharedString>) -> Self {
@@ -188,6 +195,7 @@ impl RenderOnce for SessionOverlay {
                 let title = self.title.unwrap_or_else(|| "Chat paused".into());
                 let subtitle = self.subtitle.expect("ended overlay subtitle");
                 let shell = self.ended_style == EndedStyle::Shell;
+                let slot = self.ended_style == EndedStyle::Slot;
                 let resume_click = Rc::clone(&resume);
                 let archive_click = Rc::clone(&archive);
                 let header = if shell {
@@ -243,15 +251,25 @@ impl RenderOnce for SessionOverlay {
                         .items_center()
                         .gap_2()
                         .child(
-                            Button::new(SharedString::from(format!("{id}-resume")), "Resume")
-                                .icon("play.svg")
-                                .variant(ButtonVariant::Primary)
-                                .on_press(move |window, cx| resume_click(window, cx)),
+                            Button::new(
+                                SharedString::from(format!("{id}-resume")),
+                                if slot { "Resume slot" } else { "Resume" },
+                            )
+                            .icon("play.svg")
+                            .variant(ButtonVariant::Primary)
+                            .on_press(move |window, cx| resume_click(window, cx)),
                         )
                         .child(
-                            Button::new(SharedString::from(format!("{id}-archive")), "Archive")
-                                .icon("archive.svg")
-                                .on_press(move |window, cx| archive_click(window, cx)),
+                            Button::new(
+                                SharedString::from(format!("{id}-archive")),
+                                if slot { "Restart slot" } else { "Archive" },
+                            )
+                            .icon(if slot {
+                                "rotate-ccw.svg"
+                            } else {
+                                "archive.svg"
+                            })
+                            .on_press(move |window, cx| archive_click(window, cx)),
                         )
                         .into_any_element()
                 };
@@ -399,5 +417,33 @@ mod tests {
         assert_eq!(card.size.width, px(380.));
         assert!(card.top() < actions.top());
         assert!(actions.bottom() < card.bottom());
+    }
+    struct SlotStoppedOverlayTest;
+
+    impl Render for SlotStoppedOverlayTest {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().size_full().child(SessionOverlay::ended(
+                "test-slot-stopped",
+                "@worker's PTY is closed; 2 other slots are still running. Resume continues its conversation where it left off. Restart discards it and starts over with the brief, the same first turn a cold start gives the slot.",
+                |_, _| {}, |_, _| {},
+            ).slot_stopped())
+        }
+    }
+
+    #[test]
+    fn stopped_slot_card_wraps_copy_and_keeps_bottom_docked_actions() {
+        let mut cx = TestAppContext::single();
+        let window = cx.add_window(|window, _| {
+            window.set_rem_size(px(20.8));
+            SlotStoppedOverlayTest
+        });
+        cx.run_until_parked();
+        let mut window = VisualTestContext::from_window(window.into(), &cx);
+        let card = window.debug_bounds("SESSION_ENDED_CARD").unwrap();
+        let subtitle = window.debug_bounds("SESSION_ENDED_SUBTITLE").unwrap();
+        let actions = window.debug_bounds("SESSION_ENDED_ACTIONS").unwrap();
+        assert!(subtitle.right() <= card.right());
+        assert!(subtitle.bottom() <= actions.top());
+        assert_eq!(card.bottom() - actions.bottom(), px(27.));
     }
 }

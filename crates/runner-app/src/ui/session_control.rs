@@ -22,6 +22,7 @@ pub enum SessionControlKind {
     Resume,
     Resuming,
     Stop,
+    Restart,
     Back,
 }
 
@@ -35,6 +36,7 @@ pub struct SessionControl {
     back_icon: Option<SharedString>,
     stop_icon_danger: bool,
     lifecycle_disabled: bool,
+    header_size: f32,
     focus_handle: Option<FocusHandle>,
     on_press: Option<PressHandler>,
 }
@@ -50,6 +52,7 @@ impl SessionControl {
             back_icon: None,
             stop_icon_danger: true,
             lifecycle_disabled: false,
+            header_size: 28.,
             focus_handle: None,
             on_press: None,
         }
@@ -90,6 +93,11 @@ impl SessionControl {
         self
     }
 
+    pub fn header_size(mut self, size: f32) -> Self {
+        self.header_size = size;
+        self
+    }
+
     pub fn on_press(mut self, handler: impl Fn(&mut Window, &mut App) + 'static) -> Self {
         self.on_press = Some(Rc::new(handler));
         self
@@ -100,6 +108,7 @@ impl SessionControl {
             SessionControlKind::Resume => "Resume",
             SessionControlKind::Resuming => "Resuming…",
             SessionControlKind::Stop => "Stop",
+            SessionControlKind::Restart => "Restart",
             SessionControlKind::Back => "Back to runner",
         }
     }
@@ -122,6 +131,7 @@ impl RenderOnce for SessionControl {
             SessionControlKind::Resume => Some("play.svg".into()),
             SessionControlKind::Resuming => Some("loader.svg".into()),
             SessionControlKind::Stop => Some("square.svg".into()),
+            SessionControlKind::Restart => Some("rotate-ccw.svg".into()),
             SessionControlKind::Back => self.back_icon.clone(),
         };
         let spinner_id = (self.id.clone(), "loading");
@@ -148,7 +158,7 @@ impl RenderOnce for SessionControl {
                     theme::text()
                 },
             ),
-            SessionControlKind::Back => (
+            SessionControlKind::Restart | SessionControlKind::Back => (
                 theme::border(),
                 theme::raised(),
                 theme::text(),
@@ -178,7 +188,9 @@ impl RenderOnce for SessionControl {
                     .flex_none()
                     .path(icon)
                     .size(rems(icon_size / 16.))
-                    .text_color(icon_color)
+                    .when(self.kind != SessionControlKind::Restart, |icon| {
+                        icon.text_color(icon_color)
+                    })
                     .into_any_element()
             }),
         };
@@ -195,7 +207,9 @@ impl RenderOnce for SessionControl {
             .justify_center()
             .gap(rems(6. / 16.))
             .when(header, |control| {
-                control.size(rems(28. / 16.)).rounded(rems(4. / 16.))
+                control
+                    .size(rems(self.header_size / 16.))
+                    .rounded(rems(4. / 16.))
             })
             .when(!header, |control| {
                 control
@@ -213,7 +227,7 @@ impl RenderOnce for SessionControl {
                     SessionControlKind::Resume => theme::with_alpha(theme::accent(), 0.8),
                     SessionControlKind::Resuming => theme::info(),
                     SessionControlKind::Stop => theme::with_alpha(theme::danger(), 0.8),
-                    SessionControlKind::Back => theme::muted(),
+                    SessionControlKind::Restart | SessionControlKind::Back => theme::muted(),
                 }
             } else {
                 foreground
@@ -246,15 +260,25 @@ impl RenderOnce for SessionControl {
                     .bg(theme::with_alpha(theme::accent(), 0.1))
                     .text_color(theme::accent()),
                 SessionControlKind::Resume => control.border_color(theme::accent()),
-                SessionControlKind::Stop if header => control
+                SessionControlKind::Stop | SessionControlKind::Restart if header => control
                     .bg(theme::with_alpha(theme::danger(), 0.1))
                     .text_color(theme::danger()),
                 _ => control.border_color(theme::border_strong()),
             });
+            if self.kind == SessionControlKind::Restart {
+                control = control.active(|control| {
+                    control
+                        .bg(theme::with_alpha(theme::danger(), 0.1))
+                        .text_color(theme::danger())
+                });
+            }
             if let Some(handler) = self.on_press {
                 let click = Rc::clone(&handler);
                 control = control
-                    .on_click(move |_, window, cx| click(window, cx))
+                    .on_click(move |_, window, cx| {
+                        cx.stop_propagation();
+                        click(window, cx);
+                    })
                     .on_key_down(move |event: &KeyDownEvent, window, cx| {
                         if matches!(event.keystroke.key.as_str(), "enter" | "space") {
                             cx.stop_propagation();
@@ -335,5 +359,64 @@ mod tests {
         assert!(!parent_mouse_down.get());
         #[cfg(not(windows))]
         assert!(parent_mouse_down.get());
+    }
+    struct SlotControlHost {
+        kind: SessionControlKind,
+        disabled: bool,
+        card_clicks: Rc<Cell<usize>>,
+        action_clicks: Rc<Cell<usize>>,
+    }
+
+    impl Render for SlotControlHost {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let card = self.card_clicks.clone();
+            let action = self.action_clicks.clone();
+            div()
+                .id("slot-card")
+                .size(px(100.))
+                .on_click(move |_, _, _| card.set(card.get() + 1))
+                .child(
+                    div()
+                        .size(px(24.))
+                        .debug_selector(|| "SLOT_CONTROL".into())
+                        .child(
+                            SessionControl::new("slot-action", self.kind)
+                                .variant(SessionControlVariant::Header)
+                                .header_size(24.)
+                                .lifecycle_disabled(self.disabled)
+                                .on_press(move |_, _| action.set(action.get() + 1)),
+                        ),
+                )
+        }
+    }
+
+    #[test]
+    fn slot_controls_act_once_without_opening_the_parent_card() {
+        for kind in [
+            SessionControlKind::Stop,
+            SessionControlKind::Resume,
+            SessionControlKind::Restart,
+        ] {
+            let mut cx = TestAppContext::single();
+            let card = Rc::new(Cell::new(0));
+            let action = Rc::new(Cell::new(0));
+            let window = cx.add_window(|_, _| SlotControlHost {
+                kind,
+                disabled: false,
+                card_clicks: card.clone(),
+                action_clicks: action.clone(),
+            });
+            cx.run_until_parked();
+            let mut window = VisualTestContext::from_window(window.into(), &cx);
+            let bounds = window.debug_bounds("SLOT_CONTROL").unwrap();
+            assert_eq!(bounds.size.width, px(24.));
+            window.simulate_click(bounds.center(), Modifiers::default());
+            window.run_until_parked();
+            assert_eq!(action.get(), 1, "{kind:?}");
+            assert_eq!(card.get(), 0, "{kind:?}");
+            window.simulate_click(gpui::point(px(75.), px(75.)), Modifiers::default());
+            window.run_until_parked();
+            assert_eq!(card.get(), 1);
+        }
     }
 }
