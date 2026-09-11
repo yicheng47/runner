@@ -6,7 +6,7 @@ A plan stays here while its work is in flight and moves to [`archive/`](./archiv
 
 ## Active
 
-- [`553-settings-scrollbar-alignment.md`](./553-settings-scrollbar-alignment.md) — bug [#553](https://github.com/yicheng47/runner/issues/553): the Settings content scrollbar moves from the window edge to the centered column's edge, below the titlebar strip.
+- [`553-settings-scrollbar-alignment.md`](./553-settings-scrollbar-alignment.md) — bug [#553](https://github.com/yicheng47/runner/issues/553): the Settings content scrollbar stays at the window edge but its track is inset below the titlebar strip and above the bottom corner; the Runners and Crews list scrollbars move off the cards to the page edge.
 - [`local-skills/`](./local-skills/README.md) — feature [73](../features/73-runner-skills.md) implementation program: condensed state and binding decisions, milestone plan, dated impl log.
 - [`gpui-rewrite/`](./gpui-rewrite/) — the GPUI rewrite record; shipped as `v0.6.0` 2026-08-23. What is still open from the M6 consolidation queue is in [`m6-remainder.md`](./gpui-rewrite/m6-remainder.md); [#445](https://github.com/yicheng47/runner/issues/445) closed 2026-08-27 once the queued items landed.
 

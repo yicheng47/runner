@@ -2,6 +2,10 @@
 
 Tracking issue: [#553](https://github.com/yicheng47/runner/issues/553). Bug, P2. Branch: **`fix/553-settings-scrollbar-alignment` already exists and is checked out** — it carries this brief; work on it, do not create another.
 
+## Decision change (2026-09-11, after the smoke)
+
+The column-edge placement below shipped on the branch and Jason rejected it on the Archived pane: the thumb sat on the card's right border and crowded the filter chips and the Delete all button. The reference he pointed at (the Codex app's Settings) keeps the bar at the window edge; the only real defects were the track starting at the very top behind the titlebar strip and running into the window's bottom corner. Final shape: the scrollbar stays at the window's right edge in an overlay inset by `TITLEBAR_DRAG_HEIGHT` at both top and bottom, with no column mirroring and no new constants. The Runners and Crews pages had the same overlap through `PaginatedListPage`, whose scrollbar sat inside the padded column on the cards' edge; it is pushed out by the page's side padding so the thumb rides the page edge, bounded by the list region (below the search row, above the pager). The sections below are the original plan and stay as the record.
+
 ## What is wrong
 
 In Settings the content column's scrollbar is painted at the window's right edge, from the very top of the window (behind the titlebar drag strip) to the bottom. The content it scrolls is a centered 760 px column with 40 px side padding, so on a 2000 px window the thumb sits 200 px or more from the cards. It reads as a stray bar on the window border. Every pane has it because it is the shared content column.
