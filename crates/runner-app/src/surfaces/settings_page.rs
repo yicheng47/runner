@@ -1832,6 +1832,10 @@ impl NativeRoot {
             settings.dark_app_theme,
         );
         let is_light = theme::active_variant().is_light();
+        let pick_root = cx.entity();
+        let on_pick: theme_preview::PickHandler = Rc::new(move |mode, _, cx| {
+            pick_root.update(cx, |this, cx| this.set_theme_intent(mode.intent(), cx));
+        });
         theme_preview::theme_preview(
             PreviewPane {
                 mode: PreviewMode::Light,
@@ -1857,6 +1861,7 @@ impl NativeRoot {
                 .into(),
                 active: !is_light,
             },
+            on_pick,
         )
     }
 
@@ -2375,6 +2380,17 @@ mod tests {
         assert!(captioned_by(light, active), "{light:?} {active:?}");
         assert_fill(&mut window, light_pane, theme::RUNNER_LIGHT.bg);
         assert_fill(&mut window, dark_pane, theme::CARBON.bg);
+        // The outline is a selection, not only a report: clicking a pane pins
+        // the Theme intent to that mode.
+        let pick = |window: &mut VisualTestContext, selector: &'static str| {
+            let at = window.debug_bounds(selector).unwrap().center();
+            window.simulate_click(at, gpui::Modifiers::default());
+            window.run_until_parked();
+            host.update(window, |host, _, cx| host.0.read(cx).settings(cx).app_theme)
+                .unwrap()
+        };
+        assert_eq!(pick(&mut window, dark_pane), ThemeIntent::Dark);
+        assert_eq!(pick(&mut window, light_pane), ThemeIntent::Light);
         for selector in ["SETTINGS_APPEARANCE_LIGHT", "SETTINGS_APPEARANCE_DARK"] {
             assert!(window.debug_bounds(selector).is_some(), "{selector}");
         }

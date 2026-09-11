@@ -3,10 +3,16 @@
 //! so the light pane stays light while the app is dark and vice versa.
 
 use gpui::prelude::*;
-use gpui::{div, px, rems, AnyElement, Div, FontWeight, Hsla, SharedString};
+use std::rc::Rc;
+
+use gpui::{
+    div, px, rems, AnyElement, App, ClickEvent, CursorStyle, Div, FontWeight, Hsla, SharedString,
+    Window,
+};
 use runner_terminal::palette::TerminalPalette;
 
 use crate::terminal::element::to_hsla;
+use crate::theme::ThemeIntent;
 use crate::theme::{self, ThemeColors};
 
 /// The caption of whichever pane's mode is currently resolved.
@@ -19,6 +25,13 @@ pub(crate) enum PreviewMode {
 }
 
 impl PreviewMode {
+    pub(crate) fn intent(self) -> ThemeIntent {
+        match self {
+            Self::Light => ThemeIntent::Light,
+            Self::Dark => ThemeIntent::Dark,
+        }
+    }
+
     pub(crate) fn pane_selector(self) -> &'static str {
         match self {
             Self::Light => "SETTINGS_THEME_PREVIEW_LIGHT",
@@ -42,16 +55,24 @@ pub(crate) struct PreviewPane {
     pub active: bool,
 }
 
-pub(crate) fn theme_preview(light: PreviewPane, dark: PreviewPane) -> AnyElement {
+pub(crate) type PickHandler = Rc<dyn Fn(PreviewMode, &mut Window, &mut App)>;
+
+/// Clicking a pane pins the Theme intent to that mode, so the outline is a
+/// selection the user can make, not only a report of what the OS resolved.
+pub(crate) fn theme_preview(
+    light: PreviewPane,
+    dark: PreviewPane,
+    on_pick: PickHandler,
+) -> AnyElement {
     div()
         .flex()
         .gap_4()
-        .child(preview_pane(light))
-        .child(preview_pane(dark))
+        .child(preview_pane(light, on_pick.clone()))
+        .child(preview_pane(dark, on_pick))
         .into_any_element()
 }
 
-fn preview_pane(pane: PreviewPane) -> AnyElement {
+fn preview_pane(pane: PreviewPane, on_pick: PickHandler) -> AnyElement {
     let PreviewPane {
         mode,
         colors,
@@ -72,8 +93,11 @@ fn preview_pane(pane: PreviewPane) -> AnyElement {
         .gap(rems(8. / 16.))
         .child(
             div()
+                .id(mode.pane_selector())
                 .h(rems(172. / 16.))
                 .flex()
+                .cursor(CursorStyle::PointingHand)
+                .on_click(move |_: &ClickEvent, window, cx| on_pick(mode, window, cx))
                 .rounded(rems(12. / 16.))
                 .border_1()
                 .border_color(color(colors.line))
