@@ -2,6 +2,10 @@
 
 Tracking issue: [#529](https://github.com/yicheng47/runner/issues/529). Spec: [529](../features/529-runner-light-theme.md), phases 2 and 3 (phase 1, the design, is signed off: Jason 2026-09-11 on `qBQHS`). Feature, P1. Branch: **`feat/529-runner-light-theme` already exists and is checked out** — it carries the design commit and this brief; work on it, do not create another. Do not open or edit `design/runner.pen`; every value you need is in this brief.
 
+## After the mission (2026-09-11, Jason's smoke test)
+
+Four commits landed on the branch after the crew's PR opened: the Resuming pill moved to the accent family; Claude Code is spawned with `"theme": "auto"` in the `--settings` JSON Runner already sends, so it follows the terminal's background answer instead of the user's pinned theme; Rosé Pine Dawn joined the terminal list as a third-party light palette (canvas frame `VLI02`); Monokai left the list for its licence, a stored `monokai` loading as Match app. The lists below describe the code at launch.
+
 ## What ships
 
 `ThemeVariant::RunnerLight` as the default light theme, read off the canvas; Codex Light removed; a `TerminalTheme` list of Match app (default), Runner Light, Runner Dark, Catppuccin Mocha, Monokai, with Match app following the resolved app variant; the colour literals outside `theme.rs` moved onto tokens; snapshot tests pinning Carbon and Runner Light.

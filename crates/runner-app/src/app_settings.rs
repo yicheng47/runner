@@ -36,7 +36,6 @@ pub enum TerminalTheme {
     RunnerDark,
     RosePineDawn,
     CatppuccinMocha,
-    Monokai,
     #[default]
     #[serde(alias = "runner", other)]
     MatchApp,
@@ -50,7 +49,6 @@ impl TerminalTheme {
             Self::RunnerLight => palette::RUNNER_LIGHT,
             Self::RosePineDawn => palette::ROSE_PINE_DAWN,
             Self::CatppuccinMocha => palette::CATPPUCCIN_MOCHA,
-            Self::Monokai => palette::MONOKAI,
         }
     }
 }
@@ -604,7 +602,6 @@ mod tests {
                 (TerminalTheme::RunnerLight, palette::RUNNER_LIGHT),
                 (TerminalTheme::RunnerDark, palette::RUNNER),
                 (TerminalTheme::CatppuccinMocha, palette::CATPPUCCIN_MOCHA),
-                (TerminalTheme::Monokai, palette::MONOKAI),
             ] {
                 assert_eq!(theme.palette_for(variant), palette);
             }
@@ -612,38 +609,22 @@ mod tests {
     }
 
     #[test]
-    fn monokai_terminal_theme_persists_and_loads() {
-        let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("ui-settings.json");
-        AppSettings {
-            terminal_theme: TerminalTheme::Monokai,
-            ..AppSettings::default()
-        }
-        .save(&path)
-        .unwrap();
-
-        let persisted: serde_json::Value =
-            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(persisted["terminalTheme"], "monokai");
-        assert_eq!(
-            AppSettings::load(&path).unwrap().terminal_theme,
-            TerminalTheme::Monokai
-        );
-    }
-
-    #[test]
     fn unknown_terminal_theme_loads_as_match_app_without_resetting_settings() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("ui-settings.json");
-        fs::write(
-            &path,
-            r#"{"terminalTheme":"unknown-theme","sidebarWidth":376}"#,
-        )
-        .unwrap();
+        // "monokai" shipped as a choice through 0.8.6 and was removed for
+        // its licence; it lands on Match app like any unknown key.
+        for key in ["unknown-theme", "monokai"] {
+            fs::write(
+                &path,
+                format!(r#"{{"terminalTheme":"{key}","sidebarWidth":376}}"#),
+            )
+            .unwrap();
 
-        let loaded = AppSettings::load(&path).unwrap();
-        assert_eq!(loaded.terminal_theme, TerminalTheme::MatchApp);
-        assert_eq!(loaded.sidebar_width, 376.);
+            let loaded = AppSettings::load(&path).unwrap();
+            assert_eq!(loaded.terminal_theme, TerminalTheme::MatchApp, "{key}");
+            assert_eq!(loaded.sidebar_width, 376.);
+        }
     }
 
     #[test]
