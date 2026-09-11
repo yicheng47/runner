@@ -1,12 +1,12 @@
 # Runner Light, a first-party light theme
 
-Tracking issue: [#529](https://github.com/yicheng47/runner/issues/529). Status: planned, design first. Priority P1.
+Tracking: [#529](https://github.com/yicheng47/runner/issues/529). Status: **shipped 2026-09-11 in [#563](https://github.com/yicheng47/runner/pull/563)** (merge `5ca915d`). Priority P1. Phase 1 design on `feat/529-runner-light-theme` (`c952b70`), phases 2–3 by codex-crew (mission `01M27SJTCE4Q3BW73HWRGHVN9N`, brief [529](../../impls/archive/529-runner-light-theme.md)), phase 4 by claude crew (mission `01M282RJNRN4MQ0V1JHT98KJ1Y`, brief [529 phase 4](../../impls/archive/529-appearance-terminal-palettes.md)) with the Runner Light terminal palette removal, the clickable preview panes and Claude Code `theme: auto` landed inline after Jason archived the mission.
 
 ## Motivation
 
 Some colleagues run Runner in light mode. What they get is Codex Light or Catppuccin Latte (`crates/runner-app/src/theme.rs:125`, `:144`), palettes carried over as data from the Tauri line's CSS tokens at the rewrite and never designed for Runner. Codex Light in particular is another product's palette wearing Runner's layout. `design/runner.pen` is dark-only, so every light rendering is a token swap on a dark layout. The terminal is worse: all three terminal palettes (`app_settings.rs:30`, Runner / Catppuccin Mocha / Monokai) are dark, so a light app wraps a dark terminal on every chat and slot.
 
-Runner/Carbon is the first-party dark theme, designed. There is no first-party light theme. Feature [15](./archive/15-light-theme.md) added the light *mechanism* (Auto / Light / Dark intent, a light and a dark pick) but shipped borrowed palettes. This spec is the palette.
+Runner/Carbon is the first-party dark theme, designed. There is no first-party light theme. Feature [15](./15-light-theme.md) added the light *mechanism* (Auto / Light / Dark intent, a light and a dark pick) but shipped borrowed palettes. This spec is the palette.
 
 ## Behavior
 
@@ -24,7 +24,7 @@ Per the post-cutover rule, this is Pencil-first, and per the sign-off rule the c
 
 ### Terminal: a palette per mode, picked in Appearance
 
-Decided 2026-09-11 during the smoke test of the first cut (phase 4, brief [`docs/impls/529-appearance-terminal-palettes.md`](../impls/529-appearance-terminal-palettes.md)): the terminal palette is picked per mode the way the app palette already is, and the old **Match app** entry is gone. Settings → Appearance holds a **Light** card and a **Dark** card, each with an **App palette** row and a **Terminal palette** row, and the terminal follows whichever mode the Theme row resolves to, so a fresh install set to Light gets a light terminal without touching the Terminal pane and Auto intent flips app and terminal together. Above the cards a live preview shows both modes side by side — left always the light picks, right always the dark picks — each pane drawn from its own variant's tokens and its own terminal palette rather than the active theme, with the resolved mode outlined in the accent and captioned `· active`. Settings → Terminal keeps font, size, cursor and scrollback and has no Theme row.
+Decided 2026-09-11 during the smoke test of the first cut (phase 4, brief [`docs/impls/529-appearance-terminal-palettes.md`](../../impls/archive/529-appearance-terminal-palettes.md)): the terminal palette is picked per mode the way the app palette already is, and the old **Match app** entry is gone. Settings → Appearance holds a **Light** card and a **Dark** card, each with an **App palette** row and a **Terminal palette** row, and the terminal follows whichever mode the Theme row resolves to, so a fresh install set to Light gets a light terminal without touching the Terminal pane and Auto intent flips app and terminal together. Above the cards a live preview shows both modes side by side — left always the light picks, right always the dark picks — each pane drawn from its own variant's tokens and its own terminal palette rather than the active theme, with the resolved mode outlined in the accent and captioned `· active`. Settings → Terminal keeps font, size, cursor and scrollback and has no Theme row.
 
 The four palettes are on both lists, in each list's own order:
 
@@ -44,7 +44,7 @@ Eight color literals live outside `theme.rs` and the terminal element (`surfaces
 - A theme editor or user-defined palettes. Runner Light is one designed theme, like Carbon.
 - Restyling the dark theme. Carbon does not change.
 - Per-surface light overrides (a dark sidebar in a light app). One variant, applied everywhere.
-- Windows chrome recolor beyond what the two `platform_ui/windows.rs` literals need; the header design ([494](./archive/494-macos-header-navigation.md), `design/windows-header.pen`) is separate.
+- Windows chrome recolor beyond what the two `platform_ui/windows.rs` literals need; the header design ([494](./494-macos-header-navigation.md), `design/windows-header.pen`) is separate.
 
 ## Design
 
@@ -55,7 +55,7 @@ Eight color literals live outside `theme.rs` and the terminal element (`surfaces
 1. **Design.** Light axis on the `.pen` variables; Light band with the key frames; first-pass token values; terminal palette frame. Stop for sign-off.
 2. **Theme.** `ThemeVariant::RunnerLight` and `RUNNER_LIGHT: ThemeColors` from the canvas; `TerminalTheme::{MatchApp, RunnerLight, RunnerDark}` with `palette::RUNNER_LIGHT`, keys `match-app` / `runner-light` / `runner-dark`, the legacy `runner` key loading as `MatchApp`, `MatchApp` resolving through the app variant wherever the terminal palette is picked, and the Terminal pane's Theme select in the order Match app, Runner Light, Runner Dark, Catppuccin Mocha, Monokai; `LightTheme::RunnerLight` as `#[default]`; `LightTheme::Codex`, `ThemeVariant::Codex`, and the `CODEX` table removed, with `light: "codex"` in an existing `ui-settings.json` falling back to the default on load (a serde `#[serde(other)]` or an `unknown → default` deserialiser, covered by a test); Appearance pane ordering; `resolve_variant` test. The palette constant lives beside the other terminal themes.
 3. **Audit and pins.** The eight literals onto tokens; `VisualTestContext` snapshots of the sidebar, mission workspace, and a confirm dialog in Carbon and Runner Light at one window size, so a regression in either variant fails a test.
-4. **Per-mode palettes** (2026-09-11, [`docs/impls/529-appearance-terminal-palettes.md`](../impls/529-appearance-terminal-palettes.md)). `TerminalTheme` replaced by `LightTerminalTheme` / `DarkTerminalTheme` with `terminal_palette(settings, variant)` picking by mode; the Terminal pane's Theme row moved into Appearance as one Terminal palette row per mode; the two-pane preview; the `terminalTheme` alias.
+4. **Per-mode palettes** (2026-09-11, [`docs/impls/529-appearance-terminal-palettes.md`](../../impls/archive/529-appearance-terminal-palettes.md)). `TerminalTheme` replaced by `LightTerminalTheme` / `DarkTerminalTheme` with `terminal_palette(settings, variant)` picking by mode; the Terminal pane's Theme row moved into Appearance as one Terminal palette row per mode; the two-pane preview; the `terminalTheme` alias.
 
 ## Verification
 

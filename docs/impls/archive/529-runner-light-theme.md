@@ -1,6 +1,6 @@
 # 529 — Runner Light: theme, terminal palette, literal audit
 
-Tracking issue: [#529](https://github.com/yicheng47/runner/issues/529). Spec: [529](../features/529-runner-light-theme.md), phases 2 and 3 (phase 1, the design, is signed off: Jason 2026-09-11 on `qBQHS`). Feature, P1. Branch: **`feat/529-runner-light-theme` already exists and is checked out** — it carries the design commit and this brief; work on it, do not create another. Do not open or edit `design/runner.pen`; every value you need is in this brief.
+Tracking issue: [#529](https://github.com/yicheng47/runner/issues/529). Spec: [529](../../features/archive/529-runner-light-theme.md), phases 2 and 3 (phase 1, the design, is signed off: Jason 2026-09-11 on `qBQHS`). Feature, P1. Shipped 2026-09-11 in [#563](https://github.com/yicheng47/runner/pull/563) (mission `01M27SJTCE4Q3BW73HWRGHVN9N`, codex-crew). Branch: **`feat/529-runner-light-theme` already exists and is checked out** — it carries the design commit and this brief; work on it, do not create another. Do not open or edit `design/runner.pen`; every value you need is in this brief.
 
 ## After the mission (2026-09-11, Jason's smoke test)
 
