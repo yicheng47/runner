@@ -186,8 +186,13 @@ pub fn claude_settings_args(
     let temp_path = crate::session::launch::shell_quote(&temp_path.to_string_lossy());
     let drop_path = crate::session::launch::shell_quote(&drop_path.to_string_lossy());
     let hook_command = format!("cat > {temp_path} && mv {temp_path} {drop_path}");
+    // Runner's terminal answers the background-colour query with the
+    // live palette, so `auto` is the one theme value that never fights
+    // the app: Claude Code paints light on Runner Light and dark on
+    // Carbon, whatever the user's own config says.
     let mut settings = serde_json::json!({
         "tui": "fullscreen",
+        "theme": "auto",
         "hooks": {
             "SessionStart": [{
                 "hooks": [{
@@ -1133,6 +1138,7 @@ mod tests {
         assert!(!args[1].contains(['\n', '\t']));
         let settings = serde_json::from_str::<serde_json::Value>(&args[1]).unwrap();
         assert_eq!(settings["tui"], "fullscreen");
+        assert_eq!(settings["theme"], "auto");
         let command = settings["hooks"]["SessionStart"][0]["hooks"][0]["command"]
             .as_str()
             .unwrap();
