@@ -23,11 +23,6 @@ use crate::theme::{DarkTheme, LightTheme, ThemeIntent};
 use crate::*;
 
 const SETTINGS_SAVE_DELAY_MS: u64 = 300;
-/// Content column geometry in logical pixels at 100% zoom; laid out in rems so
-/// it follows the app zoom. Shared by the scroll container and the scrollbar
-/// overlay so the thumb stays on the card edge (#553).
-const SETTINGS_CONTENT_PADDING_X: f32 = 40.;
-const SETTINGS_CONTENT_MAX_WIDTH: f32 = 760.;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) enum SettingsPane {
@@ -406,10 +401,11 @@ struct ShortcutConflict {
 }
 
 /// The content column: the titlebar drag strip, the padded scroll container
-/// with its centered column, and a scrollbar overlay that mirrors that
-/// column's geometry so the thumb sits on the card edge below the drag strip
-/// instead of on the window edge. The overlay has no id or handlers, so wheel
-/// and click pass through it to the scroll container.
+/// with its centered column, and the scrollbar in an overlay inset by the
+/// drag strip's height at both ends, so the thumb never runs behind the
+/// traffic lights or into the window's bottom corner (#553). The overlay has
+/// no id or handlers, so wheel and click pass through it to the scroll
+/// container.
 fn settings_content_column(
     titlebar_drag_area: impl IntoElement,
     content: Option<AnyElement>,
@@ -431,15 +427,14 @@ fn settings_content_column(
                 .overflow_y_scroll()
                 .scrollbar_width(px(0.))
                 .track_scroll(scroll)
-                .px(rems(SETTINGS_CONTENT_PADDING_X / 16.))
+                .px(rems(40. / 16.))
                 .pb(rems(64. / 16.))
                 .pt(rems(56. / 16.))
                 .children(content.map(|content| {
                     div()
-                        .debug_selector(|| "SETTINGS_CONTENT_COLUMN".into())
                         .mx_auto()
                         .w_full()
-                        .max_w(rems(SETTINGS_CONTENT_MAX_WIDTH / 16.))
+                        .max_w(rems(760. / 16.))
                         .child(content)
                 })),
         )
@@ -447,18 +442,14 @@ fn settings_content_column(
             div()
                 .absolute()
                 .top(px(TITLEBAR_DRAG_HEIGHT * zoom))
-                .bottom_0()
+                .bottom(px(TITLEBAR_DRAG_HEIGHT * zoom))
                 .left_0()
                 .right_0()
-                .px(rems(SETTINGS_CONTENT_PADDING_X / 16.))
                 .child(
                     div()
                         .debug_selector(|| "SETTINGS_CONTENT_SCROLLBAR_TRACK".into())
                         .relative()
-                        .mx_auto()
-                        .w_full()
-                        .max_w(rems(SETTINGS_CONTENT_MAX_WIDTH / 16.))
-                        .h_full()
+                        .size_full()
                         .child(scrollbar),
                 ),
         )
@@ -2180,7 +2171,7 @@ mod tests {
     }
 
     #[test]
-    fn content_scrollbar_overlays_the_centered_column_edge() {
+    fn content_scrollbar_starts_below_the_drag_strip_at_the_window_edge() {
         use gpui::{
             point, size, Modifiers, Pixels, Point, Render, TestAppContext, VisualTestContext,
         };
@@ -2265,7 +2256,7 @@ mod tests {
             .unwrap();
         let near = |a: Pixels, b: Pixels| (f32::from(a) - f32::from(b)).abs() <= 0.5;
 
-        for (width, capped) in [(1000., false), (2000., true)] {
+        for width in [1000., 2000.] {
             for rem in [16., 20.8] {
                 let zoom = rem / 16.;
                 window.simulate_resize(size(px(width), px(HEIGHT)));
@@ -2276,45 +2267,35 @@ mod tests {
                 .unwrap();
                 window.run_until_parked();
 
-                let column = window.debug_bounds("SETTINGS_CONTENT_COLUMN").unwrap();
                 let track = window
                     .debug_bounds("SETTINGS_CONTENT_SCROLLBAR_TRACK")
                     .unwrap();
-                let label = format!("{width}x{rem}: column {column:?} track {track:?}");
+                let label = format!("{width}x{rem}: track {track:?}");
 
-                assert!(near(track.right(), column.right()), "{label}");
-                assert!(near(track.left(), column.left()), "{label}");
+                assert!(near(track.right(), px(width)), "{label}");
+                assert!(near(track.left(), px(SIDEBAR_DEFAULT * zoom)), "{label}");
                 assert!(
                     near(track.top(), px(TITLEBAR_DRAG_HEIGHT * zoom)),
                     "{label}"
                 );
-                assert!(near(track.bottom(), px(HEIGHT)), "{label}");
-
-                let content_left = SIDEBAR_DEFAULT * zoom;
-                let padded_width = width - content_left - 2. * SETTINGS_CONTENT_PADDING_X * zoom;
-                let max_width = SETTINGS_CONTENT_MAX_WIDTH * zoom;
-                assert_eq!(capped, padded_width >= max_width, "{label}");
-                let expected_width = if capped { max_width } else { padded_width };
-                assert!(near(column.size.width, px(expected_width)), "{label}");
                 assert!(
-                    near(column.left() - px(content_left), px(width) - column.right()),
+                    near(track.bottom(), px(HEIGHT - TITLEBAR_DRAG_HEIGHT * zoom)),
                     "{label}"
                 );
 
                 // The scrollbar entity's root carries no selector, so prove its
-                // right-anchored track by where a click on it jumps the scroll:
-                // above the thumb jumps to the top, below it to the bottom, and
-                // a click outside the gutter changes nothing.
+                // right-anchored, top-inset track by where a click jumps the
+                // scroll: above the thumb jumps to the top, below it to the
+                // bottom, and a click outside the gutter changes nothing.
                 let max = scroll.max_offset().height;
                 assert!(max > px(0.), "{label}: the pane should overflow");
-                let right = f32::from(column.right());
-                let inside_left = px(right - GUTTER * zoom + 1.);
-                let outside_left = px(right - GUTTER * zoom - 1.);
-                let inside_right = px(right - 1.);
-                let outside_right = px(right + 1.);
+                let inside_left = px(width - GUTTER * zoom + 1.);
+                let outside_left = px(width - GUTTER * zoom - 1.);
+                let inside_right = px(width - 1.);
                 let below_top = track.top() + px(1.);
                 let above_top = track.top() - px(1.);
-                let bottom = px(HEIGHT - 1.);
+                let bottom = track.bottom() - px(1.);
+                let below_bottom = track.bottom() + px(1.);
                 let mut click_from = |from: Pixels, at: Point<Pixels>| {
                     scroll.set_offset(point(px(0.), from));
                     host.update(&mut window, |_, window, _| window.refresh())
@@ -2340,12 +2321,15 @@ mod tests {
                     "{label}: a click left of the gutter should not scroll"
                 );
                 assert!(
-                    near(click_from(-max, point(outside_right, below_top)), -max),
-                    "{label}: a click right of the column should not scroll"
-                );
-                assert!(
                     near(click_from(-max, point(inside_right, above_top)), -max),
                     "{label}: a click in the drag strip should not scroll"
+                );
+                assert!(
+                    near(
+                        click_from(px(0.), point(inside_right, below_bottom)),
+                        px(0.)
+                    ),
+                    "{label}: a click below the track should not scroll"
                 );
             }
         }

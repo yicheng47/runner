@@ -10,6 +10,11 @@ use crate::theme;
 use crate::ui::field::TextField;
 use crate::ui::scrollbar::Scrollbar;
 
+/// Side padding of a paginated list page in logical pixels at 100% zoom. The
+/// list scrollbar is pushed out by the same amount so its thumb rides the
+/// page's right edge instead of the cards' (#553).
+const LIST_PAGE_PADDING_X: f32 = 32.;
+
 pub const PAGE_SIZE: usize = 8;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -593,7 +598,15 @@ impl RenderOnce for PaginatedListPage {
                                     .track_scroll(&scroll_handle)
                                     .child(self.content),
                             )
-                            .child(scrollbar),
+                            .child(
+                                div()
+                                    .absolute()
+                                    .top_0()
+                                    .bottom_0()
+                                    .right(rems(-LIST_PAGE_PADDING_X / 16.))
+                                    .w(rems(LIST_PAGE_PADDING_X / 16.))
+                                    .child(div().relative().size_full().child(scrollbar)),
+                            ),
                     )
                     .child(
                         div()
@@ -651,7 +664,7 @@ impl RenderOnce for PaginatedListPage {
                     .flex()
                     .flex_col()
                     .gap(rems(24. / 16.))
-                    .px(rems(32. / 16.))
+                    .px(rems(LIST_PAGE_PADDING_X / 16.))
                     .pt(rems(40. / 16.))
                     .pb(rems(18. / 16.))
                     .child(
