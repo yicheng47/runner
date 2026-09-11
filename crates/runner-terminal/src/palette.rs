@@ -17,6 +17,15 @@ const fn rgb(r: u8, g: u8, b: u8) -> Rgb {
     Rgb { r, g, b }
 }
 
+impl TerminalPalette {
+    /// Whether the ground reads as light, the DEC 2031 sense of "colour
+    /// scheme" that a TUI on auto keys its own paint set off.
+    pub fn is_light(&self) -> bool {
+        let Rgb { r, g, b } = self.background;
+        0.2126 * f32::from(r) + 0.7152 * f32::from(g) + 0.0722 * f32::from(b) > 127.5
+    }
+}
+
 pub const RUNNER: TerminalPalette = TerminalPalette {
     background: rgb(0x15, 0x16, 0x1b),
     foreground: rgb(0xdc, 0xdc, 0xe0),
@@ -182,6 +191,13 @@ mod tests {
         assert_eq!(RUNNER.selection, rgb(0x3b, 0x3e, 0x49));
         assert_eq!(RUNNER.cursor, rgb(0x00, 0xff, 0x9c));
         assert_eq!(CATPPUCCIN_MOCHA.ansi[4], rgb(0x89, 0xb4, 0xfa));
+    }
+
+    #[test]
+    fn lightness_follows_the_ground() {
+        assert!(!RUNNER.is_light());
+        assert!(!CATPPUCCIN_MOCHA.is_light());
+        assert!(ROSE_PINE_DAWN.is_light());
     }
 
     #[test]
