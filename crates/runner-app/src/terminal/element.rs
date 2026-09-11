@@ -1091,13 +1091,15 @@ impl Element for TerminalElement {
                 if cell.flags.contains(Flags::ITALIC) {
                     cell_font = cell_font.italic();
                 }
+                let link_armed = link_underlined && link_modifier_held;
+                let text_color = if link_armed {
+                    theme::accent()
+                } else {
+                    to_hsla(fg, 1.)
+                };
                 let underline = if link_underlined {
                     Some(gpui::UnderlineStyle {
-                        color: Some(if link_modifier_held {
-                            theme::accent()
-                        } else {
-                            to_hsla(fg, 1.)
-                        }),
+                        color: Some(text_color),
                         thickness: px(self.style.app_zoom),
                         wavy: false,
                     })
@@ -1134,7 +1136,7 @@ impl Element for TerminalElement {
                 let run = TextRun {
                     len: text.len(),
                     font: cell_font,
-                    color: to_hsla(fg, 1.),
+                    color: text_color,
                     background_color: None,
                     underline,
                     strikethrough,
