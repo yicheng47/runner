@@ -4,7 +4,7 @@ use std::time::Duration;
 use gpui::prelude::*;
 use gpui::{
     div, px, rems, svg, AnyElement, BoxShadow, Context, CursorStyle, Entity, FontWeight,
-    KeyDownEvent, PathPromptOptions, ScrollHandle, SharedString, Subscription, Window,
+    KeyDownEvent, PathPromptOptions, Pixels, ScrollHandle, SharedString, Subscription, Window,
 };
 use runner_app::ui::{
     working_dir_text_field, Button, ButtonSize, IconButton, IconButtonSize, PaneHeader, Scrollbar,
@@ -14,15 +14,19 @@ use runner_app::ui::{
 
 use super::*;
 use crate::app_settings::{
-    normalize_zoom, nudge_zoom, FileLinkEditor, MissionPermissionMode, TerminalCursorStyle,
-    TerminalFontFamily, TerminalTheme, TERMINAL_FONT_SIZE_MAX, TERMINAL_FONT_SIZE_MIN,
-    TERMINAL_SCROLLBACK_LINES, ZOOM_STEPS,
+    normalize_zoom, nudge_zoom, DarkTerminalTheme, FileLinkEditor, LightTerminalTheme,
+    MissionPermissionMode, TerminalCursorStyle, TerminalFontFamily, TERMINAL_FONT_SIZE_MAX,
+    TERMINAL_FONT_SIZE_MIN, TERMINAL_SCROLLBACK_LINES, ZOOM_STEPS,
 };
 use crate::surfaces::app_shell::TITLEBAR_DRAG_HEIGHT;
+use crate::surfaces::settings::theme_preview::{self, PreviewMode, PreviewPane};
 use crate::theme::{DarkTheme, LightTheme, ThemeIntent};
 use crate::*;
 
 const SETTINGS_SAVE_DELAY_MS: u64 = 300;
+/// The four palette selects in Appearance share one trigger width, so the
+/// app and terminal rows of each mode line up.
+const SETTINGS_SELECT_WIDTH: Pixels = px(176.);
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) enum SettingsPane {
@@ -169,7 +173,8 @@ enum SettingsSelection {
     MissionPermissions,
     LightTheme,
     DarkTheme,
-    TerminalTheme,
+    LightTerminalTheme,
+    DarkTerminalTheme,
     TerminalFont,
     TerminalCursor,
     FileLinkEditor,
@@ -191,7 +196,8 @@ pub(crate) struct SettingsState {
     working_dir_browse_focus: FocusHandle,
     light_theme: Entity<StyledSelect>,
     dark_theme: Entity<StyledSelect>,
-    terminal_theme: Entity<StyledSelect>,
+    light_terminal_theme: Entity<StyledSelect>,
+    dark_terminal_theme: Entity<StyledSelect>,
     terminal_font: Entity<StyledSelect>,
     terminal_cursor: Entity<StyledSelect>,
     file_link_editor: Entity<StyledSelect>,
@@ -277,12 +283,20 @@ impl SettingsState {
             SettingsSelection::DarkTheme,
             cx,
         );
-        let terminal_theme = settings_select(
+        let light_terminal_theme = settings_select(
             &root,
-            "settings-terminal-theme",
-            terminal_theme_value(settings.terminal_theme),
-            terminal_theme_options(theme::active_variant()),
-            SettingsSelection::TerminalTheme,
+            "settings-light-terminal-theme",
+            settings.light_terminal_theme.key(),
+            light_terminal_theme_options(),
+            SettingsSelection::LightTerminalTheme,
+            cx,
+        );
+        let dark_terminal_theme = settings_select(
+            &root,
+            "settings-dark-terminal-theme",
+            settings.dark_terminal_theme.key(),
+            dark_terminal_theme_options(),
+            SettingsSelection::DarkTerminalTheme,
             cx,
         );
         let terminal_font = settings_select(
@@ -374,7 +388,8 @@ impl SettingsState {
             working_dir_browse_focus: cx.focus_handle(),
             light_theme,
             dark_theme,
-            terminal_theme,
+            light_terminal_theme,
+            dark_terminal_theme,
             terminal_font,
             terminal_cursor,
             file_link_editor,
@@ -533,15 +548,30 @@ fn settings_select(
         });
     });
     let value = value.into();
+    let width = match selection {
+        SettingsSelection::LightTheme
+        | SettingsSelection::DarkTheme
+        | SettingsSelection::LightTerminalTheme
+        | SettingsSelection::DarkTerminalTheme => Some(SETTINGS_SELECT_WIDTH),
+        SettingsSelection::DefaultCrew
+        | SettingsSelection::MissionPermissions
+        | SettingsSelection::TerminalFont
+        | SettingsSelection::TerminalCursor
+        | SettingsSelection::FileLinkEditor => None,
+    };
     cx.new(|select_cx| {
-        StyledSelect::new(
+        let select = StyledSelect::new(
             id,
             select_cx.focus_handle(),
             value,
             options,
             handler,
             select_cx,
-        )
+        );
+        match width {
+            Some(width) => select.width(width),
+            None => select,
+        }
     })
 }
 
@@ -801,8 +831,10 @@ impl NativeRoot {
                 .is_some_and(|value| update_if_changed(&mut settings.light_app_theme, value)),
             SettingsSelection::DarkTheme => parse_dark_theme(value)
                 .is_some_and(|value| update_if_changed(&mut settings.dark_app_theme, value)),
-            SettingsSelection::TerminalTheme => parse_terminal_theme(value)
-                .is_some_and(|value| update_if_changed(&mut settings.terminal_theme, value)),
+            SettingsSelection::LightTerminalTheme => LightTerminalTheme::parse(value)
+                .is_some_and(|value| update_if_changed(&mut settings.light_terminal_theme, value)),
+            SettingsSelection::DarkTerminalTheme => DarkTerminalTheme::parse(value)
+                .is_some_and(|value| update_if_changed(&mut settings.dark_terminal_theme, value)),
             SettingsSelection::TerminalFont => parse_terminal_font(value)
                 .is_some_and(|value| update_if_changed(&mut settings.terminal_font_family, value)),
             SettingsSelection::TerminalCursor => parse_terminal_cursor(value)
@@ -1752,19 +1784,80 @@ impl NativeRoot {
             .flex()
             .flex_col()
             .gap_5()
-            .child(PaneHeader::new("Appearance", "Theme, palette, and font."))
-            .child(SettingsCard::new(vec![
-                SettingsRow::new("Theme", self.render_theme_segmented(cx))
-                    .subtitle("Match the OS, or pin to light or dark.")
-                    .into_any_element(),
-                SettingsRow::new("Light theme", self.settings_page.light_theme.clone())
-                    .subtitle("Picked when the OS is light or Theme = Light.")
-                    .into_any_element(),
-                SettingsRow::new("Dark theme", self.settings_page.dark_theme.clone())
-                    .subtitle("Picked when the OS is dark or Theme = Dark.")
-                    .into_any_element(),
-            ]))
+            .child(PaneHeader::new(
+                "Appearance",
+                "Theme, and the app and terminal palettes for each mode.",
+            ))
+            .child(SettingsCard::new(vec![SettingsRow::new(
+                "Theme",
+                self.render_theme_segmented(cx),
+            )
+            .subtitle("Match the OS, or pin to light or dark.")
+            .into_any_element()]))
+            .child(self.render_theme_preview(cx))
+            .child(palette_section(
+                "Light",
+                "SETTINGS_APPEARANCE_LIGHT",
+                self.settings_page.light_theme.clone(),
+                "Chrome colours when the app is light.",
+                self.settings_page.light_terminal_theme.clone(),
+                "Terminal colours when the app is light.",
+            ))
+            .child(palette_section(
+                "Dark",
+                "SETTINGS_APPEARANCE_DARK",
+                self.settings_page.dark_theme.clone(),
+                "Chrome colours when the app is dark.",
+                self.settings_page.dark_terminal_theme.clone(),
+                "Terminal colours when the app is dark.",
+            ))
             .into_any_element()
+    }
+
+    /// Both panes are built from the picks, not from the active variant: the
+    /// left pane is always the light picks and the right the dark picks, and
+    /// only the outline and caption follow which mode is resolved now.
+    fn render_theme_preview(&self, cx: &mut Context<Self>) -> AnyElement {
+        let settings = self.settings(cx);
+        let light_variant = theme::resolve_variant(
+            ThemeIntent::Light,
+            true,
+            settings.light_app_theme,
+            settings.dark_app_theme,
+        );
+        let dark_variant = theme::resolve_variant(
+            ThemeIntent::Dark,
+            false,
+            settings.light_app_theme,
+            settings.dark_app_theme,
+        );
+        let is_light = theme::active_variant().is_light();
+        theme_preview::theme_preview(
+            PreviewPane {
+                mode: PreviewMode::Light,
+                colors: theme::colors_for(light_variant),
+                palette: settings.light_terminal_theme.palette(),
+                caption: format!(
+                    "Light · {} + {}",
+                    light_theme_label(settings.light_app_theme),
+                    settings.light_terminal_theme.label()
+                )
+                .into(),
+                active: is_light,
+            },
+            PreviewPane {
+                mode: PreviewMode::Dark,
+                colors: theme::colors_for(dark_variant),
+                palette: settings.dark_terminal_theme.palette(),
+                caption: format!(
+                    "Dark · {} + {}",
+                    dark_theme_label(settings.dark_app_theme),
+                    settings.dark_terminal_theme.label()
+                )
+                .into(),
+                active: !is_light,
+            },
+        )
     }
 
     fn render_theme_segmented(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -1843,9 +1936,6 @@ impl NativeRoot {
     }
 
     fn render_terminal_settings(&self, cx: &mut Context<Self>) -> AnyElement {
-        self.settings_page.terminal_theme.update(cx, |select, cx| {
-            select.set_options(terminal_theme_options(theme::active_variant()), cx);
-        });
         let size = self
             .settings(cx)
             .terminal_font_size
@@ -1892,17 +1982,20 @@ impl NativeRoot {
             .flex()
             .flex_col()
             .gap_5()
+            .debug_selector(|| "SETTINGS_TERMINAL_PANE".into())
             .child(PaneHeader::new(
                 "Terminal",
-                "xterm appearance settings for the runner terminal.",
+                "Font, size, and cursor for the embedded terminal; palettes live in Appearance.",
             ))
             .child(SettingsCard::new(vec![
-                SettingsRow::new("Theme", self.settings_page.terminal_theme.clone())
-                    .subtitle("ANSI palette for the embedded terminal.")
-                    .into_any_element(),
-                SettingsRow::new("Font family", self.settings_page.terminal_font.clone())
-                    .subtitle("Typeface used by the embedded terminal.")
-                    .into_any_element(),
+                SettingsRow::new(
+                    "Font family",
+                    div()
+                        .debug_selector(|| "SETTINGS_TERMINAL_FONT".into())
+                        .child(self.settings_page.terminal_font.clone()),
+                )
+                .subtitle("Typeface used by the embedded terminal.")
+                .into_any_element(),
                 SettingsRow::new("Terminal font size", size_stepper)
                     .subtitle("Glyph size for the embedded terminal.")
                     .into_any_element(),
@@ -1979,14 +2072,68 @@ fn light_theme_options() -> Vec<SelectOption> {
     ]
 }
 
-fn terminal_theme_options(variant: theme::ThemeVariant) -> Vec<SelectOption> {
+fn light_terminal_theme_options() -> Vec<SelectOption> {
     vec![
-        SelectOption::new("match-app", "Match app").swatch(theme::colors_for(variant).accent),
-        SelectOption::new("runner-light", "Runner Light").swatch(0x00a66a),
-        SelectOption::new("runner-dark", "Runner Dark").swatch(0x00a66a),
         SelectOption::new("rose-pine-dawn", "Rosé Pine Dawn").swatch(0xd7827e),
+        SelectOption::new("runner-light", "Runner Light").swatch(0x00a66a),
+        SelectOption::new("runner-dark", "Runner Dark").swatch(0x00ff9c),
         SelectOption::new("catppuccin-mocha", "Catppuccin Mocha").swatch(0xcba6f7),
     ]
+}
+
+fn dark_terminal_theme_options() -> Vec<SelectOption> {
+    vec![
+        SelectOption::new("runner-dark", "Runner Dark").swatch(0x00ff9c),
+        SelectOption::new("catppuccin-mocha", "Catppuccin Mocha").swatch(0xcba6f7),
+        SelectOption::new("rose-pine-dawn", "Rosé Pine Dawn").swatch(0xd7827e),
+        SelectOption::new("runner-light", "Runner Light").swatch(0x00a66a),
+    ]
+}
+
+/// A mode's label and its App palette + Terminal palette card.
+fn palette_section(
+    label: &'static str,
+    selector: &'static str,
+    app_palette: Entity<StyledSelect>,
+    app_subtitle: &'static str,
+    terminal_palette: Entity<StyledSelect>,
+    terminal_subtitle: &'static str,
+) -> AnyElement {
+    div()
+        .flex()
+        .flex_col()
+        .gap(rems(8. / 16.))
+        .debug_selector(move || selector.into())
+        .child(
+            div()
+                .text_size(theme::text_body())
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(theme::muted())
+                .child(label),
+        )
+        .child(SettingsCard::new(vec![
+            SettingsRow::new("App palette", app_palette)
+                .subtitle(app_subtitle)
+                .into_any_element(),
+            SettingsRow::new("Terminal palette", terminal_palette)
+                .subtitle(terminal_subtitle)
+                .into_any_element(),
+        ]))
+        .into_any_element()
+}
+
+fn light_theme_label(value: LightTheme) -> &'static str {
+    match value {
+        LightTheme::RunnerLight => "Runner Light",
+        LightTheme::CatppuccinLatte => "Catppuccin Latte",
+    }
+}
+
+fn dark_theme_label(value: DarkTheme) -> &'static str {
+    match value {
+        DarkTheme::Runner => "Runner",
+        DarkTheme::CatppuccinMocha => "Catppuccin Mocha",
+    }
 }
 
 fn light_theme_value(value: LightTheme) -> &'static str {
@@ -2015,27 +2162,6 @@ fn parse_dark_theme(value: &str) -> Option<DarkTheme> {
     match value {
         "carbon" => Some(DarkTheme::Runner),
         "catppuccin-mocha" => Some(DarkTheme::CatppuccinMocha),
-        _ => None,
-    }
-}
-
-fn terminal_theme_value(value: TerminalTheme) -> &'static str {
-    match value {
-        TerminalTheme::MatchApp => "match-app",
-        TerminalTheme::RunnerLight => "runner-light",
-        TerminalTheme::RunnerDark => "runner-dark",
-        TerminalTheme::RosePineDawn => "rose-pine-dawn",
-        TerminalTheme::CatppuccinMocha => "catppuccin-mocha",
-    }
-}
-
-fn parse_terminal_theme(value: &str) -> Option<TerminalTheme> {
-    match value {
-        "match-app" => Some(TerminalTheme::MatchApp),
-        "runner-light" => Some(TerminalTheme::RunnerLight),
-        "runner-dark" => Some(TerminalTheme::RunnerDark),
-        "rose-pine-dawn" => Some(TerminalTheme::RosePineDawn),
-        "catppuccin-mocha" => Some(TerminalTheme::CatppuccinMocha),
         _ => None,
     }
 }
@@ -2086,33 +2212,195 @@ mod tests {
                 SelectOption::new("catppuccin-latte", "Catppuccin Latte").swatch(0x8839ef),
             ]
         );
-        let variant = theme::ThemeVariant::RunnerLight;
-        let terminal = terminal_theme_options(variant);
+        let light_terminal = light_terminal_theme_options();
         assert_eq!(
-            terminal,
+            light_terminal,
             vec![
-                SelectOption::new("match-app", "Match app")
-                    .swatch(theme::colors_for(variant).accent),
-                SelectOption::new("runner-light", "Runner Light").swatch(0x00a66a),
-                SelectOption::new("runner-dark", "Runner Dark").swatch(0x00a66a),
                 SelectOption::new("rose-pine-dawn", "Rosé Pine Dawn").swatch(0xd7827e),
+                SelectOption::new("runner-light", "Runner Light").swatch(0x00a66a),
+                SelectOption::new("runner-dark", "Runner Dark").swatch(0x00ff9c),
                 SelectOption::new("catppuccin-mocha", "Catppuccin Mocha").swatch(0xcba6f7),
             ]
         );
+        let dark_terminal = dark_terminal_theme_options();
+        assert_eq!(
+            dark_terminal,
+            vec![
+                SelectOption::new("runner-dark", "Runner Dark").swatch(0x00ff9c),
+                SelectOption::new("catppuccin-mocha", "Catppuccin Mocha").swatch(0xcba6f7),
+                SelectOption::new("rose-pine-dawn", "Rosé Pine Dawn").swatch(0xd7827e),
+                SelectOption::new("runner-light", "Runner Light").swatch(0x00a66a),
+            ]
+        );
         for option in light {
-            assert_eq!(
-                light_theme_value(parse_light_theme(&option.value).unwrap()),
-                option.value
-            );
+            let theme = parse_light_theme(&option.value).unwrap();
+            assert_eq!(light_theme_value(theme), option.value);
+            assert_eq!(option.label.as_ref(), light_theme_label(theme));
         }
-        for option in terminal {
-            assert_eq!(
-                terminal_theme_value(parse_terminal_theme(&option.value).unwrap()),
-                option.value
-            );
+        for (option, theme) in light_terminal.iter().zip(LightTerminalTheme::ALL) {
+            assert_eq!(option.value, theme.key());
+            assert_eq!(option.label.as_ref(), theme.label());
         }
+        for (option, theme) in dark_terminal.iter().zip(DarkTerminalTheme::ALL) {
+            assert_eq!(option.value, theme.key());
+            assert_eq!(option.label.as_ref(), theme.label());
+        }
+        assert_eq!(dark_theme_label(DarkTheme::Runner), "Runner");
         assert_eq!(parse_light_theme("codex"), None);
-        assert_eq!(parse_terminal_theme("runner"), None);
+        assert_eq!(LightTerminalTheme::parse("match-app"), None);
+        assert_eq!(DarkTerminalTheme::parse("runner"), None);
+    }
+
+    #[test]
+    fn appearance_preview_draws_each_mode_from_its_picks_and_outlines_the_resolved_one() {
+        use crate::theme_snapshot::{assert_fill, ThemeGuard};
+        use gpui::{size, Render, TestAppContext, VisualTestContext};
+        use runner_backend::{db, event_bus, events, mcp, router, session, shell_path, windows};
+        use std::sync::{Arc, Mutex, RwLock};
+
+        struct PaneHost(Entity<NativeRoot>);
+        impl Render for PaneHost {
+            fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                div()
+                    .size_full()
+                    .p_6()
+                    .children(self.0.update(cx, |root, cx| root.render_settings_pane(cx)))
+            }
+        }
+        fn packed(rgb: alacritty_terminal::vte::ansi::Rgb) -> u32 {
+            u32::from(rgb.r) << 16 | u32::from(rgb.g) << 8 | u32::from(rgb.b)
+        }
+        fn captioned_by(
+            pane: gpui::Bounds<gpui::Pixels>,
+            caption: gpui::Bounds<gpui::Pixels>,
+        ) -> bool {
+            caption.left() >= pane.left()
+                && caption.right() <= pane.right()
+                && caption.top() >= pane.bottom()
+        }
+
+        let _theme = ThemeGuard::new();
+        theme::set_active_variant(theme::ThemeVariant::Carbon);
+        let temp = tempfile::tempdir().unwrap();
+        let runtime_shell_env = Arc::new(RwLock::new(shell_path::LoginShellEnv::default()));
+        let runtime_discovery =
+            Arc::new(RwLock::new(shell_path::DiscoveryState::startup(None, None)));
+        let core = AppCore {
+            db: Arc::new(db::open_pool(&temp.path().join("runner.db")).unwrap()),
+            app_data_dir: temp.path().to_owned(),
+            sessions: session::SessionManager::new(
+                runtime_shell_env.clone(),
+                runtime_discovery.clone(),
+                Arc::new(session::pty_runtime::PtyRuntime::new()),
+            ),
+            runtime_shell_env,
+            runtime_discovery,
+            buses: event_bus::BusRegistry::new(),
+            routers: router::RouterRegistry::new(),
+            mission_grid_hint: Arc::new(Mutex::new(None)),
+            mcp: Arc::new(mcp::McpHandle::new()),
+            windows: Arc::new(windows::WindowRegistry::new()),
+            events: events::EventChannel::new(),
+            session_event_observer: Default::default(),
+            app_version: "0.0.0-test".into(),
+        };
+        let mut cx = TestAppContext::single();
+        let store = cx.new(|cx| {
+            AppStore::new(
+                core,
+                temp.path().join("settings.json"),
+                AppSettings {
+                    app_theme: ThemeIntent::Dark,
+                    dark_terminal_theme: DarkTerminalTheme::CatppuccinMocha,
+                    ..AppSettings::default()
+                },
+                None,
+                cx,
+            )
+        });
+        cx.update(|cx| {
+            cx.set_global(GlobalAppStore(store.clone()));
+            cx.set_global(WindowLayoutCheckpoint::default());
+            #[cfg(not(windows))]
+            let updater = cx.new(|cx| Updater::new(false, cx));
+            #[cfg(windows)]
+            let updater = cx.new(|cx| Updater::new(false, temp.path().join("updates"), cx));
+            cx.set_global(GlobalUpdater(updater));
+        });
+        let host = cx.add_window(|window, cx| {
+            window.resize(size(px(1200.), px(900.)));
+            let root = cx.new(|cx| {
+                NativeRoot::new(
+                    "theme-preview".into(),
+                    temp.path().join("logs"),
+                    None,
+                    None,
+                    store.clone(),
+                    window,
+                    cx,
+                )
+            });
+            root.update(cx, |root, _| {
+                root.settings_page.pane = SettingsPane::Appearance
+            });
+            PaneHost(root)
+        });
+        cx.run_until_parked();
+        let mut window = VisualTestContext::from_window(host.into(), &cx);
+        let light_pane = PreviewMode::Light.pane_selector();
+        let dark_pane = PreviewMode::Dark.pane_selector();
+
+        // The app is Carbon, yet the left pane is Runner Light + Dawn: the
+        // preview reads the picks, not the globals.
+        assert_eq!(theme::active_variant(), theme::ThemeVariant::Carbon);
+        let light = window.debug_bounds(light_pane).unwrap();
+        let dark = window.debug_bounds(dark_pane).unwrap();
+        assert!(light.right() <= dark.left(), "{light:?} {dark:?}");
+        assert_fill(&mut window, light_pane, theme::RUNNER_LIGHT.bg);
+        assert_fill(
+            &mut window,
+            PreviewMode::Light.terminal_selector(),
+            packed(runner_terminal::palette::ROSE_PINE_DAWN.background),
+        );
+        assert_fill(&mut window, dark_pane, theme::CARBON.bg);
+        assert_fill(
+            &mut window,
+            PreviewMode::Dark.terminal_selector(),
+            packed(runner_terminal::palette::CATPPUCCIN_MOCHA.background),
+        );
+        let active = window.debug_bounds(theme_preview::ACTIVE_CAPTION).unwrap();
+        assert!(captioned_by(dark, active), "{dark:?} {active:?}");
+
+        theme::set_active_variant(theme::ThemeVariant::RunnerLight);
+        window.refresh().unwrap();
+        window.run_until_parked();
+        let light = window.debug_bounds(light_pane).unwrap();
+        let active = window.debug_bounds(theme_preview::ACTIVE_CAPTION).unwrap();
+        assert!(captioned_by(light, active), "{light:?} {active:?}");
+        assert_fill(&mut window, light_pane, theme::RUNNER_LIGHT.bg);
+        assert_fill(&mut window, dark_pane, theme::CARBON.bg);
+        for selector in ["SETTINGS_APPEARANCE_LIGHT", "SETTINGS_APPEARANCE_DARK"] {
+            assert!(window.debug_bounds(selector).is_some(), "{selector}");
+        }
+
+        host.update(&mut window, |host, _, cx| {
+            host.0.update(cx, |root, _| {
+                root.settings_page.pane = SettingsPane::Terminal
+            });
+            cx.notify();
+        })
+        .unwrap();
+        window.run_until_parked();
+        assert!(window.debug_bounds("SETTINGS_TERMINAL_THEME").is_none());
+        // gpui-ce 0.3.3 never clears `debug_bounds` between frames, so the
+        // preview's selectors linger from the Appearance frame; the pane's own
+        // selector and the font row prove the Terminal pane is what rendered.
+        let pane = window.debug_bounds("SETTINGS_TERMINAL_PANE").unwrap();
+        let font = window.debug_bounds("SETTINGS_TERMINAL_FONT").unwrap();
+        assert!(
+            font.top() >= pane.top() && font.bottom() <= pane.bottom(),
+            "{pane:?} {font:?}"
+        );
     }
 
     #[test]

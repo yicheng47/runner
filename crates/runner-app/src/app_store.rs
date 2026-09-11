@@ -17,7 +17,9 @@ use runner_backend::session::manager::SessionActivityState;
 use runner_backend::AppCore;
 use runner_terminal::terminal::TerminalBridge;
 
-use crate::app_settings::{AppSettings, TerminalCursorStyle, TerminalFontFamily, TerminalTheme};
+use crate::app_settings::{
+    AppSettings, DarkTerminalTheme, LightTerminalTheme, TerminalCursorStyle, TerminalFontFamily,
+};
 
 mod mcp_defaults;
 
@@ -153,8 +155,9 @@ impl StoreRevisions {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct TerminalSettingsSnapshot {
-    theme: TerminalTheme,
-    light: bool,
+    light_theme: LightTerminalTheme,
+    dark_theme: DarkTerminalTheme,
+    is_light: bool,
     font_family: TerminalFontFamily,
     font_size: u16,
     cursor_style: TerminalCursorStyle,
@@ -169,8 +172,9 @@ impl From<&AppSettings> for TerminalSettingsSnapshot {
 impl TerminalSettingsSnapshot {
     fn for_variant(settings: &AppSettings, variant: crate::theme::ThemeVariant) -> Self {
         Self {
-            theme: settings.terminal_theme,
-            light: settings.terminal_theme == TerminalTheme::MatchApp && variant.is_light(),
+            light_theme: settings.light_terminal_theme,
+            dark_theme: settings.dark_terminal_theme,
+            is_light: variant.is_light(),
             font_family: settings.terminal_font_family,
             font_size: settings.terminal_font_size,
             cursor_style: settings.terminal_cursor_style,
@@ -207,7 +211,8 @@ impl From<&AppSettings> for ShellSettingsSnapshot {
         std::mem::discriminant(&settings.light_app_theme).hash(&mut hasher);
         std::mem::discriminant(&settings.dark_app_theme).hash(&mut hasher);
         settings.app_zoom.to_bits().hash(&mut hasher);
-        std::mem::discriminant(&settings.terminal_theme).hash(&mut hasher);
+        std::mem::discriminant(&settings.light_terminal_theme).hash(&mut hasher);
+        std::mem::discriminant(&settings.dark_terminal_theme).hash(&mut hasher);
         std::mem::discriminant(&settings.terminal_font_family).hash(&mut hasher);
         settings.terminal_font_size.hash(&mut hasher);
         std::mem::discriminant(&settings.terminal_cursor_style).hash(&mut hasher);
@@ -834,9 +839,9 @@ mod tests {
     }
 
     #[test]
-    fn terminal_settings_snapshot_tracks_resolved_match_app_appearance() {
+    fn terminal_settings_snapshot_tracks_the_resolved_mode_and_both_picks() {
         use crate::theme::ThemeVariant;
-        let mut settings = AppSettings::default();
+        let settings = AppSettings::default();
         assert_ne!(
             TerminalSettingsSnapshot::for_variant(&settings, ThemeVariant::Carbon),
             TerminalSettingsSnapshot::for_variant(&settings, ThemeVariant::RunnerLight)
@@ -845,17 +850,33 @@ mod tests {
             TerminalSettingsSnapshot::for_variant(&settings, ThemeVariant::RunnerLight),
             TerminalSettingsSnapshot::for_variant(&settings, ThemeVariant::CatppuccinLatte)
         );
-        settings.terminal_theme = TerminalTheme::RunnerDark;
         assert_eq!(
             TerminalSettingsSnapshot::for_variant(&settings, ThemeVariant::Carbon),
-            TerminalSettingsSnapshot::for_variant(&settings, ThemeVariant::RunnerLight)
+            TerminalSettingsSnapshot::for_variant(&settings, ThemeVariant::CatppuccinMocha)
         );
+
+        let mut light_pick = settings.clone();
+        light_pick.light_terminal_theme = LightTerminalTheme::RunnerLight;
+        let mut dark_pick = settings.clone();
+        dark_pick.dark_terminal_theme = DarkTerminalTheme::CatppuccinMocha;
+        for variant in [ThemeVariant::Carbon, ThemeVariant::RunnerLight] {
+            assert_ne!(
+                TerminalSettingsSnapshot::for_variant(&settings, variant),
+                TerminalSettingsSnapshot::for_variant(&light_pick, variant),
+                "{variant:?}"
+            );
+            assert_ne!(
+                TerminalSettingsSnapshot::for_variant(&settings, variant),
+                TerminalSettingsSnapshot::for_variant(&dark_pick, variant),
+                "{variant:?}"
+            );
+        }
     }
 
     #[test]
     fn terminal_settings_snapshot_ignores_unrelated_preferences() {
         let before = AppSettings {
-            terminal_theme: TerminalTheme::RunnerDark,
+            dark_terminal_theme: DarkTerminalTheme::CatppuccinMocha,
             ..AppSettings::default()
         };
         let mut after = before.clone();
@@ -892,7 +913,7 @@ mod tests {
     #[test]
     fn shell_settings_snapshot_ignores_mission_preferences() {
         let before = AppSettings {
-            terminal_theme: TerminalTheme::RunnerDark,
+            dark_terminal_theme: DarkTerminalTheme::CatppuccinMocha,
             ..AppSettings::default()
         };
         let mut after = before.clone();

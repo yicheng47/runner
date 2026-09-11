@@ -795,10 +795,7 @@ impl MissionWorkspace {
 
     fn terminal_style(&self, cx: &App) -> crate::terminal::element::TerminalStyle {
         crate::terminal::element::TerminalStyle {
-            palette: self
-                .settings(cx)
-                .terminal_theme
-                .palette_for(theme::active_variant()),
+            palette: app_settings::terminal_palette(self.settings(cx), theme::active_variant()),
             font: self.settings(cx).terminal_font_family.font(),
             font_size: self.settings(cx).terminal_font_size as f32 * self.settings(cx).app_zoom,
             app_zoom: self.settings(cx).app_zoom,
@@ -818,11 +815,10 @@ impl MissionWorkspace {
             }
         };
         for chat in self.attached.values() {
-            chat.terminal.set_palette(
-                self.settings(cx)
-                    .terminal_theme
-                    .palette_for(theme::active_variant()),
-            );
+            chat.terminal.set_palette(app_settings::terminal_palette(
+                self.settings(cx),
+                theme::active_variant(),
+            ));
             chat.terminal
                 .configure(app_settings::TERMINAL_SCROLLBACK_LINES, cursor);
         }
@@ -1585,11 +1581,10 @@ impl MissionWorkspace {
         let Some(terminal) = self.app_store.read(cx).bridge.session(session_id) else {
             return Ok(());
         };
-        terminal.set_palette(
-            self.settings(cx)
-                .terminal_theme
-                .palette_for(theme::active_variant()),
-        );
+        terminal.set_palette(app_settings::terminal_palette(
+            self.settings(cx),
+            theme::active_variant(),
+        ));
         terminal.configure(
             app_settings::TERMINAL_SCROLLBACK_LINES,
             match self.settings(cx).terminal_cursor_style {
@@ -4495,10 +4490,7 @@ impl MissionWorkspace {
     ) -> AnyElement {
         let handler = self.feed_selection_handler(cx);
         let selection_color = crate::terminal::element::to_hsla(
-            self.settings(cx)
-                .terminal_theme
-                .palette_for(theme::active_variant())
-                .selection,
+            app_settings::terminal_palette(self.settings(cx), theme::active_variant()).selection,
             1.,
         );
         crate::surfaces::mission_markdown::render_markdown(
@@ -6700,7 +6692,7 @@ mod tests {
                 temp.path().join("settings.json"),
                 AppSettings {
                     app_theme: theme::ThemeIntent::Dark,
-                    terminal_theme: app_settings::TerminalTheme::RunnerLight,
+                    dark_terminal_theme: app_settings::DarkTerminalTheme::RunnerLight,
                     ..AppSettings::default()
                 },
                 None,
@@ -6768,7 +6760,7 @@ mod tests {
                 store.update_settings(
                     |settings| {
                         settings.app_theme = intent;
-                        settings.terminal_theme = app_settings::TerminalTheme::MatchApp;
+                        settings.dark_terminal_theme = app_settings::DarkTerminalTheme::RunnerDark;
                         true
                     },
                     false,
@@ -6784,7 +6776,7 @@ mod tests {
             assert_fill(&mut visual, "MISSION_BG", colors.bg);
             assert_fill(&mut visual, "MISSION_PANEL", colors.panel);
             assert_fill(&mut visual, "MISSION_ACCENT", colors.accent);
-            let palette = app_settings::TerminalTheme::MatchApp.palette_for(variant);
+            let palette = app_settings::terminal_palette(&AppSettings::default(), variant);
             assert_eq!(bridge.session("direct").unwrap().palette(), palette);
             assert_eq!(bridge.session("slot").unwrap().palette(), palette);
         }

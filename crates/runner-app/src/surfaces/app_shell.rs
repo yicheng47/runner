@@ -718,10 +718,7 @@ impl NativeRoot {
 
     pub(crate) fn terminal_style(&self, cx: &App) -> crate::terminal::element::TerminalStyle {
         crate::terminal::element::TerminalStyle {
-            palette: self
-                .settings(cx)
-                .terminal_theme
-                .palette_for(theme::active_variant()),
+            palette: app_settings::terminal_palette(self.settings(cx), theme::active_variant()),
             font: self.settings(cx).terminal_font_family.font(),
             font_size: self.settings(cx).terminal_font_size as f32 * self.settings(cx).app_zoom,
             app_zoom: self.settings(cx).app_zoom,
@@ -765,11 +762,13 @@ impl NativeRoot {
     }
 
     pub(crate) fn apply_terminal_palette(&self, cx: &App) {
-        self.app_store.read(cx).bridge.set_palette(
-            self.settings(cx)
-                .terminal_theme
-                .palette_for(theme::active_variant()),
-        );
+        self.app_store
+            .read(cx)
+            .bridge
+            .set_palette(app_settings::terminal_palette(
+                self.settings(cx),
+                theme::active_variant(),
+            ));
     }
 
     pub(crate) fn save_settings(&self, cx: &App) {
