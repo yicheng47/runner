@@ -1,6 +1,6 @@
 # Translucent window backdrop
 
-Tracking issue: [#557](https://github.com/yicheng47/runner/issues/557). Status: planned, design first. Priority P2.
+Tracking issue: [#557](https://github.com/yicheng47/runner/issues/557). Status: dropped — closed as not planned on 2026-09-11; Jason judged it not important enough to carry right now after seeing the first Pencil pass. Kept as the record of the GPUI `Blurred` mechanism and the four-ground alpha design. Priority was P2.
 
 ## Motivation
 
