@@ -704,8 +704,15 @@ impl NativeRoot {
             SettingsPane::Skills => {
                 if self.settings_page.skills.is_none() {
                     let app_store = self.app_store.clone();
-                    self.settings_page.skills =
-                        Some(cx.new(|cx| settings::skills::SkillsPane::new(app_store, cx)));
+                    let pane = cx.new(|cx| settings::skills::SkillsPane::new(app_store, cx));
+                    let detail = pane.read(cx).detail.clone();
+                    self.settings_page._subscriptions.push(cx.subscribe(
+                        &detail,
+                        |this, _, notice: &settings::SaveNotice, cx| {
+                            this.show_toast(notice.message.clone(), notice.tone, cx)
+                        },
+                    ));
+                    self.settings_page.skills = Some(pane);
                 }
                 if let Some(skills) = self.settings_page.skills.clone() {
                     skills.update(cx, |pane, cx| pane.refresh(cx));
@@ -714,8 +721,15 @@ impl NativeRoot {
             SettingsPane::Mcp => {
                 if self.settings_page.mcp.is_none() {
                     let app_store = self.app_store.clone();
-                    self.settings_page.mcp =
-                        Some(cx.new(|cx| settings::mcp::McpPane::new(app_store, cx)));
+                    let pane = cx.new(|cx| settings::mcp::McpPane::new(app_store, cx));
+                    let detail = pane.read(cx).detail.clone();
+                    self.settings_page._subscriptions.push(cx.subscribe(
+                        &detail,
+                        |this, _, notice: &settings::SaveNotice, cx| {
+                            this.show_toast(notice.message.clone(), notice.tone, cx)
+                        },
+                    ));
+                    self.settings_page.mcp = Some(pane);
                 }
                 if let Some(mcp) = self.settings_page.mcp.clone() {
                     mcp.update(cx, |pane, cx| pane.refresh(cx));

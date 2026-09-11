@@ -2,10 +2,11 @@ use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::rc::Rc;
 
+use super::SaveNotice;
 use gpui::prelude::*;
 use gpui::{
-    div, px, rems, AnyElement, Context, Entity, FocusHandle, FontWeight, KeyDownEvent, Render,
-    ScrollHandle, Subscription, Window,
+    div, px, rems, AnyElement, Context, Entity, EventEmitter, FocusHandle, FontWeight,
+    KeyDownEvent, Render, ScrollHandle, Subscription, Window,
 };
 use runner_app::ui::{
     Badge, Button, ButtonSize, ButtonVariant, ConfirmDialog, IconButton, IconButtonSize, Modal,
@@ -86,10 +87,32 @@ fn definition_summary(definition: Option<&McpServerDefinition>) -> String {
         ),
         McpServerDefinition::Http { url, headers } => (url.clone(), headers),
     };
-    for key in secrets.keys() {
+    let shown = secrets.keys().take(2);
+    for key in shown {
         text.push_str(&format!(" · {key}=•••"));
     }
+    let hidden = secrets.len().saturating_sub(2);
+    if hidden > 0 {
+        let noun = match definition {
+            McpServerDefinition::Stdio { .. } => "env",
+            McpServerDefinition::Http { .. } => "headers",
+        };
+        text.push_str(&format!(" · +{hidden} {noun}"));
+    }
     text
+}
+
+/// A parser error spans several lines (a caret diagram for TOML); the modal
+/// shows its first and last lines, which carry the position and the reason.
+fn one_line_error(error: &str) -> String {
+    let mut lines = error.lines().map(str::trim).filter(|l| !l.is_empty());
+    let Some(first) = lines.next() else {
+        return error.to_owned();
+    };
+    match lines.next_back() {
+        Some(last) if last != first => format!("{first} — {last}"),
+        _ => first.to_owned(),
+    }
 }
 
 fn conflict_caption(entry: &McpServerEntry, selected: McpClientId) -> Option<String> {
@@ -465,6 +488,8 @@ impl Render for McpPane {
     }
 }
 
+impl EventEmitter<SaveNotice> for McpDetail {}
+
 pub(crate) struct McpDetail {
     app_store: Entity<AppStore>,
     catalog: Option<McpCatalog>,
@@ -674,6 +699,7 @@ impl McpDetail {
                     mcp::mcp_remove_server(core, client, &name)
                 }
             },
+            None,
             cx,
         );
     }
@@ -694,6 +720,7 @@ impl McpDetail {
         operation: impl FnOnce(&runner_backend::AppCore) -> runner_backend::error::Result<()>
             + Send
             + 'static,
+        saved: Option<String>,
         cx: &mut Context<Self>,
     ) {
         self.busy = true;
@@ -715,7 +742,22 @@ impl McpDetail {
                     if let Ok(catalog) = &catalog {
                         this.apply_catalog(catalog.clone());
                     }
-                    this.error = result.as_ref().err().cloned().or_else(|| catalog.err());
+                    match (&result, &saved) {
+                        (Err(message), Some(_)) => cx.emit(SaveNotice {
+                            message: message.clone(),
+                            tone: crate::toast::ToastTone::Error,
+                        }),
+                        (Ok(()), Some(saved)) => cx.emit(SaveNotice {
+                            message: saved.clone(),
+                            tone: crate::toast::ToastTone::Success,
+                        }),
+                        _ => {}
+                    }
+                    this.error = match &saved {
+                        Some(_) => None,
+                        None => result.as_ref().err().cloned(),
+                    }
+                    .or_else(|| catalog.err());
                     if result.is_ok() {
                         this.editing = false;
                         this.confirming = false;
@@ -776,20 +818,34 @@ impl McpDetail {
         .map_err(|e| e.to_string())
     }
 
-    fn can_save(&self, cx: &Context<Self>) -> bool {
-        self.editing && !self.busy && !self.confirming && self.validation(cx).is_ok()
+    fn can_save(&self, _cx: &Context<Self>) -> bool {
+        self.editing && !self.busy && !self.confirming
     }
 
     fn save(&mut self, cx: &mut Context<Self>) {
         if !self.can_save(cx) {
             return;
         }
+        if let Err(error) = self.validation(cx) {
+            cx.emit(SaveNotice {
+                message: one_line_error(&error),
+                tone: crate::toast::ToastTone::Error,
+            });
+            return;
+        }
         let name = self.name.clone().unwrap();
         let client = self.viewing;
         let text = self.editor.read(cx).text().to_owned();
         let also: Vec<_> = self.also.iter().copied().collect();
+        let files = std::iter::once(client)
+            .chain(also.iter().copied())
+            .map(|c| c.config_file())
+            .collect::<Vec<_>>()
+            .join(" and ");
+        let saved = format!("Saved {name} to {files}");
         self.write(
             move |core| mcp::mcp_edit_server(core, client, &name, &text, &also),
+            Some(saved),
             cx,
         );
     }
@@ -1135,10 +1191,9 @@ impl McpDetail {
                 .child(self.scrollbar.clone())
                 .into_any_element()
         };
-        let error = self
-            .error
-            .clone()
-            .or_else(|| self.editing.then(|| self.validation(cx).err()).flatten())
+        let error = (!self.editing)
+            .then(|| self.error.clone())
+            .flatten()
             .or_else(|| entry.clients[&client].error.clone());
         let body = div()
             .debug_selector(|| "MCP_MODAL_BODY".into())
@@ -1763,21 +1818,32 @@ mod tests {
                 assert!(detail.also.contains(&McpClientId::ClaudeCode));
                 assert!(detail.can_save(cx));
                 detail.editor.update(cx, |e, cx| e.reset("[broken", cx));
-                assert!(!detail.can_save(cx));
+                assert!(detail.can_save(cx), "typing never disables Save");
                 detail.save(cx);
-                assert!(!detail.busy);
+                assert!(
+                    !detail.busy && detail.editing,
+                    "an invalid Save writes nothing"
+                );
+                assert!(detail.error.is_none(), "the parse error goes to a toast");
+                assert_eq!(detail.editor.read(cx).text(), "[broken");
+                let error = one_line_error(&detail.validation(cx).unwrap_err());
+                assert!(error.starts_with("Invalid TOML"), "{error}");
+                assert_eq!(error.lines().count(), 1, "{error}");
                 detail.discard_edit(window, cx);
                 detail.viewing = McpClientId::ClaudeCode;
                 detail.edit(window, cx);
                 assert!(detail.editor.read(cx).text().starts_with('{'));
                 detail.editor.update(cx, |e, cx| e.reset("[]", cx));
-                assert!(!detail.can_save(cx));
+                detail.save(cx);
+                assert!(detail.error.is_none() && !detail.busy && detail.editing);
                 detail.editor.update(cx, |e, cx| {
                     e.reset(r#"{"type":"sse","url":"https://example.test"}"#, cx)
                 });
-                assert!(!detail.can_save(cx));
+                assert!(detail
+                    .validation(cx)
+                    .is_err_and(|e| e.contains("cannot be translated")));
                 detail.also.clear();
-                assert!(detail.can_save(cx));
+                assert!(detail.validation(cx).is_ok());
             });
         })
         .unwrap();
