@@ -23,6 +23,11 @@ use crate::theme::{DarkTheme, LightTheme, ThemeIntent};
 use crate::*;
 
 const SETTINGS_SAVE_DELAY_MS: u64 = 300;
+/// Content column geometry in logical pixels at 100% zoom; laid out in rems so
+/// it follows the app zoom. Shared by the scroll container and the scrollbar
+/// overlay so the thumb stays on the card edge (#553).
+const SETTINGS_CONTENT_PADDING_X: f32 = 40.;
+const SETTINGS_CONTENT_MAX_WIDTH: f32 = 760.;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) enum SettingsPane {
@@ -398,6 +403,65 @@ impl SettingsState {
 struct ShortcutConflict {
     id: &'static str,
     message: String,
+}
+
+/// The content column: the titlebar drag strip, the padded scroll container
+/// with its centered column, and a scrollbar overlay that mirrors that
+/// column's geometry so the thumb sits on the card edge below the drag strip
+/// instead of on the window edge. The overlay has no id or handlers, so wheel
+/// and click pass through it to the scroll container.
+fn settings_content_column(
+    titlebar_drag_area: impl IntoElement,
+    content: Option<AnyElement>,
+    scroll: &ScrollHandle,
+    scrollbar: Entity<Scrollbar>,
+    zoom: f32,
+) -> impl IntoElement {
+    div()
+        .relative()
+        .min_w(px(0.))
+        .h_full()
+        .flex_1()
+        .bg(theme::bg())
+        .child(titlebar_drag_area)
+        .child(
+            div()
+                .id("settings-content-scroll")
+                .size_full()
+                .overflow_y_scroll()
+                .scrollbar_width(px(0.))
+                .track_scroll(scroll)
+                .px(rems(SETTINGS_CONTENT_PADDING_X / 16.))
+                .pb(rems(64. / 16.))
+                .pt(rems(56. / 16.))
+                .children(content.map(|content| {
+                    div()
+                        .debug_selector(|| "SETTINGS_CONTENT_COLUMN".into())
+                        .mx_auto()
+                        .w_full()
+                        .max_w(rems(SETTINGS_CONTENT_MAX_WIDTH / 16.))
+                        .child(content)
+                })),
+        )
+        .child(
+            div()
+                .absolute()
+                .top(px(TITLEBAR_DRAG_HEIGHT * zoom))
+                .bottom_0()
+                .left_0()
+                .right_0()
+                .px(rems(SETTINGS_CONTENT_PADDING_X / 16.))
+                .child(
+                    div()
+                        .debug_selector(|| "SETTINGS_CONTENT_SCROLLBAR_TRACK".into())
+                        .relative()
+                        .mx_auto()
+                        .w_full()
+                        .max_w(rems(SETTINGS_CONTENT_MAX_WIDTH / 16.))
+                        .h_full()
+                        .child(scrollbar),
+                ),
+        )
 }
 
 fn missions_settings_pane(
@@ -800,7 +864,8 @@ impl NativeRoot {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let width = self.settings(cx).sidebar_width * self.settings(cx).app_zoom;
+        let zoom = self.settings(cx).app_zoom;
+        let width = self.settings(cx).sidebar_width * zoom;
         let groups = filtered_nav_groups(&self.settings_page.search_query);
         let active = self.settings_page.pane;
         let nav = if groups.is_empty() {
@@ -903,45 +968,22 @@ impl NativeRoot {
                     )
                     .child(self.render_sidebar_resize_handle(cx)),
             )
-            .child(
-                div()
-                    .relative()
-                    .min_w(px(0.))
-                    .h_full()
-                    .flex_1()
-                    .bg(theme::bg())
-                    .child(
-                        self.render_titlebar_drag_area(
-                            "settings-content-titlebar-drag",
-                            div()
-                                .absolute()
-                                .top_0()
-                                .left_0()
-                                .right_0()
-                                .h(px(TITLEBAR_DRAG_HEIGHT * self.settings(cx).app_zoom)),
-                            cx,
-                        ),
-                    )
-                    .child(
-                        div()
-                            .id("settings-content-scroll")
-                            .size_full()
-                            .overflow_y_scroll()
-                            .scrollbar_width(px(0.))
-                            .track_scroll(&self.settings_page.content_scroll)
-                            .px(rems(40. / 16.))
-                            .pb(rems(64. / 16.))
-                            .pt(rems(56. / 16.))
-                            .children(content.map(|content| {
-                                div()
-                                    .mx_auto()
-                                    .w_full()
-                                    .max_w(rems(760. / 16.))
-                                    .child(content)
-                            })),
-                    )
-                    .child(self.settings_page.content_scrollbar.clone()),
-            )
+            .child(settings_content_column(
+                self.render_titlebar_drag_area(
+                    "settings-content-titlebar-drag",
+                    div()
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .right_0()
+                        .h(px(TITLEBAR_DRAG_HEIGHT * zoom)),
+                    cx,
+                ),
+                content,
+                &self.settings_page.content_scroll,
+                self.settings_page.content_scrollbar.clone(),
+                zoom,
+            ))
             .when(active == SettingsPane::Skills, |takeover| {
                 takeover.children(
                     self.settings_page
@@ -2135,6 +2177,178 @@ mod tests {
             assert_eq!(host.mission_permissions.read(cx).value(), "auto");
         })
         .unwrap();
+    }
+
+    #[test]
+    fn content_scrollbar_overlays_the_centered_column_edge() {
+        use gpui::{
+            point, size, Modifiers, Pixels, Point, Render, TestAppContext, VisualTestContext,
+        };
+
+        use crate::app_settings::SIDEBAR_DEFAULT;
+
+        const HEIGHT: f32 = 320.;
+        // ScrollbarKind::App's track width, private to ui/scrollbar.rs.
+        const GUTTER: f32 = 10.;
+
+        struct ColumnHost {
+            default_crew: Entity<StyledSelect>,
+            mission_permissions: Entity<StyledSelect>,
+            content_scroll: ScrollHandle,
+            content_scrollbar: Entity<Scrollbar>,
+        }
+        impl Render for ColumnHost {
+            fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                let zoom = f32::from(window.rem_size()) / 16.;
+                div()
+                    .size_full()
+                    .flex()
+                    .child(div().flex_none().h_full().w(px(SIDEBAR_DEFAULT * zoom)))
+                    .child(settings_content_column(
+                        div()
+                            .absolute()
+                            .top_0()
+                            .left_0()
+                            .right_0()
+                            .h(px(TITLEBAR_DRAG_HEIGHT * zoom)),
+                        Some(missions_settings_pane(
+                            self.default_crew.clone(),
+                            self.mission_permissions.clone(),
+                        )),
+                        &self.content_scroll,
+                        self.content_scrollbar.clone(),
+                        zoom,
+                    ))
+            }
+        }
+
+        let mut cx = TestAppContext::single();
+        let host = cx.add_window(|_, cx| {
+            let noop: SelectHandler = Rc::new(|_, _, _| {});
+            let default_crew = cx.new(|cx| {
+                StyledSelect::new(
+                    "settings-default-crew",
+                    cx.focus_handle(),
+                    "",
+                    vec![SelectOption::new("", "No default")],
+                    noop.clone(),
+                    cx,
+                )
+            });
+            let mission_permissions = cx.new(|cx| {
+                StyledSelect::new(
+                    "settings-mission-permissions",
+                    cx.focus_handle(),
+                    MissionPermissionMode::Auto.key(),
+                    MissionPermissionMode::ALL
+                        .into_iter()
+                        .map(|mode| SelectOption::new(mode.key(), mode.label()))
+                        .collect(),
+                    noop,
+                    cx,
+                )
+            });
+            let content_scroll = ScrollHandle::new();
+            let owner = cx.entity_id();
+            let content_scrollbar = cx.new(|_| Scrollbar::app(content_scroll.clone(), owner));
+            ColumnHost {
+                default_crew,
+                mission_permissions,
+                content_scroll,
+                content_scrollbar,
+            }
+        });
+        cx.run_until_parked();
+        let mut window = VisualTestContext::from_window(host.into(), &cx);
+        let scroll = host
+            .update(&mut window, |host, _, _| host.content_scroll.clone())
+            .unwrap();
+        let near = |a: Pixels, b: Pixels| (f32::from(a) - f32::from(b)).abs() <= 0.5;
+
+        for (width, capped) in [(1000., false), (2000., true)] {
+            for rem in [16., 20.8] {
+                let zoom = rem / 16.;
+                window.simulate_resize(size(px(width), px(HEIGHT)));
+                host.update(&mut window, |_, window, _| {
+                    window.set_rem_size(px(rem));
+                    window.refresh();
+                })
+                .unwrap();
+                window.run_until_parked();
+
+                let column = window.debug_bounds("SETTINGS_CONTENT_COLUMN").unwrap();
+                let track = window
+                    .debug_bounds("SETTINGS_CONTENT_SCROLLBAR_TRACK")
+                    .unwrap();
+                let label = format!("{width}x{rem}: column {column:?} track {track:?}");
+
+                assert!(near(track.right(), column.right()), "{label}");
+                assert!(near(track.left(), column.left()), "{label}");
+                assert!(
+                    near(track.top(), px(TITLEBAR_DRAG_HEIGHT * zoom)),
+                    "{label}"
+                );
+                assert!(near(track.bottom(), px(HEIGHT)), "{label}");
+
+                let content_left = SIDEBAR_DEFAULT * zoom;
+                let padded_width = width - content_left - 2. * SETTINGS_CONTENT_PADDING_X * zoom;
+                let max_width = SETTINGS_CONTENT_MAX_WIDTH * zoom;
+                assert_eq!(capped, padded_width >= max_width, "{label}");
+                let expected_width = if capped { max_width } else { padded_width };
+                assert!(near(column.size.width, px(expected_width)), "{label}");
+                assert!(
+                    near(column.left() - px(content_left), px(width) - column.right()),
+                    "{label}"
+                );
+
+                // The scrollbar entity's root carries no selector, so prove its
+                // right-anchored track by where a click on it jumps the scroll:
+                // above the thumb jumps to the top, below it to the bottom, and
+                // a click outside the gutter changes nothing.
+                let max = scroll.max_offset().height;
+                assert!(max > px(0.), "{label}: the pane should overflow");
+                let right = f32::from(column.right());
+                let inside_left = px(right - GUTTER * zoom + 1.);
+                let outside_left = px(right - GUTTER * zoom - 1.);
+                let inside_right = px(right - 1.);
+                let outside_right = px(right + 1.);
+                let below_top = track.top() + px(1.);
+                let above_top = track.top() - px(1.);
+                let bottom = px(HEIGHT - 1.);
+                let mut click_from = |from: Pixels, at: Point<Pixels>| {
+                    scroll.set_offset(point(px(0.), from));
+                    host.update(&mut window, |_, window, _| window.refresh())
+                        .unwrap();
+                    window.run_until_parked();
+                    window.simulate_click(at, Modifiers::default());
+                    scroll.offset().y
+                };
+                assert!(
+                    near(click_from(-max, point(inside_left, below_top)), px(0.)),
+                    "{label}: a click on the gutter's left edge should jump to the top"
+                );
+                assert!(
+                    near(click_from(-max, point(inside_right, below_top)), px(0.)),
+                    "{label}: a click on the gutter's right edge should jump to the top"
+                );
+                assert!(
+                    near(click_from(px(0.), point(inside_right, bottom)), -max),
+                    "{label}: a click at the track's bottom should jump to the bottom"
+                );
+                assert!(
+                    near(click_from(-max, point(outside_left, below_top)), -max),
+                    "{label}: a click left of the gutter should not scroll"
+                );
+                assert!(
+                    near(click_from(-max, point(outside_right, below_top)), -max),
+                    "{label}: a click right of the column should not scroll"
+                );
+                assert!(
+                    near(click_from(-max, point(inside_right, above_top)), -max),
+                    "{label}: a click in the drag strip should not scroll"
+                );
+            }
+        }
     }
 
     #[test]
