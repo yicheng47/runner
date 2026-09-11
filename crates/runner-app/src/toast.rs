@@ -1,4 +1,4 @@
-pub const DEFAULT_TOAST_DURATION_MS: u64 = 6_000;
+pub const DEFAULT_TOAST_DURATION_MS: u64 = 4_000;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[allow(dead_code)]
@@ -68,11 +68,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_toast_has_the_react_timeout() {
+    fn default_toast_dismisses_after_four_seconds() {
         let mut host = ToastHost::default();
         host.show("Saved", ToastTone::Success);
         let toast = host.active().unwrap();
-        assert_eq!(toast.duration_ms, Some(6_000));
+        assert_eq!(toast.duration_ms, Some(DEFAULT_TOAST_DURATION_MS));
+        assert_eq!(DEFAULT_TOAST_DURATION_MS, 4_000);
         assert_eq!(toast.tone, ToastTone::Success);
     }
 

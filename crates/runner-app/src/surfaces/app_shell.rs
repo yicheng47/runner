@@ -613,74 +613,73 @@ impl NativeRoot {
 
     fn render_toast(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         self.toasts.active().map(|toast| {
-            let (border, text) = match toast.tone {
-                ToastTone::Info => (theme::border_strong(), theme::text()),
-                ToastTone::Success => (alpha(theme::accent(), 0.4), theme::accent()),
-                ToastTone::Error => (alpha(theme::danger(), 0.4), theme::danger()),
+            let zoom = self.settings(cx).app_zoom;
+            let (icon, icon_color) = match toast.tone {
+                ToastTone::Info => ("info.svg", theme::muted()),
+                ToastTone::Success => ("circle-check.svg", theme::accent()),
+                ToastTone::Error => ("circle-x.svg", theme::danger()),
             };
             div()
                 .absolute()
-                .top(px(20. * self.settings(cx).app_zoom))
-                .left(px(16. * self.settings(cx).app_zoom))
-                .right(px(16. * self.settings(cx).app_zoom))
+                .top(px((TITLEBAR_DRAG_HEIGHT + 12.) * zoom))
+                .left(px(16. * zoom))
+                .right(px(16. * zoom))
                 .flex()
                 .justify_center()
                 .child(
                     div()
                         .id("global-toast")
-                        .w_full()
-                        .max_w(px(420. * self.settings(cx).app_zoom))
-                        .px_4()
-                        .py_3()
+                        .max_w(px(420. * zoom))
+                        .pl(px(14. * zoom))
+                        .pr(px(12. * zoom))
+                        .py(px(10. * zoom))
                         .flex()
-                        .items_start()
-                        .gap_3()
-                        .rounded_lg()
+                        .items_center()
+                        .gap(px(10. * zoom))
+                        .rounded(px(10. * zoom))
                         .border_1()
-                        .border_color(border)
+                        .border_color(theme::border())
                         .bg(theme::panel())
                         .shadow(vec![BoxShadow {
-                            color: gpui::hsla(0., 0., 0., 0.5),
-                            offset: point(px(0.), px(8. * self.settings(cx).app_zoom)),
-                            blur_radius: px(24. * self.settings(cx).app_zoom),
+                            color: gpui::hsla(0., 0., 0., 0.35),
+                            offset: point(px(0.), px(8. * zoom)),
+                            blur_radius: px(24. * zoom),
                             spread_radius: px(0.),
                         }])
-                        .text_size(theme::text_title())
-                        .text_color(text)
+                        .cursor_pointer()
+                        .occlude()
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            cx.stop_propagation();
+                            this.toasts.dismiss();
+                            cx.notify();
+                        }))
                         .child(
-                            div()
-                                .min_w(px(0.))
-                                .flex_1()
-                                .whitespace_normal()
-                                .line_height(px(20. * self.settings(cx).app_zoom))
-                                .child(SharedString::from(toast.message.clone())),
+                            svg()
+                                .flex_none()
+                                .path(icon)
+                                .w(px(16. * zoom))
+                                .h(px(16. * zoom))
+                                .text_color(icon_color),
                         )
                         .child(
                             div()
-                                .id("dismiss-toast")
-                                .mt(rems(2. / 16.))
-                                .w(px(20. * self.settings(cx).app_zoom))
-                                .h(px(20. * self.settings(cx).app_zoom))
+                                .min_w(px(0.))
+                                .whitespace_normal()
+                                .text_size(theme::text_body())
+                                .text_color(theme::text())
+                                .line_height(px(18. * zoom))
+                                .child(SharedString::from(toast.message.clone())),
+                        )
+                        .child(
+                            svg()
                                 .flex_none()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .rounded_sm()
-                                .cursor_pointer()
-                                .opacity(0.7)
-                                .hover(|button| button.opacity(1.))
-                                .child(
-                                    svg()
-                                        .flex_none()
-                                        .path("close.svg")
-                                        .w(px(14. * self.settings(cx).app_zoom))
-                                        .h(px(14. * self.settings(cx).app_zoom))
-                                        .text_color(text),
-                                )
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.toasts.dismiss();
-                                    cx.notify();
-                                })),
+                                .ml(px(6. * zoom))
+                                .path("close.svg")
+                                .w(px(14. * zoom))
+                                .h(px(14. * zoom))
+                                .text_color(theme::faint())
+                                .hover(|close| close.text_color(theme::text())),
                         ),
                 )
                 .into_any_element()
