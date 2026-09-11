@@ -147,7 +147,7 @@ Everything above is also an MCP tool. Runner bundles a `runner-mcp` stdio sideca
 ### Also in the box
 
 - **Projects** — bind a working directory once; chats and missions started inside a project inherit its cwd and stay grouped in their own sidebar section.
-- **Themes** — Auto / Light / Dark chrome with two variants per side (Runner and Catppuccin Mocha dark; Codex Light and Catppuccin Latte light), independent terminal palettes (Runner, Catppuccin Mocha, Monokai), Inter bundled as the UI font, and JetBrains Mono (the Nerd Font Mono build) bundled for terminals.
+- **Themes** — Auto / Light / Dark chrome with an app palette and a terminal palette per mode (Runner and Catppuccin Mocha dark; Runner Light and Catppuccin Latte light; Rosé Pine Dawn, Runner and Catppuccin Mocha for terminals), a live preview of both modes in Settings → Appearance, Inter bundled as the UI font, and JetBrains Mono (the Nerd Font Mono build) bundled for terminals.
 - **Updates** — macOS releases update through Sparkle. Windows downloads and verifies newer builds in the background; the update icon beside Settings opens a dialog with **Install and restart**, retaining your data.
 - **Bundled `runner` CLI** — spawned agents message each other, check the crew roster, and post signals from inside their own PTYs.
 

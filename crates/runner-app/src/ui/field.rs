@@ -1846,6 +1846,7 @@ mod tests {
 
     #[test]
     fn field_validation_exposes_only_error_messages() {
+        let _theme = crate::theme_snapshot::ThemeGuard::new();
         assert!(!FieldValidation::Valid.is_error());
         assert_eq!(FieldValidation::Valid.message(), None);
 

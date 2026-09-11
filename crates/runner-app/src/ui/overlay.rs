@@ -493,6 +493,12 @@ impl RenderOnce for ConfirmDialog {
                     .border_1()
                     .border_color(theme::border())
                     .bg(theme::panel())
+                    .map(|element| {
+                        #[cfg(test)]
+                        let element =
+                            crate::theme_snapshot::record_fill("CONFIRM_DIALOG_PANEL", element);
+                        element
+                    })
                     .px(rems(22. / 16.))
                     .py(rems(20. / 16.))
                     .shadow_2xl()
@@ -615,6 +621,11 @@ fn confirm_action_button(
         .rounded(rems(8. / 16.))
         .when(bordered, |button| button.border_1().border_color(border))
         .bg(background)
+        .map(|element| {
+            #[cfg(test)]
+            let element = crate::theme_snapshot::record_fill(id, element);
+            element
+        })
         .px(rems(14. / 16.))
         .py(rems(6. / 16.))
         .font_weight(FontWeight::MEDIUM)
@@ -692,6 +703,56 @@ mod confirm_tests {
                 Rc::new(|_, _| {}),
                 Rc::new(|_, _| {}),
             ))
+        }
+    }
+
+    #[test]
+    fn confirm_dialog_fills_follow_carbon_and_runner_light() {
+        use crate::ui::ButtonVariant;
+        use crate::{
+            theme,
+            theme_snapshot::{assert_fill, ThemeGuard},
+        };
+
+        struct ConfirmThemeTest;
+        impl Render for ConfirmThemeTest {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().size_full().child(
+                    ConfirmDialog::new(
+                        "Resume mission?",
+                        "The crew will continue from its saved sessions.",
+                        "Resume",
+                        "Resuming…",
+                        false,
+                        Rc::new(|_, _| {}),
+                        Rc::new(|_, _| {}),
+                    )
+                    .variant(ButtonVariant::Primary),
+                )
+            }
+        }
+
+        let _theme = ThemeGuard::new();
+        for variant in [
+            theme::ThemeVariant::Carbon,
+            theme::ThemeVariant::RunnerLight,
+        ] {
+            theme::set_active_variant(variant);
+            let mut cx = TestAppContext::single();
+            let host = cx.add_window(|_, _| ConfirmThemeTest);
+            let mut visual = VisualTestContext::from_window(host.into(), &cx);
+            visual.simulate_resize(gpui::size(px(1200.), px(900.)));
+            cx.run_until_parked();
+            let colors = theme::colors_for(variant);
+            assert_fill(&mut visual, "CONFIRM_DIALOG_PANEL", colors.panel);
+            assert_fill(&mut visual, "confirm-submit", colors.accent);
+            assert_fill(&mut visual, "confirm-cancel", colors.raised);
+            assert_eq!(
+                theme::scrim().a,
+                if variant.is_light() { 0.2 } else { 0.35 }
+            );
+            assert_eq!(theme::window_close_hover(), gpui::rgb(0xc42b1c).into());
+            assert_eq!(theme::window_close_hover_ink(), gpui::rgb(0xffffff).into());
         }
     }
 

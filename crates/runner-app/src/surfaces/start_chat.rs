@@ -1971,6 +1971,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn mode_selector_defaults_to_direct_and_keeps_its_width_when_switching() {
+        let _theme = crate::theme_snapshot::ThemeGuard::new();
         use gpui::{size, Render, TestAppContext, VisualTestContext};
         use runner_backend::{db, event_bus, events, mcp, router, session, shell_path, windows};
         use std::sync::{Mutex, RwLock};

@@ -144,17 +144,11 @@ impl RenderOnce for SessionControl {
         };
         let spinner_id = (self.id.clone(), "loading");
         let (border, background, foreground, icon_color) = match self.kind {
-            SessionControlKind::Resume => (
+            SessionControlKind::Resume | SessionControlKind::Resuming => (
                 theme::with_alpha(theme::accent(), 0.4),
                 theme::with_alpha(theme::accent(), 0.1),
                 theme::accent(),
                 theme::accent(),
-            ),
-            SessionControlKind::Resuming => (
-                theme::with_alpha(theme::info(), 0.4),
-                theme::with_alpha(theme::info(), 0.1),
-                theme::info(),
-                theme::info(),
             ),
             SessionControlKind::Stop => (
                 theme::border(),
@@ -230,8 +224,9 @@ impl RenderOnce for SessionControl {
             .text_size(theme::text_meta())
             .text_color(if header {
                 match self.kind {
-                    SessionControlKind::Resume => theme::with_alpha(theme::accent(), 0.8),
-                    SessionControlKind::Resuming => theme::info(),
+                    SessionControlKind::Resume | SessionControlKind::Resuming => {
+                        theme::with_alpha(theme::accent(), 0.8)
+                    }
                     SessionControlKind::Stop => theme::with_alpha(theme::danger(), 0.8),
                     SessionControlKind::Restart | SessionControlKind::Back => theme::muted(),
                 }
