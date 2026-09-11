@@ -6,6 +6,7 @@ A plan stays here while its work is in flight and moves to [`archive/`](./archiv
 
 ## Active
 
+- [`529-appearance-terminal-palettes.md`](./529-appearance-terminal-palettes.md) — feature [529](../features/529-runner-light-theme.md) phase 4: per-mode terminal palette picks in Appearance with a two-pane preview; Match app removed.
 - [`529-runner-light-theme.md`](./529-runner-light-theme.md) — feature [529](../features/529-runner-light-theme.md) phases 2–3: `ThemeVariant::RunnerLight` from the signed-off canvas, Codex Light removed, terminal themes Match app / Runner Light / Runner Dark, literal audit, snapshot pins.
 - [`555-mcp-settings.md`](./555-mcp-settings.md) — feature [555](../features/555-mcp-settings.md): the Settings → MCP pane shaped like Skills (runtime dropdown, one toggle per server row, pinned Runner row, click-to-detail, native-text edit with cross-agent sync), with the generalised `ops/mcp.rs` writer behind it.
 - [`local-skills/`](./local-skills/README.md) — feature [73](../features/73-runner-skills.md) implementation program: condensed state and binding decisions, milestone plan, dated impl log.
