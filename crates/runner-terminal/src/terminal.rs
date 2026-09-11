@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -94,6 +94,65 @@ pub fn query_color_for<T>(
     stored.unwrap_or_else(|| palette::resolve_index_for(index, base, theme))
 }
 
+/// DEC private mode 2031: colour-scheme change notifications (Contour's
+/// spec, spoken by Ghostty, Kitty and WezTerm, listened for by Claude Code on
+/// `/theme` auto). `alacritty_terminal` files 2031 under unknown modes, so it
+/// ignores the set/reset, drops the `CSI ? 996 n` query and answers the
+/// DECRQM probe with "not recognised". The session tracks the subscription by
+/// scanning its output stream, rewrites that one probe answer, and reports
+/// `CSI ? 997 ; 1|2 n` when a palette swap flips the ground's lightness.
+const SCHEME_SUBSCRIBE: &[u8] = b"\x1b[?2031h";
+const SCHEME_UNSUBSCRIBE: &[u8] = b"\x1b[?2031l";
+const SCHEME_QUERY: &[u8] = b"\x1b[?996n";
+const SCHEME_PROBE_UNSUPPORTED: &str = "\x1b[?2031;0$y";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SchemeSequence {
+    Subscribe,
+    Unsubscribe,
+    Query,
+}
+
+#[derive(Default)]
+struct SchemeState {
+    subscribed: AtomicBool,
+    tail: Mutex<Vec<u8>>,
+}
+
+/// The scheme sequences that end inside `chunk`, as (end offset in `chunk`,
+/// sequence) in stream order. `tail` carries the last bytes of the previous
+/// chunk so a sequence split across two PTY reads is seen, and seen once: a
+/// match ending inside the carried bytes was already counted.
+fn scan_scheme_sequences(tail: &mut Vec<u8>, chunk: &[u8]) -> Vec<(usize, SchemeSequence)> {
+    const TAIL: usize = 8;
+    let mut buf = std::mem::take(tail);
+    let boundary = buf.len();
+    buf.extend_from_slice(chunk);
+    let mut found = Vec::new();
+    for (needle, sequence) in [
+        (SCHEME_SUBSCRIBE, SchemeSequence::Subscribe),
+        (SCHEME_UNSUBSCRIBE, SchemeSequence::Unsubscribe),
+        (SCHEME_QUERY, SchemeSequence::Query),
+    ] {
+        for (start, window) in buf.windows(needle.len()).enumerate() {
+            let end = start + needle.len();
+            if window == needle && end > boundary {
+                found.push((end, sequence));
+            }
+        }
+    }
+    found.sort_by_key(|(end, _)| *end);
+    *tail = buf[buf.len().saturating_sub(TAIL)..].to_vec();
+    found
+        .into_iter()
+        .map(|(end, sequence)| (end - boundary, sequence))
+        .collect()
+}
+
+fn scheme_report(palette: palette::TerminalPalette) -> String {
+    format!("\x1b[?997;{}n", if palette.is_light() { 2 } else { 1 })
+}
+
 #[derive(Default)]
 struct SequenceState {
     last: u64,
@@ -127,6 +186,8 @@ pub struct TerminalSession {
     size: Arc<Mutex<(u16, u16)>>,
     title: Arc<Mutex<String>>,
     palette: Arc<Mutex<PaletteState>>,
+    scheme: Arc<SchemeState>,
+    events: Sender<Event>,
     waker: Arc<dyn Fn() + Send + Sync>,
     viewers: Arc<AtomicUsize>,
     user_input: UserInput,
@@ -221,6 +282,7 @@ impl TerminalSession {
                 UserInput::Queued(input_tx)
             }
         };
+        let events = tx.clone();
         let proxy = EventProxy {
             tx,
             waker: Arc::clone(&waker),
@@ -232,6 +294,7 @@ impl TerminalSession {
         )));
         let size = Arc::new(Mutex::new((cols, rows)));
         let title = Arc::new(Mutex::new(String::new()));
+        let scheme = Arc::new(SchemeState::default());
         let terminal_palette = Arc::new(Mutex::new(PaletteState::new(palette::RUNNER)));
         let viewers = Arc::new(AtomicUsize::new(0));
         let now = Instant::now();
@@ -253,6 +316,8 @@ impl TerminalSession {
             size: Arc::clone(&size),
             title: Arc::clone(&title),
             palette: Arc::clone(&terminal_palette),
+            scheme: Arc::clone(&scheme),
+            events,
             waker,
             viewers,
             user_input,
@@ -264,6 +329,7 @@ impl TerminalSession {
             .report_input_state(&session_id, initial_observation);
 
         let term_for_events = Arc::downgrade(&term);
+        let scheme_for_events = Arc::clone(&scheme);
         thread::Builder::new()
             .name(format!("native-term-events-{session_id}"))
             .spawn(move || {
@@ -272,6 +338,14 @@ impl TerminalSession {
                 };
                 while let Ok(event) = rx.recv() {
                     match event {
+                        Event::PtyWrite(text) if text == SCHEME_PROBE_UNSUPPORTED => {
+                            let state = if scheme_for_events.subscribed.load(Ordering::Relaxed) {
+                                1
+                            } else {
+                                2
+                            };
+                            write(format!("\x1b[?2031;{state}$y").as_bytes());
+                        }
                         Event::PtyWrite(text) => write(text.as_bytes()),
                         Event::ColorRequest(index, format) => {
                             let palette = *terminal_palette.lock().unwrap();
@@ -336,11 +410,16 @@ impl TerminalSession {
 
     pub fn set_palette(&self, palette: palette::TerminalPalette) {
         let mut current = self.palette.lock().unwrap();
-        if current.theme != palette {
-            *current = PaletteState::new(palette);
-            drop(current);
-            (self.waker)();
+        if current.theme == palette {
+            return;
         }
+        let flipped = current.theme.is_light() != palette.is_light();
+        *current = PaletteState::new(palette);
+        drop(current);
+        if flipped && self.scheme.subscribed.load(Ordering::Relaxed) {
+            let _ = self.events.send(Event::PtyWrite(scheme_report(palette)));
+        }
+        (self.waker)();
     }
 
     pub fn palette(&self) -> palette::TerminalPalette {
@@ -380,6 +459,7 @@ impl TerminalSession {
         if let Some(recorder) = self.fixture_recorder.as_ref() {
             recorder.record_output(bytes);
         }
+        let scheme_sequences = scan_scheme_sequences(&mut self.scheme.tail.lock().unwrap(), bytes);
         sequence.last = event.seq;
         sequence.last_output_at = Some(Instant::now());
         if chunk_indicates_tui_ready(bytes) {
@@ -389,7 +469,27 @@ impl TerminalSession {
         let mut input_tracker = self.input_tracker.lock().unwrap();
         let mut term = self.term.lock();
         let previous_mode = *term.mode();
-        parser.advance(&mut *term, bytes);
+        // Feed the parser in pieces so each scheme sequence takes effect at
+        // its place in the stream: a DECRQM probe right after a subscribe is
+        // answered "set", and replies leave through the same channel as
+        // alacritty's own, in order.
+        let mut fed = 0;
+        for (end, sequence) in scheme_sequences {
+            parser.advance(&mut *term, &bytes[fed..end]);
+            fed = end;
+            match sequence {
+                SchemeSequence::Subscribe => self.scheme.subscribed.store(true, Ordering::Relaxed),
+                SchemeSequence::Unsubscribe => {
+                    self.scheme.subscribed.store(false, Ordering::Relaxed)
+                }
+                SchemeSequence::Query => {
+                    let _ = self
+                        .events
+                        .send(Event::PtyWrite(scheme_report(self.palette())));
+                }
+            }
+        }
+        parser.advance(&mut *term, &bytes[fed..]);
         if sequence.first_paint_seq == 0
             && term
                 .grid()
@@ -1592,6 +1692,99 @@ mod tests {
             assert_eq!(writes[1], b"\x1b[?6c");
             core.sessions.kill(&spawned.id).ok();
         }
+    }
+
+    #[test]
+    fn scheme_sequences_are_seen_once_across_chunk_splits() {
+        use super::{scan_scheme_sequences, SchemeSequence};
+        let mut tail = Vec::new();
+        assert_eq!(
+            scan_scheme_sequences(&mut tail, b"\x1b[?2031h\x1b[?996n"),
+            vec![(8, SchemeSequence::Subscribe), (15, SchemeSequence::Query)]
+        );
+        assert_eq!(scan_scheme_sequences(&mut tail, b"plain"), vec![]);
+        assert_eq!(scan_scheme_sequences(&mut tail, b"\x1b[?20"), vec![]);
+        assert_eq!(
+            scan_scheme_sequences(&mut tail, b"31l"),
+            vec![(3, SchemeSequence::Unsubscribe)]
+        );
+        assert_eq!(scan_scheme_sequences(&mut tail, b""), vec![]);
+        assert_eq!(scan_scheme_sequences(&mut tail, b"\x1b[?25h"), vec![]);
+    }
+
+    #[test]
+    fn a_subscribed_tui_learns_of_a_scheme_flip() {
+        let temp = tempfile::tempdir().unwrap();
+        let runtime = Arc::new(RecordingRuntime::default());
+        let core = test_core_with_runtime(temp.path(), Arc::clone(&runtime) as _);
+        let bridge = TerminalBridge::new(core.clone(), Arc::new(|| {})).unwrap();
+        bridge.set_palette(crate::palette::RUNNER);
+        let runner = runner_backend::ops::runner::create(
+            &core.db.get().unwrap(),
+            runner_backend::ops::runner::CreateRunnerInput {
+                handle: "probe".into(),
+                display_name: "Probe".into(),
+                runtime: runner_backend::model::Runtime::Shell,
+                command: "probe".into(),
+                args: Vec::new(),
+                working_dir: None,
+                system_prompt: None,
+                env: Default::default(),
+                model: None,
+                effort: None,
+                permission_mode: runner_backend::router::runtime::PermissionMode::Auto,
+            },
+        )
+        .unwrap();
+        let spawned = core
+            .sessions
+            .spawn_direct(
+                &runner,
+                None,
+                None,
+                None,
+                None,
+                Some(temp.path().to_str().unwrap()),
+                Some(80),
+                Some(24),
+                &core.app_data_dir,
+                Arc::clone(&core.db),
+                Arc::new(core.session_events()),
+                None,
+            )
+            .unwrap();
+        assert!(bridge.session(&spawned.id).is_some());
+        let wait_for = |count: usize| {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while runtime.writes().len() < count && std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            runtime.writes()
+        };
+
+        runtime.push_output(b"\x1b[?2031$p");
+        assert_eq!(wait_for(1), vec![b"\x1b[?2031;2$y".to_vec()]);
+
+        runtime.push_output(b"\x1b[?2031h\x1b[?996n\x1b[?2031$p");
+        let writes = wait_for(3);
+        assert_eq!(
+            &writes[1..],
+            [b"\x1b[?997;1n".to_vec(), b"\x1b[?2031;1$y".to_vec()]
+        );
+
+        bridge.set_palette(crate::palette::ROSE_PINE_DAWN);
+        assert_eq!(wait_for(4)[3], b"\x1b[?997;2n".to_vec());
+        bridge.set_palette(crate::palette::CATPPUCCIN_MOCHA);
+        assert_eq!(wait_for(5)[4], b"\x1b[?997;1n".to_vec());
+        bridge.set_palette(crate::palette::RUNNER);
+        assert_eq!(wait_for(5).len(), 5, "dark to dark is not a scheme change");
+
+        runtime.push_output(b"\x1b[?2031l");
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        bridge.set_palette(crate::palette::ROSE_PINE_DAWN);
+        assert_eq!(wait_for(5).len(), 5, "unsubscribed sessions get no report");
+        core.sessions.kill(&spawned.id).ok();
     }
 
     #[test]
