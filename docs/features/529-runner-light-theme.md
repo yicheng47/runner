@@ -4,7 +4,7 @@ Tracking issue: [#529](https://github.com/yicheng47/runner/issues/529). Status: 
 
 ## Motivation
 
-Some colleagues run Runner in light mode. What they get is Codex Light or Catppuccin Latte (`crates/runner-app/src/theme.rs:125`, `:144`), palettes carried over as data from the Tauri line's CSS tokens at the rewrite and never designed for Runner. `design/runner.pen` is dark-only, so every light rendering is a token swap on a dark layout. The terminal is worse: all three terminal palettes (`app_settings.rs:30`, Runner / Catppuccin Mocha / Monokai) are dark, so a light app wraps a dark terminal on every chat and slot.
+Some colleagues run Runner in light mode. What they get is Codex Light or Catppuccin Latte (`crates/runner-app/src/theme.rs:125`, `:144`), palettes carried over as data from the Tauri line's CSS tokens at the rewrite and never designed for Runner. Codex Light in particular is another product's palette wearing Runner's layout. `design/runner.pen` is dark-only, so every light rendering is a token swap on a dark layout. The terminal is worse: all three terminal palettes (`app_settings.rs:30`, Runner / Catppuccin Mocha / Monokai) are dark, so a light app wraps a dark terminal on every chat and slot.
 
 Runner/Carbon is the first-party dark theme, designed. There is no first-party light theme. Feature [15](./archive/15-light-theme.md) added the light *mechanism* (Auto / Light / Dark intent, a light and a dark pick) but shipped borrowed palettes. This spec is the palette.
 
@@ -12,9 +12,9 @@ Runner/Carbon is the first-party dark theme, designed. There is no first-party l
 
 ### Runner Light
 
-A new theme variant, **Runner Light**, designed by Jason in Pencil and owned by the product the way Runner/Carbon is. It becomes the default `LightTheme`; Codex Light and Catppuccin Latte remain selectable. Appearance → Light theme lists Runner Light first.
+A new theme variant, **Runner Light**, designed by Jason in Pencil and owned by the product the way Runner/Carbon is. It becomes the default `LightTheme` and **replaces Codex Light**, which is removed (decided 2026-09-11: "No need for codex light anymore"). Catppuccin Latte remains selectable. Appearance → Light theme lists Runner Light first, then Latte.
 
-A user who never touched the light-theme setting resolves to Runner Light after the update (the serde default flips). A user who explicitly chose Codex Light or Latte keeps it; `ui-settings.json` is not rewritten.
+A user who never touched the light-theme setting resolves to Runner Light after the update (the serde default flips). A user who had chosen Codex Light lands on Runner Light, since that variant no longer exists: the stored `light: "codex"` deserialises to the default and `ui-settings.json` is rewritten on the next save. A user who chose Latte keeps it.
 
 ### The design is the source of truth
 
@@ -22,9 +22,15 @@ The 16 tokens of `ThemeColors` (`bg`, `panel`, `raised`, `line`, `line_strong`, 
 
 Per the post-cutover rule, this is Pencil-first, and per the sign-off rule the code phase does not start until Jason has approved the frames.
 
-### Terminal follows the app
+### Terminal: Match app by default, Runner Light selectable
 
-The `Runner` terminal theme becomes theme-following: when the resolved app variant is light it renders the new **Runner Light terminal palette** (16 ANSI colors, fg, bg, cursor, selection), otherwise today's dark palette. Monokai and Catppuccin Mocha stay as they are, dark, for people who want a dark terminal inside a light app. The palette is designed on the same canvas as the app tokens so the slot terminal and the feed beside it agree. It lives beside the other palettes in `crates/runner-terminal/src/palette.rs`. A Catppuccin Latte terminal palette was filed separately as #528 and closed into this spec on 2026-09-09; it can ride on the same mechanism later if anyone asks.
+Settings → Terminal → Theme gains the entries the `Settings — Terminal` frame already shows and the code never grew. The list reads **Match app**, **Runner Light**, **Runner Dark**, **Catppuccin Mocha**, **Monokai**:
+
+- **Match app** (`TerminalTheme::MatchApp`, key `match-app`, the default) renders Runner Dark under a dark app variant and Runner Light under a light one, so a fresh install set to Light gets a light terminal without touching the Terminal pane, and Auto intent flips app and terminal together.
+- **Runner Light** (`TerminalTheme::RunnerLight`, key `runner-light`) is the new palette as an explicit pick: 16 ANSI colors plus fg, bg, cursor, selection, designed on the same canvas as the app tokens (`Runner Light · terminal palette`, `W7oJm`). Its ground is the app `bg`, so a terminal pane and the chat around it are one surface, as they are in Carbon. It lives beside the other palettes in `crates/runner-terminal/src/palette.rs` as `RUNNER_LIGHT`.
+- **Runner Dark** is today's `Runner` palette under its honest name, key `runner-dark`, for a dark terminal inside a light app; Mocha and Monokai stay for the same purpose.
+
+Loading an existing `ui-settings.json`: `terminal_theme: "runner"` was the only first-party choice before this spec and meant "the Runner palette", which now follows the app, so it loads as Match app; `catppuccin-mocha` and `monokai` keep their meaning; a missing key is Match app. The file is rewritten on the next save. A Catppuccin Latte terminal palette was filed separately as #528 and closed into this spec on 2026-09-09; it can ride on the same list later if anyone asks.
 
 ### No literal colors outside the theme
 
@@ -39,18 +45,19 @@ Eight color literals live outside `theme.rs` and the terminal element (`surfaces
 
 ## Design
 
-`design/runner.pen`: add the `mode` theme axis with a `light` value on the shared variables, then a **Light** band with the six key frames above rendered in the light axis. The terminal palette gets its own frame beside the existing terminal theme swatches. Jason authors the values; the agent's job in phase 1 is the axis plumbing, the band, and a first proposal of token values for him to overwrite.
+`design/runner.pen`: the `mode` theme axis with `dark` and `light` values on the shared variables (plus new `danger` and `info` tokens), the **DS · Option 4 — Runner Light** sheet (`WFqT1`) in the slot the Codex Light option used to occupy, a **Light** band (divider at y 22500) with the main chat page (`qBQHS`) and the mission workspace (`cPsVA`) rendered in the light axis, and the **Runner Light · terminal palette** frame (`W7oJm`). Phase 1 done 2026-09-11 on `feat/529-runner-light-theme`; Jason overwrites the token values in the variables panel, and the remaining key frames (settings, Start Chat, confirm dialog, split chat) join the band as light copies when reviewed.
 
 ## Implementation Phases
 
 1. **Design.** Light axis on the `.pen` variables; Light band with the key frames; first-pass token values; terminal palette frame. Stop for sign-off.
-2. **Theme.** `ThemeVariant::RunnerLight` and `RUNNER_LIGHT: ThemeColors` from the canvas; `LightTheme::RunnerLight` as `#[default]`; Appearance pane ordering; `resolve_variant` test. Runner terminal theme resolves to the light palette under a light variant; the palette constant lives beside the other terminal themes.
+2. **Theme.** `ThemeVariant::RunnerLight` and `RUNNER_LIGHT: ThemeColors` from the canvas; `TerminalTheme::{MatchApp, RunnerLight, RunnerDark}` with `palette::RUNNER_LIGHT`, keys `match-app` / `runner-light` / `runner-dark`, the legacy `runner` key loading as `MatchApp`, `MatchApp` resolving through the app variant wherever the terminal palette is picked, and the Terminal pane's Theme select in the order Match app, Runner Light, Runner Dark, Catppuccin Mocha, Monokai; `LightTheme::RunnerLight` as `#[default]`; `LightTheme::Codex`, `ThemeVariant::Codex`, and the `CODEX` table removed, with `light: "codex"` in an existing `ui-settings.json` falling back to the default on load (a serde `#[serde(other)]` or an `unknown → default` deserialiser, covered by a test); Appearance pane ordering; `resolve_variant` test. The palette constant lives beside the other terminal themes.
 3. **Audit and pins.** The eight literals onto tokens; `VisualTestContext` snapshots of the sidebar, mission workspace, and a confirm dialog in Carbon and Runner Light at one window size, so a regression in either variant fails a test.
 
 ## Verification
 
-- Fresh `ui-settings.json`, Appearance set to Light: the app renders Runner Light, the Runner terminal theme shows the light palette in a claude-code and a codex slot, and the feed beside the slot reads as one surface.
-- Existing settings with `light: "codex"`: still Codex Light after the update.
+- Fresh `ui-settings.json`, Appearance set to Light: the app renders Runner Light, the Match app terminal theme shows the light palette in a claude-code and a codex slot, and the feed beside the slot reads as one surface.
+- Settings → Terminal → Theme reads Match app, Runner Light, Runner Dark, Catppuccin Mocha, Monokai, with Match app selected on a fresh profile and on a profile whose file said `runner`; picking Runner Light under a dark app gives a light terminal in a dark app, picking Runner Dark or Monokai under a light app gives a dark terminal in a light app; both survive a restart.
+- Existing settings with `light: "codex"`: load without error and render Runner Light; Appearance shows Runner Light selected. Settings with `light: "catppuccin-latte"` still render Latte.
 - Auto intent with macOS switching appearance while a mission is running: app and terminal flip together, no dark fragments left on any surface (walk sidebar, chat split, mission feed, settings, Start Chat, confirm dialog, command palette).
 - Windows build: header and title bar match the light variant.
 - `make verify` green; the two snapshot tests pass on CI.
