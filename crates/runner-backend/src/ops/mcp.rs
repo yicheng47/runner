@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::io::Write;
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
@@ -55,14 +56,15 @@ impl McpClientStatus {
     }
 }
 
-enum Client {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum McpClientId {
     ClaudeCode,
     Codex,
     Trae,
 }
 
-impl Client {
-    fn parse(raw: &str) -> Result<Self> {
+impl McpClientId {
+    pub fn parse(raw: &str) -> Result<Self> {
         if raw == "claude_code" {
             return Ok(Self::ClaudeCode);
         }
@@ -171,47 +173,17 @@ pub(crate) fn claude_code_status_at(path: &Path, binary_path: &str) -> Result<Mc
 }
 
 pub(crate) fn claude_code_write_at(path: &Path, enabled: bool, binary_path: &str) -> Result<()> {
-    let mut val: serde_json::Value = if path.exists() {
-        let raw = std::fs::read_to_string(path)
-            .map_err(|e| Error::msg(format!("read {}: {e}", path.display())))?;
-        if raw.trim().is_empty() {
-            json!({})
+    write_entry_at(
+        path,
+        McpClientId::ClaudeCode,
+        "runner",
+        if enabled {
+            Some(NativeEntry::Claude(json_mcp_entry(binary_path)))
         } else {
-            serde_json::from_str(&raw)
-                .map_err(|e| Error::msg(format!("parse {}: {e}", path.display())))?
-        }
-    } else {
-        json!({})
-    };
-
-    let obj = val.as_object_mut().ok_or_else(|| {
-        Error::msg(format!(
-            "{} is not a JSON object at top level",
-            path.display()
-        ))
-    })?;
-    let servers = obj
-        .entry("mcpServers")
-        .or_insert_with(|| json!({}))
-        .as_object_mut()
-        .ok_or_else(|| {
-            Error::msg(format!(
-                "{}::mcpServers is not a JSON object",
-                path.display()
-            ))
-        })?;
-
-    if enabled {
-        servers.insert("runner".to_string(), json_mcp_entry(binary_path));
-    } else {
-        servers.remove("runner");
-    }
-
-    let mut out = serde_json::to_string_pretty(&val)
-        .map_err(|e| Error::msg(format!("serialize {}: {e}", path.display())))?;
-    out.push('\n');
-    std::fs::write(path, out).map_err(|e| Error::msg(format!("write {}: {e}", path.display())))?;
-    Ok(())
+            None
+        },
+        false,
+    )
 }
 
 fn toml_args(item: Option<&toml_edit::Item>) -> Vec<String> {
@@ -260,53 +232,12 @@ pub(crate) fn codex_status_at(path: &Path, binary_path: &str) -> Result<McpClien
 }
 
 pub(crate) fn codex_write_at(path: &Path, enabled: bool, binary_path: &str) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| Error::msg(format!("mkdir {}: {e}", parent.display())))?;
-    }
-
-    let mut doc: toml_edit::DocumentMut = if path.exists() {
-        let raw = std::fs::read_to_string(path)
-            .map_err(|e| Error::msg(format!("read {}: {e}", path.display())))?;
-        raw.parse()
-            .map_err(|e| Error::msg(format!("parse {}: {e}", path.display())))?
-    } else {
-        toml_edit::DocumentMut::new()
-    };
-
-    if enabled {
-        match doc.get("mcp_servers") {
-            Some(item) if !item.is_table() => {
-                return Err(Error::msg("mcp_servers is not a table"));
-            }
-            Some(_) => {}
-            None => {
-                doc["mcp_servers"] = toml_edit::Item::Table(toml_edit::Table::new());
-            }
-        }
-        let servers = doc["mcp_servers"]
-            .as_table_mut()
-            .ok_or_else(|| Error::msg("mcp_servers is not a table"))?;
-        let mut entry = toml_edit::Table::new();
-        entry["command"] = toml_edit::value(binary_path);
-        servers["runner"] = toml_edit::Item::Table(entry);
-    } else if let Some(servers) = doc
-        .get_mut("mcp_servers")
-        .and_then(|item| item.as_table_mut())
-    {
-        servers.remove("runner");
-    }
-
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    options.mode(0o600);
-    let mut file = options
-        .open(path)
-        .map_err(|e| Error::msg(format!("write {}: {e}", path.display())))?;
-    file.write_all(doc.to_string().as_bytes())
-        .map_err(|e| Error::msg(format!("write {}: {e}", path.display())))?;
-    Ok(())
+    let entry = enabled.then(|| {
+        let mut table = toml_edit::Table::new();
+        table["command"] = toml_edit::value(binary_path);
+        NativeEntry::Toml(table)
+    });
+    write_entry_at(path, McpClientId::Codex, "runner", entry, false)
 }
 
 pub fn mcp_integration_status(state: &AppCore) -> Result<McpIntegrationStatus> {
@@ -332,10 +263,12 @@ pub fn mcp_integration_status(state: &AppCore) -> Result<McpIntegrationStatus> {
 
 pub fn mcp_set_integration(state: &AppCore, client: &str, enabled: bool) -> Result<()> {
     let binary_path = mcp_binary_path(state);
-    match Client::parse(client)? {
-        Client::ClaudeCode => claude_code_write_at(&claude_code_path()?, enabled, &binary_path),
-        Client::Codex => codex_write_at(&codex_path()?, enabled, &binary_path),
-        Client::Trae => codex_write_at(&trae_path()?, enabled, &binary_path),
+    match McpClientId::parse(client)? {
+        McpClientId::ClaudeCode => {
+            claude_code_write_at(&claude_code_path()?, enabled, &binary_path)
+        }
+        McpClientId::Codex => codex_write_at(&codex_path()?, enabled, &binary_path),
+        McpClientId::Trae => codex_write_at(&trae_path()?, enabled, &binary_path),
     }
 }
 
@@ -358,10 +291,958 @@ pub fn mcp_config_snippet(state: &AppCore) -> Result<McpConfigSnippet> {
     })
 }
 
+impl McpClientId {
+    pub const ALL: [Self; 3] = [Self::ClaudeCode, Self::Codex, Self::Trae];
+
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::ClaudeCode => "claude_code",
+            Self::Codex => "codex",
+            Self::Trae => "trae",
+        }
+    }
+
+    pub fn for_runtime(runtime: crate::model::Runtime) -> Option<Self> {
+        match runtime {
+            crate::model::Runtime::ClaudeCode => Some(Self::ClaudeCode),
+            crate::model::Runtime::Codex => Some(Self::Codex),
+            crate::model::Runtime::Trae => Some(Self::Trae),
+            crate::model::Runtime::Shell => None,
+        }
+    }
+
+    pub fn runtime(self) -> crate::model::Runtime {
+        match self {
+            Self::ClaudeCode => crate::model::Runtime::ClaudeCode,
+            Self::Codex => crate::model::Runtime::Codex,
+            Self::Trae => crate::model::Runtime::Trae,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::ClaudeCode => "Claude Code",
+            Self::Codex => "Codex",
+            Self::Trae => "TRAE CLI",
+        }
+    }
+
+    pub fn config_file(self) -> &'static str {
+        match self {
+            Self::ClaudeCode => "~/.claude.json",
+            Self::Codex => "~/.codex/config.toml",
+            Self::Trae => "~/.trae/traecli.toml",
+        }
+    }
+
+    pub fn entry_key(self, name: &str) -> String {
+        format!(
+            "{}.{name}",
+            if self == Self::ClaudeCode {
+                "mcpServers"
+            } else {
+                "mcp_servers"
+            }
+        )
+    }
+
+    pub fn status(self, status: &McpIntegrationStatus) -> &McpClientStatus {
+        match self {
+            Self::ClaudeCode => &status.claude_code,
+            Self::Codex => &status.codex,
+            Self::Trae => &status.trae,
+        }
+    }
+
+    fn path(self) -> Result<PathBuf> {
+        match self {
+            Self::ClaudeCode => claude_code_path(),
+            Self::Codex => codex_path(),
+            Self::Trae => trae_path(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum McpServerDefinition {
+    Stdio {
+        command: String,
+        args: Vec<String>,
+        env: BTreeMap<String, String>,
+    },
+    Http {
+        url: String,
+        headers: BTreeMap<String, String>,
+    },
+}
+
+impl McpServerDefinition {
+    pub fn from_claude(value: &serde_json::Value) -> Option<Self> {
+        let kind = value.get("type").and_then(serde_json::Value::as_str);
+        if !matches!(kind, None | Some("stdio" | "http")) {
+            return None;
+        }
+        let strings = |key: &str| -> Option<BTreeMap<String, String>> {
+            match value.get(key) {
+                None => Some(BTreeMap::new()),
+                Some(v) => v
+                    .as_object()?
+                    .iter()
+                    .map(|(k, v)| Some((k.clone(), v.as_str()?.into())))
+                    .collect(),
+            }
+        };
+        if kind != Some("http") {
+            if let Some(command) = value.get("command").and_then(serde_json::Value::as_str) {
+                let args = match value.get("args") {
+                    None => Vec::new(),
+                    Some(v) => v
+                        .as_array()?
+                        .iter()
+                        .map(|a| a.as_str().map(str::to_owned))
+                        .collect::<Option<_>>()?,
+                };
+                return Some(Self::Stdio {
+                    command: command.into(),
+                    args,
+                    env: strings("env")?,
+                });
+            }
+        }
+        if kind == Some("stdio") {
+            return None;
+        }
+        Some(Self::Http {
+            url: value.get("url")?.as_str()?.into(),
+            headers: strings("headers")?,
+        })
+    }
+
+    pub fn from_toml(table: &toml_edit::Table) -> Option<Self> {
+        let strings = |key: &str| -> Option<BTreeMap<String, String>> {
+            match table.get(key) {
+                None => Some(BTreeMap::new()),
+                Some(v) => v
+                    .as_table_like()?
+                    .iter()
+                    .map(|(k, v)| Some((k.into(), v.as_str()?.into())))
+                    .collect(),
+            }
+        };
+        if let Some(command) = table.get("command").and_then(toml_edit::Item::as_str) {
+            let args = match table.get("args") {
+                None => Vec::new(),
+                Some(v) => v
+                    .as_array()?
+                    .iter()
+                    .map(|a| a.as_str().map(str::to_owned))
+                    .collect::<Option<_>>()?,
+            };
+            return Some(Self::Stdio {
+                command: command.into(),
+                args,
+                env: strings("env")?,
+            });
+        }
+        Some(Self::Http {
+            url: table.get("url")?.as_str()?.into(),
+            headers: strings("http_headers")?,
+        })
+    }
+
+    pub fn to_claude(&self) -> serde_json::Value {
+        match self {
+            Self::Stdio { command, args, env } => {
+                json!({"type": "stdio", "command": command, "args": args, "env": env})
+            }
+            Self::Http { url, headers } => json!({"type": "http", "url": url, "headers": headers}),
+        }
+    }
+
+    pub fn write_toml(&self, table: &mut toml_edit::Table) {
+        let map = |values: &BTreeMap<String, String>| {
+            let mut result = toml_edit::InlineTable::new();
+            for (key, value) in values {
+                result.insert(key, value.as_str().into());
+            }
+            toml_edit::value(result)
+        };
+        match self {
+            Self::Stdio { command, args, env } => {
+                table.remove("url");
+                table.remove("http_headers");
+                table["command"] = toml_edit::value(command);
+                table["args"] = toml_edit::value(args.iter().collect::<toml_edit::Array>());
+                table["env"] = map(env);
+            }
+            Self::Http { url, headers } => {
+                for key in ["command", "args", "env"] {
+                    table.remove(key);
+                }
+                table["url"] = toml_edit::value(url);
+                table["http_headers"] = map(headers);
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct McpServerClientEntry {
+    pub registered: bool,
+    pub native_text: String,
+    pub definition: Option<McpServerDefinition>,
+    pub conflicting: bool,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpServerEntry {
+    pub name: String,
+    pub clients: BTreeMap<McpClientId, McpServerClientEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpCatalog {
+    pub runner: McpIntegrationStatus,
+    pub runner_server: McpServerEntry,
+    pub servers: Vec<McpServerEntry>,
+}
+
+#[derive(Clone)]
+enum NativeEntry {
+    Claude(serde_json::Value),
+    Toml(toml_edit::Table),
+}
+
+impl NativeEntry {
+    fn definition(&self) -> Option<McpServerDefinition> {
+        match self {
+            Self::Claude(value) => McpServerDefinition::from_claude(value),
+            Self::Toml(table) => McpServerDefinition::from_toml(table),
+        }
+    }
+
+    fn text(&self, name: &str) -> String {
+        match self {
+            Self::Claude(value) => serde_json::to_string_pretty(value).unwrap(),
+            Self::Toml(table) => {
+                let mut doc = toml_edit::DocumentMut::new();
+                let mut parent = toml_edit::Table::new();
+                parent.set_implicit(true);
+                parent.insert(name, toml_edit::Item::Table(table.clone()));
+                doc.insert("mcp_servers", toml_edit::Item::Table(parent));
+                doc.to_string()
+            }
+        }
+    }
+}
+
+fn read_config(path: &Path) -> Result<String> {
+    match std::fs::read_to_string(path) {
+        Ok(raw) => Ok(raw),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+        Err(e) => Err(Error::msg(format!("read {}: {e}", path.display()))),
+    }
+}
+
+fn read_entries_at(path: &Path, client: McpClientId) -> Result<BTreeMap<String, NativeEntry>> {
+    let raw = read_config(path)?;
+    if raw.trim().is_empty() {
+        return Ok(BTreeMap::new());
+    }
+    if client == McpClientId::ClaudeCode {
+        let value: serde_json::Value = serde_json::from_str(&raw)
+            .map_err(|e| Error::msg(format!("parse {}: {e}", path.display())))?;
+        let object = value
+            .as_object()
+            .ok_or_else(|| Error::msg(format!("{} is not a JSON object", path.display())))?;
+        match object.get("mcpServers") {
+            None => Ok(BTreeMap::new()),
+            Some(servers) => Ok(servers
+                .as_object()
+                .ok_or_else(|| {
+                    Error::msg(format!(
+                        "{}::mcpServers is not a JSON object",
+                        path.display()
+                    ))
+                })?
+                .iter()
+                .map(|(name, value)| (name.clone(), NativeEntry::Claude(value.clone())))
+                .collect()),
+        }
+    } else {
+        let doc: toml_edit::DocumentMut = raw
+            .parse()
+            .map_err(|e| Error::msg(format!("parse {}: {e}", path.display())))?;
+        let Some(servers) = doc.get("mcp_servers") else {
+            return Ok(BTreeMap::new());
+        };
+        servers
+            .as_table_like()
+            .ok_or_else(|| Error::msg(format!("{}: mcp_servers is not a table", path.display())))?
+            .iter()
+            .map(|(name, item)| {
+                let table = item.clone().into_table().map_err(|_| {
+                    Error::msg(format!(
+                        "{}: mcp_servers.{name} is not a table",
+                        path.display()
+                    ))
+                })?;
+                Ok((name.into(), NativeEntry::Toml(table)))
+            })
+            .collect()
+    }
+}
+
+fn catalog_at(runner: McpIntegrationStatus, paths: &BTreeMap<McpClientId, PathBuf>) -> McpCatalog {
+    let sources: BTreeMap<_, _> = paths
+        .iter()
+        .map(|(&client, path)| (client, read_entries_at(path, client)))
+        .collect();
+    let mut entries = BTreeMap::<String, McpServerEntry>::new();
+    entries.insert(
+        "runner".into(),
+        McpServerEntry {
+            name: "runner".into(),
+            clients: BTreeMap::new(),
+        },
+    );
+    for (&client, source) in &sources {
+        if let Ok(servers) = source {
+            for (name, native) in servers {
+                entries
+                    .entry(name.clone())
+                    .or_insert_with(|| McpServerEntry {
+                        name: name.clone(),
+                        clients: BTreeMap::new(),
+                    })
+                    .clients
+                    .insert(
+                        client,
+                        McpServerClientEntry {
+                            registered: true,
+                            native_text: native.text(name),
+                            definition: native.definition(),
+                            ..Default::default()
+                        },
+                    );
+            }
+        }
+    }
+    for entry in entries.values_mut() {
+        let snapshots = entry.clients.clone();
+        for (&client, source) in &sources {
+            let slot = entry.clients.entry(client).or_default();
+            slot.error = source.as_ref().err().map(ToString::to_string);
+            slot.conflicting = slot.registered
+                && snapshots.iter().any(|(&other, copy)| {
+                    other != client
+                        && (copy.definition != slot.definition
+                            || (copy.definition.is_none() && copy.native_text != slot.native_text))
+                });
+        }
+    }
+    McpCatalog {
+        runner,
+        runner_server: entries.remove("runner").unwrap(),
+        servers: entries.into_values().collect(),
+    }
+}
+
+fn client_paths() -> Result<BTreeMap<McpClientId, PathBuf>> {
+    McpClientId::ALL
+        .into_iter()
+        .map(|client| Ok((client, client.path()?)))
+        .collect()
+}
+
+pub fn mcp_catalog(state: &AppCore) -> Result<McpCatalog> {
+    Ok(catalog_at(mcp_integration_status(state)?, &client_paths()?))
+}
+
+// serde_json validates and locates values; splice only the owned member so unrelated
+// JSON whitespace, ordering, and number/string spellings survive byte for byte.
+struct JsonMember {
+    key: String,
+    key_start: usize,
+    value: std::ops::Range<usize>,
+    comma: Option<usize>,
+}
+
+fn json_members(raw: &str) -> Result<(Vec<JsonMember>, usize)> {
+    let mut offset = raw
+        .find('{')
+        .ok_or_else(|| Error::msg("expected JSON object"))?
+        + 1;
+    let mut members = Vec::new();
+    loop {
+        offset += raw[offset..].len() - raw[offset..].trim_start().len();
+        if raw.as_bytes()[offset] == b'}' {
+            return Ok((members, offset));
+        }
+        let key_start = offset;
+        let mut keys = serde_json::Deserializer::from_str(&raw[offset..]).into_iter::<String>();
+        let key = keys
+            .next()
+            .unwrap()
+            .map_err(|e| Error::msg(e.to_string()))?;
+        offset += keys.byte_offset();
+        offset += raw[offset..].find(':').unwrap() + 1;
+        offset += raw[offset..].len() - raw[offset..].trim_start().len();
+        let start = offset;
+        let mut values =
+            serde_json::Deserializer::from_str(&raw[offset..]).into_iter::<serde::de::IgnoredAny>();
+        values
+            .next()
+            .unwrap()
+            .map_err(|e| Error::msg(e.to_string()))?;
+        offset += values.byte_offset();
+        let end = offset;
+        offset += raw[offset..].len() - raw[offset..].trim_start().len();
+        let comma = (raw.as_bytes()[offset] == b',').then_some(offset);
+        if comma.is_some() {
+            offset += 1;
+        }
+        members.push(JsonMember {
+            key,
+            key_start,
+            value: start..end,
+            comma,
+        });
+    }
+}
+
+fn replace_json_member(raw: &str, name: &str, value: Option<&serde_json::Value>) -> Result<String> {
+    let (members, close) = json_members(raw)?;
+    let mut out = raw.to_owned();
+    if let Some((index, member)) = members.iter().enumerate().find(|(_, m)| m.key == name) {
+        if let Some(value) = value {
+            out.replace_range(
+                member.value.clone(),
+                &serde_json::to_string_pretty(value).unwrap(),
+            );
+        } else {
+            out.replace_range(member.key_start..member.value.end, "");
+            if let Some(comma) = member.comma {
+                let shifted = comma - (member.value.end - member.key_start);
+                out.replace_range(shifted..shifted + 1, "");
+            } else if index > 0 {
+                let comma = members[index - 1].comma.unwrap();
+                out.replace_range(comma..comma + 1, "");
+            }
+        }
+    } else if let Some(value) = value {
+        let text = format!(
+            "{}: {}",
+            serde_json::to_string(name).unwrap(),
+            serde_json::to_string_pretty(value).unwrap()
+        );
+        out.insert_str(close, &text);
+        if let Some(last) = members.last() {
+            out.insert(last.value.end, ',');
+        }
+    }
+    Ok(out)
+}
+
+fn write_entry_at(
+    path: &Path,
+    client: McpClientId,
+    name: &str,
+    entry: Option<NativeEntry>,
+    merge: bool,
+) -> Result<()> {
+    let raw = read_config(path)?;
+    let existing = read_entries_at(path, client)?;
+    if entry.is_none() && !existing.contains_key(name) {
+        return Ok(());
+    }
+    let output = if client == McpClientId::ClaudeCode {
+        let raw = if raw.trim().is_empty() { "{}" } else { &raw };
+        let (members, _) = json_members(raw)?;
+        let server_member = members.iter().find(|m| m.key == "mcpServers");
+        let value = match entry {
+            Some(NativeEntry::Claude(mut value)) => {
+                if merge {
+                    if let Some(NativeEntry::Claude(old)) = existing.get(name) {
+                        let mut base = old.as_object().cloned().unwrap_or_default();
+                        for key in ["type", "command", "args", "env", "url", "headers"] {
+                            base.remove(key);
+                        }
+                        base.extend(value.as_object().unwrap().clone());
+                        value = serde_json::Value::Object(base);
+                    }
+                }
+                Some(value)
+            }
+            None => None,
+            _ => unreachable!(),
+        };
+        if let Some(member) = server_member {
+            let updated = replace_json_member(&raw[member.value.clone()], name, value.as_ref())?;
+            let mut out = raw.to_owned();
+            out.replace_range(member.value.clone(), &updated);
+            out
+        } else {
+            replace_json_member(raw, "mcpServers", Some(&json!({ name: value.unwrap() })))?
+        }
+    } else {
+        let mut doc: toml_edit::DocumentMut = raw
+            .parse()
+            .map_err(|e| Error::msg(format!("parse {}: {e}", path.display())))?;
+        if !doc.contains_key("mcp_servers") {
+            let mut parent = toml_edit::Table::new();
+            parent.set_implicit(true);
+            doc.insert("mcp_servers", toml_edit::Item::Table(parent));
+        }
+        let servers = doc
+            .get_mut("mcp_servers")
+            .unwrap()
+            .as_table_like_mut()
+            .ok_or_else(|| Error::msg(format!("{}: mcp_servers is not a table", path.display())))?;
+        match entry {
+            Some(NativeEntry::Toml(mut table)) => {
+                if merge {
+                    if let Some(NativeEntry::Toml(old)) = existing.get(name) {
+                        let definition = McpServerDefinition::from_toml(&table).unwrap();
+                        table = old.clone();
+                        definition.write_toml(&mut table);
+                    }
+                }
+                servers.insert(name, toml_edit::Item::Table(table));
+            }
+            None => {
+                servers.remove(name);
+            }
+            _ => unreachable!(),
+        }
+        doc.to_string()
+    };
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| Error::msg(format!("mkdir {}: {e}", parent.display())))?;
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    options
+        .open(path)
+        .and_then(|mut file| file.write_all(output.as_bytes()))
+        .map_err(|e| Error::msg(format!("write {}: {e}", path.display())))
+}
+
+fn translated(definition: &McpServerDefinition, client: McpClientId) -> NativeEntry {
+    if client == McpClientId::ClaudeCode {
+        NativeEntry::Claude(definition.to_claude())
+    } else {
+        let mut table = toml_edit::Table::new();
+        definition.write_toml(&mut table);
+        NativeEntry::Toml(table)
+    }
+}
+
+fn copy_at(
+    paths: &BTreeMap<McpClientId, PathBuf>,
+    from: McpClientId,
+    to: McpClientId,
+    name: &str,
+) -> Result<()> {
+    let source = read_entries_at(&paths[&from], from)?;
+    let entry = source.get(name).ok_or_else(|| {
+        Error::msg(format!(
+            "{}: {name} is not registered",
+            paths[&from].display()
+        ))
+    })?;
+    let definition = entry.definition().ok_or_else(|| {
+        Error::msg(format!(
+            "{name} cannot be translated; add it with {}'s CLI",
+            to.label()
+        ))
+    })?;
+    write_entry_at(
+        &paths[&to],
+        to,
+        name,
+        Some(translated(&definition, to)),
+        true,
+    )
+}
+
+pub fn mcp_copy_server(
+    _state: &AppCore,
+    from: McpClientId,
+    to: McpClientId,
+    name: &str,
+) -> Result<()> {
+    check_server_name(name)?;
+    copy_at(&client_paths()?, from, to, name)
+}
+
+pub fn mcp_remove_server(_state: &AppCore, client: McpClientId, name: &str) -> Result<()> {
+    check_server_name(name)?;
+    write_entry_at(&client.path()?, client, name, None, false)
+}
+
+fn check_server_name(name: &str) -> Result<()> {
+    if name == "runner" {
+        return Err(Error::msg(
+            "Use Runner MCP registration to change the built-in server",
+        ));
+    }
+    Ok(())
+}
+
+fn parse_native(client: McpClientId, name: &str, text: &str) -> Result<NativeEntry> {
+    if client == McpClientId::ClaudeCode {
+        let value: serde_json::Value =
+            serde_json::from_str(text).map_err(|e| Error::msg(format!("Invalid JSON: {e}")))?;
+        if !value.is_object() {
+            return Err(Error::msg("The MCP entry must be a JSON object"));
+        }
+        Ok(NativeEntry::Claude(value))
+    } else {
+        let mut doc: toml_edit::DocumentMut = text
+            .parse()
+            .map_err(|e| Error::msg(format!("Invalid TOML: {e}")))?;
+        if let Some(servers) = doc.get("mcp_servers") {
+            let servers = servers
+                .as_table_like()
+                .ok_or_else(|| Error::msg("mcp_servers must be a table"))?;
+            if doc.len() != 1 || servers.len() != 1 || !servers.contains_key(name) {
+                return Err(Error::msg(format!("Edit only the mcp_servers.{name} table; rename servers through the agent's CLI")));
+            }
+            let table = servers
+                .get(name)
+                .unwrap()
+                .clone()
+                .into_table()
+                .map_err(|_| Error::msg("The MCP entry must be a TOML table"))?;
+            Ok(NativeEntry::Toml(table))
+        } else {
+            Ok(NativeEntry::Toml(std::mem::take(doc.as_table_mut())))
+        }
+    }
+}
+
+pub fn validate_mcp_edit(
+    client: McpClientId,
+    name: &str,
+    text: &str,
+    also_update: bool,
+) -> Result<()> {
+    let entry = parse_native(client, name, text)?;
+    if also_update && entry.definition().is_none() {
+        return Err(Error::msg("This transport cannot be translated. Turn off Also update and edit each agent's config with its own CLI."));
+    }
+    Ok(())
+}
+
+fn edit_at(
+    paths: &BTreeMap<McpClientId, PathBuf>,
+    client: McpClientId,
+    name: &str,
+    text: &str,
+    also: &[McpClientId],
+) -> Result<()> {
+    validate_mcp_edit(client, name, text, !also.is_empty())?;
+    let native = parse_native(client, name, text)?;
+    let definition = native.definition();
+    let mut errors = Vec::new();
+    if let Err(e) = write_entry_at(&paths[&client], client, name, Some(native), false) {
+        errors.push(e.to_string());
+    }
+    for &other in McpClientId::ALL
+        .iter()
+        .filter(|&&other| other != client && also.contains(&other))
+    {
+        if let Err(e) = write_entry_at(
+            &paths[&other],
+            other,
+            name,
+            Some(translated(definition.as_ref().unwrap(), other)),
+            true,
+        ) {
+            errors.push(e.to_string());
+        }
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(Error::msg(errors.join("\n")))
+    }
+}
+
+pub fn mcp_edit_server(
+    _state: &AppCore,
+    client: McpClientId,
+    name: &str,
+    native_text: &str,
+    also: &[McpClientId],
+) -> Result<()> {
+    check_server_name(name)?;
+    edit_at(&client_paths()?, client, name, native_text, also)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    fn paths(dir: &TempDir) -> BTreeMap<McpClientId, PathBuf> {
+        McpClientId::ALL
+            .into_iter()
+            .map(|c| (c, dir.path().join(c.key())))
+            .collect()
+    }
+
+    fn catalog(paths: &BTreeMap<McpClientId, PathBuf>) -> McpCatalog {
+        catalog_at(
+            McpIntegrationStatus {
+                environment: "test".into(),
+                binary_path: "/runner".into(),
+                endpoint: String::new(),
+                claude_code: McpClientStatus::empty(&paths[&McpClientId::ClaudeCode]),
+                codex: McpClientStatus::empty(&paths[&McpClientId::Codex]),
+                trae: McpClientStatus::empty(&paths[&McpClientId::Trae]),
+            },
+            paths,
+        )
+    }
+
+    #[test]
+    fn catalog_copies_conflicts_and_edits_without_touching_other_entries() {
+        use McpClientId::*;
+        let dir = TempDir::new().unwrap();
+        let paths = paths(&dir);
+        let claude = "{\n  \"theme\" : \"dark\", \"mcpServers\" : {\"github\": {\"command\":\"gh-mcp\"}, \"runner\": {\"command\":\"/runner\"}}, \"n\":1e2\n}\n";
+        let rest = "# model comment\nmodel = 'gpt-5'\n\n[tools]\nweb = true # stay\n\n[mcp_servers.other]\ncommand = 'other'\n\n[mcp_servers.other.env]\nTOKEN = 'secret'\n";
+        std::fs::write(&paths[&ClaudeCode], claude).unwrap();
+        std::fs::write(&paths[&Codex], rest).unwrap();
+        let first = catalog(&paths);
+        assert_eq!(
+            first
+                .servers
+                .iter()
+                .map(|s| s.name.as_str())
+                .collect::<Vec<_>>(),
+            ["github", "other"]
+        );
+        let github = &first.servers[0];
+        assert!(github.clients[&ClaudeCode].registered);
+        assert!(!github.clients[&Codex].registered);
+        assert!(!github.clients[&Trae].registered);
+        assert!(first.runner_server.clients[&ClaudeCode].registered);
+        copy_at(&paths, ClaudeCode, Codex, "github").unwrap();
+        let copied = std::fs::read_to_string(&paths[&Codex]).unwrap();
+        assert!(copied.starts_with(rest), "{copied}");
+        assert!(copied.contains("[mcp_servers.github]"));
+        assert_eq!(
+            std::fs::read_to_string(&paths[&ClaudeCode]).unwrap(),
+            claude
+        );
+        let conflicting = format!("{rest}\n[mcp_servers.github]\ncommand = 'different'\nstartup_timeout_sec = 90 # keep\n");
+        std::fs::write(&paths[&Codex], &conflicting).unwrap();
+        let second = catalog(&paths);
+        assert!(second.servers[0].clients[&ClaudeCode].conflicting);
+        assert!(second.servers[0].clients[&Codex].conflicting);
+        edit_at(
+            &paths,
+            ClaudeCode,
+            "github",
+            r#"{"command":"fixed","extra":42}"#,
+            &[Codex],
+        )
+        .unwrap();
+        let after = std::fs::read_to_string(&paths[&Codex]).unwrap();
+        assert!(after.starts_with(rest));
+        assert!(after.contains("startup_timeout_sec = 90 # keep\n"));
+        assert!(!catalog(&paths).servers[0].clients[&Codex].conflicting);
+        let after_claude = std::fs::read_to_string(&paths[&ClaudeCode]).unwrap();
+        assert_eq!(
+            after_claude,
+            claude.replace(
+                r#"{"command":"gh-mcp"}"#,
+                "{\n  \"command\": \"fixed\",\n  \"extra\": 42\n}"
+            )
+        );
+        for client in [ClaudeCode, Codex] {
+            write_entry_at(&paths[&client], client, "github", None, false).unwrap();
+        }
+        assert_eq!(
+            catalog(&paths)
+                .servers
+                .iter()
+                .map(|s| s.name.as_str())
+                .collect::<Vec<_>>(),
+            ["other"]
+        );
+        assert!(std::fs::read_to_string(&paths[&Codex])
+            .unwrap()
+            .starts_with(rest));
+        assert!(catalog(&paths).runner_server.clients[&ClaudeCode].registered);
+    }
+
+    #[test]
+    fn copying_onto_existing_entry_keeps_unmodelled_keys_and_switches_transport() {
+        use McpClientId::*;
+        let dir = TempDir::new().unwrap();
+        let paths = paths(&dir);
+        std::fs::write(&paths[&ClaudeCode], r#"{"mcpServers":{"github":{"type":"http","url":"https://example.test","headers":{"Authorization":"secret"}}}}"#).unwrap();
+        let rest = "# untouched\nmodel = 'old'\n\n";
+        std::fs::write(&paths[&Codex], format!("{rest}[mcp_servers.github]\ncommand = 'old'\nargs = ['a']\nenv = {{ KEY = 'value' }}\nstartup_timeout_sec = 60 # keep\nenabled = false\ncwd = '/tmp'\n")).unwrap();
+        copy_at(&paths, ClaudeCode, Codex, "github").unwrap();
+        let after = std::fs::read_to_string(&paths[&Codex]).unwrap();
+        assert!(after.starts_with(rest));
+        assert!(after.contains("startup_timeout_sec = 60 # keep\nenabled = false\ncwd = '/tmp'\n"));
+        let entries = read_entries_at(&paths[&Codex], Codex).unwrap();
+        assert_eq!(
+            entries["github"].definition(),
+            read_entries_at(&paths[&ClaudeCode], ClaudeCode).unwrap()["github"].definition()
+        );
+        assert!(!after.contains("command ="));
+        assert!(!after.contains("env ="));
+        copy_at(&paths, Codex, Trae, "github").unwrap();
+        assert_eq!(
+            read_entries_at(&paths[&Trae], Trae).unwrap()["github"].definition(),
+            entries["github"].definition()
+        );
+    }
+
+    #[test]
+    fn invalid_and_untranslatable_edits_validate_before_any_write() {
+        use McpClientId::*;
+        let dir = TempDir::new().unwrap();
+        let paths = paths(&dir);
+        let json = r#"{"mcpServers":{"github":{"command":"old"}}}"#;
+        let toml = "[mcp_servers.github]\ncommand = 'old'\n";
+        std::fs::write(&paths[&ClaudeCode], json).unwrap();
+        std::fs::write(&paths[&Codex], toml).unwrap();
+        for invalid in ["{", "[]", r#"{"type":"sse","url":"https://example.test"}"#] {
+            assert!(edit_at(&paths, ClaudeCode, "github", invalid, &[Codex]).is_err());
+            assert_eq!(std::fs::read_to_string(&paths[&ClaudeCode]).unwrap(), json);
+            assert_eq!(std::fs::read_to_string(&paths[&Codex]).unwrap(), toml);
+        }
+        for invalid in [
+            "[",
+            "[mcp_servers.renamed]\ncommand = 'new'",
+            "[mcp_servers.github]\ncommand = 'new'\n[other]\nx = 1",
+        ] {
+            assert!(edit_at(&paths, Codex, "github", invalid, &[ClaudeCode]).is_err());
+            assert_eq!(std::fs::read_to_string(&paths[&ClaudeCode]).unwrap(), json);
+            assert_eq!(std::fs::read_to_string(&paths[&Codex]).unwrap(), toml);
+        }
+        let sse = r#"{"type":"sse","url":"https://example.test"}"#;
+        edit_at(&paths, ClaudeCode, "github", sse, &[]).unwrap();
+        let entry = catalog(&paths).servers.remove(0);
+        assert!(entry.clients[&ClaudeCode].registered);
+        assert!(entry.clients[&ClaudeCode].definition.is_none());
+        assert!(copy_at(&paths, ClaudeCode, Codex, "github")
+            .unwrap_err()
+            .to_string()
+            .contains("CLI"));
+        assert_eq!(std::fs::read_to_string(&paths[&Codex]).unwrap(), toml);
+    }
+
+    #[test]
+    fn malformed_client_is_reported_on_every_row_and_independent_edits_continue() {
+        use McpClientId::*;
+        let dir = TempDir::new().unwrap();
+        let paths = paths(&dir);
+        std::fs::write(&paths[&ClaudeCode], "{ broken").unwrap();
+        std::fs::write(
+            &paths[&Codex],
+            "[mcp_servers.github]\ncommand = 'old'\n[mcp_servers.other]\ncommand = 'other'\n",
+        )
+        .unwrap();
+        let catalog = catalog(&paths);
+        assert!(catalog.servers.iter().all(|e| e.clients[&ClaudeCode]
+            .error
+            .as_ref()
+            .unwrap()
+            .contains(paths[&ClaudeCode].to_str().unwrap())));
+        assert!(catalog.runner_server.clients[&ClaudeCode].error.is_some());
+        let error = edit_at(
+            &paths,
+            ClaudeCode,
+            "github",
+            r#"{"command":"new"}"#,
+            &[Codex, Trae],
+        )
+        .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains(paths[&ClaudeCode].to_str().unwrap()));
+        assert_eq!(
+            std::fs::read_to_string(&paths[&ClaudeCode]).unwrap(),
+            "{ broken"
+        );
+        for client in [Codex, Trae] {
+            assert_eq!(
+                read_entries_at(&paths[&client], client).unwrap()["github"].definition(),
+                Some(McpServerDefinition::Stdio {
+                    command: "new".into(),
+                    args: vec![],
+                    env: BTreeMap::new()
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn last_removal_preserves_parent_and_every_unowned_byte() {
+        use McpClientId::*;
+        let dir = TempDir::new().unwrap();
+        let paths = paths(&dir);
+        let json = "{ \"before\":1e2, \"mcpServers\" : {  \"runner\" : {\"command\":\"old\"}  }, \"after\":\"\\u0061\" }\n";
+        std::fs::write(&paths[&ClaudeCode], json).unwrap();
+        claude_code_write_at(&paths[&ClaudeCode], false, "new").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&paths[&ClaudeCode]).unwrap(),
+            json.replace("\"runner\" : {\"command\":\"old\"}", "")
+        );
+        let toml = "# before\nmodel = 'gpt-5'\n\n# parent comment\n[mcp_servers] # keep parent\n\n[mcp_servers.runner]\ncommand = 'old'\n\n[after]\nflag = true\n";
+        std::fs::write(&paths[&Codex], toml).unwrap();
+        codex_write_at(&paths[&Codex], false, "new").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&paths[&Codex]).unwrap(),
+            toml.replace("\n[mcp_servers.runner]\ncommand = 'old'\n", "")
+        );
+    }
+
+    #[test]
+    fn json_member_splicing_handles_first_middle_last_and_escaped_names() {
+        let raw = r#" { "a": {"s":"x,}[]\""}, "b\"x": [1,2], "c": 1e2 } "#;
+        for (name, expected) in [
+            ("a", r#" {  "b\"x": [1,2], "c": 1e2 } "#),
+            ("b\"x", r#" { "a": {"s":"x,}[]\""},  "c": 1e2 } "#),
+            ("c", r#" { "a": {"s":"x,}[]\""}, "b\"x": [1,2]  } "#),
+        ] {
+            let edited = replace_json_member(raw, name, None).unwrap();
+            assert_eq!(edited, expected);
+            serde_json::from_str::<serde_json::Value>(&edited).unwrap();
+        }
+    }
+
+    #[test]
+    fn toml_edit_roundtrips_named_table_subtables_and_extra_keys() {
+        use McpClientId::*;
+        let text = "[mcp_servers.\"a.b\"]\ncommand = 'mcp'\nstartup_timeout_sec = 20\n\n[mcp_servers.\"a.b\".env]\nTOKEN = 'secret'\n";
+        let parsed = parse_native(Codex, "a.b", text).unwrap();
+        assert_eq!(parsed.text("a.b"), text);
+        assert_eq!(
+            parse_native(Trae, "a.b", &parsed.text("a.b"))
+                .unwrap()
+                .definition(),
+            parsed.definition()
+        );
+        assert!(
+            McpServerDefinition::from_claude(&json!({"type":"ws","url":"wss://example.test"}))
+                .is_none()
+        );
+        assert!(McpServerDefinition::from_claude(&json!({"extra": true})).is_none());
+    }
 
     #[test]
     fn claude_code_status_false_when_file_missing() {
