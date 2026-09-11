@@ -208,9 +208,9 @@ Runner is written and maintained by **Yicheng Wang** (Jason Wang, 王逸成) —
 ## Community
 
 - Bugs and feature requests: [GitHub Issues](https://github.com/yicheng47/runner/issues).
-- 中文用户可以扫码加我微信，备注「runner」，我会拉你进 Runner 用户群。
+- 中文用户可以扫码加入 Runner 微信用户群。群二维码 7 天过期，如果扫码提示失效，请[提一个 issue](https://github.com/yicheng47/runner/issues/new) 提醒我更新。
 
-<img src="assets/wechat_qr.jpg" alt="微信二维码" width="200" />
+<img src="assets/wechat_group_qr.png" alt="Runner 微信用户群二维码" width="200" />
 
 ## License
 
