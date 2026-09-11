@@ -2075,18 +2075,16 @@ fn light_theme_options() -> Vec<SelectOption> {
 fn light_terminal_theme_options() -> Vec<SelectOption> {
     vec![
         SelectOption::new("rose-pine-dawn", "Rosé Pine Dawn").swatch(0xd7827e),
-        SelectOption::new("runner-light", "Runner Light").swatch(0x00a66a),
-        SelectOption::new("runner-dark", "Runner Dark").swatch(0x00ff9c),
+        SelectOption::new("runner", "Runner").swatch(0x00ff9c),
         SelectOption::new("catppuccin-mocha", "Catppuccin Mocha").swatch(0xcba6f7),
     ]
 }
 
 fn dark_terminal_theme_options() -> Vec<SelectOption> {
     vec![
-        SelectOption::new("runner-dark", "Runner Dark").swatch(0x00ff9c),
+        SelectOption::new("runner", "Runner").swatch(0x00ff9c),
         SelectOption::new("catppuccin-mocha", "Catppuccin Mocha").swatch(0xcba6f7),
         SelectOption::new("rose-pine-dawn", "Rosé Pine Dawn").swatch(0xd7827e),
-        SelectOption::new("runner-light", "Runner Light").swatch(0x00a66a),
     ]
 }
 
@@ -2217,8 +2215,7 @@ mod tests {
             light_terminal,
             vec![
                 SelectOption::new("rose-pine-dawn", "Rosé Pine Dawn").swatch(0xd7827e),
-                SelectOption::new("runner-light", "Runner Light").swatch(0x00a66a),
-                SelectOption::new("runner-dark", "Runner Dark").swatch(0x00ff9c),
+                SelectOption::new("runner", "Runner").swatch(0x00ff9c),
                 SelectOption::new("catppuccin-mocha", "Catppuccin Mocha").swatch(0xcba6f7),
             ]
         );
@@ -2226,10 +2223,9 @@ mod tests {
         assert_eq!(
             dark_terminal,
             vec![
-                SelectOption::new("runner-dark", "Runner Dark").swatch(0x00ff9c),
+                SelectOption::new("runner", "Runner").swatch(0x00ff9c),
                 SelectOption::new("catppuccin-mocha", "Catppuccin Mocha").swatch(0xcba6f7),
                 SelectOption::new("rose-pine-dawn", "Rosé Pine Dawn").swatch(0xd7827e),
-                SelectOption::new("runner-light", "Runner Light").swatch(0x00a66a),
             ]
         );
         for option in light {
@@ -2248,7 +2244,7 @@ mod tests {
         assert_eq!(dark_theme_label(DarkTheme::Runner), "Runner");
         assert_eq!(parse_light_theme("codex"), None);
         assert_eq!(LightTerminalTheme::parse("match-app"), None);
-        assert_eq!(DarkTerminalTheme::parse("runner"), None);
+        assert_eq!(DarkTerminalTheme::parse("runner-dark"), None);
     }
 
     #[test]

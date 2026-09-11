@@ -1522,8 +1522,8 @@ mod tests {
                 b"\x1b]11;rgb:1515/1616/1b1b\x1b\\".as_slice(),
             ),
             (
-                crate::palette::RUNNER_LIGHT,
-                b"\x1b]11;rgb:f6f6/f6f6/f8f8\x1b\\".as_slice(),
+                crate::palette::ROSE_PINE_DAWN,
+                b"\x1b]11;rgb:fafa/f4f4/eded\x1b\\".as_slice(),
             ),
         ] {
             let temp = tempfile::tempdir().unwrap();
@@ -1599,7 +1599,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let core = test_core(temp.path());
         let bridge = TerminalBridge::new(core, Arc::new(|| {})).unwrap();
-        bridge.set_palette(crate::palette::RUNNER_LIGHT);
+        bridge.set_palette(crate::palette::ROSE_PINE_DAWN);
         for (session_id, mission_id) in [("direct", None), ("slot", Some("mission".into()))] {
             bridge.output(&OutputEvent {
                 session_id: session_id.into(),
@@ -1609,7 +1609,7 @@ mod tests {
             });
             assert_eq!(
                 bridge.session(session_id).unwrap().palette(),
-                crate::palette::RUNNER_LIGHT
+                crate::palette::ROSE_PINE_DAWN
             );
         }
         bridge.set_palette(crate::palette::RUNNER);

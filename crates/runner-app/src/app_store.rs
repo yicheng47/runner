@@ -856,7 +856,7 @@ mod tests {
         );
 
         let mut light_pick = settings.clone();
-        light_pick.light_terminal_theme = LightTerminalTheme::RunnerLight;
+        light_pick.light_terminal_theme = LightTerminalTheme::Runner;
         let mut dark_pick = settings.clone();
         dark_pick.dark_terminal_theme = DarkTerminalTheme::CatppuccinMocha;
         for variant in [ThemeVariant::Carbon, ThemeVariant::RunnerLight] {

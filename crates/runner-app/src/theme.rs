@@ -432,13 +432,6 @@ mod tests {
                 info: 0x0a8fb3,
             }
         );
-        let terminal_bg = runner_terminal::palette::RUNNER_LIGHT.background;
-        assert_eq!(
-            RUNNER_LIGHT.bg,
-            u32::from(terminal_bg.r) << 16
-                | u32::from(terminal_bg.g) << 8
-                | u32::from(terminal_bg.b)
-        );
     }
 
     #[test]

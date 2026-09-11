@@ -6692,7 +6692,7 @@ mod tests {
                 temp.path().join("settings.json"),
                 AppSettings {
                     app_theme: theme::ThemeIntent::Dark,
-                    dark_terminal_theme: app_settings::DarkTerminalTheme::RunnerLight,
+                    dark_terminal_theme: app_settings::DarkTerminalTheme::RosePineDawn,
                     ..AppSettings::default()
                 },
                 None,
@@ -6744,11 +6744,11 @@ mod tests {
         assert_eq!(theme::active_variant(), theme::ThemeVariant::Carbon);
         assert_eq!(
             bridge.session("direct").unwrap().palette(),
-            runner_terminal::palette::RUNNER_LIGHT
+            runner_terminal::palette::ROSE_PINE_DAWN
         );
         assert_eq!(
             bridge.session("slot").unwrap().palette(),
-            runner_terminal::palette::RUNNER_LIGHT
+            runner_terminal::palette::ROSE_PINE_DAWN
         );
         let mut visual = VisualTestContext::from_window(host.into(), &cx);
         visual.simulate_resize(size(px(1200.), px(900.)));
@@ -6760,7 +6760,7 @@ mod tests {
                 store.update_settings(
                     |settings| {
                         settings.app_theme = intent;
-                        settings.dark_terminal_theme = app_settings::DarkTerminalTheme::RunnerDark;
+                        settings.dark_terminal_theme = app_settings::DarkTerminalTheme::Runner;
                         true
                     },
                     false,

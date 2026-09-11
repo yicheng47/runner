@@ -2,6 +2,8 @@
 
 Tracking issue: [#529](https://github.com/yicheng47/runner/issues/529), phase 4, decided by Jason on 2026-09-11 during the smoke test of PR [#563](https://github.com/yicheng47/runner/pull/563). Design: `design/runner.pen` `Settings — Appearance` (`k1WS7`), `Settings — Terminal` (`n5LJj`), committed `c16f1e6`; signed off. Branch: **`feat/529-runner-light-theme` already exists and is checked out** — it carries the whole 529 work and this brief; work on it, do not create another. Do not open or edit `design/runner.pen`.
 
+> Changed after handoff (2026-09-11, Jason): the Runner Light *terminal* palette is gone and Runner Dark is plain **Runner** (key `runner`). Terminal lists are Rosé Pine Dawn / Runner / Catppuccin Mocha (light) and Runner / Catppuccin Mocha / Rosé Pine Dawn (dark). The crew shipped the four-palette version in `e32263b`; the reduction landed inline after the mission was archived.
+
 ## What ships
 
 Match app goes away. The terminal palette is picked per mode, like the app palette already is: a light pick and a dark pick, both living in Settings → Appearance next to the app picks, and the terminal follows whichever mode is resolved. Appearance gains a live preview of both modes. Settings → Terminal keeps font, size, cursor, scrollback and loses its Theme row.

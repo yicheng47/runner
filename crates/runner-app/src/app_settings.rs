@@ -35,8 +35,7 @@ pub const MISSION_RAIL_DEFAULT: f32 = 288.;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum LightTerminalTheme {
-    RunnerLight,
-    RunnerDark,
+    Runner,
     CatppuccinMocha,
     #[default]
     #[serde(other)]
@@ -44,18 +43,12 @@ pub enum LightTerminalTheme {
 }
 
 impl LightTerminalTheme {
-    pub const ALL: [Self; 4] = [
-        Self::RosePineDawn,
-        Self::RunnerLight,
-        Self::RunnerDark,
-        Self::CatppuccinMocha,
-    ];
+    pub const ALL: [Self; 3] = [Self::RosePineDawn, Self::Runner, Self::CatppuccinMocha];
 
     pub fn palette(self) -> TerminalPalette {
         match self {
             Self::RosePineDawn => palette::ROSE_PINE_DAWN,
-            Self::RunnerLight => palette::RUNNER_LIGHT,
-            Self::RunnerDark => palette::RUNNER,
+            Self::Runner => palette::RUNNER,
             Self::CatppuccinMocha => palette::CATPPUCCIN_MOCHA,
         }
     }
@@ -63,8 +56,7 @@ impl LightTerminalTheme {
     pub fn key(self) -> &'static str {
         match self {
             Self::RosePineDawn => "rose-pine-dawn",
-            Self::RunnerLight => "runner-light",
-            Self::RunnerDark => "runner-dark",
+            Self::Runner => "runner",
             Self::CatppuccinMocha => "catppuccin-mocha",
         }
     }
@@ -76,51 +68,42 @@ impl LightTerminalTheme {
     pub fn label(self) -> &'static str {
         match self {
             Self::RosePineDawn => "Rosé Pine Dawn",
-            Self::RunnerLight => "Runner Light",
-            Self::RunnerDark => "Runner Dark",
+            Self::Runner => "Runner",
             Self::CatppuccinMocha => "Catppuccin Mocha",
         }
     }
 }
 
 /// The terminal palette used while the app resolves to a dark variant. The
-/// pre-0.8.7 single `terminalTheme` key loads into this pick: its `runner`
-/// value was the Runner palette, and `match-app` and `monokai` (both retired)
-/// land on the default like any unknown key.
+/// pre-0.8.7 single `terminalTheme` key loads into this pick: `runner` is
+/// still the Runner palette, and the retired `match-app`, `monokai`,
+/// `runner-dark` and `runner-light` land on the default like any unknown key.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum DarkTerminalTheme {
     CatppuccinMocha,
     RosePineDawn,
-    RunnerLight,
     #[default]
-    #[serde(alias = "runner", other)]
-    RunnerDark,
+    #[serde(other)]
+    Runner,
 }
 
 impl DarkTerminalTheme {
-    pub const ALL: [Self; 4] = [
-        Self::RunnerDark,
-        Self::CatppuccinMocha,
-        Self::RosePineDawn,
-        Self::RunnerLight,
-    ];
+    pub const ALL: [Self; 3] = [Self::Runner, Self::CatppuccinMocha, Self::RosePineDawn];
 
     pub fn palette(self) -> TerminalPalette {
         match self {
-            Self::RunnerDark => palette::RUNNER,
+            Self::Runner => palette::RUNNER,
             Self::CatppuccinMocha => palette::CATPPUCCIN_MOCHA,
             Self::RosePineDawn => palette::ROSE_PINE_DAWN,
-            Self::RunnerLight => palette::RUNNER_LIGHT,
         }
     }
 
     pub fn key(self) -> &'static str {
         match self {
-            Self::RunnerDark => "runner-dark",
+            Self::Runner => "runner",
             Self::CatppuccinMocha => "catppuccin-mocha",
             Self::RosePineDawn => "rose-pine-dawn",
-            Self::RunnerLight => "runner-light",
         }
     }
 
@@ -130,10 +113,9 @@ impl DarkTerminalTheme {
 
     pub fn label(self) -> &'static str {
         match self {
-            Self::RunnerDark => "Runner Dark",
+            Self::Runner => "Runner",
             Self::CatppuccinMocha => "Catppuccin Mocha",
             Self::RosePineDawn => "Rosé Pine Dawn",
-            Self::RunnerLight => "Runner Light",
         }
     }
 }
@@ -312,7 +294,7 @@ impl Default for AppSettings {
             dark_app_theme: DarkTheme::Runner,
             app_zoom: 1.,
             light_terminal_theme: LightTerminalTheme::RosePineDawn,
-            dark_terminal_theme: DarkTerminalTheme::RunnerDark,
+            dark_terminal_theme: DarkTerminalTheme::Runner,
             terminal_font_family: TerminalFontFamily::JetBrainsMono,
             terminal_font_size: TERMINAL_FONT_SIZE_DEFAULT,
             terminal_cursor_style: TerminalCursorStyle::Block,
@@ -632,7 +614,7 @@ mod tests {
         assert_eq!(value["lightAppTheme"], "runner-light");
         assert_eq!(value["darkAppTheme"], "carbon");
         assert_eq!(value["lightTerminalTheme"], "rose-pine-dawn");
-        assert_eq!(value["darkTerminalTheme"], "runner-dark");
+        assert_eq!(value["darkTerminalTheme"], "runner");
         assert!(value.get("terminalTheme").is_none());
         assert_eq!(value["terminalFontFamily"], "JetBrains Mono");
         assert_eq!(value["defaultCrewId"], "");
@@ -650,7 +632,7 @@ mod tests {
             r#"{"sidebarWidth":376}"#,
         ] {
             let settings: AppSettings = serde_json::from_str(json).unwrap();
-            assert_eq!(settings.dark_terminal_theme, DarkTerminalTheme::RunnerDark);
+            assert_eq!(settings.dark_terminal_theme, DarkTerminalTheme::Runner);
             assert_eq!(
                 settings.light_terminal_theme,
                 LightTerminalTheme::RosePineDawn
@@ -670,7 +652,7 @@ mod tests {
         fs::write(&path, r#"{"terminalTheme":"runner","sidebarWidth":376}"#).unwrap();
 
         let loaded = AppSettings::load(&path).unwrap();
-        assert_eq!(loaded.dark_terminal_theme, DarkTerminalTheme::RunnerDark);
+        assert_eq!(loaded.dark_terminal_theme, DarkTerminalTheme::Runner);
         assert_eq!(
             loaded.light_terminal_theme,
             LightTerminalTheme::RosePineDawn
@@ -680,7 +662,7 @@ mod tests {
         loaded.save(&path).unwrap();
         let saved: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(saved["darkTerminalTheme"], "runner-dark");
+        assert_eq!(saved["darkTerminalTheme"], "runner");
         assert_eq!(saved["lightTerminalTheme"], "rose-pine-dawn");
         assert!(saved.get("terminalTheme").is_none());
 
@@ -723,12 +705,12 @@ mod tests {
             );
             assert_eq!(
                 loaded.dark_terminal_theme,
-                DarkTerminalTheme::RunnerDark,
+                DarkTerminalTheme::Runner,
                 "{dark}"
             );
             assert_eq!(loaded.sidebar_width, 376.);
         }
-        for key in ["match-app", "monokai"] {
+        for key in ["match-app", "monokai", "runner-dark", "runner-light"] {
             let settings: AppSettings =
                 serde_json::from_str(&format!(r#"{{"terminalTheme":"{key}"}}"#)).unwrap();
             assert_eq!(settings, AppSettings::default(), "{key}");
@@ -760,20 +742,20 @@ mod tests {
             assert_eq!(DarkTerminalTheme::parse(dark.key()), Some(dark));
         }
         assert_eq!(LightTerminalTheme::parse("match-app"), None);
-        assert_eq!(DarkTerminalTheme::parse("runner"), None);
+        assert_eq!(DarkTerminalTheme::parse("runner-dark"), None);
     }
 
     #[test]
     fn terminal_palette_follows_the_resolved_mode() {
         let settings = AppSettings {
-            light_terminal_theme: LightTerminalTheme::RunnerLight,
+            light_terminal_theme: LightTerminalTheme::Runner,
             dark_terminal_theme: DarkTerminalTheme::CatppuccinMocha,
             ..AppSettings::default()
         };
         for variant in [ThemeVariant::RunnerLight, ThemeVariant::CatppuccinLatte] {
             assert_eq!(
                 terminal_palette(&settings, variant),
-                palette::RUNNER_LIGHT,
+                palette::RUNNER,
                 "{variant:?}"
             );
         }
