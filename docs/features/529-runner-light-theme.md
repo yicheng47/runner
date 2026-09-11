@@ -24,11 +24,12 @@ Per the post-cutover rule, this is Pencil-first, and per the sign-off rule the c
 
 ### Terminal: Match app by default, Runner Light selectable
 
-Settings → Terminal → Theme gains the entries the `Settings — Terminal` frame already shows and the code never grew. The list reads **Match app**, **Runner Light**, **Runner Dark**, **Catppuccin Mocha**, **Monokai**:
+Settings → Terminal → Theme gains the entries the `Settings — Terminal` frame already shows and the code never grew. The list reads **Match app**, **Runner Light**, **Runner Dark**, **Rosé Pine Dawn**, **Catppuccin Mocha**, **Monokai**:
 
 - **Match app** (`TerminalTheme::MatchApp`, key `match-app`, the default) renders Runner Dark under a dark app variant and Runner Light under a light one, so a fresh install set to Light gets a light terminal without touching the Terminal pane, and Auto intent flips app and terminal together.
 - **Runner Light** (`TerminalTheme::RunnerLight`, key `runner-light`) is the new palette as an explicit pick: 16 ANSI colors plus fg, bg, cursor, selection, designed on the same canvas as the app tokens (`Runner Light · terminal palette`, `W7oJm`). Its ground is the app `bg`, so a terminal pane and the chat around it are one surface, as they are in Carbon. It lives beside the other palettes in `crates/runner-terminal/src/palette.rs` as `RUNNER_LIGHT`.
 - **Runner Dark** is today's `Runner` palette under its honest name, key `runner-dark`, for a dark terminal inside a light app; Mocha and Monokai stay for the same purpose.
+- **Rosé Pine Dawn** (`TerminalTheme::RosePineDawn`, key `rose-pine-dawn`, added 2026-09-11 at Jason's ask after the smoke test) is the official Rosé Pine Dawn terminal palette as a third-party light choice beside Runner Light, canvas frame `Rosé Pine Dawn — terminal palette (529)` (`VLI02`). Match app never picks it.
 
 Loading an existing `ui-settings.json`: `terminal_theme: "runner"` was the only first-party choice before this spec and meant "the Runner palette", which now follows the app, so it loads as Match app; `catppuccin-mocha` and `monokai` keep their meaning; a missing key is Match app. The file is rewritten on the next save. A Catppuccin Latte terminal palette was filed separately as #528 and closed into this spec on 2026-09-09; it can ride on the same list later if anyone asks.
 

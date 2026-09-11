@@ -1984,6 +1984,7 @@ fn terminal_theme_options(variant: theme::ThemeVariant) -> Vec<SelectOption> {
         SelectOption::new("match-app", "Match app").swatch(theme::colors_for(variant).accent),
         SelectOption::new("runner-light", "Runner Light").swatch(0x00a66a),
         SelectOption::new("runner-dark", "Runner Dark").swatch(0x00a66a),
+        SelectOption::new("rose-pine-dawn", "Rosé Pine Dawn").swatch(0xd7827e),
         SelectOption::new("catppuccin-mocha", "Catppuccin Mocha").swatch(0xcba6f7),
         SelectOption::new("monokai", "Monokai").swatch(0xff6188),
     ]
@@ -2024,6 +2025,7 @@ fn terminal_theme_value(value: TerminalTheme) -> &'static str {
         TerminalTheme::MatchApp => "match-app",
         TerminalTheme::RunnerLight => "runner-light",
         TerminalTheme::RunnerDark => "runner-dark",
+        TerminalTheme::RosePineDawn => "rose-pine-dawn",
         TerminalTheme::CatppuccinMocha => "catppuccin-mocha",
         TerminalTheme::Monokai => "monokai",
     }
@@ -2034,6 +2036,7 @@ fn parse_terminal_theme(value: &str) -> Option<TerminalTheme> {
         "match-app" => Some(TerminalTheme::MatchApp),
         "runner-light" => Some(TerminalTheme::RunnerLight),
         "runner-dark" => Some(TerminalTheme::RunnerDark),
+        "rose-pine-dawn" => Some(TerminalTheme::RosePineDawn),
         "catppuccin-mocha" => Some(TerminalTheme::CatppuccinMocha),
         "monokai" => Some(TerminalTheme::Monokai),
         _ => None,
@@ -2095,6 +2098,7 @@ mod tests {
                     .swatch(theme::colors_for(variant).accent),
                 SelectOption::new("runner-light", "Runner Light").swatch(0x00a66a),
                 SelectOption::new("runner-dark", "Runner Dark").swatch(0x00a66a),
+                SelectOption::new("rose-pine-dawn", "Rosé Pine Dawn").swatch(0xd7827e),
                 SelectOption::new("catppuccin-mocha", "Catppuccin Mocha").swatch(0xcba6f7),
                 SelectOption::new("monokai", "Monokai").swatch(0xff6188),
             ]

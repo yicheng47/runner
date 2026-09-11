@@ -73,6 +73,34 @@ pub const BACKGROUND: Rgb = RUNNER.background;
 pub const FOREGROUND: Rgb = RUNNER.foreground;
 pub const CURSOR: Rgb = RUNNER.cursor;
 
+/// Official Rosé Pine Dawn terminal values: black is overlay, white is
+/// text, cyan is rose, as the theme itself defines them.
+pub const ROSE_PINE_DAWN: TerminalPalette = TerminalPalette {
+    background: rgb(0xfa, 0xf4, 0xed),
+    foreground: rgb(0x57, 0x52, 0x79),
+    cursor: rgb(0x57, 0x52, 0x79),
+    cursor_accent: rgb(0xfa, 0xf4, 0xed),
+    selection: rgb(0xdf, 0xda, 0xd9),
+    ansi: [
+        rgb(0xf2, 0xe9, 0xe1),
+        rgb(0xb4, 0x63, 0x7a),
+        rgb(0x28, 0x69, 0x83),
+        rgb(0xea, 0x9d, 0x34),
+        rgb(0x56, 0x94, 0x9f),
+        rgb(0x90, 0x7a, 0xa9),
+        rgb(0xd7, 0x82, 0x7e),
+        rgb(0x57, 0x52, 0x79),
+        rgb(0x98, 0x93, 0xa5),
+        rgb(0xb4, 0x63, 0x7a),
+        rgb(0x28, 0x69, 0x83),
+        rgb(0xea, 0x9d, 0x34),
+        rgb(0x56, 0x94, 0x9f),
+        rgb(0x90, 0x7a, 0xa9),
+        rgb(0xd7, 0x82, 0x7e),
+        rgb(0x57, 0x52, 0x79),
+    ],
+};
+
 pub const CATPPUCCIN_MOCHA: TerminalPalette = TerminalPalette {
     background: rgb(0x1e, 0x1e, 0x2e),
     foreground: rgb(0xcd, 0xd6, 0xf4),
@@ -208,6 +236,16 @@ mod tests {
         assert_eq!(CATPPUCCIN_MOCHA.ansi[4], rgb(0x89, 0xb4, 0xfa));
         assert_eq!(MONOKAI.ansi[4], rgb(0xfc, 0x98, 0x67));
         assert_eq!(MONOKAI.cursor, rgb(0xc1, 0xc0, 0xc0));
+    }
+
+    #[test]
+    fn rose_pine_dawn_matches_the_official_palette() {
+        assert_eq!(ROSE_PINE_DAWN.background, rgb(0xfa, 0xf4, 0xed));
+        assert_eq!(ROSE_PINE_DAWN.foreground, rgb(0x57, 0x52, 0x79));
+        assert_eq!(ROSE_PINE_DAWN.cursor_accent, ROSE_PINE_DAWN.background);
+        assert_eq!(ROSE_PINE_DAWN.ansi[0], rgb(0xf2, 0xe9, 0xe1));
+        assert_eq!(ROSE_PINE_DAWN.ansi[6], rgb(0xd7, 0x82, 0x7e));
+        assert_eq!(ROSE_PINE_DAWN.ansi[15], ROSE_PINE_DAWN.foreground);
     }
 
     #[test]

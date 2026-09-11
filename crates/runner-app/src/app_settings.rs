@@ -34,6 +34,7 @@ pub const MISSION_RAIL_DEFAULT: f32 = 288.;
 pub enum TerminalTheme {
     RunnerLight,
     RunnerDark,
+    RosePineDawn,
     CatppuccinMocha,
     Monokai,
     #[default]
@@ -47,6 +48,7 @@ impl TerminalTheme {
             Self::MatchApp if variant.is_light() => palette::RUNNER_LIGHT,
             Self::MatchApp | Self::RunnerDark => palette::RUNNER,
             Self::RunnerLight => palette::RUNNER_LIGHT,
+            Self::RosePineDawn => palette::ROSE_PINE_DAWN,
             Self::CatppuccinMocha => palette::CATPPUCCIN_MOCHA,
             Self::Monokai => palette::MONOKAI,
         }
@@ -565,6 +567,7 @@ mod tests {
             (TerminalTheme::MatchApp, "match-app"),
             (TerminalTheme::RunnerLight, "runner-light"),
             (TerminalTheme::RunnerDark, "runner-dark"),
+            (TerminalTheme::RosePineDawn, "rose-pine-dawn"),
         ] {
             let json = serde_json::to_value(AppSettings {
                 terminal_theme: theme,
