@@ -44,7 +44,7 @@ pub enum TerminalTheme {
 impl TerminalTheme {
     pub fn palette_for(self, variant: ThemeVariant) -> TerminalPalette {
         match self {
-            Self::MatchApp if variant.is_light() => palette::RUNNER_LIGHT,
+            Self::MatchApp if variant.is_light() => palette::ROSE_PINE_DAWN,
             Self::MatchApp | Self::RunnerDark => palette::RUNNER,
             Self::RunnerLight => palette::RUNNER_LIGHT,
             Self::RosePineDawn => palette::ROSE_PINE_DAWN,
@@ -593,7 +593,7 @@ mod tests {
             assert_eq!(
                 TerminalTheme::MatchApp.palette_for(variant),
                 if variant.is_light() {
-                    palette::RUNNER_LIGHT
+                    palette::ROSE_PINE_DAWN
                 } else {
                     palette::RUNNER
                 }
