@@ -765,7 +765,15 @@ fn table_ranges(raw: &str, table: &toml_edit::Table, ranges: &mut Vec<std::ops::
     }
     for (keys, value) in table.get_values() {
         if let (Some(key), Some(value)) = (keys.first().and_then(|k| k.span()), value.span()) {
-            ranges.push(line_range(raw, key.start..value.end));
+            let mut range = line_range(raw, key.start..value.end);
+            if let Some(prefix) = keys
+                .first()
+                .and_then(|key| key.leaf_decor().prefix())
+                .and_then(|prefix| prefix.span())
+            {
+                range.start = range.start.min(prefix.start);
+            }
+            ranges.push(range);
         }
     }
     for (_, item) in table.iter() {
@@ -1152,6 +1160,44 @@ mod tests {
             },
             paths,
         )
+    }
+
+    #[test]
+    fn toml_key_comments_stay_single_across_saves_copies_and_removal() {
+        use McpClientId::*;
+        let dir = TempDir::new().unwrap();
+        let paths = paths(&dir);
+        let prefix = "# user settings\nmodel = 'gpt-5'\n\n[mcp_servers] # keep parent\n";
+        let entry = "\n[mcp_servers.github]\n# token comes from the keychain\ncommand = 'gh-mcp'\n\nstartup_timeout_sec = 60\n";
+        let suffix = "\n[ui]\ntheme = 'dark'\n";
+        let original = format!("{prefix}{entry}{suffix}");
+        std::fs::write(
+            &paths[&ClaudeCode],
+            r#"{"mcpServers":{"github":{"command":"new-mcp"}}}"#,
+        )
+        .unwrap();
+        for client in [Codex, Trae] {
+            std::fs::write(&paths[&client], &original).unwrap();
+            for _ in 0..2 {
+                let text =
+                    read_entries_at(&paths[&client], client).unwrap()["github"].text("github");
+                edit_at(&paths, client, "github", &text, &[]).unwrap();
+                assert_eq!(std::fs::read_to_string(&paths[&client]).unwrap(), original);
+            }
+            for _ in 0..2 {
+                copy_at(&paths, ClaudeCode, client, "github").unwrap();
+                let copied = std::fs::read_to_string(&paths[&client]).unwrap();
+                assert!(copied.starts_with(prefix));
+                assert!(copied.ends_with(suffix));
+                assert_eq!(copied.matches("# token comes from the keychain").count(), 1);
+                assert!(copied.contains("\n\nstartup_timeout_sec = 60\n"));
+            }
+            write_entry_at(&paths[&client], client, "github", None, false).unwrap();
+            assert_eq!(
+                std::fs::read_to_string(&paths[&client]).unwrap(),
+                format!("{prefix}{suffix}")
+            );
+        }
     }
 
     #[test]

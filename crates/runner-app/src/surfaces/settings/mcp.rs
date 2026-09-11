@@ -13,7 +13,8 @@ use runner_app::ui::{
     Toggle, Tone,
 };
 use runner_backend::ops::mcp::{
-    self, McpCatalog, McpClientId, McpClientStatus, McpServerDefinition, McpServerEntry,
+    self, McpCatalog, McpClientId, McpClientStatus, McpIntegrationStatus, McpServerDefinition,
+    McpServerEntry,
 };
 use runner_backend::ops::runtime::RuntimeCatalogEntry;
 
@@ -34,6 +35,21 @@ fn registered_clients(entry: &McpServerEntry) -> Vec<McpClientId> {
 
 fn source_client(entry: &McpServerEntry) -> Option<McpClientId> {
     registered_clients(entry).first().copied()
+}
+
+fn server_toggle_on(
+    entry: &McpServerEntry,
+    client: McpClientId,
+    runner: &McpIntegrationStatus,
+) -> bool {
+    if entry.name == "runner" {
+        client.status(runner).matches_current
+    } else {
+        entry
+            .clients
+            .get(&client)
+            .is_some_and(|slot| slot.registered)
+    }
 }
 
 fn definition_for(entry: &McpServerEntry, client: McpClientId) -> Option<&McpServerDefinition> {
@@ -97,7 +113,7 @@ fn conflict_caption(entry: &McpServerEntry, selected: McpClientId) -> Option<Str
 }
 
 fn copy_hint(entry: &McpServerEntry, client: McpClientId) -> Option<String> {
-    if entry.clients.get(&client).is_some_and(|s| s.registered) {
+    if entry.name == "runner" || entry.clients.get(&client).is_some_and(|s| s.registered) {
         return None;
     }
     let source = source_client(entry)?;
@@ -224,7 +240,10 @@ impl McpPane {
     ) -> AnyElement {
         let state = self.detail.read(cx);
         let built_in = entry.name == "runner";
-        let registered = entry.clients.get(&client).is_some_and(|s| s.registered);
+        let registered = state
+            .catalog
+            .as_ref()
+            .is_some_and(|catalog| server_toggle_on(entry, client, &catalog.runner));
         let presentation = state.catalog.as_ref().filter(|_| built_in).map(|catalog| {
             mcp_row_presentation(
                 client,
@@ -355,7 +374,7 @@ impl Render for McpPane {
                 .collect();
             let off = std::iter::once(&catalog.runner_server)
                 .chain(&catalog.servers)
-                .filter(|e| !e.clients[&client].registered)
+                .filter(|entry| !server_toggle_on(entry, client, &catalog.runner))
                 .count();
             meta = Some(format!(
                 "{} · {} servers · {off} off",
@@ -543,7 +562,7 @@ impl McpDetail {
                 if this.generation == generation {
                     match result {
                         Ok((catalog, runtimes)) => {
-                            this.catalog = Some(catalog);
+                            this.apply_catalog(catalog);
                             this.runtimes = runtimes;
                             this.error = None;
                         }
@@ -562,6 +581,15 @@ impl McpDetail {
         if self.refresh_pending && !self.loading && !self.busy {
             self.refresh_pending = false;
             self.refresh(cx);
+        }
+    }
+
+    fn apply_catalog(&mut self, catalog: McpCatalog) {
+        self.catalog = Some(catalog);
+        if self.name.is_some() && self.entry().is_none() {
+            self.name = None;
+            self.editing = false;
+            self.confirming = false;
         }
     }
 
@@ -685,7 +713,7 @@ impl McpDetail {
                 this.editor.update(cx, |e, cx| e.set_disabled(false, cx));
                 if generation == this.generation {
                     if let Ok(catalog) = &catalog {
-                        this.catalog = Some(catalog.clone());
+                        this.apply_catalog(catalog.clone());
                     }
                     this.error = result.as_ref().err().cloned().or_else(|| catalog.err());
                     if result.is_ok() {
@@ -858,7 +886,7 @@ impl McpDetail {
             }
         };
         let clients = registered_clients(entry);
-        let registered = entry.clients[&runtime].registered;
+        let registered = server_toggle_on(entry, runtime, &self.catalog.as_ref()?.runner);
         let copy_hint = copy_hint(entry, runtime);
         let overview =
             div()
@@ -1371,7 +1399,7 @@ fn row_color(tone: McpRowTone) -> gpui::Hsla {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use runner_backend::ops::mcp::{McpIntegrationStatus, McpServerClientEntry};
+    use runner_backend::ops::mcp::McpServerClientEntry;
     use std::collections::BTreeMap;
     fn test_store(path: &std::path::Path, cx: &mut gpui::TestAppContext) -> Entity<AppStore> {
         use runner_backend::{
@@ -1646,6 +1674,54 @@ mod tests {
     }
 
     #[test]
+    fn runner_toggle_offers_repoint_when_another_installation_is_registered() {
+        let mut catalog = catalog();
+        let client = McpClientId::Codex;
+        catalog.runner.codex = mcp_status(true, false, None);
+        assert!(catalog.runner_server.clients[&client].registered);
+        assert!(!server_toggle_on(
+            &catalog.runner_server,
+            client,
+            &catalog.runner
+        ));
+        assert!(
+            mcp_row_presentation(client, Some(&catalog.runner.codex), false, true)
+                .status
+                .starts_with("Registered to another Runner")
+        );
+        assert!(server_toggle_on(
+            &catalog.servers[0],
+            client,
+            &catalog.runner
+        ));
+        catalog.runner.codex = mcp_status(true, true, None);
+        assert!(server_toggle_on(
+            &catalog.runner_server,
+            client,
+            &catalog.runner
+        ));
+        catalog.runner.codex = mcp_status(false, false, None);
+        assert!(!server_toggle_on(
+            &catalog.runner_server,
+            client,
+            &catalog.runner
+        ));
+        catalog
+            .runner_server
+            .clients
+            .get_mut(&client)
+            .unwrap()
+            .registered = false;
+        catalog
+            .runner_server
+            .clients
+            .get_mut(&McpClientId::ClaudeCode)
+            .unwrap()
+            .definition = None;
+        assert!(copy_hint(&catalog.runner_server, client).is_none());
+    }
+
+    #[test]
     fn runtime_dropdown_filters_unavailable_disabled_and_unknown_agents() {
         let mut settings = AppSettings::default();
         assert_eq!(
@@ -1738,6 +1814,38 @@ mod tests {
                 detail.open(McpClientId::ClaudeCode, "runner", window, cx);
                 detail.edit(window, cx);
                 assert!(!detail.editing);
+            });
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn catalog_removal_clears_edit_state_and_allows_opening_another_server() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut cx = gpui::TestAppContext::single();
+        let store = test_store(temp.path(), &mut cx);
+        let host = cx.add_window(|_, cx| Host(cx.new(|cx| McpPane::new(store, cx))));
+        host.update(&mut cx, |host, window, cx| {
+            let detail = host.0.read(cx).detail.clone();
+            detail.update(cx, |detail, cx| {
+                detail.apply_catalog(catalog());
+                detail.open(McpClientId::ClaudeCode, "github", window, cx);
+                detail.edit(window, cx);
+                detail
+                    .editor
+                    .update(cx, |editor, cx| editor.reset("unsaved", cx));
+                detail.request_dismiss(window, cx);
+                assert!(detail.editing && detail.confirming);
+                let mut next = catalog();
+                next.servers.retain(|entry| entry.name != "github");
+                detail.apply_catalog(next);
+                assert!(detail.name.is_none());
+                assert!(!detail.editing && !detail.confirming);
+                detail.open(McpClientId::ClaudeCode, "aaa", window, cx);
+                assert_eq!(detail.name.as_deref(), Some("aaa"));
+                detail.edit(window, cx);
+                assert!(detail.can_save(cx));
+                assert_ne!(detail.editor.read(cx).text(), "unsaved");
             });
         })
         .unwrap();
