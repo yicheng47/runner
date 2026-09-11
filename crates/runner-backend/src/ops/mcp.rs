@@ -207,13 +207,13 @@ pub(crate) fn codex_status_at(path: &Path, binary_path: &str) -> Result<McpClien
         .map_err(|e| Error::msg(format!("parse {}: {e}", path.display())))?;
     let entry = doc
         .get("mcp_servers")
-        .and_then(|item| item.as_table())
+        .and_then(|item| item.as_table_like())
         .and_then(|servers| servers.get("runner"));
     let Some(entry) = entry else {
         return Ok(McpClientStatus::empty(path));
     };
     let entry_table = entry
-        .as_table()
+        .as_table_like()
         .ok_or_else(|| Error::msg("mcp_servers.runner is not a table"))?;
     let command = entry_table
         .get("command")
@@ -745,6 +745,163 @@ fn replace_json_member(raw: &str, name: &str, value: Option<&serde_json::Value>)
     Ok(out)
 }
 
+fn line_range(raw: &str, span: std::ops::Range<usize>) -> std::ops::Range<usize> {
+    let start = raw[..span.start].rfind('\n').map_or(0, |i| i + 1);
+    let end = raw[span.end..]
+        .find('\n')
+        .map_or(raw.len(), |i| span.end + i + 1);
+    start..end
+}
+
+fn table_ranges(raw: &str, table: &toml_edit::Table, ranges: &mut Vec<std::ops::Range<usize>>) {
+    if !table.is_implicit() && !table.is_dotted() {
+        if let Some(span) = table.span().filter(|s| !s.is_empty()) {
+            let mut range = line_range(raw, span);
+            if let Some(prefix) = table.decor().prefix().and_then(|p| p.span()) {
+                range.start = range.start.min(prefix.start);
+            }
+            ranges.push(range);
+        }
+    }
+    for (keys, value) in table.get_values() {
+        if let (Some(key), Some(value)) = (keys.first().and_then(|k| k.span()), value.span()) {
+            ranges.push(line_range(raw, key.start..value.end));
+        }
+    }
+    for (_, item) in table.iter() {
+        match item {
+            toml_edit::Item::Table(child) => table_ranges(raw, child, ranges),
+            toml_edit::Item::ArrayOfTables(array) => {
+                for child in array.iter() {
+                    table_ranges(raw, child, ranges);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn inline_entry_text(table: toml_edit::Table) -> String {
+    let mut inline = table.into_inline_table();
+    inline.fmt();
+    inline.to_string()
+}
+
+// DocumentMut emits LF after every value/header. Use the parser's original spans
+// for the write boundary so CRLF, an absent final newline, and interleaved tables survive.
+fn splice_toml_entry(
+    raw: &str,
+    name: &str,
+    replacement: Option<toml_edit::Table>,
+) -> Result<String> {
+    let parsed = toml_edit::Document::parse(raw).map_err(|e| Error::msg(e.to_string()))?;
+    let parent = parsed.get("mcp_servers");
+    let mut out = raw.to_owned();
+    if let Some(inline) = parent.and_then(toml_edit::Item::as_inline_table) {
+        let members: Vec<_> = inline
+            .iter()
+            .map(|(key, value)| {
+                (
+                    key,
+                    inline.key(key).unwrap().span().unwrap(),
+                    value.span().unwrap(),
+                )
+            })
+            .collect();
+        let span = inline.span().unwrap();
+        if let Some((index, (_, key, value))) = members
+            .iter()
+            .enumerate()
+            .find(|(_, (key, _, _))| *key == name)
+        {
+            if let Some(table) = replacement {
+                out.replace_range(value.clone(), &inline_entry_text(table));
+            } else {
+                let mut range = key.start..value.end;
+                if let Some((_, next, _)) = members.get(index + 1) {
+                    if let Some(comma) = raw[value.end..next.start].find(',') {
+                        range.end = value.end + comma + 1;
+                    }
+                } else if index > 0 {
+                    let previous = &members[index - 1].2;
+                    if let Some(comma) = raw[previous.end..key.start].find(',') {
+                        range.start = previous.end + comma;
+                    }
+                } else if let Some(comma) = raw[value.end..span.end - 1].find(',') {
+                    range.end = value.end + comma + 1;
+                }
+                out.replace_range(range, "");
+            }
+        } else if let Some(table) = replacement {
+            let text = format!(
+                "{} = {}",
+                toml_edit::Key::new(name),
+                inline_entry_text(table)
+            );
+            out.insert_str(span.end - 1, &text);
+            if let Some((_, _, last)) = members.last() {
+                if !raw[last.end..span.end - 1].contains(',') {
+                    out.insert(last.end, ',');
+                }
+            }
+        }
+        out.parse::<toml_edit::DocumentMut>()
+            .map_err(|e| Error::msg(format!("Cannot update this TOML entry in place: {e}")))?;
+        return Ok(out);
+    }
+    let existing = parent.and_then(|p| p.get(name));
+    if let Some(value) = existing.and_then(toml_edit::Item::as_inline_table) {
+        if let Some(table) = replacement {
+            out.replace_range(value.span().unwrap(), &inline_entry_text(table));
+        } else {
+            let key = parent
+                .unwrap()
+                .as_table()
+                .unwrap()
+                .key(name)
+                .unwrap()
+                .span()
+                .unwrap();
+            out.replace_range(line_range(raw, key.start..value.span().unwrap().end), "");
+        }
+        return Ok(out);
+    }
+    let mut ranges = Vec::new();
+    if let Some(table) = existing.and_then(toml_edit::Item::as_table) {
+        table_ranges(raw, table, &mut ranges);
+    }
+    ranges.sort_by_key(|r| r.start);
+    let mut merged: Vec<std::ops::Range<usize>> = Vec::new();
+    for range in ranges {
+        if let Some(last) = merged.last_mut().filter(|last| last.end >= range.start) {
+            last.end = last.end.max(range.end);
+        } else {
+            merged.push(range);
+        }
+    }
+    let append = existing
+        .and_then(toml_edit::Item::as_table)
+        .is_some_and(toml_edit::Table::is_dotted);
+    let insertion = merged.first().map_or(raw.len(), |range| range.start);
+    for range in merged.iter().rev() {
+        out.replace_range(range.clone(), "");
+    }
+    let insertion = if append { out.len() } else { insertion };
+    if let Some(mut table) = replacement {
+        table.set_implicit(false);
+        table.set_dotted(false);
+        let mut text = NativeEntry::Toml(table).text(name);
+        if insertion > 0 && !out[..insertion].ends_with('\n') {
+            text.insert(0, '\n');
+        }
+        out.insert_str(insertion, &text);
+    }
+    // Reject unusual dotted/inline forms we cannot patch without altering another entry.
+    out.parse::<toml_edit::DocumentMut>()
+        .map_err(|e| Error::msg(format!("Cannot update this TOML entry in place: {e}")))?;
+    Ok(out)
+}
+
 fn write_entry_at(
     path: &Path,
     client: McpClientId,
@@ -787,20 +944,7 @@ fn write_entry_at(
             replace_json_member(raw, "mcpServers", Some(&json!({ name: value.unwrap() })))?
         }
     } else {
-        let mut doc: toml_edit::DocumentMut = raw
-            .parse()
-            .map_err(|e| Error::msg(format!("parse {}: {e}", path.display())))?;
-        if !doc.contains_key("mcp_servers") {
-            let mut parent = toml_edit::Table::new();
-            parent.set_implicit(true);
-            doc.insert("mcp_servers", toml_edit::Item::Table(parent));
-        }
-        let servers = doc
-            .get_mut("mcp_servers")
-            .unwrap()
-            .as_table_like_mut()
-            .ok_or_else(|| Error::msg(format!("{}: mcp_servers is not a table", path.display())))?;
-        match entry {
+        let replacement = match entry {
             Some(NativeEntry::Toml(mut table)) => {
                 if merge {
                     if let Some(NativeEntry::Toml(old)) = existing.get(name) {
@@ -809,14 +953,13 @@ fn write_entry_at(
                         definition.write_toml(&mut table);
                     }
                 }
-                servers.insert(name, toml_edit::Item::Table(table));
+                Some(table)
             }
-            None => {
-                servers.remove(name);
-            }
+            None => None,
             _ => unreachable!(),
-        }
-        doc.to_string()
+        };
+        splice_toml_entry(&raw, name, replacement)
+            .map_err(|e| Error::msg(format!("{}: {e}", path.display())))?
     };
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
@@ -1009,6 +1152,114 @@ mod tests {
             },
             paths,
         )
+    }
+
+    #[test]
+    fn toml_writes_preserve_crlf_missing_final_newline_and_interleaved_tables() {
+        use McpClientId::*;
+        let dir = TempDir::new().unwrap();
+        let paths = paths(&dir);
+        let prefix = "# user settings\r\nmodel = 'gpt-5'\r\n\r\n[mcp_servers] # parent\r\n";
+        let middle = "\r\n[mcp_servers.other]\r\ncommand = 'other' # untouched\r\n";
+        let suffix = "\r\n[ui]\r\ntheme = 'dark'";
+        let raw = format!("{prefix}\r\n[mcp_servers.github]\r\ncommand = 'old'\r\nstartup_timeout_sec = 60\r\n{middle}\r\n[mcp_servers.github.env]\r\nTOKEN = 'old'\r\n{suffix}");
+        std::fs::write(&paths[&Codex], &raw).unwrap();
+        std::fs::write(
+            &paths[&ClaudeCode],
+            r#"{"mcpServers":{"github":{"command":"new","env":{"TOKEN":"new"}}}}"#,
+        )
+        .unwrap();
+        copy_at(&paths, ClaudeCode, Codex, "github").unwrap();
+        let after = std::fs::read_to_string(&paths[&Codex]).unwrap();
+        assert!(after.starts_with(prefix));
+        assert!(after.contains(middle));
+        assert!(after.ends_with(suffix));
+        assert!(after.contains("startup_timeout_sec = 60"));
+        let body = read_entries_at(&paths[&Codex], Codex).unwrap()["github"].text("github");
+        edit_at(&paths, Codex, "github", &body.replace("new", "edited"), &[]).unwrap();
+        let after = std::fs::read_to_string(&paths[&Codex]).unwrap();
+        assert!(after.starts_with(prefix));
+        assert!(after.contains(middle));
+        assert!(after.ends_with(suffix));
+        write_entry_at(&paths[&Codex], Codex, "github", None, false).unwrap();
+        let removed = std::fs::read_to_string(&paths[&Codex]).unwrap();
+        assert_eq!(removed, format!("{prefix}{middle}{suffix}"));
+        codex_write_at(&paths[&Codex], true, "/runner").unwrap();
+        assert!(std::fs::read_to_string(&paths[&Codex])
+            .unwrap()
+            .starts_with(&removed));
+    }
+
+    #[test]
+    fn inline_and_dotted_toml_entries_keep_siblings_and_parent() {
+        for raw in [
+            "model = 'gpt'\r\nmcp_servers = { github = { command = 'old' }, other = { command = 'other' } }\r\n# trailing",
+            "[mcp_servers]\r\ngithub = { command = 'old' }\r\nother = { command = 'other' }\r\n# trailing",
+            "mcp_servers.github.command = 'old'\r\nmcp_servers.other.command = 'other'\r\n# trailing",
+        ] {
+            let dir = TempDir::new().unwrap();
+            let path = dir.path().join("config.toml");
+            std::fs::write(&path, raw).unwrap();
+            let mut replacement = toml_edit::Table::new();
+            replacement["command"] = toml_edit::value("new");
+            write_entry_at(&path, McpClientId::Codex, "github", Some(NativeEntry::Toml(replacement)), false).unwrap();
+            let updated = std::fs::read_to_string(&path).unwrap();
+            assert!(updated.contains("command = 'other'"));
+            assert!(updated.contains("\r\n# trailing"));
+            write_entry_at(&path, McpClientId::Codex, "github", None, false).unwrap();
+            let removed = std::fs::read_to_string(&path).unwrap();
+            assert!(removed.contains("command = 'other'"), "input: {raw:?}\nremoved: {removed:?}");
+            assert!(!removed.contains("github"));
+        }
+        let raw = "mcp_servers = { github = { command = 'old' } }\r\nmodel = 'gpt'";
+        assert_eq!(
+            splice_toml_entry(raw, "github", None).unwrap(),
+            "mcp_servers = {  }\r\nmodel = 'gpt'"
+        );
+    }
+
+    #[test]
+    fn runner_status_reads_inline_registration_without_overwriting_it() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("config.toml");
+        for raw in [
+            "mcp_servers = { runner = { command = '/other/runner' } }",
+            "[mcp_servers]\nrunner = { command = '/other/runner' }",
+        ] {
+            std::fs::write(&path, raw).unwrap();
+            let status = codex_status_at(&path, "/current/runner").unwrap();
+            assert!(status.registered && !status.matches_current);
+            assert_eq!(status.command.as_deref(), Some("/other/runner"));
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), raw);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_only_claude_file_fails_by_path_while_codex_edit_lands() {
+        use std::os::unix::fs::PermissionsExt;
+        use McpClientId::*;
+        let dir = TempDir::new().unwrap();
+        let paths = paths(&dir);
+        let json = r#"{"mcpServers":{"github":{"command":"old"}}, "theme" : "dark"}"#;
+        std::fs::write(&paths[&ClaudeCode], json).unwrap();
+        std::fs::set_permissions(&paths[&ClaudeCode], std::fs::Permissions::from_mode(0o400))
+            .unwrap();
+        let result = edit_at(
+            &paths,
+            ClaudeCode,
+            "github",
+            r#"{"command":"new"}"#,
+            &[Codex],
+        );
+        std::fs::set_permissions(&paths[&ClaudeCode], std::fs::Permissions::from_mode(0o600))
+            .unwrap();
+        let error = result.unwrap_err().to_string();
+        assert!(error.contains(paths[&ClaudeCode].to_str().unwrap()));
+        assert_eq!(std::fs::read_to_string(&paths[&ClaudeCode]).unwrap(), json);
+        assert!(read_entries_at(&paths[&Codex], Codex).unwrap()["github"]
+            .text("github")
+            .contains("new"));
     }
 
     #[test]
