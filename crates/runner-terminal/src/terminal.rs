@@ -975,6 +975,7 @@ fn chunk_indicates_tui_ready(bytes: &[u8]) -> bool {
 pub struct TerminalBridge {
     core: AppCore,
     sessions: Mutex<HashMap<String, Arc<TerminalSession>>>,
+    palette: Mutex<palette::TerminalPalette>,
     waker: Arc<dyn Fn() + Send + Sync>,
 }
 
@@ -983,6 +984,7 @@ impl TerminalBridge {
         let bridge = Arc::new(Self {
             core,
             sessions: Mutex::new(HashMap::new()),
+            palette: Mutex::new(palette::RUNNER),
             waker,
         });
         let observer: Arc<dyn SessionEvents> = bridge.clone();
@@ -997,6 +999,18 @@ impl TerminalBridge {
         self.sessions.lock().unwrap().get(session_id).cloned()
     }
 
+    pub fn set_palette(&self, palette: palette::TerminalPalette) {
+        let sessions = self.sessions.lock().unwrap();
+        let mut current = self.palette.lock().unwrap();
+        if *current == palette {
+            return;
+        }
+        *current = palette;
+        for session in sessions.values() {
+            session.set_palette(palette);
+        }
+    }
+
     pub fn live_session_count(&self) -> usize {
         self.sessions.lock().unwrap().len()
     }
@@ -1008,7 +1022,7 @@ impl TerminalBridge {
         cols: u16,
         rows: u16,
     ) -> Result<Arc<TerminalSession>> {
-        TerminalSession::attach_with_input_mode(
+        let session = TerminalSession::attach_with_input_mode(
             self.core.clone(),
             session_id.to_owned(),
             cols,
@@ -1019,20 +1033,20 @@ impl TerminalBridge {
             } else {
                 UserInputMode::Inline
             },
-        )
+        )?;
+        let mut sessions = self.sessions.lock().unwrap();
+        session.set_palette(*self.palette.lock().unwrap());
+        sessions.insert(session_id.to_owned(), Arc::clone(&session));
+        Ok(session)
     }
 
     fn replace_session(&self, event: &SessionSpawnedEvent) -> Result<()> {
-        let session = self.new_session(
+        self.new_session(
             &event.session_id,
             event.mission_id.as_deref(),
             event.cols,
             event.rows,
         )?;
-        self.sessions
-            .lock()
-            .unwrap()
-            .insert(event.session_id.clone(), session);
         Ok(())
     }
 
@@ -1051,13 +1065,7 @@ impl SessionEvents for TerminalBridge {
                     .flatten()
                     .unwrap_or((80, 24));
             match self.new_session(&event.session_id, event.mission_id.as_deref(), cols, rows) {
-                Ok(session) => {
-                    self.sessions
-                        .lock()
-                        .unwrap()
-                        .insert(event.session_id.clone(), Arc::clone(&session));
-                    Some(session)
-                }
+                Ok(session) => Some(session),
                 Err(error) => {
                     log::error!(
                         "create terminal for session {} output failed: {error}",
@@ -1508,70 +1516,111 @@ mod tests {
     /// contract, #524's regression): one reply per query, in order.
     #[test]
     fn hidden_terminal_answers_each_query_once() {
-        let temp = tempfile::tempdir().unwrap();
-        let runtime = Arc::new(RecordingRuntime::default());
-        let core = test_core_with_runtime(temp.path(), Arc::clone(&runtime) as _);
-        let bridge = TerminalBridge::new(core.clone(), Arc::new(|| {})).unwrap();
-        let runner = runner_backend::ops::runner::create(
-            &core.db.get().unwrap(),
-            runner_backend::ops::runner::CreateRunnerInput {
-                handle: "probe".into(),
-                display_name: "Probe".into(),
-                runtime: runner_backend::model::Runtime::Shell,
-                command: "probe".into(),
-                args: Vec::new(),
-                working_dir: None,
-                system_prompt: None,
-                env: Default::default(),
-                model: None,
-                effort: None,
-                permission_mode: runner_backend::router::runtime::PermissionMode::Auto,
-            },
-        )
-        .unwrap();
-        let spawned = core
-            .sessions
-            .spawn_direct(
-                &runner,
-                None,
-                None,
-                None,
-                None,
-                Some(temp.path().to_str().unwrap()),
-                Some(80),
-                Some(24),
-                &core.app_data_dir,
-                Arc::clone(&core.db),
-                Arc::new(core.session_events()),
-                None,
+        for (palette, background) in [
+            (
+                crate::palette::RUNNER,
+                b"\x1b]11;rgb:1515/1616/1b1b\x1b\\".as_slice(),
+            ),
+            (
+                crate::palette::RUNNER_LIGHT,
+                b"\x1b]11;rgb:f6f6/f6f6/f8f8\x1b\\".as_slice(),
+            ),
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let runtime = Arc::new(RecordingRuntime::default());
+            let core = test_core_with_runtime(temp.path(), Arc::clone(&runtime) as _);
+            let bridge = TerminalBridge::new(core.clone(), Arc::new(|| {})).unwrap();
+            bridge.set_palette(palette);
+            let runner = runner_backend::ops::runner::create(
+                &core.db.get().unwrap(),
+                runner_backend::ops::runner::CreateRunnerInput {
+                    handle: "probe".into(),
+                    display_name: "Probe".into(),
+                    runtime: runner_backend::model::Runtime::Shell,
+                    command: "probe".into(),
+                    args: Vec::new(),
+                    working_dir: None,
+                    system_prompt: None,
+                    env: Default::default(),
+                    model: None,
+                    effort: None,
+                    permission_mode: runner_backend::router::runtime::PermissionMode::Auto,
+                },
             )
             .unwrap();
-        assert!(bridge.session(&spawned.id).is_some());
-        assert_eq!(
-            bridge
-                .session(&spawned.id)
-                .unwrap()
-                .viewers
-                .load(Ordering::Acquire),
-            0
-        );
+            let spawned = core
+                .sessions
+                .spawn_direct(
+                    &runner,
+                    None,
+                    None,
+                    None,
+                    None,
+                    Some(temp.path().to_str().unwrap()),
+                    Some(80),
+                    Some(24),
+                    &core.app_data_dir,
+                    Arc::clone(&core.db),
+                    Arc::new(core.session_events()),
+                    None,
+                )
+                .unwrap();
+            assert!(bridge.session(&spawned.id).is_some());
+            assert_eq!(
+                bridge
+                    .session(&spawned.id)
+                    .unwrap()
+                    .viewers
+                    .load(Ordering::Acquire),
+                0
+            );
 
-        runtime.push_output(b"\x1b]11;?\x1b\\\x1b[c");
+            runtime.push_output(b"\x1b]11;?\x1b\\\x1b[c");
 
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while runtime.writes().len() < 2 && std::time::Instant::now() < deadline {
-            std::thread::sleep(std::time::Duration::from_millis(10));
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while runtime.writes().len() < 2 && std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            let writes = runtime.writes();
+            assert_eq!(
+                writes.len(),
+                2,
+                "expected one OSC 11 report and one DA1 reply, got {writes:?}"
+            );
+            assert_eq!(writes[0], background);
+            assert_eq!(writes[1], b"\x1b[?6c");
+            core.sessions.kill(&spawned.id).ok();
         }
-        std::thread::sleep(std::time::Duration::from_millis(100));
-        let writes = runtime.writes();
+    }
+
+    #[test]
+    fn unseen_terminals_inherit_the_bridge_palette() {
+        let temp = tempfile::tempdir().unwrap();
+        let core = test_core(temp.path());
+        let bridge = TerminalBridge::new(core, Arc::new(|| {})).unwrap();
+        bridge.set_palette(crate::palette::RUNNER_LIGHT);
+        for (session_id, mission_id) in [("direct", None), ("slot", Some("mission".into()))] {
+            bridge.output(&OutputEvent {
+                session_id: session_id.into(),
+                mission_id,
+                seq: 1,
+                bytes: b"ready".to_vec(),
+            });
+            assert_eq!(
+                bridge.session(session_id).unwrap().palette(),
+                crate::palette::RUNNER_LIGHT
+            );
+        }
+        bridge.set_palette(crate::palette::RUNNER);
         assert_eq!(
-            writes.len(),
-            2,
-            "expected one OSC 11 report and one DA1 reply, got {writes:?}"
+            bridge.session("direct").unwrap().palette(),
+            crate::palette::RUNNER
         );
-        assert_eq!(writes[0], b"\x1b]11;rgb:1515/1616/1b1b\x1b\\");
-        assert_eq!(writes[1], b"\x1b[?6c");
-        core.sessions.kill(&spawned.id).ok();
+        assert_eq!(
+            bridge.session("slot").unwrap().palette(),
+            crate::palette::RUNNER
+        );
     }
 
     #[test]

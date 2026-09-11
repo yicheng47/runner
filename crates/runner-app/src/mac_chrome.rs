@@ -1,7 +1,7 @@
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", not(test)))]
 use gpui::Window;
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", not(test)))]
 pub fn sync_traffic_lights(window: &Window, zoom: f32) {
     use objc2::rc::Retained;
     use objc2_app_kit::{NSView, NSWindowButton, NSWindowStyleMask};
@@ -56,5 +56,5 @@ pub fn sync_traffic_lights(window: &Window, zoom: f32) {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(any(not(target_os = "macos"), test))]
 pub fn sync_traffic_lights(_: &gpui::Window, _: f32) {}

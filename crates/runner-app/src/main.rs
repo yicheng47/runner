@@ -1,4 +1,6 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+#[cfg(test)]
+mod theme_snapshot;
 
 mod app_settings;
 mod app_store;
@@ -781,6 +783,7 @@ impl NativeRoot {
                 this.sync_sidebar_window_activation(window, cx)
             }));
         mac_chrome::sync_traffic_lights(window, root.settings(cx).app_zoom);
+        root.sync_theme(window, cx);
         match root.route.clone() {
             AppRoute::Mission(mission_id) => root.open_mission(mission_id, window, cx),
             AppRoute::Runners => {

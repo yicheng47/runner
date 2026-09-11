@@ -226,7 +226,7 @@ impl NativeRoot {
                             .window_control_area(area)
                             .hover(move |button| {
                                 button.bg(if close {
-                                    gpui::rgb(0xc42b1c).into()
+                                    theme::window_close_hover()
                                 } else {
                                     alpha(theme::sidebar_selected(), 0.6)
                                 })
@@ -239,7 +239,7 @@ impl NativeRoot {
                                     .text_color(theme::muted())
                                     .group_hover(id, move |icon| {
                                         icon.text_color(if close {
-                                            gpui::rgb(0xffffff).into()
+                                            theme::window_close_hover_ink()
                                         } else {
                                             theme::text()
                                         })

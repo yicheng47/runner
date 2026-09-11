@@ -467,6 +467,11 @@ impl NativeRoot {
             .overflow_hidden()
             .opacity(visibility)
             .bg(theme::sidebar())
+            .map(|element| {
+                #[cfg(test)]
+                let element = crate::theme_snapshot::record_fill("APP_SIDEBAR", element);
+                element
+            })
             .border_r_1()
             .border_color(theme::border())
             .child(content)
@@ -641,7 +646,7 @@ impl NativeRoot {
                         .border_color(theme::border())
                         .bg(theme::panel())
                         .shadow(vec![BoxShadow {
-                            color: gpui::hsla(0., 0., 0., 0.35),
+                            color: theme::scrim(),
                             offset: point(px(0.), px(8. * zoom)),
                             blur_radius: px(24. * zoom),
                             spread_radius: px(0.),
@@ -713,7 +718,10 @@ impl NativeRoot {
 
     pub(crate) fn terminal_style(&self, cx: &App) -> crate::terminal::element::TerminalStyle {
         crate::terminal::element::TerminalStyle {
-            palette: self.settings(cx).terminal_theme.palette(),
+            palette: self
+                .settings(cx)
+                .terminal_theme
+                .palette_for(theme::active_variant()),
             font: self.settings(cx).terminal_font_family.font(),
             font_size: self.settings(cx).terminal_font_size as f32 * self.settings(cx).app_zoom,
             app_zoom: self.settings(cx).app_zoom,
@@ -736,17 +744,32 @@ impl NativeRoot {
         }
     }
 
-    fn sync_theme(&self, window: &Window, cx: &App) {
+    pub(crate) fn sync_theme(&self, window: &Window, cx: &mut Context<Self>) {
         let system_is_light = matches!(
             window.appearance(),
             WindowAppearance::Light | WindowAppearance::VibrantLight
         );
-        theme::set_active_variant(theme::resolve_variant(
+        let variant = theme::resolve_variant(
             self.settings(cx).app_theme,
             system_is_light,
             self.settings(cx).light_app_theme,
             self.settings(cx).dark_app_theme,
-        ));
+        );
+        let previous = theme::active_variant();
+        if previous != variant {
+            theme::set_active_variant(variant);
+            self.app_store
+                .update(cx, |store, cx| store.theme_changed(previous, cx));
+        }
+        self.apply_terminal_palette(cx);
+    }
+
+    pub(crate) fn apply_terminal_palette(&self, cx: &App) {
+        self.app_store.read(cx).bridge.set_palette(
+            self.settings(cx)
+                .terminal_theme
+                .palette_for(theme::active_variant()),
+        );
     }
 
     pub(crate) fn save_settings(&self, cx: &App) {

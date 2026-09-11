@@ -396,7 +396,12 @@ pub(crate) fn outer_origin(window: &Window) -> gpui::Point<Pixels> {
     window.window_bounds().get_bounds().origin
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", test))]
+fn native_window_frame(_: &Window) -> Option<(Bounds<Pixels>, gpui::Size<Pixels>)> {
+    None
+}
+
+#[cfg(all(target_os = "macos", not(test)))]
 fn native_window_frame(window: &Window) -> Option<(Bounds<Pixels>, gpui::Size<Pixels>)> {
     use objc2::rc::Retained;
     use objc2::MainThreadMarker;

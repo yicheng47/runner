@@ -262,10 +262,7 @@ impl SettingsState {
             &root,
             "settings-light-theme",
             light_theme_value(settings.light_app_theme),
-            vec![
-                SelectOption::new("codex", "Codex Light").swatch(0x339cff),
-                SelectOption::new("catppuccin-latte", "Catppuccin Latte").swatch(0x8839ef),
-            ],
+            light_theme_options(),
             SettingsSelection::LightTheme,
             cx,
         );
@@ -284,11 +281,7 @@ impl SettingsState {
             &root,
             "settings-terminal-theme",
             terminal_theme_value(settings.terminal_theme),
-            vec![
-                SelectOption::new("runner", "Runner").swatch(0x00ff9c),
-                SelectOption::new("catppuccin-mocha", "Catppuccin Mocha").swatch(0xcba6f7),
-                SelectOption::new("monokai", "Monokai").swatch(0xff6188),
-            ],
+            terminal_theme_options(theme::active_variant()),
             SettingsSelection::TerminalTheme,
             cx,
         );
@@ -854,9 +847,8 @@ impl NativeRoot {
             TerminalCursorStyle::Underline => alacritty_terminal::vte::ansi::CursorShape::Underline,
             TerminalCursorStyle::Bar => alacritty_terminal::vte::ansi::CursorShape::Beam,
         };
+        self.apply_terminal_palette(cx);
         for chat in self.attached.values() {
-            chat.terminal
-                .set_palette(self.settings(cx).terminal_theme.palette());
             chat.terminal.configure(TERMINAL_SCROLLBACK_LINES, cursor);
         }
     }
@@ -1851,6 +1843,9 @@ impl NativeRoot {
     }
 
     fn render_terminal_settings(&self, cx: &mut Context<Self>) -> AnyElement {
+        self.settings_page.terminal_theme.update(cx, |select, cx| {
+            select.set_options(terminal_theme_options(theme::active_variant()), cx);
+        });
         let size = self
             .settings(cx)
             .terminal_font_size
@@ -1977,16 +1972,33 @@ fn update_if_changed<T: PartialEq>(target: &mut T, value: T) -> bool {
     true
 }
 
+fn light_theme_options() -> Vec<SelectOption> {
+    vec![
+        SelectOption::new("runner-light", "Runner Light").swatch(0x00a66a),
+        SelectOption::new("catppuccin-latte", "Catppuccin Latte").swatch(0x8839ef),
+    ]
+}
+
+fn terminal_theme_options(variant: theme::ThemeVariant) -> Vec<SelectOption> {
+    vec![
+        SelectOption::new("match-app", "Match app").swatch(theme::colors_for(variant).accent),
+        SelectOption::new("runner-light", "Runner Light").swatch(0x00a66a),
+        SelectOption::new("runner-dark", "Runner Dark").swatch(0x00a66a),
+        SelectOption::new("catppuccin-mocha", "Catppuccin Mocha").swatch(0xcba6f7),
+        SelectOption::new("monokai", "Monokai").swatch(0xff6188),
+    ]
+}
+
 fn light_theme_value(value: LightTheme) -> &'static str {
     match value {
-        LightTheme::Codex => "codex",
+        LightTheme::RunnerLight => "runner-light",
         LightTheme::CatppuccinLatte => "catppuccin-latte",
     }
 }
 
 fn parse_light_theme(value: &str) -> Option<LightTheme> {
     match value {
-        "codex" => Some(LightTheme::Codex),
+        "runner-light" => Some(LightTheme::RunnerLight),
         "catppuccin-latte" => Some(LightTheme::CatppuccinLatte),
         _ => None,
     }
@@ -2009,7 +2021,9 @@ fn parse_dark_theme(value: &str) -> Option<DarkTheme> {
 
 fn terminal_theme_value(value: TerminalTheme) -> &'static str {
     match value {
-        TerminalTheme::Runner => "runner",
+        TerminalTheme::MatchApp => "match-app",
+        TerminalTheme::RunnerLight => "runner-light",
+        TerminalTheme::RunnerDark => "runner-dark",
         TerminalTheme::CatppuccinMocha => "catppuccin-mocha",
         TerminalTheme::Monokai => "monokai",
     }
@@ -2017,7 +2031,9 @@ fn terminal_theme_value(value: TerminalTheme) -> &'static str {
 
 fn parse_terminal_theme(value: &str) -> Option<TerminalTheme> {
     match value {
-        "runner" => Some(TerminalTheme::Runner),
+        "match-app" => Some(TerminalTheme::MatchApp),
+        "runner-light" => Some(TerminalTheme::RunnerLight),
+        "runner-dark" => Some(TerminalTheme::RunnerDark),
         "catppuccin-mocha" => Some(TerminalTheme::CatppuccinMocha),
         "monokai" => Some(TerminalTheme::Monokai),
         _ => None,
@@ -2059,6 +2075,45 @@ fn parse_terminal_cursor(value: &str) -> Option<TerminalCursorStyle> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn theme_selects_have_the_signed_off_options_in_order() {
+        let light = light_theme_options();
+        assert_eq!(
+            light,
+            vec![
+                SelectOption::new("runner-light", "Runner Light").swatch(0x00a66a),
+                SelectOption::new("catppuccin-latte", "Catppuccin Latte").swatch(0x8839ef),
+            ]
+        );
+        let variant = theme::ThemeVariant::RunnerLight;
+        let terminal = terminal_theme_options(variant);
+        assert_eq!(
+            terminal,
+            vec![
+                SelectOption::new("match-app", "Match app")
+                    .swatch(theme::colors_for(variant).accent),
+                SelectOption::new("runner-light", "Runner Light").swatch(0x00a66a),
+                SelectOption::new("runner-dark", "Runner Dark").swatch(0x00a66a),
+                SelectOption::new("catppuccin-mocha", "Catppuccin Mocha").swatch(0xcba6f7),
+                SelectOption::new("monokai", "Monokai").swatch(0xff6188),
+            ]
+        );
+        for option in light {
+            assert_eq!(
+                light_theme_value(parse_light_theme(&option.value).unwrap()),
+                option.value
+            );
+        }
+        for option in terminal {
+            assert_eq!(
+                terminal_theme_value(parse_terminal_theme(&option.value).unwrap()),
+                option.value
+            );
+        }
+        assert_eq!(parse_light_theme("codex"), None);
+        assert_eq!(parse_terminal_theme("runner"), None);
+    }
 
     #[test]
     fn settings_routes_fall_back_to_general() {

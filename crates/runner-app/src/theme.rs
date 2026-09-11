@@ -74,9 +74,10 @@ pub enum ThemeIntent {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum LightTheme {
-    #[default]
-    Codex,
     CatppuccinLatte,
+    #[default]
+    #[serde(other)]
+    RunnerLight,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -93,8 +94,14 @@ pub enum ThemeVariant {
     #[default]
     Carbon,
     CatppuccinMocha,
-    Codex,
+    RunnerLight,
     CatppuccinLatte,
+}
+
+impl ThemeVariant {
+    pub fn is_light(self) -> bool {
+        matches!(self, Self::RunnerLight | Self::CatppuccinLatte)
+    }
 }
 
 pub fn resolve_variant(
@@ -110,7 +117,7 @@ pub fn resolve_variant(
     };
     if use_light {
         match light {
-            LightTheme::Codex => ThemeVariant::Codex,
+            LightTheme::RunnerLight => ThemeVariant::RunnerLight,
             LightTheme::CatppuccinLatte => ThemeVariant::CatppuccinLatte,
         }
     } else {
@@ -179,23 +186,23 @@ pub const CATPPUCCIN_MOCHA: ThemeColors = ThemeColors {
     info: 0x74c7ec,
 };
 
-pub const CODEX: ThemeColors = ThemeColors {
-    bg: 0xffffff,
-    panel: 0xf7f7f8,
-    raised: 0xffffff,
-    line: 0xe5e5e7,
-    line_strong: 0xd1d1d6,
-    sidebar: 0xf7f7f8,
-    sidebar_selected: 0xeaeaed,
-    sidebar_selected_border: 0xd8d8de,
-    fg: 0x1a1c1f,
-    fg_2: 0x6e6e73,
-    fg_3: 0xa0a0a8,
-    accent: 0x339cff,
+pub const RUNNER_LIGHT: ThemeColors = ThemeColors {
+    bg: 0xf6f6f8,
+    panel: 0xffffff,
+    raised: 0xecedf1,
+    line: 0xe4e5ea,
+    line_strong: 0xd6d8df,
+    sidebar: 0xeeeff3,
+    sidebar_selected: 0xe1e3e9,
+    sidebar_selected_border: 0xd3d6de,
+    fg: 0x1c1d22,
+    fg_2: 0x5f616b,
+    fg_3: 0x9a9ca6,
+    accent: 0x00a66a,
     accent_ink: 0xffffff,
-    warn: 0xf59e0b,
-    danger: 0xe5484d,
-    info: 0x0ea5e9,
+    warn: 0xc27c0e,
+    danger: 0xd63b57,
+    info: 0x0a8fb3,
 };
 
 pub const CATPPUCCIN_LATTE: ThemeColors = ThemeColors {
@@ -226,7 +233,7 @@ pub fn set_active_variant(variant: ThemeVariant) {
 pub fn active_variant() -> ThemeVariant {
     match ACTIVE_VARIANT.load(Ordering::Relaxed) {
         value if value == ThemeVariant::CatppuccinMocha as u8 => ThemeVariant::CatppuccinMocha,
-        value if value == ThemeVariant::Codex as u8 => ThemeVariant::Codex,
+        value if value == ThemeVariant::RunnerLight as u8 => ThemeVariant::RunnerLight,
         value if value == ThemeVariant::CatppuccinLatte as u8 => ThemeVariant::CatppuccinLatte,
         _ => ThemeVariant::Carbon,
     }
@@ -236,7 +243,7 @@ pub fn colors_for(variant: ThemeVariant) -> ThemeColors {
     match variant {
         ThemeVariant::Carbon => CARBON,
         ThemeVariant::CatppuccinMocha => CATPPUCCIN_MOCHA,
-        ThemeVariant::Codex => CODEX,
+        ThemeVariant::RunnerLight => RUNNER_LIGHT,
         ThemeVariant::CatppuccinLatte => CATPPUCCIN_LATTE,
     }
 }
@@ -313,6 +320,27 @@ pub fn info() -> Hsla {
     color(colors().info)
 }
 
+pub fn scrim() -> Hsla {
+    gpui::hsla(
+        0.,
+        0.,
+        0.,
+        if active_variant().is_light() {
+            0.2
+        } else {
+            0.35
+        },
+    )
+}
+
+pub fn window_close_hover() -> Hsla {
+    color(0xc42b1c)
+}
+
+pub fn window_close_hover_ink() -> Hsla {
+    color(0xffffff)
+}
+
 pub fn with_alpha(mut color: Hsla, alpha: f32) -> Hsla {
     color.a = alpha;
     color
@@ -337,7 +365,7 @@ mod tests {
             resolve_variant(
                 ThemeIntent::Auto,
                 false,
-                LightTheme::Codex,
+                LightTheme::RunnerLight,
                 DarkTheme::CatppuccinMocha,
             ),
             ThemeVariant::CatppuccinMocha
@@ -346,10 +374,10 @@ mod tests {
             resolve_variant(
                 ThemeIntent::Light,
                 false,
-                LightTheme::Codex,
+                LightTheme::RunnerLight,
                 DarkTheme::CatppuccinMocha,
             ),
-            ThemeVariant::Codex
+            ThemeVariant::RunnerLight
         );
         assert_eq!(
             resolve_variant(
@@ -363,10 +391,61 @@ mod tests {
     }
 
     #[test]
+    fn runner_light_is_the_default_and_migrates_codex() {
+        assert_eq!(LightTheme::default(), LightTheme::RunnerLight);
+        assert_eq!(
+            serde_json::from_str::<LightTheme>(r#""codex""#).unwrap(),
+            LightTheme::RunnerLight
+        );
+        for intent in [ThemeIntent::Auto, ThemeIntent::Light] {
+            assert_eq!(
+                resolve_variant(intent, true, LightTheme::default(), DarkTheme::default()),
+                ThemeVariant::RunnerLight
+            );
+        }
+        assert!(ThemeVariant::RunnerLight.is_light());
+        assert!(ThemeVariant::CatppuccinLatte.is_light());
+        assert!(!ThemeVariant::Carbon.is_light());
+        assert!(!ThemeVariant::CatppuccinMocha.is_light());
+    }
+
+    #[test]
+    fn runner_light_matches_the_signed_off_tokens() {
+        assert_eq!(
+            RUNNER_LIGHT,
+            ThemeColors {
+                bg: 0xf6f6f8,
+                panel: 0xffffff,
+                raised: 0xecedf1,
+                line: 0xe4e5ea,
+                line_strong: 0xd6d8df,
+                sidebar: 0xeeeff3,
+                sidebar_selected: 0xe1e3e9,
+                sidebar_selected_border: 0xd3d6de,
+                fg: 0x1c1d22,
+                fg_2: 0x5f616b,
+                fg_3: 0x9a9ca6,
+                accent: 0x00a66a,
+                accent_ink: 0xffffff,
+                warn: 0xc27c0e,
+                danger: 0xd63b57,
+                info: 0x0a8fb3,
+            }
+        );
+        let terminal_bg = runner_terminal::palette::RUNNER_LIGHT.background;
+        assert_eq!(
+            RUNNER_LIGHT.bg,
+            u32::from(terminal_bg.r) << 16
+                | u32::from(terminal_bg.g) << 8
+                | u32::from(terminal_bg.b)
+        );
+    }
+
+    #[test]
     fn shipped_roles_match_react_tokens() {
         assert_eq!(CARBON.accent, 0x00ff9c);
         assert_eq!(CATPPUCCIN_MOCHA.sidebar_selected, 0x3b3d52);
-        assert_eq!(CODEX.panel, 0xf7f7f8);
+        assert_eq!(RUNNER_LIGHT.panel, 0xffffff);
         assert_eq!(CATPPUCCIN_LATTE.sidebar_selected_border, 0xc8ccda);
     }
 }

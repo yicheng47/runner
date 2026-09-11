@@ -795,7 +795,10 @@ impl MissionWorkspace {
 
     fn terminal_style(&self, cx: &App) -> crate::terminal::element::TerminalStyle {
         crate::terminal::element::TerminalStyle {
-            palette: self.settings(cx).terminal_theme.palette(),
+            palette: self
+                .settings(cx)
+                .terminal_theme
+                .palette_for(theme::active_variant()),
             font: self.settings(cx).terminal_font_family.font(),
             font_size: self.settings(cx).terminal_font_size as f32 * self.settings(cx).app_zoom,
             app_zoom: self.settings(cx).app_zoom,
@@ -815,8 +818,11 @@ impl MissionWorkspace {
             }
         };
         for chat in self.attached.values() {
-            chat.terminal
-                .set_palette(self.settings(cx).terminal_theme.palette());
+            chat.terminal.set_palette(
+                self.settings(cx)
+                    .terminal_theme
+                    .palette_for(theme::active_variant()),
+            );
             chat.terminal
                 .configure(app_settings::TERMINAL_SCROLLBACK_LINES, cursor);
         }
@@ -1579,7 +1585,11 @@ impl MissionWorkspace {
         let Some(terminal) = self.app_store.read(cx).bridge.session(session_id) else {
             return Ok(());
         };
-        terminal.set_palette(self.settings(cx).terminal_theme.palette());
+        terminal.set_palette(
+            self.settings(cx)
+                .terminal_theme
+                .palette_for(theme::active_variant()),
+        );
         terminal.configure(
             app_settings::TERMINAL_SCROLLBACK_LINES,
             match self.settings(cx).terminal_cursor_style {
@@ -3583,6 +3593,11 @@ impl MissionWorkspace {
             .h_full()
             .flex()
             .bg(theme::bg())
+            .map(|element| {
+                #[cfg(test)]
+                let element = crate::theme_snapshot::record_fill("MISSION_BG", element);
+                element
+            })
             .child(center)
             .child(rail)
             .on_mouse_down(
@@ -4480,7 +4495,10 @@ impl MissionWorkspace {
     ) -> AnyElement {
         let handler = self.feed_selection_handler(cx);
         let selection_color = crate::terminal::element::to_hsla(
-            self.settings(cx).terminal_theme.palette().selection,
+            self.settings(cx)
+                .terminal_theme
+                .palette_for(theme::active_variant())
+                .selection,
             1.,
         );
         crate::surfaces::mission_markdown::render_markdown(
@@ -4597,6 +4615,11 @@ impl MissionWorkspace {
                     .flex_none()
                     .rounded_md()
                     .bg(theme::accent())
+                    .map(|element| {
+                        #[cfg(test)]
+                        let element = crate::theme_snapshot::record_fill("MISSION_ACCENT", element);
+                        element
+                    })
                     .px_3()
                     .py_1()
                     .opacity(if can_send { 1. } else { 0.5 })
@@ -5799,6 +5822,11 @@ impl MissionWorkspace {
             .flex_col()
             .overflow_hidden()
             .bg(theme::panel())
+            .map(|element| {
+                #[cfg(test)]
+                let element = crate::theme_snapshot::record_fill("MISSION_PANEL", element);
+                element
+            })
             .child(header)
             .child(body)
             .child(
@@ -6618,6 +6646,147 @@ mod tests {
             to: None,
             signal_type: Some(runner_backend::model::SignalType::new(signal_type)),
             payload,
+        }
+    }
+
+    #[test]
+    fn sidebar_and_mission_fills_follow_carbon_and_runner_light() {
+        use crate::theme_snapshot::{assert_fill, ThemeGuard};
+        use gpui::{TestAppContext, VisualTestContext};
+        use runner_backend::session::manager::{OutputEvent, SessionEvents};
+        use runner_backend::{db, event_bus, events, mcp, router, session, shell_path, windows};
+        use std::sync::{Mutex, RwLock};
+
+        let _theme = ThemeGuard::new();
+        theme::set_active_variant(theme::ThemeVariant::Carbon);
+        let temp = tempfile::tempdir().unwrap();
+        let pool = Arc::new(db::open_pool(&temp.path().join("runner.db")).unwrap());
+        pool.get()
+            .unwrap()
+            .execute_batch(
+                "INSERT INTO crews (id, name, created_at, updated_at)
+                 VALUES ('crew', 'Crew', '2026-09-06T00:00:00Z', '2026-09-06T00:00:00Z');
+                 INSERT INTO missions (id, crew_id, title, status, started_at)
+                 VALUES ('mission', 'crew', 'Original mission', 'running', '2026-09-06T00:00:00Z');",
+            )
+            .unwrap();
+        let runtime_shell_env = Arc::new(RwLock::new(shell_path::LoginShellEnv::default()));
+        let runtime_discovery =
+            Arc::new(RwLock::new(shell_path::DiscoveryState::startup(None, None)));
+        let core = AppCore {
+            db: pool.clone(),
+            app_data_dir: temp.path().to_owned(),
+            sessions: session::SessionManager::new(
+                runtime_shell_env.clone(),
+                runtime_discovery.clone(),
+                Arc::new(session::pty_runtime::PtyRuntime::new()),
+            ),
+            runtime_shell_env,
+            runtime_discovery,
+            buses: event_bus::BusRegistry::new(),
+            routers: router::RouterRegistry::new(),
+            mission_grid_hint: Arc::new(Mutex::new(None)),
+            mcp: Arc::new(mcp::McpHandle::new()),
+            windows: Arc::new(windows::WindowRegistry::new()),
+            events: events::EventChannel::new(),
+            session_event_observer: Default::default(),
+            app_version: "0.0.0-test".into(),
+        };
+
+        let mut cx = TestAppContext::single();
+        let store = cx.new(|cx| {
+            AppStore::new(
+                core.clone(),
+                temp.path().join("settings.json"),
+                AppSettings {
+                    app_theme: theme::ThemeIntent::Dark,
+                    terminal_theme: app_settings::TerminalTheme::RunnerLight,
+                    ..AppSettings::default()
+                },
+                None,
+                cx,
+            )
+        });
+        cx.update(|cx| {
+            cx.set_global(crate::GlobalAppStore(store.clone()));
+            cx.set_global(crate::WindowLayoutCheckpoint::default());
+            #[cfg(not(windows))]
+            let updater = cx.new(|cx| crate::Updater::new(false, cx));
+            #[cfg(windows)]
+            let updater = cx.new(|cx| crate::Updater::new(false, temp.path().join("updates"), cx));
+            cx.set_global(crate::GlobalUpdater(updater));
+        });
+        for (id, mission_id) in [("direct", None), ("slot", Some("mission".into()))] {
+            core.session_events().output(&OutputEvent {
+                session_id: id.into(),
+                mission_id,
+                seq: 1,
+                bytes: b"ready".to_vec(),
+            });
+        }
+        let bridge = cx.update(|cx| store.read(cx).bridge.clone());
+        let host = cx.add_window(|window, cx| {
+            let mut root = NativeRoot::new(
+                "theme-snapshot".into(),
+                temp.path().join("logs"),
+                None,
+                None,
+                store.clone(),
+                window,
+                cx,
+            );
+            root.route = AppRoute::Mission("mission".into());
+            root.mission_workspace.update(cx, |workspace, cx| {
+                workspace.active = true;
+                workspace.mission_id = Some("mission".into());
+                workspace.mission =
+                    Some(runner_backend::ops::mission::mission_get(&core, "mission").unwrap());
+                workspace.crew = Some(runner_backend::ops::crew::crew_get(&core, "crew").unwrap());
+                workspace.composer.draft = "Ready to review".into();
+                workspace
+                    .composer_input
+                    .update(cx, |input, cx| input.reset("Ready to review", cx));
+            });
+            root
+        });
+        assert_eq!(theme::active_variant(), theme::ThemeVariant::Carbon);
+        assert_eq!(
+            bridge.session("direct").unwrap().palette(),
+            runner_terminal::palette::RUNNER_LIGHT
+        );
+        assert_eq!(
+            bridge.session("slot").unwrap().palette(),
+            runner_terminal::palette::RUNNER_LIGHT
+        );
+        let mut visual = VisualTestContext::from_window(host.into(), &cx);
+        visual.simulate_resize(size(px(1200.), px(900.)));
+        for (intent, variant) in [
+            (theme::ThemeIntent::Dark, theme::ThemeVariant::Carbon),
+            (theme::ThemeIntent::Light, theme::ThemeVariant::RunnerLight),
+        ] {
+            store.update(&mut cx, |store, cx| {
+                store.update_settings(
+                    |settings| {
+                        settings.app_theme = intent;
+                        settings.terminal_theme = app_settings::TerminalTheme::MatchApp;
+                        true
+                    },
+                    false,
+                    cx,
+                );
+            });
+            cx.run_until_parked();
+            visual.refresh().unwrap();
+            cx.run_until_parked();
+            let colors = theme::colors_for(variant);
+            assert_eq!(theme::active_variant(), variant);
+            assert_fill(&mut visual, "APP_SIDEBAR", colors.sidebar);
+            assert_fill(&mut visual, "MISSION_BG", colors.bg);
+            assert_fill(&mut visual, "MISSION_PANEL", colors.panel);
+            assert_fill(&mut visual, "MISSION_ACCENT", colors.accent);
+            let palette = app_settings::TerminalTheme::MatchApp.palette_for(variant);
+            assert_eq!(bridge.session("direct").unwrap().palette(), palette);
+            assert_eq!(bridge.session("slot").unwrap().palette(), palette);
         }
     }
 

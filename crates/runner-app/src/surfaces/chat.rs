@@ -982,7 +982,11 @@ impl NativeRoot {
         let Some(terminal) = self.app_store.read(cx).bridge.session(session_id) else {
             return Ok(());
         };
-        terminal.set_palette(self.settings(cx).terminal_theme.palette());
+        terminal.set_palette(
+            self.settings(cx)
+                .terminal_theme
+                .palette_for(theme::active_variant()),
+        );
         terminal.configure(
             app_settings::TERMINAL_SCROLLBACK_LINES,
             match self.settings(cx).terminal_cursor_style {

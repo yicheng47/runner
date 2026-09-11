@@ -154,6 +154,7 @@ impl StoreRevisions {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct TerminalSettingsSnapshot {
     theme: TerminalTheme,
+    light: bool,
     font_family: TerminalFontFamily,
     font_size: u16,
     cursor_style: TerminalCursorStyle,
@@ -161,8 +162,15 @@ struct TerminalSettingsSnapshot {
 
 impl From<&AppSettings> for TerminalSettingsSnapshot {
     fn from(settings: &AppSettings) -> Self {
+        Self::for_variant(settings, crate::theme::active_variant())
+    }
+}
+
+impl TerminalSettingsSnapshot {
+    fn for_variant(settings: &AppSettings, variant: crate::theme::ThemeVariant) -> Self {
         Self {
             theme: settings.terminal_theme,
+            light: settings.terminal_theme == TerminalTheme::MatchApp && variant.is_light(),
             font_family: settings.terminal_font_family,
             font_size: settings.terminal_font_size,
             cursor_style: settings.terminal_cursor_style,
@@ -464,6 +472,20 @@ impl AppStore {
             self.revisions.sessions = self.revisions.sessions.wrapping_add(1);
             cx.notify();
         }
+    }
+
+    pub(crate) fn theme_changed(
+        &mut self,
+        previous: crate::theme::ThemeVariant,
+        cx: &mut Context<Self>,
+    ) {
+        if TerminalSettingsSnapshot::for_variant(&self.settings, previous)
+            != TerminalSettingsSnapshot::from(&self.settings)
+        {
+            self.revisions.terminal_settings = self.revisions.terminal_settings.wrapping_add(1);
+        }
+        self.revisions.shell_settings = self.revisions.shell_settings.wrapping_add(1);
+        cx.notify();
     }
 
     pub(crate) fn update_settings(
@@ -812,8 +834,30 @@ mod tests {
     }
 
     #[test]
+    fn terminal_settings_snapshot_tracks_resolved_match_app_appearance() {
+        use crate::theme::ThemeVariant;
+        let mut settings = AppSettings::default();
+        assert_ne!(
+            TerminalSettingsSnapshot::for_variant(&settings, ThemeVariant::Carbon),
+            TerminalSettingsSnapshot::for_variant(&settings, ThemeVariant::RunnerLight)
+        );
+        assert_eq!(
+            TerminalSettingsSnapshot::for_variant(&settings, ThemeVariant::RunnerLight),
+            TerminalSettingsSnapshot::for_variant(&settings, ThemeVariant::CatppuccinLatte)
+        );
+        settings.terminal_theme = TerminalTheme::RunnerDark;
+        assert_eq!(
+            TerminalSettingsSnapshot::for_variant(&settings, ThemeVariant::Carbon),
+            TerminalSettingsSnapshot::for_variant(&settings, ThemeVariant::RunnerLight)
+        );
+    }
+
+    #[test]
     fn terminal_settings_snapshot_ignores_unrelated_preferences() {
-        let before = AppSettings::default();
+        let before = AppSettings {
+            terminal_theme: TerminalTheme::RunnerDark,
+            ..AppSettings::default()
+        };
         let mut after = before.clone();
         after.sidebar_width += 1.;
         assert_eq!(
@@ -847,7 +891,10 @@ mod tests {
 
     #[test]
     fn shell_settings_snapshot_ignores_mission_preferences() {
-        let before = AppSettings::default();
+        let before = AppSettings {
+            terminal_theme: TerminalTheme::RunnerDark,
+            ..AppSettings::default()
+        };
         let mut after = before.clone();
         after.mission_rail_width += 1.;
         after

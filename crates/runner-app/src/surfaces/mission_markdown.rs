@@ -1203,6 +1203,7 @@ mod tests {
 
     #[test]
     fn inline_markers_recurse_and_code_overrides_outer_weight() {
+        let _theme = crate::theme_snapshot::ThemeGuard::new();
         let mut text = String::new();
         let mut highlights = Vec::new();
         append_styled_segment(

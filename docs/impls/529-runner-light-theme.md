@@ -25,7 +25,7 @@ Appearance swatch for the select option: the accent, `0x00a66a`.
 
 ## Terminal palette (canvas frame `Runner Light · terminal palette`, final)
 
-`palette::RUNNER_LIGHT` in `crates/runner-terminal/src/palette.rs`, same shape as `RUNNER` (`:20`): background `0xf6f6f8` (the app `bg`, so pane and chat are one surface as in Carbon; the canvas frame shows `#fafafb` and the spec's "ground is the app bg" wins), foreground `0x1c1d22`, cursor `0x00a66a`, selection `0xd6e9df`. ANSI 0–7: `1c1d22 d63b57 00a66a c27c0e 2563eb 7c3aed 0a8fb3 c9cbd3`. ANSI 8–15: `5f616b e0526e 0bbf80 d9932a 3b82f6 a78bfa 22a6c9 ffffff`.
+`palette::RUNNER_LIGHT` in `crates/runner-terminal/src/palette.rs`, same shape as `RUNNER` (`:20`): background `0xf6f6f8` (the app `bg`, so pane and chat are one surface as in Carbon; the canvas frame shows `#fafafb` and the spec's "ground is the app bg" wins), foreground `0x1c1d22`, cursor `0x00a66a`, selection `0xd6e9df`. ANSI 0–7: `5f616b d63b57 00a66a c27c0e 2563eb 7c3aed 0a8fb3 b4b7c1`. ANSI 8–15: `6e717c e0526e 0bbf80 d9932a 3b82f6 a78bfa 22a6c9 c9cbd3`. The four achromatic slots were revised after Jason’s 2026-09-11 smoke test: foreground < black < bright black < white < bright white < background, keeping all four darker than the light ground.
 
 ## Where the code is
 

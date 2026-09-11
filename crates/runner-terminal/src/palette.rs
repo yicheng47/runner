@@ -43,6 +43,32 @@ pub const RUNNER: TerminalPalette = TerminalPalette {
     ],
 };
 
+pub const RUNNER_LIGHT: TerminalPalette = TerminalPalette {
+    background: rgb(0xf6, 0xf6, 0xf8),
+    foreground: rgb(0x1c, 0x1d, 0x22),
+    cursor: rgb(0x00, 0xa6, 0x6a),
+    cursor_accent: rgb(0xf6, 0xf6, 0xf8),
+    selection: rgb(0xd6, 0xe9, 0xdf),
+    ansi: [
+        rgb(0x5f, 0x61, 0x6b),
+        rgb(0xd6, 0x3b, 0x57),
+        rgb(0x00, 0xa6, 0x6a),
+        rgb(0xc2, 0x7c, 0x0e),
+        rgb(0x25, 0x63, 0xeb),
+        rgb(0x7c, 0x3a, 0xed),
+        rgb(0x0a, 0x8f, 0xb3),
+        rgb(0xb4, 0xb7, 0xc1),
+        rgb(0x6e, 0x71, 0x7c),
+        rgb(0xe0, 0x52, 0x6e),
+        rgb(0x0b, 0xbf, 0x80),
+        rgb(0xd9, 0x93, 0x2a),
+        rgb(0x3b, 0x82, 0xf6),
+        rgb(0xa7, 0x8b, 0xfa),
+        rgb(0x22, 0xa6, 0xc9),
+        rgb(0xc9, 0xcb, 0xd3),
+    ],
+};
+
 pub const BACKGROUND: Rgb = RUNNER.background;
 pub const FOREGROUND: Rgb = RUNNER.foreground;
 pub const CURSOR: Rgb = RUNNER.cursor;
@@ -182,6 +208,23 @@ mod tests {
         assert_eq!(CATPPUCCIN_MOCHA.ansi[4], rgb(0x89, 0xb4, 0xfa));
         assert_eq!(MONOKAI.ansi[4], rgb(0xfc, 0x98, 0x67));
         assert_eq!(MONOKAI.cursor, rgb(0xc1, 0xc0, 0xc0));
+    }
+
+    #[test]
+    fn runner_light_matches_the_signed_off_palette() {
+        assert_eq!(RUNNER_LIGHT.background, rgb(0xf6, 0xf6, 0xf8));
+        assert_eq!(RUNNER_LIGHT.foreground, rgb(0x1c, 0x1d, 0x22));
+        assert_eq!(RUNNER_LIGHT.cursor, rgb(0x00, 0xa6, 0x6a));
+        assert_eq!(RUNNER_LIGHT.cursor_accent, RUNNER_LIGHT.background);
+        assert_eq!(RUNNER_LIGHT.selection, rgb(0xd6, 0xe9, 0xdf));
+        let ansi = [
+            0x5f616b, 0xd63b57, 0x00a66a, 0xc27c0e, 0x2563eb, 0x7c3aed, 0x0a8fb3, 0xb4b7c1,
+            0x6e717c, 0xe0526e, 0x0bbf80, 0xd9932a, 0x3b82f6, 0xa78bfa, 0x22a6c9, 0xc9cbd3,
+        ];
+        assert_eq!(
+            RUNNER_LIGHT.ansi,
+            ansi.map(|value| rgb((value >> 16) as u8, (value >> 8) as u8, value as u8))
+        );
     }
 
     #[test]

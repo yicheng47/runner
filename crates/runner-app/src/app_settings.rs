@@ -10,7 +10,7 @@ use runner_terminal::palette::{self, TerminalPalette};
 use serde::{Deserialize, Serialize};
 
 use crate::keymap::{self, KeymapOverrides};
-use crate::theme::{DarkTheme, LightTheme, ThemeIntent};
+use crate::theme::{DarkTheme, LightTheme, ThemeIntent, ThemeVariant};
 
 pub const SIDEBAR_MIN: f32 = 200.;
 pub const SIDEBAR_MAX: f32 = 480.;
@@ -32,17 +32,21 @@ pub const MISSION_RAIL_DEFAULT: f32 = 288.;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum TerminalTheme {
+    RunnerLight,
+    RunnerDark,
     CatppuccinMocha,
     Monokai,
     #[default]
-    #[serde(other)]
-    Runner,
+    #[serde(alias = "runner", other)]
+    MatchApp,
 }
 
 impl TerminalTheme {
-    pub fn palette(self) -> TerminalPalette {
+    pub fn palette_for(self, variant: ThemeVariant) -> TerminalPalette {
         match self {
-            Self::Runner => palette::RUNNER,
+            Self::MatchApp if variant.is_light() => palette::RUNNER_LIGHT,
+            Self::MatchApp | Self::RunnerDark => palette::RUNNER,
+            Self::RunnerLight => palette::RUNNER_LIGHT,
             Self::CatppuccinMocha => palette::CATPPUCCIN_MOCHA,
             Self::Monokai => palette::MONOKAI,
         }
@@ -207,10 +211,10 @@ impl Default for AppSettings {
     fn default() -> Self {
         Self {
             app_theme: ThemeIntent::Auto,
-            light_app_theme: LightTheme::Codex,
+            light_app_theme: LightTheme::RunnerLight,
             dark_app_theme: DarkTheme::Runner,
             app_zoom: 1.,
-            terminal_theme: TerminalTheme::Runner,
+            terminal_theme: TerminalTheme::MatchApp,
             terminal_font_family: TerminalFontFamily::JetBrainsMono,
             terminal_font_size: TERMINAL_FONT_SIZE_DEFAULT,
             terminal_cursor_style: TerminalCursorStyle::Block,
@@ -527,9 +531,9 @@ mod tests {
     fn persisted_labels_match_the_react_settings_contract() {
         let value = serde_json::to_value(AppSettings::default()).unwrap();
         assert_eq!(value["appTheme"], "auto");
-        assert_eq!(value["lightAppTheme"], "codex");
+        assert_eq!(value["lightAppTheme"], "runner-light");
         assert_eq!(value["darkAppTheme"], "carbon");
-        assert_eq!(value["terminalTheme"], "runner");
+        assert_eq!(value["terminalTheme"], "match-app");
         assert_eq!(value["terminalFontFamily"], "JetBrains Mono");
         assert_eq!(value["defaultCrewId"], "");
         assert_eq!(value["defaultWorkingDir"], "");
@@ -537,6 +541,71 @@ mod tests {
         assert_eq!(value["automaticallyCheckForUpdates"], true);
         assert_eq!(value["defaultRuntime"], "");
         assert_eq!(value["keymapOverrides"], serde_json::json!({}));
+    }
+
+    #[test]
+    fn legacy_theme_settings_migrate_without_resetting_other_preferences() {
+        for json in [
+            r#"{"terminalTheme":"runner","lightAppTheme":"codex","sidebarWidth":376}"#,
+            r#"{"sidebarWidth":376}"#,
+        ] {
+            let settings: AppSettings = serde_json::from_str(json).unwrap();
+            assert_eq!(settings.terminal_theme, TerminalTheme::MatchApp);
+            assert_eq!(settings.light_app_theme, LightTheme::RunnerLight);
+            assert_eq!(settings.sidebar_width, 376.);
+        }
+        let settings: AppSettings =
+            serde_json::from_str(r#"{"lightAppTheme":"catppuccin-latte"}"#).unwrap();
+        assert_eq!(settings.light_app_theme, LightTheme::CatppuccinLatte);
+    }
+
+    #[test]
+    fn runner_terminal_themes_round_trip() {
+        for (theme, key) in [
+            (TerminalTheme::MatchApp, "match-app"),
+            (TerminalTheme::RunnerLight, "runner-light"),
+            (TerminalTheme::RunnerDark, "runner-dark"),
+        ] {
+            let json = serde_json::to_value(AppSettings {
+                terminal_theme: theme,
+                ..AppSettings::default()
+            })
+            .unwrap();
+            assert_eq!(json["terminalTheme"], key);
+            assert_eq!(
+                serde_json::from_value::<AppSettings>(json)
+                    .unwrap()
+                    .terminal_theme,
+                theme
+            );
+        }
+    }
+
+    #[test]
+    fn terminal_palette_follows_app_only_when_requested() {
+        for variant in [
+            ThemeVariant::Carbon,
+            ThemeVariant::CatppuccinMocha,
+            ThemeVariant::RunnerLight,
+            ThemeVariant::CatppuccinLatte,
+        ] {
+            assert_eq!(
+                TerminalTheme::MatchApp.palette_for(variant),
+                if variant.is_light() {
+                    palette::RUNNER_LIGHT
+                } else {
+                    palette::RUNNER
+                }
+            );
+            for (theme, palette) in [
+                (TerminalTheme::RunnerLight, palette::RUNNER_LIGHT),
+                (TerminalTheme::RunnerDark, palette::RUNNER),
+                (TerminalTheme::CatppuccinMocha, palette::CATPPUCCIN_MOCHA),
+                (TerminalTheme::Monokai, palette::MONOKAI),
+            ] {
+                assert_eq!(theme.palette_for(variant), palette);
+            }
+        }
     }
 
     #[test]
@@ -560,7 +629,7 @@ mod tests {
     }
 
     #[test]
-    fn unknown_terminal_theme_loads_as_runner_without_resetting_settings() {
+    fn unknown_terminal_theme_loads_as_match_app_without_resetting_settings() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("ui-settings.json");
         fs::write(
@@ -570,7 +639,7 @@ mod tests {
         .unwrap();
 
         let loaded = AppSettings::load(&path).unwrap();
-        assert_eq!(loaded.terminal_theme, TerminalTheme::Runner);
+        assert_eq!(loaded.terminal_theme, TerminalTheme::MatchApp);
         assert_eq!(loaded.sidebar_width, 376.);
     }
 
