@@ -34,6 +34,7 @@ pub(crate) enum SettingsPane {
     Shortcuts,
     Agents,
     Skills,
+    Mcp,
     Updates,
     Diagnostics,
     About,
@@ -47,7 +48,8 @@ impl SettingsPane {
             Some("appearance") => Self::Appearance,
             Some("terminal") => Self::Terminal,
             Some("shortcuts") => Self::Shortcuts,
-            Some("agents") | Some("mcp") => Self::Agents,
+            Some("agents") => Self::Agents,
+            Some("mcp") => Self::Mcp,
             Some("skills") => Self::Skills,
             Some("updates") => Self::Updates,
             Some("diagnostics") => Self::Diagnostics,
@@ -66,6 +68,7 @@ impl SettingsPane {
             Self::Shortcuts => "shortcuts",
             Self::Agents => "agents",
             Self::Skills => "skills",
+            Self::Mcp => "mcp",
             Self::Updates => "updates",
             Self::Diagnostics => "diagnostics",
             Self::About => "about",
@@ -82,6 +85,7 @@ impl SettingsPane {
             Self::Shortcuts => "Keyboard shortcuts",
             Self::Agents => "Agents",
             Self::Skills => "Skills",
+            Self::Mcp => "MCP",
             Self::Updates => "Updates",
             Self::Diagnostics => "Diagnostics",
             Self::About => "About",
@@ -98,6 +102,7 @@ impl SettingsPane {
             Self::Shortcuts => "keyboard.svg",
             Self::Agents => "bot.svg",
             Self::Skills => "file-text.svg",
+            Self::Mcp => "plug.svg",
             Self::Updates => "refresh-cw.svg",
             Self::Diagnostics => "file-text.svg",
             Self::About => "info.svg",
@@ -114,7 +119,11 @@ const APP_PANES: &[SettingsPane] = &[
     SettingsPane::Shortcuts,
     SettingsPane::Archived,
 ];
-const INTEGRATION_PANES: &[SettingsPane] = &[SettingsPane::Agents, SettingsPane::Skills];
+const INTEGRATION_PANES: &[SettingsPane] = &[
+    SettingsPane::Agents,
+    SettingsPane::Skills,
+    SettingsPane::Mcp,
+];
 const SYSTEM_PANES: &[SettingsPane] = &[
     SettingsPane::Updates,
     SettingsPane::Diagnostics,
@@ -188,6 +197,7 @@ pub(crate) struct SettingsState {
     file_link_editor: Entity<StyledSelect>,
     agents: Option<Entity<settings::agents::AgentsPane>>,
     skills: Option<Entity<settings::skills::SkillsPane>>,
+    mcp: Option<Entity<settings::mcp::McpPane>>,
     updates: Option<Entity<settings::updates::UpdatesPane>>,
     diagnostics: Option<Entity<settings::diagnostics::DiagnosticsPane>>,
     about: Option<Entity<settings::about::AboutPane>>,
@@ -377,6 +387,7 @@ impl SettingsState {
             file_link_editor,
             agents: None,
             skills: None,
+            mcp: None,
             updates: None,
             diagnostics: None,
             about: None,
@@ -693,11 +704,35 @@ impl NativeRoot {
             SettingsPane::Skills => {
                 if self.settings_page.skills.is_none() {
                     let app_store = self.app_store.clone();
-                    self.settings_page.skills =
-                        Some(cx.new(|cx| settings::skills::SkillsPane::new(app_store, cx)));
+                    let pane = cx.new(|cx| settings::skills::SkillsPane::new(app_store, cx));
+                    let detail = pane.read(cx).detail.clone();
+                    self.settings_page._subscriptions.push(cx.subscribe(
+                        &detail,
+                        |this, _, notice: &settings::SaveNotice, cx| {
+                            this.show_toast(notice.message.clone(), notice.tone, cx)
+                        },
+                    ));
+                    self.settings_page.skills = Some(pane);
                 }
                 if let Some(skills) = self.settings_page.skills.clone() {
                     skills.update(cx, |pane, cx| pane.refresh(cx));
+                }
+            }
+            SettingsPane::Mcp => {
+                if self.settings_page.mcp.is_none() {
+                    let app_store = self.app_store.clone();
+                    let pane = cx.new(|cx| settings::mcp::McpPane::new(app_store, cx));
+                    let detail = pane.read(cx).detail.clone();
+                    self.settings_page._subscriptions.push(cx.subscribe(
+                        &detail,
+                        |this, _, notice: &settings::SaveNotice, cx| {
+                            this.show_toast(notice.message.clone(), notice.tone, cx)
+                        },
+                    ));
+                    self.settings_page.mcp = Some(pane);
+                }
+                if let Some(mcp) = self.settings_page.mcp.clone() {
+                    mcp.update(cx, |pane, cx| pane.refresh(cx));
                 }
             }
             SettingsPane::Updates => {
@@ -983,6 +1018,14 @@ impl NativeRoot {
                         .map(|pane| pane.read(cx).detail.clone()),
                 )
             })
+            .when(active == SettingsPane::Mcp, |takeover| {
+                takeover.children(
+                    self.settings_page
+                        .mcp
+                        .as_ref()
+                        .map(|pane| pane.read(cx).detail.clone()),
+                )
+            })
             .into_any_element()
     }
 
@@ -1148,6 +1191,11 @@ impl NativeRoot {
             SettingsPane::Skills => self
                 .settings_page
                 .skills
+                .clone()
+                .map(IntoElement::into_any_element),
+            SettingsPane::Mcp => self
+                .settings_page
+                .mcp
                 .clone()
                 .map(IntoElement::into_any_element),
             SettingsPane::Updates => self
@@ -2036,7 +2084,7 @@ mod tests {
     fn nav_search_filters_labels_and_removes_empty_groups() {
         let all = filtered_nav_groups("");
         assert_eq!(all.len(), 3);
-        assert_eq!(all.iter().map(|(_, panes)| panes.len()).sum::<usize>(), 11);
+        assert_eq!(all.iter().map(|(_, panes)| panes.len()).sum::<usize>(), 12);
         assert_eq!(
             all[0],
             (
@@ -2056,15 +2104,22 @@ mod tests {
             all[1],
             (
                 "Integrations",
-                vec![SettingsPane::Agents, SettingsPane::Skills]
+                vec![
+                    SettingsPane::Agents,
+                    SettingsPane::Skills,
+                    SettingsPane::Mcp
+                ]
             )
         );
         assert_eq!(
             SettingsPane::from_route(Some("skills")),
             SettingsPane::Skills
         );
-        assert_eq!(SettingsPane::from_route(Some("mcp")), SettingsPane::Agents);
-        assert!(filtered_nav_groups("mcp").is_empty());
+        assert_eq!(SettingsPane::from_route(Some("mcp")), SettingsPane::Mcp);
+        assert_eq!(
+            filtered_nav_groups("mcp"),
+            vec![("Integrations", vec![SettingsPane::Mcp])]
+        );
         assert_eq!(
             filtered_nav_groups("skills"),
             vec![("Integrations", vec![SettingsPane::Skills])]

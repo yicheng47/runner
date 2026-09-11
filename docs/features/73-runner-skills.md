@@ -2,7 +2,7 @@
 
 Tracking: [#73](https://github.com/yicheng47/runner/issues/73). Status: specced 2026-08-28; pane designed 2026-09-09 (`design/runner.pen`, §Surfaces); M1 landed via [#531](https://github.com/yicheng47/runner/pull/531). Implementation program: [`docs/impls/local-skills/`](../impls/local-skills/README.md) (M1 view skills by runtime → M2 allowlist backend → M3 allowlist app → later).
 
-> Rewritten 2026-08-28. The 2026-07-15 text at this number described an agent-agnostic MCP + skills catalog modelled on skills-manager (central library, per-agent sync ladder, adopt-into-catalog). That framing answered "where do skills live"; the problem Jason actually has is "which skills does *this session* see". Claude Code has shipped the primitives that answer it since then, so this spec narrows to skills, per runner, claude-code first, and defers the MCP catalog to a later spec. The earlier text stays in git history.
+> Rewritten 2026-08-28. The 2026-07-15 text at this number described an agent-agnostic MCP + skills catalog modelled on skills-manager (central library, per-agent sync ladder, adopt-into-catalog). That framing answered "where do skills live"; the problem Jason actually has is "which skills does *this session* see". Claude Code has shipped the primitives that answer it since then, so this spec narrows to skills, per runner, claude-code first, and defers the MCP catalog to [#555 — Settings → MCP](555-mcp-settings.md). The earlier text stays in git history.
 
 ## Motivation
 
@@ -17,7 +17,7 @@ So the feature is small at its core: **a runner declares which skills it wants, 
 
 ## Principles
 
-- **One key in the user's home, never a file move.** Runner reads each runtime's global skills directory (`~/.claude/skills`, `~/.codex/skills`) and never moves, copies or links anything there. The one file it writes there is a skill's own `SKILL.md`, in place, only when the user presses Save in the detail modal's editor (§Surfaces). The other thing it writes is the `skillOverrides` key of `~/.claude/settings.json` — the same key Claude Code's own `/skills` menu writes — for global on/off. Same posture as MCP registration (only `mcp_servers.runner` is ever touched): structured read-modify-write of one key, everything else in the file preserved byte-for-byte where the JSON allows.
+- **One key in the user's home, never a file move.** Runner reads each runtime's global skills directory (`~/.claude/skills`, `~/.codex/skills`) and never moves, copies or links anything there. The one file it writes there is a skill's own `SKILL.md`, in place, only when the user presses Save in the detail modal's editor (§Surfaces). The other thing it writes is the `skillOverrides` key of `~/.claude/settings.json` — the same key Claude Code's own `/skills` menu writes — for global on/off. Same posture as the [MCP catalog](555-mcp-settings.md) (only the named server entry is touched): structured read-modify-write of one key, everything else in the file preserved byte-for-byte where the JSON allows.
 - **Allowlist, computed at spawn.** The runner stores what it *wants*; the `"off"` set is derived from what exists at spawn time. A skill added next week is hidden from restricted runners automatically instead of leaking in.
 - **Scan, don't trust.** The catalog is derived from the filesystem on every read; Runner keeps no parallel list that can drift.
 - **claude-code first, honestly.** Both runtimes have a global on/off (claude-code's `skillOverrides`, codex's `[[skills.config]]`), so the pane switches both. Only claude-code has a verified per-launch control today; whether codex's `-c skills.config=…` override serves as one is an M2 question, and until it is answered the runner-form picker is hidden for codex rather than pretending.
@@ -140,7 +140,7 @@ A **Skills** field directly under **Model** (claude-code runtimes only; the fiel
 ## Non-Goals (v1)
 
 - Project skills (`<cwd>/.claude/skills`, `.agents/skills`) and bundled skills: not catalogued, never hidden — they are the project's and the CLI's, respectively. No probe, no version cache, no project picker.
-- The MCP-server catalog half of #73 — a later spec; Runner's own MCP registration (`Settings → MCP`) is unrelated and stays.
+- The MCP-server catalog half of #73 is specified in [#555 — Settings → MCP](555-mcp-settings.md), including Runner's own pinned registration row.
 - Creating, deleting or installing skills; git sources, update checks, content hashes, marketplaces, the skills-manager adopt flow. Editing is the modal's plain-text editor; anything richer (highlighting, formatting) is the user's own editor via `Reveal in Finder`.
 - Per-chat overrides in Start Chat, and per-slot overrides in the crew editor (phase 3).
 - Changing the listing budget, or writing `disable-model-invocation` into anyone's `SKILL.md`.

@@ -1,3 +1,4 @@
+use super::SaveNotice;
 use runner_backend::model::Runtime;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -482,6 +483,7 @@ pub(crate) struct SkillDetail {
 }
 
 impl EventEmitter<CatalogUpdate> for SkillDetail {}
+impl EventEmitter<SaveNotice> for SkillDetail {}
 
 impl SkillDetail {
     fn new(app_store: Entity<AppStore>, cx: &mut Context<Self>) -> Self {
@@ -724,6 +726,7 @@ impl SkillDetail {
         };
         let runtime = skill.runtime;
         let path = skill.entry.path.clone();
+        let name = skill.entry.name.clone();
         let text = self.editor.read(cx).text().to_owned();
         let core = self.app_store.read(cx).core.clone();
         self.busy = true;
@@ -757,8 +760,15 @@ impl SkillDetail {
                         this.source = false;
                         this.scroll.set_offset(gpui::point(px(0.), px(0.)));
                         cx.emit(CatalogUpdate(Ok(catalogs)));
+                        cx.emit(SaveNotice {
+                            message: format!("Saved SKILL.md for {name}"),
+                            tone: crate::toast::ToastTone::Success,
+                        });
                     }
-                    Err(error) => this.error = Some(error),
+                    Err(error) => cx.emit(SaveNotice {
+                        message: error,
+                        tone: crate::toast::ToastTone::Error,
+                    }),
                 }
                 cx.notify();
             });
