@@ -22,6 +22,20 @@ fn pane_rename_change(original: &str, value: &str) -> PaneRenameChange {
     }
 }
 
+fn archive_chat_pane_target(
+    layout: &PaneLayout,
+    pane_id: &str,
+    session_id: &str,
+) -> TerminalCloseTarget {
+    TerminalCloseTarget::ArchiveChatPane {
+        session_id: session_id.to_owned(),
+        close: PendingPaneClose {
+            tab_id: layout.id.clone(),
+            pane_id: pane_id.to_owned(),
+        },
+    }
+}
+
 fn fork_confirmation(entry: Option<&DirectSessionEntry>) -> Option<ForkConfirm> {
     entry
         .filter(|entry| {
@@ -1929,6 +1943,30 @@ impl NativeRoot {
         }
     }
 
+    pub(crate) fn request_close_chat_pane(
+        &mut self,
+        pane_id: &str,
+        session_id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let session_ids = super::sidebar::archive_targets_for_chats(
+            vec![session_id.to_owned()],
+            self.tabs.tabs(),
+        );
+        if session_ids.len() > 1 {
+            self.request_archive_all(None, session_ids, ArchiveAllSource::Chat, window, cx);
+            return;
+        }
+        let Some(layout) = self.tabs.active() else {
+            return;
+        };
+        self.terminal_close_confirm = Some(TerminalCloseConfirm {
+            target: archive_chat_pane_target(layout, pane_id, session_id),
+        });
+        cx.notify();
+    }
+
     pub(crate) fn request_close_terminal_tab(
         &mut self,
         tab_id: &str,
@@ -2050,6 +2088,10 @@ impl NativeRoot {
                 pane_id,
                 session_id,
             } => self.close_terminal_pane(&pane_id, &session_id, window, cx),
+            TerminalCloseTarget::ArchiveChatPane { session_id, close } => {
+                self.pending_pane_closes.insert(session_id.clone(), close);
+                self.archive_all_sessions(vec![session_id], ArchiveAllSource::Chat, window, cx);
+            }
             TerminalCloseTarget::Tab { session_id } => {
                 self.close_terminal_tab(&session_id, window, cx)
             }
@@ -2143,10 +2185,12 @@ impl NativeRoot {
 #[cfg(test)]
 mod tests {
     use super::{
-        accept_fork_started, begin_fork_submission, cancel_fork_confirmation, finish_fork_tracking,
-        fork_confirmation, fork_in_progress, fork_materializing, pane_rename_change,
-        PaneRenameChange,
+        accept_fork_started, archive_chat_pane_target, begin_fork_submission,
+        cancel_fork_confirmation, finish_fork_tracking, fork_confirmation, fork_in_progress,
+        fork_materializing, pane_rename_change, PaneRenameChange,
     };
+    use crate::{PendingPaneClose, TerminalCloseTarget};
+    use runner_app::pane_layout::{PaneLayout, PresetKind};
     use runner_backend::model::SessionStatus;
     use runner_backend::ops::session::DirectSessionEntry;
     use std::collections::HashMap;
@@ -2172,6 +2216,29 @@ mod tests {
             pinned: false,
             archived_at: None,
         }
+    }
+
+    #[test]
+    fn archive_chat_pane_target_pins_the_requesting_tab_before_confirm() {
+        let mut requesting = PaneLayout::fresh(
+            PresetKind::Cols2,
+            Some("chat"),
+            &["chat".into(), "other".into()],
+        );
+        requesting.id = "tab-a".into();
+        let TerminalCloseTarget::ArchiveChatPane { session_id, close } =
+            archive_chat_pane_target(&requesting, "p1", "chat")
+        else {
+            panic!("× on a chat pane requests an archive");
+        };
+        assert_eq!(session_id, "chat");
+        assert_eq!(
+            close,
+            PendingPaneClose {
+                tab_id: "tab-a".into(),
+                pane_id: "p1".into(),
+            }
+        );
     }
 
     #[test]

@@ -1111,7 +1111,7 @@ impl NativeRoot {
     }
 
     pub(crate) fn render_terminal_close_confirm(&self, cx: &mut Context<Self>) -> AnyElement {
-        let (title, body, confirm_label, pending_label) = match self
+        let (title, body, confirm_label, pending_label, icon) = match self
             .terminal_close_confirm
             .as_ref()
             .map(|confirm| &confirm.target)
@@ -1126,6 +1126,7 @@ impl NativeRoot {
                     .to_owned(),
                 "Close terminal",
                 "Closing…",
+                "trash.svg",
             ),
             Some(TerminalCloseTarget::ArchiveAll {
                 confirmation_body, ..
@@ -1134,12 +1135,28 @@ impl NativeRoot {
                 confirmation_body.clone(),
                 "Archive all",
                 "Archiving…",
+                "trash.svg",
             ),
+            Some(TerminalCloseTarget::ArchiveChatPane { session_id, .. }) => {
+                let entry = self.session_entry(session_id, cx);
+                let label = entry
+                    .map(session_label)
+                    .unwrap_or_else(|| "this chat".into());
+                let running = entry.is_some_and(|entry| entry.status == SessionStatus::Running);
+                (
+                    "Archive chat?",
+                    archive_chat_confirm_body(&label, running),
+                    "Archive chat",
+                    "Archiving…",
+                    "archive.svg",
+                )
+            }
             _ => (
                 "Close terminal?",
                 "A foreground process is still running. Closing this pane will stop it.".to_owned(),
                 "Close terminal",
                 "Closing…",
+                "trash.svg",
             ),
         };
         let root = cx.entity();
@@ -1157,6 +1174,7 @@ impl NativeRoot {
                 root.update(cx, |this, cx| this.cancel_terminal_close(cx));
             }),
         )
+        .icon(icon)
         .into_any_element()
     }
 
@@ -2004,10 +2022,22 @@ impl NativeRoot {
                                                 cx,
                                             );
                                         }
+                                        (PaneCloseBehavior::ArchiveChat, Some(session_id)) => {
+                                            this.request_close_chat_pane(
+                                                &pane_id,
+                                                &session_id,
+                                                window,
+                                                cx,
+                                            );
+                                        }
                                         (PaneCloseBehavior::LayoutOnly, _) => {
                                             this.close_pane(&pane_id, window, cx);
                                         }
-                                        (PaneCloseBehavior::CloseTerminal, None) => {}
+                                        (
+                                            PaneCloseBehavior::CloseTerminal
+                                            | PaneCloseBehavior::ArchiveChat,
+                                            None,
+                                        ) => {}
                                     }
                                 });
                             }),
@@ -2335,9 +2365,10 @@ impl NativeRoot {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum PaneCloseBehavior {
+pub(crate) enum PaneCloseBehavior {
     LayoutOnly,
     CloseTerminal,
+    ArchiveChat,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2444,11 +2475,21 @@ fn header_fork_state(
     }
 }
 
-fn pane_close_behavior(runtime: Option<&str>) -> PaneCloseBehavior {
-    if runtime == Some(Runtime::Shell.key()) {
-        PaneCloseBehavior::CloseTerminal
+pub(crate) fn pane_close_behavior(runtime: Option<&str>) -> PaneCloseBehavior {
+    match runtime {
+        None => PaneCloseBehavior::LayoutOnly,
+        Some(runtime) if runtime == Runtime::Shell.key() => PaneCloseBehavior::CloseTerminal,
+        Some(_) => PaneCloseBehavior::ArchiveChat,
+    }
+}
+
+fn archive_chat_confirm_body(label: &str, running: bool) -> String {
+    if running {
+        format!(
+            "{label} is still running. Archiving stops it. You can restore the chat from Settings → Archived."
+        )
     } else {
-        PaneCloseBehavior::LayoutOnly
+        format!("You can restore {label} from Settings → Archived.")
     }
 }
 
@@ -2668,10 +2709,11 @@ pub(crate) fn adjacent_pane_index(
 #[cfg(test)]
 mod tests {
     use super::{
-        adjacent_pane_index, empty_pane_action_label, header_fork_state, pane_action_items_for,
-        pane_close_behavior, pane_identity_icon, pane_identity_shows_status, pane_identity_visible,
-        pane_rename_key, side_panel_open, split_panes_tooltip, starting_overlay_label,
-        terminal_drawer_tooltip, HeaderForkState, PaneCloseBehavior, PaneRenameKey,
+        adjacent_pane_index, archive_chat_confirm_body, empty_pane_action_label, header_fork_state,
+        pane_action_items_for, pane_close_behavior, pane_identity_icon, pane_identity_shows_status,
+        pane_identity_visible, pane_rename_key, side_panel_open, split_panes_tooltip,
+        starting_overlay_label, terminal_drawer_tooltip, HeaderForkState, PaneCloseBehavior,
+        PaneRenameKey,
     };
     use crate::keymap;
     use runner_backend::model::SessionStatus;
@@ -2797,7 +2839,40 @@ mod tests {
         );
         assert_eq!(
             pane_close_behavior(Some("codex")),
-            PaneCloseBehavior::LayoutOnly
+            PaneCloseBehavior::ArchiveChat
+        );
+    }
+
+    #[test]
+    fn pane_close_archives_chats_closes_terminals_and_drops_empty_panes() {
+        assert_eq!(pane_close_behavior(None), PaneCloseBehavior::LayoutOnly);
+        assert_eq!(
+            pane_close_behavior(Some("shell")),
+            PaneCloseBehavior::CloseTerminal
+        );
+        assert_eq!(
+            pane_close_behavior(Some("codex")),
+            PaneCloseBehavior::ArchiveChat
+        );
+        assert_eq!(
+            pane_close_behavior(Some("claude-code")),
+            PaneCloseBehavior::ArchiveChat
+        );
+    }
+
+    #[test]
+    fn archive_chat_confirm_body_warns_only_while_the_agent_runs() {
+        assert_eq!(
+            archive_chat_confirm_body("@coder", true),
+            "@coder is still running. Archiving stops it. You can restore the chat from Settings → Archived."
+        );
+        assert_eq!(
+            archive_chat_confirm_body("@coder", false),
+            "You can restore @coder from Settings → Archived."
+        );
+        assert_eq!(
+            archive_chat_confirm_body("this chat", false),
+            "You can restore this chat from Settings → Archived."
         );
     }
 

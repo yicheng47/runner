@@ -14,7 +14,6 @@ mod surfaces;
 mod terminal;
 mod window_state;
 
-use runner_backend::model::Runtime;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -111,8 +110,9 @@ impl Global for GlobalNativePaths {}
 mod toast;
 
 use surfaces::{
-    AppRoute, CommandPaletteState, CrewSurfaces, MissionWorkspace, ProjectModal, RunnerSurfaces,
-    SettingsPane, SettingsState, Sidebar, StartChatModal, StartMissionModalState,
+    pane_close_behavior, AppRoute, CommandPaletteState, CrewSurfaces, MissionWorkspace,
+    PaneCloseBehavior, ProjectModal, RunnerSurfaces, SettingsPane, SettingsState, Sidebar,
+    StartChatModal, StartMissionModalState,
 };
 
 const INITIAL_COLS: u16 = 100;
@@ -233,30 +233,33 @@ fn close_window_or_pane(this: &mut NativeRoot, window: &mut Window, cx: &mut Con
                 });
         }
         CloseTarget::Pane => {
-            if let Some(pane_id) = this
-                .tabs
-                .active()
-                .map(|layout| layout.focused_pane_id.clone())
-            {
-                let terminal_session_id = this.tabs.active().and_then(|layout| {
-                    layout
-                        .root
-                        .leaves()
-                        .into_iter()
-                        .find(|leaf| leaf.id == pane_id)
-                        .and_then(|leaf| leaf.session_id.as_deref())
-                        .filter(|session_id| {
-                            this.session_entry(session_id, cx).is_some_and(|entry| {
-                                Runtime::parse(&entry.agent_runtime) == Some(Runtime::Shell)
-                            })
-                        })
-                        .map(str::to_owned)
-                });
-                if let Some(session_id) = terminal_session_id {
+            let Some((pane_id, session_id)) = this.tabs.active().map(|layout| {
+                let pane_id = layout.focused_pane_id.clone();
+                let session_id = layout
+                    .root
+                    .leaves()
+                    .into_iter()
+                    .find(|leaf| leaf.id == pane_id)
+                    .and_then(|leaf| leaf.session_id.clone());
+                (pane_id, session_id)
+            }) else {
+                return;
+            };
+            let behavior = pane_close_behavior(
+                session_id
+                    .as_deref()
+                    .and_then(|session_id| this.session_entry(session_id, cx))
+                    .map(|entry| entry.agent_runtime.as_str()),
+            );
+            match (behavior, session_id) {
+                (PaneCloseBehavior::CloseTerminal, Some(session_id)) => {
                     this.request_close_terminal_pane(&pane_id, &session_id, window, cx);
-                } else {
-                    this.close_pane(&pane_id, window, cx);
                 }
+                (PaneCloseBehavior::ArchiveChat, Some(session_id)) => {
+                    this.request_close_chat_pane(&pane_id, &session_id, window, cx);
+                }
+                (PaneCloseBehavior::LayoutOnly, _) => this.close_pane(&pane_id, window, cx),
+                (PaneCloseBehavior::CloseTerminal | PaneCloseBehavior::ArchiveChat, None) => {}
             }
         }
         CloseTarget::Window => {
@@ -287,6 +290,10 @@ enum TerminalCloseTarget {
         pane_id: String,
         session_id: String,
     },
+    ArchiveChatPane {
+        session_id: String,
+        close: PendingPaneClose,
+    },
     Tab {
         session_id: String,
     },
@@ -305,6 +312,12 @@ enum TerminalCloseTarget {
 
 struct TerminalCloseConfirm {
     target: TerminalCloseTarget,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct PendingPaneClose {
+    tab_id: String,
+    pane_id: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -409,6 +422,7 @@ struct NativeRoot {
     pane_rename: Option<PaneRename>,
     _pane_rename_focus_subscription: Option<Subscription>,
     terminal_close_confirm: Option<TerminalCloseConfirm>,
+    pending_pane_closes: HashMap<String, PendingPaneClose>,
     #[cfg(windows)]
     update_dialog: Option<Entity<surfaces::update_dialog::UpdateDialog>>,
     fork_confirm: Option<ForkConfirm>,
@@ -717,6 +731,7 @@ impl NativeRoot {
             pane_rename: None,
             _pane_rename_focus_subscription: None,
             terminal_close_confirm: None,
+            pending_pane_closes: HashMap::new(),
             #[cfg(windows)]
             update_dialog: None,
             fork_confirm: None,

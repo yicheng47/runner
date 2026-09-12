@@ -87,7 +87,10 @@ fn archive_session_plan(
     plan
 }
 
-fn archive_targets_for_chats(mut session_ids: Vec<String>, layouts: &[PaneLayout]) -> Vec<String> {
+pub(crate) fn archive_targets_for_chats(
+    mut session_ids: Vec<String>,
+    layouts: &[PaneLayout],
+) -> Vec<String> {
     let requested = session_ids.iter().cloned().collect::<HashSet<_>>();
     for layout in layouts {
         let pane_sessions = layout.session_ids();
@@ -105,6 +108,33 @@ fn archive_targets_for_chats(mut session_ids: Vec<String>, layouts: &[PaneLayout
         }
     }
     session_ids
+}
+
+fn take_pending_pane_closes(
+    pending: &mut HashMap<String, PendingPaneClose>,
+    attempted: &[String],
+    removed: &[String],
+) -> Vec<PendingPaneClose> {
+    attempted
+        .iter()
+        .filter_map(|session_id| {
+            let close = pending.remove(session_id)?;
+            removed.contains(session_id).then_some(close)
+        })
+        .collect()
+}
+
+fn pane_close_after_archive<'a>(
+    tabs: &'a [PaneLayout],
+    pending: &PendingPaneClose,
+) -> Option<&'a PaneLayout> {
+    let layout = tabs.iter().find(|layout| layout.id == pending.tab_id)?;
+    let leaves = layout.root.leaves();
+    let emptied = leaves.len() > 1
+        && leaves
+            .iter()
+            .any(|leaf| leaf.id == pending.pane_id && leaf.session_id.is_none());
+    emptied.then_some(layout)
 }
 
 pub(crate) fn archive_all_confirmation_body(
@@ -1547,6 +1577,7 @@ impl Sidebar {
                     window.defer(cx, move |window, cx| {
                         shell.update(cx, |shell, shell_cx| {
                             shell.finish_sidebar_archive(
+                                pending_ids,
                                 removed,
                                 archive_error,
                                 error_target,
@@ -1565,24 +1596,28 @@ impl Sidebar {
 impl NativeRoot {
     fn finish_sidebar_archive(
         &mut self,
+        attempted: Vec<String>,
         removed: Vec<String>,
         archive_error: Option<String>,
         error_target: ArchiveErrorTarget,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        for session_id in removed {
-            self.attached.remove(&session_id);
-            self.session_exit_codes.remove(&session_id);
-            self.chat_transitions.remove(&session_id);
+        for session_id in &removed {
+            self.attached.remove(session_id);
+            self.session_exit_codes.remove(session_id);
+            self.chat_transitions.remove(session_id);
         }
+        let pane_closes =
+            take_pending_pane_closes(&mut self.pending_pane_closes, &attempted, &removed);
         let refresh_result = (|| -> Result<()> {
             self.refresh_sessions(cx);
             self.reload_tabs(cx)?;
             self.ensure_active_tab_attached(window, cx)?;
             Ok(())
         })();
-        if refresh_result.is_ok() {
+        let refresh_ok = refresh_result.is_ok();
+        if refresh_ok {
             self.mark_active_tab_viewed(window, cx);
             self.focus_active_terminal(window, cx);
         }
@@ -1594,6 +1629,39 @@ impl NativeRoot {
         match error_target {
             ArchiveErrorTarget::App => self.error = error,
             ArchiveErrorTarget::Chat => self.chat_error = error,
+        }
+        if refresh_ok {
+            for pending in pane_closes {
+                self.close_archived_pane(&pending, window, cx);
+            }
+        }
+        cx.notify();
+    }
+
+    // The archived chat's tab may no longer be the active one, so the
+    // collapse targets the layout by id and persists it directly.
+    fn close_archived_pane(
+        &mut self,
+        pending: &PendingPaneClose,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(mut layout) = pane_close_after_archive(self.tabs.tabs(), pending).cloned() else {
+            return;
+        };
+        if self.tabs.active_tab_id() == Some(layout.id.as_str()) {
+            self.close_pane(&pending.pane_id, window, cx);
+            return;
+        }
+        if !layout.close_pane(&pending.pane_id) {
+            return;
+        }
+        let result = layout.upsert_input().and_then(|input| {
+            runner_backend::ops::node::node_tab_upsert(self.core(cx), input)?;
+            self.reload_tabs(cx)
+        });
+        if let Err(error) = result {
+            self.chat_error = Some(error.to_string());
         }
         cx.notify();
     }
@@ -4686,6 +4754,93 @@ mod tests {
             archive_targets_for_chats(vec!["chat-1".into(), "chat-2".into()], &[split],),
             ["chat-1", "chat-2", "shell"]
         );
+    }
+
+    fn pending_pane_close(tab_id: &str, pane_id: &str) -> PendingPaneClose {
+        PendingPaneClose {
+            tab_id: tab_id.into(),
+            pane_id: pane_id.into(),
+        }
+    }
+
+    #[test]
+    fn pane_close_after_archive_finds_the_emptied_leaf_by_tab_id() {
+        let mut front = PaneLayout::fresh(PresetKind::Single, Some("chat-0"), &["chat-0".into()]);
+        front.id = "front".into();
+        let mut split = PaneLayout::fresh(
+            PresetKind::Cols2,
+            Some("chat-1"),
+            &["chat-1".into(), "chat-2".into()],
+        );
+        split.id = "split".into();
+        let mut tabs = vec![front, split];
+        assert!(pane_close_after_archive(&tabs, &pending_pane_close("split", "p1")).is_none());
+
+        tabs[1].remove_session("chat-1");
+        assert_eq!(
+            pane_close_after_archive(&tabs, &pending_pane_close("split", "p1"))
+                .map(|layout| layout.id.as_str()),
+            Some("split")
+        );
+        assert!(pane_close_after_archive(&tabs, &pending_pane_close("split", "p2")).is_none());
+        assert!(pane_close_after_archive(&tabs, &pending_pane_close("split", "p3")).is_none());
+        assert!(pane_close_after_archive(&tabs, &pending_pane_close("gone", "p1")).is_none());
+
+        let mut single = PaneLayout::fresh(PresetKind::Single, None, &[]);
+        single.id = "single".into();
+        assert!(pane_close_after_archive(&[single], &pending_pane_close("single", "p1")).is_none());
+    }
+
+    #[test]
+    fn pending_pane_closes_are_consumed_only_by_the_archive_that_attempted_them() {
+        let mut pending = HashMap::from([
+            ("a".to_owned(), pending_pane_close("tab", "p1")),
+            ("b".to_owned(), pending_pane_close("tab", "p2")),
+        ]);
+
+        let closes = take_pending_pane_closes(&mut pending, &["b".into()], &["b".into()]);
+        assert_eq!(closes, [pending_pane_close("tab", "p2")]);
+        assert!(pending.contains_key("a"));
+
+        assert!(take_pending_pane_closes(&mut pending, &["c".into()], &["c".into()]).is_empty());
+        assert!(pending.contains_key("a"));
+
+        assert!(take_pending_pane_closes(&mut pending, &["a".into()], &[]).is_empty());
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn overlapping_pane_closes_collapse_a_three_way_split_one_leaf_at_a_time() {
+        let mut tabs = vec![PaneLayout::fresh(
+            PresetKind::Cols3,
+            Some("a"),
+            &["a".into(), "b".into(), "c".into()],
+        )];
+        tabs[0].id = "tab".into();
+        let mut pending = HashMap::from([
+            ("a".to_owned(), pending_pane_close("tab", "p1")),
+            ("b".to_owned(), pending_pane_close("tab", "p2")),
+        ]);
+
+        tabs[0].remove_session("b");
+        for close in take_pending_pane_closes(&mut pending, &["b".into()], &["b".into()]) {
+            assert_eq!(
+                pane_close_after_archive(&tabs, &close).map(|layout| layout.id.as_str()),
+                Some("tab")
+            );
+            assert!(tabs[0].close_pane(&close.pane_id));
+        }
+        assert_eq!(tabs[0].session_ids(), ["a", "c"]);
+        assert_eq!(tabs[0].preset, PresetKind::Cols2);
+
+        tabs[0].remove_session("a");
+        for close in take_pending_pane_closes(&mut pending, &["a".into()], &["a".into()]) {
+            assert!(pane_close_after_archive(&tabs, &close).is_some());
+            assert!(tabs[0].close_pane(&close.pane_id));
+        }
+        assert_eq!(tabs[0].session_ids(), ["c"]);
+        assert_eq!(tabs[0].preset, PresetKind::Single);
+        assert!(pending.is_empty());
     }
 
     #[test]
