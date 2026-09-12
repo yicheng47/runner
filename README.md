@@ -97,12 +97,13 @@ A **runner** is a reusable agent configuration: runtime, role, system prompt, wo
 <tr>
 <td width="50%">
   <img src="assets/mission_feed.png" alt="Mission workspace — the event feed between crew and human" width="100%" />
+  <img src="assets/mission_terminal.png" alt="Mission workspace — one slot's live terminal" width="100%" />
 </td>
 <td width="50%" valign="middle">
 
 ### Missions — a crew working one goal
 
-Starting a mission spawns one live PTY per slot into a tabbed workspace where the crew coordinates over an append-only event log — every signal is persisted and replayable, so missions survive a quit or crash, and `ask_human` questions surface in the feed.
+Starting a mission spawns one live PTY per slot into a tabbed workspace. The **feed** is where the crew coordinates: an append-only event log, every signal persisted and replayable, so missions survive a quit or crash, and `ask_human` questions surface there for you. Each **slot** is a real terminal one tab over, the agent's own TUI, where you can watch, type, or stop, resume, and restart that runner on its own.
 
 [Architecture →](./docs/arch/arch.md)
 
@@ -122,13 +123,13 @@ Every chat is a real 1:1 PTY with a runner, no mission required. Tabs hold up to
 </tr>
 <tr>
 <td width="50%">
-  <img src="assets/mission_terminal.png" alt="Per-slot PTY terminal, live" width="100%" />
+  <img src="assets/terminal_drawer.png" alt="A zsh drawer open beneath a Claude Code chat, in the same repository" width="100%" />
 </td>
 <td width="50%" valign="middle">
 
-### A real terminal
+### Terminal drawer
 
-Every pane is a real PTY behind an `alacritty_terminal` grid, drawn by GPUI on the GPU — claude-code, codex, and any modern TUI render with their actual ANSI palette, mouse reporting, alt-screen redraws, and pixel-snapped box-drawing glyphs. Mouse selection and copy (⌘C on macOS, Ctrl+C on Windows), IME composition (Pinyin included), file-path paste, 10,000 lines of scrollback. Sessions are resumable across app restarts; the event log is the source of truth.
+Every chat and every mission has a shell beneath it, one shortcut away, opened in the same directory as the agent above. Run the tests the agent just wrote, check `git status`, tail a log, without leaving the pane or opening another terminal app. Drawers hold as many shells as you need and come back where you left them.
 
 </td>
 </tr>
@@ -147,6 +148,7 @@ Every pane is a real PTY behind an `alacritty_terminal` grid, drawn by GPUI on t
 <tr>
 <td width="50%">
   <img src="assets/mcp_settings.png" alt="Settings → MCP — every MCP server each agent has, with Runner's own pinned first" width="100%" />
+  <img src="assets/skills.png" alt="Settings → Skills — every skill an agent can load, with a toggle per skill" width="100%" />
 </td>
 <td width="50%" valign="middle">
 
@@ -154,19 +156,9 @@ Every pane is a real PTY behind an `alacritty_terminal` grid, drawn by GPUI on t
 
 Everything above is also an MCP tool. Runner bundles a `runner-mcp` stdio sidecar and registers it with Claude Code, Codex and TRAE CLI from **Settings → Agents**. Connected agents assemble crews, create and file projects, start and steer missions (`mission_start`, `mission_feed`, `mission_post_human_signal`), and spin up chats (`session_start_direct`). The compounding trick: your daily driver agent plans a fix, dispatches a coder/reviewer crew, and keeps working — agents dispatching crews of agents, every session still a real PTY you can open and watch.
 
-**Settings → MCP** is the other direction: one catalog of every MCP server each agent has configured, read from the agent's own config file, with a toggle per server and Runner's own pinned first.
+### MCP servers and skills, one list per agent
 
-</td>
-</tr>
-<tr>
-<td width="50%">
-  <img src="assets/skills.png" alt="Settings → Skills — every skill an agent can load, with a toggle per skill" width="100%" />
-</td>
-<td width="50%" valign="middle">
-
-### Skills — one list per agent
-
-**Settings → Skills** lists the skills each agent loads, read from the agent's own skill directory. Click a row to read a skill, hover it to edit, flip the toggle to hide it from every new session of that agent, inside Runner or not. Runner writes only the agent's own override key, never the skill itself.
+The other direction: **Settings → MCP** catalogs every MCP server each agent has configured and **Settings → Skills** every skill it loads, both read from the agent's own files. A toggle per row turns a server or a skill off for that agent's new sessions, inside Runner or not; click a skill to read it, hover to edit. Runner writes only the one entry it touched, never the rest of the file.
 
 </td>
 </tr>
@@ -176,9 +168,21 @@ Everything above is also an MCP tool. Runner bundles a `runner-mcp` stdio sideca
 </td>
 <td width="50%" valign="middle">
 
-### Light, dark, and the terminal in between
+### A palette per mode, previewed
 
-Runner Light and Carbon are designed for Runner; Catppuccin Latte and Mocha ride along. **Settings → Appearance** picks an app palette and a terminal palette per mode above a live preview of both, so a light app gets a light terminal without a second setting, and a Claude Code chat follows the flip the moment it happens. Rosé Pine Dawn is the default light terminal.
+**Settings → Appearance** picks an app palette and a terminal palette for light and for dark above a live preview of both modes, so a light app gets a light terminal without a second setting. Carbon and Runner Light are designed for Runner; Catppuccin Mocha and Latte ride along; Rosé Pine Dawn is the default light terminal.
+
+</td>
+</tr>
+<tr>
+<td width="50%">
+  <img src="assets/light.png" alt="Runner in Runner Light — a Claude Code chat on the light theme" width="100%" />
+</td>
+<td width="50%" valign="middle">
+
+### Runner Light
+
+A light theme designed for Runner rather than borrowed: the chrome, the sidebar, and the terminal ground agree, and a Claude Code chat follows the flip the moment it happens, no restart, no `/theme`. Auto follows the OS; Light and Dark pin it.
 
 </td>
 </tr>
@@ -187,10 +191,9 @@ Runner Light and Carbon are designed for Runner; Catppuccin Latte and Mocha ride
 ### Also in the box
 
 - **Projects** — bind a working directory once; chats and missions started inside a project inherit its cwd and stay grouped in their own sidebar section. Agents can create, rename, file into, and delete projects over MCP too.
-- **Terminal drawer** — a shell beneath every chat and every mission, in the same directory as the agent above it, one shortcut away.
 - **Mission controls** — stop, resume, or restart a single slot without restarting the mission; a restarted runner comes back fresh with its original brief. Missions run in Bypass permission mode by default, with Accept-edits and Default a setting away, and never stall on an agent's first-run consent dialog.
 - **Sessions that outlive the app** — quitting or crashing does not kill your agents; the next launch reattaches to the sessions still running, and a quit while work is in flight asks first.
-- **Terminal extras** — click a file path in any terminal to open it in your editor; select some output and ask about it in a side thread forked from the chat; ⌘+ and ⌘− zoom the whole app from 60% to 200%.
+- **Real terminals** — every pane is a real PTY on an `alacritty_terminal` grid drawn on the GPU: the agents' own colours, mouse reporting, IME input (Pinyin included), copy, file-path paste, 10,000 lines of scrollback. Click a file path to open it in your editor; select some output and ask about it in a side thread; ⌘+ and ⌘− zoom the app from 60% to 200%.
 - **Bundled `runner` CLI** — spawned agents message each other, check the crew roster, and post signals from inside their own PTYs.
 
 ## Supported agents
