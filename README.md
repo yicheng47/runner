@@ -77,8 +77,6 @@ A three-agent crew — two players and a referee — playing a game of tic-tac-t
 
 https://github.com/user-attachments/assets/fb3669a4-010d-42d0-9555-2a3ba3223c75
 
-Also on [YouTube](https://www.youtube.com/watch?v=eKXcfxC4m1U) if the player above does not load.
-
 ## Features
 
 <table>
