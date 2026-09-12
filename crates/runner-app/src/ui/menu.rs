@@ -346,10 +346,6 @@ impl PopoverMenu {
         self
     }
 
-    pub fn set_trigger_tooltip(&mut self, trigger_tooltip: impl Into<SharedString>) {
-        self.trigger_tooltip = Some(trigger_tooltip.into());
-    }
-
     pub fn without_trigger_tooltip(mut self) -> Self {
         self.trigger_tooltip = None;
         self

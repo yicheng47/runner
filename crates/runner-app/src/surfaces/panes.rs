@@ -1358,7 +1358,8 @@ impl NativeRoot {
                         menu_cx,
                     )
                     .min_width(px(196.))
-                    .trigger_icon("columns-2.svg");
+                    .trigger_icon("columns-2.svg")
+                    .without_trigger_tooltip();
                     match surface {
                         SplitMenuSurface::Header => menu,
                         SplitMenuSurface::Pane => menu.trigger_size(IconButtonSize::Sm),
@@ -1369,12 +1370,8 @@ impl NativeRoot {
         let settings = self.settings(cx);
         let zoom = settings.app_zoom;
         let overrides = settings.keymap_overrides.clone();
-        let tooltip = split_panes_tooltip(&overrides);
         let items = split_menu_items(self.pane_bounds.get(&key).copied(), zoom, &overrides);
-        menu.update(cx, |menu, menu_cx| {
-            menu.set_trigger_tooltip(tooltip);
-            menu.set_items(items, menu_cx);
-        });
+        menu.update(cx, |menu, menu_cx| menu.set_items(items, menu_cx));
         menu
     }
 
@@ -2479,19 +2476,6 @@ fn split_menu_items(
     .collect()
 }
 
-fn split_panes_tooltip(overrides: &keymap::KeymapOverrides) -> String {
-    let shortcuts = ["split-pane-right", "split-pane-down"]
-        .into_iter()
-        .filter_map(|id| keymap::effective_binding(id, overrides))
-        .map(|combo| keymap::format_combo(&combo))
-        .collect::<Vec<_>>();
-    if shortcuts.is_empty() {
-        "Split panes".to_owned()
-    } else {
-        format!("Split panes · {}", shortcuts.join(" / "))
-    }
-}
-
 fn workspace_header_icon(grouped: bool, focused_shell: bool) -> &'static str {
     if grouped {
         "square-split-horizontal.svg"
@@ -2735,10 +2719,10 @@ mod tests {
         adjacent_pane_index, archive_chat_confirm_body, empty_pane_action_label, header_fork_state,
         pane_action_items_for, pane_body_opacity, pane_close_behavior, pane_identity_icon,
         pane_identity_shows_status, pane_identity_visible, pane_rename_key, side_panel_open,
-        split_allowed, split_decision, split_menu_items, split_panes_tooltip,
-        starting_overlay_label, terminal_drawer_tooltip, workspace_header_icon, HeaderForkState,
-        PaneCloseBehavior, PaneRenameKey, SplitDecision, MIN_SPLIT_PANE_HEIGHT,
-        MIN_SPLIT_PANE_WIDTH, TOO_SMALL_TO_SPLIT, UNFOCUSED_PANE_OPACITY,
+        split_allowed, split_decision, split_menu_items, starting_overlay_label,
+        terminal_drawer_tooltip, workspace_header_icon, HeaderForkState, PaneCloseBehavior,
+        PaneRenameKey, SplitDecision, MIN_SPLIT_PANE_HEIGHT, MIN_SPLIT_PANE_WIDTH,
+        TOO_SMALL_TO_SPLIT, UNFOCUSED_PANE_OPACITY,
     };
     use crate::keymap;
     use gpui::{px, size};
@@ -3009,35 +2993,6 @@ mod tests {
             terminal_drawer_tooltip(false, &overrides),
             "Show terminal drawer"
         );
-    }
-
-    #[test]
-    fn split_panes_tooltip_tracks_rebound_and_unbound_shortcuts() {
-        let mut overrides = keymap::KeymapOverrides::new();
-        #[cfg(unix)]
-        assert_eq!(split_panes_tooltip(&overrides), "Split panes · ⌘D / ⇧⌘D");
-        #[cfg(windows)]
-        assert_eq!(
-            split_panes_tooltip(&overrides),
-            "Split panes · Ctrl+D / Ctrl+Shift+D"
-        );
-
-        let mut rebound = keymap::entry("split-pane-right").unwrap().default.clone();
-        rebound.meta = false;
-        rebound.ctrl = true;
-        #[cfg(windows)]
-        {
-            rebound.shift = false;
-        }
-        overrides.insert("split-pane-right".into(), Some(rebound));
-        overrides.insert("split-pane-down".into(), None);
-        #[cfg(unix)]
-        assert_eq!(split_panes_tooltip(&overrides), "Split panes · ⌃D");
-        #[cfg(windows)]
-        assert_eq!(split_panes_tooltip(&overrides), "Split panes · Ctrl+D");
-
-        overrides.insert("split-pane-right".into(), None);
-        assert_eq!(split_panes_tooltip(&overrides), "Split panes");
     }
 
     #[test]
