@@ -6,9 +6,29 @@
 </h1>
 
 <p align="center">
-  Spawn a runner. Create your crew. Ship the feature.
+  <a href="https://github.com/yicheng47/runner/stargazers"><img src="https://img.shields.io/github/stars/yicheng47/runner?style=flat-square&logo=github&label=stars" alt="GitHub stars" /></a>
+  <a href="https://github.com/yicheng47/runner/releases"><img src="https://img.shields.io/github/downloads/yicheng47/runner/total?style=flat-square&label=downloads" alt="Downloads" /></a>
+  <a href="./LICENSE"><img src="https://img.shields.io/github/license/yicheng47/runner?style=flat-square" alt="License" /></a>
+  <a href="#community"><img src="https://img.shields.io/badge/WeChat-user%20group-07C160?style=flat-square&logo=wechat&logoColor=white" alt="WeChat user group" /></a>
+  <a href="#download"><img src="https://img.shields.io/badge/macOS%20%7C%20Windows-native-2ea44f?style=flat-square" alt="macOS and Windows" /></a>
+</p>
+
+<p align="center">
+  English · <a href="./README.zh-CN.md">简体中文</a>
+</p>
+
+<p align="center">
+  <strong>Spawn a runner. Create your crew. Ship the feature.</strong>
   <br />
   A native terminal that orchestrates coding agents. Claude Code and Codex keep their own TUI; Runner adds sessions, skills, and crews.
+</p>
+
+<p align="center">
+  <a href="https://github.com/yicheng47/runner/releases/latest"><strong>Download Runner</strong></a>
+</p>
+
+<p align="center">
+  <img src="assets/hero.png" alt="Runner — one tab with a Claude Code and two Codex sessions side by side, projects and chats in the sidebar" width="100%" />
 </p>
 
 <p align="center">
@@ -29,11 +49,7 @@
   <a href="./AGENTS.md">Contributing</a>
 </p>
 
----
-
 > Status: alpha, actively shipping. Native macOS (Apple Silicon) and Windows (x64), with Windows support starting in 0.8.0.
-
----
 
 ## About
 
@@ -49,13 +65,11 @@ Runner is a native macOS and Windows app written in Rust: [gpui-ce](https://gith
 
 ## Download
 
-Download the latest macOS build (Apple Silicon `.dmg`) from the [releases page](https://github.com/yicheng47/runner/releases/latest). Signed and notarized, with updates through Sparkle. Intel Macs and Linux are not supported.
+Grab the latest build from the [releases page](https://github.com/yicheng47/runner/releases/latest): a signed and notarized `.dmg` for macOS on Apple Silicon, and a signed `Runner-Setup-…-x64.exe` installer for Windows 10 version 1809 or later. Intel Macs, Windows ARM64, and Linux are not supported.
 
-Starting with **0.8.0**, Windows x64 installers (`Runner-Setup-…-x64.exe`) are available alongside the Mac DMG on the [releases page](https://github.com/yicheng47/runner/releases/latest). Windows 10 version 1809 or later is required.
+Both platforms update in place, macOS through Sparkle and Windows through the update icon beside Settings, and keep your settings, chats, and missions. On Windows, SmartScreen may still warn on a fresh release while the certificate builds reputation; **More info → Run anyway** continues.
 
-The Windows installer, app, and CLI sidecars are **Authenticode-signed** with a Certum open-source code-signing certificate; Windows names the publisher as **Open Source Developer Yicheng Wang**. SmartScreen builds reputation per certificate, so a brand-new release may still show **Windows protected your PC** with that publisher named; **More info → Run anyway** continues the installation. Signed nightlies share the certificate.
-
-Runner checks for Windows updates at startup and every six hours, downloads them in the background by default, and verifies their minisign signatures. Open the update icon beside Settings or **Settings → Updates → Update**, then choose **Install and restart**. Settings, chats, and missions are retained. Turn off **Automatically download updates** to download only when you choose.
+Want what landed today instead? The [`nightly` prerelease](https://github.com/yicheng47/runner/releases/tag/nightly) is built from `main` for both platforms, signed the same way, and updates on its own channel.
 
 ## Demo
 
@@ -132,13 +146,39 @@ Every pane is a real PTY behind an `alacritty_terminal` grid, drawn by GPUI on t
 </tr>
 <tr>
 <td width="50%">
-  <img src="assets/mcp_settings.png" alt="Settings → MCP — one-click config for Claude Code and Codex" width="100%" />
+  <img src="assets/mcp_settings.png" alt="Settings → MCP — every MCP server each agent has, with Runner's own pinned first" width="100%" />
 </td>
 <td width="50%" valign="middle">
 
 ### Drive it from your agents (MCP)
 
-Everything above is also an MCP tool. Runner bundles a `runner-mcp` stdio sidecar, and **Settings → Agents** registers it with Claude Code, Codex and TRAE CLI on both platforms. Connected agents assemble crews, start and steer missions (`mission_start`, `mission_feed`, `mission_post_human_signal`), and spin up chats (`session_start_direct`). The compounding trick: your daily driver agent plans a fix, dispatches a coder/reviewer crew, and keeps working — agents dispatching crews of agents, every session still a real PTY you can open and watch.
+Everything above is also an MCP tool. Runner bundles a `runner-mcp` stdio sidecar and registers it with Claude Code, Codex and TRAE CLI from **Settings → Agents**. Connected agents assemble crews, create and file projects, start and steer missions (`mission_start`, `mission_feed`, `mission_post_human_signal`), and spin up chats (`session_start_direct`). The compounding trick: your daily driver agent plans a fix, dispatches a coder/reviewer crew, and keeps working — agents dispatching crews of agents, every session still a real PTY you can open and watch.
+
+**Settings → MCP** is the other direction: one catalog of every MCP server each agent has configured, read from the agent's own config file, with a toggle per server and Runner's own pinned first.
+
+</td>
+</tr>
+<tr>
+<td width="50%">
+  <img src="assets/skills.png" alt="Settings → Skills — every skill an agent can load, with a toggle per skill" width="100%" />
+</td>
+<td width="50%" valign="middle">
+
+### Skills — one list per agent
+
+**Settings → Skills** lists the skills each agent loads, read from the agent's own skill directory. Click a row to read a skill, hover it to edit, flip the toggle to hide it from every new session of that agent, inside Runner or not. Runner writes only the agent's own override key, never the skill itself.
+
+</td>
+</tr>
+<tr>
+<td width="50%">
+  <img src="assets/appearance.png" alt="Settings → Appearance — light and dark previews with an app and a terminal palette per mode" width="100%" />
+</td>
+<td width="50%" valign="middle">
+
+### Light, dark, and the terminal in between
+
+Runner Light and Carbon are designed for Runner; Catppuccin Latte and Mocha ride along. **Settings → Appearance** picks an app palette and a terminal palette per mode above a live preview of both, so a light app gets a light terminal without a second setting, and a Claude Code chat follows the flip the moment it happens. Rosé Pine Dawn is the default light terminal.
 
 </td>
 </tr>
@@ -146,9 +186,11 @@ Everything above is also an MCP tool. Runner bundles a `runner-mcp` stdio sideca
 
 ### Also in the box
 
-- **Projects** — bind a working directory once; chats and missions started inside a project inherit its cwd and stay grouped in their own sidebar section.
-- **Themes** — Auto / Light / Dark chrome with an app palette and a terminal palette per mode (Runner and Catppuccin Mocha dark; Runner Light and Catppuccin Latte light; Rosé Pine Dawn, Runner and Catppuccin Mocha for terminals), a live preview of both modes in Settings → Appearance, Inter bundled as the UI font, and JetBrains Mono (the Nerd Font Mono build) bundled for terminals.
-- **Updates** — macOS releases update through Sparkle. Windows downloads and verifies newer builds in the background; the update icon beside Settings opens a dialog with **Install and restart**, retaining your data.
+- **Projects** — bind a working directory once; chats and missions started inside a project inherit its cwd and stay grouped in their own sidebar section. Agents can create, rename, file into, and delete projects over MCP too.
+- **Terminal drawer** — a shell beneath every chat and every mission, in the same directory as the agent above it, one shortcut away.
+- **Mission controls** — stop, resume, or restart a single slot without restarting the mission; a restarted runner comes back fresh with its original brief. Missions run in Bypass permission mode by default, with Accept-edits and Default a setting away, and never stall on an agent's first-run consent dialog.
+- **Sessions that outlive the app** — quitting or crashing does not kill your agents; the next launch reattaches to the sessions still running, and a quit while work is in flight asks first.
+- **Terminal extras** — click a file path in any terminal to open it in your editor; select some output and ask about it in a side thread forked from the chat; ⌘+ and ⌘− zoom the whole app from 60% to 200%.
 - **Bundled `runner` CLI** — spawned agents message each other, check the crew roster, and post signals from inside their own PTYs.
 
 ## Supported agents
