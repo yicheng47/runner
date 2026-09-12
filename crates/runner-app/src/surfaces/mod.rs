@@ -25,7 +25,9 @@ pub(crate) use app_shell::AppRoute;
 pub(crate) use command_palette::CommandPaletteState;
 pub(crate) use crews::CrewSurfaces;
 pub(crate) use mission_workspace::MissionWorkspace;
-pub(crate) use panes::{adjacent_pane_index, pane_fractions};
+pub(crate) use panes::{
+    adjacent_pane_index, pane_close_behavior, pane_fractions, PaneCloseBehavior,
+};
 pub(crate) use runners::RunnerSurfaces;
 pub(crate) use settings_page::{SettingsPane, SettingsState};
 pub(crate) use sidebar::{default_session_label, session_label, ProjectModal, Sidebar};

@@ -51,13 +51,14 @@ Run against the development database with `make run`. One Runner instance, no cr
 - [ ] `⌘.` with the terminal focused stops it — the keystroke must reach the app rather than being swallowed by the PTY.
 - [ ] Double-click the pane name → an inline field. Enter commits, and **the composed header title above updates with it**.
 - [ ] Escape reverts. Clearing the field and pressing Enter restores the default (`zsh`).
-- [ ] `×` on a **chat** pane: the split re-flows, and the chat is still in the sidebar and reopenable.
+- [ ] `×` on a **chat** pane → **Archive chat?**. Cancel keeps the pane and the agent. Confirm stops a running agent, archives the chat, and drops the pane: the split re-flows, and the chat is under Settings → Archived, not in the sidebar.
+- [ ] `×` on a chat showing its ended card: the body reads `You can restore <name> from Settings → Archived.`, and confirm archives with no kill.
 - [ ] Archive a chat pane: the pane stays in place, empty, offering **New chat** / **New terminal**.
 - [ ] In a mixed chat/terminal tab, **Archive all** always asks once, including at a bare prompt. The dialog gives the live chat/terminal counts and says archived chats are restorable while closed terminals are not; confirming archives the chat, permanently closes the terminal, and removes the whole tab.
 - [ ] `×` on a terminal sitting at a bare prompt → closes silently.
 - [ ] Run `sleep 60`, then `×` → a **confirmation dialog**. Cancel keeps the pane; confirm kills the process and drops it.
 - [ ] Right-click a single-pane terminal tab → **Close terminal** occupies the destructive slot where a chat has Archive. At a bare prompt it closes immediately; with `sleep 60` running it shows the same foreground-process confirmation before removing the tab.
-- [ ] `⌘W` on a terminal pane inside a split behaves as `×`. On a single-pane tab, `⌘W` closes the **window** — that is intended, not a regression.
+- [ ] `⌘W` inside a split behaves as `×` for chats and terminals alike. On a single-pane tab, `⌘W` closes the **window** — that is intended, not a regression.
 
 ## 5. Lifecycle and relaunch
 

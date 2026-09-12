@@ -6,6 +6,7 @@ A plan stays here while its work is in flight and moves to [`archive/`](./archiv
 
 ## Active
 
+- [`567-pane-close-archives-chat.md`](./567-pane-close-archives-chat.md) — feature [567](../features/567-pane-close-archives-chat.md): the split pane's `×` opens **Archive chat?** on any chat, confirm archives the session then drops the pane, `⌘W` shares the fork, the drawer-shell case falls through to **Archive all?**.
 - [`555-mcp-settings.md`](./555-mcp-settings.md) — feature [555](../features/555-mcp-settings.md): the Settings → MCP pane shaped like Skills (runtime dropdown, one toggle per server row, pinned Runner row, click-to-detail, native-text edit with cross-agent sync), with the generalised `ops/mcp.rs` writer behind it.
 - [`local-skills/`](./local-skills/README.md) — feature [73](../features/73-runner-skills.md) implementation program: condensed state and binding decisions, milestone plan, dated impl log.
 - [`gpui-rewrite/`](./gpui-rewrite/) — the GPUI rewrite record; shipped as `v0.6.0` 2026-08-23. What is still open from the M6 consolidation queue is in [`m6-remainder.md`](./gpui-rewrite/m6-remainder.md); [#445](https://github.com/yicheng47/runner/issues/445) closed 2026-08-27 once the queued items landed.
