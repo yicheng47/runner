@@ -38,7 +38,7 @@
   ·
   <a href="#supported-agents">Agents</a>
   ·
-  <a href="#drive-it-from-your-agents-mcp">MCP</a>
+  <a href="#mcp-servers-and-skills-managed-in-one-place">MCP</a>
   ·
   <a href="#example-crew">Crew example</a>
   ·
@@ -152,13 +152,13 @@ Every chat and every mission has a shell beneath it, one shortcut away, opened i
 </td>
 <td width="50%" valign="middle">
 
-### Drive it from your agents (MCP)
+### MCP servers and skills, managed in one place
 
-Everything above is also an MCP tool. Runner bundles a `runner-mcp` stdio sidecar and registers it with Claude Code, Codex and TRAE CLI from **Settings → Agents**. Connected agents assemble crews, create and file projects, start and steer missions (`mission_start`, `mission_feed`, `mission_post_human_signal`), and spin up chats (`session_start_direct`). The compounding trick: your daily driver agent plans a fix, dispatches a coder/reviewer crew, and keeps working — agents dispatching crews of agents, every session still a real PTY you can open and watch.
+Each agent keeps its MCP servers and its skills in its own config files. **Settings → MCP** and **Settings → Skills** read those files and show them as one list per agent: pick Claude Code or Codex, see everything it has, flip a toggle to switch a server or a skill off for that agent's new sessions, click a skill to read it or edit it. Runner changes only the one entry you touched and leaves the rest of the file exactly as you wrote it.
 
-### MCP servers and skills, one list per agent
+### Drive Runner from your agents
 
-The other direction: **Settings → MCP** catalogs every MCP server each agent has configured and **Settings → Skills** every skill it loads, both read from the agent's own files. A toggle per row turns a server or a skill off for that agent's new sessions, inside Runner or not; click a skill to read it, hover to edit. Runner writes only the one entry it touched, never the rest of the file.
+Runner is an MCP server too. **Settings → Agents** registers it with Claude Code, Codex and TRAE CLI, and from then on any of them can create crews and projects, start a mission, read its feed, answer its questions, or open a chat. The part that compounds: your daily agent plans a fix, dispatches a coder and reviewer crew to build it, and keeps working, while every session it spawned is still a real terminal you can open and watch.
 
 </td>
 </tr>
