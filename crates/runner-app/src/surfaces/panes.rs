@@ -14,6 +14,7 @@ use crate::surfaces::chat_lifecycle::{
 use crate::surfaces::sidebar::{direct_chat_display_status, DirectChatDisplayStatus};
 
 const CHAT_PANEL_TRANSITION_MS: u64 = 200;
+pub(crate) const UNFOCUSED_PANE_OPACITY: f32 = 0.7;
 
 pub(crate) type TerminalDrawerSessionCallback = Rc<dyn Fn(String, &mut Window, &mut App)>;
 pub(crate) type TerminalDrawerActionCallback = Rc<dyn Fn(&mut Window, &mut App)>;
@@ -448,13 +449,7 @@ impl NativeRoot {
             });
         let header = WorkspaceHeader::new(
             px(self.workspace_titlebar_padding(window, cx)),
-            if grouped {
-                "square-split-horizontal.svg"
-            } else if focused_shell {
-                "square-terminal.svg"
-            } else {
-                "terminal.svg"
-            },
+            workspace_header_icon(grouped, focused_shell),
             label,
         )
         .sidebar_toggle(sidebar_toggle)
@@ -2341,15 +2336,17 @@ impl NativeRoot {
             .flex()
             .flex_col()
             .overflow_hidden()
-            .when(grouped, |pane| {
-                pane.border_1().border_color(if focused {
-                    theme::accent()
-                } else {
-                    gpui::transparent_black()
-                })
-            })
             .children(header)
-            .child(body)
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.))
+                    .min_h(px(0.))
+                    .flex()
+                    .flex_col()
+                    .opacity(pane_body_opacity(grouped, focused))
+                    .child(body),
+            )
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _, window, cx| {
@@ -2421,10 +2418,28 @@ fn split_panes_tooltip(overrides: &keymap::KeymapOverrides) -> String {
     }
 }
 
+fn workspace_header_icon(grouped: bool, focused_shell: bool) -> &'static str {
+    if grouped {
+        "square-split-horizontal.svg"
+    } else if focused_shell {
+        "square-terminal.svg"
+    } else {
+        "message-square.svg"
+    }
+}
+
+fn pane_body_opacity(grouped: bool, focused: bool) -> f32 {
+    if grouped && !focused {
+        UNFOCUSED_PANE_OPACITY
+    } else {
+        1.
+    }
+}
+
 fn pane_identity_icon(runtime: Option<&str>) -> &'static str {
     match runtime {
         Some(runtime) if Runtime::parse(runtime) == Some(Runtime::Shell) => "square-terminal.svg",
-        Some(_) => "terminal.svg",
+        Some(_) => "message-square.svg",
         None => "square-dashed.svg",
     }
 }
@@ -2710,10 +2725,11 @@ pub(crate) fn adjacent_pane_index(
 mod tests {
     use super::{
         adjacent_pane_index, archive_chat_confirm_body, empty_pane_action_label, header_fork_state,
-        pane_action_items_for, pane_close_behavior, pane_identity_icon, pane_identity_shows_status,
-        pane_identity_visible, pane_rename_key, side_panel_open, split_panes_tooltip,
-        starting_overlay_label, terminal_drawer_tooltip, HeaderForkState, PaneCloseBehavior,
-        PaneRenameKey,
+        pane_action_items_for, pane_body_opacity, pane_close_behavior, pane_identity_icon,
+        pane_identity_shows_status, pane_identity_visible, pane_rename_key, side_panel_open,
+        split_panes_tooltip, starting_overlay_label, terminal_drawer_tooltip,
+        workspace_header_icon, HeaderForkState, PaneCloseBehavior, PaneRenameKey,
+        UNFOCUSED_PANE_OPACITY,
     };
     use crate::keymap;
     use runner_backend::model::SessionStatus;
@@ -2798,7 +2814,11 @@ mod tests {
 
     #[test]
     fn pane_identity_branches_for_chat_terminal_and_empty_panes() {
-        assert_eq!(pane_identity_icon(Some("codex")), "terminal.svg");
+        assert_eq!(pane_identity_icon(Some("codex")), "message-square.svg");
+        assert_eq!(
+            pane_identity_icon(Some("claude-code")),
+            "message-square.svg"
+        );
         assert!(pane_identity_shows_status("codex"));
 
         assert_eq!(pane_identity_icon(Some("shell")), "square-terminal.svg");
@@ -2807,6 +2827,28 @@ mod tests {
 
         assert_eq!(pane_identity_icon(None), "square-dashed.svg");
         assert_eq!(pane_close_behavior(None), PaneCloseBehavior::LayoutOnly);
+    }
+
+    #[test]
+    fn only_unfocused_panes_in_a_split_are_faded() {
+        assert_eq!(UNFOCUSED_PANE_OPACITY, 0.7);
+        assert_eq!(pane_body_opacity(true, false), UNFOCUSED_PANE_OPACITY);
+        assert_eq!(pane_body_opacity(true, true), 1.);
+        assert_eq!(pane_body_opacity(false, false), 1.);
+    }
+
+    #[test]
+    fn workspace_header_icon_follows_the_split_then_the_focused_runtime() {
+        assert_eq!(
+            workspace_header_icon(true, true),
+            "square-split-horizontal.svg"
+        );
+        assert_eq!(
+            workspace_header_icon(true, false),
+            "square-split-horizontal.svg"
+        );
+        assert_eq!(workspace_header_icon(false, true), "square-terminal.svg");
+        assert_eq!(workspace_header_icon(false, false), "message-square.svg");
     }
 
     #[test]

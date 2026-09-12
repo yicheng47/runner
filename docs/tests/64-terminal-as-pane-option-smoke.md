@@ -46,6 +46,7 @@ Run against the development database with `make run`. One Runner instance, no cr
 ## 4. Chrome, rename, close
 
 - [ ] A single-pane tab renders **no identity line at all**. Split it → a 26 px line per pane.
+- [ ] In a split, the focused pane has **no border** and every unfocused pane is **dimmed** — identity lines excluded, they stay at full strength.
 - [ ] Focus a terminal pane → the chat side panel disappears. Focus a chat pane → **it comes back**, which proves the saved setting was not rewritten.
 - [ ] `⋯` on a chat: Stop **⌘.** · Rename… · Archive chat. On a terminal: Stop **⌘.** · Rename…. **Never** a Close item on either.
 - [ ] `⌘.` with the terminal focused stops it — the keystroke must reach the app rather than being swallowed by the PTY.
