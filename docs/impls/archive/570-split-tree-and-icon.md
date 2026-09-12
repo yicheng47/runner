@@ -1,6 +1,6 @@
 # 570 — Split panes redesign, PR 2: the layout tree, one split icon per pane, the picker gone
 
-Tracking issue: [#570](https://github.com/yicheng47/runner/issues/570). Spec: [570](../features/570-split-panes-redesign.md), phases 3–5. Feature, P2. Design: `design/runner.pen` frame `Spec — Split panes redesign (570) · v1` (`w2FDzK`), section D. PR 1 ([#571](https://github.com/yicheng47/runner/pull/571)) shipped the fade, the border removal, and the chat glyph. Branch: **`feat/570-split-tree-and-icon` already exists and is checked out** — it carries this brief; work on it, do not create another.
+Tracking issue: [#570](https://github.com/yicheng47/runner/issues/570). Spec: [570](../../features/archive/570-split-panes-redesign.md), phases 3–5. Feature, P2. Shipped 2026-09-12 in [#572](https://github.com/yicheng47/runner/pull/572) (mission `01M2AHEYTZQFK3X5JZA2TGZNDN`, claude crew; three review must-fixes on the tree reader, pane measurement, and the shortcut gate, then two of Jason's tweaks: the identity-line trigger moved left of `×`, the trigger tooltip dropped). Design: `design/runner.pen` frame `Spec — Split panes redesign (570) · v1` (`w2FDzK`), section D. PR 1 ([#571](https://github.com/yicheng47/runner/pull/571)) shipped the fade, the border removal, and the chat glyph. Branch: **`feat/570-split-tree-and-icon` already exists and is checked out** — it carries this brief; work on it, do not create another.
 
 ## What ships
 

@@ -1,6 +1,6 @@
 # 570 — Split panes redesign, PR 1: no focus border, unfocused panes faded, chat glyph
 
-Tracking issue: [#570](https://github.com/yicheng47/runner/issues/570). Spec: [570](../../features/570-split-panes-redesign.md), phase 2 only. Feature, P2. Shipped 2026-09-12 in [#571](https://github.com/yicheng47/runner/pull/571) (mission `01M2AGDBGT7CPFSWSFR652FQ20`, claude crew). Design: `design/runner.pen` frame `Spec — Split panes redesign (570) · v1` (`w2FDzK`), surfaces B and C, committed `63e5818`. Branch: **`feat/570-split-panes-redesign` already exists and is checked out** — it carries this brief; work on it, do not create another. The layout tree, the split icon, and the picker removal (spec phases 3–5) are a second brief after this lands; do not start them.
+Tracking issue: [#570](https://github.com/yicheng47/runner/issues/570). Spec: [570](../../features/archive/570-split-panes-redesign.md), phase 2 only. Feature, P2. Shipped 2026-09-12 in [#571](https://github.com/yicheng47/runner/pull/571) (mission `01M2AGDBGT7CPFSWSFR652FQ20`, claude crew). Design: `design/runner.pen` frame `Spec — Split panes redesign (570) · v1` (`w2FDzK`), surfaces B and C, committed `63e5818`. Branch: **`feat/570-split-panes-redesign` already exists and is checked out** — it carries this brief; work on it, do not create another. The layout tree, the split icon, and the picker removal (spec phases 3–5) are a second brief after this lands; do not start them.
 
 ## What ships
 

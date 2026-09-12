@@ -1,6 +1,6 @@
 # Split panes redesign: divider only, unfocused fade, and a split menu
 
-Tracking issue: [#570](https://github.com/yicheng47/runner/issues/570). Status: spec, 2026-09-12; Pencil-first, code waits for the frame sign-off. Priority P2.
+Tracking issue: [#570](https://github.com/yicheng47/runner/issues/570). Status: shipped 2026-09-12 in [#571](https://github.com/yicheng47/runner/pull/571) (fade, border, chat glyph; mission `01M2AGDBGT7CPFSWSFR652FQ20`) and [#572](https://github.com/yicheng47/runner/pull/572) (layout tree, split icon, picker removed; mission `01M2AHEYTZQFK3X5JZA2TGZNDN`), both claude crew. Priority was P2.
 
 ## Motivation
 
@@ -22,14 +22,14 @@ Ghostty answers the first: no focus border at all, one hairline divider, and the
 ### Splitting is one icon per pane, two directions
 
 - **One split icon on every pane**, opening a two-item menu: **Split Right** `⌘D` and **Split Down** `⇧⌘D`. The two keymap entries and their defaults are unchanged; the shortcuts act on the focused pane, the icon on its own pane. No left or up: a pane splits to its right or below, which is Ghostty's pair, and the new pane is where the eye already is.
-- **The icon lives with the pane it splits.** A single-pane tab has no identity line, so its header keeps today's split icon and that icon opens the menu. Once the tab is split, each identity line carries the icon next to `⋯`, always visible like `⋯` and `×`, and the header icon goes; one affordance per pane, Zed's placement.
+- **The icon lives with the pane it splits.** A single-pane tab has no identity line, so its header keeps today's split icon and that icon opens the menu. Once the tab is split, each identity line carries the icon at its right end, immediately left of `×` (moved there from beside `⋯` on Jason's check of the build), always visible like `⋯` and `×`, and the header icon goes; one affordance per pane, Zed's placement. The trigger has no hover tooltip: the menu shows both shortcuts.
 - **Each item splits that pane**, not the tab: its leaf becomes a split with a new empty pane on the chosen side at 50 / 50. The new pane takes focus and shows the empty-pane stub (New chat / New terminal), as a preset split does today.
 - **`⋯` is unchanged.** Stop, Rename…, Archive chat, nothing more.
 - **The glyph is `columns-2`** on both surfaces, the icon the sidebar already uses for a split tab. The header button's `square-split-horizontal` changes to match; the two glyphs said the same thing in two drawings.
 - **No count limit; a size floor instead.** An item is disabled, tooltip "Too small to split", when either resulting pane would be narrower than 240 px or shorter than 160 px at 1× zoom, scaled with the app zoom. The gate reads the pane's last laid-out bounds.
 - **The layout picker is gone**, with `next_split_preset`, `pick_preset`, and the preset list. A three-column tab is two Split Right clicks.
 - **The layout persists as a tree.** Today's `preset + slots + sizes` shape cannot describe a tree the picker did not draw, so the layout is stored as nested splits (orientation, sizes, id) and leaves (session id). Rows in the old shape read through a legacy path that rebuilds the same tree the preset built, and are rewritten on their next save. Leaf ids are `p<n>` with the next unused number in the tab, split ids `s<n>`; the `<preset>:outer` / `:inner` scheme goes. `PresetKind` survives only inside the legacy reader.
-- **A split holds chats only.** Since the terminal drawer ([469](./archive/469-terminal-drawer.md)) a shell lives in the drawer under the tab or in a terminal-only single-pane tab; the empty pane offers New chat alone, so no split mixes a chat with a terminal. Nothing here changes that.
+- **A split holds chats only.** Since the terminal drawer ([469](./469-terminal-drawer.md)) a shell lives in the drawer under the tab or in a terminal-only single-pane tab; the empty pane offers New chat alone, so no split mixes a chat with a terminal. Nothing here changes that.
 - **Close and resize are unchanged.** `×` / `⌘W` collapse the split as they do today, and the gutter drag resizes by split id.
 
 ### What does not change
@@ -55,7 +55,7 @@ Ghostty answers the first: no focus border at all, one hairline divider, and the
 1. **Design.** The frame above. Stop for sign-off.
 2. **Fade and border.** The pane body container in `render_pane` (`panes.rs:1855` onward, the `body` element that stacks the terminal and its overlay) gets `.opacity(UNFOCUSED_PANE_OPACITY)` when `grouped && !focused`, one constant at `0.7`; the identity line sits outside it. GPUI applies element opacity to every quad and glyph painted underneath, the terminal element included. Remove the border at `panes.rs:2345`. `pane_identity_icon` (`panes.rs:2424`) and the header title glyph (`panes.rs:454`) return `message-square.svg` for chats. Lands as its own PR.
 3. **Layout tree.** `PaneLayout::split(pane_id, side) -> pane id` in `pane_layout.rs`; tree persistence with the legacy reader; the new id scheme; `apply_preset`, `next_split_preset`, `derive_preset`, and `canonicalize_split_ids` removed with the picker (`panes.rs:1338` `render_layout_picker`, `chat.rs:1660` `pick_preset`, `:1717` `split_pane`). Anything that derived a glyph or label from the preset reads the tree instead.
-4. **Icon and menu.** The header icon (`panes.rs:400`) opens a two-item `UiMenu` in the `⋯` popover's shape and renders only for single-pane tabs; the identity line gains the same icon beside `⋯` when grouped, opening the same menu for its pane; both use `columns-2.svg` (the header swaps off `square-split-horizontal.svg`); `⌘D` / `⇧⌘D` call the new split on the focused pane; the size gate and its tooltip; `split_panes_tooltip` (`panes.rs:2411`) is unchanged. Lands with phase 3 as the second PR.
+4. **Icon and menu.** The header icon (`panes.rs:400`) opens a two-item `UiMenu` in the `⋯` popover's shape and renders only for single-pane tabs; the identity line gains the same icon beside `⋯` when grouped, opening the same menu for its pane; both use `columns-2.svg` (the header swaps off `square-split-horizontal.svg`); `⌘D` / `⇧⌘D` call the new split on the focused pane through the same gate; disabled items carry the tooltip; the trigger carries none, and `split_panes_tooltip` went with it. Lands with phase 3 as the second PR.
 5. **Docs.** `docs/arch` wherever it describes presets; the 64 smoke test's chrome section.
 
 ## Verification

@@ -2,6 +2,7 @@
 
 > Tracking issue: [#566](https://github.com/yicheng47/runner/issues/566)
 > Priority: P2.
+> Status: shipped 2026-09-11 (`fe0a7ce`, the English refresh) and 2026-09-12 (`f94a91b`, `README.zh-CN.md` and the `AGENTS.md` sync rule), landed by local merge.
 
 ## Motivation
 
