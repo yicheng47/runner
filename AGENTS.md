@@ -73,6 +73,7 @@ Prefer the smallest check that covers the change. For native UI changes, run the
   manipulation.
 - Keep comments rare and useful. Explain non-obvious intent, not mechanics.
 - Treat `design/runner-mvp-design.pen` as the historical MVP canvas. Put new product work in a feature-scoped `.pen` file and keep UI aligned with the file and node referenced by the user or feature spec. The active canvas is `design/runner.pen`; the gpui-rewrite's parity exception (plan decision 1) ended at the `v0.6.0` cutover on 2026-08-23.
+- `README.md` and `README.zh-CN.md` change together: a PR that edits one edits the other, and a paragraph that cannot be translated yet is marked `<!-- TODO zh-CN -->` rather than left silently behind.
 - Do not add repo conventions only to an agent-specific file. Update this file
   and leave tool-specific files as pointers if needed.
 

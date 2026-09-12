@@ -71,6 +71,13 @@ Both platforms update in place, macOS through Sparkle and Windows through the up
 
 Want what landed today instead? The [`nightly` prerelease](https://github.com/yicheng47/runner/releases/tag/nightly) is built from `main` for both platforms, signed the same way, and updates on its own channel.
 
+## Community
+
+- Bugs and feature requests: [GitHub Issues](https://github.com/yicheng47/runner/issues).
+- 中文用户可以扫码加入 Runner 微信用户群。群二维码 7 天过期，如果扫码提示失效，请[提一个 issue](https://github.com/yicheng47/runner/issues/new) 提醒我更新。
+
+<img src="assets/wechat_group_qr.png" alt="Runner 微信用户群二维码" width="200" />
+
 ## Demo
 
 A three-agent crew — two players and a referee — playing a game of tic-tac-toe against each other over the mission feed, from the [`tic-tac-toe`](./examples/tic-tac-toe/) example crew.
@@ -240,13 +247,6 @@ macOS and Windows are developed together on `main`. For dev setup, prereqs, and 
 ## Author
 
 Runner is written and maintained by **Yicheng Wang** (Jason Wang, 王逸成) — [@yicheng47](https://github.com/yicheng47) on GitHub.
-
-## Community
-
-- Bugs and feature requests: [GitHub Issues](https://github.com/yicheng47/runner/issues).
-- 中文用户可以扫码加入 Runner 微信用户群。群二维码 7 天过期，如果扫码提示失效，请[提一个 issue](https://github.com/yicheng47/runner/issues/new) 提醒我更新。
-
-<img src="assets/wechat_group_qr.png" alt="Runner 微信用户群二维码" width="200" />
 
 ## License
 
