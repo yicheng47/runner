@@ -795,7 +795,6 @@ impl NativeRoot {
         let submit_focus = cx.focus_handle();
         let title_focus = title_input.read(cx).focus_handle();
 
-        self.layout_picker_open = false;
         self.sidebar_preview_open = false;
         self.start_chat_modal = Some(StartChatModal {
             target,

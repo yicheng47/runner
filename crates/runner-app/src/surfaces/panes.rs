@@ -1,10 +1,9 @@
-//! Chat-surface rendering: the active tab, layout picker, and pane tree.
+//! Chat-surface rendering: the active tab, its split menus, and the pane tree.
 use super::*;
 use crate::*;
-use gpui::{svg, FontWeight};
+use gpui::{canvas, svg, FontWeight, Pixels, Size};
 use runner_app::ui::{
     ButtonVariant, Modal, OverlayWidth, SessionControlVariant, SessionOverlay, SessionOverlayKind,
-    Tooltip,
 };
 use runner_backend::model::Runtime;
 
@@ -15,6 +14,10 @@ use crate::surfaces::sidebar::{direct_chat_display_status, DirectChatDisplayStat
 
 const CHAT_PANEL_TRANSITION_MS: u64 = 200;
 pub(crate) const UNFOCUSED_PANE_OPACITY: f32 = 0.7;
+/// The smallest pane a split may leave behind, at 1× zoom.
+const MIN_SPLIT_PANE_WIDTH: f32 = 240.;
+const MIN_SPLIT_PANE_HEIGHT: f32 = 160.;
+const TOO_SMALL_TO_SPLIT: &str = "Too small to split";
 
 pub(crate) type TerminalDrawerSessionCallback = Rc<dyn Fn(String, &mut Window, &mut App)>;
 pub(crate) type TerminalDrawerActionCallback = Rc<dyn Fn(&mut Window, &mut App)>;
@@ -317,7 +320,6 @@ impl NativeRoot {
                 })
                 .into_any_element();
         };
-        let preset = layout.preset;
         let session_ids = layout.session_ids();
         let grouped = pane_identity_visible(layout.root.leaves().len());
         let focused_session_id = layout.focused_session_id().map(str::to_owned);
@@ -350,18 +352,11 @@ impl NativeRoot {
             })
             .any(|session_id| self.session_lifecycle_disabled(session_id, cx));
         self.configure_chat_action_menu(&layout, lifecycle_busy, cx);
+        self.prune_pane_state(&layout);
         let pane_tree = self.render_pane_node(&layout.root, &layout, window, cx);
-        let picker = self.layout_picker_open.then(|| {
-            self.render_layout_picker(
-                preset,
-                self.settings(cx).chat_panel_open && !focused_shell,
-                cx,
-            )
-        });
         let sidebar_toggle = self.render_open_sidebar_button(cx);
         let root = cx.entity();
         let fork_root = root.clone();
-        let layout_root = root.clone();
         let drawer_root = root.clone();
         let panel_root = root.clone();
         let control = (!focused_secondary)
@@ -398,22 +393,14 @@ impl NativeRoot {
             .chain(control)
             .chain(fork_action);
         let keymap_overrides = self.settings(cx).keymap_overrides.clone();
-        let split_tooltip = split_panes_tooltip(&keymap_overrides);
-        let layout_action = IconButton::new("layout-picker-toggle", "square-split-horizontal.svg")
-            .focus_handle(self.layout_picker_focus.clone())
-            .variant(if self.layout_picker_open {
-                ButtonVariant::Secondary
-            } else {
-                ButtonVariant::Ghost
-            })
-            .tooltip(split_tooltip)
-            .on_press(move |_, cx| {
-                layout_root.update(cx, |this, cx| {
-                    this.layout_picker_open = !this.layout_picker_open;
-                    cx.notify();
-                });
-            })
-            .into_any_element();
+        // A single-pane tab has no identity line, so the header carries its
+        // split menu; once split, every identity line carries its own.
+        let split_action = (!grouped && !terminal_only).then(|| {
+            let tab_id = layout.id.clone();
+            let pane_id = layout.focused_pane_id.clone();
+            self.split_menu(SplitMenuSurface::Header, &tab_id, &pane_id, cx)
+                .into_any_element()
+        });
         let drawer_action = (!terminal_only).then(|| {
             let open = layout.drawer_open();
             let tooltip = terminal_drawer_tooltip(open, &keymap_overrides);
@@ -455,7 +442,8 @@ impl NativeRoot {
         .sidebar_toggle(sidebar_toggle)
         .title_actions(title_actions)
         .trailing_actions(
-            std::iter::once(layout_action)
+            split_action
+                .into_iter()
                 .chain(drawer_action)
                 .chain(panel_action),
         )
@@ -570,19 +558,10 @@ impl NativeRoot {
             .h_full()
             .flex()
             .flex_col()
-            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
-                if this.layout_picker_open && event.keystroke.key == "escape" {
-                    cx.stop_propagation();
-                    this.layout_picker_open = false;
-                    this.focus_active_terminal(window, cx);
-                    cx.notify();
-                }
-            }))
             .child(self.render_titlebar_drag_area("chat-titlebar-drag", header, cx))
             .children(error_banner)
             .children(warning_banner)
-            .child(tab_body)
-            .children(picker);
+            .child(tab_body);
         let panel_open = side_panel_open(self.settings(cx).chat_panel_open, focused_shell);
         let (panel_visibility, panel_animating) = self.chat_panel_visibility.animate_to(
             if panel_open { 1. } else { 0. },
@@ -611,15 +590,6 @@ impl NativeRoot {
             .flex()
             .child(chat_column)
             .child(side_panel)
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, _, _, cx| {
-                    if this.layout_picker_open {
-                        this.layout_picker_open = false;
-                        cx.notify();
-                    }
-                }),
-            )
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(|this, _, _, cx| {
@@ -1330,111 +1300,82 @@ impl NativeRoot {
         .into_any_element()
     }
 
-    pub(crate) fn render_layout_picker(
-        &self,
-        active: PresetKind,
-        panel_open: bool,
+    /// Split menus and pane sizes are keyed by tab *and* pane, because a pane
+    /// id such as `p1` exists in every tab; drop everything the active tab
+    /// does not have so a switch cannot inherit the other tab's measurement
+    /// or leave its menu hanging open.
+    fn prune_pane_state(&mut self, layout: &PaneLayout) {
+        let panes = layout
+            .root
+            .leaves()
+            .into_iter()
+            .map(|leaf| leaf.id.as_str())
+            .collect::<HashSet<_>>();
+        let tab_id = layout.id.as_str();
+        self.split_menus
+            .retain(|key, _| key.tab_id == tab_id && panes.contains(key.pane_id.as_str()));
+        self.pane_bounds
+            .retain(|key, _| key.tab_id == tab_id && panes.contains(key.pane_id.as_str()));
+    }
+
+    /// The split menu for one pane. The header and an identity line differ
+    /// only in trigger size, so each keeps its own entity rather than
+    /// resizing a shared one when a tab is split or collapsed.
+    fn split_menu(
+        &mut self,
+        surface: SplitMenuSurface,
+        tab_id: &str,
+        pane_id: &str,
         cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let rows = [
-            ("1", vec![PresetKind::Single]),
-            ("2", vec![PresetKind::Cols2, PresetKind::Rows2]),
-            (
-                "3",
-                vec![PresetKind::Main2, PresetKind::Cols3, PresetKind::Rows3],
-            ),
-        ];
-        let root = cx.entity();
-        let picker_right = if panel_open { 8. } else { 44. };
-        div()
-            .absolute()
-            .id("layout-picker-popup")
-            .top(rems((WORKSPACE_HEADER_HEIGHT + 6.) / 16.))
-            .right(rems(picker_right / 16.))
-            .w(rems(236. / 16.))
-            .p(rems(14. / 16.))
-            .flex()
-            .flex_col()
-            .gap(rems(14. / 16.))
-            .rounded_lg()
-            .border_1()
-            .border_color(theme::border())
-            .bg(theme::panel())
-            .shadow_lg()
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .child(
-                div()
-                    .font_family(theme::SYSTEM_MONOSPACE_FONT)
-                    .text_size(theme::text_caption())
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(theme::faint())
-                    .child("LAYOUT"),
-            )
-            .children(rows.into_iter().map(|(count, presets)| {
-                let root = root.clone();
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(rems(10. / 16.))
-                    .child(
-                        div()
-                            .w(rems(8. / 16.))
-                            .font_family(theme::SYSTEM_MONOSPACE_FONT)
-                            .text_size(theme::text_meta())
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(theme::muted())
-                            .child(count),
+    ) -> Entity<PopoverMenu> {
+        let key = PaneKey::new(tab_id, pane_id);
+        let menu = self
+            .split_menus
+            .entry(SplitMenuKey {
+                surface,
+                tab_id: key.tab_id.clone(),
+                pane_id: key.pane_id.clone(),
+            })
+            .or_insert_with(|| {
+                let root = cx.entity();
+                let target = pane_id.to_owned();
+                let id = SharedString::from(format!("split-menu-{}-{pane_id}", surface.key()));
+                cx.new(move |menu_cx| {
+                    let menu = PopoverMenu::new(
+                        id,
+                        menu_cx.focus_handle(),
+                        Vec::new(),
+                        Rc::new(move |index, window, cx| {
+                            let pane_id = target.clone();
+                            root.update(cx, |this, cx| match index {
+                                0 => this.split_pane(&pane_id, SplitOrientation::Row, window, cx),
+                                1 => {
+                                    this.split_pane(&pane_id, SplitOrientation::Column, window, cx)
+                                }
+                                _ => {}
+                            });
+                        }),
+                        menu_cx,
                     )
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .children(presets.into_iter().map(move |preset| {
-                                let tile_root = root.clone();
-                                let tile = div()
-                                    .id(SharedString::from(format!(
-                                        "layout-preset-{}",
-                                        preset.label()
-                                    )))
-                                    .w(rems(56. / 16.))
-                                    .h(rems(40. / 16.))
-                                    .p(rems(4. / 16.))
-                                    .rounded(rems(5. / 16.))
-                                    .border_1()
-                                    .border_color(if preset == active {
-                                        theme::accent()
-                                    } else {
-                                        theme::border_strong()
-                                    })
-                                    .bg(theme::bg())
-                                    .cursor_pointer()
-                                    .hover(|tile| tile.border_color(theme::faint()))
-                                    .child(preset_diagram(preset, preset == active))
-                                    .on_click(move |_, window, cx| {
-                                        tile_root.update(cx, |this, cx| {
-                                            this.pick_preset(preset, window, cx)
-                                        });
-                                    });
-                                Tooltip::new(
-                                    SharedString::from(format!(
-                                        "layout-preset-tooltip-{}",
-                                        preset.label()
-                                    )),
-                                    preset.label(),
-                                    tile,
-                                )
-                            })),
-                    )
-            }))
-            .child(div().h(rems(1. / 16.)).w_full().bg(theme::border()))
-            .child(
-                div()
-                    .text_size(theme::text_caption())
-                    .text_color(theme::faint())
-                    .child("Layout is remembered across restarts"),
-            )
-            .into_any_element()
+                    .min_width(px(196.))
+                    .trigger_icon("columns-2.svg");
+                    match surface {
+                        SplitMenuSurface::Header => menu,
+                        SplitMenuSurface::Pane => menu.trigger_size(IconButtonSize::Sm),
+                    }
+                })
+            })
+            .clone();
+        let settings = self.settings(cx);
+        let zoom = settings.app_zoom;
+        let overrides = settings.keymap_overrides.clone();
+        let tooltip = split_panes_tooltip(&overrides);
+        let items = split_menu_items(self.pane_bounds.get(&key).copied(), zoom, &overrides);
+        menu.update(cx, |menu, menu_cx| {
+            menu.set_trigger_tooltip(tooltip);
+            menu.set_items(items, menu_cx);
+        });
+        menu
     }
 
     pub(crate) fn render_pane_node(
@@ -1862,6 +1803,7 @@ impl NativeRoot {
         let pane_session_for_focus = entry.as_ref().map(|entry| entry.session_id.clone());
         let close_root = cx.entity();
         let header = grouped.then(|| {
+            let split_menu = self.split_menu(SplitMenuSurface::Pane, &layout.id, &pane_id, cx);
             let close_pane_id = pane_id.clone();
             let close_behavior =
                 pane_close_behavior(entry.as_ref().map(|entry| entry.agent_runtime.as_str()));
@@ -1957,6 +1899,7 @@ impl NativeRoot {
                     )
                     .child(name)
                     .children(status.map(render_pane_header_status))
+                    .child(split_menu)
                     .children(menu)
                     .into_any_element()
             } else {
@@ -1980,6 +1923,7 @@ impl NativeRoot {
                             .text_color(theme::faint())
                             .child("Empty"),
                     )
+                    .child(split_menu)
                     .into_any_element()
             };
             div()
@@ -2327,6 +2271,12 @@ impl NativeRoot {
                 .into_any_element()
         };
 
+        // The split menu gates its items on how big this pane was last laid
+        // out, and those items are built during this entity's render — so a
+        // size that actually changed has to ask for another one. Notifying
+        // only on a change is what keeps that from looping every frame.
+        let measure_root = cx.entity();
+        let measured = PaneKey::new(&layout.id, &pane_id);
         div()
             .id(SharedString::from(format!("pane-{pane_id}")))
             .relative()
@@ -2336,6 +2286,22 @@ impl NativeRoot {
             .flex()
             .flex_col()
             .overflow_hidden()
+            .child(
+                canvas(
+                    |_, _, _| {},
+                    move |bounds, _, _, cx| {
+                        measure_root.update(cx, |this, this_cx| {
+                            if this.pane_bounds.get(&measured) == Some(&bounds.size) {
+                                return;
+                            }
+                            this.pane_bounds.insert(measured.clone(), bounds.size);
+                            this_cx.notify();
+                        });
+                    },
+                )
+                .absolute()
+                .inset_0(),
+            )
             .children(header)
             .child(
                 div()
@@ -2359,6 +2325,44 @@ impl NativeRoot {
             )
             .into_any_element()
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub(crate) enum SplitMenuSurface {
+    Header,
+    Pane,
+}
+
+impl SplitMenuSurface {
+    fn key(self) -> &'static str {
+        match self {
+            Self::Header => "header",
+            Self::Pane => "pane",
+        }
+    }
+}
+
+/// One pane, named the only way a pane id is unique: inside its tab.
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+pub(crate) struct PaneKey {
+    pub(crate) tab_id: String,
+    pub(crate) pane_id: String,
+}
+
+impl PaneKey {
+    pub(crate) fn new(tab_id: &str, pane_id: &str) -> Self {
+        Self {
+            tab_id: tab_id.to_owned(),
+            pane_id: pane_id.to_owned(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+pub(crate) struct SplitMenuKey {
+    pub(crate) surface: SplitMenuSurface,
+    pub(crate) tab_id: String,
+    pub(crate) pane_id: String,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2403,6 +2407,74 @@ pub(crate) fn terminal_drawer_tooltip(open: bool, overrides: &keymap::KeymapOver
         || label.to_owned(),
         |combo| format!("{label} · {}", keymap::format_combo(&combo)),
     )
+}
+
+/// A split leaves two panes where one stood, so each side needs half of the
+/// floor. `None` bounds mean the pane has not been laid out yet — allow it
+/// rather than refuse on a measurement we do not have.
+fn split_allowed(pane: Option<Size<Pixels>>, orientation: SplitOrientation, zoom: f32) -> bool {
+    let Some(pane) = pane else {
+        return true;
+    };
+    match orientation {
+        SplitOrientation::Row => f32::from(pane.width) >= 2. * MIN_SPLIT_PANE_WIDTH * zoom,
+        SplitOrientation::Column => f32::from(pane.height) >= 2. * MIN_SPLIT_PANE_HEIGHT * zoom,
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum SplitDecision {
+    Allowed,
+    /// Why the split cannot happen — menu tooltip and error-banner copy alike.
+    Blocked(&'static str),
+    /// Splits hold chats only, so a terminal-only tab offers nothing at all.
+    NotSplittable,
+}
+
+/// The one place a split request is judged. Both routes — the menu item and
+/// `⌘D` / `⇧⌘D` — go through it, so the size floor cannot be walked around
+/// by reaching for the keyboard.
+pub(crate) fn split_decision(
+    terminal_only: bool,
+    pane: Option<Size<Pixels>>,
+    orientation: SplitOrientation,
+    zoom: f32,
+) -> SplitDecision {
+    if terminal_only {
+        SplitDecision::NotSplittable
+    } else if split_allowed(pane, orientation, zoom) {
+        SplitDecision::Allowed
+    } else {
+        SplitDecision::Blocked(TOO_SMALL_TO_SPLIT)
+    }
+}
+
+fn split_menu_items(
+    pane: Option<Size<Pixels>>,
+    zoom: f32,
+    overrides: &keymap::KeymapOverrides,
+) -> Vec<UiMenuItem> {
+    [
+        ("Split Right", "split-pane-right", SplitOrientation::Row),
+        ("Split Down", "split-pane-down", SplitOrientation::Column),
+    ]
+    .into_iter()
+    .map(|(label, binding, orientation)| {
+        let blocked = match split_decision(false, pane, orientation, zoom) {
+            SplitDecision::Allowed => None,
+            SplitDecision::Blocked(reason) => Some(reason),
+            SplitDecision::NotSplittable => None,
+        };
+        let mut item = UiMenuItem::new(label).disabled(blocked.is_some());
+        if let Some(combo) = keymap::effective_binding(binding, overrides) {
+            item = item.shortcut(keymap::format_combo(&combo));
+        }
+        if let Some(reason) = blocked {
+            item = item.tooltip(reason);
+        }
+        item
+    })
+    .collect()
 }
 
 fn split_panes_tooltip(overrides: &keymap::KeymapOverrides) -> String {
@@ -2622,72 +2694,6 @@ fn side_panel_row(label: &'static str, value: impl IntoElement) -> AnyElement {
         .into_any_element()
 }
 
-fn preset_diagram(preset: PresetKind, active: bool) -> AnyElement {
-    let pane = || {
-        div()
-            .flex_1()
-            .min_w(px(0.))
-            .min_h(px(0.))
-            .rounded(rems(2. / 16.))
-            .bg(if active {
-                theme::with_alpha(theme::accent(), 0.15)
-            } else {
-                theme::sidebar_selected()
-            })
-    };
-    match preset {
-        PresetKind::Single => div().size_full().flex().child(pane()).into_any_element(),
-        PresetKind::Cols2 => div()
-            .size_full()
-            .flex()
-            .gap(rems(3. / 16.))
-            .child(pane())
-            .child(pane())
-            .into_any_element(),
-        PresetKind::Rows2 => div()
-            .size_full()
-            .flex()
-            .flex_col()
-            .gap(rems(3. / 16.))
-            .child(pane())
-            .child(pane())
-            .into_any_element(),
-        PresetKind::Main2 => div()
-            .size_full()
-            .flex()
-            .gap(rems(3. / 16.))
-            .child(pane())
-            .child(
-                div()
-                    .flex_1()
-                    .min_w(px(0.))
-                    .flex()
-                    .flex_col()
-                    .gap(rems(3. / 16.))
-                    .child(pane())
-                    .child(pane()),
-            )
-            .into_any_element(),
-        PresetKind::Cols3 => div()
-            .size_full()
-            .flex()
-            .gap(rems(3. / 16.))
-            .child(pane())
-            .child(pane())
-            .child(pane())
-            .into_any_element(),
-        PresetKind::Rows3 => div()
-            .size_full()
-            .flex()
-            .flex_col()
-            .gap(rems(3. / 16.))
-            .child(pane())
-            .child(pane())
-            .child(pane())
-            .into_any_element(),
-    }
-}
-
 pub(crate) fn pane_fractions(node: &PaneNode, pane_id: &str) -> Option<(f32, f32)> {
     match node {
         PaneNode::Leaf(leaf) => (leaf.id == pane_id).then_some((1., 1.)),
@@ -2727,11 +2733,14 @@ mod tests {
         adjacent_pane_index, archive_chat_confirm_body, empty_pane_action_label, header_fork_state,
         pane_action_items_for, pane_body_opacity, pane_close_behavior, pane_identity_icon,
         pane_identity_shows_status, pane_identity_visible, pane_rename_key, side_panel_open,
-        split_panes_tooltip, starting_overlay_label, terminal_drawer_tooltip,
-        workspace_header_icon, HeaderForkState, PaneCloseBehavior, PaneRenameKey,
-        UNFOCUSED_PANE_OPACITY,
+        split_allowed, split_decision, split_menu_items, split_panes_tooltip,
+        starting_overlay_label, terminal_drawer_tooltip, workspace_header_icon, HeaderForkState,
+        PaneCloseBehavior, PaneRenameKey, SplitDecision, MIN_SPLIT_PANE_HEIGHT,
+        MIN_SPLIT_PANE_WIDTH, TOO_SMALL_TO_SPLIT, UNFOCUSED_PANE_OPACITY,
     };
     use crate::keymap;
+    use gpui::{px, size};
+    use runner_app::pane_layout::SplitOrientation;
     use runner_backend::model::SessionStatus;
     use runner_backend::ops::session::DirectSessionEntry;
 
@@ -3027,6 +3036,150 @@ mod tests {
 
         overrides.insert("split-pane-right".into(), None);
         assert_eq!(split_panes_tooltip(&overrides), "Split panes");
+    }
+
+    #[test]
+    fn a_split_needs_room_for_both_halves_and_the_floor_scales_with_zoom() {
+        let wide = size(
+            px(2. * MIN_SPLIT_PANE_WIDTH),
+            px(2. * MIN_SPLIT_PANE_HEIGHT),
+        );
+        assert!(split_allowed(Some(wide), SplitOrientation::Row, 1.));
+        assert!(split_allowed(Some(wide), SplitOrientation::Column, 1.));
+
+        let narrow = size(
+            px(2. * MIN_SPLIT_PANE_WIDTH - 1.),
+            px(2. * MIN_SPLIT_PANE_HEIGHT),
+        );
+        assert!(!split_allowed(Some(narrow), SplitOrientation::Row, 1.));
+        assert!(split_allowed(Some(narrow), SplitOrientation::Column, 1.));
+
+        let short = size(
+            px(2. * MIN_SPLIT_PANE_WIDTH),
+            px(2. * MIN_SPLIT_PANE_HEIGHT - 1.),
+        );
+        assert!(split_allowed(Some(short), SplitOrientation::Row, 1.));
+        assert!(!split_allowed(Some(short), SplitOrientation::Column, 1.));
+
+        // The same pixels are too small once the app is zoomed in.
+        assert!(!split_allowed(Some(wide), SplitOrientation::Row, 1.5));
+        assert!(!split_allowed(Some(wide), SplitOrientation::Column, 1.5));
+        let zoomed = size(
+            px(3. * MIN_SPLIT_PANE_WIDTH),
+            px(3. * MIN_SPLIT_PANE_HEIGHT),
+        );
+        assert!(split_allowed(Some(zoomed), SplitOrientation::Row, 1.5));
+        assert!(split_allowed(Some(zoomed), SplitOrientation::Column, 1.5));
+
+        // An unmeasured pane is not disabled on a size we do not have.
+        assert!(split_allowed(None, SplitOrientation::Row, 1.));
+    }
+
+    // `split_pane` is the single gate both routes pass through — the menu
+    // item and `⌘D` / `⇧⌘D` alike — so what it decides is what is pinned here.
+    #[test]
+    fn every_split_route_meets_the_same_floor_and_terminal_only_tabs_offer_none() {
+        let roomy = size(px(1200.), px(800.));
+        let narrow = size(px(300.), px(800.));
+        let short = size(px(1200.), px(200.));
+
+        assert_eq!(
+            split_decision(false, Some(roomy), SplitOrientation::Row, 1.),
+            SplitDecision::Allowed
+        );
+        assert_eq!(
+            split_decision(false, Some(narrow), SplitOrientation::Row, 1.),
+            SplitDecision::Blocked(TOO_SMALL_TO_SPLIT)
+        );
+        assert_eq!(
+            split_decision(false, Some(narrow), SplitOrientation::Column, 1.),
+            SplitDecision::Allowed
+        );
+        assert_eq!(
+            split_decision(false, Some(short), SplitOrientation::Column, 1.),
+            SplitDecision::Blocked(TOO_SMALL_TO_SPLIT)
+        );
+
+        // Zoom moves the floor for the shortcut exactly as it does for the
+        // menu: 1200 px clears 2 × 240 at 1× and at 2.5×, and fails at 3×.
+        assert_eq!(
+            split_decision(false, Some(roomy), SplitOrientation::Row, 2.5),
+            SplitDecision::Allowed
+        );
+        assert_eq!(
+            split_decision(false, Some(roomy), SplitOrientation::Row, 3.),
+            SplitDecision::Blocked(TOO_SMALL_TO_SPLIT)
+        );
+
+        // Splits hold chats only.
+        for orientation in [SplitOrientation::Row, SplitOrientation::Column] {
+            assert_eq!(
+                split_decision(true, Some(roomy), orientation, 1.),
+                SplitDecision::NotSplittable
+            );
+        }
+
+        // An unmeasured pane is not refused on a size we do not have.
+        assert_eq!(
+            split_decision(false, None, SplitOrientation::Row, 1.),
+            SplitDecision::Allowed
+        );
+    }
+
+    #[test]
+    fn a_disabled_menu_item_carries_the_reason_the_action_path_would_report() {
+        let narrow = size(px(300.), px(800.));
+        let items = split_menu_items(Some(narrow), 1., &keymap::KeymapOverrides::new());
+        let SplitDecision::Blocked(reason) =
+            split_decision(false, Some(narrow), SplitOrientation::Row, 1.)
+        else {
+            panic!("a 300 px pane cannot split to the right");
+        };
+
+        assert!(items[0].disabled);
+        assert_eq!(
+            items[0].tooltip.as_ref().map(|tip| tip.as_ref()),
+            Some(reason)
+        );
+    }
+
+    #[test]
+    fn the_split_menu_offers_two_directions_with_live_pills_and_says_why_it_is_off() {
+        let mut overrides = keymap::KeymapOverrides::new();
+        let roomy = size(px(1200.), px(800.));
+        let items = split_menu_items(Some(roomy), 1., &overrides);
+        assert_eq!(
+            items
+                .iter()
+                .map(|item| item.label.as_ref())
+                .collect::<Vec<_>>(),
+            ["Split Right", "Split Down"]
+        );
+        assert!(items.iter().all(|item| !item.disabled));
+        assert!(items.iter().all(|item| item.tooltip.is_none()));
+        #[cfg(unix)]
+        assert_eq!(
+            items
+                .iter()
+                .map(|item| item.shortcut.as_ref().map(|pill| pill.as_ref()))
+                .collect::<Vec<_>>(),
+            [Some("⌘D"), Some("⇧⌘D")]
+        );
+
+        overrides.insert("split-pane-right".into(), None);
+        let unbound = split_menu_items(Some(roomy), 1., &overrides);
+        assert_eq!(unbound[0].shortcut, None);
+        assert!(unbound[1].shortcut.is_some());
+
+        let cramped = size(px(300.), px(800.));
+        let gated = split_menu_items(Some(cramped), 1., &keymap::KeymapOverrides::new());
+        assert!(gated[0].disabled);
+        assert_eq!(
+            gated[0].tooltip.as_ref().map(|tip| tip.as_ref()),
+            Some(TOO_SMALL_TO_SPLIT)
+        );
+        assert!(!gated[1].disabled);
+        assert_eq!(gated[1].tooltip, None);
     }
 
     #[test]

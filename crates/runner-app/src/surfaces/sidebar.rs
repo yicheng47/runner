@@ -4732,7 +4732,7 @@ mod tests {
 
     #[test]
     fn archiving_every_chat_in_a_tab_also_closes_its_drawer_shells() {
-        let mut single = PaneLayout::fresh(PresetKind::Single, Some("chat"), &["chat".into()]);
+        let mut single = PaneLayout::single(Some("chat"), &["chat".into()]);
         single.add_drawer_shell("shell-1".into());
         single.add_drawer_shell("shell-2".into());
         assert_eq!(
@@ -4740,11 +4740,7 @@ mod tests {
             ["chat", "shell-1", "shell-2"]
         );
 
-        let mut split = PaneLayout::fresh(
-            PresetKind::Cols2,
-            Some("chat-1"),
-            &["chat-1".into(), "chat-2".into()],
-        );
+        let mut split = two_pane_layout("chat-1", "chat-2");
         split.add_drawer_shell("shell".into());
         assert_eq!(
             archive_targets_for_chats(vec!["chat-1".into()], &[split.clone()]),
@@ -4756,6 +4752,13 @@ mod tests {
         );
     }
 
+    fn two_pane_layout(first: &str, second: &str) -> PaneLayout {
+        let mut layout = PaneLayout::single(Some(first), &[first.to_owned()]);
+        let pane = layout.split("p1", SplitOrientation::Row).unwrap();
+        layout.assign_session(&pane, second).unwrap();
+        layout
+    }
+
     fn pending_pane_close(tab_id: &str, pane_id: &str) -> PendingPaneClose {
         PendingPaneClose {
             tab_id: tab_id.into(),
@@ -4765,13 +4768,9 @@ mod tests {
 
     #[test]
     fn pane_close_after_archive_finds_the_emptied_leaf_by_tab_id() {
-        let mut front = PaneLayout::fresh(PresetKind::Single, Some("chat-0"), &["chat-0".into()]);
+        let mut front = PaneLayout::single(Some("chat-0"), &["chat-0".into()]);
         front.id = "front".into();
-        let mut split = PaneLayout::fresh(
-            PresetKind::Cols2,
-            Some("chat-1"),
-            &["chat-1".into(), "chat-2".into()],
-        );
+        let mut split = two_pane_layout("chat-1", "chat-2");
         split.id = "split".into();
         let mut tabs = vec![front, split];
         assert!(pane_close_after_archive(&tabs, &pending_pane_close("split", "p1")).is_none());
@@ -4782,11 +4781,11 @@ mod tests {
                 .map(|layout| layout.id.as_str()),
             Some("split")
         );
-        assert!(pane_close_after_archive(&tabs, &pending_pane_close("split", "p2")).is_none());
         assert!(pane_close_after_archive(&tabs, &pending_pane_close("split", "p3")).is_none());
+        assert!(pane_close_after_archive(&tabs, &pending_pane_close("split", "p9")).is_none());
         assert!(pane_close_after_archive(&tabs, &pending_pane_close("gone", "p1")).is_none());
 
-        let mut single = PaneLayout::fresh(PresetKind::Single, None, &[]);
+        let mut single = PaneLayout::single(None, &[]);
         single.id = "single".into();
         assert!(pane_close_after_archive(&[single], &pending_pane_close("single", "p1")).is_none());
     }
@@ -4811,15 +4810,14 @@ mod tests {
 
     #[test]
     fn overlapping_pane_closes_collapse_a_three_way_split_one_leaf_at_a_time() {
-        let mut tabs = vec![PaneLayout::fresh(
-            PresetKind::Cols3,
-            Some("a"),
-            &["a".into(), "b".into(), "c".into()],
-        )];
-        tabs[0].id = "tab".into();
+        let mut layout = two_pane_layout("a", "b");
+        let third = layout.split("p3", SplitOrientation::Row).unwrap();
+        layout.assign_session(&third, "c").unwrap();
+        layout.id = "tab".into();
+        let mut tabs = vec![layout];
         let mut pending = HashMap::from([
             ("a".to_owned(), pending_pane_close("tab", "p1")),
-            ("b".to_owned(), pending_pane_close("tab", "p2")),
+            ("b".to_owned(), pending_pane_close("tab", "p3")),
         ]);
 
         tabs[0].remove_session("b");
@@ -4831,7 +4829,7 @@ mod tests {
             assert!(tabs[0].close_pane(&close.pane_id));
         }
         assert_eq!(tabs[0].session_ids(), ["a", "c"]);
-        assert_eq!(tabs[0].preset, PresetKind::Cols2);
+        assert_eq!(tabs[0].root.leaves().len(), 2);
 
         tabs[0].remove_session("a");
         for close in take_pending_pane_closes(&mut pending, &["a".into()], &["a".into()]) {
@@ -4839,13 +4837,13 @@ mod tests {
             assert!(tabs[0].close_pane(&close.pane_id));
         }
         assert_eq!(tabs[0].session_ids(), ["c"]);
-        assert_eq!(tabs[0].preset, PresetKind::Single);
+        assert!(matches!(tabs[0].root, PaneNode::Leaf(_)));
         assert!(pending.is_empty());
     }
 
     #[test]
     fn sidebar_fork_menu_target_exposes_enabled_and_disabled_single_chats() {
-        let layout = PaneLayout::fresh(PresetKind::Single, Some("chat"), &["chat".into()]);
+        let layout = PaneLayout::single(Some("chat"), &["chat".into()]);
         let mut codex = direct_session("chat", "codex", SessionStatus::Running);
         codex.forkable = true;
         codex.agent_session_key = Some("key".into());
@@ -4940,7 +4938,8 @@ mod tests {
         let shell_members = vec![direct_session("chat", "shell", SessionStatus::Running)];
         assert!(sidebar_fork_menu_target(&layout, &shell_members).is_none());
 
-        let grouped = PaneLayout::fresh(PresetKind::Cols2, Some("chat"), &["chat".into()]);
+        let mut grouped = PaneLayout::single(Some("chat"), &["chat".into()]);
+        grouped.split("p1", SplitOrientation::Row).unwrap();
         assert!(sidebar_fork_menu_target(&grouped, &members).is_none());
     }
 

@@ -20,13 +20,14 @@ Run against the development database with `make run`. One Runner instance, no cr
 - [ ] Open the `+` beside **RECENT** → **New chat**, **New terminal**, and **New mission** are siblings. Choose **New terminal** → it creates a new single-pane tab rather than splitting the active tab.
 - [ ] Open a project's `+` → the same three actions appear. Choose **New terminal** → its new single-pane tab is nested under that project and starts at the project cwd.
 - [ ] The new terminal-only tab uses the terminal glyph in the sidebar rather than the chat bubble. Split tabs keep their two-/three-pane layout glyphs.
-- [ ] Open a chat and choose a split layout → the new pane stays empty and the **Start a chat** modal does not open automatically.
-- [ ] From a single-pane tab, `⌘D` grows side by side and `⇧⌘D` grows stacked; repeat the same shortcut to reach three panes. Each added pane stays empty without opening a modal, and another split attempt shows the three-pane limit without changing the layout.
+- [ ] A terminal-only tab has **no split icon** in its header, and `⌘D` / `⇧⌘D` do nothing there.
+- [ ] Open a chat and split it from the header's split icon → the new pane stays empty and the **Start a chat** modal does not open automatically.
+- [ ] From a single-pane tab, `⌘D` splits the focused pane to the right and `⇧⌘D` splits it downward; repeat either to keep going past three panes. Each added pane stays empty without opening a modal.
 - [ ] In that empty pane, **New terminal** fills it and **New chat** remains the explicit path to the chat modal.
 - [ ] `⌘K` → **New terminal** is the first entry, and typing `shell` still matches it.
-- [ ] Choose **New terminal** from the palette with a focused *empty* pane → the terminal lands there and the preset does not change.
+- [ ] Choose **New terminal** from the palette with a focused *empty* pane → the terminal lands there and the layout does not change.
 - [ ] Choose it with a focused *filled* pane while a different pane sits empty → it fills **the existing empty pane** rather than growing the split.
-- [ ] Choose it on a full 3-pane tab → a clean error message, no crash.
+- [ ] Choose it on a tab whose panes are all filled → the focused pane splits to the right and the terminal lands in the new pane.
 
 ## 2. It is a real login shell
 
@@ -45,7 +46,7 @@ Run against the development database with `make run`. One Runner instance, no cr
 
 ## 4. Chrome, rename, close
 
-- [ ] A single-pane tab renders **no identity line at all**. Split it → a 26 px line per pane.
+- [ ] A single-pane tab renders **no identity line at all**, and its header carries the split icon. Split it → a 26 px line per pane, each with its own split icon beside `⋯`, and the header icon is gone.
 - [ ] In a split, the focused pane has **no border** and every unfocused pane is **dimmed** — identity lines excluded, they stay at full strength.
 - [ ] Focus a terminal pane → the chat side panel disappears. Focus a chat pane → **it comes back**, which proves the saved setting was not rewritten.
 - [ ] `⋯` on a chat: Stop **⌘.** · Rename… · Archive chat. On a terminal: Stop **⌘.** · Rename…. **Never** a Close item on either.

@@ -28,16 +28,16 @@ use gpui::QuitMode;
 use gpui::{
     actions, div, point, prelude::*, px, relative, rems, size, AnyElement, App, Application,
     Bounds, ClipboardItem, Context, CursorStyle, DragMoveEvent, Entity, FocusHandle, Global,
-    KeyDownEvent, Menu, MenuItem, MouseButton, OsAction, ScrollDelta, ScrollHandle,
-    ScrollWheelEvent, SharedString, Subscription, SystemMenuType, TitlebarOptions, Window,
+    KeyDownEvent, Menu, MenuItem, MouseButton, OsAction, Pixels, ScrollDelta, ScrollHandle,
+    ScrollWheelEvent, SharedString, Size, Subscription, SystemMenuType, TitlebarOptions, Window,
     WindowBounds, WindowOptions,
 };
 use runner_app::bootstrap::{
     boot_core, native_paths, stop_running_sessions_on_quit, NativeMcpServer, NativePaths,
 };
 use runner_app::pane_layout::{
-    MissionLayout, PaneLayout, PaneLeaf, PaneNode, PresetKind, SplitOrientation, TabSet,
-    MAX_DRAWER_HEIGHT, MIN_DRAWER_HEIGHT,
+    MissionLayout, PaneLayout, PaneLeaf, PaneNode, SplitOrientation, TabSet, MAX_DRAWER_HEIGHT,
+    MIN_DRAWER_HEIGHT,
 };
 use runner_app::terminal_ime::TerminalInput;
 use runner_app::ui::{
@@ -111,8 +111,8 @@ mod toast;
 
 use surfaces::{
     pane_close_behavior, AppRoute, CommandPaletteState, CrewSurfaces, MissionWorkspace,
-    PaneCloseBehavior, ProjectModal, RunnerSurfaces, SettingsPane, SettingsState, Sidebar,
-    StartChatModal, StartMissionModalState,
+    PaneCloseBehavior, PaneKey, ProjectModal, RunnerSurfaces, SettingsPane, SettingsState, Sidebar,
+    SplitMenuKey, StartChatModal, StartMissionModalState,
 };
 
 const INITIAL_COLS: u16 = 100;
@@ -399,7 +399,6 @@ struct NativeRoot {
     root_focus: FocusHandle,
     chat_focus: FocusHandle,
     drawer_focus: FocusHandle,
-    layout_picker_focus: FocusHandle,
     sidebar: Entity<Sidebar>,
     start_chat_modal: Option<StartChatModal>,
     start_mission_modal: Option<StartMissionModalState>,
@@ -419,6 +418,8 @@ struct NativeRoot {
     chat_action_menu: Entity<PopoverMenu>,
     chat_menu_actions: Vec<ChatMenuAction>,
     pane_action_menus: HashMap<String, Entity<PopoverMenu>>,
+    split_menus: HashMap<SplitMenuKey, Entity<PopoverMenu>>,
+    pane_bounds: HashMap<PaneKey, Size<Pixels>>,
     pane_rename: Option<PaneRename>,
     _pane_rename_focus_subscription: Option<Subscription>,
     terminal_close_confirm: Option<TerminalCloseConfirm>,
@@ -429,7 +430,6 @@ struct NativeRoot {
     forking_sessions: HashMap<String, String>,
     chat_rename_modal: Option<ChatRenameModal>,
     last_focused_runner_id: Option<String>,
-    layout_picker_open: bool,
     split_sizes_dirty: bool,
     drawer_resizing: bool,
     chat_secondaries: HashMap<String, String>,
@@ -603,7 +603,6 @@ impl NativeRoot {
         let root_focus = cx.focus_handle();
         let chat_focus = cx.focus_handle();
         let drawer_focus = cx.focus_handle();
-        let layout_picker_focus = cx.focus_handle();
         let active_chat_detail = tabs
             .active()
             .and_then(PaneLayout::focused_session_id)
@@ -708,7 +707,6 @@ impl NativeRoot {
             root_focus,
             chat_focus,
             drawer_focus,
-            layout_picker_focus,
             sidebar,
             start_chat_modal: None,
             start_mission_modal: None,
@@ -728,6 +726,8 @@ impl NativeRoot {
             chat_action_menu,
             chat_menu_actions: Vec::new(),
             pane_action_menus: HashMap::new(),
+            split_menus: HashMap::new(),
+            pane_bounds: HashMap::new(),
             pane_rename: None,
             _pane_rename_focus_subscription: None,
             terminal_close_confirm: None,
@@ -738,7 +738,6 @@ impl NativeRoot {
             forking_sessions: HashMap::new(),
             chat_rename_modal: None,
             last_focused_runner_id,
-            layout_picker_open: false,
             split_sizes_dirty: false,
             drawer_resizing: false,
             chat_secondaries: HashMap::new(),

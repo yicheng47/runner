@@ -9,10 +9,12 @@ pub const DEFAULT_DRAWER_HEIGHT: f32 = 280.;
 pub const MIN_DRAWER_HEIGHT: f32 = 120.;
 pub const MAX_DRAWER_HEIGHT: f32 = 600.;
 
+// The six shapes the retired layout picker could draw. Kept only so rows
+// written before the tree landed still open; nothing writes a preset.
 // Wire names keep the Tauri-era spellings (`cols-2`, not serde's kebab-case
 // `cols2`); the aliases keep rows written by 0.6.0/0.6.1 readable.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum PresetKind {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+enum PresetKind {
     #[serde(rename = "single")]
     Single,
     #[serde(rename = "cols-2", alias = "cols2")]
@@ -27,60 +29,21 @@ pub enum PresetKind {
     Rows3,
 }
 
-impl PresetKind {
-    pub const ALL: [Self; 6] = [
-        Self::Single,
-        Self::Cols2,
-        Self::Rows2,
-        Self::Main2,
-        Self::Cols3,
-        Self::Rows3,
-    ];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Single => "Single pane",
-            Self::Cols2 => "2 side by side",
-            Self::Rows2 => "2 stacked",
-            Self::Main2 => "1 big + 2 stacked",
-            Self::Cols3 => "3 columns",
-            Self::Rows3 => "3 rows",
-        }
-    }
-
-    fn pane_count(self) -> usize {
-        match self {
-            Self::Single => 1,
-            Self::Cols2 | Self::Rows2 => 2,
-            Self::Main2 | Self::Cols3 | Self::Rows3 => 3,
-        }
-    }
-
-    fn split_id_prefix(self) -> &'static str {
-        match self {
-            Self::Single => "single",
-            Self::Cols2 => "cols-2",
-            Self::Rows2 => "rows-2",
-            Self::Main2 => "main-2",
-            Self::Cols3 => "cols-3",
-            Self::Rows3 => "rows-3",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum SplitOrientation {
     Row,
     Column,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PaneLeaf {
     pub id: String,
+    #[serde(default)]
     pub session_id: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PaneSplit {
     pub id: String,
     pub orientation: SplitOrientation,
@@ -89,7 +52,8 @@ pub struct PaneSplit {
     pub b: Box<PaneNode>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
 pub enum PaneNode {
     Leaf(PaneLeaf),
     Split(PaneSplit),
@@ -112,11 +76,65 @@ impl PaneNode {
         }
     }
 
-    fn collect_split_sizes(&self, sizes: &mut BTreeMap<String, [f32; 2]>) {
-        if let Self::Split(split) = self {
-            sizes.insert(split.id.clone(), split.sizes);
-            split.a.collect_split_sizes(sizes);
-            split.b.collect_split_sizes(sizes);
+    // Leaves are `p<n>` and splits `s<n>`, both drawn from one counter so a
+    // tab never reuses a number. Legacy split ids (`cols-2:outer`) carry no
+    // number of their own and simply do not raise the mark.
+    fn highest_node_number(&self) -> usize {
+        match self {
+            Self::Leaf(leaf) => node_number(&leaf.id),
+            Self::Split(split) => node_number(&split.id)
+                .max(split.a.highest_node_number())
+                .max(split.b.highest_node_number()),
+        }
+    }
+
+    fn split_leaf(
+        &mut self,
+        pane_id: &str,
+        split_id: &str,
+        new_pane_id: &str,
+        orientation: SplitOrientation,
+    ) -> bool {
+        match self {
+            Self::Leaf(existing) => {
+                if existing.id != pane_id {
+                    return false;
+                }
+                let existing = Self::Leaf(existing.clone());
+                *self = split(
+                    split_id,
+                    orientation,
+                    [50., 50.],
+                    existing,
+                    leaf(new_pane_id, None),
+                );
+                true
+            }
+            Self::Split(parent) => {
+                parent
+                    .a
+                    .split_leaf(pane_id, split_id, new_pane_id, orientation)
+                    || parent
+                        .b
+                        .split_leaf(pane_id, split_id, new_pane_id, orientation)
+            }
+        }
+    }
+
+    // `slots` is the only pane membership the backend understands: it nulls a
+    // slot in the stored JSON when a session is archived or deleted
+    // (`repo::node::remove_session_except`) and leaves the tree alone. So the
+    // tree supplies the shape and `slots` supplies the sessions, in leaf order.
+    fn apply_slots(&mut self, slots: &[Option<String>], next: &mut usize) {
+        match self {
+            Self::Leaf(leaf) => {
+                leaf.session_id = slots.get(*next).cloned().flatten();
+                *next += 1;
+            }
+            Self::Split(split) => {
+                split.a.apply_slots(slots, next);
+                split.b.apply_slots(slots, next);
+            }
         }
     }
 
@@ -169,7 +187,6 @@ pub struct PaneLayout {
     pub parent_id: Option<String>,
     pub name: Option<String>,
     pub position: i64,
-    pub preset: PresetKind,
     pub root: PaneNode,
     pub focused_pane_id: String,
     drawer: TerminalDrawer,
@@ -296,12 +313,20 @@ impl MissionLayout {
     }
 }
 
+// `slots` and `drawer` are the backend's contract (`repo::node::StoredLayout`
+// feeds the reconciler from them), so the tree is written beside them rather
+// than in place of them. `preset` and `sizes` are read-only now: a row saved
+// before the tree landed rebuilds through them and is rewritten on its next
+// save.
 #[derive(Debug, Serialize, Deserialize)]
 struct PersistedLayout {
-    preset: PresetKind,
+    #[serde(default)]
+    tree: Option<PaneNode>,
+    #[serde(default, skip_serializing)]
+    preset: Option<PresetKind>,
     #[serde(default)]
     slots: Vec<Option<String>>,
-    #[serde(default, deserialize_with = "lenient_sizes")]
+    #[serde(default, skip_serializing, deserialize_with = "lenient_sizes")]
     sizes: BTreeMap<String, [f32; 2]>,
     #[serde(default)]
     drawer: TerminalDrawer,
@@ -336,14 +361,27 @@ impl PaneLayout {
             .with_context(|| format!("tab node {} has no layout", row.id))?;
         let persisted: PersistedLayout =
             serde_json::from_str(layout).with_context(|| format!("parse tab {} layout", row.id))?;
-        let mut root = build_preset_tree(persisted.preset, &persisted.slots);
-        root.apply_split_sizes(&persisted.sizes);
-        let focused_pane_id = root
-            .leaves()
+        let root = match persisted.tree {
+            Some(mut tree) => {
+                tree.apply_slots(&persisted.slots, &mut 0);
+                tree
+            }
+            None => {
+                let preset = persisted
+                    .preset
+                    .context("tab layout has neither a tree nor a preset")?;
+                let mut root = build_preset_tree(preset, &persisted.slots);
+                root.apply_split_sizes(&persisted.sizes);
+                root
+            }
+        };
+        let leaves = root.leaves();
+        let focused_pane_id = leaves
             .first()
-            .context("preset has no panes")?
+            .context("tab layout has no panes")?
             .id
             .clone();
+        let grouped = leaves.len() > 1;
         Ok(Self {
             id: row.id.clone(),
             parent_id: row.parent_id.clone(),
@@ -351,52 +389,26 @@ impl PaneLayout {
                 .name
                 .as_deref()
                 .map(str::trim)
-                .filter(|name| !name.is_empty() && persisted.preset != PresetKind::Single)
+                .filter(|name| !name.is_empty() && grouped)
                 .map(str::to_owned),
             position: row.position,
-            preset: persisted.preset,
             root,
             focused_pane_id,
             drawer: persisted.drawer.normalized(),
         })
     }
 
-    pub fn fresh(preset: PresetKind, focused_session_id: Option<&str>, visible: &[String]) -> Self {
-        let ordered = focused_session_id
-            .into_iter()
+    pub fn single(focused_session_id: Option<&str>, visible: &[String]) -> Self {
+        let session_id = focused_session_id
             .map(str::to_owned)
-            .chain(
-                visible
-                    .iter()
-                    .filter(|session_id| Some(session_id.as_str()) != focused_session_id)
-                    .cloned(),
-            )
-            .take(preset.pane_count())
-            .map(Some)
-            .collect::<Vec<_>>();
-        let root = build_preset_tree(preset, &ordered);
-        let leaves = root.leaves();
-        let focused_pane_id = leaves
-            .iter()
-            .find(|leaf| leaf.session_id.is_none())
-            .or_else(|| {
-                focused_session_id.and_then(|focused| {
-                    leaves
-                        .iter()
-                        .find(|leaf| leaf.session_id.as_deref() == Some(focused))
-                })
-            })
-            .unwrap_or(&leaves[0])
-            .id
-            .clone();
+            .or_else(|| visible.first().cloned());
         Self {
             id: String::new(),
             parent_id: None,
             name: None,
             position: 0,
-            preset,
-            root,
-            focused_pane_id,
+            root: leaf("p1", session_id),
+            focused_pane_id: "p1".to_owned(),
             drawer: TerminalDrawer::default(),
         }
     }
@@ -511,16 +523,20 @@ impl PaneLayout {
         self.remove_drawer_shell(session_id);
     }
 
-    pub fn apply_preset(&mut self, preset: PresetKind) {
-        let visible = self.session_ids();
-        let focused = self.focused_session_id().map(str::to_owned);
-        let next = Self::fresh(preset, focused.as_deref(), &visible);
-        self.preset = next.preset;
-        self.root = next.root;
-        self.focused_pane_id = next.focused_pane_id;
-        if preset == PresetKind::Single {
-            self.name = None;
+    /// Turns `pane_id`'s leaf into a 50/50 split with a new empty pane on the
+    /// given side, focuses the new pane and returns its id.
+    pub fn split(&mut self, pane_id: &str, orientation: SplitOrientation) -> Result<String> {
+        let next = self.root.highest_node_number() + 1;
+        let split_id = format!("s{next}");
+        let new_pane_id = format!("p{}", next + 1);
+        if !self
+            .root
+            .split_leaf(pane_id, &split_id, &new_pane_id, orientation)
+        {
+            bail!("pane not found: {pane_id}");
         }
+        self.focused_pane_id = new_pane_id.clone();
+        Ok(new_pane_id)
     }
 
     pub fn prepare_new_pane(&mut self) -> Result<String> {
@@ -544,38 +560,8 @@ impl PaneLayout {
             return Ok(pane_id);
         }
 
-        let next_preset = match self.preset {
-            PresetKind::Single => PresetKind::Cols2,
-            PresetKind::Cols2 => PresetKind::Cols3,
-            PresetKind::Rows2 => PresetKind::Rows3,
-            PresetKind::Main2 | PresetKind::Cols3 | PresetKind::Rows3 => {
-                bail!("this tab already has three panes")
-            }
-        };
-        let leaves = self.root.leaves();
-        let focused = leaves
-            .iter()
-            .position(|leaf| leaf.id == self.focused_pane_id)
-            .context("focused pane is missing")?;
-        let mut slots = leaves
-            .into_iter()
-            .map(|leaf| leaf.session_id.clone())
-            .collect::<Vec<_>>();
-        slots.insert(focused + 1, None);
-        self.preset = next_preset;
-        self.root = build_preset_tree(next_preset, &slots);
-        self.focused_pane_id = self.root.leaves()[focused + 1].id.clone();
-        Ok(self.focused_pane_id.clone())
-    }
-
-    pub fn next_split_preset(&self, orientation: SplitOrientation) -> Result<PresetKind> {
-        match (self.root.leaves().len(), orientation) {
-            (1, SplitOrientation::Row) => Ok(PresetKind::Cols2),
-            (1, SplitOrientation::Column) => Ok(PresetKind::Rows2),
-            (2, SplitOrientation::Row) => Ok(PresetKind::Cols3),
-            (2, SplitOrientation::Column) => Ok(PresetKind::Rows3),
-            _ => bail!("this tab already has three panes"),
-        }
+        let focused = self.focused_pane_id.clone();
+        self.split(&focused, SplitOrientation::Row)
     }
 
     pub fn close_pane(&mut self, pane_id: &str) -> bool {
@@ -583,15 +569,13 @@ impl PaneLayout {
             return false;
         }
 
-        let Some(mut root) = remove_pane(&self.root, pane_id) else {
+        let Some(root) = remove_pane(&self.root, pane_id) else {
             return false;
         };
         if root == self.root {
             return false;
         }
 
-        let preset = derive_preset(&root);
-        canonicalize_split_ids(&mut root, preset);
         let focused_pane_id = root
             .leaves()
             .into_iter()
@@ -600,10 +584,9 @@ impl PaneLayout {
             .expect("collapsed pane tree has a leaf")
             .id
             .clone();
-        self.preset = preset;
         self.root = root;
         self.focused_pane_id = focused_pane_id;
-        if self.preset == PresetKind::Single {
+        if matches!(self.root, PaneNode::Leaf(_)) {
             self.name = None;
         }
         true
@@ -627,17 +610,16 @@ impl PaneLayout {
     }
 
     pub fn serialize(&self) -> Result<String> {
-        let mut sizes = BTreeMap::new();
-        self.root.collect_split_sizes(&mut sizes);
         Ok(serde_json::to_string(&PersistedLayout {
-            preset: self.preset,
+            tree: Some(self.root.clone()),
+            preset: None,
             slots: self
                 .root
                 .leaves()
                 .into_iter()
                 .map(|leaf| leaf.session_id.clone())
                 .collect(),
-            sizes,
+            sizes: BTreeMap::new(),
             drawer: self.drawer.clone(),
         })?)
     }
@@ -846,38 +828,11 @@ fn remove_pane(node: &PaneNode, pane_id: &str) -> Option<PaneNode> {
     }
 }
 
-fn derive_preset(root: &PaneNode) -> PresetKind {
-    let PaneNode::Split(split) = root else {
-        return PresetKind::Single;
-    };
-    match (&*split.a, &*split.b) {
-        (PaneNode::Leaf(_), PaneNode::Leaf(_)) => match split.orientation {
-            SplitOrientation::Row => PresetKind::Cols2,
-            SplitOrientation::Column => PresetKind::Rows2,
-        },
-        (_, PaneNode::Split(inner)) => match (split.orientation, inner.orientation) {
-            (SplitOrientation::Row, SplitOrientation::Column) => PresetKind::Main2,
-            (SplitOrientation::Row, SplitOrientation::Row) => PresetKind::Cols3,
-            (SplitOrientation::Column, _) => PresetKind::Rows3,
-        },
-        (PaneNode::Split(_), PaneNode::Leaf(_)) => match split.orientation {
-            SplitOrientation::Row => PresetKind::Cols3,
-            SplitOrientation::Column => PresetKind::Rows3,
-        },
-    }
-}
-
-fn canonicalize_split_ids(root: &mut PaneNode, preset: PresetKind) {
-    let PaneNode::Split(outer) = root else {
-        return;
-    };
-    outer.id = format!("{}:outer", preset.split_id_prefix());
-    if let PaneNode::Split(inner) = outer.a.as_mut() {
-        inner.id = format!("{}:inner", preset.split_id_prefix());
-    }
-    if let PaneNode::Split(inner) = outer.b.as_mut() {
-        inner.id = format!("{}:inner", preset.split_id_prefix());
-    }
+fn node_number(id: &str) -> usize {
+    id.strip_prefix('p')
+        .or_else(|| id.strip_prefix('s'))
+        .and_then(|digits| digits.parse().ok())
+        .unwrap_or(0)
 }
 
 fn valid_sizes(sizes: [f32; 2]) -> bool {
@@ -888,7 +843,7 @@ fn valid_sizes(sizes: [f32; 2]) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{PaneLayout, PresetKind, SplitOrientation};
+    use super::{PaneLayout, PaneNode, SplitOrientation};
     use runner_backend::repo::node::{NodeRow, NodeType};
 
     fn tab_row(name: Option<&str>, layout: &PaneLayout) -> NodeRow {
@@ -909,106 +864,110 @@ mod tests {
 
     #[test]
     fn single_pane_tabs_take_their_name_from_the_session_not_the_node() {
-        let single = PaneLayout::fresh(PresetKind::Single, Some("shell"), &["shell".into()]);
+        let single = PaneLayout::single(Some("shell"), &["shell".into()]);
         let loaded = PaneLayout::from_node_row(&tab_row(Some("build"), &single)).unwrap();
         assert_eq!(loaded.name, None);
 
-        let grouped = PaneLayout::fresh(PresetKind::Cols2, Some("shell"), &["shell".into()]);
+        let mut grouped = PaneLayout::single(Some("shell"), &["shell".into()]);
+        grouped.split("p1", SplitOrientation::Row).unwrap();
         let loaded = PaneLayout::from_node_row(&tab_row(Some("build"), &grouped)).unwrap();
         assert_eq!(loaded.name.as_deref(), Some("build"));
     }
 
     #[test]
     fn closing_a_pane_only_removes_it_from_the_tab_layout() {
-        let visible = vec!["chat".to_owned(), "terminal".to_owned()];
-        let mut layout = PaneLayout::fresh(PresetKind::Cols2, Some("chat"), &visible);
-        let chat_pane = layout
-            .root
-            .leaves()
-            .into_iter()
-            .find(|leaf| leaf.session_id.as_deref() == Some("chat"))
-            .unwrap()
-            .id
-            .clone();
+        let mut layout = PaneLayout::single(Some("chat"), &["chat".into()]);
+        let terminal_pane = layout.split("p1", SplitOrientation::Row).unwrap();
+        layout.assign_session(&terminal_pane, "terminal").unwrap();
 
-        assert!(layout.close_pane(&chat_pane));
+        assert!(layout.close_pane("p1"));
 
-        assert_eq!(layout.preset, PresetKind::Single);
+        assert!(matches!(layout.root, PaneNode::Leaf(_)));
         assert_eq!(layout.session_ids(), ["terminal"]);
     }
 
     #[test]
-    fn preparing_a_new_pane_uses_focus_then_splits_up_to_three() {
-        let mut empty = PaneLayout::fresh(PresetKind::Cols2, Some("chat"), &["chat".into()]);
-        let empty_id = empty.focused_pane_id.clone();
+    fn preparing_a_new_pane_uses_an_empty_pane_then_splits_the_focused_one() {
+        let mut empty = PaneLayout::single(Some("chat"), &["chat".into()]);
+        let empty_id = empty.split("p1", SplitOrientation::Row).unwrap();
         assert_eq!(empty.prepare_new_pane().unwrap(), empty_id);
-        assert_eq!(empty.preset, PresetKind::Cols2);
 
-        let mut nonfocused_empty =
-            PaneLayout::fresh(PresetKind::Cols2, Some("chat"), &["chat".into()]);
-        let empty_id = nonfocused_empty.focused_pane_id.clone();
+        let mut nonfocused_empty = PaneLayout::single(Some("chat"), &["chat".into()]);
+        let empty_id = nonfocused_empty.split("p1", SplitOrientation::Row).unwrap();
         assert!(nonfocused_empty.focus_session("chat"));
         assert_eq!(nonfocused_empty.prepare_new_pane().unwrap(), empty_id);
         assert_eq!(nonfocused_empty.focused_pane_id, empty_id);
-        assert_eq!(nonfocused_empty.preset, PresetKind::Cols2);
 
-        let mut capped_with_empty = PaneLayout::fresh(
-            PresetKind::Cols3,
-            Some("chat"),
-            &["chat".into(), "terminal".into()],
-        );
-        let empty_id = capped_with_empty.focused_pane_id.clone();
-        assert!(capped_with_empty.focus_session("chat"));
-        assert_eq!(capped_with_empty.prepare_new_pane().unwrap(), empty_id);
-        assert_eq!(capped_with_empty.focused_pane_id, empty_id);
-        assert_eq!(capped_with_empty.preset, PresetKind::Cols3);
+        let mut full = PaneLayout::single(Some("chat"), &["chat".into()]);
+        let second = full.split("p1", SplitOrientation::Row).unwrap();
+        full.assign_session(&second, "terminal").unwrap();
+        assert!(full.focus_session("chat"));
 
-        let mut single = PaneLayout::fresh(PresetKind::Single, Some("chat"), &["chat".into()]);
-        let target = single.prepare_new_pane().unwrap();
-        assert_eq!(single.preset, PresetKind::Cols2);
-        assert_eq!(single.root.leaves()[1].id, target);
-        assert_eq!(single.session_ids(), ["chat"]);
-
-        single.assign_session(&target, "terminal").unwrap();
-        let target = single.prepare_new_pane().unwrap();
-        assert_eq!(single.preset, PresetKind::Cols3);
-        assert_eq!(single.root.leaves()[2].id, target);
-        single.assign_session(&target, "second-terminal").unwrap();
-        assert!(single.prepare_new_pane().is_err());
+        let target = full.prepare_new_pane().unwrap();
+        assert_eq!(full.root.leaves().len(), 3);
+        assert_eq!(full.root.leaves()[1].id, target);
+        assert_eq!(full.focused_pane_id, target);
+        assert_eq!(full.session_ids(), ["chat", "terminal"]);
     }
 
     #[test]
-    fn applying_two_pane_presets_leaves_the_new_pane_empty_and_focused() {
-        for preset in [PresetKind::Cols2, PresetKind::Rows2] {
-            let mut layout = PaneLayout::fresh(PresetKind::Single, Some("chat"), &["chat".into()]);
+    fn splitting_a_root_leaf_numbers_the_split_and_the_new_pane_and_focuses_it() {
+        for orientation in [SplitOrientation::Row, SplitOrientation::Column] {
+            let mut layout = PaneLayout::single(Some("chat"), &["chat".into()]);
 
-            layout.apply_preset(preset);
+            let new_pane = layout.split("p1", orientation).unwrap();
 
+            assert_eq!(new_pane, "p3");
+            assert_eq!(layout.focused_pane_id, "p3");
             assert_eq!(layout.session_ids(), ["chat"]);
-            assert_eq!(layout.root.leaves().len(), 2);
-            assert!(layout.focused_session_id().is_none());
-
-            layout.apply_preset(PresetKind::Single);
-            assert_eq!(layout.focused_session_id(), Some("chat"));
+            let PaneNode::Split(split) = &layout.root else {
+                panic!("the root leaf must become a split");
+            };
+            assert_eq!(split.id, "s2");
+            assert_eq!(split.orientation, orientation);
+            assert_eq!(split.sizes, [50., 50.]);
+            assert_eq!(
+                layout
+                    .root
+                    .leaves()
+                    .iter()
+                    .map(|leaf| leaf.id.as_str())
+                    .collect::<Vec<_>>(),
+                ["p1", "p3"]
+            );
         }
     }
 
     #[test]
-    fn split_shortcuts_grow_rows_or_columns_and_stop_at_three() {
-        for (orientation, two, three) in [
-            (SplitOrientation::Row, PresetKind::Cols2, PresetKind::Cols3),
-            (
-                SplitOrientation::Column,
-                PresetKind::Rows2,
-                PresetKind::Rows3,
-            ),
-        ] {
-            let mut layout = PaneLayout::fresh(PresetKind::Single, Some("chat"), &["chat".into()]);
-            assert_eq!(layout.next_split_preset(orientation).unwrap(), two);
-            layout.apply_preset(two);
-            assert_eq!(layout.next_split_preset(orientation).unwrap(), three);
-            layout.apply_preset(three);
-            assert!(layout.next_split_preset(orientation).is_err());
-        }
+    fn splitting_a_nested_leaf_nests_again_and_close_pane_collapses_back() {
+        let mut layout = PaneLayout::single(Some("a"), &["a".into()]);
+        let second = layout.split("p1", SplitOrientation::Row).unwrap();
+        layout.assign_session(&second, "b").unwrap();
+        let before = layout.root.clone();
+
+        let third = layout.split(&second, SplitOrientation::Column).unwrap();
+
+        assert_eq!(third, "p5");
+        assert_eq!(layout.focused_pane_id, "p5");
+        assert_eq!(layout.session_ids(), ["a", "b"]);
+        let PaneNode::Split(outer) = &layout.root else {
+            panic!("the outer split must survive");
+        };
+        assert_eq!(outer.id, "s2");
+        let PaneNode::Split(inner) = outer.b.as_ref() else {
+            panic!("the nested leaf must become a split");
+        };
+        assert_eq!(inner.id, "s4");
+        assert_eq!(inner.orientation, SplitOrientation::Column);
+
+        assert!(layout.close_pane(&third));
+        assert_eq!(layout.root, before);
+    }
+
+    #[test]
+    fn splitting_an_unknown_pane_is_an_error() {
+        let mut layout = PaneLayout::single(Some("chat"), &["chat".into()]);
+        assert!(layout.split("p9", SplitOrientation::Row).is_err());
+        assert!(matches!(layout.root, PaneNode::Leaf(_)));
     }
 }
