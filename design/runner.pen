@@ -80162,6 +80162,711 @@
           ]
         }
       ]
+    },
+    {
+      "type": "frame",
+      "id": "Id1kj",
+      "x": 4408,
+      "y": 5174,
+      "name": "Spec — Pane × archives the chat (567) · v1",
+      "width": 1500,
+      "height": 844,
+      "fill": "$bg",
+      "layout": "none",
+      "children": [
+        {
+          "type": "text",
+          "id": "wvZO0",
+          "x": 24,
+          "y": 20,
+          "name": "spec_title",
+          "fill": "$text-hi",
+          "content": "Spec — Pane × archives the chat (567) · v1",
+          "fontFamily": "$font-ui",
+          "fontSize": 14,
+          "fontWeight": "bold"
+        },
+        {
+          "type": "text",
+          "id": "zTU47",
+          "x": 24,
+          "y": 42,
+          "name": "spec_sub",
+          "fill": "$text-mid",
+          "textGrowth": "fixed-width",
+          "width": 1452,
+          "content": "× on a split chat pane archives the chat instead of popping it out into its own tab. Every chat × confirms, running or stopped; the empty stub and the terminal × are unchanged; ⌘W in a split does what × does; ⋯ → Archive chat and the sidebar's Archive stay silent.",
+          "lineHeight": 1.5,
+          "fontFamily": "$font-ui",
+          "fontSize": 11,
+          "fontWeight": "normal"
+        },
+        {
+          "type": "text",
+          "id": "r3rgsx",
+          "x": 24,
+          "y": 82,
+          "name": "cap_a",
+          "fill": "$text-low",
+          "content": "A · TWO PANES — × ON A RUNNING CHAT OPENS ARCHIVE CHAT?",
+          "fontFamily": "$font-ui",
+          "fontSize": 11,
+          "fontWeight": "normal"
+        },
+        {
+          "type": "frame",
+          "id": "l6SdHl",
+          "x": 24,
+          "y": 100,
+          "name": "surface_two_panes",
+          "clip": true,
+          "width": 700,
+          "height": 290,
+          "fill": "$bg",
+          "stroke": "$line",
+          "strokeWidth": 1,
+          "strokeAlignment": "inner",
+          "layout": "vertical",
+          "children": [
+            {
+              "type": "frame",
+              "id": "t7bn0D",
+              "name": "header",
+              "width": "fill_container",
+              "height": 38,
+              "fill": "$panel",
+              "stroke": "$hairline",
+              "strokeWidth": {
+                "bottom": 1
+              },
+              "strokeAlignment": "inner",
+              "gap": 4,
+              "padding": [
+                0,
+                8
+              ],
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "frame",
+                  "id": "VKaN4",
+                  "name": "title_cluster",
+                  "fill": "#00000000",
+                  "stroke": "$sidebar-sel-border",
+                  "strokeAlignment": "inner",
+                  "gap": 9,
+                  "padding": [
+                    0,
+                    4
+                  ],
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "icon",
+                      "id": "U4eCkQ",
+                      "name": "i",
+                      "width": 14,
+                      "height": 14,
+                      "icon": "square-split-horizontal",
+                      "library": "lucide",
+                      "fill": "$text-mid"
+                    },
+                    {
+                      "type": "text",
+                      "id": "hXa0o",
+                      "name": "l",
+                      "fill": "$text-hi",
+                      "content": "Claude Code + zsh",
+                      "fontFamily": "$font-ui",
+                      "fontSize": 13,
+                      "fontWeight": "500"
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "weuDI",
+                  "name": "header_kebab",
+                  "height": 26,
+                  "padding": [
+                    0,
+                    4
+                  ],
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "icon",
+                      "id": "V9mDKP",
+                      "name": "d",
+                      "width": 13,
+                      "height": 13,
+                      "icon": "ellipsis",
+                      "library": "lucide",
+                      "fill": "$text-mid"
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "bUYi4",
+                  "name": "sp",
+                  "width": "fill_container",
+                  "height": 1
+                },
+                {
+                  "type": "frame",
+                  "id": "pPhSL",
+                  "name": "right",
+                  "gap": 12,
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "icon",
+                      "id": "zYqVv",
+                      "name": "a",
+                      "width": 14,
+                      "height": 14,
+                      "icon": "columns-2",
+                      "library": "lucide",
+                      "fill": "$text-mid"
+                    },
+                    {
+                      "type": "icon",
+                      "id": "IBfed",
+                      "name": "b",
+                      "width": 14,
+                      "height": 14,
+                      "icon": "panel-right",
+                      "library": "lucide",
+                      "fill": "$text-mid"
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "T5mWgr",
+              "name": "split",
+              "width": "fill_container",
+              "height": "fill_container",
+              "children": [
+                {
+                  "type": "frame",
+                  "id": "O1REh",
+                  "name": "view",
+                  "clip": true,
+                  "width": "fill_container",
+                  "height": "fill_container",
+                  "stroke": "$accent",
+                  "strokeWidth": 1,
+                  "strokeAlignment": "inner",
+                  "layout": "vertical",
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "BNnrS",
+                      "name": "idline",
+                      "width": "fill_container",
+                      "height": 26,
+                      "gap": 6,
+                      "padding": [
+                        0,
+                        8,
+                        0,
+                        10
+                      ],
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "icon",
+                          "id": "y57sjb",
+                          "name": "i",
+                          "width": 12,
+                          "height": 12,
+                          "icon": "terminal",
+                          "library": "lucide",
+                          "fill": "$accent"
+                        },
+                        {
+                          "type": "text",
+                          "id": "jOWNa",
+                          "name": "n",
+                          "fill": "$text-hi",
+                          "content": "Claude Code",
+                          "fontFamily": "$font-ui",
+                          "fontSize": 12,
+                          "fontWeight": "500"
+                        },
+                        {
+                          "type": "ellipse",
+                          "id": "jbhwr",
+                          "name": "d",
+                          "fill": "$warn",
+                          "width": 5,
+                          "height": 5
+                        },
+                        {
+                          "type": "frame",
+                          "id": "V2lYZ6",
+                          "name": "kebab",
+                          "height": "fill_container",
+                          "padding": [
+                            0,
+                            4
+                          ],
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "icon",
+                              "id": "Wezr7",
+                              "name": "d",
+                              "width": 13,
+                              "height": 13,
+                              "icon": "ellipsis",
+                              "library": "lucide",
+                              "fill": "$text-mid"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "ggN4P",
+                          "name": "sp",
+                          "width": "fill_container",
+                          "height": 1
+                        },
+                        {
+                          "type": "frame",
+                          "id": "cytSD",
+                          "name": "close_view",
+                          "height": "fill_container",
+                          "padding": [
+                            0,
+                            4
+                          ],
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "icon",
+                              "id": "c7zgSV",
+                              "name": "d",
+                              "width": 13,
+                              "height": 13,
+                              "icon": "x",
+                              "library": "lucide",
+                              "fill": "$text-low"
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "etvAv",
+                      "name": "body",
+                      "clip": true,
+                      "width": "fill_container",
+                      "height": "fill_container",
+                      "layout": "vertical",
+                      "gap": 4,
+                      "padding": [
+                        10,
+                        12
+                      ],
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "cZ8aF",
+                          "name": "ln",
+                          "fill": "$text-hi",
+                          "content": "⏺ Ran cargo test -p runner-backend",
+                          "fontFamily": "$font-mono",
+                          "fontSize": 11,
+                          "fontWeight": "normal"
+                        },
+                        {
+                          "type": "text",
+                          "id": "iNJmP",
+                          "name": "ln",
+                          "fill": "$text-low",
+                          "content": "   test repo::runner::tests … ok",
+                          "fontFamily": "$font-mono",
+                          "fontSize": 11,
+                          "fontWeight": "normal"
+                        },
+                        {
+                          "type": "text",
+                          "id": "GdsMW",
+                          "name": "ln",
+                          "fill": "$text-low",
+                          "content": "   test session::tests … ok",
+                          "fontFamily": "$font-mono",
+                          "fontSize": 11,
+                          "fontWeight": "normal"
+                        },
+                        {
+                          "type": "text",
+                          "id": "XUH4h",
+                          "name": "ln",
+                          "fill": "$text-hi",
+                          "content": "❯ ▏",
+                          "fontFamily": "$font-mono",
+                          "fontSize": 11,
+                          "fontWeight": "normal"
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "type": "rectangle",
+                  "id": "gKVoR",
+                  "name": "divider",
+                  "fill": "$hairline",
+                  "width": 1,
+                  "height": "fill_container"
+                },
+                {
+                  "type": "frame",
+                  "id": "RyD0v",
+                  "name": "view",
+                  "clip": true,
+                  "width": "fill_container",
+                  "height": "fill_container",
+                  "layout": "vertical",
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "S9ISe",
+                      "name": "idline",
+                      "width": "fill_container",
+                      "height": 26,
+                      "gap": 6,
+                      "padding": [
+                        0,
+                        8,
+                        0,
+                        10
+                      ],
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "icon",
+                          "id": "qOIwO",
+                          "name": "i",
+                          "width": 12,
+                          "height": 12,
+                          "icon": "square-terminal",
+                          "library": "lucide",
+                          "fill": "$text-low"
+                        },
+                        {
+                          "type": "text",
+                          "id": "qhqwn",
+                          "name": "n",
+                          "fill": "$text-mid",
+                          "content": "zsh",
+                          "fontFamily": "$font-ui",
+                          "fontSize": 12,
+                          "fontWeight": "500"
+                        },
+                        {
+                          "type": "frame",
+                          "id": "YzJSJ",
+                          "name": "kebab",
+                          "height": "fill_container",
+                          "padding": [
+                            0,
+                            4
+                          ],
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "icon",
+                              "id": "B67LK",
+                              "name": "d",
+                              "width": 13,
+                              "height": 13,
+                              "icon": "ellipsis",
+                              "library": "lucide",
+                              "fill": "$text-mid"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "DmJGD",
+                          "name": "sp",
+                          "width": "fill_container",
+                          "height": 1
+                        },
+                        {
+                          "type": "frame",
+                          "id": "xvoJ9",
+                          "name": "close_view",
+                          "height": "fill_container",
+                          "padding": [
+                            0,
+                            4
+                          ],
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "icon",
+                              "id": "E4JO0",
+                              "name": "d",
+                              "width": 13,
+                              "height": 13,
+                              "icon": "x",
+                              "library": "lucide",
+                              "fill": "$text-low"
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "xCY0e",
+                      "name": "body",
+                      "clip": true,
+                      "width": "fill_container",
+                      "height": "fill_container",
+                      "layout": "vertical",
+                      "gap": 4,
+                      "padding": [
+                        10,
+                        12
+                      ],
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "ZbWmb",
+                          "name": "ln",
+                          "fill": "$text-hi",
+                          "content": "$ git status",
+                          "fontFamily": "$font-mono",
+                          "fontSize": 11,
+                          "fontWeight": "normal"
+                        },
+                        {
+                          "type": "text",
+                          "id": "gmJU3",
+                          "name": "ln",
+                          "fill": "$text-low",
+                          "content": "On branch feat/64-terminal",
+                          "fontFamily": "$font-mono",
+                          "fontSize": 11,
+                          "fontWeight": "normal"
+                        },
+                        {
+                          "type": "text",
+                          "id": "I1Hny",
+                          "name": "ln",
+                          "fill": "$accent",
+                          "content": "nothing to commit",
+                          "fontFamily": "$font-mono",
+                          "fontSize": 11,
+                          "fontWeight": "normal"
+                        },
+                        {
+                          "type": "text",
+                          "id": "V7X58p",
+                          "name": "ln",
+                          "fill": "$text-hi",
+                          "content": "▏",
+                          "fontFamily": "$font-mono",
+                          "fontSize": 11,
+                          "fontWeight": "normal"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "rectangle",
+          "id": "TFJ66",
+          "x": 24,
+          "y": 100,
+          "name": "scrim",
+          "fill": "#00000059",
+          "width": 700,
+          "height": 290
+        },
+        {
+          "id": "NTHFh",
+          "type": "ref",
+          "ref": "tK5Xb",
+          "name": "confirm_archive_running",
+          "x": 164,
+          "y": 168,
+          "descendants": {
+            "CucJL": {
+              "icon": "archive",
+              "fill": "#F87171"
+            },
+            "igS7I": {
+              "content": "Archive chat?"
+            },
+            "FbcRk": {
+              "content": "@coder is still running. Archiving stops it. You can restore the chat from Settings → Archived."
+            },
+            "ecePg": {
+              "fill": "#2A1416",
+              "stroke": "#4A2226"
+            },
+            "Lw5AS": {
+              "content": "Archive chat",
+              "fill": "#F87171"
+            }
+          }
+        },
+        {
+          "type": "text",
+          "id": "LPFbX",
+          "x": 24,
+          "y": 400,
+          "name": "cap_a_note",
+          "fill": "$text-low",
+          "textGrowth": "fixed-width",
+          "width": 700,
+          "content": "Confirm stops @coder, archives the chat, drops the pane; the split re-flows to one pane as today. Cancel changes nothing. The body's name is session_label, the same label the sidebar and the fork dialog use.",
+          "lineHeight": 1.4,
+          "fontFamily": "$font-ui",
+          "fontSize": 10,
+          "fontWeight": "normal"
+        },
+        {
+          "type": "text",
+          "id": "zC4u8",
+          "x": 756,
+          "y": 82,
+          "name": "cap_b",
+          "fill": "$text-low",
+          "content": "B · THE SAME × ON A STOPPED CHAT — SHORTER BODY, NOTHING TO STOP",
+          "fontFamily": "$font-ui",
+          "fontSize": 11,
+          "fontWeight": "normal"
+        },
+        {
+          "id": "iYQr9",
+          "type": "ref",
+          "ref": "tK5Xb",
+          "name": "confirm_archive_stopped",
+          "x": 756,
+          "y": 100,
+          "descendants": {
+            "CucJL": {
+              "icon": "archive",
+              "fill": "#F87171"
+            },
+            "igS7I": {
+              "content": "Archive chat?"
+            },
+            "FbcRk": {
+              "content": "You can restore @coder from Settings → Archived."
+            },
+            "ecePg": {
+              "fill": "#2A1416",
+              "stroke": "#4A2226"
+            },
+            "Lw5AS": {
+              "content": "Archive chat",
+              "fill": "#F87171"
+            }
+          }
+        },
+        {
+          "type": "text",
+          "id": "b8rzrG",
+          "x": 756,
+          "y": 263,
+          "name": "cap_c",
+          "fill": "$text-low",
+          "content": "C · THE CHAT IS THE TAB'S ONLY SESSION AND THE DRAWER HAS SHELLS — THE EXISTING ARCHIVE ALL? SHOWS INSTEAD",
+          "fontFamily": "$font-ui",
+          "fontSize": 11,
+          "fontWeight": "normal"
+        },
+        {
+          "id": "NQMjl",
+          "type": "ref",
+          "ref": "tK5Xb",
+          "name": "confirm_archive_all",
+          "x": 756,
+          "y": 281,
+          "descendants": {
+            "igS7I": {
+              "content": "Archive all?"
+            },
+            "FbcRk": {
+              "content": "This archives 1 chat and permanently closes 1 terminal. Archived chats can be restored from Settings → Archived; closed terminals cannot."
+            },
+            "Lw5AS": {
+              "content": "Archive all"
+            }
+          }
+        },
+        {
+          "type": "text",
+          "id": "Vm78X",
+          "x": 24,
+          "y": 486,
+          "name": "cap_rule",
+          "fill": "$text-low",
+          "content": "THE RULE",
+          "fontFamily": "$font-ui",
+          "fontSize": 11,
+          "fontWeight": "normal"
+        },
+        {
+          "type": "text",
+          "id": "uLr2F",
+          "x": 24,
+          "y": 508,
+          "name": "notes_rule",
+          "fill": "$text-mid",
+          "textGrowth": "fixed-width",
+          "width": 700,
+          "content": "CHAT PANE, RUNNING OR STOPPED — × opens Archive chat?. Confirm stops the agent if it is running, archives the session, and drops the pane; the split re-flows as today. Cancel changes nothing.\n\nWHY EVERY CHAT × CONFIRMS — × is a wordless one-click button in a corner whose meaning changes in this release. Archive is reversible, but it stops a live agent and takes the chat out of the split, and the dialog is the one place that says so. A menu item labelled Archive is its own confirmation, so ⋯ → Archive chat and the sidebar's Archive stay silent. Rejected: confirm only while the agent is busy (it cannot see a chat whose session key is not captured yet, and the user has no model for that anyway), and confirm only while the process is alive (a stopped chat would then vanish on one click, the exact surprise this spec removes).\n\nEMPTY STUB — layout-only close, no dialog. TERMINAL — unchanged: foreground-process confirm, then kill and drop. ⌘W IN A SPLIT — the same request as ×; on a single-pane tab it still closes the window. ⋯ → ARCHIVE CHAT — unchanged: archive the session, leave the pane in place, empty. × is archive plus close.\n\nRESTORE — Settings → Archived → Restore clears the marker; the node reconciler wraps the active, uncovered session in a fresh single-pane tab at the end of its project. The old split is not remembered, on purpose. Nothing here touches the restore path.",
+          "lineHeight": 1.5,
+          "fontFamily": "$font-ui",
+          "fontSize": 12,
+          "fontWeight": "normal"
+        },
+        {
+          "type": "text",
+          "id": "yOLTl",
+          "x": 756,
+          "y": 486,
+          "name": "cap_code",
+          "fill": "$text-low",
+          "content": "WHAT CHANGES IN CODE",
+          "fontFamily": "$font-ui",
+          "fontSize": 11,
+          "fontWeight": "normal"
+        },
+        {
+          "type": "text",
+          "id": "m3zVD",
+          "x": 756,
+          "y": 508,
+          "name": "notes_code",
+          "fill": "$text-mid",
+          "textGrowth": "fixed-width",
+          "width": 700,
+          "content": "ONE REQUEST — request_close_chat_pane(pane_id, session_id) on the root. If archive_targets_for_chats grows the set (the chat is the tab's only session and the drawer holds shells), hand off to request_archive_all and the Archive all? dialog. Otherwise set TerminalCloseTarget::ArchiveChatPane { pane_id, session_id }; render_terminal_close_confirm picks the body by the entry's status.\n\nORDER — archive first through the existing archive_all_sessions path; drop the pane only after the archive has completed and tabs have reloaded. At that point the leaf is an empty stub, so the drop is the existing layout-only close_pane and no tree read can re-adopt the session in between. That re-adoption is today's pop-out.\n\nONE FORK — pane_close_behavior gains the chat case so the × button and the close-pane handler in main.rs share it instead of carrying two copies.\n\nDIALOG — the existing ConfirmDialog with .icon(\"archive.svg\") and the default danger button, the same red as Archive all? and Close terminal?; only the fork dialog is primary. Archive all? is untouched.\n\nDOCS — spec 64's \"× is a layout action\" paragraph gets a pointer to 567; the chat × line in the 64 smoke test is rewritten.",
+          "lineHeight": 1.5,
+          "fontFamily": "$font-ui",
+          "fontSize": 12,
+          "fontWeight": "normal"
+        }
+      ]
     }
   ],
   "themes": {
