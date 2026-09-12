@@ -1899,8 +1899,9 @@ impl NativeRoot {
                     )
                     .child(name)
                     .children(status.map(render_pane_header_status))
-                    .child(split_menu)
                     .children(menu)
+                    .child(div().min_w(px(0.)).flex_1())
+                    .child(split_menu)
                     .into_any_element()
             } else {
                 div()
@@ -1923,6 +1924,7 @@ impl NativeRoot {
                             .text_color(theme::faint())
                             .child("Empty"),
                     )
+                    .child(div().min_w(px(0.)).flex_1())
                     .child(split_menu)
                     .into_any_element()
             };
