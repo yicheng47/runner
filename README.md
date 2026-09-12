@@ -59,7 +59,7 @@ Runner is a **native terminal that orchestrates coding agents**. Each agent keep
 
 The coordination model is explicit. A **runner** is a reusable agent configuration — runtime, role, system prompt, working directory. A **crew** composes runners with exactly one lead. Starting a **mission** spawns one real PTY per slot into a tabbed workspace where the crew coordinates over an append-only event log: handoffs and status flow between agents, and when a decision needs a human, `ask_human` surfaces it in the feed. Everything runs and persists locally — sessions are real processes on your machine, and the log is on-disk and replayable.
 
-Runner also runs as an **MCP server**: any MCP client — including the agents themselves — can create crews, start missions, and steer them programmatically. See [Drive it from your agents](#drive-it-from-your-agents-mcp).
+Runner also runs as an **MCP server**: any MCP client — including the agents themselves — can create crews, start missions, and steer them programmatically. See [Drive Runner from your agents](#drive-runner-from-your-agents).
 
 Runner is a native macOS and Windows app written in Rust: [gpui-ce](https://github.com/gpui-ce/gpui-ce) — the community-maintained fork of [Zed](https://zed.dev)'s GPUI — for the UI, `alacritty_terminal` for the terminal grid, SQLite for state. No webview.
 
@@ -164,25 +164,18 @@ Runner is an MCP server too. **Settings → Agents** registers it with Claude Co
 </tr>
 <tr>
 <td width="50%">
+  <img src="assets/light.png" alt="Runner in Runner Light — a Claude Code chat on the light theme" width="100%" />
   <img src="assets/appearance.png" alt="Settings → Appearance — light and dark previews with an app and a terminal palette per mode" width="100%" />
 </td>
 <td width="50%" valign="middle">
 
+### Light and dark, designed for Runner
+
+Carbon and Runner Light are Runner's own themes; Catppuccin Mocha and Latte ride along. Auto follows the OS, Light and Dark pin it, and a Claude Code chat follows the flip the moment it happens, no restart, no `/theme`.
+
 ### A palette per mode, previewed
 
-**Settings → Appearance** picks an app palette and a terminal palette for light and for dark above a live preview of both modes, so a light app gets a light terminal without a second setting. Carbon and Runner Light are designed for Runner; Catppuccin Mocha and Latte ride along; Rosé Pine Dawn is the default light terminal.
-
-</td>
-</tr>
-<tr>
-<td width="50%">
-  <img src="assets/light.png" alt="Runner in Runner Light — a Claude Code chat on the light theme" width="100%" />
-</td>
-<td width="50%" valign="middle">
-
-### Runner Light
-
-A light theme designed for Runner rather than borrowed: the chrome, the sidebar, and the terminal ground agree, and a Claude Code chat follows the flip the moment it happens, no restart, no `/theme`. Auto follows the OS; Light and Dark pin it.
+**Settings → Appearance** picks an app palette and a terminal palette for light and for dark above a live preview of both modes, so a light app gets a light terminal without a second setting. Rosé Pine Dawn is the default light terminal.
 
 </td>
 </tr>
