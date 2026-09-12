@@ -53,15 +53,15 @@
 
 ## About
 
-Runner is a local desktop workspace for operating multiple CLI coding agents at once. Instead of scattering Claude Code and Codex sessions across terminal windows, you run them as an organized fleet — configured runners, composed crews, coordinated missions — from a single app.
+Runner is a native desktop app for running several CLI coding agents at once. Claude Code and Codex keep their own TUI in a real terminal; Runner is the layer around them.
 
-Runner is a **native terminal that orchestrates coding agents**. Each agent keeps its own TUI in a real PTY; Runner adds the session layer around it. Where an IDE organizes buffers and a debugger around the code you write, Runner organizes terminals, crews, and event feeds around the agents writing it. The operator's job shifts accordingly: assign roles, start missions, monitor progress, review diffs, and make the calls agents escalate to you.
+- **Runner** — a reusable agent configuration: runtime, role, system prompt, working directory.
+- **Crew** — runners composed into named slots with one lead, plus the team conventions every mission inherits.
+- **Mission** — a crew working one goal: one live terminal per slot, coordinating over an event feed that persists and replays, with `ask_human` when a decision is yours.
+- **Chat** — a single agent in a real terminal, no mission required; tabs hold up to three side by side.
+- **MCP** — everything above is also a tool, so your agents can run Runner themselves.
 
-The coordination model is explicit. A **runner** is a reusable agent configuration — runtime, role, system prompt, working directory. A **crew** composes runners with exactly one lead. Starting a **mission** spawns one real PTY per slot into a tabbed workspace where the crew coordinates over an append-only event log: handoffs and status flow between agents, and when a decision needs a human, `ask_human` surfaces it in the feed. Everything runs and persists locally — sessions are real processes on your machine, and the log is on-disk and replayable.
-
-Runner also runs as an **MCP server**: any MCP client — including the agents themselves — can create crews, start missions, and steer them programmatically. See [Drive Runner from your agents](#drive-runner-from-your-agents).
-
-Runner is a native macOS and Windows app written in Rust: [gpui-ce](https://github.com/gpui-ce/gpui-ce) — the community-maintained fork of [Zed](https://zed.dev)'s GPUI — for the UI, `alacritty_terminal` for the terminal grid, SQLite for state. No webview.
+Written in Rust on [gpui-ce](https://github.com/gpui-ce/gpui-ce), the community fork of [Zed](https://zed.dev)'s GPUI, with `alacritty_terminal` for the grid and SQLite for state. No webview. Everything runs and persists on your machine.
 
 ## Download
 
