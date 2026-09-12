@@ -11,6 +11,7 @@ use crate::theme;
 use crate::ui::app_zoom;
 use crate::ui::button::{IconButton, IconButtonSize};
 use crate::ui::scrollbar::Scrollbar;
+use crate::ui::tooltip::tooltip_view;
 
 pub type MenuHandler = Rc<dyn Fn(usize, &mut Window, &mut App)>;
 pub type DismissHandler = Rc<dyn Fn(&mut Window, &mut App)>;
@@ -21,6 +22,7 @@ pub struct MenuItem {
     pub description: Option<SharedString>,
     pub icon: Option<SharedString>,
     pub shortcut: Option<SharedString>,
+    pub tooltip: Option<SharedString>,
     pub destructive: bool,
     pub disabled: bool,
     pub separator_before: bool,
@@ -33,6 +35,7 @@ impl MenuItem {
             description: None,
             icon: None,
             shortcut: None,
+            tooltip: None,
             destructive: false,
             disabled: false,
             separator_before: false,
@@ -51,6 +54,12 @@ impl MenuItem {
 
     pub fn shortcut(mut self, shortcut: impl Into<SharedString>) -> Self {
         self.shortcut = Some(shortcut.into());
+        self
+    }
+
+    /// Hover copy for the row — the only way a disabled item can say why.
+    pub fn tooltip(mut self, tooltip: impl Into<SharedString>) -> Self {
+        self.tooltip = Some(tooltip.into());
         self
     }
 
@@ -500,6 +509,9 @@ impl Render for PopoverMenu {
                             .text_color(theme::faint())
                             .child(shortcut)
                     }))
+                    .when_some(item.tooltip, |row, tooltip| {
+                        row.tooltip(move |_, cx| tooltip_view(tooltip.clone(), cx))
+                    })
                     .when(!item.disabled, |row| {
                         row.on_click(move |_, window, cx| {
                             click_entity.update(cx, |menu, cx| {

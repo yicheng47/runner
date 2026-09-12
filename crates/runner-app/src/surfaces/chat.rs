@@ -1136,13 +1136,6 @@ impl NativeRoot {
         })
     }
 
-    fn focused_pane_is_terminal(&self, cx: &App) -> bool {
-        self.active_focused_session_id().is_some_and(|session_id| {
-            self.session_entry(&session_id, cx)
-                .is_some_and(|entry| Runtime::parse(&entry.agent_runtime) == Some(Runtime::Shell))
-        })
-    }
-
     pub(crate) fn active_focused_session_id(&self) -> Option<String> {
         self.tabs
             .active()
@@ -1199,7 +1192,6 @@ impl NativeRoot {
             return;
         }
         self.sync_active_project_from_active_tab(cx);
-        self.layout_picker_open = false;
         match self.ensure_active_tab_attached(window, cx) {
             Ok(()) => {
                 self.chat_error = None;
@@ -1657,28 +1649,49 @@ impl NativeRoot {
         cx.notify();
     }
 
-    pub(crate) fn pick_preset(
+    /// Splits one pane, then reloads so the new empty pane is attached,
+    /// remembered and focused the way any layout change is. Both the menu
+    /// item and the shortcuts land here, so the size floor is judged once.
+    pub(crate) fn split_pane(
         &mut self,
-        preset: PresetKind,
+        pane_id: &str,
+        orientation: SplitOrientation,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.layout_picker_open = false;
-        let Some(original) = self.tabs.active().cloned() else {
-            cx.notify();
+        if self.route != AppRoute::Chat {
+            return;
+        }
+        let Some(tab_id) = self.tabs.active().map(|layout| layout.id.clone()) else {
             return;
         };
-        let terminal_location = self
-            .focused_pane_is_terminal(cx)
-            .then(|| self.terminal_start_location(cx));
-        let layout = self.tabs.active_mut().expect("active tab was cloned");
-        layout.apply_preset(preset);
-        if let Some((project_id, cwd)) = terminal_location {
-            if layout.focused_session_id().is_none() {
-                let pane_id = layout.focused_pane_id.clone();
-                self.spawn_terminal_in_pane(pane_id, original, project_id, cwd, window, cx);
+        let bounds = self
+            .pane_bounds
+            .get(&PaneKey::new(&tab_id, pane_id))
+            .copied();
+        match split_decision(
+            self.active_tab_is_terminal_only(cx),
+            bounds,
+            orientation,
+            self.settings(cx).app_zoom,
+        ) {
+            SplitDecision::Allowed => {}
+            SplitDecision::NotSplittable => return,
+            SplitDecision::Blocked(reason) => {
+                self.chat_error = Some(reason.to_owned());
+                cx.notify();
                 return;
             }
+        }
+        let split = self
+            .tabs
+            .active_mut()
+            .context("active tab is missing")
+            .and_then(|layout| layout.split(pane_id, orientation));
+        if let Err(error) = split {
+            self.chat_error = Some(error.to_string());
+            cx.notify();
+            return;
         }
         let result = self
             .persist_active_tab(cx)
@@ -1702,7 +1715,7 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.split_pane(SplitOrientation::Row, window, cx);
+        self.split_focused_pane(SplitOrientation::Row, window, cx);
     }
 
     pub(crate) fn split_pane_down(
@@ -1711,30 +1724,23 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.split_pane(SplitOrientation::Column, window, cx);
+        self.split_focused_pane(SplitOrientation::Column, window, cx);
     }
 
-    fn split_pane(
+    fn split_focused_pane(
         &mut self,
         orientation: SplitOrientation,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.route != AppRoute::Chat {
-            return;
-        }
-        match self
+        let Some(pane_id) = self
             .tabs
             .active()
-            .context("active tab is missing")
-            .and_then(|layout| layout.next_split_preset(orientation))
-        {
-            Ok(preset) => self.pick_preset(preset, window, cx),
-            Err(error) => {
-                self.chat_error = Some(error.to_string());
-                cx.notify();
-            }
-        }
+            .map(|layout| layout.focused_pane_id.clone())
+        else {
+            return;
+        };
+        self.split_pane(&pane_id, orientation, window, cx);
     }
 
     pub(crate) fn persist_active_tab(&self, cx: &App) -> Result<()> {
@@ -2190,7 +2196,7 @@ mod tests {
         fork_materializing, pane_rename_change, PaneRenameChange,
     };
     use crate::{PendingPaneClose, TerminalCloseTarget};
-    use runner_app::pane_layout::{PaneLayout, PresetKind};
+    use runner_app::pane_layout::{PaneLayout, SplitOrientation};
     use runner_backend::model::SessionStatus;
     use runner_backend::ops::session::DirectSessionEntry;
     use std::collections::HashMap;
@@ -2220,11 +2226,9 @@ mod tests {
 
     #[test]
     fn archive_chat_pane_target_pins_the_requesting_tab_before_confirm() {
-        let mut requesting = PaneLayout::fresh(
-            PresetKind::Cols2,
-            Some("chat"),
-            &["chat".into(), "other".into()],
-        );
+        let mut requesting = PaneLayout::single(Some("chat"), &["chat".into()]);
+        let other = requesting.split("p1", SplitOrientation::Row).unwrap();
+        requesting.assign_session(&other, "other").unwrap();
         requesting.id = "tab-a".into();
         let TerminalCloseTarget::ArchiveChatPane { session_id, close } =
             archive_chat_pane_target(&requesting, "p1", "chat")

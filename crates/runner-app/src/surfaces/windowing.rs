@@ -213,15 +213,8 @@ mod tests {
 
     #[test]
     fn chat_subjects_come_from_every_leaf_in_the_active_pane_tree() {
-        let mut layout = PaneLayout::fresh(PresetKind::Cols2, Some("chat-a"), &["chat-a".into()]);
-        let empty = layout
-            .root
-            .leaves()
-            .into_iter()
-            .find(|leaf| leaf.session_id.is_none())
-            .unwrap()
-            .id
-            .clone();
+        let mut layout = PaneLayout::single(Some("chat-a"), &["chat-a".into()]);
+        let empty = layout.split("p1", SplitOrientation::Row).unwrap();
         layout.assign_session(&empty, "chat-b").unwrap();
         assert_eq!(
             subjects_for_pane_tree(&layout.root),
