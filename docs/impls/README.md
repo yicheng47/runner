@@ -6,6 +6,7 @@ A plan stays here while its work is in flight and moves to [`archive/`](./archiv
 
 ## Active
 
+- [`570-split-panes-redesign.md`](./570-split-panes-redesign.md) — feature [570](../features/570-split-panes-redesign.md), PR 1: the focused pane loses its accent border, unfocused pane bodies are drawn at 70 % opacity, chat panes get the chat glyph on the identity line and header. The tree, split icon, and picker removal follow in a second brief.
 - [`555-mcp-settings.md`](./555-mcp-settings.md) — feature [555](../features/555-mcp-settings.md): the Settings → MCP pane shaped like Skills (runtime dropdown, one toggle per server row, pinned Runner row, click-to-detail, native-text edit with cross-agent sync), with the generalised `ops/mcp.rs` writer behind it.
 - [`local-skills/`](./local-skills/README.md) — feature [73](../features/73-runner-skills.md) implementation program: condensed state and binding decisions, milestone plan, dated impl log.
 - [`gpui-rewrite/`](./gpui-rewrite/) — the GPUI rewrite record; shipped as `v0.6.0` 2026-08-23. What is still open from the M6 consolidation queue is in [`m6-remainder.md`](./gpui-rewrite/m6-remainder.md); [#445](https://github.com/yicheng47/runner/issues/445) closed 2026-08-27 once the queued items landed.
