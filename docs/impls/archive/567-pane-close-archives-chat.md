@@ -1,6 +1,6 @@
 # 567 — `×` on a chat pane archives the chat
 
-Tracking issue: [#567](https://github.com/yicheng47/runner/issues/567). Spec: [567](../features/567-pane-close-archives-chat.md). Feature, P2. Design: `design/runner.pen` frame `Spec — Pane × archives the chat (567) · v1` (`Id1kj`), committed `50085cc`. Branch: **`feat/567-pane-close-archives-chat` already exists and is checked out** — it carries the spec, the design and this brief; work on it, do not create another. Phases 2–4 of the spec.
+Tracking issue: [#567](https://github.com/yicheng47/runner/issues/567). Spec: [567](../../features/archive/567-pane-close-archives-chat.md). Feature, P2. Shipped 2026-09-12 in [#569](https://github.com/yicheng47/runner/pull/569) (mission `01M2A53W681P3VY7K5XQYHVRQ9`, claude crew). Design: `design/runner.pen` frame `Spec — Pane × archives the chat (567) · v1` (`Id1kj`), committed `50085cc`. Branch: **`feat/567-pane-close-archives-chat` already exists and is checked out** — it carries the spec, the design and this brief; work on it, do not create another. Phases 2–4 of the spec.
 
 ## What ships
 

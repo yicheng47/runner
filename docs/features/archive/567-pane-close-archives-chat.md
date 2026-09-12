@@ -1,6 +1,6 @@
 # `×` on a chat pane archives the chat
 
-Tracking issue: [#567](https://github.com/yicheng47/runner/issues/567). Status: spec, 2026-09-12; Pencil-first, code waits for the frame sign-off. Priority P2.
+Tracking issue: [#567](https://github.com/yicheng47/runner/issues/567). Status: shipped 2026-09-12 in [#569](https://github.com/yicheng47/runner/pull/569) (mission `01M2A53W681P3VY7K5XQYHVRQ9`, claude crew). Priority was P2.
 
 ## Motivation
 
