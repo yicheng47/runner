@@ -29,7 +29,7 @@ Ghostty answers the first: no focus border at all, one hairline divider, and the
 - **No count limit; a size floor instead.** An item is disabled, tooltip "Too small to split", when either resulting pane would be narrower than 240 px or shorter than 160 px at 1× zoom, scaled with the app zoom. The gate reads the pane's last laid-out bounds.
 - **The layout picker is gone**, with `next_split_preset`, `pick_preset`, and the preset list. A three-column tab is two Split Right clicks.
 - **The layout persists as a tree.** Today's `preset + slots + sizes` shape cannot describe a tree the picker did not draw, so the layout is stored as nested splits (orientation, sizes, id) and leaves (session id). Rows in the old shape read through a legacy path that rebuilds the same tree the preset built, and are rewritten on their next save. Leaf ids are `p<n>` with the next unused number in the tab, split ids `s<n>`; the `<preset>:outer` / `:inner` scheme goes. `PresetKind` survives only inside the legacy reader.
-- **A split holds chats only.** Since the terminal drawer ([469](./469-terminal-drawer.md)) a shell lives in the drawer under the tab or in a terminal-only single-pane tab; the empty pane offers New chat alone, so no split mixes a chat with a terminal. Nothing here changes that.
+- **A split holds chats only.** Superseded by [574](../574-terminal-tab-split.md). Since the terminal drawer ([469](./469-terminal-drawer.md)) a shell lives in the drawer under the tab or in a terminal-only single-pane tab; the empty pane offers New chat alone, so no split mixes a chat with a terminal. Nothing here changes that.
 - **Close and resize are unchanged.** `×` / `⌘W` collapse the split as they do today, and the gutter drag resizes by split id.
 
 ### What does not change

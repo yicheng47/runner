@@ -5,6 +5,17 @@ use super::*;
 use crate::*;
 use runner_backend::model::Runtime;
 
+pub(super) fn tab_is_terminal(
+    layout: &PaneLayout,
+    runtime: impl Fn(&str) -> Option<Runtime>,
+) -> bool {
+    let sessions = layout.session_ids();
+    !sessions.is_empty()
+        && sessions
+            .iter()
+            .all(|session_id| runtime(session_id) == Some(Runtime::Shell))
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum PaneRenameChange {
     Unchanged,
@@ -1124,15 +1135,12 @@ impl NativeRoot {
         )
     }
 
-    pub(crate) fn active_tab_is_terminal_only(&self, cx: &App) -> bool {
+    pub(crate) fn active_tab_is_terminal(&self, cx: &App) -> bool {
         self.tabs.active().is_some_and(|layout| {
-            layout.root.leaves().len() == 1
-                && layout.session_ids().len() == 1
-                && layout.session_ids().first().is_some_and(|session_id| {
-                    self.session_entry(session_id, cx).is_some_and(|entry| {
-                        Runtime::parse(&entry.agent_runtime) == Some(Runtime::Shell)
-                    })
-                })
+            tab_is_terminal(layout, |session_id| {
+                self.session_entry(session_id, cx)
+                    .and_then(|entry| Runtime::parse(&entry.agent_runtime))
+            })
         })
     }
 
@@ -1718,9 +1726,6 @@ impl NativeRoot {
         cx.notify();
     }
 
-    /// Splits one pane, then reloads so the new empty pane is attached,
-    /// remembered and focused the way any layout change is. Both the menu
-    /// item and the shortcuts land here, so the size floor is judged once.
     pub(crate) fn split_pane(
         &mut self,
         pane_id: &str,
@@ -1731,35 +1736,47 @@ impl NativeRoot {
         if self.route != AppRoute::Chat {
             return;
         }
-        let Some(tab_id) = self.tabs.active().map(|layout| layout.id.clone()) else {
+        let Some(original) = self.tabs.active().cloned() else {
             return;
         };
         let bounds = self
             .pane_bounds
-            .get(&PaneKey::new(&tab_id, pane_id))
+            .get(&PaneKey::new(&original.id, pane_id))
             .copied();
-        match split_decision(
-            self.active_tab_is_terminal_only(cx),
-            bounds,
-            orientation,
-            self.settings(cx).app_zoom,
-        ) {
+        match split_decision(bounds, orientation, self.settings(cx).app_zoom) {
             SplitDecision::Allowed => {}
-            SplitDecision::NotSplittable => return,
             SplitDecision::Blocked(reason) => {
                 self.chat_error = Some(reason.to_owned());
                 cx.notify();
                 return;
             }
         }
+        let terminal_location = self.active_tab_is_terminal(cx).then(|| {
+            original
+                .root
+                .leaves()
+                .into_iter()
+                .find(|leaf| leaf.id == pane_id)
+                .and_then(|leaf| leaf.session_id.as_deref())
+                .and_then(|session_id| self.session_entry(session_id, cx))
+                .map(|entry| (entry.project_id.clone(), entry.cwd.clone()))
+                .unwrap_or_else(|| self.terminal_start_location(cx))
+        });
         let split = self
             .tabs
             .active_mut()
             .context("active tab is missing")
             .and_then(|layout| layout.split(pane_id, orientation));
-        if let Err(error) = split {
-            self.chat_error = Some(error.to_string());
-            cx.notify();
+        let new_pane_id = match split {
+            Ok(pane_id) => pane_id,
+            Err(error) => {
+                self.chat_error = Some(error.to_string());
+                cx.notify();
+                return;
+            }
+        };
+        if let Some((project_id, cwd)) = terminal_location {
+            self.spawn_terminal_in_pane(new_pane_id, original, project_id, cwd, window, cx);
             return;
         }
         let result = self
@@ -2262,13 +2279,43 @@ mod tests {
     use super::{
         accept_fork_started, archive_chat_pane_target, begin_fork_submission,
         cancel_fork_confirmation, finish_fork_tracking, fork_confirmation, fork_in_progress,
-        fork_materializing, pane_rename_change, PaneRenameChange,
+        fork_materializing, pane_rename_change, tab_is_terminal, PaneRenameChange,
     };
     use crate::{PendingPaneClose, TerminalCloseTarget};
     use runner_app::pane_layout::{PaneLayout, SplitOrientation};
-    use runner_backend::model::SessionStatus;
+    use runner_backend::model::{Runtime, SessionStatus};
     use runner_backend::ops::session::DirectSessionEntry;
     use std::collections::HashMap;
+
+    #[test]
+    fn terminal_tabs_require_sessions_and_ignore_empty_panes() {
+        for (sessions, expected) in [
+            (vec![Some("shell")], true),
+            (vec![Some("shell"), Some("shell-2")], true),
+            (vec![Some("shell"), None], true),
+            (vec![Some("codex")], false),
+            (vec![Some("codex"), Some("shell")], false),
+            (vec![None], false),
+            (vec![None, None], false),
+            (vec![Some("unknown")], false),
+        ] {
+            let mut layout = PaneLayout::single(sessions[0], &[]);
+            for session in &sessions[1..] {
+                let pane = layout.split("p1", SplitOrientation::Row).unwrap();
+                if let Some(session) = session {
+                    layout.assign_session(&pane, session).unwrap();
+                }
+            }
+            assert_eq!(
+                tab_is_terminal(&layout, |session| match session {
+                    "shell-2" => Some(Runtime::Shell),
+                    runtime => Runtime::parse(runtime),
+                }),
+                expected,
+                "{sessions:?}"
+            );
+        }
+    }
 
     fn direct_session(runtime: &str, forkable: bool) -> DirectSessionEntry {
         DirectSessionEntry {

@@ -67,15 +67,24 @@ enum NewTerminalTarget {
 fn new_terminal_target(
     route: &AppRoute,
     mission_drawer_available: bool,
-    active_tab_is_terminal_only: bool,
+    active_tab_is_terminal: bool,
 ) -> NewTerminalTarget {
     if matches!(route, AppRoute::Mission(_)) && mission_drawer_available {
         NewTerminalTarget::MissionDrawer
-    } else if *route == AppRoute::Chat && !active_tab_is_terminal_only {
+    } else if !active_tab_is_terminal {
         NewTerminalTarget::ChatDrawer
     } else {
         NewTerminalTarget::Tab
     }
+}
+
+fn new_terminal_empty_pane(layout: &PaneLayout) -> Option<String> {
+    let leaves = layout.root.leaves();
+    leaves
+        .iter()
+        .find(|leaf| leaf.id == layout.focused_pane_id && leaf.session_id.is_none())
+        .or_else(|| leaves.iter().find(|leaf| leaf.session_id.is_none()))
+        .map(|leaf| leaf.id.clone())
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -252,44 +261,37 @@ impl NativeRoot {
     pub(crate) fn new_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let mission_drawer_available = matches!(self.route, AppRoute::Mission(_))
             && self.mission_workspace.read(cx).drawer_available(cx);
-        match new_terminal_target(
+        let target = new_terminal_target(
             &self.route,
             mission_drawer_available,
-            self.active_tab_is_terminal_only(cx),
-        ) {
-            NewTerminalTarget::MissionDrawer => {
-                self.mission_workspace
-                    .update(cx, |workspace, workspace_cx| {
-                        workspace.add_terminal_drawer_shell(window, workspace_cx)
-                    });
-                return;
-            }
-            NewTerminalTarget::ChatDrawer => {
-                self.add_terminal_drawer_shell(window, cx);
-                return;
-            }
-            NewTerminalTarget::Tab => {}
+            self.active_tab_is_terminal(cx),
+        );
+        if target == NewTerminalTarget::MissionDrawer {
+            self.mission_workspace
+                .update(cx, |workspace, workspace_cx| {
+                    workspace.add_terminal_drawer_shell(window, workspace_cx)
+                });
+            return;
         }
         let Some(original) = self.tabs.active().cloned() else {
             self.chat_error = Some("Open a tab before creating a terminal".into());
             cx.notify();
             return;
         };
-        let (project_id, cwd) = self.terminal_start_location(cx);
-        let target = match self
-            .tabs
-            .active_mut()
-            .expect("active tab was cloned")
-            .prepare_new_pane()
-        {
-            Ok(target) => target,
-            Err(error) => {
-                self.chat_error = Some(error.to_string());
-                cx.notify();
-                return;
-            }
-        };
-        self.spawn_terminal_in_pane(target, original, project_id, cwd, window, cx);
+        if self.route != AppRoute::Chat {
+            self.set_route(AppRoute::Chat, cx);
+            self.activate_tab(&original.id, window, cx);
+        }
+        if target == NewTerminalTarget::ChatDrawer {
+            self.add_terminal_drawer_shell(window, cx);
+            return;
+        }
+        if let Some(pane_id) = new_terminal_empty_pane(&original) {
+            let (project_id, cwd) = self.terminal_start_location(cx);
+            self.spawn_terminal_in_pane(pane_id, original, project_id, cwd, window, cx);
+        } else {
+            self.split_pane(&original.focused_pane_id, SplitOrientation::Row, window, cx);
+        }
     }
 
     pub(crate) fn toggle_terminal_drawer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -300,7 +302,7 @@ impl NativeRoot {
                 });
             return;
         }
-        if self.route != AppRoute::Chat || self.active_tab_is_terminal_only(cx) {
+        if self.route != AppRoute::Chat || self.active_tab_is_terminal(cx) {
             return;
         }
         let Some(layout) = self.tabs.active() else {
@@ -365,7 +367,7 @@ impl NativeRoot {
             cx.notify();
             return;
         };
-        if self.active_tab_is_terminal_only(cx) {
+        if self.active_tab_is_terminal(cx) {
             return;
         }
         let (project_id, cwd) = self.terminal_start_location(cx);
@@ -387,6 +389,7 @@ impl NativeRoot {
                 .add_drawer_shell(spawned.id.clone());
             self.persist_active_tab(cx)?;
             self.reload_tabs(cx)?;
+            self.set_route(AppRoute::Chat, cx);
             self.ensure_active_tab_attached(window, cx)?;
             Ok(spawned.id)
         })();
@@ -2070,24 +2073,59 @@ mod tests {
     }
 
     #[test]
-    fn new_terminal_targets_only_an_available_mission_drawer() {
+    fn new_terminal_targets_an_available_mission_drawer_then_the_active_tab_kind() {
         let mission = AppRoute::Mission("mission".into());
-        assert_eq!(
-            new_terminal_target(&mission, true, false),
-            NewTerminalTarget::MissionDrawer
-        );
-        assert_eq!(
-            new_terminal_target(&mission, false, false),
-            NewTerminalTarget::Tab
-        );
-        assert_eq!(
-            new_terminal_target(&AppRoute::Chat, false, false),
-            NewTerminalTarget::ChatDrawer
-        );
-        assert_eq!(
-            new_terminal_target(&AppRoute::Chat, false, true),
-            NewTerminalTarget::Tab
-        );
+        let mut terminals = PaneLayout::single(Some("shell"), &[]);
+        let pane = terminals.split("p1", SplitOrientation::Row).unwrap();
+        terminals.assign_session(&pane, "shell-2").unwrap();
+        let terminal_tab =
+            super::super::chat::tab_is_terminal(&terminals, |_| Some(Runtime::Shell));
+        assert!(terminal_tab);
+        for terminal in [false, terminal_tab] {
+            assert_eq!(
+                new_terminal_target(&mission, true, terminal),
+                NewTerminalTarget::MissionDrawer
+            );
+            for route in [
+                AppRoute::Chat,
+                AppRoute::Runners,
+                AppRoute::RunnerDetail("runner".into()),
+                AppRoute::Crews,
+                AppRoute::CrewEditor("crew".into()),
+                AppRoute::Settings,
+                AppRoute::ArchivedChat,
+                mission.clone(),
+            ] {
+                assert_eq!(
+                    new_terminal_target(&route, false, terminal),
+                    if terminal {
+                        NewTerminalTarget::Tab
+                    } else {
+                        NewTerminalTarget::ChatDrawer
+                    },
+                    "{route:?}, terminal={terminal}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn new_terminal_prefers_the_focused_empty_pane_then_any_empty_pane() {
+        let mut layout = PaneLayout::single(Some("shell"), &[]);
+        assert_eq!(new_terminal_empty_pane(&layout), None);
+
+        let first = layout.split("p1", SplitOrientation::Row).unwrap();
+        let second = layout.split(&first, SplitOrientation::Column).unwrap();
+        assert_eq!(new_terminal_empty_pane(&layout), Some(second.clone()));
+
+        layout.focus_session("shell");
+        assert_eq!(new_terminal_empty_pane(&layout), Some(first.clone()));
+
+        layout.assign_session(&first, "shell-2").unwrap();
+        assert_eq!(new_terminal_empty_pane(&layout), Some(second.clone()));
+
+        layout.assign_session(&second, "shell-3").unwrap();
+        assert_eq!(new_terminal_empty_pane(&layout), None);
     }
 
     fn runtime(name: &str, efforts: &[&str]) -> RuntimeCatalogEntry {

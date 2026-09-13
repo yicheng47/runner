@@ -581,31 +581,6 @@ impl PaneLayout {
         Ok(())
     }
 
-    pub fn prepare_new_pane(&mut self) -> Result<String> {
-        if let Some(pane_id) = self
-            .root
-            .leaves()
-            .into_iter()
-            .find(|leaf| leaf.id == self.focused_pane_id && leaf.session_id.is_none())
-            .map(|leaf| leaf.id.clone())
-        {
-            return Ok(pane_id);
-        }
-        if let Some(pane_id) = self
-            .root
-            .leaves()
-            .into_iter()
-            .find(|leaf| leaf.session_id.is_none())
-            .map(|leaf| leaf.id.clone())
-        {
-            self.focused_pane_id = pane_id.clone();
-            return Ok(pane_id);
-        }
-
-        let focused = self.focused_pane_id.clone();
-        self.split(&focused, SplitOrientation::Row)
-    }
-
     pub fn close_pane(&mut self, pane_id: &str) -> bool {
         if matches!(self.root, PaneNode::Leaf(_)) {
             return false;
@@ -926,30 +901,6 @@ mod tests {
 
         assert!(matches!(layout.root, PaneNode::Leaf(_)));
         assert_eq!(layout.session_ids(), ["terminal"]);
-    }
-
-    #[test]
-    fn preparing_a_new_pane_uses_an_empty_pane_then_splits_the_focused_one() {
-        let mut empty = PaneLayout::single(Some("chat"), &["chat".into()]);
-        let empty_id = empty.split("p1", SplitOrientation::Row).unwrap();
-        assert_eq!(empty.prepare_new_pane().unwrap(), empty_id);
-
-        let mut nonfocused_empty = PaneLayout::single(Some("chat"), &["chat".into()]);
-        let empty_id = nonfocused_empty.split("p1", SplitOrientation::Row).unwrap();
-        assert!(nonfocused_empty.focus_session("chat"));
-        assert_eq!(nonfocused_empty.prepare_new_pane().unwrap(), empty_id);
-        assert_eq!(nonfocused_empty.focused_pane_id, empty_id);
-
-        let mut full = PaneLayout::single(Some("chat"), &["chat".into()]);
-        let second = full.split("p1", SplitOrientation::Row).unwrap();
-        full.assign_session(&second, "terminal").unwrap();
-        assert!(full.focus_session("chat"));
-
-        let target = full.prepare_new_pane().unwrap();
-        assert_eq!(full.root.leaves().len(), 3);
-        assert_eq!(full.root.leaves()[1].id, target);
-        assert_eq!(full.focused_pane_id, target);
-        assert_eq!(full.session_ids(), ["chat", "terminal"]);
     }
 
     #[test]
