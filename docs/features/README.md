@@ -13,7 +13,9 @@ Since the GPUI rewrite shipped as `v0.6.0` (2026-08-23) there is one line of wor
 
 ## Index
 
-- [584 — Session status from the declared window title](./584-title-status-detection.md) — the byte-based idle detector is wrong in both directions, measured: Codex's animated composer keeps a session Busy for 17 s after it declares itself idle, and a shell running `sleep 4` reads Idle 2 s before it finishes. Every runtime already declares state in its window title and Runner discards it; derive status from the title, keep the byte detector as the fallback for runtimes that say nothing ([#584](https://github.com/yicheng47/runner/issues/584), closes [#583](https://github.com/yicheng47/runner/issues/583)).
+- [347 — Hook-based agent session status](./347-hook-based-session-status.md) — next step after v0.8.9: Claude Code and Codex lifecycle hooks replace title-spinner classification, with explicit source ownership and no silence-based override of healthy hooks ([#347](https://github.com/yicheng47/runner/issues/347), P1).
+- [586 — Shell status: process detection first](./586-shell-status-detection.md) — try shell foreground/child process detection with Unix and Windows limits; semantic shell integration is a later improvement ([#586](https://github.com/yicheng47/runner/issues/586), P2).
+- [587 — Display terminal-provided titles](./587-terminal-provided-titles.md) — show child-supplied OSC 0/2 titles in pane and tab labels on macOS and Windows, with explicit user names taking precedence; live title text stays separate from activity detection and routing ([#587](https://github.com/yicheng47/runner/issues/587), P2).
 - [565 — i18n: Runner's UI in the user's language, 简体中文 first](./565-i18n.md) — a `language` setting (`system` / `en` / `zh-hans`, default system, resolved through `sys-locale` with `zh-*` → Simplified) as a segmented row in Settings → General, a hand-rolled catalog (`crates/runner-app/i18n/<tag>.toml` embedded at compile time, `t` / `tf` / `tn` returning `SharedString`, a process-wide active locale like the theme variant, English fallback, a completeness test over keys and placeholders), a live switch that re-renders every window plus the menu bar, extraction of every user-facing literal in the app crate including keymap titles keyed by id, enum word-labels, and the six date patterns, then `zh-hans.toml` against a signed-off glossary and a CJK font fallback; agent-facing text, backend error prose, terminal content, other languages, and the landing page stay out ([#565](https://github.com/yicheng47/runner/issues/565)).
 - [562 — Add runners to a running mission](./562-mission-add-runner.md) — the crew stays a template but the mission's roster grows: mission-scoped slots (`slots.mission_id`, invisible to the crew page, deleted with the mission), one `mission_add_runner` op that inserts the slot, registers a worker session with the cold-start first turn, adds the handle to the router, bus, and `roster.json`, appends a `runner_added` signal plus a `runner` broadcast introducing the newcomer both ways and the requester's note as a directed message, then spawns through the mission's cancel flag; the lead adds via `runner signal add_runner` (lead-only, unknown template and taken handle and the 8-slot cap bounce as `mission_warning`), the human via a **+ Add runner** row and modal in the rail, MCP via `mission_add_runner`; removing, promoting into the crew, changing the lead, and add-time model/effort stay out ([#562](https://github.com/yicheng47/runner/issues/562)).
 - [559 — Command palette on ⌘⇧P](./559-command-palette.md) — a VS Code-style command palette over the keymap: ⌘⇧P opens the existing ⌘K overlay in command mode (and `>` as the first character of a ⌘K query does the same), one row per `KeymapEntry` plus the shortcut-less actions with the live shortcut pill, scope-gated by `KeymapScope` from the focus captured at open, selection dispatching the same GPUI action the shortcut does, a persisted five-item Recent group, and all-words substring matching; the ⌘K entry is retitled Quick switcher with its id kept. Chords, argument-taking commands, fuzzy ranking, and new actions stay out ([#559](https://github.com/yicheng47/runner/issues/559)).
@@ -27,8 +29,9 @@ Since the GPUI rewrite shipped as `v0.6.0` (2026-08-23) there is one line of wor
 
 ## Archive
 
-Shipped specs live in [`archive/`](./archive/), in spec-number order.
-See the directory listing for what's there.
+Shipped specs live in [`archive/`](./archive/), in spec-number order. See the directory listing for what's there.
+
+- [584 — Title-spinner status heuristic](./archive/584-title-status-detection.md) — implemented by #585 and included unchanged in v0.8.9; the next agent detector is #347. The [old hook proposal (52)](./archive/52-hook-based-session-status.md) remains historical context for the reopened issue.
 
 ## Dropped
 
@@ -52,7 +55,6 @@ Considered and deliberately not built. Spec kept in [`archive/`](./archive/) as 
   external scheduler fire missions on cron with zero app code. Revisit
   only if the same mission goal keeps getting launched manually on a
   rhythm.
-- [52 — Hook-based session status](./archive/52-hook-based-session-status.md) — closed as won't-do ([#347](https://github.com/yicheng47/runner/issues/347), 2026-08-27; the grid-scraping variant [#455](https://github.com/yicheng47/runner/issues/455) closed 2026-08-28): busy/idle stays on the byte-flow `IdleDetector`. Kept as the record of the hook-injection design (claude `--settings`, codex hooks.json) in case a needs-you state is wanted later.
 - [53 — Session fork](./archive/53-session-fork.md)
   — closed as won't-do ([#348](https://github.com/yicheng47/runner/issues/348)):
   months of daily use produced zero fork reaches, and the generic

@@ -6,11 +6,12 @@ A plan stays here while its work is in flight and moves to [`archive/`](./archiv
 
 ## Active
 
-- [`584-title-status-phase-1.md`](./584-title-status-phase-1.md) — feature [584](../features/584-title-status-detection.md): derive session Busy/Idle from the window-title spinner that every runtime already declares, with the byte detector kept as the fallback for sessions that declare nothing. Phase 1 is agents only; shells (baseline divergence) are phase 2.
 - [`local-skills/`](./local-skills/README.md) — feature [73](../features/archive/73-runner-skills.md) (closed 2026-09-13; M2/M3 continue as [#577](https://github.com/yicheng47/runner/issues/577)) implementation program: condensed state and binding decisions, milestone plan, dated impl log.
 - [`gpui-rewrite/`](./gpui-rewrite/) — the GPUI rewrite record; shipped as `v0.6.0` 2026-08-23. What is still open from the M6 consolidation queue is in [`m6-remainder.md`](./gpui-rewrite/m6-remainder.md); [#445](https://github.com/yicheng47/runner/issues/445) closed 2026-08-27 once the queued items landed.
 
 ## Archive
+
+- [Title-spinner status heuristic](./archive/584-title-status-phase-1.md) — [#584](../features/archive/584-title-status-detection.md), implemented by #585 and included in v0.8.9. Hook-based agent status is the next step under #347.
 
 Shipped plans live in [`archive/`](./archive/) in number order; mission briefs live under [`archive/gpui-rewrite/briefs/`](./archive/gpui-rewrite/briefs/).
 
