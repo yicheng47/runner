@@ -330,7 +330,7 @@ impl NativeRoot {
         let focused_shell = focused_entry
             .as_ref()
             .is_some_and(|entry| Runtime::parse(&entry.agent_runtime) == Some(Runtime::Shell));
-        let terminal_only = self.active_tab_is_terminal_only(cx);
+        let terminal_tab = self.active_tab_is_terminal(cx);
         let focused_secondary = focused_session_id
             .as_deref()
             .is_some_and(|session_id| self.cached_chat_secondary_state(session_id).secondary);
@@ -395,13 +395,13 @@ impl NativeRoot {
         let keymap_overrides = self.settings(cx).keymap_overrides.clone();
         // A single-pane tab has no identity line, so the header carries its
         // split menu; once split, every identity line carries its own.
-        let split_action = (!grouped && !terminal_only).then(|| {
+        let split_action = (!grouped).then(|| {
             let tab_id = layout.id.clone();
             let pane_id = layout.focused_pane_id.clone();
             self.split_menu(SplitMenuSurface::Header, &tab_id, &pane_id, cx)
                 .into_any_element()
         });
-        let drawer_action = (!terminal_only).then(|| {
+        let drawer_action = (!terminal_tab).then(|| {
             let open = layout.drawer_open();
             let tooltip = terminal_drawer_tooltip(open, &keymap_overrides);
             IconButton::new(
@@ -2563,22 +2563,17 @@ pub(crate) enum SplitDecision {
     Allowed,
     /// Why the split cannot happen — menu tooltip and error-banner copy alike.
     Blocked(&'static str),
-    /// Splits hold chats only, so a terminal-only tab offers nothing at all.
-    NotSplittable,
 }
 
 /// The one place a split request is judged. Both routes — the menu item and
 /// `⌘D` / `⇧⌘D` — go through it, so the size floor cannot be walked around
 /// by reaching for the keyboard.
 pub(crate) fn split_decision(
-    terminal_only: bool,
     pane: Option<Size<Pixels>>,
     orientation: SplitOrientation,
     zoom: f32,
 ) -> SplitDecision {
-    if terminal_only {
-        SplitDecision::NotSplittable
-    } else if split_allowed(pane, orientation, zoom) {
+    if split_allowed(pane, orientation, zoom) {
         SplitDecision::Allowed
     } else {
         SplitDecision::Blocked(TOO_SMALL_TO_SPLIT)
@@ -2596,10 +2591,9 @@ fn split_menu_items(
     ]
     .into_iter()
     .map(|(label, binding, orientation)| {
-        let blocked = match split_decision(false, pane, orientation, zoom) {
+        let blocked = match split_decision(pane, orientation, zoom) {
             SplitDecision::Allowed => None,
             SplitDecision::Blocked(reason) => Some(reason),
-            SplitDecision::NotSplittable => None,
         };
         let mut item = UiMenuItem::new(label).disabled(blocked.is_some());
         if let Some(combo) = keymap::effective_binding(binding, overrides) {
@@ -3245,52 +3239,41 @@ mod tests {
     // `split_pane` is the single gate both routes pass through — the menu
     // item and `⌘D` / `⇧⌘D` alike — so what it decides is what is pinned here.
     #[test]
-    fn every_split_route_meets_the_same_floor_and_terminal_only_tabs_offer_none() {
-        let roomy = size(px(1200.), px(800.));
-        let narrow = size(px(300.), px(800.));
-        let short = size(px(1200.), px(200.));
-
-        assert_eq!(
-            split_decision(false, Some(roomy), SplitOrientation::Row, 1.),
-            SplitDecision::Allowed
-        );
-        assert_eq!(
-            split_decision(false, Some(narrow), SplitOrientation::Row, 1.),
-            SplitDecision::Blocked(TOO_SMALL_TO_SPLIT)
-        );
-        assert_eq!(
-            split_decision(false, Some(narrow), SplitOrientation::Column, 1.),
-            SplitDecision::Allowed
-        );
-        assert_eq!(
-            split_decision(false, Some(short), SplitOrientation::Column, 1.),
-            SplitDecision::Blocked(TOO_SMALL_TO_SPLIT)
-        );
-
-        // Zoom moves the floor for the shortcut exactly as it does for the
-        // menu: 1200 px clears 2 × 240 at 1× and at 2.5×, and fails at 3×.
-        assert_eq!(
-            split_decision(false, Some(roomy), SplitOrientation::Row, 2.5),
-            SplitDecision::Allowed
-        );
-        assert_eq!(
-            split_decision(false, Some(roomy), SplitOrientation::Row, 3.),
-            SplitDecision::Blocked(TOO_SMALL_TO_SPLIT)
-        );
-
-        // Splits hold chats only.
-        for orientation in [SplitOrientation::Row, SplitOrientation::Column] {
+    fn chat_and_terminal_splits_meet_the_same_floor_on_every_route() {
+        for zoom in [1., 1.5] {
+            let roomy = size(
+                px(2. * MIN_SPLIT_PANE_WIDTH * zoom),
+                px(2. * MIN_SPLIT_PANE_HEIGHT * zoom),
+            );
+            let narrow = size(roomy.width - px(1.), roomy.height);
+            let short = size(roomy.width, roomy.height - px(1.));
+            for orientation in [SplitOrientation::Row, SplitOrientation::Column] {
+                assert_eq!(
+                    split_decision(Some(roomy), orientation, zoom),
+                    SplitDecision::Allowed
+                );
+                assert_eq!(
+                    split_decision(None, orientation, zoom),
+                    SplitDecision::Allowed
+                );
+            }
             assert_eq!(
-                split_decision(true, Some(roomy), orientation, 1.),
-                SplitDecision::NotSplittable
+                split_decision(Some(narrow), SplitOrientation::Row, zoom),
+                SplitDecision::Blocked(TOO_SMALL_TO_SPLIT)
+            );
+            assert_eq!(
+                split_decision(Some(narrow), SplitOrientation::Column, zoom),
+                SplitDecision::Allowed
+            );
+            assert_eq!(
+                split_decision(Some(short), SplitOrientation::Column, zoom),
+                SplitDecision::Blocked(TOO_SMALL_TO_SPLIT)
+            );
+            assert_eq!(
+                split_decision(Some(short), SplitOrientation::Row, zoom),
+                SplitDecision::Allowed
             );
         }
-
-        // An unmeasured pane is not refused on a size we do not have.
-        assert_eq!(
-            split_decision(false, None, SplitOrientation::Row, 1.),
-            SplitDecision::Allowed
-        );
     }
 
     #[test]
@@ -3298,7 +3281,7 @@ mod tests {
         let narrow = size(px(300.), px(800.));
         let items = split_menu_items(Some(narrow), 1., &keymap::KeymapOverrides::new());
         let SplitDecision::Blocked(reason) =
-            split_decision(false, Some(narrow), SplitOrientation::Row, 1.)
+            split_decision(Some(narrow), SplitOrientation::Row, 1.)
         else {
             panic!("a 300 px pane cannot split to the right");
         };
