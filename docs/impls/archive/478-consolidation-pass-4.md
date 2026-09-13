@@ -1,8 +1,8 @@
 # 478 — Consolidation pass 4: split `crews.rs` and `runners.rs`
 
-Tracking issue: [#478](https://github.com/yicheng47/runner/issues/478). Chore, P2. Last of four passes. Branch: **`chore/478-pass-4-crews-runners` already exists and is checked out** — it carries this brief; work on it, do not create another.
+Tracking issue: [#478](https://github.com/yicheng47/runner/issues/478). Status: shipped 2026-09-13 in [#581](https://github.com/yicheng47/runner/pull/581) (mission `01M2CZC69PGG7CRN4A1H55AWP5` on codex-crew, 9 min launch to merge, no must-fix). Chore, P2. Last of four passes; with it #478 is complete.
 
-**Read [`archive/478-consolidation-pass-3.md`](./archive/478-consolidation-pass-3.md) and [`archive/478-consolidation-pass-2.md`](./archive/478-consolidation-pass-2.md) first.** Between them they hold the pattern, the four privacy rules, the audit, and the gate. This brief gives only the two cuts and what differs. Where they disagree, the later pass wins on method and this one wins on the cut.
+**Read [`478-consolidation-pass-3.md`](./478-consolidation-pass-3.md) and [`478-consolidation-pass-2.md`](./478-consolidation-pass-2.md) first.** Between them they hold the pattern, the four privacy rules, the audit, and the gate. This brief gives only the two cuts and what differs. Where they disagree, the later pass wins on method and this one wins on the cut.
 
 ## What ships
 
@@ -82,3 +82,7 @@ Also report, per surface: the line count of every new file; every `pub(super)` i
 Deduplicating the five colliding names, `sidebar_logic.rs`, every other oversized file, behavior, styling, test behavior, and docs other than corrections to this brief.
 
 **When this lands, all four passes are done.** The `docs/arch/` module map and the decision about the files that have grown since the 2026-09-04 audit both come after, and neither is in scope here.
+
+## Outcome
+
+Both cuts landed as prescribed. `crews/` is 10 files, largest `add_slot.rs` at 750; `runners/` is 10 files, largest `logic.rs` at 562. Seventy-six compiler-proven `pub(super)` items, `surfaces/mod.rs` untouched, no shared module created. The three predicted field-privacy items resolved as written: `RunnerEditResolution` and `RuntimeLayerResolution` moved to `runners/mod.rs`, `CrewNameRefresh` took `pub(super)`. One the brief missed, `RunnerFormKind`, needed `pub(super)` for the same reason and the compiler found it.
