@@ -60,13 +60,19 @@ The status vocabulary (`SessionActivityState`), the transition sink (`note_forwa
 
 **Phase 1 — spinner detection, agents only.** Classify in the existing `Event::Title` arm of the `native-term-events-{session_id}` thread (`terminal.rs:381`), report through a sibling of `report_input_state` (`terminal.rs:329`, `:514`), and emit with `source: "title"`. Byte fallback untouched for unarmed sessions. This closes #583.
 
-**Phase 2 — foreground process, shells.** Gate the byte detector's Busy→Idle transition on `SessionRuntime::has_foreground_process` for shell sessions: when the two-second silence would flip a shell to Idle, ask first, and stay Busy while a foreground child exists. One query per would-be transition, no polling.
+**Phase 2 — dropped. Superseded by [#586](https://github.com/yicheng47/runner/issues/586), shell integration.** It would have gated the byte detector's Busy→Idle flip on `has_foreground_process`, keeping a shell Busy while a foreground child exists. It was built and abandoned unmerged; nothing landed.
 
-**Titles were the wrong route for shells, and the recordings say so.** A shell does declare through its title — oh-my-zsh sets it to the running command via `preexec` and back to the prompt via `precmd` — but nothing tells the two apart reliably. A capture of five commands including a `cd` kills each candidate rule: "a title seen before is the baseline" fails because running `sleep 2` twice makes the *busy* title a repeat; "a title not seen before is busy" fails because `cd` mints a new prompt title; strict alternation from the first title classifies all eleven writes in that capture correctly but desynchronises permanently and silently the first time anything else sets a title, which any full-screen program does. The process tree has none of these problems and needs no shell configuration.
+Three findings from that attempt are worth keeping, because they are why the shell half is not a small job.
 
-`has_foreground_process` is already implemented on the PTY runtime (`pty_runtime.rs:456`), already reads the process tree, and is already used to decide the close-confirmation prompt. Phase 2 is a gate on an existing query, not new detection.
+*Titles cannot carry it.* A shell does declare through its title — oh-my-zsh sets it to the running command via `preexec` and back to the prompt via `precmd` — but nothing tells the two apart. A capture of five commands including a `cd` kills each candidate rule: "a title seen before is the baseline" fails because running `sleep 2` twice makes the *busy* title a repeat; "a title not seen before is busy" fails because `cd` mints a new prompt title; strict alternation classifies all eleven writes in that capture correctly and then desynchronises permanently and silently the first time a full-screen program sets a title.
 
-**Phase 3 — precedence with the third signal.** `InputTracker` (`crates/runner-terminal/src/input_state.rs`) already reports composer state and is a third opinion on the same question. Three signals need one owner and a stated order, not three independent votes. Scope it once phases 1 and 2 have settled what the title can actually carry.
+*The foreground check is an inference, and it grew.* It works only because shells do job control: a shell running a command reads busy in 6 of 12 samples, while a TUI program spawning a subprocess on pipes reads busy in 0 of 12, because it never hands over the terminal. Suppressing a transition also desynchronises the detector — with an empty `PS1` a shell stayed Busy indefinitely, measured — so it needed per-session pending state, a bounded retry, and a four-variant refactor of the status sink. That is a lot of machinery to avoid asking the shell.
+
+*Asking is the correct shape.* The shell knows when a command starts and ends; #586 reads that directly, and also yields exit codes, command timing and prompt navigation. Same principle as phase 1, which reads what the agent declares rather than inferring from its output.
+
+Until #586 ships, a shell keeps byte-derived status and its dot can go idle up to two seconds early on a silent command. Nothing routes crew work to a shell, so nothing is blocked.
+
+**Phase 3 — mis-specified, replaced by a documentation task.** It claimed `InputTracker` is a third opinion on session status. It is not: it tracks composer and input state, and feeds `suppress_local_input_busy`, not the activity value. What is actually true is that four sources write status today — `forwarder` (bytes), `title` (phase 1), `input-submit` (the user pressed Enter), and `agent` (the `runner status` CLI verb) — and their precedence is implicit in the order of guards inside `note_forwarder_transition`. Write that ladder down in `docs/arch/`. No code.
 
 ## Verification
 
