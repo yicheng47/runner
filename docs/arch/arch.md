@@ -63,6 +63,27 @@ Runner is a local macOS desktop app. A user configures a **crew** of CLI coding 
 
 **The invariant this picture encodes.** There is exactly one piece of mutable shared state per mission: `events.ndjson`. Every other component is a writer to it (the `runner` CLI; the router for `human_question` / `mission_warning`), a reader of it (EventBus → router + UI), or a per-session PTY pipeline that doesn't touch it. On restart Runner re-opens the file and reconstructs router/feed projections from replay. PTY children do not survive app restart; their rows become resumable stopped sessions, and sessions flagged `resume_on_launch` are re-spawned at startup.
 
+### 1.2 Code map
+
+Crate boundaries are in [`AGENTS.md`](../../AGENTS.md); this is the shape *inside* `crates/runner-app/src/surfaces/`, where most of the UI lives.
+
+**One directory per surface, one file per concern.** A surface that outgrows a single file becomes a directory: `mod.rs` holds the types, the state struct and the `Render` impl; every other file owns one concern and carries its own `use` block; tests live in `tests.rs`. `settings/` set the pattern and the four largest surfaces followed it in [#478](https://github.com/yicheng47/runner/issues/478) on 2026-09-13.
+
+| Surface | Files | Largest | Concerns beyond `mod.rs` and `tests.rs` |
+|---|---|---|---|
+| `mission_workspace/` | 14 | 839 | state, routing, attach, drawer, events, actions, input, view, feed, composer, terminal pane, rail |
+| `sidebar/` | 13 | 891 | state, activation, archive, rows, shortcuts, menus, project, drag, view, row renders, elements |
+| `crews/` | 10 | 750 | list, editor, editor sections, create, add slot, slots, overlays, logic |
+| `runners/` | 10 | 562 | forms, create, edit, delete, list, detail, menu, logic |
+
+`chat.rs`, `panes.rs`, `settings_page.rs` and `start_chat.rs` are still single files. The ones that have since outgrown the shape are tracked in [#582](https://github.com/yicheng47/runner/issues/582).
+
+**Three privacy rules, one per error, and they are not interchangeable.** A **field** declared in `mod.rs` is visible to every child, so `self.field` from a concern file needs nothing. A private **method** moved into one child and called from a sibling is `E0624`; it takes `pub(super)`, applied only where the compiler asks, and needing `pub(crate)` means the item is reached from outside the directory and the cut is wrong. A private **field of a type declared in a child**, read from a sibling, is `E0616`; `pub(super)` on the type does not expose its fields, so the type moves to `mod.rs` instead.
+
+**Paths into a surface stay stable.** `panes.rs` and `chat.rs` reach into `sidebar::` directly, so every item that is `pub(crate)` keeps resolving at `crate::surfaces::<surface>::<name>` through a `pub(crate) use` in `mod.rs`. The proof that a split preserved this is that the calling modules do not appear in its diff.
+
+**Splitting one of these is a move, not a refactor.** Nothing about behavior, signatures or formatting changes; the permitted mechanical differences are imports, module declarations, `impl` wrappers, compiler-driven `pub(super)`, and the rustfmt reflow a widened signature forces. The four archived briefs under [`../impls/archive/`](../impls/archive/) carry the method: a `syn` item audit keyed by `Type::method`, validated by negative controls that must make it fail, plus an unchanged workspace test count.
+
 ## 2. Tech stack
 
 | Layer | Choice | Why |
@@ -82,7 +103,7 @@ Runner is a local macOS desktop app. A user configures a **crew** of CLI coding 
 | Packaging | `script/bundle-mac` | `.app` assembly, Developer ID codesign, notarization, DMG; `CFBundleVersion` is the build stamp. |
 | Input | GPUI key dispatch + native IME (`terminal_ime.rs`) | Pinyin composition in the terminal was the hard requirement of the rewrite. |
 
-**Platform target.** macOS on Apple Silicon, and only macOS. Intel Macs are not supported and no Intel build is planned: universal packaging shipped in `v0.6.0` and `v0.6.1` and was dropped for download size — 43 MB universal against 19 MB arm64 (Jason, 2026-08-25). Linux and Windows are out of scope, so no cross-platform fallback paths are maintained and Unix-only mechanisms are used freely.
+**Platform target.** macOS on Apple Silicon and Windows x64. Intel Macs are not supported and no Intel build is planned: universal packaging shipped in `v0.6.0` and `v0.6.1` and was dropped for download size — 43 MB universal against 19 MB arm64 (Jason, 2026-08-25). Windows has shipped since `0.8.0`; both platforms develop from `main` and CI gates each on every pull request, so a change that builds only on macOS is not landable — see [Windows development](./windows.md) and §14. Platform window chrome lives in `crates/runner-app/src/platform_ui/{macos,windows}.rs` with fonts in the adjacent `fonts_{macos,windows}.rs`, selected at compile time; everything else is shared, and a Unix-only mechanism needs a `cfg` arm rather than an assumption. Linux is out of scope.
 
 ## 3. Domain model
 
