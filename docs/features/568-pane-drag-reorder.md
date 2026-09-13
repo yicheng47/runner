@@ -1,6 +1,6 @@
 # Drag to reorder panes
 
-Tracking issue: [#568](https://github.com/yicheng47/runner/issues/568). Status: spec, 2026-09-12; Pencil-first, code waits for the frame sign-off. Priority P2.
+Tracking issue: [#568](https://github.com/yicheng47/runner/issues/568). Status: in progress, 2026-09-13 — frame signed off 2026-09-12, brief [568](../impls/568-pane-drag-reorder.md) on `feat/568-pane-drag-reorder`. Priority P2.
 
 ## Motivation
 
