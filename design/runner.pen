@@ -83232,9 +83232,9 @@
               "children": [
                 {
                   "type": "frame",
-                  "id": "U7DKO",
+                  "id": "Pz9If",
                   "name": "card @architect",
-                  "width": 300,
+                  "width": 240,
                   "fill": "$bg",
                   "cornerRadius": 6,
                   "stroke": "$border",
@@ -83245,7 +83245,7 @@
                   "children": [
                     {
                       "type": "frame",
-                      "id": "R2nXD",
+                      "id": "dHSuj",
                       "name": "Card header",
                       "width": "fill_container",
                       "justifyContent": "space_between",
@@ -83253,14 +83253,14 @@
                       "children": [
                         {
                           "type": "frame",
-                          "id": "I6lEXo",
+                          "id": "nJjgB",
                           "name": "Identity",
                           "gap": 8,
                           "alignItems": "center",
                           "children": [
                             {
                               "type": "frame",
-                              "id": "HoqgA",
+                              "id": "VEOIV",
                               "name": "Avatar wrap",
                               "width": 25,
                               "height": 25,
@@ -83268,7 +83268,7 @@
                               "children": [
                                 {
                                   "type": "frame",
-                                  "id": "N6ei7j",
+                                  "id": "LZdIn",
                                   "x": 0,
                                   "y": 0,
                                   "name": "Avatar",
@@ -83281,12 +83281,12 @@
                                   "children": [
                                     {
                                       "type": "frame",
-                                      "id": "VbMPt",
+                                      "id": "IFU5K",
                                       "name": "Pixel row",
                                       "children": [
                                         {
                                           "type": "rectangle",
-                                          "id": "EwZet",
+                                          "id": "KSfn1",
                                           "name": "Pixel",
                                           "fill": "#00000000",
                                           "width": 5,
@@ -83294,7 +83294,7 @@
                                         },
                                         {
                                           "type": "rectangle",
-                                          "id": "sKLbn",
+                                          "id": "OcMHH",
                                           "name": "Pixel",
                                           "fill": "$accent",
                                           "width": 5,
@@ -83302,7 +83302,7 @@
                                         },
                                         {
                                           "type": "rectangle",
-                                          "id": "OZwQJ",
+                                          "id": "LYUmu",
                                           "name": "Pixel",
                                           "fill": "$accent",
                                           "width": 5,
@@ -83310,7 +83310,7 @@
                                         },
                                         {
                                           "type": "rectangle",
-                                          "id": "Qa7sV",
+                                          "id": "EUDhx",
                                           "name": "Pixel",
                                           "fill": "$accent",
                                           "width": 5,
@@ -83318,7 +83318,7 @@
                                         },
                                         {
                                           "type": "rectangle",
-                                          "id": "t2OIq9",
+                                          "id": "G1Sva5",
                                           "name": "Pixel",
                                           "fill": "#00000000",
                                           "width": 5,
@@ -83328,12 +83328,12 @@
                                     },
                                     {
                                       "type": "frame",
-                                      "id": "uuCf1",
+                                      "id": "iJTzh",
                                       "name": "Pixel row",
                                       "children": [
                                         {
                                           "type": "rectangle",
-                                          "id": "l3zduH",
+                                          "id": "V88IS",
                                           "name": "Pixel",
                                           "fill": "$accent",
                                           "width": 5,
@@ -83341,7 +83341,7 @@
                                         },
                                         {
                                           "type": "rectangle",
-                                          "id": "r8Qh44",
+                                          "id": "xUlXP",
                                           "name": "Pixel",
                                           "fill": "#00000000",
                                           "width": 5,
@@ -83349,7 +83349,7 @@
                                         },
                                         {
                                           "type": "rectangle",
-                                          "id": "YAOqo",
+                                          "id": "FVFEd",
                                           "name": "Pixel",
                                           "fill": "$accent",
                                           "width": 5,
@@ -83357,7 +83357,7 @@
                                         },
                                         {
                                           "type": "rectangle",
-                                          "id": "cZlIr",
+                                          "id": "TMd4J",
                                           "name": "Pixel",
                                           "fill": "#00000000",
                                           "width": 5,
@@ -83365,7 +83365,7 @@
                                         },
                                         {
                                           "type": "rectangle",
-                                          "id": "cRuog",
+                                          "id": "ioHli",
                                           "name": "Pixel",
                                           "fill": "$accent",
                                           "width": 5,
@@ -83375,12 +83375,12 @@
                                     },
                                     {
                                       "type": "frame",
-                                      "id": "ixGMX",
+                                      "id": "xdv3t",
                                       "name": "Pixel row",
                                       "children": [
                                         {
                                           "type": "rectangle",
-                                          "id": "IkO5R",
+                                          "id": "yqgvc",
                                           "name": "Pixel",
                                           "fill": "$accent",
                                           "width": 5,
@@ -83388,7 +83388,7 @@
                                         },
                                         {
                                           "type": "rectangle",
-                                          "id": "s6TeM",
+                                          "id": "RgxN6",
                                           "name": "Pixel",
                                           "fill": "$accent",
                                           "width": 5,
@@ -83396,7 +83396,7 @@
                                         },
                                         {
                                           "type": "rectangle",
-                                          "id": "p6H3Lj",
+                                          "id": "uzH1Q",
                                           "name": "Pixel",
                                           "fill": "$accent",
                                           "width": 5,
@@ -83404,7 +83404,7 @@
                                         },
                                         {
                                           "type": "rectangle",
-                                          "id": "G3NjfV",
+                                          "id": "UWPtJ",
                                           "name": "Pixel",
                                           "fill": "$accent",
                                           "width": 5,
@@ -83412,7 +83412,7 @@
                                         },
                                         {
                                           "type": "rectangle",
-                                          "id": "fx3bs",
+                                          "id": "Yl1ib",
                                           "name": "Pixel",
                                           "fill": "$accent",
                                           "width": 5,
@@ -83422,12 +83422,12 @@
                                     },
                                     {
                                       "type": "frame",
-                                      "id": "Zr48H",
+                                      "id": "yQJxv",
                                       "name": "Pixel row",
                                       "children": [
                                         {
                                           "type": "rectangle",
-                                          "id": "AxK3o",
+                                          "id": "ynF0F",
                                           "name": "Pixel",
                                           "fill": "#00000000",
                                           "width": 5,
@@ -83435,7 +83435,7 @@
                                         },
                                         {
                                           "type": "rectangle",
-                                          "id": "R7QuEo",
+                                          "id": "GXkF0",
                                           "name": "Pixel",
                                           "fill": "$accent",
                                           "width": 5,
@@ -83443,7 +83443,7 @@
                                         },
                                         {
                                           "type": "rectangle",
-                                          "id": "zAtjS",
+                                          "id": "h3TYXu",
                                           "name": "Pixel",
                                           "fill": "#00000000",
                                           "width": 5,
@@ -83451,7 +83451,7 @@
                                         },
                                         {
                                           "type": "rectangle",
-                                          "id": "j9kyG",
+                                          "id": "KutfY",
                                           "name": "Pixel",
                                           "fill": "$accent",
                                           "width": 5,
@@ -83459,7 +83459,7 @@
                                         },
                                         {
                                           "type": "rectangle",
-                                          "id": "xvOwc",
+                                          "id": "KzJAo",
                                           "name": "Pixel",
                                           "fill": "#00000000",
                                           "width": 5,
@@ -83469,12 +83469,12 @@
                                     },
                                     {
                                       "type": "frame",
-                                      "id": "Xxzg3",
+                                      "id": "pFODT",
                                       "name": "Pixel row",
                                       "children": [
                                         {
                                           "type": "rectangle",
-                                          "id": "K9ciFQ",
+                                          "id": "YKr5R",
                                           "name": "Pixel",
                                           "fill": "$accent",
                                           "width": 5,
@@ -83482,7 +83482,7 @@
                                         },
                                         {
                                           "type": "rectangle",
-                                          "id": "pUWSX",
+                                          "id": "nS6tF",
                                           "name": "Pixel",
                                           "fill": "#00000000",
                                           "width": 5,
@@ -83490,7 +83490,7 @@
                                         },
                                         {
                                           "type": "rectangle",
-                                          "id": "JIWg2",
+                                          "id": "i0VLx2",
                                           "name": "Pixel",
                                           "fill": "$accent",
                                           "width": 5,
@@ -83498,7 +83498,7 @@
                                         },
                                         {
                                           "type": "rectangle",
-                                          "id": "We2Qz",
+                                          "id": "Q7OESF",
                                           "name": "Pixel",
                                           "fill": "#00000000",
                                           "width": 5,
@@ -83506,7 +83506,7 @@
                                         },
                                         {
                                           "type": "rectangle",
-                                          "id": "D2KPJd",
+                                          "id": "SHnXC",
                                           "name": "Pixel",
                                           "fill": "$accent",
                                           "width": 5,
@@ -83518,7 +83518,7 @@
                                 },
                                 {
                                   "type": "ellipse",
-                                  "id": "XslBN",
+                                  "id": "e6DzSD",
                                   "x": 17,
                                   "y": 17,
                                   "name": "Presence dot",
@@ -83533,7 +83533,7 @@
                             },
                             {
                               "type": "text",
-                              "id": "G9vMTM",
+                              "id": "OqY0X",
                               "name": "Handle",
                               "fill": "$accent",
                               "content": "@architect",
@@ -83543,7 +83543,7 @@
                             },
                             {
                               "type": "frame",
-                              "id": "Nu37m",
+                              "id": "fJrws",
                               "name": "Lead badge",
                               "fill": "#FFB02033",
                               "cornerRadius": 3,
@@ -83554,7 +83554,7 @@
                               "children": [
                                 {
                                   "type": "text",
-                                  "id": "NDGcc",
+                                  "id": "i3tD7",
                                   "name": "Lead label",
                                   "fill": "$warn",
                                   "content": "LEAD",
@@ -83569,25 +83569,54 @@
                         },
                         {
                           "type": "frame",
-                          "id": "p5qSd",
-                          "name": "Pty button",
-                          "width": 24,
-                          "height": 24,
-                          "cornerRadius": 4,
-                          "stroke": "$border",
-                          "strokeWidth": 1,
-                          "justifyContent": "center",
+                          "id": "a3gaR",
+                          "name": "Card actions",
+                          "gap": 4,
                           "alignItems": "center",
                           "children": [
                             {
-                              "type": "icon",
-                              "id": "i6Kp6E",
-                              "name": "Terminal icon",
-                              "width": 12,
-                              "height": 12,
-                              "icon": "terminal",
-                              "library": "lucide",
-                              "fill": "$text-mid"
+                              "type": "frame",
+                              "id": "ihgMC",
+                              "name": "Stop button",
+                              "width": 24,
+                              "height": 24,
+                              "cornerRadius": 4,
+                              "justifyContent": "center",
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "icon",
+                                  "id": "Mn5XB",
+                                  "name": "Stop buttonIcon",
+                                  "width": 13,
+                                  "height": 13,
+                                  "icon": "square",
+                                  "library": "lucide",
+                                  "fill": "#E5484DCC"
+                                }
+                              ]
+                            },
+                            {
+                              "type": "frame",
+                              "id": "H8gDdb",
+                              "name": "Restart button",
+                              "width": 24,
+                              "height": 24,
+                              "cornerRadius": 4,
+                              "justifyContent": "center",
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "icon",
+                                  "id": "Xld05",
+                                  "name": "Restart buttonIcon",
+                                  "width": 13,
+                                  "height": 13,
+                                  "icon": "rotate-ccw",
+                                  "library": "lucide",
+                                  "fill": "$text-mid"
+                                }
+                              ]
                             }
                           ]
                         }
@@ -83595,15 +83624,16 @@
                     },
                     {
                       "type": "frame",
-                      "id": "y0ztZ",
+                      "id": "d1CAI",
                       "name": "Status subtitle",
+                      "clip": true,
                       "width": "fill_container",
                       "gap": 6,
                       "alignItems": "center",
                       "children": [
                         {
                           "type": "frame",
-                          "id": "Dx99W",
+                          "id": "UHIVD",
                           "name": "glyph",
                           "width": 14,
                           "height": 14,
@@ -83612,7 +83642,7 @@
                           "children": [
                             {
                               "type": "ellipse",
-                              "id": "fPYOU",
+                              "id": "gaOLi",
                               "name": "spin",
                               "innerRadius": 0.62,
                               "startAngle": 100,
@@ -83625,7 +83655,7 @@
                         },
                         {
                           "type": "text",
-                          "id": "Y34uy",
+                          "id": "RcOIV",
                           "name": "label",
                           "fill": "$text-mid",
                           "content": "Working",
@@ -83635,9 +83665,11 @@
                         },
                         {
                           "type": "text",
-                          "id": "p6YY2",
+                          "id": "e4nUPI",
                           "name": "detail",
                           "fill": "$text-mid",
+                          "textGrowth": "fixed-width",
+                          "width": "fill_container",
                           "content": "· Compacting context",
                           "fontFamily": "$font-ui",
                           "fontSize": 11,
@@ -83647,7 +83679,7 @@
                     },
                     {
                       "type": "rectangle",
-                      "id": "BrCpS",
+                      "id": "dGO5c",
                       "name": "Key divider",
                       "fill": "#272930A6",
                       "width": "fill_container",
@@ -83655,7 +83687,7 @@
                     },
                     {
                       "type": "frame",
-                      "id": "npHyu",
+                      "id": "Rtmk3",
                       "name": "Session key row",
                       "width": "fill_container",
                       "gap": 8,
@@ -83663,7 +83695,7 @@
                       "children": [
                         {
                           "type": "text",
-                          "id": "XQ9W9",
+                          "id": "Tk95N",
                           "name": "Key label",
                           "fill": "$text-low",
                           "content": "session_key",
@@ -83673,14 +83705,14 @@
                         },
                         {
                           "type": "frame",
-                          "id": "Kgpgl",
+                          "id": "tfrXW",
                           "name": "Key spacer",
                           "width": "fill_container",
                           "height": 1
                         },
                         {
                           "type": "text",
-                          "id": "ZVfct",
+                          "id": "WZYPF",
                           "name": "Key value",
                           "fill": "$text-mid",
                           "content": "01KZMR6Z…S61",
@@ -83690,7 +83722,7 @@
                         },
                         {
                           "type": "icon",
-                          "id": "Z5L65",
+                          "id": "X8kzQs",
                           "name": "Copy icon",
                           "width": 11,
                           "height": 11,
@@ -83727,9 +83759,9 @@
               "children": [
                 {
                   "type": "frame",
-                  "id": "qOGJe",
+                  "id": "bUqTc",
                   "name": "card @impl",
-                  "width": 300,
+                  "width": 240,
                   "fill": "$bg",
                   "cornerRadius": 6,
                   "stroke": "$border",
@@ -83740,7 +83772,7 @@
                   "children": [
                     {
                       "type": "frame",
-                      "id": "Hz3dU",
+                      "id": "pWSDp",
                       "name": "Card header",
                       "width": "fill_container",
                       "justifyContent": "space_between",
@@ -83748,14 +83780,14 @@
                       "children": [
                         {
                           "type": "frame",
-                          "id": "sfAY8",
+                          "id": "ZTm40",
                           "name": "Identity",
                           "gap": 8,
                           "alignItems": "center",
                           "children": [
                             {
                               "type": "frame",
-                              "id": "M8K7Z0",
+                              "id": "OSuWn",
                               "name": "Avatar wrap",
                               "width": 25,
                               "height": 25,
@@ -83763,7 +83795,7 @@
                               "children": [
                                 {
                                   "type": "frame",
-                                  "id": "i7shvz",
+                                  "id": "N6fQr",
                                   "x": 0,
                                   "y": 0,
                                   "name": "Avatar",
@@ -83776,12 +83808,12 @@
                                   "children": [
                                     {
                                       "type": "frame",
-                                      "id": "o2tpqW",
+                                      "id": "bF9Jv",
                                       "name": "Pixel row",
                                       "children": [
                                         {
                                           "type": "rectangle",
-                                          "id": "qDj8j",
+                                          "id": "TFpZn",
                                           "name": "Pixel",
                                           "fill": "#00000000",
                                           "width": 5,
@@ -83789,7 +83821,7 @@
                                         },
                                         {
                                           "type": "rectangle",
-                                          "id": "WNFzI",
+                                          "id": "m7DFs2",
                                           "name": "Pixel",
                                           "fill": "$accent",
                                           "width": 5,
@@ -83797,7 +83829,7 @@
                                         },
                                         {
                                           "type": "rectangle",
-                                          "id": "Ac1oY",
+                                          "id": "r4Syc",
                                           "name": "Pixel",
                                           "fill": "$accent",
                                           "width": 5,
@@ -83805,7 +83837,7 @@
                                         },
                                         {
                                           "type": "rectangle",
-                                          "id": "W3jD0",
+                                          "id": "xwuWc",
                                           "name": "Pixel",
                                           "fill": "$accent",
                                           "width": 5,
@@ -83813,7 +83845,7 @@
                                         },
                                         {
                                           "type": "rectangle",
-                                          "id": "bok9Y",
+                                          "id": "oAAP4",
                                           "name": "Pixel",
                                           "fill": "#00000000",
                                           "width": 5,
@@ -83823,12 +83855,12 @@
                                     },
                                     {
                                       "type": "frame",
-                                      "id": "tFNN9",
+                                      "id": "Ix77D",
                                       "name": "Pixel row",
                                       "children": [
                                         {
                                           "type": "rectangle",
-                                          "id": "z6LtN",
+                                          "id": "QSVDh",
                                           "name": "Pixel",
                                           "fill": "$accent",
                                           "width": 5,
@@ -83836,7 +83868,7 @@
                                         },
                                         {
                                           "type": "rectangle",
-                                          "id": "lg88K",
+                                          "id": "IcOSf",
                                           "name": "Pixel",
                                           "fill": "#00000000",
                                           "width": 5,
@@ -83844,7 +83876,7 @@
                                         },
                                         {
                                           "type": "rectangle",
-                                          "id": "b8dF7",
+                                          "id": "f8Kq9R",
                                           "name": "Pixel",
                                           "fill": "$accent",
                                           "width": 5,
@@ -83852,7 +83884,7 @@
                                         },
                                         {
                                           "type": "rectangle",
-                                          "id": "alZAx",
+                                          "id": "DF4So",
                                           "name": "Pixel",
                                           "fill": "#00000000",
                                           "width": 5,
@@ -83860,7 +83892,7 @@
                                         },
                                         {
                                           "type": "rectangle",
-                                          "id": "qXE4A",
+                                          "id": "mEDi9",
                                           "name": "Pixel",
                                           "fill": "$accent",
                                           "width": 5,
@@ -83870,12 +83902,12 @@
                                     },
                                     {
                                       "type": "frame",
-                                      "id": "rdGvr",
+                                      "id": "WTVQG",
                                       "name": "Pixel row",
                                       "children": [
                                         {
                                           "type": "rectangle",
-                                          "id": "h5v5y",
+                                          "id": "qDVf9",
                                           "name": "Pixel",
                                           "fill": "$accent",
                                           "width": 5,
@@ -83883,7 +83915,7 @@
                                         },
                                         {
                                           "type": "rectangle",
-                                          "id": "QLlkV",
+                                          "id": "p33LXg",
                                           "name": "Pixel",
                                           "fill": "$accent",
                                           "width": 5,
@@ -83891,7 +83923,7 @@
                                         },
                                         {
                                           "type": "rectangle",
-                                          "id": "rDo70",
+                                          "id": "T24oi",
                                           "name": "Pixel",
                                           "fill": "$accent",
                                           "width": 5,
@@ -83899,7 +83931,7 @@
                                         },
                                         {
                                           "type": "rectangle",
-                                          "id": "d8tziJ",
+                                          "id": "HIN4U",
                                           "name": "Pixel",
                                           "fill": "$accent",
                                           "width": 5,
@@ -83907,7 +83939,7 @@
                                         },
                                         {
                                           "type": "rectangle",
-                                          "id": "p4pUv0",
+                                          "id": "KA3g6",
                                           "name": "Pixel",
                                           "fill": "$accent",
                                           "width": 5,
@@ -83917,12 +83949,12 @@
                                     },
                                     {
                                       "type": "frame",
-                                      "id": "OrTCO",
+                                      "id": "EjQgS",
                                       "name": "Pixel row",
                                       "children": [
                                         {
                                           "type": "rectangle",
-                                          "id": "eNTCa",
+                                          "id": "H0san",
                                           "name": "Pixel",
                                           "fill": "#00000000",
                                           "width": 5,
@@ -83930,7 +83962,7 @@
                                         },
                                         {
                                           "type": "rectangle",
-                                          "id": "bVpee",
+                                          "id": "jXXzQ",
                                           "name": "Pixel",
                                           "fill": "$accent",
                                           "width": 5,
@@ -83938,7 +83970,7 @@
                                         },
                                         {
                                           "type": "rectangle",
-                                          "id": "NxIGn",
+                                          "id": "BH0ZY",
                                           "name": "Pixel",
                                           "fill": "#00000000",
                                           "width": 5,
@@ -83946,7 +83978,7 @@
                                         },
                                         {
                                           "type": "rectangle",
-                                          "id": "NowB3",
+                                          "id": "PLsUu",
                                           "name": "Pixel",
                                           "fill": "$accent",
                                           "width": 5,
@@ -83954,7 +83986,7 @@
                                         },
                                         {
                                           "type": "rectangle",
-                                          "id": "kOOsy",
+                                          "id": "k3UC5",
                                           "name": "Pixel",
                                           "fill": "#00000000",
                                           "width": 5,
@@ -83964,12 +83996,12 @@
                                     },
                                     {
                                       "type": "frame",
-                                      "id": "p01mrq",
+                                      "id": "iky3m",
                                       "name": "Pixel row",
                                       "children": [
                                         {
                                           "type": "rectangle",
-                                          "id": "G7aQg",
+                                          "id": "G4gPY",
                                           "name": "Pixel",
                                           "fill": "$accent",
                                           "width": 5,
@@ -83977,7 +84009,7 @@
                                         },
                                         {
                                           "type": "rectangle",
-                                          "id": "LVF1Y",
+                                          "id": "OOTL4",
                                           "name": "Pixel",
                                           "fill": "#00000000",
                                           "width": 5,
@@ -83985,7 +84017,7 @@
                                         },
                                         {
                                           "type": "rectangle",
-                                          "id": "T904E",
+                                          "id": "ViZqC",
                                           "name": "Pixel",
                                           "fill": "$accent",
                                           "width": 5,
@@ -83993,7 +84025,7 @@
                                         },
                                         {
                                           "type": "rectangle",
-                                          "id": "H7F2kK",
+                                          "id": "aVvNG",
                                           "name": "Pixel",
                                           "fill": "#00000000",
                                           "width": 5,
@@ -84001,7 +84033,7 @@
                                         },
                                         {
                                           "type": "rectangle",
-                                          "id": "q4IuN",
+                                          "id": "eDgZW",
                                           "name": "Pixel",
                                           "fill": "$accent",
                                           "width": 5,
@@ -84013,7 +84045,7 @@
                                 },
                                 {
                                   "type": "ellipse",
-                                  "id": "q2Wtp",
+                                  "id": "ln9wb",
                                   "x": 17,
                                   "y": 17,
                                   "name": "Presence dot",
@@ -84028,7 +84060,7 @@
                             },
                             {
                               "type": "text",
-                              "id": "FA0cQ",
+                              "id": "EnPVM",
                               "name": "Handle",
                               "fill": "$accent",
                               "content": "@impl",
@@ -84038,7 +84070,7 @@
                             },
                             {
                               "type": "frame",
-                              "id": "vh9ov",
+                              "id": "d0ph9Q",
                               "x": 120,
                               "y": 6,
                               "name": "Lead badge",
@@ -84052,7 +84084,7 @@
                               "children": [
                                 {
                                   "type": "text",
-                                  "id": "R1p8q",
+                                  "id": "R5jhKP",
                                   "name": "Lead label",
                                   "fill": "$warn",
                                   "content": "LEAD",
@@ -84067,25 +84099,54 @@
                         },
                         {
                           "type": "frame",
-                          "id": "k3DlB3",
-                          "name": "Pty button",
-                          "width": 24,
-                          "height": 24,
-                          "cornerRadius": 4,
-                          "stroke": "$border",
-                          "strokeWidth": 1,
-                          "justifyContent": "center",
+                          "id": "tjzL1",
+                          "name": "Card actions",
+                          "gap": 4,
                           "alignItems": "center",
                           "children": [
                             {
-                              "type": "icon",
-                              "id": "OttFz",
-                              "name": "Terminal icon",
-                              "width": 12,
-                              "height": 12,
-                              "icon": "terminal",
-                              "library": "lucide",
-                              "fill": "$text-mid"
+                              "type": "frame",
+                              "id": "qNNoe",
+                              "name": "Stop button",
+                              "width": 24,
+                              "height": 24,
+                              "cornerRadius": 4,
+                              "justifyContent": "center",
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "icon",
+                                  "id": "h2ewtZ",
+                                  "name": "Stop buttonIcon",
+                                  "width": 13,
+                                  "height": 13,
+                                  "icon": "square",
+                                  "library": "lucide",
+                                  "fill": "#E5484DCC"
+                                }
+                              ]
+                            },
+                            {
+                              "type": "frame",
+                              "id": "vKNLH",
+                              "name": "Restart button",
+                              "width": 24,
+                              "height": 24,
+                              "cornerRadius": 4,
+                              "justifyContent": "center",
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "icon",
+                                  "id": "iglUy",
+                                  "name": "Restart buttonIcon",
+                                  "width": 13,
+                                  "height": 13,
+                                  "icon": "rotate-ccw",
+                                  "library": "lucide",
+                                  "fill": "$text-mid"
+                                }
+                              ]
                             }
                           ]
                         }
@@ -84093,15 +84154,16 @@
                     },
                     {
                       "type": "frame",
-                      "id": "uGDeJ",
+                      "id": "fuPF1",
                       "name": "Status subtitle",
+                      "clip": true,
                       "width": "fill_container",
                       "gap": 6,
                       "alignItems": "center",
                       "children": [
                         {
                           "type": "frame",
-                          "id": "ZlW1m",
+                          "id": "bhNMR",
                           "name": "glyph",
                           "width": 14,
                           "height": 14,
@@ -84110,7 +84172,7 @@
                           "children": [
                             {
                               "type": "icon",
-                              "id": "hSdjJ",
+                              "id": "DCEFz",
                               "name": "hand",
                               "width": 12,
                               "height": 12,
@@ -84122,7 +84184,7 @@
                         },
                         {
                           "type": "text",
-                          "id": "aC50R",
+                          "id": "iKSOC",
                           "name": "label",
                           "fill": "$warn",
                           "content": "Approval needed",
@@ -84134,7 +84196,7 @@
                     },
                     {
                       "type": "rectangle",
-                      "id": "I7eK1",
+                      "id": "cPnyx",
                       "name": "Key divider",
                       "fill": "#272930A6",
                       "width": "fill_container",
@@ -84142,7 +84204,7 @@
                     },
                     {
                       "type": "frame",
-                      "id": "wgCzT",
+                      "id": "MvkD3",
                       "name": "Session key row",
                       "width": "fill_container",
                       "gap": 8,
@@ -84150,7 +84212,7 @@
                       "children": [
                         {
                           "type": "text",
-                          "id": "RyhIU",
+                          "id": "ACpEe",
                           "name": "Key label",
                           "fill": "$text-low",
                           "content": "session_key",
@@ -84160,14 +84222,14 @@
                         },
                         {
                           "type": "frame",
-                          "id": "C4WU7J",
+                          "id": "lahmZ",
                           "name": "Key spacer",
                           "width": "fill_container",
                           "height": 1
                         },
                         {
                           "type": "text",
-                          "id": "vpixR",
+                          "id": "aeT6t",
                           "name": "Key value",
                           "fill": "$text-mid",
                           "content": "01KZMR7A…Q18",
@@ -84177,7 +84239,7 @@
                         },
                         {
                           "type": "icon",
-                          "id": "YfWWw",
+                          "id": "GZTHv",
                           "name": "Copy icon",
                           "width": 11,
                           "height": 11,
@@ -84214,9 +84276,9 @@
               "children": [
                 {
                   "type": "frame",
-                  "id": "A1wsE",
+                  "id": "EBzas",
                   "name": "card @reviewer",
-                  "width": 300,
+                  "width": 240,
                   "fill": "$bg",
                   "cornerRadius": 6,
                   "stroke": "$border",
@@ -84227,7 +84289,7 @@
                   "children": [
                     {
                       "type": "frame",
-                      "id": "CI5ge",
+                      "id": "RvAAS",
                       "name": "Card header",
                       "width": "fill_container",
                       "justifyContent": "space_between",
@@ -84235,14 +84297,14 @@
                       "children": [
                         {
                           "type": "frame",
-                          "id": "t0frHw",
+                          "id": "yJghJ",
                           "name": "Identity",
                           "gap": 8,
                           "alignItems": "center",
                           "children": [
                             {
                               "type": "frame",
-                              "id": "FyQ8T",
+                              "id": "sBH2s",
                               "name": "Avatar wrap",
                               "width": 25,
                               "height": 25,
@@ -84250,7 +84312,7 @@
                               "children": [
                                 {
                                   "type": "frame",
-                                  "id": "Q3nfFI",
+                                  "id": "t66OnS",
                                   "x": 0,
                                   "y": 0,
                                   "name": "Avatar",
@@ -84263,12 +84325,12 @@
                                   "children": [
                                     {
                                       "type": "frame",
-                                      "id": "o0LAO",
+                                      "id": "lf8lU",
                                       "name": "Pixel row",
                                       "children": [
                                         {
                                           "type": "rectangle",
-                                          "id": "cTzjX",
+                                          "id": "eAn7v",
                                           "name": "Pixel",
                                           "fill": "#00000000",
                                           "width": 5,
@@ -84276,7 +84338,7 @@
                                         },
                                         {
                                           "type": "rectangle",
-                                          "id": "msKgg",
+                                          "id": "jwMeg",
                                           "name": "Pixel",
                                           "fill": "$accent",
                                           "width": 5,
@@ -84284,7 +84346,7 @@
                                         },
                                         {
                                           "type": "rectangle",
-                                          "id": "hjWjg",
+                                          "id": "dL4M7",
                                           "name": "Pixel",
                                           "fill": "$accent",
                                           "width": 5,
@@ -84292,7 +84354,7 @@
                                         },
                                         {
                                           "type": "rectangle",
-                                          "id": "BJdiR",
+                                          "id": "h0vff",
                                           "name": "Pixel",
                                           "fill": "$accent",
                                           "width": 5,
@@ -84300,7 +84362,7 @@
                                         },
                                         {
                                           "type": "rectangle",
-                                          "id": "KAKdr",
+                                          "id": "ySUWd",
                                           "name": "Pixel",
                                           "fill": "#00000000",
                                           "width": 5,
@@ -84310,12 +84372,12 @@
                                     },
                                     {
                                       "type": "frame",
-                                      "id": "eHGpW",
+                                      "id": "iGB9m",
                                       "name": "Pixel row",
                                       "children": [
                                         {
                                           "type": "rectangle",
-                                          "id": "U2oVw",
+                                          "id": "WoG3k",
                                           "name": "Pixel",
                                           "fill": "$accent",
                                           "width": 5,
@@ -84323,7 +84385,7 @@
                                         },
                                         {
                                           "type": "rectangle",
-                                          "id": "S9dlTh",
+                                          "id": "Rpk90",
                                           "name": "Pixel",
                                           "fill": "#00000000",
                                           "width": 5,
@@ -84331,7 +84393,7 @@
                                         },
                                         {
                                           "type": "rectangle",
-                                          "id": "o94bsQ",
+                                          "id": "tC5fo",
                                           "name": "Pixel",
                                           "fill": "$accent",
                                           "width": 5,
@@ -84339,7 +84401,7 @@
                                         },
                                         {
                                           "type": "rectangle",
-                                          "id": "sT6m1",
+                                          "id": "ct4yH",
                                           "name": "Pixel",
                                           "fill": "#00000000",
                                           "width": 5,
@@ -84347,7 +84409,7 @@
                                         },
                                         {
                                           "type": "rectangle",
-                                          "id": "JsMZW",
+                                          "id": "jrWTy",
                                           "name": "Pixel",
                                           "fill": "$accent",
                                           "width": 5,
@@ -84357,12 +84419,12 @@
                                     },
                                     {
                                       "type": "frame",
-                                      "id": "Egxay",
+                                      "id": "U849av",
                                       "name": "Pixel row",
                                       "children": [
                                         {
                                           "type": "rectangle",
-                                          "id": "LB8h1",
+                                          "id": "JCNnR",
                                           "name": "Pixel",
                                           "fill": "$accent",
                                           "width": 5,
@@ -84370,7 +84432,7 @@
                                         },
                                         {
                                           "type": "rectangle",
-                                          "id": "Bta7I",
+                                          "id": "F2gc5b",
                                           "name": "Pixel",
                                           "fill": "$accent",
                                           "width": 5,
@@ -84378,7 +84440,7 @@
                                         },
                                         {
                                           "type": "rectangle",
-                                          "id": "ROcvi",
+                                          "id": "C9OYB",
                                           "name": "Pixel",
                                           "fill": "$accent",
                                           "width": 5,
@@ -84386,7 +84448,7 @@
                                         },
                                         {
                                           "type": "rectangle",
-                                          "id": "JheET",
+                                          "id": "G8fbS",
                                           "name": "Pixel",
                                           "fill": "$accent",
                                           "width": 5,
@@ -84394,7 +84456,7 @@
                                         },
                                         {
                                           "type": "rectangle",
-                                          "id": "C1UdOv",
+                                          "id": "d9X7wx",
                                           "name": "Pixel",
                                           "fill": "$accent",
                                           "width": 5,
@@ -84404,12 +84466,12 @@
                                     },
                                     {
                                       "type": "frame",
-                                      "id": "UoBE1",
+                                      "id": "GW2RD",
                                       "name": "Pixel row",
                                       "children": [
                                         {
                                           "type": "rectangle",
-                                          "id": "mZA01",
+                                          "id": "a5jaE",
                                           "name": "Pixel",
                                           "fill": "#00000000",
                                           "width": 5,
@@ -84417,7 +84479,7 @@
                                         },
                                         {
                                           "type": "rectangle",
-                                          "id": "KgVMd",
+                                          "id": "u0JrH",
                                           "name": "Pixel",
                                           "fill": "$accent",
                                           "width": 5,
@@ -84425,7 +84487,7 @@
                                         },
                                         {
                                           "type": "rectangle",
-                                          "id": "IVNCL",
+                                          "id": "pmrdK",
                                           "name": "Pixel",
                                           "fill": "#00000000",
                                           "width": 5,
@@ -84433,7 +84495,7 @@
                                         },
                                         {
                                           "type": "rectangle",
-                                          "id": "B1ORa",
+                                          "id": "aRwMu",
                                           "name": "Pixel",
                                           "fill": "$accent",
                                           "width": 5,
@@ -84441,7 +84503,7 @@
                                         },
                                         {
                                           "type": "rectangle",
-                                          "id": "wWoUJ",
+                                          "id": "O7sAz2",
                                           "name": "Pixel",
                                           "fill": "#00000000",
                                           "width": 5,
@@ -84451,12 +84513,12 @@
                                     },
                                     {
                                       "type": "frame",
-                                      "id": "nXdvR",
+                                      "id": "fsfY9",
                                       "name": "Pixel row",
                                       "children": [
                                         {
                                           "type": "rectangle",
-                                          "id": "dZIoP",
+                                          "id": "sUcvh",
                                           "name": "Pixel",
                                           "fill": "$accent",
                                           "width": 5,
@@ -84464,7 +84526,7 @@
                                         },
                                         {
                                           "type": "rectangle",
-                                          "id": "xRL2a",
+                                          "id": "ajFI0",
                                           "name": "Pixel",
                                           "fill": "#00000000",
                                           "width": 5,
@@ -84472,7 +84534,7 @@
                                         },
                                         {
                                           "type": "rectangle",
-                                          "id": "k7IXr",
+                                          "id": "l1F3J",
                                           "name": "Pixel",
                                           "fill": "$accent",
                                           "width": 5,
@@ -84480,7 +84542,7 @@
                                         },
                                         {
                                           "type": "rectangle",
-                                          "id": "gVKUZ",
+                                          "id": "ppOaf",
                                           "name": "Pixel",
                                           "fill": "#00000000",
                                           "width": 5,
@@ -84488,7 +84550,7 @@
                                         },
                                         {
                                           "type": "rectangle",
-                                          "id": "F65Dbn",
+                                          "id": "WwFnL",
                                           "name": "Pixel",
                                           "fill": "$accent",
                                           "width": 5,
@@ -84500,7 +84562,7 @@
                                 },
                                 {
                                   "type": "ellipse",
-                                  "id": "ZpSwP",
+                                  "id": "Omcpt",
                                   "x": 17,
                                   "y": 17,
                                   "name": "Presence dot",
@@ -84515,7 +84577,7 @@
                             },
                             {
                               "type": "text",
-                              "id": "Y9yEOk",
+                              "id": "LcwsE",
                               "name": "Handle",
                               "fill": "$accent",
                               "content": "@reviewer",
@@ -84525,7 +84587,7 @@
                             },
                             {
                               "type": "frame",
-                              "id": "SFh1K",
+                              "id": "A0JPV",
                               "x": 120,
                               "y": 6,
                               "name": "Lead badge",
@@ -84539,7 +84601,7 @@
                               "children": [
                                 {
                                   "type": "text",
-                                  "id": "h4MCa",
+                                  "id": "zkV5K",
                                   "name": "Lead label",
                                   "fill": "$warn",
                                   "content": "LEAD",
@@ -84554,25 +84616,54 @@
                         },
                         {
                           "type": "frame",
-                          "id": "lrYAy",
-                          "name": "Pty button",
-                          "width": 24,
-                          "height": 24,
-                          "cornerRadius": 4,
-                          "stroke": "$border",
-                          "strokeWidth": 1,
-                          "justifyContent": "center",
+                          "id": "W8mclX",
+                          "name": "Card actions",
+                          "gap": 4,
                           "alignItems": "center",
                           "children": [
                             {
-                              "type": "icon",
-                              "id": "qm3xX",
-                              "name": "Terminal icon",
-                              "width": 12,
-                              "height": 12,
-                              "icon": "terminal",
-                              "library": "lucide",
-                              "fill": "$text-mid"
+                              "type": "frame",
+                              "id": "AW0BP",
+                              "name": "Stop button",
+                              "width": 24,
+                              "height": 24,
+                              "cornerRadius": 4,
+                              "justifyContent": "center",
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "icon",
+                                  "id": "ZkI20",
+                                  "name": "Stop buttonIcon",
+                                  "width": 13,
+                                  "height": 13,
+                                  "icon": "square",
+                                  "library": "lucide",
+                                  "fill": "#E5484DCC"
+                                }
+                              ]
+                            },
+                            {
+                              "type": "frame",
+                              "id": "E6yMtF",
+                              "name": "Restart button",
+                              "width": 24,
+                              "height": 24,
+                              "cornerRadius": 4,
+                              "justifyContent": "center",
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "icon",
+                                  "id": "m4YYZ",
+                                  "name": "Restart buttonIcon",
+                                  "width": 13,
+                                  "height": 13,
+                                  "icon": "rotate-ccw",
+                                  "library": "lucide",
+                                  "fill": "$text-mid"
+                                }
+                              ]
                             }
                           ]
                         }
@@ -84580,15 +84671,16 @@
                     },
                     {
                       "type": "frame",
-                      "id": "mYLbI",
+                      "id": "n969su",
                       "name": "Status subtitle",
+                      "clip": true,
                       "width": "fill_container",
                       "gap": 6,
                       "alignItems": "center",
                       "children": [
                         {
                           "type": "frame",
-                          "id": "M6wxI",
+                          "id": "K394K",
                           "name": "glyph",
                           "width": 14,
                           "height": 14,
@@ -84597,7 +84689,7 @@
                           "children": [
                             {
                               "type": "ellipse",
-                              "id": "WvFXz",
+                              "id": "n6pdr",
                               "name": "ring",
                               "width": 9,
                               "height": 9,
@@ -84609,29 +84701,19 @@
                         },
                         {
                           "type": "text",
-                          "id": "M2YAeR",
+                          "id": "j5JXkW",
                           "name": "label",
                           "fill": "$text-mid",
                           "content": "Ready",
                           "fontFamily": "$font-ui",
                           "fontSize": 11,
                           "fontWeight": "500"
-                        },
-                        {
-                          "type": "text",
-                          "id": "lBFwP",
-                          "name": "detail",
-                          "fill": "$text-mid",
-                          "content": "· Last response finished",
-                          "fontFamily": "$font-ui",
-                          "fontSize": 11,
-                          "fontWeight": "normal"
                         }
                       ]
                     },
                     {
                       "type": "rectangle",
-                      "id": "D63XGS",
+                      "id": "z83ev",
                       "name": "Key divider",
                       "fill": "#272930A6",
                       "width": "fill_container",
@@ -84639,7 +84721,7 @@
                     },
                     {
                       "type": "frame",
-                      "id": "hYGoh",
+                      "id": "YfSw3",
                       "name": "Session key row",
                       "width": "fill_container",
                       "gap": 8,
@@ -84647,7 +84729,7 @@
                       "children": [
                         {
                           "type": "text",
-                          "id": "T4C4Tn",
+                          "id": "HsuHy",
                           "name": "Key label",
                           "fill": "$text-low",
                           "content": "session_key",
@@ -84657,14 +84739,14 @@
                         },
                         {
                           "type": "frame",
-                          "id": "wodws",
+                          "id": "TBTbj",
                           "name": "Key spacer",
                           "width": "fill_container",
                           "height": 1
                         },
                         {
                           "type": "text",
-                          "id": "NEWm8",
+                          "id": "mHT4K",
                           "name": "Key value",
                           "fill": "$text-mid",
                           "content": "01KZMR7B…C42",
@@ -84674,7 +84756,7 @@
                         },
                         {
                           "type": "icon",
-                          "id": "Q0Lapj",
+                          "id": "GWCLa",
                           "name": "Copy icon",
                           "width": 11,
                           "height": 11,
@@ -84711,9 +84793,9 @@
               "children": [
                 {
                   "type": "frame",
-                  "id": "gKkrk",
+                  "id": "hcKJB",
                   "name": "card @scout",
-                  "width": 300,
+                  "width": 240,
                   "fill": "$bg",
                   "cornerRadius": 6,
                   "stroke": "$border",
@@ -84724,7 +84806,7 @@
                   "children": [
                     {
                       "type": "frame",
-                      "id": "TXnIk",
+                      "id": "hjF9L",
                       "name": "Card header",
                       "width": "fill_container",
                       "justifyContent": "space_between",
@@ -84732,14 +84814,14 @@
                       "children": [
                         {
                           "type": "frame",
-                          "id": "vZFgi",
+                          "id": "G5J1r1",
                           "name": "Identity",
                           "gap": 8,
                           "alignItems": "center",
                           "children": [
                             {
                               "type": "frame",
-                              "id": "yuEb3",
+                              "id": "dI4lW",
                               "name": "Avatar wrap",
                               "width": 25,
                               "height": 25,
@@ -84747,7 +84829,7 @@
                               "children": [
                                 {
                                   "type": "frame",
-                                  "id": "qRyBy",
+                                  "id": "nzmaM",
                                   "x": 0,
                                   "y": 0,
                                   "name": "Avatar",
@@ -84760,12 +84842,12 @@
                                   "children": [
                                     {
                                       "type": "frame",
-                                      "id": "u36k3S",
+                                      "id": "VexAU",
                                       "name": "Pixel row",
                                       "children": [
                                         {
                                           "type": "rectangle",
-                                          "id": "aEW0e",
+                                          "id": "HCOZ5",
                                           "name": "Pixel",
                                           "fill": "#00000000",
                                           "width": 5,
@@ -84773,7 +84855,7 @@
                                         },
                                         {
                                           "type": "rectangle",
-                                          "id": "PIunO",
+                                          "id": "nQAye",
                                           "name": "Pixel",
                                           "fill": "$accent",
                                           "width": 5,
@@ -84781,7 +84863,7 @@
                                         },
                                         {
                                           "type": "rectangle",
-                                          "id": "I9qag",
+                                          "id": "x5rsvn",
                                           "name": "Pixel",
                                           "fill": "$accent",
                                           "width": 5,
@@ -84789,7 +84871,7 @@
                                         },
                                         {
                                           "type": "rectangle",
-                                          "id": "PwILy",
+                                          "id": "VZl6e",
                                           "name": "Pixel",
                                           "fill": "$accent",
                                           "width": 5,
@@ -84797,7 +84879,7 @@
                                         },
                                         {
                                           "type": "rectangle",
-                                          "id": "EzgvA",
+                                          "id": "n6KCF",
                                           "name": "Pixel",
                                           "fill": "#00000000",
                                           "width": 5,
@@ -84807,12 +84889,12 @@
                                     },
                                     {
                                       "type": "frame",
-                                      "id": "BSePq",
+                                      "id": "DLDxs",
                                       "name": "Pixel row",
                                       "children": [
                                         {
                                           "type": "rectangle",
-                                          "id": "b0eR0",
+                                          "id": "aVyWa",
                                           "name": "Pixel",
                                           "fill": "$accent",
                                           "width": 5,
@@ -84820,7 +84902,7 @@
                                         },
                                         {
                                           "type": "rectangle",
-                                          "id": "u66YeJ",
+                                          "id": "ruV6D",
                                           "name": "Pixel",
                                           "fill": "#00000000",
                                           "width": 5,
@@ -84828,7 +84910,7 @@
                                         },
                                         {
                                           "type": "rectangle",
-                                          "id": "UQnqF",
+                                          "id": "KCME7",
                                           "name": "Pixel",
                                           "fill": "$accent",
                                           "width": 5,
@@ -84836,7 +84918,7 @@
                                         },
                                         {
                                           "type": "rectangle",
-                                          "id": "mIlNs",
+                                          "id": "zIENM",
                                           "name": "Pixel",
                                           "fill": "#00000000",
                                           "width": 5,
@@ -84844,7 +84926,7 @@
                                         },
                                         {
                                           "type": "rectangle",
-                                          "id": "Wfzxl",
+                                          "id": "Ynvbc",
                                           "name": "Pixel",
                                           "fill": "$accent",
                                           "width": 5,
@@ -84854,12 +84936,12 @@
                                     },
                                     {
                                       "type": "frame",
-                                      "id": "w6MqQ",
+                                      "id": "l36ZQT",
                                       "name": "Pixel row",
                                       "children": [
                                         {
                                           "type": "rectangle",
-                                          "id": "hECB8",
+                                          "id": "GtyIE",
                                           "name": "Pixel",
                                           "fill": "$accent",
                                           "width": 5,
@@ -84867,7 +84949,7 @@
                                         },
                                         {
                                           "type": "rectangle",
-                                          "id": "eTDd3",
+                                          "id": "XmgpD",
                                           "name": "Pixel",
                                           "fill": "$accent",
                                           "width": 5,
@@ -84875,7 +84957,7 @@
                                         },
                                         {
                                           "type": "rectangle",
-                                          "id": "J8wkR",
+                                          "id": "yShRQ",
                                           "name": "Pixel",
                                           "fill": "$accent",
                                           "width": 5,
@@ -84883,7 +84965,7 @@
                                         },
                                         {
                                           "type": "rectangle",
-                                          "id": "oltUm",
+                                          "id": "WSylQ",
                                           "name": "Pixel",
                                           "fill": "$accent",
                                           "width": 5,
@@ -84891,7 +84973,7 @@
                                         },
                                         {
                                           "type": "rectangle",
-                                          "id": "Y6KzZ",
+                                          "id": "N43MI",
                                           "name": "Pixel",
                                           "fill": "$accent",
                                           "width": 5,
@@ -84901,12 +84983,12 @@
                                     },
                                     {
                                       "type": "frame",
-                                      "id": "ZZ0Hg",
+                                      "id": "Hs3ny",
                                       "name": "Pixel row",
                                       "children": [
                                         {
                                           "type": "rectangle",
-                                          "id": "l2GgAr",
+                                          "id": "mj3G5",
                                           "name": "Pixel",
                                           "fill": "#00000000",
                                           "width": 5,
@@ -84914,7 +84996,7 @@
                                         },
                                         {
                                           "type": "rectangle",
-                                          "id": "Nn9PV",
+                                          "id": "HiAFT",
                                           "name": "Pixel",
                                           "fill": "$accent",
                                           "width": 5,
@@ -84922,7 +85004,7 @@
                                         },
                                         {
                                           "type": "rectangle",
-                                          "id": "On8Yp",
+                                          "id": "plFsS",
                                           "name": "Pixel",
                                           "fill": "#00000000",
                                           "width": 5,
@@ -84930,7 +85012,7 @@
                                         },
                                         {
                                           "type": "rectangle",
-                                          "id": "jErqc",
+                                          "id": "u3cbd",
                                           "name": "Pixel",
                                           "fill": "$accent",
                                           "width": 5,
@@ -84938,7 +85020,7 @@
                                         },
                                         {
                                           "type": "rectangle",
-                                          "id": "zakYn",
+                                          "id": "mxPiL",
                                           "name": "Pixel",
                                           "fill": "#00000000",
                                           "width": 5,
@@ -84948,12 +85030,12 @@
                                     },
                                     {
                                       "type": "frame",
-                                      "id": "O7Ewz",
+                                      "id": "okVMA",
                                       "name": "Pixel row",
                                       "children": [
                                         {
                                           "type": "rectangle",
-                                          "id": "WWpKT",
+                                          "id": "bEauC",
                                           "name": "Pixel",
                                           "fill": "$accent",
                                           "width": 5,
@@ -84961,7 +85043,7 @@
                                         },
                                         {
                                           "type": "rectangle",
-                                          "id": "jRgMt",
+                                          "id": "vYk73",
                                           "name": "Pixel",
                                           "fill": "#00000000",
                                           "width": 5,
@@ -84969,7 +85051,7 @@
                                         },
                                         {
                                           "type": "rectangle",
-                                          "id": "m1rAVj",
+                                          "id": "gHxEr",
                                           "name": "Pixel",
                                           "fill": "$accent",
                                           "width": 5,
@@ -84977,7 +85059,7 @@
                                         },
                                         {
                                           "type": "rectangle",
-                                          "id": "SejG0",
+                                          "id": "yFvEn",
                                           "name": "Pixel",
                                           "fill": "#00000000",
                                           "width": 5,
@@ -84985,7 +85067,7 @@
                                         },
                                         {
                                           "type": "rectangle",
-                                          "id": "H0fnu",
+                                          "id": "U5jnwo",
                                           "name": "Pixel",
                                           "fill": "$accent",
                                           "width": 5,
@@ -84997,7 +85079,7 @@
                                 },
                                 {
                                   "type": "ellipse",
-                                  "id": "f2OexQ",
+                                  "id": "ikkVU",
                                   "x": 17,
                                   "y": 17,
                                   "name": "Presence dot",
@@ -85012,7 +85094,7 @@
                             },
                             {
                               "type": "text",
-                              "id": "tN6RF",
+                              "id": "Ol3XA",
                               "name": "Handle",
                               "fill": "$accent",
                               "content": "@scout",
@@ -85022,7 +85104,7 @@
                             },
                             {
                               "type": "frame",
-                              "id": "fcN7V",
+                              "id": "zzxqD",
                               "x": 120,
                               "y": 6,
                               "name": "Lead badge",
@@ -85036,7 +85118,7 @@
                               "children": [
                                 {
                                   "type": "text",
-                                  "id": "ybmYr",
+                                  "id": "aEW2D",
                                   "name": "Lead label",
                                   "fill": "$warn",
                                   "content": "LEAD",
@@ -85051,25 +85133,54 @@
                         },
                         {
                           "type": "frame",
-                          "id": "I24NsA",
-                          "name": "Pty button",
-                          "width": 24,
-                          "height": 24,
-                          "cornerRadius": 4,
-                          "stroke": "$border",
-                          "strokeWidth": 1,
-                          "justifyContent": "center",
+                          "id": "TAaJN",
+                          "name": "Card actions",
+                          "gap": 4,
                           "alignItems": "center",
                           "children": [
                             {
-                              "type": "icon",
-                              "id": "O9q8wQ",
-                              "name": "Terminal icon",
-                              "width": 12,
-                              "height": 12,
-                              "icon": "terminal",
-                              "library": "lucide",
-                              "fill": "$text-mid"
+                              "type": "frame",
+                              "id": "oS3HW",
+                              "name": "Stop button",
+                              "width": 24,
+                              "height": 24,
+                              "cornerRadius": 4,
+                              "justifyContent": "center",
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "icon",
+                                  "id": "Fnk3W",
+                                  "name": "Stop buttonIcon",
+                                  "width": 13,
+                                  "height": 13,
+                                  "icon": "square",
+                                  "library": "lucide",
+                                  "fill": "#E5484DCC"
+                                }
+                              ]
+                            },
+                            {
+                              "type": "frame",
+                              "id": "YQqzI",
+                              "name": "Restart button",
+                              "width": 24,
+                              "height": 24,
+                              "cornerRadius": 4,
+                              "justifyContent": "center",
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "icon",
+                                  "id": "BughK",
+                                  "name": "Restart buttonIcon",
+                                  "width": 13,
+                                  "height": 13,
+                                  "icon": "rotate-ccw",
+                                  "library": "lucide",
+                                  "fill": "$text-mid"
+                                }
+                              ]
                             }
                           ]
                         }
@@ -85077,15 +85188,16 @@
                     },
                     {
                       "type": "frame",
-                      "id": "Shvez",
+                      "id": "oqfba",
                       "name": "Status subtitle",
+                      "clip": true,
                       "width": "fill_container",
                       "gap": 6,
                       "alignItems": "center",
                       "children": [
                         {
                           "type": "frame",
-                          "id": "hzi3D",
+                          "id": "GbpCs",
                           "name": "glyph",
                           "width": 14,
                           "height": 14,
@@ -85094,7 +85206,7 @@
                           "children": [
                             {
                               "type": "icon",
-                              "id": "V5QRe",
+                              "id": "y5gF0",
                               "name": "circle-alert",
                               "width": 12,
                               "height": 12,
@@ -85106,7 +85218,7 @@
                         },
                         {
                           "type": "text",
-                          "id": "v952Ra",
+                          "id": "gAAid",
                           "name": "label",
                           "fill": "$danger",
                           "content": "Response failed",
@@ -85118,7 +85230,7 @@
                     },
                     {
                       "type": "rectangle",
-                      "id": "VBVXU",
+                      "id": "OZCGO",
                       "name": "Key divider",
                       "fill": "#272930A6",
                       "width": "fill_container",
@@ -85126,7 +85238,7 @@
                     },
                     {
                       "type": "frame",
-                      "id": "EVHKr",
+                      "id": "kpCHu",
                       "name": "Session key row",
                       "width": "fill_container",
                       "gap": 8,
@@ -85134,7 +85246,7 @@
                       "children": [
                         {
                           "type": "text",
-                          "id": "biK1U",
+                          "id": "e1Fi4q",
                           "name": "Key label",
                           "fill": "$text-low",
                           "content": "session_key",
@@ -85144,14 +85256,14 @@
                         },
                         {
                           "type": "frame",
-                          "id": "fteQH",
+                          "id": "MQk2g",
                           "name": "Key spacer",
                           "width": "fill_container",
                           "height": 1
                         },
                         {
                           "type": "text",
-                          "id": "e8RTW5",
+                          "id": "hI3N2",
                           "name": "Key value",
                           "fill": "$text-mid",
                           "content": "01KZMR7C…D93",
@@ -85161,7 +85273,7 @@
                         },
                         {
                           "type": "icon",
-                          "id": "Nwyrj",
+                          "id": "R3HXe",
                           "name": "Copy icon",
                           "width": 11,
                           "height": 11,
