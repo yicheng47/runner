@@ -1,6 +1,8 @@
 # 478 — Consolidation pass 2: split `mission_workspace.rs`
 
-Tracking issue: [#478](https://github.com/yicheng47/runner/issues/478). Chore, P2. Second of four passes; pass 1 shipped 2026-09-05 in [#479](https://github.com/yicheng47/runner/pull/479) and its tail in [#578](https://github.com/yicheng47/runner/pull/578). Branch: **`chore/478-pass-2-mission-workspace` already exists and is checked out** — it carries this brief; work on it, do not create another.
+Tracking issue: [#478](https://github.com/yicheng47/runner/issues/478). Status: shipped 2026-09-13 in [#579](https://github.com/yicheng47/runner/pull/579) (mission `01M2CVJWWF9TYP23ZZRYZD7TT7` on codex-crew, 32 min launch to merge). Chore, P2. Second of four passes; pass 1 shipped 2026-09-05 in [#479](https://github.com/yicheng47/runner/pull/479) and its tail in [#578](https://github.com/yicheng47/runner/pull/578).
+
+The verification sections below were corrected during the mission and are the pattern passes 3 and 4 inherit: the original brief's privacy bullet could not compile, and its line-based content gate measured the wrong thing.
 
 This pass **fixes the split pattern** passes 3 and 4 copy.
 
