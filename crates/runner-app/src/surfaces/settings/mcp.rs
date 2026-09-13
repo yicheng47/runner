@@ -833,7 +833,10 @@ impl McpDetail {
             });
             return;
         }
-        let name = self.name.clone().unwrap();
+        let name = self
+            .name
+            .clone()
+            .expect("validation above rejects an empty selection");
         let client = self.viewing;
         let text = self.editor.read(cx).text().to_owned();
         let also: Vec<_> = self.also.iter().copied().collect();

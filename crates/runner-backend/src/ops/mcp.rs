@@ -524,7 +524,9 @@ impl NativeEntry {
 
     fn text(&self, name: &str) -> String {
         match self {
-            Self::Claude(value) => serde_json::to_string_pretty(value).unwrap(),
+            Self::Claude(value) => {
+                serde_json::to_string_pretty(value).expect("a serde_json::Value always serializes")
+            }
             Self::Toml(table) => {
                 let mut doc = toml_edit::DocumentMut::new();
                 let mut parent = toml_edit::Table::new();
@@ -644,7 +646,9 @@ fn catalog_at(runner: McpIntegrationStatus, paths: &BTreeMap<McpClientId, PathBu
     }
     McpCatalog {
         runner,
-        runner_server: entries.remove("runner").unwrap(),
+        runner_server: entries
+            .remove("runner")
+            .expect("the runner entry is seeded before this loop"),
         servers: entries.into_values().collect(),
     }
 }
@@ -659,6 +663,9 @@ fn client_paths() -> Result<BTreeMap<McpClientId, PathBuf>> {
 pub fn mcp_catalog(state: &AppCore) -> Result<McpCatalog> {
     Ok(catalog_at(mcp_integration_status(state)?, &client_paths()?))
 }
+
+// Every toml_edit node here comes out of the parser, which records a span on each one.
+const PARSED_SPAN: &str = "a parsed TOML document keeps its spans";
 
 // serde_json validates and locates values; splice only the owned member so unrelated
 // JSON whitespace, ordering, and number/string spellings survive byte for byte.
@@ -677,29 +684,34 @@ fn json_members(raw: &str) -> Result<(Vec<JsonMember>, usize)> {
     let mut members = Vec::new();
     loop {
         offset += raw[offset..].len() - raw[offset..].trim_start().len();
-        if raw.as_bytes()[offset] == b'}' {
-            return Ok((members, offset));
+        match raw.as_bytes().get(offset) {
+            Some(b'}') => return Ok((members, offset)),
+            Some(_) => {}
+            None => return Err(Error::msg("unterminated JSON object")),
         }
         let key_start = offset;
         let mut keys = serde_json::Deserializer::from_str(&raw[offset..]).into_iter::<String>();
         let key = keys
             .next()
-            .unwrap()
+            .ok_or_else(|| Error::msg("unterminated JSON object"))?
             .map_err(|e| Error::msg(e.to_string()))?;
         offset += keys.byte_offset();
-        offset += raw[offset..].find(':').unwrap() + 1;
+        offset += raw[offset..]
+            .find(':')
+            .ok_or_else(|| Error::msg("expected ':' after a JSON member key"))?
+            + 1;
         offset += raw[offset..].len() - raw[offset..].trim_start().len();
         let start = offset;
         let mut values =
             serde_json::Deserializer::from_str(&raw[offset..]).into_iter::<serde::de::IgnoredAny>();
         values
             .next()
-            .unwrap()
+            .ok_or_else(|| Error::msg("unterminated JSON object"))?
             .map_err(|e| Error::msg(e.to_string()))?;
         offset += values.byte_offset();
         let end = offset;
         offset += raw[offset..].len() - raw[offset..].trim_start().len();
-        let comma = (raw.as_bytes()[offset] == b',').then_some(offset);
+        let comma = (raw.as_bytes().get(offset) == Some(&b',')).then_some(offset);
         if comma.is_some() {
             offset += 1;
         }
@@ -719,7 +731,8 @@ fn replace_json_member(raw: &str, name: &str, value: Option<&serde_json::Value>)
         if let Some(value) = value {
             out.replace_range(
                 member.value.clone(),
-                &serde_json::to_string_pretty(value).unwrap(),
+                &serde_json::to_string_pretty(value)
+                    .expect("a serde_json::Value always serializes"),
             );
         } else {
             out.replace_range(member.key_start..member.value.end, "");
@@ -727,15 +740,17 @@ fn replace_json_member(raw: &str, name: &str, value: Option<&serde_json::Value>)
                 let shifted = comma - (member.value.end - member.key_start);
                 out.replace_range(shifted..shifted + 1, "");
             } else if index > 0 {
-                let comma = members[index - 1].comma.unwrap();
+                let comma = members[index - 1]
+                    .comma
+                    .expect("a member followed by another member is comma-terminated");
                 out.replace_range(comma..comma + 1, "");
             }
         }
     } else if let Some(value) = value {
         let text = format!(
             "{}: {}",
-            serde_json::to_string(name).unwrap(),
-            serde_json::to_string_pretty(value).unwrap()
+            serde_json::to_string(name).expect("a string always serializes"),
+            serde_json::to_string_pretty(value).expect("a serde_json::Value always serializes")
         );
         out.insert_str(close, &text);
         if let Some(last) = members.last() {
@@ -811,12 +826,16 @@ fn splice_toml_entry(
             .map(|(key, value)| {
                 (
                     key,
-                    inline.key(key).unwrap().span().unwrap(),
-                    value.span().unwrap(),
+                    inline
+                        .key(key)
+                        .expect("the key comes from this table")
+                        .span()
+                        .expect(PARSED_SPAN),
+                    value.span().expect(PARSED_SPAN),
                 )
             })
             .collect();
-        let span = inline.span().unwrap();
+        let span = inline.span().expect(PARSED_SPAN);
         if let Some((index, (_, key, value))) = members
             .iter()
             .enumerate()
@@ -860,17 +879,20 @@ fn splice_toml_entry(
     let existing = parent.and_then(|p| p.get(name));
     if let Some(value) = existing.and_then(toml_edit::Item::as_inline_table) {
         if let Some(table) = replacement {
-            out.replace_range(value.span().unwrap(), &inline_entry_text(table));
+            out.replace_range(value.span().expect(PARSED_SPAN), &inline_entry_text(table));
         } else {
             let key = parent
-                .unwrap()
+                .expect("the entry was read out of this parent")
                 .as_table()
-                .unwrap()
+                .expect("a non-inline parent holding an entry is a table")
                 .key(name)
-                .unwrap()
+                .expect("the entry was read out of this parent")
                 .span()
-                .unwrap();
-            out.replace_range(line_range(raw, key.start..value.span().unwrap().end), "");
+                .expect(PARSED_SPAN);
+            out.replace_range(
+                line_range(raw, key.start..value.span().expect(PARSED_SPAN).end),
+                "",
+            );
         }
         return Ok(out);
     }
@@ -934,7 +956,12 @@ fn write_entry_at(
                         for key in ["type", "command", "args", "env", "url", "headers"] {
                             base.remove(key);
                         }
-                        base.extend(value.as_object().unwrap().clone());
+                        base.extend(
+                            value
+                                .as_object()
+                                .expect("a Claude entry is validated as a JSON object")
+                                .clone(),
+                        );
                         value = serde_json::Value::Object(base);
                     }
                 }
@@ -949,14 +976,16 @@ fn write_entry_at(
             out.replace_range(member.value.clone(), &updated);
             out
         } else {
-            replace_json_member(raw, "mcpServers", Some(&json!({ name: value.unwrap() })))?
+            let value = value.expect("a removal with no mcpServers member returned early");
+            replace_json_member(raw, "mcpServers", Some(&json!({ name: value })))?
         }
     } else {
         let replacement = match entry {
             Some(NativeEntry::Toml(mut table)) => {
                 if merge {
                     if let Some(NativeEntry::Toml(old)) = existing.get(name) {
-                        let definition = McpServerDefinition::from_toml(&table).unwrap();
+                        let definition = McpServerDefinition::from_toml(&table)
+                            .expect("a merge always writes a table built from a definition");
                         table = old.clone();
                         definition.write_toml(&mut table);
                     }
@@ -1066,7 +1095,7 @@ fn parse_native(client: McpClientId, name: &str, text: &str) -> Result<NativeEnt
             }
             let table = servers
                 .get(name)
-                .unwrap()
+                .expect("contains_key was checked above")
                 .clone()
                 .into_table()
                 .map_err(|_| Error::msg("The MCP entry must be a TOML table"))?;
@@ -1112,7 +1141,12 @@ fn edit_at(
             &paths[&other],
             other,
             name,
-            Some(translated(definition.as_ref().unwrap(), other)),
+            Some(translated(
+                definition
+                    .as_ref()
+                    .expect("also-update is validated to have a translatable definition"),
+                other,
+            )),
             true,
         ) {
             errors.push(e.to_string());
@@ -1160,6 +1194,17 @@ mod tests {
             },
             paths,
         )
+    }
+
+    #[test]
+    fn truncated_json_reports_an_error_instead_of_panicking() {
+        for raw in ["{", "{\"a\"", "{\"a\":", "{\"a\": 1", "{\"a\": 1,"] {
+            assert!(
+                json_members(raw).is_err(),
+                "expected an error for {raw:?}, not a panic"
+            );
+        }
+        assert!(json_members("{\"a\": 1}").is_ok());
     }
 
     #[test]

@@ -2532,7 +2532,7 @@ fn drop_side(pane: Bounds<Pixels>, pointer: Point<Pixels>) -> DropSide {
     ]
     .into_iter()
     .min_by(|(_, a), (_, b)| a.total_cmp(b))
-    .unwrap()
+    .expect("the four sides are a non-empty array")
     .0
 }
 
