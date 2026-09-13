@@ -1,6 +1,6 @@
 # 574 — Terminal tab split: Split Right / Split Down spawn a shell in place
 
-Tracking issue: [#574](https://github.com/yicheng47/runner/issues/574). Spec: [574](../features/574-terminal-tab-split.md). Feature, P2. Design: `design/runner.pen` frame `Spec — Terminal tab split (574) · v1` (`TbPja`). Branch: **`feat/574-terminal-tab-split` already exists and is checked out** — it carries this brief; work on it, do not create another.
+Tracking issue: [#574](https://github.com/yicheng47/runner/issues/574). Spec: [574](../../features/archive/574-terminal-tab-split.md). Feature, P2. Shipped 2026-09-13 in [#576](https://github.com/yicheng47/runner/pull/576) (mission `01M2CEE7QAZSAA65ATQQ3XRQWN`, codex-crew; one review round — New terminal from the palette off the Chat route was a silent no-op, or would have put a shell into a chat tab; settled by choosing the target by tab kind on every route — then commit `2766b6a`; CI queued 50 min without a runner and passed on a re-run). Design: `design/runner.pen` frame `Spec — Terminal tab split (574) · v1` (`TbPja`). Branch: **`feat/574-terminal-tab-split` already exists and is checked out** — it carries this brief; work on it, do not create another.
 
 ## What ships
 

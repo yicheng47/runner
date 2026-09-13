@@ -1,10 +1,10 @@
 # Terminal tab split
 
-Tracking issue: [#574](https://github.com/yicheng47/runner/issues/574). Status: spec, 2026-09-13; frame drawn, mission next. Priority P2.
+Tracking issue: [#574](https://github.com/yicheng47/runner/issues/574). Status: shipped 2026-09-13 in [#576](https://github.com/yicheng47/runner/pull/576) (brief [574](../../impls/archive/574-terminal-tab-split.md), mission `01M2CEE7QAZSAA65ATQQ3XRQWN` on codex-crew). Priority P2.
 
 ## Motivation
 
-[570](./archive/570-split-panes-redesign.md) wrote "a split holds chats only", and the code enforces it: a terminal-only tab hides the split icon, `split_decision` answers NotSplittable, and `⌘D` / `⇧⌘D` return early. The rule was about mixing — the empty pane a split creates offers New chat alone, so a split on a terminal tab would have produced a pane that could only hold a chat. It is narrower than that intent: a terminal tab cannot become two terminals at all. Meanwhile **New terminal** with a terminal tab active does split the focused pane through `prepare_new_pane`, without the size floor — the follow-up 570 left unfiled.
+[570](./570-split-panes-redesign.md) wrote "a split holds chats only", and the code enforces it: a terminal-only tab hides the split icon, `split_decision` answers NotSplittable, and `⌘D` / `⇧⌘D` return early. The rule was about mixing — the empty pane a split creates offers New chat alone, so a split on a terminal tab would have produced a pane that could only hold a chat. It is narrower than that intent: a terminal tab cannot become two terminals at all. Meanwhile **New terminal** with a terminal tab active does split the focused pane through `prepare_new_pane`, without the size floor — the follow-up 570 left unfiled.
 
 Ghostty is the reference. A split there means "another shell here, now": no empty pane, no picker, the new surface is a shell in the directory you were in. A terminal split has no choice to make, which is exactly why the chat split's stop at the empty stub does not apply.
 
@@ -14,7 +14,7 @@ Ghostty is the reference. A split there means "another shell here, now": no empt
 - **The new pane is never empty.** A shell spawns in it at once and takes focus, in the working directory the split-from pane's shell was spawned with; Runner stores that per session. The empty-pane stub never appears on a terminal tab. Inheriting the shell's *live* directory needs OSC 7 and is [#575](https://github.com/yicheng47/runner/issues/575).
 - **No mixing, by tab kind.** A terminal tab's split makes a terminal; a chat tab's split makes the chat stub as today; the drawer stays the terminal home beside a chat. The header's drawer icon stays hidden on terminal tabs.
 - **New terminal on a terminal tab is Split Right.** Same gate, same floor, instead of `prepare_new_pane`.
-- Grip and drag ([568](./archive/568-pane-drag-reorder.md)), `×` with its foreground-process confirmation, `⋯` (Stop · Rename…), rename, the sidebar row's terminal glyph and title: unchanged.
+- Grip and drag ([568](./568-pane-drag-reorder.md)), `×` with its foreground-process confirmation, `⋯` (Stop · Rename…), rename, the sidebar row's terminal glyph and title: unchanged.
 
 ## Non-goals
 
