@@ -1,6 +1,6 @@
 # 73 — Local skills management
 
-Tracking: [#73](https://github.com/yicheng47/runner/issues/73). Status: specced 2026-08-28; pane designed 2026-09-09 (`design/runner.pen`, §Surfaces); M1 landed via [#531](https://github.com/yicheng47/runner/pull/531). Implementation program: [`docs/impls/local-skills/`](../impls/local-skills/README.md) (M1 view skills by runtime → M2 allowlist backend → M3 allowlist app → later).
+Tracking: [#73](https://github.com/yicheng47/runner/issues/73). Status: closed 2026-09-13 — M1 (the Settings → Skills pane) shipped in [#531](https://github.com/yicheng47/runner/pull/531) and the MCP catalog in [#555](https://github.com/yicheng47/runner/issues/555); M2 and M3, the per-runner allowlists, continue as [#577](https://github.com/yicheng47/runner/issues/577). Implementation program: [`docs/impls/local-skills/`](../../impls/local-skills/README.md) (M1 view skills by runtime → M2 allowlist backend → M3 allowlist app → later).
 
 > Rewritten 2026-08-28. The 2026-07-15 text at this number described an agent-agnostic MCP + skills catalog modelled on skills-manager (central library, per-agent sync ladder, adopt-into-catalog). That framing answered "where do skills live"; the problem Jason actually has is "which skills does *this session* see". Claude Code has shipped the primitives that answer it since then, so this spec narrows to skills, per runner, claude-code first, and defers the MCP catalog to [#555 — Settings → MCP](555-mcp-settings.md). The earlier text stays in git history.
 
