@@ -64,10 +64,9 @@ The status vocabulary (`SessionActivityState`), the transition sink (`note_forwa
 
 ## Verification
 
-Fixture-driven, against real recordings rather than synthetic input. Add the two #583 captures and a `sleep 4` shell recording to `crates/runner-terminal/fixtures/`.
+Fixture-driven, against real recordings rather than synthetic input. Add the kept #583 capture and a `sleep 4` shell recording to `crates/runner-terminal/fixtures/`.
 
-- **Codex idle-with-animation:** derived status goes idle at t≈2 s, not t=19.7 s. This is the #583 regression test.
-- **Codex working:** stays busy for the full span the spinner is present.
+- **Codex, one capture for both properties:** `codex-title-working.ndjson` stays busy for the full span the spinner is present, 0.177 s to 7.428 s, then stays idle through 46 further output events over 3.465 s whose largest gap is 153 ms. Not one of those gaps reaches the two-second threshold, which is why the byte path reports Busy for the entire recording — that continuous tail *is* the #583 regression test. It is not a replay of the original 19.7 s animation; what makes it conclusive is the zero, not the duration. The capture that carried the longer animation was deleted rather than replaced: it leaked a home path, a memory-repo listing and a project record into a public repo, in the recording and again in plaintext in its snapshot.
 - **Claude Code:** the existing `claude-session.ndjson` classifies busy only across 5.038–7.891 s, the braille window that brackets submit and reply. The two `✳` titles at 2.637 s and 7.891 s must classify idle; asserting otherwise encodes the bug this table originally had.
 - **Silent shell work** (phase 2): busy for the full four seconds of `sleep 4`.
 - **No title signal:** a session whose runtime sets no usable title behaves exactly as today, proven by an unchanged assertion.
