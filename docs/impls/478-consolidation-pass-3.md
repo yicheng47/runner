@@ -23,13 +23,15 @@ Tracking issue: [#478](https://github.com/yicheng47/runner/issues/478). Chore, P
 
 **3. Expect far more `pub(super)` on free functions.** Pass 2 widened 74 methods and moved 7 helpers to `mod.rs`. Here 33 of 37 free functions have a caller outside the file the cut puts them in, mostly because `tests.rs` exercises them directly. Expected, not a smell. Rule unchanged: compiler-driven `pub(super)`, never `pub(crate)` for anything not already `pub(crate)`, and a helper moves to `mod.rs` only when **three or more** files call it — here that is `node_project_id` alone. Do not contort the cut to avoid widenings.
 
+**4. Private fields crossing a sibling boundary move with their type to the parent.** Human-approved correction (2026-09-13): move `SidebarForkMenuTarget` (original lines 4001–4005, including its derive) unchanged into `mod.rs`; keep its builder `sidebar_fork_menu_target` in `elements.rs`. Its private `session_id` and `disabled_reason` fields are read from `menus.rs` and `tests.rs`; widening only the type does not expose its fields. Methods crossing sibling boundaries get compiler-driven `pub(super)`, while private fields crossing them are fixed by relocating their declaring type to the parent, with no field visibility changes. The other child type, `DirectChatDisplayStatus`, stays in `elements.rs` and retains its re-export. Pass 4 inherits this rule.
+
 ## The cut
 
 Line numbers are `sidebar.rs` on `main` at the branch point. Each item carries its doc comment, attributes, and any `const` immediately above it.
 
 | File | From | Holds |
 |---|---|---|
-| `mod.rs` | 1–27, 49–58, 172–378, 3328–3334 | Module declarations, the `pub(crate) use` re-exports, `ArchiveErrorTarget`, `ArchiveSessionOperation`, and every type with its small inherent impl: `SidebarRow`, `SidebarRenameTarget`, `SidebarRename`, `ProjectModal`, `SidebarNodeDrag` and its `Render`, `SidebarMenuAction`, `WorkspaceEntry` with `WORKSPACE_ENTRIES`, the `Sidebar` struct, and `impl Render for Sidebar` |
+| `mod.rs` | 1–27, 49–58, 172–378, 3328–3334, 3700–3707, 4001–4005 | Module declarations, the `pub(crate) use` re-exports, `ArchiveErrorTarget`, `ArchiveSessionOperation`, and every type with its small inherent impl: `SidebarRow`, `SidebarRenameTarget`, `SidebarRename`, `ProjectModal`, `SidebarNodeDrag` and its `Render`, `SidebarMenuAction`, `WorkspaceEntry` with `WORKSPACE_ENTRIES`, the `Sidebar` struct, `SidebarForkMenuTarget`, and `impl Render for Sidebar` |
 | `state.rs` | 379–516 | `new` … `focus_shell_terminal`: construction, accessors, settings, store refresh, error reporting, shell notify and focus |
 | `activation.rs` | 517–674, 707–769 | `impl NativeRoot`: `tab_label`, both prune fns, transient dismissal, window activation, shortcut-row sync, `mark_active_tab_viewed`, active project, the archiving accessors, `clear_sidebar_drag`, `activate_sidebar_session`, `open_chat_session` |
 | `archive.rs` | 60–171, 675–706, 1520–1595, 1597–1668 | The five archive planning free fns, `archive_chat_sessions`, `archive_all_sessions`, `archive_sessions`, `finish_sidebar_archive`, `close_archived_pane` |
@@ -40,7 +42,7 @@ Line numbers are `sidebar.rs` on `main` at the branch point. Each item carries i
 | `drag.rs` | 1860–2101 | `clear_sidebar_drag` … `commit_sidebar_drop` |
 | `view.rs` | 28–47, 2102–2614 | The two scroll helpers, `render_sidebar_contents`, `render_section_header`, `render_sidebar_row` |
 | `rows_render.rs` | 2615–3327 | `render_tab_row` … `render_inline_rename_row` |
-| `elements.rs` | 3700–4180 | The presentational builders and label helpers: `node_project_id` through `default_session_label_parts`, including `SidebarForkMenuTarget` and `DirectChatDisplayStatus` |
+| `elements.rs` | 3709–4180 | The presentational builders and label helpers: `project_name_from_path` through `default_session_label_parts`, including `DirectChatDisplayStatus`; `SidebarForkMenuTarget` moves to `mod.rs` per the approved correction above |
 | `tests.rs` | 4181–5060 | The `#[cfg(test)] mod tests` body, declared from `mod.rs` as `#[cfg(test)] mod tests;` |
 
 Largest lands near 880 lines (`tests.rs`), then ~715 (`rows_render.rs`). If a boundary falls inside an item, move the whole item and say which range you adjusted. `sidebar_logic.rs` is a separate sibling module, out of scope, do not fold it in.
