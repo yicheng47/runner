@@ -1,6 +1,6 @@
 # 568 — Drag to reorder panes: a grip on the identity line, four drops by nearest edge
 
-Tracking issue: [#568](https://github.com/yicheng47/runner/issues/568). Spec: [568](../features/568-pane-drag-reorder.md). Feature, P2. Design: `design/runner.pen` frame `Spec — Drag to reorder panes (568) · v1` (`ITbDO`). Branch: **`feat/568-pane-drag-reorder` already exists and is checked out** — it carries this brief; work on it, do not create another.
+Tracking issue: [#568](https://github.com/yicheng47/runner/issues/568). Spec: [568](../../features/archive/568-pane-drag-reorder.md). Feature, P2. Shipped 2026-09-13 in [#573](https://github.com/yicheng47/runner/pull/573) (mission `01M2C50JAYDGEKHJDTPCJ1QZA4`, codex-crew; one review round — the grip wrapper needed a real min width so long titles yield to it, the pill took the sidebar pill's cap and shadow — then commit `c1d460b`, CI green in 5 min). Design: `design/runner.pen` frame `Spec — Drag to reorder panes (568) · v1` (`ITbDO`). Branch: **`feat/568-pane-drag-reorder` already exists and is checked out** — it carries this brief; work on it, do not create another.
 
 ## What ships
 

@@ -1,10 +1,10 @@
 # Drag to reorder panes
 
-Tracking issue: [#568](https://github.com/yicheng47/runner/issues/568). Status: in progress, 2026-09-13 — frame signed off 2026-09-12, brief [568](../impls/568-pane-drag-reorder.md) on `feat/568-pane-drag-reorder`. Priority P2.
+Tracking issue: [#568](https://github.com/yicheng47/runner/issues/568). Status: shipped 2026-09-13 in [#573](https://github.com/yicheng47/runner/pull/573) (brief [568](../../impls/archive/568-pane-drag-reorder.md), mission `01M2C50JAYDGEKHJDTPCJ1QZA4` on codex-crew). Priority P2.
 
 ## Motivation
 
-Since [570](./archive/570-split-panes-redesign.md) a tab's layout is a free tree with any number of panes, but pane order is still whatever order the panes were opened in. Putting the reviewer on the left of the implementer means closing a pane and reopening the chat in the right place, and with [567](./archive/567-pane-close-archives-chat.md) even that workaround archives the chat first. Every split UI lets you move a pane.
+Since [570](./570-split-panes-redesign.md) a tab's layout is a free tree with any number of panes, but pane order is still whatever order the panes were opened in. Putting the reviewer on the left of the implementer means closing a pane and reopening the chat in the right place, and with [567](./567-pane-close-archives-chat.md) even that workaround archives the chat first. Every split UI lets you move a pane.
 
 Ghostty 1.3 is the reference. Hover near the top of a split and a grab handle appears, a small bar of dots; drag it and drop the split into any other split position, and its contents and running process move with it. The maintainers tried an always-visible bar first, users found it confusing, and it became a handle that shows on hover ([discussion 10553](https://github.com/ghostty-org/ghostty/discussions/10553)). Runner already has the place for the handle: the identity line that sits on every pane in a split, with free space in its middle.
 

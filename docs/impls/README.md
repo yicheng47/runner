@@ -6,7 +6,6 @@ A plan stays here while its work is in flight and moves to [`archive/`](./archiv
 
 ## Active
 
-- [`568-pane-drag-reorder.md`](./568-pane-drag-reorder.md) — feature [568](../features/568-pane-drag-reorder.md): a grip on every split pane's identity line, four drops by nearest edge with the destination half as the preview, a drop moves the leaf in the layout tree at 50 / 50.
 - [`555-mcp-settings.md`](./555-mcp-settings.md) — feature [555](../features/555-mcp-settings.md): the Settings → MCP pane shaped like Skills (runtime dropdown, one toggle per server row, pinned Runner row, click-to-detail, native-text edit with cross-agent sync), with the generalised `ops/mcp.rs` writer behind it.
 - [`local-skills/`](./local-skills/README.md) — feature [73](../features/73-runner-skills.md) implementation program: condensed state and binding decisions, milestone plan, dated impl log.
 - [`gpui-rewrite/`](./gpui-rewrite/) — the GPUI rewrite record; shipped as `v0.6.0` 2026-08-23. What is still open from the M6 consolidation queue is in [`m6-remainder.md`](./gpui-rewrite/m6-remainder.md); [#445](https://github.com/yicheng47/runner/issues/445) closed 2026-08-27 once the queued items landed.
@@ -15,6 +14,7 @@ A plan stays here while its work is in flight and moves to [`archive/`](./archiv
 
 Shipped plans live in [`archive/`](./archive/) in number order; mission briefs live under [`archive/gpui-rewrite/briefs/`](./archive/gpui-rewrite/briefs/).
 
+- [Drag to reorder panes](./archive/568-pane-drag-reorder.md) — feature [568](../features/archive/568-pane-drag-reorder.md), shipped 2026-09-13 in [#573](https://github.com/yicheng47/runner/pull/573): a grip on every split pane's identity line, four drops by nearest edge with the destination half as the preview, a drop moves the leaf at 50 / 50 without remounting either terminal.
 - [Split panes, PR 2](./archive/570-split-tree-and-icon.md) — feature [570](../features/archive/570-split-panes-redesign.md), shipped 2026-09-12 in [#572](https://github.com/yicheng47/runner/pull/572): the layout persists as a tree beside the backend's `slots`, one `columns-2` split icon per pane opens Split Right / Split Down for that pane, a 240 × 160 px size floor replaces the pane count, the preset picker is gone.
 - [Split panes, PR 1](./archive/570-split-panes-redesign.md) — feature [570](../features/archive/570-split-panes-redesign.md), shipped 2026-09-12 in [#571](https://github.com/yicheng47/runner/pull/571): no focus border, unfocused pane bodies at 70 % opacity, the chat glyph on the identity line and header.
 - [Pane × archives the chat](./archive/567-pane-close-archives-chat.md) — feature [567](../features/archive/567-pane-close-archives-chat.md), shipped 2026-09-12 in [#569](https://github.com/yicheng47/runner/pull/569): the split pane's `×` opens **Archive chat?** on any chat and confirm archives the session before dropping the pane, `⌘W` shares the fork, the drawer-shell case falls through to **Archive all?**; the close intent is kept per session and applied to the layout by tab id.
