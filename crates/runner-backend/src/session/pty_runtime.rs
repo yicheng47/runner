@@ -114,6 +114,8 @@ struct SessionHandle {
     /// to ignore SIGWINCH repaint bursts for `RESIZE_GRACE` (see
     /// `IdleDetector`), so resizing an idle session doesn't read as Busy.
     last_resize: Mutex<Option<Instant>>,
+    status_tx: Mutex<Option<mpsc::Sender<RuntimeOutput>>>,
+    idle_detector: Arc<Mutex<IdleDetector>>,
     pid: Option<i32>,
     process_tree: Option<ProcessTree>,
     command: String,
@@ -258,6 +260,8 @@ impl SessionRuntime for PtyRuntime {
             exit_code: AtomicI32::new(EXIT_UNSET),
             alive: AtomicBool::new(true),
             last_resize: Mutex::new(None),
+            status_tx: Mutex::new(Some(tx.clone())),
+            idle_detector: Arc::new(Mutex::new(IdleDetector::new(DEFAULT_IDLE_THRESHOLD))),
             pid,
             process_tree,
             command: format_command_summary(&spec.command, &spec.args),
@@ -371,6 +375,28 @@ impl SessionRuntime for PtyRuntime {
             }
             None => stop_child_owned_by_reader(&session.session_id, &handle),
         }
+    }
+
+    fn note_declared_status(
+        &self,
+        session: &RuntimeSession,
+        state: RunnerStatus,
+    ) -> RuntimeResult<()> {
+        let handle = lookup(self, &session.session_id)?;
+        let tx = handle.status_tx.lock().expect("status sender poisoned");
+        let tx = tx
+            .as_ref()
+            .ok_or_else(|| RuntimeError::Msg(format!("session exited: {}", session.session_id)))?;
+        handle
+            .idle_detector
+            .lock()
+            .expect("idle detector poisoned")
+            .current = state;
+        tx.send(RuntimeOutput::StatusTransition {
+            state,
+            source: "title",
+        })
+        .map_err(|error| RuntimeError::Msg(error.to_string()))
     }
 
     fn send_bytes(&self, session: &RuntimeSession, bytes: &[u8]) -> RuntimeResult<()> {
@@ -782,7 +808,7 @@ fn reader_thread(
     handle: Arc<SessionHandle>,
     session_id: String,
 ) {
-    let detector = Arc::new(Mutex::new(IdleDetector::new(DEFAULT_IDLE_THRESHOLD)));
+    let detector = Arc::clone(&handle.idle_detector);
     let monitor_done = Arc::new(AtomicBool::new(false));
     let monitor = thread::Builder::new()
         .name(format!("pty-idle-{session_id}"))
@@ -877,6 +903,12 @@ fn reader_thread(
             }
         }
     }
+    // Release the retained title sender too, so EOF still disconnects the forwarder.
+    handle
+        .status_tx
+        .lock()
+        .expect("status sender poisoned")
+        .take();
     // tx dropped on scope exit → OutputStream::recv_timeout sees
     // Disconnected on the manager side, which is how the existing
     // forwarder thread knows to wind down.
@@ -1378,6 +1410,48 @@ mod tests {
             "expected idle then busy transition, got {statuses:?}"
         );
         let _ = rt.stop(&sess);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn declared_status_updates_detector_and_releases_sender_at_eof() {
+        let rt = PtyRuntime::new();
+        let (session, stream) = rt
+            .spawn(spec(
+                "title-status",
+                "/bin/sh",
+                &["-c", "read line; exit 7"],
+            ))
+            .unwrap();
+        let handle = lookup(&rt, &session.session_id).unwrap();
+        for state in [RunnerStatus::Busy, RunnerStatus::Idle] {
+            rt.note_declared_status(&session, state).unwrap();
+            assert_eq!(handle.idle_detector.lock().unwrap().current, state);
+            assert!(
+                matches!(stream.recv_timeout(Duration::from_secs(1)).unwrap(),
+                RuntimeOutput::StatusTransition { state: actual, source: "title" } if actual == state)
+            );
+        }
+        rt.send_bytes(&session, b"done\n").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            assert!(
+                Instant::now() < deadline,
+                "retained title sender kept output open after EOF"
+            );
+            if matches!(
+                stream.recv_timeout(Duration::from_millis(100)),
+                Err(mpsc::RecvTimeoutError::Disconnected)
+            ) {
+                break;
+            }
+        }
+        assert_eq!(rt.status(&session).unwrap().unwrap().exit_code, Some(7));
+        assert!(handle.status_tx.lock().unwrap().is_none());
+        assert!(rt
+            .note_declared_status(&session, RunnerStatus::Busy)
+            .is_err());
+        rt.stop(&session).unwrap();
     }
 
     #[test]

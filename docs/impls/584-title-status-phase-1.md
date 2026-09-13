@@ -27,11 +27,11 @@ The whole path exists; nothing here is new architecture.
 The sender half of the status channel lives only inside `pty_runtime::spawn`; `OutputStream` holds the receiver. So the title signal cannot push a transition directly and must reach the runtime, which owns the sender.
 
 1. **Runtime seam.** `SessionHandle` keeps a clone of the transition `tx` and of the existing `Arc<Mutex<IdleDetector>>`. Add a defaulted trait method — `note_declared_status(&self, session, RunnerStatus) -> RuntimeResult<()>` — implemented by the PTY runtime as: look the handle up, set the detector's `current` so it does not immediately contradict, and send `StatusTransition { state, source: "title" }`. Everything downstream then works unchanged.
-2. **Manager.** `SessionManager::report_declared_status(&self, session_id, RunnerStatus)`: set `title_status_armed` on `SessionState`, then call the runtime method.
+2. **Manager.** `SessionManager::report_declared_status(&self, session_id, RunnerStatus)`: call the runtime method, then set `title_status_armed` on `SessionState` only on success. Hold the state lock across both steps so the output consumer cannot race arming. The default runtime method rejects unsupported reports, preserving byte detection.
 3. **Suppression.** In `note_forwarder_transition`, ignore `source == "forwarder"` once that session is armed — a branch parallel to the existing `suppress_local_input_busy` one. Byte transitions keep flowing for unarmed sessions.
 4. **Terminal.** In the `Event::Title` arm: classify, compare to the last classification for this session, and only on a change call `core.sessions.report_declared_status(…)`. Keep storing the title as today.
 
-**Classification for phase 1.** Busy iff the title's first grapheme is an animation glyph: braille `U+2800`–`U+28FF`, or `✳`. Blank titles are not a signal. A session arms the first time it observes a title *with* a spinner — never on a bare title, or a shell's prompt title would arm it and then wrongly pin it Idle.
+**Classification for phase 1.** Busy iff the title's first grapheme is a braille animation glyph (`U+2800`–`U+28FF`). `✳` is a resting title prefix in the Claude recording, so it classifies Idle and cannot arm a session. Blank titles are not a signal. A session arms the first time it observes a title *with* a braille spinner — never on a bare title, or a shell's prompt title would arm it and then wrongly pin it Idle.
 
 ## Rules of the road
 
@@ -45,11 +45,10 @@ The sender half of the status channel lives only inside `pty_runtime::spawn`; `O
 
 ## Tests
 
-Fixture-driven against real recordings, not synthetic input. Copy these three into `crates/runner-terminal/fixtures/` and name them in the handoff:
+Fixture-driven against real recordings, not synthetic input. Replay these fixtures in `crates/runner-terminal/fixtures/` and name them in the handoff:
 
-- `/tmp/snow.01M2342JDPW2R02HAKSSS5RJPD.ndjson` — Codex, 148×42, 19.7 s. Spinner stops at t≈2 s, animation continues to the end. **The #583 regression test: derived status must go Idle at ≈2 s, not at 19.7 s.**
-- `/tmp/snow.01M2D3VQ7B140BQYCX1H46E56N.ndjson` — Codex, 100×30, 10.9 s. Spinner stops at t≈7 s.
-- `crates/runner-terminal/fixtures/claude-session.ndjson` — already present. Classifies Busy while `✳` or braille is prefixed, covering the second glyph set.
+- `crates/runner-terminal/fixtures/codex-title-working.ndjson` — Codex, 100×30, 10.893 s, copied from `/tmp/snow.01M2D3VQ7B140BQYCX1H46E56N.ndjson`. Busy at 177 ms, Idle at 7428 ms, then no further transition despite 46 output events over 3465 ms; the largest gap is 153 ms and none reaches the byte detector's two-second threshold. This single recording proves both working detection and the continuous-output regression behind #583; it does not replay the original 19.7-second capture.
+- `crates/runner-terminal/fixtures/claude-session.ndjson` — already present. The initial `✳` title does not arm; braille starts Busy at 5.038 s and the resting `✳` title returns Idle at 7.891 s.
 
 Plus, as pure unit tests on the classifier: a spinner-prefixed title is Busy; the same title without the prefix is Idle; a blank title is not a signal; a shell prompt title (`jason@Jasons-Mac-Studio:~/repos/runner`) never arms a session. And on the debounce: ten identical classifications in a second produce one transition.
 

@@ -590,6 +590,7 @@ struct SessionState {
     activity: Option<SessionActivityState>,
     activity_revision: u64,
     suppress_local_input_busy: bool,
+    title_status_armed: bool,
     local_input_pending: bool,
     observed_input: Option<ObservedInput>,
     last_local_input_at: Option<Instant>,
@@ -612,6 +613,7 @@ impl SessionState {
         self.handle.is_none()
             && self.activity.is_none()
             && !self.suppress_local_input_busy
+            && !self.title_status_armed
             && !self.local_input_pending
             && self.observed_input.is_none()
             && self.last_local_input_at.is_none()
@@ -943,6 +945,23 @@ impl SessionManager {
         Ok(router::DeliveryReservation::Ready(delivery.generation))
     }
 
+    pub fn report_declared_status(&self, session_id: &str, state: RunnerStatus) -> Result<()> {
+        let session = self
+            .session_state(session_id)
+            .ok_or_else(|| Error::msg(format!("session not found: {session_id}")))?;
+        let mut session = session.lock().unwrap();
+        let rt_session = session
+            .handle
+            .as_ref()
+            .ok_or_else(|| Error::msg(format!("session not found: {session_id}")))?
+            .runtime_session
+            .clone();
+        // Keep the consumer behind this lock until a successful report arms title precedence.
+        self.runtime.note_declared_status(&rt_session, state)?;
+        session.title_status_armed = true;
+        Ok(())
+    }
+
     pub fn report_input_state(&self, session_id: &str, observation: InputObservation) {
         let Some(session) = self.session_state(session_id) else {
             return;
@@ -1107,6 +1126,9 @@ impl SessionManager {
     ) -> bool {
         let session = self.session_state_or_insert(session_id);
         let mut session = session.lock().unwrap();
+        if source == "forwarder" && session.title_status_armed {
+            return false;
+        }
         if source == "forwarder"
             && state == SessionActivityState::Busy
             && session.suppress_local_input_busy

@@ -1,0 +1,31 @@
+cols=100 rows=30 cursor=18,2
+|╭────────────────────────────────────────────────────────╮
+|│ >_ OpenAI Codex (v0.154.0)                             │
+|│                                                        │
+|│ model:     gpt-6-astra xhigh   fast   /model to change │
+|│ directory: ~/repos/yicheng47                           │
+|╰────────────────────────────────────────────────────────╯
+|
+|  Tip: Try the Desktop app. Run 'codex app' or visit https://chatgpt.com/codex?app-landing-page=true
+|
+|• You have 1 usage limit reset available. Run /usage to use one.
+|
+|
+|› hi
+|
+|
+|• Hey Jason. What are we working on?
+|
+|              ⠄                 ⠁ ⢀                ⠐     ⠐              ⠄   ⠄  ⠈             ⠠     ⠈
+|⡀ Ask Codex to do anything           ⠂                       ⠈                          ⠈  ⢀       ⠁
+|      ⠠⢀                            ⠠        ⢀       ⡀    ⡀               ⠄                    ⠠   ⠐
+|  gpt-6-astra xhigh fast · weekly 87% left
+|
+|
+|
+|
+|
+|
+|
+|
+|
