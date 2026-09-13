@@ -1,7 +1,6 @@
 pub const DEFAULT_TOAST_DURATION_MS: u64 = 4_000;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum ToastTone {
     #[default]
     Info,

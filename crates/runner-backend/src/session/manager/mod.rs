@@ -488,8 +488,6 @@ pub struct SpawnedSession {
 struct SessionHandle {
     #[cfg(windows)]
     pending_first_turn: Option<PendingFirstTurn>,
-    // Kept for debugging and future kill-by-pid / identity checks.
-    #[allow(dead_code)]
     id: String,
     /// `None` for direct-chat sessions (C8.5). `kill_all_for_mission`
     /// filters on this so direct chats don't get torn down when a mission
