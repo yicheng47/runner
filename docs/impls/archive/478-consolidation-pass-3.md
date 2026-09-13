@@ -1,8 +1,8 @@
 # 478 — Consolidation pass 3: split `sidebar.rs`
 
-Tracking issue: [#478](https://github.com/yicheng47/runner/issues/478). Chore, P2. Third of four passes. Branch: **`chore/478-pass-3-sidebar` already exists and is checked out** — it carries this brief; work on it, do not create another.
+Tracking issue: [#478](https://github.com/yicheng47/runner/issues/478). Status: shipped 2026-09-13 in [#580](https://github.com/yicheng47/runner/pull/580) (mission `01M2CXQEWVGRV43590Z9EFSHGK` on codex-crew, 20 min launch to merge). Chore, P2. Third of four passes.
 
-**Read [`archive/478-consolidation-pass-2.md`](./archive/478-consolidation-pass-2.md) first and in full.** Pass 2 split `mission_workspace.rs` the same way and its brief was corrected during that mission; that corrected text is the pattern, the method, and the gate. This brief gives only the cut and what differs. Where they disagree, pass 2 wins on method, this one on the cut.
+**Read [`478-consolidation-pass-2.md`](./478-consolidation-pass-2.md) first and in full.** Pass 2 split `mission_workspace.rs` the same way and its brief was corrected during that mission; that corrected text is the pattern, the method, and the gate. This brief gives only the cut and what differs. Where they disagree, pass 2 wins on method, this one on the cut.
 
 ## What ships
 
