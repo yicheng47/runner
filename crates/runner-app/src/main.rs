@@ -36,8 +36,8 @@ use runner_app::bootstrap::{
     boot_core, native_paths, stop_running_sessions_on_quit, NativeMcpServer, NativePaths,
 };
 use runner_app::pane_layout::{
-    MissionLayout, PaneLayout, PaneLeaf, PaneNode, SplitOrientation, TabSet, MAX_DRAWER_HEIGHT,
-    MIN_DRAWER_HEIGHT,
+    DropSide, MissionLayout, PaneLayout, PaneLeaf, PaneNode, SplitOrientation, TabSet,
+    MAX_DRAWER_HEIGHT, MIN_DRAWER_HEIGHT,
 };
 use runner_app::terminal_ime::TerminalInput;
 use runner_app::ui::{
@@ -136,6 +136,41 @@ struct AttachedChat {
 struct SplitResizeDrag {
     split_id: String,
     orientation: SplitOrientation,
+}
+
+#[derive(Clone)]
+struct PaneDrag {
+    tab_id: String,
+    pane_id: String,
+    label: String,
+    icon: &'static str,
+}
+
+impl Render for PaneDrag {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .max_w(rems(220. / 16.))
+            .flex()
+            .items_center()
+            .gap_2()
+            .px_2()
+            .py_1()
+            .rounded(rems(6. / 16.))
+            .bg(theme::panel())
+            .border_1()
+            .border_color(theme::border())
+            .shadow_lg()
+            .text_size(theme::text_ui())
+            .text_color(theme::text())
+            .child(
+                gpui::svg()
+                    .path(self.icon)
+                    .size(rems(12. / 16.))
+                    .flex_none()
+                    .text_color(theme::text()),
+            )
+            .child(div().min_w(px(0.)).truncate().child(self.label.clone()))
+    }
 }
 
 #[derive(Clone)]
@@ -420,6 +455,7 @@ struct NativeRoot {
     pane_action_menus: HashMap<String, Entity<PopoverMenu>>,
     split_menus: HashMap<SplitMenuKey, Entity<PopoverMenu>>,
     pane_bounds: HashMap<PaneKey, Size<Pixels>>,
+    pane_drop: Option<(PaneKey, DropSide)>,
     pane_rename: Option<PaneRename>,
     _pane_rename_focus_subscription: Option<Subscription>,
     terminal_close_confirm: Option<TerminalCloseConfirm>,
@@ -728,6 +764,7 @@ impl NativeRoot {
             pane_action_menus: HashMap::new(),
             split_menus: HashMap::new(),
             pane_bounds: HashMap::new(),
+            pane_drop: None,
             pane_rename: None,
             _pane_rename_focus_subscription: None,
             terminal_close_confirm: None,
@@ -917,6 +954,9 @@ impl NativeRoot {
 
 impl Render for NativeRoot {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if !cx.has_active_drag() {
+            self.pane_drop = None;
+        }
         self.render_app_shell(window, cx)
     }
 }

@@ -1,7 +1,7 @@
 //! Chat-surface rendering: the active tab, its split menus, and the pane tree.
 use super::*;
 use crate::*;
-use gpui::{canvas, svg, FontWeight, Pixels, Size};
+use gpui::{canvas, quad, svg, BorderStyle, FontWeight, Pixels, Point, Size};
 use runner_app::ui::{
     ButtonVariant, Modal, OverlayWidth, SessionControlVariant, SessionOverlay, SessionOverlayKind,
 };
@@ -550,6 +550,9 @@ impl NativeRoot {
             ))
             .on_drop(cx.listener(|this, _: &DrawerResizeDrag, _, cx| {
                 this.finish_terminal_drawer_resize(cx);
+            }))
+            .on_drop(cx.listener(|this, drag: &PaneDrag, window, cx| {
+                this.apply_pane_drop(drag, window, cx);
             }));
         let chat_column = div()
             .relative()
@@ -1801,6 +1804,46 @@ impl NativeRoot {
         let close_root = cx.entity();
         let header = grouped.then(|| {
             let split_menu = self.split_menu(SplitMenuSurface::Pane, &layout.id, &pane_id, cx);
+            let grip = div()
+                .min_w(rems(20. / 16.))
+                .flex_1()
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(
+                    div()
+                        .id(SharedString::from(format!("pane-grip-{pane_id}")))
+                        .group("pane-grip")
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .size(rems(20. / 16.))
+                        // GPUI captures the base cursor for the drag, before hover refinement.
+                        .cursor(CursorStyle::ClosedHand)
+                        .hover(|grip| grip.cursor(CursorStyle::OpenHand))
+                        .child(
+                            svg()
+                                .path("grip-horizontal.svg")
+                                .size(rems(12. / 16.))
+                                .text_color(theme::faint())
+                                .group_hover("pane-grip", |icon| icon.text_color(theme::text())),
+                        )
+                        .on_drag(
+                            PaneDrag {
+                                tab_id: layout.id.clone(),
+                                pane_id: pane_id.clone(),
+                                label: entry
+                                    .as_ref()
+                                    .map(session_label)
+                                    .unwrap_or_else(|| "Empty".into()),
+                                icon: pane_identity_icon(
+                                    entry.as_ref().map(|entry| entry.agent_runtime.as_str()),
+                                ),
+                            },
+                            |drag: &PaneDrag, _, _, cx: &mut App| cx.new(|_| drag.clone()),
+                        ),
+                );
             let close_pane_id = pane_id.clone();
             let close_behavior =
                 pane_close_behavior(entry.as_ref().map(|entry| entry.agent_runtime.as_str()));
@@ -1897,7 +1940,7 @@ impl NativeRoot {
                     .child(name)
                     .children(status.map(render_pane_header_status))
                     .children(menu)
-                    .child(div().min_w(px(0.)).flex_1())
+                    .child(grip)
                     .child(split_menu)
                     .into_any_element()
             } else {
@@ -1921,7 +1964,7 @@ impl NativeRoot {
                             .text_color(theme::faint())
                             .child("Empty"),
                     )
-                    .child(div().min_w(px(0.)).flex_1())
+                    .child(grip)
                     .child(split_menu)
                     .into_any_element()
             };
@@ -2276,6 +2319,11 @@ impl NativeRoot {
         // only on a change is what keeps that from looping every frame.
         let measure_root = cx.entity();
         let measured = PaneKey::new(&layout.id, &pane_id);
+        let drop_key = measured.clone();
+        let preview = self
+            .pane_drop
+            .as_ref()
+            .and_then(|(key, side)| (key == &drop_key).then_some(*side));
         div()
             .id(SharedString::from(format!("pane-{pane_id}")))
             .relative()
@@ -2312,6 +2360,54 @@ impl NativeRoot {
                     .opacity(pane_body_opacity(grouped, focused))
                     .child(body),
             )
+            .children(preview.map(|side| {
+                canvas(
+                    |_, _, _| {},
+                    move |bounds, _, window, _| {
+                        window.paint_quad(quad(
+                            drop_preview(bounds, side),
+                            px(0.),
+                            theme::with_alpha(theme::accent(), 0.12),
+                            px(1.),
+                            theme::accent(),
+                            BorderStyle::Solid,
+                        ));
+                    },
+                )
+                .absolute()
+                .inset_0()
+            }))
+            .on_drag_move::<PaneDrag>(cx.listener(
+                move |this, event: &DragMoveEvent<PaneDrag>, _, cx| {
+                    let drag = event.drag(cx);
+                    let next = if event.bounds.contains(&event.event.position) {
+                        let side = drop_side(event.bounds, event.event.position);
+                        (drag.tab_id == drop_key.tab_id
+                            && drag.pane_id != drop_key.pane_id
+                            && drop_allowed(
+                                Some(event.bounds.size),
+                                side,
+                                this.settings(cx).app_zoom,
+                            ))
+                        .then(|| (drop_key.clone(), side))
+                    } else if this
+                        .pane_drop
+                        .as_ref()
+                        .is_some_and(|(key, _)| key == &drop_key)
+                    {
+                        None
+                    } else {
+                        return;
+                    };
+                    if this.pane_drop != next {
+                        this.pane_drop = next;
+                        cx.notify();
+                    }
+                },
+            ))
+            .on_drop(cx.listener(|this, drag: &PaneDrag, window, cx| {
+                this.apply_pane_drop(drag, window, cx);
+            }))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _, window, cx| {
@@ -2419,6 +2515,47 @@ fn split_allowed(pane: Option<Size<Pixels>>, orientation: SplitOrientation, zoom
         SplitOrientation::Row => f32::from(pane.width) >= 2. * MIN_SPLIT_PANE_WIDTH * zoom,
         SplitOrientation::Column => f32::from(pane.height) >= 2. * MIN_SPLIT_PANE_HEIGHT * zoom,
     }
+}
+
+fn drop_side(pane: Bounds<Pixels>, pointer: Point<Pixels>) -> DropSide {
+    [
+        (DropSide::Left, (pointer.x - pane.left()) / pane.size.width),
+        (DropSide::Up, (pointer.y - pane.top()) / pane.size.height),
+        (
+            DropSide::Right,
+            (pane.right() - pointer.x) / pane.size.width,
+        ),
+        (
+            DropSide::Down,
+            (pane.bottom() - pointer.y) / pane.size.height,
+        ),
+    ]
+    .into_iter()
+    .min_by(|(_, a), (_, b)| a.total_cmp(b))
+    .unwrap()
+    .0
+}
+
+fn drop_preview(mut pane: Bounds<Pixels>, side: DropSide) -> Bounds<Pixels> {
+    match side {
+        DropSide::Left | DropSide::Right => {
+            pane.size.width /= 2.;
+            if side == DropSide::Right {
+                pane.origin.x += pane.size.width;
+            }
+        }
+        DropSide::Up | DropSide::Down => {
+            pane.size.height /= 2.;
+            if side == DropSide::Down {
+                pane.origin.y += pane.size.height;
+            }
+        }
+    }
+    pane
+}
+
+pub(crate) fn drop_allowed(pane: Option<Size<Pixels>>, side: DropSide, zoom: f32) -> bool {
+    split_allowed(pane, side.orientation(), zoom)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2716,17 +2853,17 @@ pub(crate) fn adjacent_pane_index(
 #[cfg(test)]
 mod tests {
     use super::{
-        adjacent_pane_index, archive_chat_confirm_body, empty_pane_action_label, header_fork_state,
-        pane_action_items_for, pane_body_opacity, pane_close_behavior, pane_identity_icon,
-        pane_identity_shows_status, pane_identity_visible, pane_rename_key, side_panel_open,
-        split_allowed, split_decision, split_menu_items, starting_overlay_label,
-        terminal_drawer_tooltip, workspace_header_icon, HeaderForkState, PaneCloseBehavior,
-        PaneRenameKey, SplitDecision, MIN_SPLIT_PANE_HEIGHT, MIN_SPLIT_PANE_WIDTH,
-        TOO_SMALL_TO_SPLIT, UNFOCUSED_PANE_OPACITY,
+        adjacent_pane_index, archive_chat_confirm_body, drop_allowed, drop_preview, drop_side,
+        empty_pane_action_label, header_fork_state, pane_action_items_for, pane_body_opacity,
+        pane_close_behavior, pane_identity_icon, pane_identity_shows_status, pane_identity_visible,
+        pane_rename_key, side_panel_open, split_allowed, split_decision, split_menu_items,
+        starting_overlay_label, terminal_drawer_tooltip, workspace_header_icon, HeaderForkState,
+        PaneCloseBehavior, PaneRenameKey, SplitDecision, MIN_SPLIT_PANE_HEIGHT,
+        MIN_SPLIT_PANE_WIDTH, TOO_SMALL_TO_SPLIT, UNFOCUSED_PANE_OPACITY,
     };
     use crate::keymap;
-    use gpui::{px, size};
-    use runner_app::pane_layout::SplitOrientation;
+    use gpui::{point, px, size, Bounds};
+    use runner_app::pane_layout::{DropSide, SplitOrientation};
     use runner_backend::model::SessionStatus;
     use runner_backend::ops::session::DirectSessionEntry;
 
@@ -2760,6 +2897,79 @@ mod tests {
         assert_eq!(adjacent_pane_index(1, 3, 1), Some(2));
         assert_eq!(adjacent_pane_index(0, 1, 1), None);
         assert_eq!(adjacent_pane_index(3, 3, -1), None);
+    }
+
+    #[test]
+    fn drop_side_uses_normalized_edges_and_breaks_diagonal_ties_left_then_up() {
+        let pane = Bounds::new(point(px(100.), px(200.)), size(px(800.), px(400.)));
+        for (x, y, side) in [
+            (0.1, 0.5, DropSide::Left),
+            (0.9, 0.5, DropSide::Right),
+            (0.5, 0.1, DropSide::Up),
+            (0.5, 0.9, DropSide::Down),
+            (0.375, 0.5, DropSide::Left),
+            (0.25, 0.25, DropSide::Left),
+            (0.25, 0.75, DropSide::Left),
+            (0.75, 0.25, DropSide::Up),
+            (0.75, 0.75, DropSide::Right),
+            (0.5, 0.5, DropSide::Left),
+            (0., 0., DropSide::Left),
+            (1., 0., DropSide::Up),
+            (0., 1., DropSide::Left),
+            (1., 1., DropSide::Right),
+        ] {
+            assert_eq!(
+                drop_side(pane, pane.origin + point(px(800. * x), px(400. * y))),
+                side,
+                "({x}, {y})"
+            );
+        }
+    }
+
+    #[test]
+    fn drop_preview_is_the_destination_half_in_pane_coordinates() {
+        let pane = Bounds::new(point(px(100.), px(200.)), size(px(800.), px(400.)));
+        for (side, x, y, width, height) in [
+            (DropSide::Left, 100., 200., 400., 400.),
+            (DropSide::Right, 500., 200., 400., 400.),
+            (DropSide::Up, 100., 200., 800., 200.),
+            (DropSide::Down, 100., 400., 800., 200.),
+        ] {
+            assert_eq!(
+                drop_preview(pane, side),
+                Bounds::new(point(px(x), px(y)), size(px(width), px(height)))
+            );
+        }
+    }
+
+    #[test]
+    fn drop_allowed_respects_both_split_axes_at_each_zoom() {
+        for zoom in [1., 1.5] {
+            for side in [DropSide::Left, DropSide::Right] {
+                assert!(drop_allowed(
+                    Some(size(px(480. * zoom), px(160. * zoom))),
+                    side,
+                    zoom
+                ));
+                assert!(!drop_allowed(
+                    Some(size(px(480. * zoom - 1.), px(160. * zoom))),
+                    side,
+                    zoom
+                ));
+            }
+            for side in [DropSide::Up, DropSide::Down] {
+                assert!(drop_allowed(
+                    Some(size(px(240. * zoom), px(320. * zoom))),
+                    side,
+                    zoom
+                ));
+                assert!(!drop_allowed(
+                    Some(size(px(240. * zoom), px(320. * zoom - 1.))),
+                    side,
+                    zoom
+                ));
+            }
+        }
     }
 
     #[test]

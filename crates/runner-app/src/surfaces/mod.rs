@@ -26,8 +26,8 @@ pub(crate) use command_palette::CommandPaletteState;
 pub(crate) use crews::CrewSurfaces;
 pub(crate) use mission_workspace::MissionWorkspace;
 pub(crate) use panes::{
-    adjacent_pane_index, pane_close_behavior, pane_fractions, split_decision, PaneCloseBehavior,
-    PaneKey, SplitDecision, SplitMenuKey,
+    adjacent_pane_index, drop_allowed, pane_close_behavior, pane_fractions, split_decision,
+    PaneCloseBehavior, PaneKey, SplitDecision, SplitMenuKey,
 };
 pub(crate) use runners::RunnerSurfaces;
 pub(crate) use settings_page::{SettingsPane, SettingsState};

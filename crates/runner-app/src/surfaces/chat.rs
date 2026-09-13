@@ -1649,6 +1649,75 @@ impl NativeRoot {
         cx.notify();
     }
 
+    pub(crate) fn apply_pane_drop(
+        &mut self,
+        drag: &PaneDrag,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((target, side)) = self.pane_drop.take() else {
+            return;
+        };
+        cx.notify();
+        if drag.tab_id != target.tab_id
+            || drag.pane_id == target.pane_id
+            || self
+                .tabs
+                .active()
+                .is_none_or(|layout| layout.id != drag.tab_id)
+        {
+            return;
+        }
+        self.move_pane(&drag.pane_id, &target.pane_id, side, window, cx);
+    }
+
+    pub(crate) fn move_pane(
+        &mut self,
+        pane_id: &str,
+        target_id: &str,
+        side: DropSide,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.route != AppRoute::Chat {
+            return;
+        }
+        let Some(tab_id) = self.tabs.active().map(|layout| layout.id.clone()) else {
+            return;
+        };
+        let bounds = self
+            .pane_bounds
+            .get(&PaneKey::new(&tab_id, target_id))
+            .copied();
+        if !drop_allowed(bounds, side, self.settings(cx).app_zoom) {
+            return;
+        }
+        let moved = self
+            .tabs
+            .active_mut()
+            .context("active tab is missing")
+            .and_then(|layout| layout.move_to(pane_id, target_id, side));
+        if let Err(error) = moved {
+            self.chat_error = Some(error.to_string());
+            cx.notify();
+            return;
+        }
+        let result = self
+            .persist_active_tab(cx)
+            .and_then(|_| self.reload_tabs(cx))
+            .and_then(|_| self.ensure_active_tab_attached(window, cx));
+        match result {
+            Ok(()) => {
+                self.chat_error = None;
+                self.remember_active_runner(cx);
+                self.mark_active_tab_viewed(window, cx);
+                self.focus_active_terminal(window, cx);
+            }
+            Err(error) => self.chat_error = Some(error.to_string()),
+        }
+        cx.notify();
+    }
+
     /// Splits one pane, then reloads so the new empty pane is attached,
     /// remembered and focused the way any layout change is. Both the menu
     /// item and the shortcuts land here, so the size floor is judged once.

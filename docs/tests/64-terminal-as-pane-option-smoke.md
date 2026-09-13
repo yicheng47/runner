@@ -46,6 +46,9 @@ Run against the development database with `make run`. One Runner instance, no cr
 
 ## 4. Chrome, rename, close
 
+- [ ] Every split pane (chat, terminal, or empty) has a faint grip centered between `⋯` and the split icon; hover brightens it with an open hand, and only the grip starts a drag with a closed hand and an icon/name pill. Name, `⋯`, split, and `×` still work independently.
+- [ ] Drag onto each edge of another pane: its destination half previews in accent, the drop moves the pane there at 50 / 50, the vacated split collapses, both sessions keep their scrollback, and focus stays with the moved pane. Repeat in a terminal-only tab; confirm order and sidebar title after relaunch. Below the size floor or over itself, the drawer, or outside the tab, no preview or move occurs.
+
 - [ ] A single-pane tab renders **no identity line at all**, and its header carries the split icon. Split it → a 26 px line per pane, each with its own split icon beside `⋯`, and the header icon is gone.
 - [ ] In a split, the focused pane has **no border** and every unfocused pane is **dimmed** — identity lines excluded, they stay at full strength.
 - [ ] Focus a terminal pane → the chat side panel disappears. Focus a chat pane → **it comes back**, which proves the saved setting was not rewritten.
