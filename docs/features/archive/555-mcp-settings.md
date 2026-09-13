@@ -1,6 +1,7 @@
 # 555 — Settings → MCP: one catalog of MCP servers for every agent
 
 > Tracking issue: [#555](https://github.com/yicheng47/runner/issues/555)
+> Status: shipped 2026-09-11 in [#561](https://github.com/yicheng47/runner/pull/561) (brief [555](../../impls/archive/555-mcp-settings.md)).
 > Priority: P2.
 > Design: `design/runner.pen`, SETTINGS row at y 20953: `Settings — MCP` (`S4ZUkV`), `· Codex` (`EdDY5`), `· server detail` (`J4GKLQ`), `· edit server` (`VKKcK`, JSON), `· edit server · Codex` (`gI12M`, TOML), `· conflict` (`e2kKf`), `· empty` (`Jdsq6`); `cmp/SettingsNav` gained `nav_mcp` (`FCMH4`); the `Settings — Agents` cards lost their `Runner MCP` line. Signed off 2026-09-11.
 
