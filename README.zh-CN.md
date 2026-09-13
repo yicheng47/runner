@@ -117,12 +117,13 @@ https://github.com/user-attachments/assets/fb3669a4-010d-42d0-9555-2a3ba3223c75
 <tr>
 <td width="50%">
   <img src="assets/chat_split.png" alt="三个分栏的对话标签页和整理好的侧边栏" width="100%" />
+  <img src="assets/chat_drag.png" alt="拖动窗格的把手——目标窗格高亮的那一半就是它落下的位置" width="100%" />
 </td>
 <td width="50%" valign="middle">
 
 ### Chat — 标签页、分栏、文件夹
 
-每个 chat 都是和一个 runner 一对一的真实 PTY，不需要 mission。一个标签页最多并排三栏，可以让一个 Claude Code 和一个 Codex 在同一个视图里处理同一个问题。侧边栏把标签页归进可折叠的文件夹；某一栏还在工作时标签页显示转圈，你不在时有一栏完成了则显示一个圆点，一整墙并行的 agent 也能一眼扫清。
+每个 chat 都是和一个 runner 一对一的真实 PTY，不需要 mission。标签页可以一直分栏到窗口放不下为止——从任意一栏向右或向下分（`⌘D`、`⇧⌘D`），拖动把手就能重新排列各栏；终端标签页同样可以分栏，直接开出另一个 shell。侧边栏把标签页归进可折叠的文件夹；某一栏还在工作时标签页显示转圈，你不在时有一栏完成了则显示一个圆点，一整墙并行的 agent 也能一眼扫清。
 
 </td>
 </tr>

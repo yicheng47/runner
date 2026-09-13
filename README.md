@@ -117,12 +117,13 @@ Starting a mission spawns one live PTY per slot into a tabbed workspace. The **f
 <tr>
 <td width="50%">
   <img src="assets/chat_split.png" alt="Chat tab with three split panes and organized sidebar" width="100%" />
+  <img src="assets/chat_drag.png" alt="Dragging a pane by its grip — the highlighted half of the target shows where it lands" width="100%" />
 </td>
 <td width="50%" valign="middle">
 
 ### Chats — tabs, split panes, folders
 
-Every chat is a real 1:1 PTY with a runner, no mission required. Tabs hold up to three side-by-side panes — run a Claude Code and a Codex on the same problem in one view. The sidebar groups tabs into collapsible folders; every tab shows a spinner while a pane is still working and a dot when one finished while you were elsewhere, so a wall of parallel agents stays scannable.
+Every chat is a real 1:1 PTY with a runner, no mission required. Split a tab as far as the window allows — right or down from any pane, `⌘D` and `⇧⌘D` — and drag a pane by its grip to reorder; terminal tabs split the same way, straight into another shell. The sidebar groups tabs into collapsible folders; every tab shows a spinner while a pane is still working and a dot when one finished while you were elsewhere, so a wall of parallel agents stays scannable.
 
 </td>
 </tr>
