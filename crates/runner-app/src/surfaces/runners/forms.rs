@@ -1,0 +1,529 @@
+use super::logic::effort_options;
+use super::logic::ensure_runtime_present;
+use super::logic::parse_permission_mode;
+use super::logic::permission_mode_value;
+use super::logic::permission_modes;
+use super::logic::permission_options;
+use super::logic::resolve_runner_edit;
+use super::logic::runner_edit_runtime_options;
+use super::logic::runtime_efforts;
+use super::logic::runtime_entry;
+use super::logic::runtime_model_placeholder;
+use super::logic::runtime_models;
+use super::logic::validate_runner_handle;
+use runner_backend::model::Runtime;
+use std::rc::Rc;
+
+use gpui::prelude::*;
+use gpui::{px, Context, ScrollHandle, Window};
+use runner_app::ui::{
+    working_dir_text_field, ModelField, RuntimeSelect, Scrollbar, StyledSelect, TextField,
+};
+use runner_backend::model::Runner;
+use runner_backend::router::runtime::PermissionMode;
+
+use super::*;
+use crate::*;
+
+impl NativeRoot {
+    pub(crate) fn refresh_runner_form_runtimes(&mut self, cx: &mut Context<Self>) {
+        let (selectable, agents_checking, agents_error) =
+            crate::surfaces::start_chat::load_selectable_runtimes(self.core(cx), self.settings(cx));
+        let catalog_loaded = agents_error.is_none();
+        let placeholder = if agents_checking {
+            "Detecting agents…"
+        } else {
+            "No enabled agents detected"
+        };
+
+        if let Some(form) = self.runner_surfaces.create.as_mut() {
+            form.agents_checking = agents_checking;
+            form.agents_error.clone_from(&agents_error);
+            if catalog_loaded {
+                form.runtimes.clone_from(&selectable);
+                let next_runtime = form
+                    .runtimes
+                    .iter()
+                    .find(|runtime| runtime.name.key() == form.runtime)
+                    .or_else(|| form.runtimes.first())
+                    .map(|runtime| runtime.name.to_string())
+                    .unwrap_or_default();
+                if next_runtime != form.runtime {
+                    form.runtime.clone_from(&next_runtime);
+                    let command = runtime_entry(&form.runtimes, &next_runtime)
+                        .map(|runtime| runtime.command.clone())
+                        .unwrap_or_default();
+                    form.command
+                        .update(cx, |input, input_cx| input.reset(command, input_cx));
+                    form.model
+                        .update(cx, |input, input_cx| input.reset("", input_cx));
+                    if !permission_modes(&next_runtime).contains(&form.permission_mode) {
+                        form.permission_mode = PermissionMode::Default;
+                    }
+                }
+                let model_placeholder =
+                    runtime_model_placeholder(&form.runtimes, &next_runtime, false);
+                form.model.update(cx, |input, input_cx| {
+                    input.set_placeholder(model_placeholder, input_cx)
+                });
+                form.runtime_select.update(cx, |select, select_cx| {
+                    select.set_options(
+                        runner_app::ui::runtime_select_options(&form.runtimes),
+                        select_cx,
+                    );
+                    select.set_value(next_runtime.clone(), select_cx);
+                    select.set_disabled(form.runtimes.is_empty(), select_cx);
+                    select.set_placeholder(placeholder, select_cx);
+                });
+                form.model_field.update(cx, |field, field_cx| {
+                    field.set_suggestions(runtime_models(&form.runtimes, &next_runtime), field_cx);
+                    field.set_disabled(next_runtime.is_empty(), field_cx);
+                });
+                form.permission_select.update(cx, |select, select_cx| {
+                    select.set_options(permission_options(&next_runtime), select_cx);
+                    select.set_value(permission_mode_value(form.permission_mode), select_cx);
+                });
+            }
+        }
+
+        let core = self.core(cx).clone();
+        if let Some(form) = self.runner_surfaces.edit.as_mut() {
+            form.agents_checking = agents_checking;
+            form.agents_error = agents_error;
+            if catalog_loaded {
+                let mut runtimes = selectable;
+                ensure_runtime_present(&core, &mut runtimes, &form.runtime);
+                form.runtimes = runtimes;
+                let runtime_value = if form.slot.is_some() && !form.runtime_pinned {
+                    String::new()
+                } else {
+                    form.runtime.clone()
+                };
+                let options = runner_edit_runtime_options(
+                    &form.runtimes,
+                    &form.runner,
+                    &form.runtime,
+                    form.slot.is_some(),
+                );
+                form.runtime_select.update(cx, |select, select_cx| {
+                    select.set_options(options, select_cx);
+                    select.set_value(runtime_value, select_cx);
+                    select.set_placeholder(placeholder, select_cx);
+                });
+                let model_placeholder =
+                    runtime_model_placeholder(&form.runtimes, &form.runtime, form.slot.is_some());
+                form.model.update(cx, |input, input_cx| {
+                    input.set_placeholder(model_placeholder, input_cx)
+                });
+                form.model_field.update(cx, |field, field_cx| {
+                    field.set_suggestions(runtime_models(&form.runtimes, &form.runtime), field_cx)
+                });
+                form.effort_select.update(cx, |select, select_cx| {
+                    select.set_options(
+                        effort_options(
+                            &form.runtimes,
+                            &form.runtime,
+                            &form.runner,
+                            form.slot.is_some(),
+                        ),
+                        select_cx,
+                    );
+                    select.set_value(form.effort.clone(), select_cx);
+                });
+            }
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn open_create_runner(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.runner_surfaces.create.is_some() {
+            return;
+        }
+        let (runtimes, agents_checking, agents_error) =
+            crate::surfaces::start_chat::load_selectable_runtimes(self.core(cx), self.settings(cx));
+        let runtime = runtimes
+            .first()
+            .map(|runtime| runtime.name.to_string())
+            .unwrap_or_default();
+        let command = runtime_entry(&runtimes, &runtime)
+            .map(|runtime| runtime.command.clone())
+            .unwrap_or_default();
+        let handle = cx.new(|input_cx| {
+            TextField::new(input_cx.focus_handle(), "", "architect", true)
+                .text_size(theme::text_title())
+        });
+        handle.update(cx, |input, input_cx| input.set_bare(true, input_cx));
+        let display_name = cx.new(|input_cx| {
+            TextField::new(input_cx.focus_handle(), "", "Architect", false)
+                .text_size(theme::text_title())
+        });
+        let command = cx.new(|input_cx| {
+            let mut input = TextField::new(input_cx.focus_handle(), command, "", true)
+                .text_size(theme::text_title());
+            input.set_disabled(true, input_cx);
+            input
+        });
+        let args = cx.new(|input_cx| {
+            TextField::new(input_cx.focus_handle(), "", "--mcp-debug", true)
+                .text_size(theme::text_title())
+        });
+        let model = cx.new(|input_cx| {
+            TextField::new(input_cx.focus_handle(), "", "default", true).placeholder_as_value(true)
+        });
+        let model_field = cx.new(|model_cx| {
+            ModelField::new(model.clone(), runtime_models(&runtimes, &runtime), model_cx)
+        });
+        let model_placeholder = runtime_model_placeholder(&runtimes, &runtime, false);
+        model.update(cx, |input, input_cx| {
+            input.set_placeholder(model_placeholder, input_cx)
+        });
+        model_field.update(cx, |field, field_cx| {
+            field.set_disabled(runtime.is_empty(), field_cx)
+        });
+        let default_working_dir = self.settings(cx).default_working_dir.clone();
+        let working_dir = cx.new(|input_cx| {
+            working_dir_text_field(input_cx.focus_handle(), default_working_dir, "")
+                .text_size(theme::text_body())
+        });
+        let system_prompt = cx.new(|input_cx| {
+            TextField::textarea(
+                input_cx.focus_handle(),
+                "",
+                "You are the architect for this crew. When a mission starts, decompose the goal into 2–4 tasks and assign each to a @handle in the crew.",
+                5,
+                true,
+            )
+            .text_size(theme::text_body())
+        });
+        let root = cx.entity();
+        let runtime_root = root.clone();
+        let runtime_select = cx.new(|select_cx| {
+            RuntimeSelect::runtime(
+                "new-runner-runtime",
+                select_cx.focus_handle(),
+                runtime.clone(),
+                &runtimes,
+                Rc::new(move |value, _, cx| {
+                    runtime_root
+                        .update(cx, |this, cx| this.select_create_runner_runtime(value, cx));
+                }),
+                select_cx,
+            )
+            .width(px(FIELD_WIDTH))
+            .min_menu_width(px(FIELD_WIDTH))
+            .detailed(true)
+            .disabled(runtimes.is_empty())
+            .placeholder(if agents_checking {
+                "Detecting agents…"
+            } else {
+                "No enabled agents detected"
+            })
+        });
+        let permission_root = root.clone();
+        let permission_select = cx.new(|select_cx| {
+            StyledSelect::new(
+                "new-runner-permission",
+                select_cx.focus_handle(),
+                permission_mode_value(PermissionMode::Auto),
+                permission_options(&runtime),
+                Rc::new(move |value, _, cx| {
+                    permission_root.update(cx, |this, cx| {
+                        if let Some(form) = this.runner_surfaces.create.as_mut() {
+                            form.permission_mode = parse_permission_mode(&value);
+                            cx.notify();
+                        }
+                    });
+                }),
+                select_cx,
+            )
+            .width(px(FIELD_WIDTH))
+            .min_menu_width(px(FIELD_WIDTH))
+        });
+        let scroll = ScrollHandle::new();
+        let scroll_owner = cx.entity_id();
+        let scrollbar = cx.new(|_| Scrollbar::app(scroll.clone(), scroll_owner));
+        let browse_focus = cx.focus_handle();
+        let args_hint_focus = cx.focus_handle();
+        let model_hint_focus = cx.focus_handle();
+        let permission_hint_focus = cx.focus_handle();
+        let close_focus = cx.focus_handle();
+        let cancel_focus = cx.focus_handle();
+        let submit_focus = cx.focus_handle();
+        let mut subscriptions = Vec::new();
+        subscriptions.push(cx.observe(&handle, |this, input, cx| {
+            let text = input.read(cx).text().to_owned();
+            let lowercase = text.to_lowercase();
+            if text != lowercase {
+                input.update(cx, |input, input_cx| input.set_text(lowercase, input_cx));
+                return;
+            }
+            let empty = text.is_empty();
+            let error = validate_runner_handle(&text);
+            let Some(form) = this.runner_surfaces.create.as_mut() else {
+                return;
+            };
+            if form.handle_empty != empty || form.handle_error != error {
+                form.handle_empty = empty;
+                form.handle_error = error;
+                cx.notify();
+            }
+        }));
+        subscriptions.push(cx.observe(&display_name, |this, input, cx| {
+            let valid = !input.read(cx).text().trim().is_empty();
+            let Some(form) = this.runner_surfaces.create.as_mut() else {
+                return;
+            };
+            if form.display_name_valid != valid {
+                form.display_name_valid = valid;
+                cx.notify();
+            }
+        }));
+        self.runner_surfaces.create = Some(CreateRunnerForm {
+            runtimes,
+            runtime,
+            permission_mode: PermissionMode::Auto,
+            handle: handle.clone(),
+            display_name,
+            command,
+            args,
+            model,
+            model_field,
+            working_dir,
+            system_prompt,
+            runtime_select,
+            permission_select,
+            scroll,
+            scrollbar,
+            browse_focus,
+            args_hint_focus,
+            model_hint_focus,
+            permission_hint_focus,
+            close_focus,
+            cancel_focus,
+            submit_focus,
+            handle_empty: true,
+            handle_error: None,
+            display_name_valid: false,
+            submitting: false,
+            agents_checking,
+            agents_error,
+            error: None,
+            _subscriptions: subscriptions,
+        });
+        handle.read(cx).focus_handle().focus(window);
+        cx.notify();
+    }
+
+    pub(crate) fn open_runner_edit(
+        &mut self,
+        runner: Runner,
+        slot: Option<runner_backend::model::SlotWithRunner>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let (mut runtimes, agents_checking, agents_error) =
+            crate::surfaces::start_chat::load_selectable_runtimes(self.core(cx), self.settings(cx));
+        let mut resolution = resolve_runner_edit(&runner, slot.as_ref());
+        ensure_runtime_present(self.core(cx), &mut runtimes, &resolution.runtime);
+        if !runtime_efforts(&runtimes, &resolution.runtime)
+            .iter()
+            .any(|option| option.value == resolution.effort)
+        {
+            resolution.effort.clear();
+        }
+        let display_name = cx.new(|input_cx| {
+            TextField::new(
+                input_cx.focus_handle(),
+                runner.display_name.clone(),
+                "",
+                false,
+            )
+        });
+        let command = cx.new(|input_cx| {
+            let mut input = TextField::new(
+                input_cx.focus_handle(),
+                resolution.command.clone(),
+                "",
+                true,
+            );
+            input.set_disabled(true, input_cx);
+            input
+        });
+        let visible_args = if slot.is_some() {
+            String::new()
+        } else {
+            runner_backend::router::runtime::strip_permission_flags(
+                Runtime::parse(&runner.runtime),
+                &runner.args,
+            )
+            .join(" ")
+        };
+        let args = cx.new(|input_cx| {
+            TextField::new(input_cx.focus_handle(), visible_args, "--mcp-debug", true)
+        });
+        let model_value = resolution.model.clone();
+        let model = cx.new(move |input_cx| {
+            TextField::new(input_cx.focus_handle(), model_value, "default", true)
+                .placeholder_as_value(true)
+        });
+        let model_field = cx.new(|model_cx| {
+            ModelField::new(
+                model.clone(),
+                runtime_models(&runtimes, &resolution.runtime),
+                model_cx,
+            )
+        });
+        let model_placeholder =
+            runtime_model_placeholder(&runtimes, &resolution.runtime, slot.is_some());
+        model.update(cx, |input, input_cx| {
+            input.set_placeholder(model_placeholder, input_cx)
+        });
+        let working_dir = cx.new(|input_cx| {
+            working_dir_text_field(
+                input_cx.focus_handle(),
+                runner.working_dir.clone().unwrap_or_default(),
+                "",
+            )
+            .text_size(theme::text_body())
+        });
+        let system_prompt = cx.new(|input_cx| {
+            TextField::textarea(
+                input_cx.focus_handle(),
+                runner.system_prompt.clone().unwrap_or_default(),
+                "",
+                6,
+                true,
+            )
+            .text_size(theme::text_body())
+        });
+        let root = cx.entity();
+        let runtime_root = root.clone();
+        let runtime_value = if slot.is_some() && !resolution.runtime_pinned {
+            String::new()
+        } else {
+            resolution.runtime.clone()
+        };
+        let runtime_options =
+            runner_edit_runtime_options(&runtimes, &runner, &resolution.runtime, slot.is_some());
+        let runtime_select = cx.new(|select_cx| {
+            StyledSelect::new(
+                "edit-runner-runtime",
+                select_cx.focus_handle(),
+                runtime_value,
+                runtime_options,
+                Rc::new(move |value, _, cx| {
+                    runtime_root.update(cx, |this, cx| this.select_runner_edit_runtime(value, cx));
+                }),
+                select_cx,
+            )
+            .width(px(FIELD_WIDTH))
+            .min_menu_width(px(FIELD_WIDTH))
+            .detailed(true)
+            .monospace(true)
+            .placeholder(if agents_checking {
+                "Detecting agents…"
+            } else {
+                "No enabled agents detected"
+            })
+        });
+        let effort_root = root.clone();
+        let effort_select = cx.new(|select_cx| {
+            StyledSelect::new(
+                "edit-runner-effort",
+                select_cx.focus_handle(),
+                resolution.effort.clone(),
+                effort_options(&runtimes, &resolution.runtime, &runner, slot.is_some()),
+                Rc::new(move |value, _, cx| {
+                    effort_root.update(cx, |this, cx| {
+                        if let Some(form) = this.runner_surfaces.edit.as_mut() {
+                            form.effort = value;
+                            cx.notify();
+                        }
+                    });
+                }),
+                select_cx,
+            )
+            .width(px(FIELD_WIDTH))
+            .min_menu_width(px(FIELD_WIDTH))
+        });
+        let permission_mode = if slot.is_some() {
+            PermissionMode::Default
+        } else {
+            runner_backend::router::runtime::infer_permission_mode(
+                Runtime::parse(&runner.runtime),
+                &runner.args,
+            )
+        };
+        let permission_root = root.clone();
+        let permission_select = cx.new(|select_cx| {
+            StyledSelect::new(
+                "edit-runner-permission",
+                select_cx.focus_handle(),
+                permission_mode_value(permission_mode),
+                permission_options(&resolution.runtime),
+                Rc::new(move |value, _, cx| {
+                    permission_root.update(cx, |this, cx| {
+                        if let Some(form) = this.runner_surfaces.edit.as_mut() {
+                            form.permission_mode = parse_permission_mode(&value);
+                            cx.notify();
+                        }
+                    });
+                }),
+                select_cx,
+            )
+            .width(px(FIELD_WIDTH))
+            .min_menu_width(px(FIELD_WIDTH))
+        });
+        let scroll = ScrollHandle::new();
+        let scroll_owner = cx.entity_id();
+        let scrollbar = cx.new(|_| Scrollbar::app(scroll.clone(), scroll_owner));
+        let subscriptions = vec![cx.observe(&display_name, |this, input, cx| {
+            let valid = !input.read(cx).text().trim().is_empty();
+            let Some(form) = this.runner_surfaces.edit.as_mut() else {
+                return;
+            };
+            if form.display_name_valid != valid {
+                form.display_name_valid = valid;
+                cx.notify();
+            }
+        })];
+        self.runner_surfaces.edit = Some(RunnerEditForm {
+            runner,
+            slot,
+            runtimes,
+            runtime: resolution.runtime,
+            runtime_pinned: resolution.runtime_pinned,
+            permission_mode,
+            display_name: display_name.clone(),
+            command,
+            args,
+            model,
+            model_field,
+            effort: resolution.effort,
+            effort_select,
+            permission_select,
+            runtime_select,
+            working_dir,
+            system_prompt,
+            scroll,
+            scrollbar,
+            browse_focus: cx.focus_handle(),
+            runtime_hint_focus: cx.focus_handle(),
+            args_hint_focus: cx.focus_handle(),
+            model_hint_focus: cx.focus_handle(),
+            effort_hint_focus: cx.focus_handle(),
+            permission_hint_focus: cx.focus_handle(),
+            close_focus: cx.focus_handle(),
+            cancel_focus: cx.focus_handle(),
+            submit_focus: cx.focus_handle(),
+            display_name_valid: true,
+            submitting: false,
+            agents_checking,
+            agents_error,
+            error: None,
+            _subscriptions: subscriptions,
+        });
+        display_name.read(cx).focus_handle().focus(window);
+        cx.notify();
+    }
+}
