@@ -36,6 +36,27 @@ pub enum SplitOrientation {
     Column,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DropSide {
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
+impl DropSide {
+    pub fn orientation(self) -> SplitOrientation {
+        match self {
+            Self::Left | Self::Right => SplitOrientation::Row,
+            Self::Up | Self::Down => SplitOrientation::Column,
+        }
+    }
+
+    pub fn moved_first(self) -> bool {
+        matches!(self, Self::Left | Self::Up)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PaneLeaf {
     pub id: String,
@@ -92,8 +113,8 @@ impl PaneNode {
         &mut self,
         pane_id: &str,
         split_id: &str,
-        new_pane_id: &str,
-        orientation: SplitOrientation,
+        new_node: &PaneNode,
+        side: DropSide,
     ) -> bool {
         match self {
             Self::Leaf(existing) => {
@@ -101,22 +122,17 @@ impl PaneNode {
                     return false;
                 }
                 let existing = Self::Leaf(existing.clone());
-                *self = split(
-                    split_id,
-                    orientation,
-                    [50., 50.],
-                    existing,
-                    leaf(new_pane_id, None),
-                );
+                let (a, b) = if side.moved_first() {
+                    (new_node.clone(), existing)
+                } else {
+                    (existing, new_node.clone())
+                };
+                *self = split(split_id, side.orientation(), [50., 50.], a, b);
                 true
             }
             Self::Split(parent) => {
-                parent
-                    .a
-                    .split_leaf(pane_id, split_id, new_pane_id, orientation)
-                    || parent
-                        .b
-                        .split_leaf(pane_id, split_id, new_pane_id, orientation)
+                parent.a.split_leaf(pane_id, split_id, new_node, side)
+                    || parent.b.split_leaf(pane_id, split_id, new_node, side)
             }
         }
     }
@@ -529,14 +545,40 @@ impl PaneLayout {
         let next = self.root.highest_node_number() + 1;
         let split_id = format!("s{next}");
         let new_pane_id = format!("p{}", next + 1);
+        let side = match orientation {
+            SplitOrientation::Row => DropSide::Right,
+            SplitOrientation::Column => DropSide::Down,
+        };
         if !self
             .root
-            .split_leaf(pane_id, &split_id, &new_pane_id, orientation)
+            .split_leaf(pane_id, &split_id, &leaf(&new_pane_id, None), side)
         {
             bail!("pane not found: {pane_id}");
         }
         self.focused_pane_id = new_pane_id.clone();
         Ok(new_pane_id)
+    }
+
+    pub fn move_to(&mut self, pane_id: &str, target_id: &str, side: DropSide) -> Result<()> {
+        if pane_id == target_id {
+            bail!("cannot move a pane onto itself");
+        }
+        let leaves = self.root.leaves();
+        let moved = leaves
+            .iter()
+            .copied()
+            .find(|leaf| leaf.id == pane_id)
+            .cloned()
+            .with_context(|| format!("pane not found: {pane_id}"))?;
+        if !leaves.iter().any(|leaf| leaf.id == target_id) {
+            bail!("pane not found: {target_id}");
+        }
+        let next = self.root.highest_node_number() + 1;
+        let mut root = remove_pane(&self.root, pane_id).expect("target pane remains in the tree");
+        root.split_leaf(target_id, &format!("s{next}"), &PaneNode::Leaf(moved), side);
+        self.root = root;
+        self.focused_pane_id = pane_id.to_owned();
+        Ok(())
     }
 
     pub fn prepare_new_pane(&mut self) -> Result<String> {
@@ -843,7 +885,7 @@ fn valid_sizes(sizes: [f32; 2]) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{PaneLayout, PaneNode, SplitOrientation};
+    use super::{leaf, split, DropSide, PaneLayout, PaneNode, SplitOrientation};
     use runner_backend::repo::node::{NodeRow, NodeType};
 
     fn tab_row(name: Option<&str>, layout: &PaneLayout) -> NodeRow {
@@ -969,5 +1011,139 @@ mod tests {
         let mut layout = PaneLayout::single(Some("chat"), &["chat".into()]);
         assert!(layout.split("p9", SplitOrientation::Row).is_err());
         assert!(matches!(layout.root, PaneNode::Leaf(_)));
+    }
+
+    #[test]
+    fn moving_a_pane_to_each_side_preserves_identity_and_collapses_its_old_split() {
+        for (side, orientation, first) in [
+            (DropSide::Left, SplitOrientation::Row, true),
+            (DropSide::Right, SplitOrientation::Row, false),
+            (DropSide::Up, SplitOrientation::Column, true),
+            (DropSide::Down, SplitOrientation::Column, false),
+        ] {
+            let mut layout = PaneLayout::single(Some("a"), &["a".into()]);
+            layout.split("p1", SplitOrientation::Row).unwrap();
+            layout.assign_session("p3", "b").unwrap();
+            layout.split("p3", SplitOrientation::Column).unwrap();
+            layout.assign_session("p5", "c").unwrap();
+            layout.set_split_sizes("s2", [35., 65.]);
+            layout.set_split_sizes("s4", [60., 40.]);
+            layout.name = Some("Review".into());
+            let moved = leaf("p5", Some("c".into()));
+            let target = leaf("p1", Some("a".into()));
+
+            layout.move_to("p5", "p1", side).unwrap();
+
+            let (a, b, order) = if first {
+                (moved, target, ["p5", "p1", "p3"])
+            } else {
+                (target, moved, ["p1", "p5", "p3"])
+            };
+            assert_eq!(
+                layout.root,
+                split(
+                    "s2",
+                    SplitOrientation::Row,
+                    [35., 65.],
+                    split("s6", orientation, [50., 50.], a, b),
+                    leaf("p3", Some("b".into())),
+                )
+            );
+            assert_eq!(
+                layout
+                    .root
+                    .leaves()
+                    .iter()
+                    .map(|leaf| leaf.id.as_str())
+                    .collect::<Vec<_>>(),
+                order
+            );
+            assert_eq!(layout.focused_pane_id, "p5");
+            assert_eq!(layout.name.as_deref(), Some("Review"));
+        }
+    }
+
+    #[test]
+    fn moving_to_the_right_of_a_sibling_reverses_two_panes() {
+        let mut layout = PaneLayout::single(Some("a"), &["a".into()]);
+        layout.split("p1", SplitOrientation::Row).unwrap();
+        layout.assign_session("p3", "b").unwrap();
+
+        layout.move_to("p1", "p3", DropSide::Right).unwrap();
+
+        assert_eq!(
+            layout.root,
+            split(
+                "s4",
+                SplitOrientation::Row,
+                [50., 50.],
+                leaf("p3", Some("b".into())),
+                leaf("p1", Some("a".into()))
+            )
+        );
+        assert_eq!(layout.focused_pane_id, "p1");
+        assert_eq!(layout.session_ids(), ["b", "a"]);
+    }
+
+    #[test]
+    fn moving_uses_the_counter_before_removing_the_vacated_split() {
+        let mut layout = PaneLayout::single(None, &[]);
+        layout.root = split(
+            "s9",
+            SplitOrientation::Row,
+            [40., 60.],
+            leaf("p1", None),
+            leaf("p3", Some("shell".into())),
+        );
+
+        layout.move_to("p1", "p3", DropSide::Up).unwrap();
+
+        assert_eq!(
+            layout.root,
+            split(
+                "s10",
+                SplitOrientation::Column,
+                [50., 50.],
+                leaf("p1", None),
+                leaf("p3", Some("shell".into()))
+            )
+        );
+    }
+
+    #[test]
+    fn moving_the_same_or_unknown_panes_errors_without_changing_the_layout() {
+        let mut layout = PaneLayout::single(Some("a"), &["a".into()]);
+        layout.split("p1", SplitOrientation::Row).unwrap();
+        let before = layout.clone();
+        for (pane, target) in [("p1", "p1"), ("p9", "p3"), ("p1", "p9"), ("p9", "p9")] {
+            assert!(layout.move_to(pane, target, DropSide::Left).is_err());
+            assert_eq!(layout, before);
+        }
+    }
+
+    #[test]
+    fn a_moved_layout_round_trips_slots_in_leaf_order_and_keeps_the_drawer() {
+        let mut layout = PaneLayout::single(Some("a"), &["a".into()]);
+        layout.split("p1", SplitOrientation::Row).unwrap();
+        layout.assign_session("p3", "b").unwrap();
+        layout.split("p3", SplitOrientation::Column).unwrap();
+        layout.add_drawer_shell("shell-1".into());
+        layout.add_drawer_shell("shell-2".into());
+        layout.activate_drawer_shell("shell-1");
+        layout.set_drawer_height(321.);
+        layout.set_drawer_open(true);
+        let before: serde_json::Value = serde_json::from_str(&layout.serialize().unwrap()).unwrap();
+
+        layout.move_to("p3", "p1", DropSide::Left).unwrap();
+
+        let serialized: serde_json::Value =
+            serde_json::from_str(&layout.serialize().unwrap()).unwrap();
+        assert_eq!(serialized["slots"], serde_json::json!(["b", "a", null]));
+        assert_eq!(serialized["drawer"], before["drawer"]);
+        assert_eq!(serialized.as_object().unwrap().len(), 3);
+        let loaded = PaneLayout::from_node_row(&tab_row(None, &layout)).unwrap();
+        assert_eq!(loaded.root, layout.root);
+        assert_eq!(loaded.drawer, layout.drawer);
+        assert_eq!(loaded.session_ids(), ["b", "a"]);
     }
 }
