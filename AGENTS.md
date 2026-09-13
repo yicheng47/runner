@@ -47,6 +47,7 @@ Surface hierarchy (strict — do not blur these in code, docs, or UI copy):
 - `docs/features/`: in-progress feature specs, named `{tracking-issue}-{slug}.md` since 2026-09-01 (file the issue first); shipped specs live in `docs/features/archive/`.
 - `docs/impls/`: implementation plans; shipped plans live in `docs/impls/archive/`.
 - `docs/tests/`: validation and smoke-test plans.
+- `docs/tech/`: deep dives on the libraries Runner builds on (how the dependencies work), pinned to the versions in `Cargo.lock`.
 
 ## Development Commands
 
