@@ -519,25 +519,11 @@ impl Router {
 
     // ---- helpers used by handlers --------------------------------------
 
-    #[allow(dead_code)] // Kept for tests + future single-shot injections.
-    pub(crate) fn inject_to_handle(&self, handle: &str, bytes: &[u8]) -> Result<()> {
-        let session_id = {
-            let state = self.state.lock().unwrap();
-            state.session_by_handle.get(handle).cloned()
-        };
-        let Some(session_id) = session_id else {
-            return Err(crate::error::Error::msg(format!(
-                "router: no live session for handle @{handle}"
-            )));
-        };
-        self.injector.inject(&session_id, bytes)
-    }
-
     /// Mark a runner as busy when the router is about to wake them via
     /// stdin injection (issue #32). Appends a synthetic `runner_status`
     /// busy event with `from = handle` so the workspace rail projection
-    /// (MissionWorkspace.tsx:397-411) keys the badge against the
-    /// recipient, and updates router state so back-to-back nudges within
+    /// keys the badge against the recipient, and updates router state so
+    /// back-to-back nudges within
     /// the same task don't churn the log. Skips for the virtual `human`
     /// handle and skips if the recipient is already marked busy.
     ///
@@ -1624,7 +1610,6 @@ impl RouterRegistry {
         }
     }
 
-    #[allow(dead_code)] // Exposed for the future workspace UI bridge.
     pub fn get(&self, mission_id: &str) -> Option<Arc<Router>> {
         self.routers.lock().unwrap().get(mission_id).cloned()
     }

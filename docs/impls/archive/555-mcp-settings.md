@@ -1,6 +1,6 @@
 # 555 — Settings → MCP: implementation brief
 
-Tracking issue: [#555](https://github.com/yicheng47/runner/issues/555). Feature, P2. Spec: [`../features/555-mcp-settings.md`](../features/555-mcp-settings.md) — read it in full first; it is the source of truth for behavior, copy, and the UI shape. Design signed off 2026-09-11; the frames are listed in the spec header. Branch: **`feat/555-mcp-settings` already exists and is checked out** — it carries this brief; work on it, do not create another.
+Tracking issue: [#555](https://github.com/yicheng47/runner/issues/555). Status: shipped 2026-09-11 in [#561](https://github.com/yicheng47/runner/pull/561). Feature, P2. Spec: [`555`](../../features/archive/555-mcp-settings.md) — read it in full first; it is the source of truth for behavior, copy, and the UI shape. Design signed off 2026-09-11; the frames are listed in the spec header. Branch: **`feat/555-mcp-settings` already exists and is checked out** — it carries this brief; work on it, do not create another.
 
 ## What ships
 

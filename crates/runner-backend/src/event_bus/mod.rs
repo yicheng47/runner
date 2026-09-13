@@ -482,7 +482,6 @@ impl BusRegistry {
         }
     }
 
-    #[allow(dead_code)] // Used by tests + future shutdown path.
     pub fn get(&self, mission_id: &str) -> Option<Arc<EventBus>> {
         self.buses.lock().unwrap().get(mission_id).cloned()
     }

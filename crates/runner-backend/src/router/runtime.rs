@@ -505,16 +505,9 @@ pub fn apply_mission_permission_mode(
 /// `Default` — the user clearly didn't pick the stricter mode and
 /// we don't want a row's UI to misrepresent its stored args.
 ///
-/// Mirrors `inferPermissionMode` in `src/components/ui/runtimes.ts`
-/// — the frontend hand-port is constrained by this function's tests.
-///
-/// `#[allow(dead_code)]` because the only direct consumer is the
-/// test suite: the function exists to *pin the algorithm* the
-/// frontend hand-ports, not to be called from Rust spawn paths
-/// (those use `apply_permission_mode` for write-side flag
-/// management). Keep it `pub` so it's discoverable from a
-/// `runtime::` module search.
-#[allow(dead_code)]
+/// Read-side only: the runner form calls this to show a stored row's
+/// mode. Spawn paths use `apply_permission_mode` for write-side flag
+/// management instead.
 pub fn infer_permission_mode(runtime: Option<Runtime>, args: &[String]) -> PermissionMode {
     if mode_pair_matches(runtime, args, PermissionMode::Bypass) {
         return PermissionMode::Bypass;
@@ -528,7 +521,6 @@ pub fn infer_permission_mode(runtime: Option<Runtime>, args: &[String]) -> Permi
     PermissionMode::Default
 }
 
-#[allow(dead_code)]
 fn mode_pair_matches(runtime: Option<Runtime>, args: &[String], mode: PermissionMode) -> bool {
     // Legacy shape: pre-rename claude-code rows used a standalone
     // `--dangerously-skip-permissions` flag for Bypass. Read it as
@@ -561,7 +553,6 @@ fn mode_pair_matches(runtime: Option<Runtime>, args: &[String], mode: Permission
 /// `--dangerously-skip-permissions` flag, which we still recognize
 /// (and the strip helper still removes) so existing installs read
 /// the right mode in their UI.
-#[allow(dead_code)]
 fn mode_match_pairs(
     runtime: Option<Runtime>,
     mode: PermissionMode,
@@ -609,7 +600,6 @@ fn mode_match_pairs(
 /// `infer_permission_mode` also needs to read the legacy flag as
 /// `Bypass` for the dropdown's initial value. Layered as a check
 /// inside `mode_pair_matches` for `claude-code` + `Bypass` only.
-#[allow(dead_code)]
 fn legacy_bypass_present(runtime: Option<Runtime>, args: &[String]) -> bool {
     runtime == Some(Runtime::ClaudeCode)
         && args.iter().any(|a| a == "--dangerously-skip-permissions")
@@ -622,7 +612,6 @@ fn legacy_bypass_present(runtime: Option<Runtime>, args: &[String]) -> bool {
 /// mixed values resolve toward "match found".
 ///
 /// Helper for `infer_permission_mode`; same dead-code caveat.
-#[allow(dead_code)]
 fn flag_value_matches(args: &[String], flag: &str, expected: Option<&str>) -> bool {
     let Some(expected) = expected else {
         return args.iter().any(|a| a == flag);

@@ -24,9 +24,9 @@ use serde::{Deserialize, Serialize};
 /// session-id, not full URL — two windows on the same mission but different
 /// inner tabs are still "looking at the same mission" (spec decision 1).
 ///
-/// Serialized adjacently-tagged so the frontend sees
-/// `{ "type": "Mission", "value": "<id>" }`. Mirrored by `Subject` in
-/// `src/lib/types.ts`.
+/// Serialized adjacently-tagged as
+/// `{ "type": "Mission", "value": "<id>" }` so the shape survives in
+/// persisted window state.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "value")]
 pub enum Subject {
@@ -37,7 +37,7 @@ pub enum Subject {
 /// One window's row in the registry. `focused_at` is the tiebreak that
 /// decides primary ownership: among windows holding the same subject, the
 /// largest `focused_at` wins. `subjects` is every subject the window has on
-/// screen — one for a single-pane surface, up to three for a split chat.
+/// screen — one for a single-pane surface, one per pane in a split tab.
 #[derive(Debug, Clone, Serialize)]
 pub struct WindowEntry {
     pub label: String,
