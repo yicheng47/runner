@@ -321,6 +321,29 @@ impl SessionRuntime for FakeRuntime {
     fn status(&self, _: &RuntimeSession) -> RuntimeResult<Option<SessionStatus>> {
         Ok(Some(self.status_response.lock().unwrap().clone()))
     }
+
+    fn note_declared_status(
+        &self,
+        session: &RuntimeSession,
+        state: RunnerStatus,
+    ) -> RuntimeResult<()> {
+        let spawns = self.spawns.lock().unwrap();
+        let spawn = spawns
+            .iter()
+            .rev()
+            .find(|spawn| spawn.rt_session.session_id == session.session_id)
+            .unwrap();
+        spawn
+            .tx
+            .as_ref()
+            .unwrap()
+            .send(RuntimeOutput::StatusTransition {
+                state,
+                source: "title",
+            })
+            .unwrap();
+        Ok(())
+    }
 }
 
 fn fake_runtime() -> Arc<FakeRuntime> {
@@ -3175,6 +3198,181 @@ fn runner_activity_event_direct_session_id_ignores_slot_bound_orphans() {
         Some("direct-valid-older"),
         "slot-bound orphan must not be emitted as a direct chat"
     );
+}
+
+#[test]
+fn title_status_suppresses_only_armed_sessions_forwarder_transitions() {
+    let manager =
+        manager_with_runtime(crate::shell_path::LoginShellEnv::default(), inert_runtime());
+    install_test_session_handle(&manager, "title");
+    install_test_session_handle(&manager, "bytes");
+    for state in [
+        SessionActivityState::Busy,
+        SessionActivityState::Idle,
+        SessionActivityState::Busy,
+    ] {
+        assert!(manager.note_forwarder_transition("title", state, "forwarder"));
+        assert!(manager.note_forwarder_transition("bytes", state, "forwarder"));
+    }
+    manager
+        .session_state("title")
+        .unwrap()
+        .lock()
+        .unwrap()
+        .title_status_armed = true;
+    assert!(!manager.note_forwarder_transition("title", SessionActivityState::Idle, "forwarder"));
+    assert!(manager.note_forwarder_transition("title", SessionActivityState::Idle, "title"));
+    assert!(!manager.note_forwarder_transition("title", SessionActivityState::Busy, "forwarder"));
+    assert!(manager.note_forwarder_transition("bytes", SessionActivityState::Idle, "forwarder"));
+    assert!(manager.note_forwarder_transition("bytes", SessionActivityState::Busy, "forwarder"));
+    assert!(manager.note_forwarder_transition("title", SessionActivityState::Busy, "input-submit"));
+    assert!(manager.note_forwarder_transition("title", SessionActivityState::Idle, "agent"));
+
+    let runtime_session = manager.live_runtime_session("title").unwrap();
+    manager
+        .forget_runtime_handle("title", &runtime_session)
+        .unwrap();
+    install_test_session_handle(&manager, "title");
+    assert!(manager.note_forwarder_transition("title", SessionActivityState::Busy, "forwarder"));
+    assert!(manager.note_forwarder_transition("title", SessionActivityState::Idle, "forwarder"));
+}
+
+#[test]
+fn rejected_declared_status_leaves_byte_detection_active() {
+    let manager =
+        manager_with_runtime(crate::shell_path::LoginShellEnv::default(), inert_runtime());
+    install_test_session_handle(&manager, "unsupported-title");
+    assert!(manager
+        .report_declared_status("unsupported-title", RunnerStatus::Busy)
+        .is_err());
+    assert!(
+        !manager
+            .session_state("unsupported-title")
+            .unwrap()
+            .lock()
+            .unwrap()
+            .title_status_armed
+    );
+    for state in [
+        SessionActivityState::Busy,
+        SessionActivityState::Idle,
+        SessionActivityState::Busy,
+    ] {
+        assert!(manager.note_forwarder_transition("unsupported-title", state, "forwarder"));
+    }
+}
+
+#[test]
+fn declared_status_uses_existing_direct_and_mission_consumers() {
+    for is_mission in [false, true] {
+        let pool = pool_with_schema();
+        let (mission, runner, slot) = single_slot_mission(&pool);
+        let app_data = tempfile::tempdir().unwrap();
+        let events_path = runner_core::event_log::path::events_path(
+            app_data.path(),
+            &mission.crew_id,
+            &mission.id,
+        );
+        let mission_dir = runner_core::event_log::path::mission_dir(
+            app_data.path(),
+            &mission.crew_id,
+            &mission.id,
+        );
+        let fake = fake_runtime();
+        let mgr = mgr_with_fake(None, Arc::clone(&fake));
+        let cap = capture();
+        let spawned = if is_mission {
+            mgr.spawn(
+                &mission,
+                &runner,
+                &slot,
+                app_data.path(),
+                events_path,
+                Arc::clone(&pool),
+                cap.clone(),
+                None,
+            )
+            .unwrap()
+        } else {
+            mgr.spawn_direct(
+                &runner,
+                None,
+                None,
+                None,
+                None,
+                Some(fixture_tmp_dir().to_str().unwrap()),
+                None,
+                None,
+                app_data.path(),
+                Arc::clone(&pool),
+                cap.clone(),
+                None,
+            )
+            .unwrap()
+        };
+        for state in [
+            RunnerStatus::Busy,
+            RunnerStatus::Idle,
+            RunnerStatus::Busy,
+            RunnerStatus::Idle,
+        ] {
+            mgr.report_declared_status(&spawned.id, state).unwrap();
+            mgr.report_declared_status(&spawned.id, state).unwrap();
+            fake.push_status(0, RunnerStatus::Busy);
+            fake.push_status(0, RunnerStatus::Idle);
+        }
+        fake.close_spawn(0);
+        join_forwarder_for_test(&mgr, &spawned.id);
+
+        if is_mission {
+            let statuses: Vec<_> = EventLog::open(&mission_dir)
+                .unwrap()
+                .read_from(0)
+                .unwrap()
+                .into_iter()
+                .map(|entry| entry.event)
+                .filter(|event| {
+                    event
+                        .signal_type
+                        .as_ref()
+                        .is_some_and(|ty| ty.as_str() == "runner_status")
+                })
+                .map(|event| {
+                    (
+                        event.payload["state"].as_str().unwrap().to_owned(),
+                        event.payload["source"].as_str().unwrap().to_owned(),
+                    )
+                })
+                .collect();
+            assert_eq!(
+                statuses,
+                ["busy", "idle", "busy", "idle"]
+                    .map(|state| (state.to_owned(), "title".to_owned()))
+            );
+            assert!(cap.status.lock().unwrap().is_empty());
+        } else {
+            let statuses: Vec<_> = cap
+                .status
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|event| (event.state, event.source.clone()))
+                .collect();
+            assert_eq!(
+                statuses,
+                [
+                    (SessionActivityState::Busy, "spawn".to_owned()),
+                    (SessionActivityState::Idle, "title".to_owned()),
+                    (SessionActivityState::Busy, "title".to_owned()),
+                    (SessionActivityState::Idle, "title".to_owned()),
+                ]
+            );
+        }
+        assert!(!mgr.activity_snapshot().contains_key(&spawned.id));
+        assert!(!mgr
+            .session_state(&spawned.id)
+            .is_some_and(|state| state.lock().unwrap().title_status_armed));
+    }
 }
 
 #[test]

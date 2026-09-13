@@ -26,7 +26,7 @@ This is not cosmetic. Inbox reconciliation only nudges runners whose status is `
 | Source | Working | Idle |
 |---|---|---|
 | Codex `0.154.0` | `⠋ Create a random mission \| yicheng47`, ten braille frames cycling ~10 Hz | `yicheng47` |
-| Claude Code | `✳ Claude Code`, `⠐ Native spike fixture ok` | cleared |
+| Claude Code | `⠂ Claude Code`, `⠐ Native spike fixture ok` — braille only | `✳ Native spike fixture ok`, and cleared at exit |
 | zsh + oh-my-zsh auto-title | `sleep 4` | `jason@Jasons-Mac-Studio:~/repos/runner` |
 
 `crates/runner-terminal/src/terminal.rs:407` is a `title()` accessor over a mutex alacritty keeps current. It has **zero callers in the workspace**.
@@ -39,7 +39,9 @@ This is not cosmetic. Inbox reconciliation only nudges runners whose status is `
 
 Two layers, in order:
 
-1. **Spinner prefix.** A title whose first grapheme is a known animation glyph means busy. The observed sets are braille `U+2800`–`U+28FF` and `✳`. Absence of the prefix, on a session that has shown one, means idle.
+1. **Spinner prefix.** A title whose first grapheme is braille (`U+2800`–`U+28FF`) means busy. Absence of it, on a session that has shown one, means idle.
+
+   **`✳` is not a busy glyph, despite appearing in Claude Code's working titles.** An earlier draft of this table listed it as one; the fixture disproves it. Claude's in-TUI spinner cycles `✻ ✽ ✶ ✳`, and the title freezes on whichever frame was current when work stopped, so a star marks *rest*, not work. In `claude-session.ndjson`: `✳ Claude Code` at 2.637 s, before the user has typed anything; braille from 5.038 s, 34 ms after submit; `✳ Native spike fixture ok` at 7.891 s, 13 ms after the reply prints and 3 ms before the prompt returns. Treating `✳` as busy arms a Claude session before its first turn and never releases it, which is a permanent version of #583. Matching one frame of four would also flip an armed session to idle mid-turn on the other three, so the star is wrong under either reading.
 2. **Baseline divergence.** For runtimes with no spinner, a title differing from the session's learned idle baseline means busy, and a return to it means idle.
 
 Layer 1 alone fixes #583 and covers both agent runtimes with no learning and no state. Layer 2 is what covers shells, and it needs a baseline-learning rule that nothing in the captures settles — see Phases.
@@ -62,11 +64,10 @@ The status vocabulary (`SessionActivityState`), the transition sink (`note_forwa
 
 ## Verification
 
-Fixture-driven, against real recordings rather than synthetic input. Add the two #583 captures and a `sleep 4` shell recording to `crates/runner-terminal/fixtures/`.
+Fixture-driven, against real recordings rather than synthetic input. Add the kept #583 capture and a `sleep 4` shell recording to `crates/runner-terminal/fixtures/`.
 
-- **Codex idle-with-animation:** derived status goes idle at t≈2 s, not t=19.7 s. This is the #583 regression test.
-- **Codex working:** stays busy for the full span the spinner is present.
-- **Claude Code:** the existing `claude-session.ndjson` classifies busy while `✳`/braille is prefixed.
+- **Codex, one capture for both properties:** `codex-title-working.ndjson` stays busy for the full span the spinner is present, 0.177 s to 7.428 s, then stays idle through 46 further output events over 3.465 s whose largest gap is 153 ms. Not one of those gaps reaches the two-second threshold, which is why the byte path reports Busy for the entire recording — that continuous tail *is* the #583 regression test. It is not a replay of the original 19.7 s animation; what makes it conclusive is the zero, not the duration. The capture that carried the longer animation was deleted rather than replaced: it leaked a home path, a memory-repo listing and a project record into a public repo, in the recording and again in plaintext in its snapshot.
+- **Claude Code:** the existing `claude-session.ndjson` classifies busy only across 5.038–7.891 s, the braille window that brackets submit and reply. The two `✳` titles at 2.637 s and 7.891 s must classify idle; asserting otherwise encodes the bug this table originally had.
 - **Silent shell work** (phase 2): busy for the full four seconds of `sleep 4`.
 - **No title signal:** a session whose runtime sets no usable title behaves exactly as today, proven by an unchanged assertion.
 - **Debounce:** ten title writes per second produce at most one transition per classification change.
