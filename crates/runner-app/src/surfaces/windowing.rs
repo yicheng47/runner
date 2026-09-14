@@ -48,6 +48,11 @@ impl NativeRoot {
             runner_backend::ops::window::mark_blurred(self.core(cx), &self.window_label);
         }
         self.sync_subject_ownership(window, cx);
+        if matches!(self.route, AppRoute::Mission(_)) {
+            self.mission_workspace.update(cx, |workspace, cx| {
+                workspace.mark_active_session_viewed(window, cx);
+            });
+        }
         cx.notify();
     }
 

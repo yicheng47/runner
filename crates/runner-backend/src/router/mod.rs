@@ -133,6 +133,7 @@ pub enum DeliveryReservation {
     Unavailable,
     Ready(u64),
     PendingInput,
+    HumanInteraction,
     RecentlyTyping(Duration),
     InFlight,
 }
@@ -721,7 +722,7 @@ impl Router {
                     }
                     (session_id, None)
                 }
-                DeliveryReservation::PendingInput => {
+                DeliveryReservation::PendingInput | DeliveryReservation::HumanInteraction => {
                     if reconciliation.is_some() {
                         return Ok(false);
                     }
@@ -1079,7 +1080,7 @@ impl Router {
                 }
                 self.schedule_outbox_retry(session_id.to_string(), delay);
             }
-            DeliveryReservation::PendingInput => {
+            DeliveryReservation::PendingInput | DeliveryReservation::HumanInteraction => {
                 let mut state = self.state.lock().unwrap();
                 let Some(outbox) = state.outbox_by_session.get_mut(session_id) else {
                     return;

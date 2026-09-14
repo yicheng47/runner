@@ -156,6 +156,12 @@ impl SessionManager {
                                 manager_t.deliver_windows_batch_first_turn(&session_id, &bytes);
                         }
                     }
+                    Ok(RuntimeOutput::AgentObservation(observation)) => {
+                        manager_t.publish_observation(&session_id, observation, events.as_ref())
+                    }
+                    Ok(RuntimeOutput::StatusBridgeFailed) => {
+                        manager_t.status_bridge_failed(&session_id, events.as_ref())
+                    }
                     Ok(RuntimeOutput::StatusTransition { state, source }) => {
                         if let Some(ctx) = emit_ctx.as_ref() {
                             if !manager_t.note_forwarder_transition(
@@ -165,7 +171,17 @@ impl SessionManager {
                             ) {
                                 continue;
                             }
-                            let outcome = ctx.try_append_runner_status(state, source);
+                            events.status(&SessionActivityEvent {
+                                session_id: session_id.clone(),
+                                state: state.into(),
+                                source: source.into(),
+                                status: manager_t.agent_status(&session_id),
+                            });
+                            let outcome = ctx.try_append_runner_status(
+                                state,
+                                source,
+                                &manager_t.agent_status(&session_id),
+                            );
                             match outcome {
                                 AppendOutcome::Ok => {
                                     if drop_streak > 0 {
@@ -267,6 +283,11 @@ impl SessionManager {
             if emit_activity {
                 emit_runner_activity(&pool, &runner, events.as_ref());
             }
+            manager_t.record_exit_status(
+                &session_id,
+                exit_code,
+                final_status == crate::model::SessionStatus::Crashed,
+            );
             events.exit(&ExitEvent {
                 session_id: session_id.clone(),
                 mission_id: mission_id.clone(),
@@ -379,7 +400,10 @@ impl SessionManager {
         let gate = session.lock().unwrap().delivery_gate.clone();
         let delivery = gate.state.lock().unwrap();
         let session = session.lock().unwrap();
-        if !delivery.in_flight || delivery.generation != token {
+        if !delivery.in_flight
+            || delivery.generation != token
+            || session.status.observation.needs_you()
+        {
             return Ok(false);
         }
         let Some(rt_session) = session
@@ -472,6 +496,7 @@ impl SessionManager {
                 .map(|handle| handle.runtime_session.clone())
                 .ok_or_else(|| Error::msg(format!("session not found: {session_id}")))?;
             let previous_activity = session.activity;
+            let previous_status = session.status.clone();
             let previous_suppression = session.suppress_local_input_busy;
             let previous_input_pending = session.local_input_pending;
             let previous_input_at = session.last_local_input_at;
@@ -484,10 +509,16 @@ impl SessionManager {
                 session.suppress_local_input_busy = false;
                 if previous_activity == Some(SessionActivityState::Idle) {
                     session.activity = Some(SessionActivityState::Busy);
+                    if !session.hook_status_armed {
+                        session.status.observation.activity = Activity::Working;
+                        session.status.observation.source = ObservationSource::Baseline;
+                        session.status.observation.outcome = None;
+                    }
                     Some(SessionActivityEvent {
                         session_id: session_id.to_string(),
                         state: SessionActivityState::Busy,
                         source: "input-submit".to_string(),
+                        status: session.status.clone(),
                     })
                 } else {
                     None
@@ -501,6 +532,7 @@ impl SessionManager {
             let input_cleared = update_local_input_state(&mut session, input_class, Instant::now());
             if let Err(error) = self.write_stdin_bytes(&rt_session, bytes) {
                 session.activity = previous_activity;
+                session.status = previous_status;
                 session.suppress_local_input_busy = previous_suppression;
                 session.local_input_pending = previous_input_pending;
                 session.last_local_input_at = previous_input_at;
@@ -540,7 +572,12 @@ impl SessionManager {
         }
         if let Some(transition) = transition.as_ref() {
             if let Some(sink) = mission_status_sink.as_ref() {
-                if let Err(error) = sink.append_runner_status(RunnerStatus::Busy, "input-submit") {
+                events.status(transition);
+                if let Err(error) = sink.append_runner_status(
+                    RunnerStatus::Busy,
+                    "input-submit",
+                    &self.agent_status(session_id),
+                ) {
                     log::error!(
                         "append input-submit runner_status failed for {session_id}: {error}"
                     );

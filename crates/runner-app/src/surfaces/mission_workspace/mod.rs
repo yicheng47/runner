@@ -154,30 +154,6 @@ fn stop_all_title(running_count: usize) -> String {
 
 const STOP_ALL_BODY: &str = "Every slot's PTY is killed and whatever turn it is on is cut off. The mission stays open; each slot can be resumed with its conversation, or restarted with its brief.";
 
-fn slot_status_label(
-    status: SessionStatus,
-    activity: Option<SessionActivityState>,
-    restarting: bool,
-    exit_code: Option<i32>,
-) -> String {
-    if restarting {
-        return "starting · fresh conversation".into();
-    }
-    let label = match status {
-        SessionStatus::Stopped => "stopped",
-        SessionStatus::Crashed => "crashed",
-        SessionStatus::Running if activity == Some(SessionActivityState::Idle) => "idle",
-        SessionStatus::Running if activity == Some(SessionActivityState::Busy) => "busy",
-        SessionStatus::Running => "running",
-    };
-    if status != SessionStatus::Running {
-        if let Some(code) = exit_code {
-            return format!("{label} · exit {code}");
-        }
-    }
-    label.into()
-}
-
 fn slot_restart_signal_summary(event: &Event) -> Option<String> {
     (event.signal_type.as_ref().map(|kind| kind.as_str()) == Some("slot_restarted")).then(|| {
         format!(
@@ -248,6 +224,7 @@ pub(crate) struct MissionWorkspace {
     sessions: Vec<SessionRow>,
     events: Vec<Event>,
     runner_statuses: BTreeMap<String, SessionActivityState>,
+    runner_observations: BTreeMap<String, runner_backend::session::status::AgentStatus>,
     goal: Option<String>,
     feed_blocks: Vec<FeedBlock>,
     feed_selection: Option<FeedSelection>,

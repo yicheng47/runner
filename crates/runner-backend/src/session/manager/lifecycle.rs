@@ -72,6 +72,8 @@ impl SessionManager {
                     delivery.next_served = 0;
                     delivery.cancelled_tickets.clear();
                     gate.ready.notify_all();
+                    state.status.lifecycle = Lifecycle::Stopped;
+                    state.status.observation.interactions.clear();
                     state.activity = None;
                     state.activity_revision = state.activity_revision.wrapping_add(1);
                     state.suppress_local_input_busy = false;
@@ -296,6 +298,7 @@ impl SessionManager {
                 delivery.cancelled_tickets.clear();
                 gate.ready.notify_all();
                 state.handle = None;
+                state.status.observation.interactions.clear();
                 state.activity = None;
                 state.activity_revision = state.activity_revision.wrapping_add(1);
                 state.suppress_local_input_busy = false;

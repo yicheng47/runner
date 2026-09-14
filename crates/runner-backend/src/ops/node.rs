@@ -10,6 +10,7 @@ use crate::error::{Error, Result};
 use crate::events::EventChannel;
 use crate::repo;
 use crate::repo::node::{NodeRow, NodeType};
+#[cfg(test)]
 use crate::session::manager::SessionActivityState;
 use crate::session::SessionManager;
 use crate::windows::{Subject, WindowRegistry};
@@ -420,14 +421,28 @@ pub fn node_mark_viewed(
     id: &str,
     member_ids: Vec<String>,
 ) -> Result<NodeRow> {
+    state.sessions.mark_status_viewed(&member_ids);
+    {
+        let conn = state.db.get()?;
+        let now = Utc::now().to_rfc3339();
+        for session_id in &member_ids {
+            repo::session_attention::mark_viewed(&conn, session_id, &now)?;
+        }
+    }
     state.windows.mark_focused(window_label);
     state.windows.set_subjects(
         window_label,
         member_ids.into_iter().map(Subject::DirectChat).collect(),
     );
     let conn = state.db.get()?;
-    let row = repo::node::mark_viewed(&conn, id, Utc::now())?
-        .ok_or_else(|| Error::msg(format!("node not found: {id}")))?;
+    let tab =
+        repo::node::get(&conn, id)?.ok_or_else(|| Error::msg(format!("node not found: {id}")))?;
+    let row = if repo::session_attention::any_unread(&conn, &repo::node::session_ids(&tab))? {
+        tab
+    } else {
+        repo::node::mark_viewed(&conn, id, Utc::now())?
+            .ok_or_else(|| Error::msg(format!("node not found: {id}")))?
+    };
     state.events.emit(
         ATTENTION_CHANGED_EVENT,
         &serde_json::json!({ "tab_id": id }),
@@ -451,31 +466,25 @@ pub(crate) fn record_session_completion(
     {
         return Ok(());
     }
+    if !sessions.take_completion_armed(&[session_id.to_owned()]) {
+        return Ok(());
+    }
+    let viewed = windows.any_focused_displaying(&[session_id.to_owned()]);
+    sessions.record_unread(session_id, viewed);
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    repo::session_attention::record_completion(
+        &tx,
+        session_id,
+        viewed,
+        Utc::now().timestamp_millis(),
+    )?;
     repo::node::ensure_active_sessions(&tx)?;
     let Some(tab) = repo::node::find_for_session(&tx, session_id)? else {
         tx.commit()?;
         return Ok(());
     };
-    let mut member_ids = Vec::new();
-    for id in repo::node::session_ids(&tab) {
-        if repo::session::effective_runtime(&tx, &id)?.as_deref() != Some(Runtime::Shell.key()) {
-            member_ids.push(id);
-        }
-    }
-    let activity = sessions.activity_snapshot();
-    if member_ids
-        .iter()
-        .any(|id| activity.get(id) == Some(&SessionActivityState::Busy))
-    {
-        tx.commit()?;
-        return Ok(());
-    }
-    if !sessions.take_completion_armed(&member_ids) {
-        tx.commit()?;
-        return Ok(());
-    }
-    let viewed = windows.any_focused_displaying(&member_ids);
+    let viewed =
+        viewed && !repo::session_attention::any_unread(&tx, &repo::node::session_ids(&tab))?;
     let row = repo::node::record_completion(&tx, &tab.id, viewed, Utc::now())?;
     tx.commit()?;
     if row.is_some() {
@@ -502,17 +511,23 @@ pub fn mark_direct_sessions_viewed(state: &AppCore, session_ids: &[String]) -> R
             }
         }
     }
+    state.sessions.mark_status_viewed(session_ids);
     let now = Utc::now();
+    for session_id in session_ids {
+        repo::session_attention::mark_viewed(&tx, session_id, &now.to_rfc3339())?;
+    }
     for tab_id in &tab_ids {
-        repo::node::mark_viewed(&tx, tab_id, now)?;
+        if let Some(tab) = repo::node::get(&tx, tab_id)? {
+            if !repo::session_attention::any_unread(&tx, &repo::node::session_ids(&tab))? {
+                repo::node::mark_viewed(&tx, tab_id, now)?;
+            }
+        }
     }
     tx.commit()?;
-    if !tab_ids.is_empty() {
-        state.events.emit(
-            ATTENTION_CHANGED_EVENT,
-            &serde_json::json!({ "tab_ids": tab_ids }),
-        );
-    }
+    state.events.emit(
+        ATTENTION_CHANGED_EVENT,
+        &serde_json::json!({ "tab_ids": tab_ids, "session_ids": session_ids }),
+    );
     Ok(())
 }
 
@@ -532,6 +547,9 @@ mod tests {
             "sizes": {},
         });
         let conn = state.db.get().unwrap();
+        for id in session_ids {
+            conn.execute("INSERT OR IGNORE INTO sessions(id, status, agent_runtime, agent_command) VALUES (?1, 'running', 'codex', 'codex')", [id]).unwrap();
+        }
         repo::node::create_tab(&conn, None, "chat", 0, &layout.to_string()).unwrap()
     }
 
@@ -923,7 +941,7 @@ mod tests {
     }
 
     #[test]
-    fn armed_member_waits_for_busy_peer_before_completing_tab() {
+    fn completion_belongs_to_its_member_while_the_peer_keeps_working() {
         let state = test_core();
         let tab = create_tab(&state, &["a", "b"]);
         let events = state.session_events();
@@ -942,7 +960,9 @@ mod tests {
         let row = repo::node::get(&state.db.get().unwrap(), &tab.id)
             .unwrap()
             .unwrap();
-        assert!(row.last_completed_at.is_none());
+        assert!(row.last_completed_at.is_some());
+        assert!(state.sessions.agent_status("a").unread_since.is_some());
+        assert!(state.sessions.agent_status("b").unread_since.is_none());
         assert!(row.last_viewed_at.is_none());
 
         state
@@ -972,6 +992,13 @@ mod tests {
             session_id: "a".into(),
             state: SessionActivityState::Idle,
             source: "input-escape".into(),
+            status: crate::session::status::AgentStatus {
+                observation: crate::session::status::AgentObservation {
+                    outcome: Some(crate::session::status::TurnOutcome::Interrupted),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
         });
         let row = repo::node::get(&state.db.get().unwrap(), &tab.id)
             .unwrap()
@@ -982,6 +1009,15 @@ mod tests {
             session_id: "a".into(),
             state: SessionActivityState::Idle,
             source: "hook".into(),
+            status: crate::session::status::AgentStatus {
+                observation: crate::session::status::AgentObservation {
+                    activity: crate::session::status::Activity::Ready,
+                    source: crate::session::status::ObservationSource::Hook,
+                    outcome: Some(crate::session::status::TurnOutcome::Completed),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
         });
         let row = repo::node::get(&state.db.get().unwrap(), &tab.id)
             .unwrap()
@@ -1114,6 +1150,34 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(after.last_completed_at.is_some());
+    }
+
+    #[test]
+    fn viewing_one_pane_preserves_persisted_sibling_unread() {
+        let state = test_core();
+        let tab = create_tab(&state, &["a", "b"]);
+        let conn = state.db.get().unwrap();
+        repo::session_attention::record_completion(&conn, "a", false, 100).unwrap();
+        let completed = repo::node::record_completion(&conn, &tab.id, false, Utc::now())
+            .unwrap()
+            .unwrap();
+        drop(conn);
+        let viewed = node_mark_viewed(&state, "main", &tab.id, vec!["b".into()]).unwrap();
+        assert_eq!(viewed.last_viewed_at, completed.last_viewed_at);
+        mark_direct_sessions_viewed(&state, &["b".into()]).unwrap();
+        let conn = state.db.get().unwrap();
+        let viewed = repo::node::get(&conn, &tab.id).unwrap().unwrap();
+        assert_eq!(viewed.last_viewed_at, completed.last_viewed_at);
+        assert!(repo::session_attention::any_unread(&conn, &["a".into()]).unwrap());
+        drop(conn);
+        mark_direct_sessions_viewed(&state, &["a".into()]).unwrap();
+        let conn = state.db.get().unwrap();
+        assert!(!repo::session_attention::any_unread(&conn, &["a".into()]).unwrap());
+        assert!(repo::node::get(&conn, &tab.id)
+            .unwrap()
+            .unwrap()
+            .last_viewed_at
+            .is_some());
     }
 
     #[test]

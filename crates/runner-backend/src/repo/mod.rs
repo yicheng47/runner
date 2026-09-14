@@ -24,6 +24,7 @@ pub mod project;
 pub mod runner;
 pub mod serde;
 pub mod session;
+pub mod session_attention;
 pub mod slot;
 
 /// Map a serde_rusqlite deserialization error into the same rusqlite error

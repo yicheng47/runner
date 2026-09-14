@@ -1,4 +1,3 @@
-use super::elements::attention_indicator;
 use super::elements::empty_sidebar_label;
 use super::elements::section_title;
 use super::elements::workspace_new_chat_row;
@@ -6,8 +5,7 @@ use super::elements::workspace_row;
 
 use super::*;
 use crate::surfaces::sidebar_logic::{
-    attention_rollups, indicator_visible, rollup_attention_state, take_drag_state, AttentionState,
-    DropKind,
+    attention_rollups, indicator_visible, take_drag_state, DropKind,
 };
 use crate::*;
 use gpui::{svg, FontWeight};
@@ -85,13 +83,6 @@ impl Sidebar {
                 .filter(|row| row.node().pinned_position.is_none())
                 .map(|row| (row.node().parent_id.clone(), row.attention())),
         );
-        let project_attention = rollup_attention_state(project_nodes.iter().map(|project| {
-            rollups
-                .get(&Some(project.id.clone()))
-                .copied()
-                .unwrap_or_default()
-        }));
-        let root_attention = rollups.get(&None).copied().unwrap_or_default();
 
         let mut scroll = sidebar_scroll_container("sidebar-node-scroll", &self.scroll).on_drop(
             cx.listener(|this, drag: &SidebarNodeDrag, _, cx| {
@@ -151,7 +142,13 @@ impl Sidebar {
                 .child(self.render_section_header(
                     "PROJECTS",
                     projects_open,
-                    (!projects_open).then_some(project_attention),
+                    (!projects_open).then(|| {
+                        self.render_status_attention(
+                            rows.iter().filter(|row| row.node().parent_id.is_some()),
+                            "project-section-attention".into(),
+                            cx,
+                        )
+                    }),
                     "Add project",
                     move |this, cx| {
                         let open = !this.settings(cx).sidebar_projects_open;
@@ -283,9 +280,13 @@ impl Sidebar {
                                 .flex()
                                 .items_center()
                                 .gap(rems(6. / 16.))
-                                .children(
-                                    (!chats_open).then(|| attention_indicator(root_attention)),
-                                )
+                                .children((!chats_open).then(|| {
+                                    self.render_status_attention(
+                                        &root_rows,
+                                        "recent-section-attention".into(),
+                                        cx,
+                                    )
+                                }))
                                 .child(create_menu),
                         ),
                 )
@@ -435,7 +436,7 @@ impl Sidebar {
         &self,
         label: &'static str,
         open: bool,
-        attention: Option<AttentionState>,
+        attention: Option<AnyElement>,
         plus_title: &'static str,
         on_toggle: F,
         on_plus: G,
@@ -490,7 +491,7 @@ impl Sidebar {
                     .flex()
                     .items_center()
                     .gap(rems(6. / 16.))
-                    .children(attention.map(attention_indicator))
+                    .children(attention)
                     .child(
                         IconButton::new(SharedString::from(format!("add-{label}")), "plus.svg")
                             .size(IconButtonSize::Sm)

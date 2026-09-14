@@ -162,6 +162,93 @@ fn sidebar_and_mission_fills_follow_carbon_and_runner_light() {
         assert_eq!(bridge.session("direct").unwrap().palette(), palette);
         assert_eq!(bridge.session("slot").unwrap().palette(), palette);
     }
+
+    let archived_slot = SessionRow {
+        session: runner_backend::model::Session {
+            id: "archived-slot".into(),
+            mission_id: Some("mission".into()),
+            runner_id: "runner".into(),
+            slot_id: None,
+            cwd: None,
+            status: SessionStatus::Stopped,
+            pid: None,
+            started_at: None,
+            stopped_at: None,
+        },
+        handle: "archived".into(),
+        runtime: "codex".into(),
+        lead: false,
+        agent_session_key: None,
+    };
+    {
+        let conn = core.db.get().unwrap();
+        conn.execute("INSERT INTO sessions(id, status, agent_runtime, archived_at) VALUES ('archived-slot', 'stopped', 'codex', '2026-09-14T00:00:00Z')", []).unwrap();
+        runner_backend::repo::session_attention::record_completion(
+            &conn,
+            "archived-slot",
+            false,
+            1,
+        )
+        .unwrap();
+    }
+    host.update(&mut cx, |root, window, cx| {
+        root.mission_workspace.update(cx, |workspace, _| {
+            workspace.sessions = vec![archived_slot.clone()];
+            workspace.active_tab = MissionTab::Session("archived-slot".into());
+            workspace.mission.as_mut().unwrap().archived_at = Some(Utc::now());
+            workspace.runner_observations.insert(
+                "archived".into(),
+                runner_backend::session::status::AgentStatus {
+                    lifecycle: runner_backend::session::status::Lifecycle::Stopped,
+                    unread_since: Some(1),
+                    ..Default::default()
+                },
+            );
+        });
+        window.activate_window();
+    })
+    .unwrap();
+    cx.run_until_parked();
+    let mut attention_events = core.events.subscribe();
+    for _ in 0..3 {
+        host.update(&mut cx, |root, window, cx| {
+            assert!(window.is_window_active());
+            root.mission_workspace.update(cx, |workspace, cx| {
+                drop(workspace.render_mission_terminal_pane(archived_slot.clone(), window, cx));
+                workspace.mark_active_session_viewed(window, cx);
+            });
+        })
+        .unwrap();
+        cx.run_until_parked();
+    }
+    assert!(runner_backend::repo::session_attention::any_unread(
+        &core.db.get().unwrap(),
+        &["archived-slot".into()]
+    )
+    .unwrap());
+    while let Ok(event) = attention_events.try_recv() {
+        assert_ne!(event.name, "chat/tab-attention-changed");
+    }
+    core.db
+        .get()
+        .unwrap()
+        .execute(
+            "UPDATE sessions SET archived_at = NULL WHERE id = 'archived-slot'",
+            [],
+        )
+        .unwrap();
+    host.update(&mut cx, |root, window, cx| {
+        root.mission_workspace.update(cx, |workspace, _| {
+            workspace.mission.as_mut().unwrap().archived_at = None;
+        });
+        root.sync_window_activation(window, cx);
+    })
+    .unwrap();
+    assert!(!runner_backend::repo::session_attention::any_unread(
+        &core.db.get().unwrap(),
+        &["archived-slot".into()]
+    )
+    .unwrap());
 }
 
 #[test]
@@ -337,7 +424,7 @@ fn slot_rail_actions_match_status() {
 }
 
 #[test]
-fn restarting_preserves_its_transition_and_fresh_label() {
+fn restarting_preserves_its_transition_and_starting_overlay() {
     assert_eq!(
         transition_to_begin_on_spawn(Some(MissionTransitionKind::Restarting)),
         None
@@ -347,29 +434,7 @@ fn restarting_preserves_its_transition_and_fresh_label() {
             resolve_slot_overlay(false, Some(MissionTransitionKind::Restarting), status),
             SlotOverlayState::Starting
         );
-        assert_eq!(
-            slot_status_label(status, Some(SessionActivityState::Idle), true, Some(0)),
-            "starting · fresh conversation"
-        );
     }
-    assert_eq!(
-        slot_status_label(
-            SessionStatus::Stopped,
-            Some(SessionActivityState::Busy),
-            false,
-            Some(143)
-        ),
-        "stopped · exit 143"
-    );
-    assert_eq!(
-        slot_status_label(
-            SessionStatus::Running,
-            Some(SessionActivityState::Idle),
-            false,
-            Some(143)
-        ),
-        "idle"
-    );
 }
 
 #[test]

@@ -8,6 +8,38 @@ use super::*;
 use crate::*;
 
 impl MissionWorkspace {
+    pub(crate) fn mark_active_session_viewed(&mut self, window: &Window, cx: &mut Context<Self>) {
+        if !self.is_active(cx)
+            || !window.is_window_active()
+            || self.archived()
+            || self.secondary
+            || self.loading
+        {
+            return;
+        }
+        let MissionTab::Session(session_id) = &self.active_tab else {
+            return;
+        };
+        if let Err(error) = runner_backend::ops::node::mark_direct_sessions_viewed(
+            self.core(cx),
+            std::slice::from_ref(session_id),
+        ) {
+            self.error = Some(error.to_string());
+        }
+    }
+
+    pub(crate) fn focus_status_session(
+        &mut self,
+        mission_id: &str,
+        session_id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.mission_id.as_deref() == Some(mission_id) && !self.loading {
+            self.select_mission_session(session_id, window, cx);
+        }
+    }
+
     pub(crate) fn cycle_mission_tab(
         &mut self,
         direction: isize,
@@ -83,6 +115,7 @@ impl MissionWorkspace {
             });
         }
         self.active_tab = MissionTab::Session(session_id.to_owned());
+        self.mark_active_session_viewed(window, cx);
         if let Err(error) = self.ensure_mission_terminals_attached(window, cx) {
             self.error = Some(error.to_string());
         }

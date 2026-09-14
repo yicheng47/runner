@@ -11,7 +11,12 @@ use serde::Deserialize;
 use crate::error::{Error, Result};
 
 use super::launch::shell_quote;
+#[cfg(test)]
 use super::runtime::RunnerStatus;
+use super::status::{
+    Activity, AgentObservation, HumanInteraction, ObservationSource, TurnOutcome, WaitReason,
+};
+use std::collections::BTreeMap;
 
 pub(crate) const PATH_ENV: &str = "RUNNER_CLAUDE_STATUS_PATH";
 pub(crate) const GENERATION_ENV: &str = "RUNNER_CLAUDE_STATUS_GENERATION";
@@ -23,20 +28,15 @@ const STATUS_DIR: &str = "session-status";
 // Runner-owned per-invocation helper follows cmux's hook bridge shape
 // (manaflow-ai/cmux, GPL-3.0-or-later); the status records are Runner's.
 const APPEND_SCRIPT: &str = r#"#!/bin/sh
-notification=
-if [ "$2" = Notification ]; then
-    kind=$(sed -n 's/.*"notification_type"[[:space:]]*:[[:space:]]*"\([a-z_]*\)".*/\1/p')
-    case "$kind" in
-        ''|*[!a-z_]*) ;;
-        *) notification=",\"notification_type\":\"$kind\"" ;;
-    esac
-fi
-printf '{"generation":"%s","hook_event_name":"%s"%s}\n' "$RUNNER_CLAUDE_STATUS_GENERATION" "$2" "$notification" >> "$1" 2>/dev/null
-if [ "$2" != Notification ]; then
-    cat >/dev/null
-fi
+payload=$(mktemp "$1.XXXXXXXX") || { cat >/dev/null; exit 0; }
+cat >"$payload" || { rm -f "$payload"; exit 0; }
+printf '{"generation":"%s","hook_event_name":"%s","payload_file":"%s"}\n' "$RUNNER_CLAUDE_STATUS_GENERATION" "$2" "${payload##*/}" >> "$1" 2>/dev/null || rm -f "$payload"
 exit 0
 "#;
+
+pub(crate) const fn hooks_supported(windows: bool) -> bool {
+    !windows
+}
 
 pub(crate) fn status_path(app_data_dir: &Path, session_id: &str) -> PathBuf {
     app_data_dir
@@ -61,7 +61,10 @@ pub(crate) fn clear_leftovers(app_data_dir: &Path) -> Result<()> {
         if matches!(
             path.extension().and_then(|extension| extension.to_str()),
             Some("ndjson" | "sh" | "tmp")
-        ) {
+        ) || path
+            .file_name()
+            .is_some_and(|name| name.to_string_lossy().contains(".ndjson."))
+        {
             if let Err(error) = fs::remove_file(&path) {
                 if error.kind() != std::io::ErrorKind::NotFound {
                     log::warn!(
@@ -76,8 +79,7 @@ pub(crate) fn clear_leftovers(app_data_dir: &Path) -> Result<()> {
 }
 
 pub(crate) fn hook_command(path: &Path, event: &str) -> String {
-    // Only the event and notification type enter the log; stdin is always drained.
-    // One small printf append avoids interleaving records from parallel tool hooks.
+    // A bounded append names the payload so parallel, large hooks cannot interleave JSON.
     format!(
         "(sh {} {} {} || cat >/dev/null) 2>/dev/null; exit 0",
         shell_quote(&script_path(path).to_string_lossy()),
@@ -94,6 +96,18 @@ struct StatusFiles(PathBuf);
 
 impl Drop for StatusFiles {
     fn drop(&mut self) {
+        if let Some(parent) = self.0.parent() {
+            if let Ok(entries) = fs::read_dir(parent) {
+                let prefix = format!("{}.", self.0.file_name().unwrap().to_string_lossy());
+                for entry in entries.flatten() {
+                    let name = entry.file_name();
+                    let name = name.to_string_lossy();
+                    if name.starts_with(&prefix) {
+                        let _ = fs::remove_file(entry.path());
+                    }
+                }
+            }
+        }
         for path in [
             script_path(&self.0),
             self.0.with_extension("sh.tmp"),
@@ -108,30 +122,243 @@ impl Drop for StatusFiles {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 struct StatusReport {
-    generation: String,
-    hook_event_name: String,
     #[serde(default)]
+    generation: String,
+    #[serde(default)]
+    hook_event_name: String,
     notification_type: Option<String>,
+    payload_file: Option<String>,
+    session_id: Option<String>,
+    prompt_id: Option<String>,
+    agent_id: Option<String>,
+    tool_use_id: Option<String>,
+    tool_name: Option<String>,
+    #[serde(default)]
+    is_interrupt: bool,
+    elicitation_id: Option<String>,
+    mcp_server_name: Option<String>,
 }
 
+#[derive(Default)]
+struct ClaudeObservation {
+    value: AgentObservation,
+    session_id: Option<String>,
+    prompt_id: Option<String>,
+    tools: BTreeMap<String, String>,
+    permission_tools: Vec<String>,
+    elicitations: BTreeMap<String, String>,
+    next_interaction: u64,
+}
+
+impl ClaudeObservation {
+    fn observe(&mut self, report: StatusReport) -> Option<AgentObservation> {
+        if report.agent_id.is_some() || report.hook_event_name.starts_with("Subagent") {
+            return None;
+        }
+        if report.hook_event_name == "SessionStart" {
+            let owned = self.value.source == ObservationSource::Hook;
+            self.session_id = report.session_id;
+            self.prompt_id = None;
+            self.clear_turn();
+            self.value.activity = Activity::Unavailable;
+            self.value.outcome = None;
+            return owned.then(|| self.value.clone());
+        }
+        if self.session_id.is_some()
+            && report.session_id.is_some()
+            && self.session_id != report.session_id
+        {
+            return None;
+        }
+        if report.hook_event_name == "UserPromptSubmit" {
+            self.prompt_id = report.prompt_id.clone();
+        } else if self.prompt_id.is_some()
+            && report.prompt_id.is_some()
+            && self.prompt_id != report.prompt_id
+        {
+            return None;
+        }
+        match report.hook_event_name.as_str() {
+            "UserPromptSubmit" => {
+                self.clear_turn();
+                self.work();
+            }
+            "PreToolUse" => {
+                if let (Some(id), Some(name)) = (report.tool_use_id, report.tool_name) {
+                    self.tools.insert(id, name);
+                }
+                self.work();
+            }
+            "PermissionRequest" => {
+                if let Some(name) = report.tool_name {
+                    for (id, tool) in &self.tools {
+                        if *tool == name && !self.permission_tools.contains(id) {
+                            self.permission_tools.push(id.clone());
+                        }
+                    }
+                }
+                return None;
+            }
+            "Elicitation" => {
+                if let Some(server) = report.mcp_server_name {
+                    let id = report.elicitation_id.unwrap_or_else(|| {
+                        self.next_interaction += 1;
+                        format!("server:{server}:{}", self.next_interaction)
+                    });
+                    self.elicitations.insert(id, server);
+                }
+                return None;
+            }
+            "PostToolUse" | "PostToolUseFailure" | "PermissionDenied" => {
+                if let Some(id) = report.tool_use_id {
+                    self.tools.remove(&id);
+                    self.permission_tools.retain(|owner| *owner != id);
+                    self.resolve(&id);
+                }
+                if report.is_interrupt {
+                    self.value.activity = Activity::Unavailable;
+                    self.value.outcome = Some(TurnOutcome::Interrupted);
+                } else {
+                    self.work();
+                }
+            }
+            "ElicitationResult" => {
+                let id = report.elicitation_id.or_else(|| {
+                    let server = report.mcp_server_name?;
+                    let mut candidates = self
+                        .elicitations
+                        .iter()
+                        .filter(|(_, owner)| **owner == server);
+                    let (id, _) = candidates.next()?;
+                    candidates.next().is_none().then(|| id.clone())
+                });
+                if let Some(id) = id {
+                    self.elicitations.remove(&id);
+                    self.resolve(&id);
+                }
+                self.work();
+            }
+            "Notification" => match report.notification_type.as_deref() {
+                Some("permission_prompt") => {
+                    if self.value.activity != Activity::Working {
+                        return None;
+                    }
+                    let mut owners = self.permission_tools.clone();
+                    for (id, tool) in &self.tools {
+                        if matches!(
+                            tool.as_str(),
+                            "AskUserQuestion" | "ExitPlanMode" | "EnterPlanMode"
+                        ) && !owners.contains(id)
+                        {
+                            owners.push(id.clone());
+                        }
+                    }
+                    let reason = if !owners.is_empty()
+                        && owners.iter().all(|id| {
+                            self.tools
+                                .get(id)
+                                .is_some_and(|tool| tool == "AskUserQuestion")
+                        }) {
+                        WaitReason::Answer
+                    } else {
+                        WaitReason::Approval
+                    };
+                    self.wait(reason, owners);
+                }
+                Some("elicitation_dialog") => {
+                    self.wait(
+                        WaitReason::Answer,
+                        self.elicitations.keys().cloned().collect(),
+                    );
+                }
+                Some("idle_prompt") if !self.value.needs_you() => {
+                    self.value.activity = Activity::Ready;
+                }
+                _ => return None,
+            },
+            "Stop" | "StopFailure" => {
+                self.clear_turn();
+                self.value.activity = Activity::Ready;
+                if self.value.outcome != Some(TurnOutcome::Interrupted) {
+                    self.value.outcome = Some(if report.hook_event_name == "Stop" {
+                        TurnOutcome::Completed
+                    } else {
+                        TurnOutcome::Failed
+                    });
+                }
+            }
+            _ => return None,
+        }
+        self.value.source = ObservationSource::Hook;
+        Some(self.value.clone())
+    }
+
+    fn work(&mut self) {
+        self.value.activity = Activity::Working;
+        self.value.outcome = None;
+    }
+
+    fn clear_turn(&mut self) {
+        self.value.interactions.clear();
+        self.tools.clear();
+        self.permission_tools.clear();
+        self.elicitations.clear();
+    }
+
+    fn resolve(&mut self, id: &str) {
+        self.value.interactions.retain_mut(|wait| {
+            if !wait.owners.iter().any(|owner| owner == id) {
+                return true;
+            }
+            wait.owners.retain(|owner| owner != id);
+            !wait.owners.is_empty()
+        });
+    }
+
+    fn wait(&mut self, reason: WaitReason, owners: Vec<String>) {
+        if let Some(wait) = self.value.interactions.iter_mut().find(|wait| {
+            wait.reason == reason
+                && (wait.owners == owners || wait.owners.iter().any(|owner| owners.contains(owner)))
+        }) {
+            for owner in owners {
+                if !wait.owners.contains(&owner) {
+                    wait.owners.push(owner);
+                }
+            }
+            return;
+        }
+        self.next_interaction += 1;
+        self.value.interactions.push(HumanInteraction {
+            id: format!("claude-{}", self.next_interaction),
+            reason,
+            owners,
+            since: chrono::Utc::now().timestamp_millis(),
+        });
+    }
+}
+
+#[cfg(test)]
 fn parse_transition(line: &[u8], generation: &str) -> Option<RunnerStatus> {
     let report: StatusReport = serde_json::from_slice(line).ok()?;
     if report.generation != generation {
         return None;
     }
-    match report.hook_event_name.as_str() {
-        "UserPromptSubmit" | "PreToolUse" | "PostToolUse" => Some(RunnerStatus::Busy),
-        "Stop" | "StopFailure" => Some(RunnerStatus::Idle),
-        "Notification" if report.notification_type.as_deref() == Some("idle_prompt") => {
-            Some(RunnerStatus::Idle)
-        }
-        _ => None,
+    let value = ClaudeObservation::default().observe(report)?;
+    if value.needs_you() {
+        return None;
     }
+    Some(if value.activity == Activity::Working {
+        RunnerStatus::Busy
+    } else {
+        RunnerStatus::Idle
+    })
 }
 
 pub(crate) struct ClaudeStatusWatcher {
+    path: PathBuf,
+    observation: ClaudeObservation,
     reader: BufReader<File>,
     pending: Vec<u8>,
     generation: String,
@@ -172,6 +399,8 @@ impl ClaudeStatusWatcher {
                 Error::msg(format!("watch Claude status {}: {error}", path.display()))
             })?;
         Ok(Self {
+            path: path.to_owned(),
+            observation: ClaudeObservation::default(),
             reader: BufReader::new(file),
             pending: Vec::new(),
             generation,
@@ -187,9 +416,9 @@ impl ClaudeStatusWatcher {
         Arc::clone(&self.interrupt)
     }
 
-    pub(crate) fn drain(
+    pub(crate) fn drain_observations(
         &mut self,
-        mut transition: impl FnMut(RunnerStatus, &'static str),
+        mut transition: impl FnMut(AgentObservation, &'static str),
     ) -> Result<()> {
         let interrupted = self.interrupt.swap(0, Ordering::AcqRel);
         if !self.dirty.swap(false, Ordering::AcqRel)
@@ -198,26 +427,83 @@ impl ClaudeStatusWatcher {
         {
             return Ok(());
         }
+        if !self.path.exists() {
+            return Err(Error::msg("Claude status bridge unavailable"));
+        }
         self.last_read = Instant::now();
         while self.reader.read_until(b'\n', &mut self.pending)? != 0 {
             if self.pending.last() != Some(&b'\n') {
                 break;
             }
-            if let Some(state) = parse_transition(&self.pending, &self.generation) {
-                transition(state, "hook");
+            if let Ok(mut report) = serde_json::from_slice::<StatusReport>(&self.pending) {
+                if report.generation == self.generation {
+                    if let Some(file) = report.payload_file.take() {
+                        let event = std::mem::take(&mut report.hook_event_name);
+                        let prefix =
+                            format!("{}.", self.path.file_name().unwrap().to_string_lossy());
+                        if file.starts_with(&prefix) && !file.contains(['/', '\\']) {
+                            let path = self.path.with_file_name(file);
+                            let payload = fs::read(&path);
+                            let _ = fs::remove_file(path);
+                            let Ok(payload) = payload else {
+                                self.pending.clear();
+                                continue;
+                            };
+                            {
+                                if let Ok(mut parsed) =
+                                    serde_json::from_slice::<StatusReport>(&payload)
+                                {
+                                    if parsed.hook_event_name.is_empty() {
+                                        parsed.hook_event_name = event.clone();
+                                    }
+                                    if parsed.hook_event_name == event {
+                                        report = parsed;
+                                    } else {
+                                        report.hook_event_name.clear();
+                                    }
+                                } else {
+                                    report.hook_event_name.clear();
+                                }
+                            }
+                        }
+                    }
+                    if let Some(value) = self.observation.observe(report) {
+                        transition(value, "hook");
+                    }
+                }
             }
             self.pending.clear();
         }
         // Keep buffered tool hooks ahead of the interrupt on the same output channel.
-        if interrupted != 0 {
+        if interrupted != 0
+            && self.observation.value.source == ObservationSource::Hook
+            && (self.observation.value.activity == Activity::Working
+                || self.observation.value.needs_you()
+                || self.observation.value.outcome == Some(TurnOutcome::Interrupted))
+        {
             let source = if interrupted & CTRL_C_INTERRUPT != 0 {
                 "input-interrupt"
             } else {
                 "input-escape"
             };
-            transition(RunnerStatus::Idle, source);
+            self.observation.value.activity = Activity::Unavailable;
+            self.observation.value.outcome = Some(TurnOutcome::Interrupted);
+            transition(self.observation.value.clone(), source);
         }
         Ok(())
+    }
+    #[cfg(test)]
+    fn drain(&mut self, mut transition: impl FnMut(RunnerStatus, &'static str)) -> Result<()> {
+        self.drain_observations(|value, source| {
+            transition(
+                if value.activity == Activity::Working {
+                    RunnerStatus::Busy
+                } else {
+                    RunnerStatus::Idle
+                },
+                source,
+            )
+        })
     }
 }
 
@@ -253,6 +539,338 @@ mod tests {
         assert!(output.status.success(), "{event}: {output:?}");
         assert!(output.stdout.is_empty());
         assert!(output.stderr.is_empty());
+    }
+
+    fn observe(
+        model: &mut ClaudeObservation,
+        event: &str,
+        fields: serde_json::Value,
+    ) -> Option<AgentObservation> {
+        let mut fields = fields;
+        fields["hook_event_name"] = event.into();
+        model.observe(serde_json::from_value(fields).unwrap())
+    }
+
+    #[test]
+    fn windows_is_explicitly_baseline_only() {
+        assert!(!hooks_supported(true));
+        assert!(hooks_supported(false));
+        assert_eq!(hooks_supported(cfg!(windows)), cfg!(unix));
+    }
+
+    #[test]
+    fn raw_auto_approval_does_not_hold_and_surfaced_wait_resolves_only_its_tool() {
+        let mut model = ClaudeObservation::default();
+        observe(
+            &mut model,
+            "UserPromptSubmit",
+            serde_json::json!({"prompt_id":"turn"}),
+        );
+        observe(
+            &mut model,
+            "PreToolUse",
+            serde_json::json!({"tool_use_id":"auto", "tool_name":"Bash"}),
+        );
+        observe(
+            &mut model,
+            "PermissionRequest",
+            serde_json::json!({"tool_name":"Bash"}),
+        );
+        assert!(!model.value.needs_you());
+        observe(
+            &mut model,
+            "PostToolUse",
+            serde_json::json!({"tool_use_id":"auto"}),
+        );
+        assert!(!model.value.needs_you());
+        observe(
+            &mut model,
+            "PreToolUse",
+            serde_json::json!({"tool_use_id":"human", "tool_name":"Bash"}),
+        );
+        observe(
+            &mut model,
+            "PermissionRequest",
+            serde_json::json!({"tool_name":"Bash"}),
+        );
+        observe(
+            &mut model,
+            "Notification",
+            serde_json::json!({"notification_type":"permission_prompt"}),
+        );
+        assert_eq!(model.value.interactions[0].owners, ["human"]);
+        observe(
+            &mut model,
+            "PostToolUse",
+            serde_json::json!({"tool_use_id":"unrelated"}),
+        );
+        assert!(model.value.needs_you());
+        observe(
+            &mut model,
+            "PermissionDenied",
+            serde_json::json!({"tool_use_id":"human"}),
+        );
+        assert!(!model.value.needs_you());
+        assert_eq!(model.value.activity, Activity::Working);
+    }
+
+    #[test]
+    fn parallel_same_tool_notifications_merge_and_hold_all_possible_owners() {
+        let mut model = ClaudeObservation::default();
+        for id in ["a", "b"] {
+            observe(
+                &mut model,
+                "PreToolUse",
+                serde_json::json!({"tool_use_id":id,"tool_name":"Bash"}),
+            );
+        }
+        observe(
+            &mut model,
+            "PermissionRequest",
+            serde_json::json!({"tool_name":"Bash"}),
+        );
+        assert!(!model.value.needs_you());
+        observe(
+            &mut model,
+            "Notification",
+            serde_json::json!({"notification_type":"permission_prompt"}),
+        );
+        let original_id = model.value.interactions[0].id.clone();
+        observe(
+            &mut model,
+            "PreToolUse",
+            serde_json::json!({"tool_use_id":"c","tool_name":"Bash"}),
+        );
+        observe(
+            &mut model,
+            "PermissionRequest",
+            serde_json::json!({"tool_name":"Bash"}),
+        );
+        observe(
+            &mut model,
+            "Notification",
+            serde_json::json!({"notification_type":"permission_prompt"}),
+        );
+        assert_eq!(model.value.interactions.len(), 1);
+        assert_eq!(model.value.interactions[0].id, original_id);
+        assert_eq!(model.value.interactions[0].owners, ["a", "b", "c"]);
+        for id in ["a", "b"] {
+            observe(
+                &mut model,
+                "PostToolUse",
+                serde_json::json!({"tool_use_id":id}),
+            );
+            assert!(model.value.needs_you());
+        }
+        observe(
+            &mut model,
+            "PostToolUse",
+            serde_json::json!({"tool_use_id":"c"}),
+        );
+        assert!(!model.value.needs_you());
+    }
+
+    #[test]
+    fn unreadable_payload_is_skipped_without_losing_the_next_record_or_bridge() {
+        let root = tempfile::tempdir().unwrap();
+        let path = status_path(root.path(), "session");
+        let mut watcher = ClaudeStatusWatcher::start(&path, "current".into()).unwrap();
+        let mut file = OpenOptions::new().append(true).open(&path).unwrap();
+        writeln!(file, "{}", serde_json::json!({"generation":"current","hook_event_name":"Stop","payload_file":"session.ndjson.missing"})).unwrap();
+        writeln!(file, "{}", report("UserPromptSubmit", None, "current")).unwrap();
+        writeln!(file, "{}", report("Stop", None, "current")).unwrap();
+        let mut observations = Vec::new();
+        watcher
+            .drain_observations(|value, _| observations.push(value))
+            .unwrap();
+        assert_eq!(observations.len(), 2);
+        assert_eq!(observations[0].activity, Activity::Working);
+        assert_eq!(observations[1].activity, Activity::Ready);
+        assert!(watcher.pending.is_empty());
+        fs::remove_file(&path).unwrap();
+        watcher.dirty.store(true, Ordering::Release);
+        assert!(watcher.drain_observations(|_, _| {}).is_err());
+    }
+
+    #[test]
+    fn question_plan_and_mcp_waits_keep_ownership() {
+        for (tool, reason) in [
+            ("AskUserQuestion", WaitReason::Answer),
+            ("ExitPlanMode", WaitReason::Approval),
+        ] {
+            let mut model = ClaudeObservation::default();
+            observe(
+                &mut model,
+                "PreToolUse",
+                serde_json::json!({"tool_use_id":"human", "tool_name":tool}),
+            );
+            observe(
+                &mut model,
+                "Notification",
+                serde_json::json!({"notification_type":"permission_prompt"}),
+            );
+            assert_eq!(model.value.interactions[0].reason, reason);
+            observe(
+                &mut model,
+                "Elicitation",
+                serde_json::json!({"elicitation_id":"mcp-1","mcp_server_name":"server"}),
+            );
+            observe(
+                &mut model,
+                "Notification",
+                serde_json::json!({"notification_type":"elicitation_dialog"}),
+            );
+            assert_eq!(model.value.interactions.len(), 2);
+            observe(
+                &mut model,
+                "PostToolUseFailure",
+                serde_json::json!({"tool_use_id":"human"}),
+            );
+            assert_eq!(model.value.interactions.len(), 1);
+            observe(
+                &mut model,
+                "ElicitationResult",
+                serde_json::json!({"elicitation_id":"mcp-2","mcp_server_name":"server"}),
+            );
+            assert!(model.value.needs_you());
+            observe(
+                &mut model,
+                "ElicitationResult",
+                serde_json::json!({"elicitation_id":"mcp-1","mcp_server_name":"server"}),
+            );
+            assert!(!model.value.needs_you());
+        }
+    }
+
+    #[test]
+    fn ambiguous_idless_forms_remain_until_owning_turn_ends() {
+        let mut model = ClaudeObservation::default();
+        observe(&mut model, "UserPromptSubmit", serde_json::json!({}));
+        for _ in 0..2 {
+            observe(
+                &mut model,
+                "Elicitation",
+                serde_json::json!({"mcp_server_name":"server"}),
+            );
+        }
+        observe(
+            &mut model,
+            "Notification",
+            serde_json::json!({"notification_type":"elicitation_dialog"}),
+        );
+        assert_eq!(model.value.interactions[0].owners.len(), 2);
+        observe(
+            &mut model,
+            "ElicitationResult",
+            serde_json::json!({"mcp_server_name":"server"}),
+        );
+        assert!(model.value.needs_you());
+        observe(&mut model, "Stop", serde_json::json!({}));
+        assert!(!model.value.needs_you());
+    }
+
+    #[test]
+    fn interrupted_tool_failure_does_not_complete_or_clear_another_wait() {
+        let mut model = ClaudeObservation::default();
+        observe(
+            &mut model,
+            "PreToolUse",
+            serde_json::json!({"tool_use_id":"question", "tool_name":"AskUserQuestion"}),
+        );
+        observe(
+            &mut model,
+            "Notification",
+            serde_json::json!({"notification_type":"permission_prompt"}),
+        );
+        observe(
+            &mut model,
+            "PostToolUseFailure",
+            serde_json::json!({"tool_use_id":"other", "is_interrupt":true}),
+        );
+        assert_eq!(model.value.outcome, Some(TurnOutcome::Interrupted));
+        assert!(model.value.needs_you());
+        observe(&mut model, "Stop", serde_json::json!({}));
+        assert_eq!(model.value.outcome, Some(TurnOutcome::Interrupted));
+    }
+
+    #[test]
+    fn old_turns_subagents_and_secondary_idle_cannot_finish_work_or_waits() {
+        let mut model = ClaudeObservation::default();
+        observe(
+            &mut model,
+            "SessionStart",
+            serde_json::json!({"session_id":"main"}),
+        );
+        observe(
+            &mut model,
+            "UserPromptSubmit",
+            serde_json::json!({"session_id":"main", "prompt_id":"new"}),
+        );
+        for fields in [
+            serde_json::json!({"prompt_id":"old"}),
+            serde_json::json!({"agent_id":"child"}),
+            serde_json::json!({"session_id":"child"}),
+        ] {
+            assert!(observe(&mut model, "Stop", fields).is_none());
+            assert_eq!(model.value.activity, Activity::Working);
+        }
+        observe(
+            &mut model,
+            "Notification",
+            serde_json::json!({"notification_type":"permission_prompt"}),
+        );
+        observe(
+            &mut model,
+            "Notification",
+            serde_json::json!({"notification_type":"idle_prompt"}),
+        );
+        assert!(model.value.needs_you());
+        observe(&mut model, "Stop", serde_json::json!({"prompt_id":"new"}));
+        assert!(!model.value.needs_you());
+        assert_eq!(model.value.outcome, Some(TurnOutcome::Completed));
+        observe(
+            &mut model,
+            "PreToolUse",
+            serde_json::json!({"prompt_id":"new"}),
+        );
+        assert_eq!(model.value.activity, Activity::Working);
+        assert_eq!(model.value.outcome, None);
+    }
+
+    #[test]
+    fn interrupt_preserves_dialog_until_correlated_resolution_and_never_completes() {
+        let root = tempfile::tempdir().unwrap();
+        let path = status_path(root.path(), "dialog");
+        let mut watcher = ClaudeStatusWatcher::start(&path, "current".into()).unwrap();
+        let mut file = OpenOptions::new().append(true).open(&path).unwrap();
+        writeln!(file, r#"{{"generation":"current","hook_event_name":"PreToolUse","tool_name":"AskUserQuestion","tool_use_id":"question"}}"#).unwrap();
+        writeln!(
+            file,
+            "{}",
+            report("Notification", Some("permission_prompt"), "current")
+        )
+        .unwrap();
+        watcher
+            .interrupt_signal()
+            .store(ESCAPE_INTERRUPT, Ordering::Release);
+        let mut observations = Vec::new();
+        watcher
+            .drain_observations(|value, _| observations.push(value))
+            .unwrap();
+        let interrupted = observations.last().unwrap();
+        assert!(interrupted.needs_you());
+        assert_eq!(interrupted.outcome, Some(TurnOutcome::Interrupted));
+        assert_eq!(interrupted.activity, Activity::Unavailable);
+        writeln!(file, "{}", report("Stop", None, "current")).unwrap();
+        watcher.dirty.store(true, Ordering::Release);
+        watcher
+            .drain_observations(|value, _| observations.push(value))
+            .unwrap();
+        assert_eq!(
+            observations.last().unwrap().outcome,
+            Some(TurnOutcome::Interrupted)
+        );
+        assert!(!observations.last().unwrap().needs_you());
     }
 
     #[test]
@@ -380,7 +998,7 @@ mod tests {
     fn notification_script_uses_payload_type_even_when_matcher_is_bypassed() {
         let root = tempfile::tempdir().unwrap();
         let path = status_path(root.path(), "notifications");
-        let _watcher = ClaudeStatusWatcher::start(&path, "current".into()).unwrap();
+        let mut watcher = ClaudeStatusWatcher::start(&path, "current".into()).unwrap();
         for kind in [
             None,
             Some(""),
@@ -400,17 +1018,15 @@ mod tests {
                 serde_json::to_string_pretty(&payload).unwrap(),
             ] {
                 run_hook(&path, "Notification", text.as_bytes());
-                let records = fs::read_to_string(&path).unwrap();
-                let line = records.lines().last().unwrap();
-                let report: StatusReport = serde_json::from_str(line).unwrap();
-                assert_eq!(
-                    report.notification_type.as_deref(),
-                    kind.filter(|kind| !kind.is_empty())
-                );
-                assert_eq!(
-                    parse_transition(line.as_bytes(), "current"),
-                    (kind == Some("idle_prompt")).then_some(RunnerStatus::Idle),
-                );
+                let mut observations = Vec::new();
+                watcher.dirty.store(true, Ordering::Release);
+                watcher
+                    .drain_observations(|value, _| observations.push(value))
+                    .unwrap();
+                assert_eq!(observations.len(), usize::from(kind == Some("idle_prompt")));
+                if let Some(value) = observations.first() {
+                    assert_eq!(value.activity, Activity::Ready);
+                }
             }
         }
     }
@@ -434,7 +1050,7 @@ mod tests {
     fn tool_hooks_drain_payloads_larger_than_the_pipe_buffer() {
         let root = tempfile::tempdir().unwrap();
         let path = status_path(root.path(), "large-payload");
-        let _watcher = ClaudeStatusWatcher::start(&path, "current".into()).unwrap();
+        let mut watcher = ClaudeStatusWatcher::start(&path, "current".into()).unwrap();
         let payload = serde_json::json!({"tool_response": "x".repeat(2 * 1024 * 1024)}).to_string();
         for event in [
             "UserPromptSubmit",
@@ -446,6 +1062,11 @@ mod tests {
             run_hook(&path, event, payload.as_bytes());
         }
         assert_eq!(fs::read_to_string(&path).unwrap().lines().count(), 5);
+        let mut observations = Vec::new();
+        watcher
+            .drain_observations(|value, _| observations.push(value))
+            .unwrap();
+        assert_eq!(observations.len(), 5);
         // A failed bridge setup leaves no helper; the command must still consume stdin.
         run_hook(
             &status_path(root.path(), "missing-helper"),
@@ -487,7 +1108,7 @@ mod tests {
     fn injected_commands_append_silently_and_fail_open() {
         let root = tempfile::tempdir().unwrap();
         let path = status_path(&root.path().join("Jason's status $dir"), "session");
-        let _watcher = ClaudeStatusWatcher::start(&path, "current".into()).unwrap();
+        let mut watcher = ClaudeStatusWatcher::start(&path, "current".into()).unwrap();
         for event in [
             "UserPromptSubmit",
             "PreToolUse",
@@ -499,10 +1120,8 @@ mod tests {
             run_hook(&path, event, br#"{"notification_type":"idle_prompt"}"#);
         }
         let records = fs::read_to_string(&path).unwrap();
-        let states: Vec<_> = records
-            .lines()
-            .filter_map(|line| parse_transition(line.as_bytes(), "current"))
-            .collect();
+        let mut states = Vec::new();
+        watcher.drain(|state, _| states.push(state)).unwrap();
         assert_eq!(records.lines().count(), 6);
         assert_eq!(
             states,

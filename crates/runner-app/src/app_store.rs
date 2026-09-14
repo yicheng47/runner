@@ -242,6 +242,7 @@ pub(crate) struct AppStore {
     pub(crate) nodes: Vec<NodeRow>,
     pub(crate) projects: Vec<ProjectRow>,
     pub(crate) missions: Vec<MissionSummary>,
+    pub(crate) session_statuses: BTreeMap<String, runner_backend::session::status::AgentStatus>,
     pub(crate) session_activity: BTreeMap<String, SessionActivityState>,
     pub(crate) settings: AppSettings,
     settings_path: PathBuf,
@@ -349,6 +350,7 @@ impl AppStore {
             nodes: Vec::new(),
             projects: Vec::new(),
             missions: Vec::new(),
+            session_statuses: BTreeMap::new(),
             session_activity: BTreeMap::new(),
             settings,
             settings_path,
@@ -458,6 +460,7 @@ impl AppStore {
 
     pub(crate) fn remove_session_activity(&mut self, session_id: &str, cx: &mut Context<Self>) {
         self.session_activity.remove(session_id);
+        self.session_statuses.remove(session_id);
         self.revisions.activity = self.revisions.activity.wrapping_add(1);
         cx.notify();
     }
@@ -591,6 +594,7 @@ impl AppStore {
             }
             Err(error) => self.record_error(error.to_string()),
         }
+        self.refresh_activity_inner();
     }
 
     fn refresh_projects_inner(&mut self) {
@@ -617,6 +621,19 @@ impl AppStore {
 
     fn refresh_activity_inner(&mut self) {
         self.session_activity = runner_backend::ops::session::session_activity_snapshot(&self.core);
+        match runner_backend::ops::session::session_status_snapshot(&self.core) {
+            Ok(statuses) => {
+                for summary in &mut self.missions {
+                    for (id, status) in &mut summary.session_statuses {
+                        if let Some(current) = statuses.get(id) {
+                            *status = current.clone();
+                        }
+                    }
+                }
+                self.session_statuses = statuses;
+            }
+            Err(error) => self.record_error(error.to_string()),
+        }
         self.revisions.activity = self.revisions.activity.wrapping_add(1);
     }
 

@@ -1,10 +1,8 @@
 use super::*;
-use crate::surfaces::sidebar_logic::{
-    direct_tab_attention_state, mission_attention_state, AttentionState,
-};
+use crate::surfaces::sidebar_logic::AttentionState;
 use crate::*;
 use runner_app::ui::TextField;
-use runner_backend::ops::mission::MissionActivityState;
+use runner_backend::model::Runtime;
 use runner_backend::repo::node::NodeType;
 
 impl Sidebar {
@@ -120,20 +118,16 @@ impl Sidebar {
                     if members.is_empty() {
                         return None;
                     }
-                    let attention = direct_tab_attention_state(
-                        members.iter().map(|member| {
-                            let running_busy = self.archiving_sessions.contains(&member.session_id)
-                                || (member.status == SessionStatus::Running
-                                    && self
-                                        .app_store
-                                        .read(cx)
-                                        .session_activity
-                                        .get(&member.session_id)
-                                        == Some(&SessionActivityState::Busy));
-                            (member.agent_runtime.as_str(), running_busy)
-                        }),
-                        node.last_completed_at.as_deref(),
-                        node.last_viewed_at.as_deref(),
+                    let rollup = self.tab_status_rollup(&members, cx);
+                    let attention = status_attention(rollup.priority_value()).max(
+                        if members
+                            .iter()
+                            .any(|member| self.archiving_sessions.contains(&member.session_id))
+                        {
+                            AttentionState::Working
+                        } else {
+                            AttentionState::None
+                        },
                     );
                     Some(SidebarRow::Tab {
                         node: node.clone(),
@@ -144,12 +138,14 @@ impl Sidebar {
                 }
                 NodeType::Mission => {
                     let summary = missions.get(node.ref_id.as_deref()?)?;
-                    let idle = summary.activity == Some(MissionActivityState::Idle);
-                    let attention = if self.archiving_missions.contains(&summary.mission.id) {
-                        AttentionState::Working
-                    } else {
-                        mission_attention_state(summary.any_session_live, idle)
-                    };
+                    let rollup = self.mission_status_rollup(summary);
+                    let attention = status_attention(rollup.priority_value()).max(
+                        if self.archiving_missions.contains(&summary.mission.id) {
+                            AttentionState::Working
+                        } else {
+                            AttentionState::None
+                        },
+                    );
                     Some(SidebarRow::Mission {
                         node: node.clone(),
                         summary: (*summary).clone(),
@@ -159,6 +155,186 @@ impl Sidebar {
                 NodeType::Project => None,
             })
             .collect()
+    }
+
+    pub(super) fn tab_status_rollup(
+        &self,
+        members: &[DirectSessionEntry],
+        cx: &App,
+    ) -> runner_app::ui::agent_status::StatusRollup {
+        use runner_backend::session::status::{AgentStatus, Lifecycle};
+        let store = self.app_store.read(cx);
+        let entries = members
+            .iter()
+            .filter(|member| Runtime::parse(&member.agent_runtime) != Some(Runtime::Shell))
+            .map(|member| {
+                let mut status = store
+                    .session_statuses
+                    .get(&member.session_id)
+                    .cloned()
+                    .unwrap_or(AgentStatus {
+                        lifecycle: Lifecycle::Running,
+                        ..Default::default()
+                    });
+                match member.status {
+                    SessionStatus::Running => {}
+                    SessionStatus::Stopped => status.lifecycle = Lifecycle::Stopped,
+                    SessionStatus::Crashed => status.lifecycle = Lifecycle::Error,
+                }
+                if self.archiving_sessions.contains(&member.session_id) {
+                    mark_archiving_status(&mut status);
+                }
+                (member.session_id.clone(), status)
+            })
+            .collect();
+        runner_app::ui::agent_status::StatusRollup { entries }
+    }
+
+    pub(super) fn mission_status_rollup(
+        &self,
+        summary: &runner_backend::ops::mission::MissionSummary,
+    ) -> runner_app::ui::agent_status::StatusRollup {
+        let mut entries = summary.session_statuses.clone();
+        if self.archiving_missions.contains(&summary.mission.id) {
+            for (_, status) in &mut entries {
+                mark_archiving_status(status);
+            }
+        }
+        runner_app::ui::agent_status::StatusRollup { entries }
+    }
+
+    pub(super) fn focus_status_target(
+        &mut self,
+        node_id: &str,
+        target: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let rows = self.resolved_sidebar_rows(cx);
+        let Some(row) = rows.iter().find(|row| row.node().id == node_id) else {
+            return;
+        };
+        let project = row
+            .node()
+            .parent_id
+            .as_deref()
+            .and_then(|id| {
+                self.app_store
+                    .read(cx)
+                    .nodes
+                    .iter()
+                    .find(|node| node.id == id)
+            })
+            .and_then(|node| node.ref_id.clone());
+        self.update_app_settings(cx, true, move |settings| {
+            settings.sidebar_projects_open = true;
+            settings.sidebar_chats_open = true;
+            if let Some(project) = &project {
+                settings.sidebar_collapsed_projects.remove(project);
+            }
+            true
+        });
+        match row {
+            SidebarRow::Tab { node, .. } => {
+                self.activate_sidebar_session(&node.id, &target, window, cx)
+            }
+            SidebarRow::Mission { summary, .. } => {
+                let mission_id = summary.mission.id.clone();
+                let session_id = target.clone();
+                self.update_app_settings(cx, true, move |settings| {
+                    settings
+                        .last_mission_terminal_ids
+                        .insert(mission_id.clone(), session_id.clone());
+                    true
+                });
+                if let Some(shell) = self.shell.upgrade() {
+                    let mission_id = summary.mission.id.clone();
+                    window.defer(cx, move |window, cx| {
+                        shell.update(cx, |shell, cx| {
+                            shell.open_mission(mission_id.clone(), window, cx);
+                            shell.mission_workspace.update(cx, |workspace, cx| {
+                                workspace.focus_status_session(&mission_id, &target, window, cx);
+                            });
+                        });
+                    });
+                }
+            }
+        }
+    }
+
+    pub(super) fn render_status_attention<'a>(
+        &self,
+        rows: impl IntoIterator<Item = &'a SidebarRow>,
+        id: SharedString,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let rows: Vec<_> = rows.into_iter().collect();
+        let rollup = runner_app::ui::agent_status::StatusRollup {
+            entries: rows
+                .iter()
+                .flat_map(|row| match row {
+                    SidebarRow::Tab { members, .. } => self.tab_status_rollup(members, cx).entries,
+                    SidebarRow::Mission { summary, .. } => {
+                        self.mission_status_rollup(summary).entries
+                    }
+                })
+                .collect(),
+        };
+        let node_id = rollup
+            .target()
+            .and_then(|target| {
+                rows.iter().find(|row| match row {
+                    SidebarRow::Tab { members, .. } => {
+                        members.iter().any(|member| member.session_id == target)
+                    }
+                    SidebarRow::Mission { summary, .. } => {
+                        summary.session_statuses.iter().any(|(id, _)| id == target)
+                    }
+                })
+            })
+            .map(|row| row.node().id.clone());
+        let archiving = rows.iter().any(|row| match row {
+            SidebarRow::Tab { members, .. } => members
+                .iter()
+                .any(|member| self.archiving_sessions.contains(&member.session_id)),
+            SidebarRow::Mission { summary, .. } => {
+                self.archiving_missions.contains(&summary.mission.id)
+            }
+        });
+        self.render_rollup_attention(rollup, node_id, archiving, id, cx)
+    }
+
+    pub(super) fn render_rollup_attention(
+        &self,
+        rollup: runner_app::ui::agent_status::StatusRollup,
+        node_id: Option<String>,
+        archiving: bool,
+        id: SharedString,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let target = node_id.zip(rollup.target().map(str::to_owned));
+        let indicator = if archiving && rollup.priority_value() < 3 {
+            runner_app::ui::Tooltip::new(
+                SharedString::from(format!("{id}-archiving")),
+                "Archiving",
+                super::elements::attention_indicator(AttentionState::Working),
+            )
+            .into_any_element()
+        } else {
+            rollup.render(id.clone())
+        };
+        div()
+            .id(id.clone())
+            .flex_none()
+            .cursor_pointer()
+            .child(indicator)
+            .on_click(cx.listener(move |this, _, window, cx| {
+                cx.stop_propagation();
+                if let Some((node_id, session_id)) = &target {
+                    this.focus_status_target(node_id, session_id.clone(), window, cx);
+                }
+            }))
+            .into_any_element()
     }
 
     pub(super) fn scope_rows(
@@ -277,5 +453,57 @@ impl Sidebar {
         self._rename_focus_subscription = None;
         self.focus_shell_terminal(window, cx);
         cx.notify();
+    }
+}
+
+fn status_attention(priority: u8) -> AttentionState {
+    match priority {
+        5 => AttentionState::Error,
+        4 => AttentionState::NeedsYou,
+        3 => AttentionState::Working,
+        2 => AttentionState::Unread,
+        1 => AttentionState::Unavailable,
+        _ => AttentionState::None,
+    }
+}
+
+fn mark_archiving_status(status: &mut runner_backend::session::status::AgentStatus) {
+    use runner_backend::session::status::{Activity, Lifecycle, ObservationSource};
+    if runner_app::ui::agent_status::StatusRollup::priority(status) < 3 {
+        status.lifecycle = Lifecycle::Running;
+        status.observation.activity = Activity::Working;
+        status.observation.source = ObservationSource::Unavailable;
+    }
+}
+
+#[cfg(test)]
+mod status_tests {
+    use super::*;
+    use runner_app::ui::agent_status::StatusRollup;
+    use runner_backend::session::status::{AgentStatus, HumanInteraction, Lifecycle, WaitReason};
+
+    #[test]
+    fn archive_feedback_preserves_higher_attention_and_unread() {
+        let mut status = AgentStatus {
+            lifecycle: Lifecycle::Stopped,
+            unread_since: Some(1),
+            ..Default::default()
+        };
+        mark_archiving_status(&mut status);
+        assert_eq!(StatusRollup::priority(&status), 3);
+        assert_eq!(status.unread_since, Some(1));
+        status.observation.interactions.push(HumanInteraction {
+            id: "wait".into(),
+            reason: WaitReason::Approval,
+            owners: vec![],
+            since: 1,
+        });
+        mark_archiving_status(&mut status);
+        assert_eq!(StatusRollup::priority(&status), 4);
+        status.lifecycle = Lifecycle::Error;
+        status.error_since = Some(1);
+        mark_archiving_status(&mut status);
+        assert_eq!(status.lifecycle, Lifecycle::Error);
+        assert_eq!(StatusRollup::priority(&status), 5);
     }
 }

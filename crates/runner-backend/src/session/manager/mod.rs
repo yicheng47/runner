@@ -1,3 +1,6 @@
+use crate::session::status::{
+    Activity, AgentObservation, AgentStatus, Lifecycle, ObservationSource, TurnOutcome,
+};
 // Per-runner session manager.
 //
 // One `Session` = one child process attached to an in-process PTY via
@@ -181,7 +184,12 @@ enum AppendOutcome {
 }
 
 impl ForwarderEmitCtx {
-    fn runner_status_draft(&self, state: RunnerStatus, source: &'static str) -> EventDraft {
+    fn runner_status_draft(
+        &self,
+        state: RunnerStatus,
+        source: &'static str,
+        status: &AgentStatus,
+    ) -> EventDraft {
         let state_str = match state {
             RunnerStatus::Busy => "busy",
             RunnerStatus::Idle => "idle",
@@ -191,7 +199,7 @@ impl ForwarderEmitCtx {
             self.mission_id.clone(),
             self.handle.clone(),
             SignalType::new("runner_status"),
-            serde_json::json!({ "state": state_str, "source": source }),
+            serde_json::json!({ "state": state_str, "source": source, "status": status }),
         )
     }
 
@@ -202,8 +210,13 @@ impl ForwarderEmitCtx {
     /// a stuck flock would freeze them too). Wire shape mirrors
     /// `cli/src/signal.rs::run_status` so router / UI projections
     /// can't tell the two apart except by `payload.source`.
-    fn try_append_runner_status(&self, state: RunnerStatus, source: &'static str) -> AppendOutcome {
-        match self.try_append_with_retry(self.runner_status_draft(state, source)) {
+    fn try_append_runner_status(
+        &self,
+        state: RunnerStatus,
+        source: &'static str,
+        status: &AgentStatus,
+    ) -> AppendOutcome {
+        match self.try_append_with_retry(self.runner_status_draft(state, source, status)) {
             Ok(()) => AppendOutcome::Ok,
             Err(TryAppendError::Contended) => AppendOutcome::Contended,
             Err(TryAppendError::Failed(_)) => AppendOutcome::Failed,
@@ -227,9 +240,10 @@ impl ForwarderEmitCtx {
         &self,
         state: RunnerStatus,
         source: &'static str,
+        status: &AgentStatus,
     ) -> runner_core::Result<()> {
         self.event_log
-            .append(self.runner_status_draft(state, source))
+            .append(self.runner_status_draft(state, source, status))
             .map(|_| ())
     }
 }
@@ -317,13 +331,14 @@ impl From<RunnerStatus> for SessionActivityState {
     }
 }
 
-/// Payload for `session/status`. Emitted only for direct chats, where
+/// Payload for `session/status`. Shared by direct chats and mission sessions, where
 /// busy/idle is a live UI projection rather than persisted DB state.
 #[derive(Debug, Clone, Serialize)]
 pub struct SessionActivityEvent {
     pub session_id: String,
     pub state: SessionActivityState,
     pub source: String,
+    pub status: AgentStatus,
 }
 
 /// Production emitter. Raw output goes synchronously to the process-local
@@ -392,7 +407,14 @@ impl SessionEvents for CoreSessionEvents {
         self.events.emit("session/updated", ev);
     }
     fn status(&self, ev: &SessionActivityEvent) {
-        if ev.state == SessionActivityState::Idle && ev.source != "input-escape" {
+        if ev.state == SessionActivityState::Idle
+            && matches!(
+                ev.status.observation.activity,
+                Activity::Idle | Activity::Ready
+            )
+            && ev.status.observation.outcome != Some(TurnOutcome::Interrupted)
+            && ev.status.observation.outcome != Some(TurnOutcome::Failed)
+        {
             if let Some(sessions) = self.sessions.upgrade() {
                 if let Err(error) = crate::ops::node::record_session_completion(
                     &self.db,
@@ -408,7 +430,11 @@ impl SessionEvents for CoreSessionEvents {
                 }
             }
         }
-        self.events.emit("session/status", ev);
+        let mut event = ev.clone();
+        if let Some(sessions) = self.sessions.upgrade() {
+            event.status = sessions.agent_status(&ev.session_id);
+        }
+        self.events.emit("session/status", &event);
     }
     fn runner_activity(&self, ev: &RunnerActivityEvent) {
         self.events.emit("runner/activity", ev);
@@ -588,6 +614,8 @@ struct PendingResize {
 struct SessionState {
     handle: Option<SessionHandle>,
     activity: Option<SessionActivityState>,
+    status: AgentStatus,
+    baseline_activity: Option<SessionActivityState>,
     activity_revision: u64,
     suppress_local_input_busy: bool,
     title_status_armed: bool,
@@ -614,6 +642,8 @@ impl SessionState {
     fn is_empty(&self) -> bool {
         self.handle.is_none()
             && self.activity.is_none()
+            && self.status.error_since.is_none()
+            && self.status.unread_since.is_none()
             && !self.suppress_local_input_busy
             && !self.title_status_armed
             && !self.hook_status_armed
@@ -893,6 +923,7 @@ impl SessionManager {
             None => !session.local_input_pending,
         };
         session.handle.is_some()
+            && !session.status.observation.needs_you()
             && !delivery.in_flight
             && delivery.next_ticket == delivery.next_served
             && observed_quiescent
@@ -915,6 +946,9 @@ impl SessionManager {
         let session = session.lock().unwrap();
         if session.handle.is_none() {
             return Ok(router::DeliveryReservation::Unavailable);
+        }
+        if session.status.observation.needs_you() {
+            return Ok(router::DeliveryReservation::HumanInteraction);
         }
         if delivery.in_flight {
             return Ok(router::DeliveryReservation::InFlight);
@@ -1059,6 +1093,11 @@ impl SessionManager {
             state.observed_input = None;
             state.last_local_input_at = None;
             state.handle = Some(handle);
+            state.status = AgentStatus {
+                unread_since: state.status.unread_since,
+                ..Default::default()
+            };
+            state.baseline_activity = None;
             state.hook_status_armed = false;
             state.provisional_idle = false;
             state.mission_status_sink = mission_status_sink;
@@ -1135,6 +1174,10 @@ impl SessionManager {
     ) -> bool {
         let session = self.session_state_or_insert(session_id);
         let mut session = session.lock().unwrap();
+        if matches!(source, "forwarder" | "title") {
+            session.baseline_activity = Some(state);
+        }
+        let old_status = session.status.clone();
         if source == "hook" {
             if session.handle.is_none() || session.killed {
                 return false;
@@ -1150,9 +1193,7 @@ impl SessionManager {
             {
                 return false;
             }
-            if source == "input-interrupt" {
-                session.completion_armed = false;
-            }
+            session.completion_armed = false;
         }
         if session.hook_status_armed && matches!(source, "forwarder" | "title") {
             return false;
@@ -1172,7 +1213,32 @@ impl SessionManager {
         if state == SessionActivityState::Idle {
             session.suppress_local_input_busy = false;
         }
-        if session.activity == Some(state) && !resolved_provisional_idle {
+        session.status.lifecycle = Lifecycle::Running;
+        if matches!(source, "input-interrupt" | "input-escape") {
+            session.status.observation.activity = Activity::Unavailable;
+            session.status.observation.outcome = Some(TurnOutcome::Interrupted);
+        } else if !session.hook_status_armed || source == "hook" {
+            session.status.observation.source = if source == "hook" {
+                ObservationSource::Hook
+            } else {
+                ObservationSource::Baseline
+            };
+            session.status.observation.activity = match (state, session.hook_status_armed) {
+                (SessionActivityState::Busy, _) => Activity::Working,
+                (SessionActivityState::Idle, true) => Activity::Ready,
+                (SessionActivityState::Idle, false) => Activity::Idle,
+            };
+            session.status.observation.outcome =
+                if source == "hook" && state == SessionActivityState::Idle {
+                    Some(TurnOutcome::Completed)
+                } else {
+                    None
+                };
+        }
+        if session.activity == Some(state)
+            && !resolved_provisional_idle
+            && session.status == old_status
+        {
             return false;
         }
         session.activity = Some(state);
@@ -1220,6 +1286,7 @@ impl SessionManager {
             session_id: session_id.to_string(),
             state,
             source: source.to_string(),
+            status: self.agent_status(session_id),
         });
     }
 
@@ -1248,6 +1315,163 @@ impl SessionManager {
             session.completion_armed = false;
         }
         armed
+    }
+
+    pub fn mark_status_viewed(&self, session_ids: &[String]) {
+        for id in session_ids {
+            if let Some(session) = self.session_state(id) {
+                let mut session = session.lock().unwrap();
+                session.status.error_since = None;
+                session.status.unread_since = None;
+            }
+        }
+    }
+
+    pub(crate) fn record_unread(&self, session_id: &str, viewed: bool) {
+        if let Some(session) = self.session_state(session_id) {
+            let mut session = session.lock().unwrap();
+            if !viewed {
+                session.status.unread_since = Some(chrono::Utc::now().timestamp_millis());
+            }
+        }
+    }
+
+    fn record_exit_status(&self, session_id: &str, exit_code: Option<i32>, crashed: bool) {
+        if let Some(session) = self.session_state(session_id) {
+            let mut session = session.lock().unwrap();
+            session.status.lifecycle = if crashed {
+                Lifecycle::Error
+            } else {
+                Lifecycle::Stopped
+            };
+            session.status.exit_code = exit_code;
+            session.status.error_since = crashed.then(|| chrono::Utc::now().timestamp_millis());
+            session.status.observation.interactions.clear();
+        }
+    }
+
+    pub fn agent_status(&self, session_id: &str) -> AgentStatus {
+        self.session_state(session_id)
+            .map(|session| session.lock().unwrap().status.clone())
+            .unwrap_or_default()
+    }
+
+    pub fn status_snapshot(&self) -> BTreeMap<String, AgentStatus> {
+        let sessions: Vec<_> = self
+            .sessions
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(id, session)| (id.clone(), Arc::clone(session)))
+            .collect();
+        sessions
+            .into_iter()
+            .map(|(id, session)| (id, session.lock().unwrap().status.clone()))
+            .collect()
+    }
+
+    fn publish_observation(
+        &self,
+        session_id: &str,
+        observation: AgentObservation,
+        events: &dyn SessionEvents,
+    ) {
+        let source = match observation.source {
+            ObservationSource::Hook => "hook",
+            ObservationSource::Baseline => "baseline",
+            ObservationSource::Unavailable => "unavailable",
+        };
+        let Some(session) = self.session_state(session_id) else {
+            return;
+        };
+        let (status, sink, released, state) = {
+            let mut session = session.lock().unwrap();
+            if session.handle.is_none() || session.killed {
+                return;
+            }
+            if session.status.lifecycle == Lifecycle::Running
+                && session.status.observation == observation
+            {
+                return;
+            }
+            let released = session.status.observation.needs_you() && !observation.needs_you();
+            if observation.outcome == Some(TurnOutcome::Interrupted) {
+                session.completion_armed = false;
+            }
+            if observation.activity == Activity::Working && observation.outcome.is_none() {
+                session.completion_armed = true;
+            }
+            session.hook_status_armed = observation.source == ObservationSource::Hook;
+            session.status.lifecycle = Lifecycle::Running;
+            session.status.observation = observation;
+            let state = if session.status.observation.activity == Activity::Working
+                || session.status.observation.needs_you()
+            {
+                SessionActivityState::Busy
+            } else {
+                SessionActivityState::Idle
+            };
+            session.activity = Some(state);
+            session.activity_revision = session.activity_revision.wrapping_add(1);
+            (
+                session.status.clone(),
+                session.mission_status_sink.clone(),
+                released,
+                state,
+            )
+        };
+        events.status(&SessionActivityEvent {
+            session_id: session_id.to_owned(),
+            state,
+            source: source.into(),
+            status,
+        });
+        let status = self.agent_status(session_id);
+        if let Some(sink) = sink {
+            let draft = sink.runner_status_draft(
+                if state == SessionActivityState::Busy {
+                    RunnerStatus::Busy
+                } else {
+                    RunnerStatus::Idle
+                },
+                source,
+                &status,
+            );
+            if let Err(error) = sink.try_append_with_retry(draft) {
+                log::warn!("publish hook observation: {error:?}");
+            }
+        }
+        if released {
+            self.notify_delivery_event(session_id, router::SessionDeliveryEvent::InputCleared);
+        }
+    }
+
+    fn status_bridge_failed(&self, session_id: &str, events: &dyn SessionEvents) {
+        let Some(session) = self.session_state(session_id) else {
+            return;
+        };
+        let activity = {
+            let mut session = session.lock().unwrap();
+            session.completion_armed = false;
+            session.baseline_activity
+        };
+        self.publish_observation(
+            session_id,
+            AgentObservation {
+                activity: match activity {
+                    Some(SessionActivityState::Busy) => Activity::Working,
+                    Some(SessionActivityState::Idle) => Activity::Idle,
+                    None => Activity::Unavailable,
+                },
+                source: if activity.is_some() {
+                    ObservationSource::Baseline
+                } else {
+                    ObservationSource::Unavailable
+                },
+                ..Default::default()
+            },
+            events,
+        );
     }
 
     pub fn activity_snapshot(&self) -> BTreeMap<String, SessionActivityState> {

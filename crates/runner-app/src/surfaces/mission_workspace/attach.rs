@@ -175,6 +175,7 @@ impl MissionWorkspace {
                         this.sync_mission_copy_entities(cx);
                         let active = this.is_active(cx);
                         this.sync_mission_subject_ownership(active, window, cx);
+                        this.mark_active_session_viewed(window, cx);
                         if !this.secondary {
                             if let Err(error) = this.ensure_mission_terminals_attached(window, cx) {
                                 this.error = Some(error.to_string());
