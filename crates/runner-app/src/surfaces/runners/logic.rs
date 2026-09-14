@@ -105,13 +105,12 @@ pub(super) fn runtime_models<'a>(
 pub(super) fn runtime_model_placeholder(
     runtimes: &[RuntimeCatalogEntry],
     runtime: &str,
-    edits_slot: bool,
+    inherited_runner: Option<&Runner>,
 ) -> String {
-    if edits_slot {
-        return "default".into();
-    }
-    runtime_entry(runtimes, runtime)
-        .and_then(|runtime| runtime.default_model.as_deref())
+    inherited_runner
+        .filter(|runner| runner.runtime == runtime)
+        .and_then(|runner| runner.model.as_deref())
+        .or_else(|| runtime_entry(runtimes, runtime)?.default_model.as_deref())
         .map(|model| format!("default ({model})"))
         .unwrap_or_else(|| "default".into())
 }
@@ -169,20 +168,21 @@ pub(super) fn effort_options(
     runtime: &str,
     runner: &Runner,
     edits_slot: bool,
+    model: &str,
 ) -> Vec<SelectOption> {
-    runtime_efforts(runtimes, runtime)
+    runtime_entry(runtimes, runtime)
+        .map(|runtime| runtime.efforts_for_model(model))
+        .unwrap_or_default()
         .iter()
         .map(|option| {
             let label = if option.value.is_empty() {
-                if edits_slot {
-                    if runtime == runner.runtime {
-                        format!(
-                            "Runner default ({})",
-                            runner.effort.as_deref().unwrap_or("default")
-                        )
-                    } else {
-                        "Runtime default".into()
-                    }
+                if edits_slot && runtime == runner.runtime {
+                    runner
+                        .effort
+                        .as_deref()
+                        .or_else(|| runtime_entry(runtimes, runtime)?.default_effort.as_deref())
+                        .map(|effort| format!("Runner default ({effort})"))
+                        .unwrap_or_else(|| "Runner default".into())
                 } else {
                     runtime_default_effort_label(runtimes, runtime)
                 }

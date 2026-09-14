@@ -68,6 +68,7 @@ pub struct DiscoveryState {
     pub result: Option<DiscoveryResult>,
     pub seeded_shell: Option<String>,
     pub last_known_good_captured_at: Option<String>,
+    pub(crate) models: crate::runtime_status::models::ModelDiscovery,
 }
 
 impl DiscoveryState {
@@ -80,6 +81,7 @@ impl DiscoveryState {
             result: None,
             seeded_shell,
             last_known_good_captured_at,
+            models: Default::default(),
         }
     }
 

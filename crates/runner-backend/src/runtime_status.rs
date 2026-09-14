@@ -10,6 +10,8 @@ use crate::session::launch;
 use crate::shell_path::{DiscoveryOutcome, DiscoveryResult, DiscoveryState, LoginShellEnv};
 use serde::Serialize;
 
+pub(crate) mod models;
+
 pub type SharedShellEnv = Arc<RwLock<LoginShellEnv>>;
 pub type SharedDiscoveryState = Arc<RwLock<DiscoveryState>>;
 
@@ -399,13 +401,21 @@ pub fn apply_discovery_result(
     }
 }
 
+/// Runs executable discovery in the background. `model_runtimes` are the
+/// installed-and-enabled runtimes whose model catalogs may be queried
+/// afterwards; executable discovery itself always covers every runtime.
 pub fn start_background_discovery(
     events: EventChannel,
     pool: Arc<DbPool>,
     shell_env: SharedShellEnv,
     discovery: SharedDiscoveryState,
+    force_models: bool,
+    model_runtimes: Vec<Runtime>,
 ) {
     std::thread::spawn(move || {
+        // Persisted catalogs publish before the shell probe, so model fields
+        // never wait on discovery to show what they already know.
+        models::load_cached(&pool, &discovery, &events);
         let result = crate::shell_path::resolve_login_shell_env();
         if let Err(error) = apply_discovery_result(&pool, &shell_env, &discovery, result) {
             log::warn!("runtime discovery state update failed: {error}");
@@ -415,6 +425,14 @@ pub fn start_background_discovery(
         }
         log_runtime_paths(&pool, &shell_env);
         events.emit("runtime/changed", &());
+        models::request(
+            &pool,
+            &shell_env,
+            &discovery,
+            &events,
+            &model_runtimes,
+            force_models,
+        );
     });
 }
 
@@ -423,6 +441,7 @@ pub fn refresh_background_discovery(
     pool: Arc<DbPool>,
     shell_env: SharedShellEnv,
     discovery: SharedDiscoveryState,
+    model_runtimes: Vec<Runtime>,
 ) -> Result<bool> {
     {
         let mut state = discovery
@@ -434,7 +453,7 @@ pub fn refresh_background_discovery(
         state.checking = true;
     }
     events.emit("runtime/changed", &());
-    start_background_discovery(events, pool, shell_env, discovery);
+    start_background_discovery(events, pool, shell_env, discovery, true, model_runtimes);
     Ok(true)
 }
 
@@ -494,6 +513,7 @@ mod tests {
             }),
             seeded_shell: None,
             last_known_good_captured_at: None,
+            models: Default::default(),
         }))
     }
 

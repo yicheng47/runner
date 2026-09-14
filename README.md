@@ -205,6 +205,8 @@ Carbon and Runner Light are Runner's own themes; Catppuccin Mocha and Latte ride
 
 Claude Code and Codex are the primary supported agents, with fixture-tested terminal rendering and tuned launch/nudge timing. TRAE CLI sees less use and may have rough edges; it is enabled by default on macOS when detected, and disabled by default on Windows, where Runner integration has not been validated. [Issues](https://github.com/yicheng47/runner/issues) are welcome.
 
+Hook-based session status is available for Claude Code and Codex on macOS. Runner does not support hook-based status for TRAE CLI; TRAE CLI and Windows sessions use estimated status from terminal activity and titles.
+
 Install the agent CLIs separately. Runner detects them on `PATH`, with per-agent executable overrides in **Settings → Agents**. On Windows, Claude Code also requires Git for Windows for Git Bash; npm-based CLI installations require Node.js. PowerShell 7 is optional. Agents run natively on Windows, without WSL.
 
 ## Example crew

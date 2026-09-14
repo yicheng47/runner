@@ -42,7 +42,7 @@ impl NativeRoot {
         let command = runtime_entry(&form.runtimes, &runtime)
             .map(|entry| entry.command.clone())
             .unwrap_or_default();
-        let model_placeholder = runtime_model_placeholder(&form.runtimes, &runtime, false);
+        let model_placeholder = runtime_model_placeholder(&form.runtimes, &runtime, None);
         form.command
             .update(cx, |input, input_cx| input.reset(command, input_cx));
         form.model.update(cx, |input, input_cx| {
@@ -60,6 +60,7 @@ impl NativeRoot {
             select.set_options(permission_options(&runtime), select_cx);
             select.set_value(permission_mode_value(form.permission_mode), select_cx);
         });
+        self.request_model_catalog(&runtime, cx);
         cx.notify();
     }
 

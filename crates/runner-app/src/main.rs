@@ -501,6 +501,14 @@ struct NativeRoot {
 }
 
 impl NativeRoot {
+    pub(crate) fn request_model_catalog(&self, runtime: &str, cx: &Context<Self>) {
+        if let Some(runtime) = runner_backend::model::Runtime::parse(runtime)
+            .filter(|runtime| self.settings(cx).model_runtimes().contains(runtime))
+        {
+            runner_backend::ops::runtime::runtime_request_models(self.core(cx), &[runtime]);
+        }
+    }
+
     fn new(
         window_label: String,
         log_dir: PathBuf,
@@ -582,6 +590,7 @@ impl NativeRoot {
                     .update(cx, |this, cx| {
                         this.refresh_start_chat_runtimes(cx);
                         this.refresh_runner_form_runtimes(cx);
+                        this.refresh_add_slot_runtimes(cx);
                         this.refresh_agents_pane(cx);
                     })
                     .is_err()
@@ -1143,7 +1152,10 @@ fn run() -> Result<()> {
         &runner_app::version::display_version(),
         &paths.app_data_dir,
     );
-    let core = boot_core(&paths)?;
+    let model_runtimes = AppSettings::load(&settings_path(&paths.app_data_dir))
+        .unwrap_or_default()
+        .model_runtimes();
+    let core = boot_core(&paths, model_runtimes)?;
     let mcp_server = match NativeMcpServer::start(&core) {
         Ok(server) => Some(server),
         Err(error) => {

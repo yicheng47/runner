@@ -205,6 +205,8 @@ Carbon 和 Runner Light 是 Runner 自己的主题，Catppuccin Mocha 和 Latte 
 
 Claude Code 和 Codex 是主要支持的 agent，终端渲染有夹具测试覆盖，启动和催促时序也做过调优。TRAE CLI 用得较少，可能有粗糙之处；macOS 上检测到后默认启用，Windows 上默认禁用，因为 Runner 与它的集成尚未在 Windows 上验证。欢迎提 [issue](https://github.com/yicheng47/runner/issues)。
 
+macOS 上的 Claude Code 和 Codex 支持基于 hook 的会话状态。Runner 不支持 TRAE CLI 的 hook 状态集成；TRAE CLI 和 Windows 上的会话通过终端活动和标题估算状态。
+
 agent 的命令行工具需要单独安装。Runner 会在 `PATH` 上检测它们，也可以在 **Settings → Agents** 里为每个 agent 单独指定可执行文件。在 Windows 上，Claude Code 还需要 Git for Windows 提供的 Git Bash；通过 npm 安装的 CLI 需要 Node.js。PowerShell 7 可选。agent 在 Windows 上原生运行，不需要 WSL。
 
 ## 示例 Crew

@@ -208,7 +208,7 @@ fn ensure_app_state_table(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-fn app_state_get(conn: &Connection, key: &str) -> Result<Option<String>> {
+pub(crate) fn app_state_get(conn: &Connection, key: &str) -> Result<Option<String>> {
     conn.query_row(
         "SELECT value FROM _app_state WHERE key = ?1",
         params![key],
@@ -218,7 +218,7 @@ fn app_state_get(conn: &Connection, key: &str) -> Result<Option<String>> {
     .map_err(Into::into)
 }
 
-fn app_state_set(conn: &Connection, key: &str, value: &str) -> Result<()> {
+pub(crate) fn app_state_set(conn: &Connection, key: &str, value: &str) -> Result<()> {
     conn.execute(
         "INSERT INTO _app_state (key, value) VALUES (?1, ?2)
          ON CONFLICT(key) DO UPDATE SET value = excluded.value",

@@ -217,8 +217,9 @@ impl AgentsPane {
         }
         self.refreshing = true;
         let core = self.app_store.read(cx).core.clone();
+        let model_runtimes = self.app_store.read(cx).settings.model_runtimes();
         let task = cx.background_spawn(async move {
-            let status = runner_backend::ops::runtime::runtime_refresh(&core)
+            let status = runner_backend::ops::runtime::runtime_refresh(&core, &model_runtimes)
                 .map_err(|error| error.to_string())?;
             let catalog = runner_backend::ops::runtime::runtime_catalog(&core)
                 .map_err(|error| error.to_string())?;
@@ -427,14 +428,26 @@ impl AgentsPane {
         let core = self.app_store.read(cx).core.clone();
         let runtime_name = runtime;
         let task_runtime = runtime_name;
+        // A new executable is a new model source; only query it when the user
+        // has this agent enabled.
+        let refresh_models = self
+            .app_store
+            .read(cx)
+            .settings
+            .model_runtimes()
+            .contains(&runtime);
         let task = cx.background_spawn(async move {
-            if draft.is_empty() {
+            let status = if draft.is_empty() {
                 runner_backend::ops::runtime::runtime_clear_override(&core, task_runtime)
                     .map_err(|error| error.to_string())
             } else {
                 runner_backend::ops::runtime::runtime_set_override(&core, task_runtime, &draft)
                     .map_err(|error| override_validation_error_message(&error))
+            };
+            if status.is_ok() && refresh_models {
+                runner_backend::ops::runtime::runtime_request_models(&core, &[task_runtime]);
             }
+            status
         });
         cx.spawn(async move |weak, cx| {
             let result = task.await;
@@ -712,7 +725,7 @@ fn runtime_property_line(runtime: Runtime, key: &'static str, label: &'static st
     div()
         .debug_selector(|| line_selector)
         .flex()
-        .items_center()
+        .items_baseline()
         .gap_2()
         .text_size(theme::text_meta())
         .line_height(rems(15.4 / 16.))
@@ -720,7 +733,6 @@ fn runtime_property_line(runtime: Runtime, key: &'static str, label: &'static st
             div()
                 .debug_selector(|| label_selector)
                 .flex_none()
-                .w(rems(92. / 16.))
                 .text_color(theme::muted())
                 .child(label),
         )

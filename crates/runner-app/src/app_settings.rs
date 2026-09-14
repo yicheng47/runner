@@ -363,6 +363,18 @@ impl AppSettings {
         keymap::normalize_overrides(&mut self.keymap_overrides);
     }
 
+    pub fn model_runtimes(&self) -> Vec<Runtime> {
+        runner_backend::ops::runtime::model_discovery_runtimes()
+            .into_iter()
+            .filter(|runtime| {
+                self.is_agent_enabled(
+                    *runtime,
+                    runner_backend::ops::runtime::runtime_default_enabled(*runtime),
+                )
+            })
+            .collect()
+    }
+
     pub fn is_agent_enabled(&self, name: Runtime, default_enabled: bool) -> bool {
         if self.disabled_agents.contains(name.key()) {
             return false;

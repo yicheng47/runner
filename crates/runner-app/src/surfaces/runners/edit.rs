@@ -1,4 +1,3 @@
-use super::logic::effort_options;
 use super::logic::error_banner;
 use super::logic::permission_mode_description;
 use super::logic::permission_mode_value;
@@ -50,12 +49,6 @@ impl NativeRoot {
         if next_runtime != form.runtime {
             form.model
                 .update(cx, |input, input_cx| input.reset("", input_cx));
-            if !runtime_efforts(&form.runtimes, &next_runtime)
-                .iter()
-                .any(|option| option.value == form.effort)
-            {
-                form.effort.clear();
-            }
             let command = if next_runtime == form.runner.runtime {
                 form.runner.command.clone()
             } else {
@@ -67,25 +60,16 @@ impl NativeRoot {
                 .update(cx, |input, input_cx| input.reset(command, input_cx));
         }
         form.runtime = next_runtime.clone();
-        let model_placeholder =
-            runtime_model_placeholder(&form.runtimes, &next_runtime, form.slot.is_some());
+        let model_placeholder = runtime_model_placeholder(
+            &form.runtimes,
+            &next_runtime,
+            form.slot.as_ref().map(|_| &form.runner),
+        );
         form.model.update(cx, |input, input_cx| {
             input.set_placeholder(model_placeholder, input_cx)
         });
         form.model_field.update(cx, |field, field_cx| {
             field.set_suggestions(runtime_models(&form.runtimes, &next_runtime), field_cx)
-        });
-        form.effort_select.update(cx, |select, select_cx| {
-            select.set_options(
-                effort_options(
-                    &form.runtimes,
-                    &next_runtime,
-                    &form.runner,
-                    form.slot.is_some(),
-                ),
-                select_cx,
-            );
-            select.set_value(form.effort.clone(), select_cx);
         });
         if !permission_modes(&next_runtime).contains(&form.permission_mode) {
             form.permission_mode = PermissionMode::Default;
@@ -94,6 +78,8 @@ impl NativeRoot {
             select.set_options(permission_options(&next_runtime), select_cx);
             select.set_value(permission_mode_value(form.permission_mode), select_cx);
         });
+        self.sync_runner_edit_efforts(cx);
+        self.request_model_catalog(&next_runtime, cx);
         cx.notify();
     }
 

@@ -31,7 +31,7 @@ fn wait_for_text(terminal: &TerminalSession, expected: &str) -> bool {
 fn direct_chat_flows_from_app_core_session_manager_into_terminal_grid() {
     let temp = tempfile::tempdir().unwrap();
     let paths = NativePaths::new(temp.path().join("app-data"), temp.path().join("logs"));
-    let core = boot_core(&paths).unwrap();
+    let core = boot_core(&paths, Vec::new()).unwrap();
     let bridge = TerminalBridge::new(core.clone(), Arc::new(|| {})).unwrap();
     let runner = runner_backend::ops::runner::runner_create(
         &core,
@@ -82,7 +82,7 @@ fn direct_chat_flows_from_app_core_session_manager_into_terminal_grid() {
 fn terminal_ime_commit_forwards_utf8_through_session_manager() {
     let temp = tempfile::tempdir().unwrap();
     let paths = NativePaths::new(temp.path().join("app-data"), temp.path().join("logs"));
-    let core = boot_core(&paths).unwrap();
+    let core = boot_core(&paths, Vec::new()).unwrap();
     let bridge = TerminalBridge::new(core.clone(), Arc::new(|| {})).unwrap();
     let runner = runner_backend::ops::runner::runner_create(
         &core,
@@ -135,7 +135,7 @@ fn terminal_ime_commit_forwards_utf8_through_session_manager() {
 fn bridge_keeps_multiple_tab_sessions_attached_with_independent_geometry() {
     let temp = tempfile::tempdir().unwrap();
     let paths = NativePaths::new(temp.path().join("app-data"), temp.path().join("logs"));
-    let core = boot_core(&paths).unwrap();
+    let core = boot_core(&paths, Vec::new()).unwrap();
     let bridge = TerminalBridge::new(core.clone(), Arc::new(|| {})).unwrap();
     let runner = runner_backend::ops::runner::runner_create(
         &core,
@@ -199,7 +199,7 @@ fn bridge_keeps_multiple_tab_sessions_attached_with_independent_geometry() {
 fn bridge_releases_every_terminal_across_twenty_start_kill_cycles() {
     let temp = tempfile::tempdir().unwrap();
     let paths = NativePaths::new(temp.path().join("app-data"), temp.path().join("logs"));
-    let core = boot_core(&paths).unwrap();
+    let core = boot_core(&paths, Vec::new()).unwrap();
     let bridge = TerminalBridge::new(core.clone(), Arc::new(|| {})).unwrap();
     let runner = runner_backend::ops::runner::runner_create(
         &core,
