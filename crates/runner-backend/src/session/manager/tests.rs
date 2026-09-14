@@ -159,12 +159,13 @@ impl FakeRuntime {
     }
 
     fn push_status(&self, i: usize, state: RunnerStatus) {
+        self.push_status_from(i, state, "forwarder");
+    }
+
+    fn push_status_from(&self, i: usize, state: RunnerStatus, source: &'static str) {
         let spawns = self.spawns.lock().unwrap();
         if let Some(tx) = spawns.get(i).and_then(|s| s.tx.as_ref()) {
-            let _ = tx.send(RuntimeOutput::StatusTransition {
-                state,
-                source: "forwarder",
-            });
+            let _ = tx.send(RuntimeOutput::StatusTransition { state, source });
         }
     }
 
@@ -3201,6 +3202,185 @@ fn runner_activity_event_direct_session_id_ignores_slot_bound_orphans() {
 }
 
 #[test]
+fn ordered_interrupt_is_idle_only_for_a_busy_hook_session() {
+    let manager = mgr_with_fake(None, fake_runtime());
+    for session_id in ["hooks", "baseline"] {
+        install_test_session_handle(&manager, session_id);
+        manager.arm_completion(session_id);
+    }
+    assert!(manager.note_forwarder_transition("baseline", SessionActivityState::Busy, "forwarder"));
+    assert!(!manager.note_forwarder_transition(
+        "baseline",
+        SessionActivityState::Idle,
+        "input-interrupt"
+    ));
+    assert!(manager.take_completion_armed(&["baseline".into()]));
+    assert!(manager.note_forwarder_transition("hooks", SessionActivityState::Busy, "hook"));
+    assert!(manager.note_forwarder_transition(
+        "hooks",
+        SessionActivityState::Idle,
+        "input-interrupt"
+    ));
+    assert!(!manager.take_completion_armed(&["hooks".into()]));
+    assert!(!manager.note_forwarder_transition(
+        "hooks",
+        SessionActivityState::Idle,
+        "input-interrupt"
+    ));
+    for source in ["forwarder", "title"] {
+        assert!(!manager.note_forwarder_transition("hooks", SessionActivityState::Busy, source));
+    }
+    assert_eq!(
+        manager.activity_snapshot()["hooks"],
+        SessionActivityState::Idle
+    );
+    assert!(manager.note_forwarder_transition("hooks", SessionActivityState::Busy, "hook"));
+}
+
+#[test]
+fn escape_idle_preserves_input_and_completion_until_the_turn_finishes() {
+    for continues in [false, true] {
+        let manager = mgr_with_fake(None, fake_runtime());
+        for id in ["hooks", "other"] {
+            install_test_session_handle(&manager, id);
+            manager.arm_completion(id);
+        }
+        assert!(manager.note_forwarder_transition(
+            "other",
+            SessionActivityState::Idle,
+            "forwarder"
+        ));
+        assert!(manager.note_forwarder_transition("hooks", SessionActivityState::Busy, "hook"));
+        let since = Instant::now();
+        {
+            let session = manager.session_state("hooks").unwrap();
+            let mut session = session.lock().unwrap();
+            session.local_input_pending = true;
+            session.observed_input = Some(ObservedInput {
+                state: InputState::Drafting,
+                since,
+            });
+        }
+        manager
+            .inject_direct_stdin("hooks", b"\x1b", capture().as_ref())
+            .unwrap();
+        assert!(manager.note_forwarder_transition(
+            "hooks",
+            SessionActivityState::Idle,
+            "input-escape"
+        ));
+        assert_eq!(
+            manager.activity_snapshot()["hooks"],
+            SessionActivityState::Idle
+        );
+        assert!(!manager.take_completion_armed(&["hooks".into()]));
+        assert!(manager.take_completion_armed(&["hooks".into(), "other".into()]));
+        {
+            let session = manager.session_state("hooks").unwrap();
+            let session = session.lock().unwrap();
+            assert!(session.local_input_pending);
+            assert_eq!(session.observed_input.unwrap().state, InputState::Drafting);
+            assert_eq!(session.observed_input.unwrap().since, since);
+            assert!(session.completion_armed);
+        }
+        if continues {
+            assert!(manager.note_forwarder_transition("hooks", SessionActivityState::Busy, "hook"));
+        }
+        assert!(manager.note_forwarder_transition("hooks", SessionActivityState::Idle, "hook"));
+        assert!(manager.take_completion_armed(&["hooks".into()]));
+        assert!(!manager.take_completion_armed(&["other".into()]));
+        assert!(!manager.take_completion_armed(&["hooks".into(), "other".into()]));
+    }
+}
+
+#[test]
+fn ctrl_c_after_provisional_escape_cancels_completion() {
+    let manager = mgr_with_fake(None, fake_runtime());
+    install_test_session_handle(&manager, "hooks");
+    manager.arm_completion("hooks");
+    manager.note_forwarder_transition("hooks", SessionActivityState::Busy, "hook");
+    manager.note_forwarder_transition("hooks", SessionActivityState::Idle, "input-escape");
+    assert!(!manager.note_forwarder_transition(
+        "hooks",
+        SessionActivityState::Idle,
+        "input-interrupt"
+    ));
+    assert!(!manager.take_completion_armed(&["hooks".into()]));
+    assert!(
+        !manager
+            .session_state("hooks")
+            .unwrap()
+            .lock()
+            .unwrap()
+            .provisional_idle
+    );
+}
+
+#[test]
+fn failed_interrupt_write_preserves_busy_and_completion_state() {
+    let manager =
+        manager_with_runtime(crate::shell_path::LoginShellEnv::default(), inert_runtime());
+    let events = capture();
+    install_test_session_handle(&manager, "failed-interrupt");
+    assert!(manager.note_forwarder_transition(
+        "failed-interrupt",
+        SessionActivityState::Busy,
+        "hook"
+    ));
+    manager.arm_completion("failed-interrupt");
+    assert!(manager
+        .inject_direct_stdin("failed-interrupt", b"\x03", events.as_ref())
+        .is_err());
+    assert_eq!(
+        manager.activity_snapshot()["failed-interrupt"],
+        SessionActivityState::Busy
+    );
+    assert!(manager.take_completion_armed(&["failed-interrupt".into()]));
+    assert!(events.status.lock().unwrap().is_empty());
+}
+
+#[test]
+fn hook_status_owns_activity_until_teardown_without_changing_submit_or_wake() {
+    let manager =
+        manager_with_runtime(crate::shell_path::LoginShellEnv::default(), inert_runtime());
+    install_test_session_handle(&manager, "hooks");
+    install_test_session_handle(&manager, "baseline");
+    assert!(manager.note_forwarder_transition("hooks", SessionActivityState::Busy, "forwarder"));
+    // An unchanged first hook must still arm precedence.
+    assert!(!manager.note_forwarder_transition("hooks", SessionActivityState::Busy, "hook"));
+    for source in ["forwarder", "title"] {
+        assert!(!manager.note_forwarder_transition("hooks", SessionActivityState::Idle, source));
+    }
+    assert_eq!(
+        manager.activity_snapshot()["hooks"],
+        SessionActivityState::Busy
+    );
+    assert!(manager.note_forwarder_transition("hooks", SessionActivityState::Idle, "hook"));
+    for source in ["forwarder", "title"] {
+        assert!(!manager.note_forwarder_transition("hooks", SessionActivityState::Busy, source));
+    }
+    assert!(manager.note_forwarder_transition("hooks", SessionActivityState::Busy, "input-submit"));
+    assert!(manager.note_forwarder_transition("hooks", SessionActivityState::Idle, "hook"));
+    assert!(manager.note_forwarder_transition("hooks", SessionActivityState::Busy, "wake"));
+    assert!(manager.note_forwarder_transition("baseline", SessionActivityState::Idle, "forwarder"));
+    assert!(manager.note_forwarder_transition("baseline", SessionActivityState::Busy, "title"));
+
+    assert!(manager.note_forwarder_transition("hooks", SessionActivityState::Idle, "input-escape"));
+    let runtime_session = manager.live_runtime_session("hooks").unwrap();
+    manager
+        .forget_runtime_handle("hooks", &runtime_session)
+        .unwrap();
+    assert!(!manager.note_forwarder_transition("hooks", SessionActivityState::Idle, "hook"));
+    assert!(!manager.activity_snapshot().contains_key("hooks"));
+    assert!(!manager
+        .session_state("hooks")
+        .is_some_and(|session| session.lock().unwrap().provisional_idle));
+    install_test_session_handle(&manager, "hooks");
+    assert!(manager.note_forwarder_transition("hooks", SessionActivityState::Busy, "forwarder"));
+    assert!(manager.note_forwarder_transition("hooks", SessionActivityState::Idle, "forwarder"));
+}
+
+#[test]
 fn title_status_suppresses_only_armed_sessions_forwarder_transitions() {
     let manager =
         manager_with_runtime(crate::shell_path::LoginShellEnv::default(), inert_runtime());
@@ -3264,6 +3444,25 @@ fn rejected_declared_status_leaves_byte_detection_active() {
 
 #[test]
 fn declared_status_uses_existing_direct_and_mission_consumers() {
+    assert_status_uses_existing_direct_and_mission_consumers("title");
+}
+
+#[test]
+fn hook_status_uses_existing_direct_and_mission_consumers() {
+    assert_status_uses_existing_direct_and_mission_consumers("hook");
+}
+
+#[test]
+fn ordered_interrupt_uses_existing_direct_and_mission_consumers() {
+    assert_status_uses_existing_direct_and_mission_consumers("input-interrupt");
+}
+
+#[test]
+fn provisional_escape_uses_existing_direct_and_mission_consumers() {
+    assert_status_uses_existing_direct_and_mission_consumers("input-escape");
+}
+
+fn assert_status_uses_existing_direct_and_mission_consumers(source: &'static str) {
     for is_mission in [false, true] {
         let pool = pool_with_schema();
         let (mission, runner, slot) = single_slot_mission(&pool);
@@ -3316,8 +3515,22 @@ fn declared_status_uses_existing_direct_and_mission_consumers() {
             RunnerStatus::Busy,
             RunnerStatus::Idle,
         ] {
-            mgr.report_declared_status(&spawned.id, state).unwrap();
-            mgr.report_declared_status(&spawned.id, state).unwrap();
+            for _ in 0..2 {
+                if source == "title" {
+                    mgr.report_declared_status(&spawned.id, state).unwrap();
+                } else {
+                    let event_source = if matches!(source, "input-interrupt" | "input-escape")
+                        && state == RunnerStatus::Idle
+                    {
+                        source
+                    } else {
+                        "hook"
+                    };
+                    fake.push_status_from(0, state, event_source);
+                    fake.push_status_from(0, RunnerStatus::Busy, "title");
+                    fake.push_status_from(0, RunnerStatus::Idle, "title");
+                }
+            }
             fake.push_status(0, RunnerStatus::Busy);
             fake.push_status(0, RunnerStatus::Idle);
         }
@@ -3346,8 +3559,16 @@ fn declared_status_uses_existing_direct_and_mission_consumers() {
                 .collect();
             assert_eq!(
                 statuses,
-                ["busy", "idle", "busy", "idle"]
-                    .map(|state| (state.to_owned(), "title".to_owned()))
+                ["busy", "idle", "busy", "idle"].map(|state| {
+                    let event_source = if matches!(source, "input-interrupt" | "input-escape")
+                        && state == "busy"
+                    {
+                        "hook"
+                    } else {
+                        source
+                    };
+                    (state.to_owned(), event_source.to_owned())
+                })
             );
             assert!(cap.status.lock().unwrap().is_empty());
         } else {
@@ -3362,9 +3583,17 @@ fn declared_status_uses_existing_direct_and_mission_consumers() {
                 statuses,
                 [
                     (SessionActivityState::Busy, "spawn".to_owned()),
-                    (SessionActivityState::Idle, "title".to_owned()),
-                    (SessionActivityState::Busy, "title".to_owned()),
-                    (SessionActivityState::Idle, "title".to_owned()),
+                    (SessionActivityState::Idle, source.to_owned()),
+                    (
+                        SessionActivityState::Busy,
+                        if matches!(source, "input-interrupt" | "input-escape") {
+                            "hook"
+                        } else {
+                            source
+                        }
+                        .to_owned()
+                    ),
+                    (SessionActivityState::Idle, source.to_owned()),
                 ]
             );
         }
@@ -5545,6 +5774,49 @@ fn enter_claude_launch_gate_first_claude_does_not_sleep() {
 }
 
 #[test]
+fn custom_claude_settings_do_not_prepare_a_status_watcher() {
+    for args in [
+        vec!["--settings".to_owned(), "custom.json".to_owned()],
+        vec!["--settings=custom.json".to_owned()],
+    ] {
+        let mut runner = runner("/bin/cat", &[]);
+        runner.runtime = "claude-code".into();
+        runner.args = args.clone();
+        let root = tempfile::tempdir().unwrap();
+        let stale_rekey = crate::session::claude_rekey::drop_path(root.path(), "custom-settings");
+        std::fs::create_dir_all(stale_rekey.parent().unwrap()).unwrap();
+        std::fs::write(&stale_rekey, "stale report").unwrap();
+        let mut spec = SpawnSpec {
+            session_id: "custom-settings".into(),
+            cwd: None,
+            command: runner.command.clone(),
+            args,
+            env: BTreeMap::new(),
+            mission: false,
+            shim_dir: None,
+            bundled_bin_dir: None,
+            shell_path: None,
+            initial_size: Some((80, 24)),
+        };
+        SessionManager::apply_runtime_args(
+            &mut spec,
+            &runner,
+            &router::runtime::resume_plan(Some(Runtime::ClaudeCode), None),
+            root.path(),
+            None,
+            None,
+        );
+        assert!(!spec
+            .env
+            .contains_key(crate::session::claude_status::PATH_ENV));
+        assert!(!spec
+            .env
+            .contains_key(crate::session::claude_status::GENERATION_ENV));
+        assert!(!stale_rekey.exists());
+    }
+}
+
+#[test]
 fn spawn_argv_injects_runtime_settings_for_fresh_and_resume() {
     let compose = |runtime: &str, plan: router::runtime::ResumePlan| {
         let mut runner = runner("/bin/cat", &["--debug"]);
@@ -5569,6 +5841,25 @@ fn spawn_argv_injects_runtime_settings_for_fresh_and_resume() {
             Some("first turn"),
             None,
         );
+        if runtime == "claude-code" {
+            let generation = spec.env[crate::session::claude_status::GENERATION_ENV].clone();
+            assert!(uuid::Uuid::parse_str(&generation).is_ok());
+            assert_eq!(
+                spec.env[crate::session::claude_status::PATH_ENV],
+                crate::session::claude_status::status_path(
+                    &fixture_tmp_dir().join("runner-app-data"),
+                    "settings-argv",
+                )
+                .to_string_lossy(),
+            );
+        } else {
+            assert!(!spec
+                .env
+                .contains_key(crate::session::claude_status::PATH_ENV));
+            assert!(!spec
+                .env
+                .contains_key(crate::session::claude_status::GENERATION_ENV));
+        }
         spec.args
     };
 

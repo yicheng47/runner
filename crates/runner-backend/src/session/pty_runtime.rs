@@ -14,7 +14,7 @@ use crate::model::Runtime;
 use std::collections::HashMap;
 use std::io::{ErrorKind, Read, Write};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -24,6 +24,9 @@ use portable_pty::{native_pty_system, Child, CommandBuilder, ExitStatus, MasterP
 #[cfg(unix)]
 use portable_pty::ChildKiller;
 
+use super::claude_status::{
+    ClaudeStatusWatcher, CTRL_C_INTERRUPT, ESCAPE_INTERRUPT, GENERATION_ENV, PATH_ENV,
+};
 use super::launch;
 #[cfg(any(unix, test))]
 use super::process::process_exists;
@@ -116,6 +119,7 @@ struct SessionHandle {
     last_resize: Mutex<Option<Instant>>,
     status_tx: Mutex<Option<mpsc::Sender<RuntimeOutput>>>,
     idle_detector: Arc<Mutex<IdleDetector>>,
+    hook_interrupt: Option<Arc<AtomicU8>>,
     pid: Option<i32>,
     process_tree: Option<ProcessTree>,
     command: String,
@@ -201,6 +205,22 @@ impl SessionRuntime for PtyRuntime {
         launch::adapt_windows_batch_command(&mut cmd)
             .map_err(|error| RuntimeError::Msg(error.to_string()))?;
 
+        let hook_status = spec
+            .env
+            .get(PATH_ENV)
+            .zip(spec.env.get(GENERATION_ENV))
+            .and_then(|(path, generation)| {
+                match ClaudeStatusWatcher::start(std::path::Path::new(path), generation.clone()) {
+                    Ok(watcher) => Some(watcher),
+                    Err(error) => {
+                        log::warn!(
+                            "Claude status bridge unavailable for {}: {error}",
+                            spec.session_id
+                        );
+                        None
+                    }
+                }
+            });
         let mut child = pair
             .slave
             .spawn_command(cmd)
@@ -262,6 +282,9 @@ impl SessionRuntime for PtyRuntime {
             last_resize: Mutex::new(None),
             status_tx: Mutex::new(Some(tx.clone())),
             idle_detector: Arc::new(Mutex::new(IdleDetector::new(DEFAULT_IDLE_THRESHOLD))),
+            hook_interrupt: hook_status
+                .as_ref()
+                .map(ClaudeStatusWatcher::interrupt_signal),
             pid,
             process_tree,
             command: format_command_summary(&spec.command, &spec.args),
@@ -284,6 +307,7 @@ impl SessionRuntime for PtyRuntime {
                     stop_for_reader,
                     handle_for_reader,
                     session_id_for_reader,
+                    hook_status,
                 );
             })
             .map_err(|e| RuntimeError::Msg(format!("spawn reader thread: {e}")))?;
@@ -765,6 +789,7 @@ fn idle_monitor_thread(
     tx: mpsc::Sender<RuntimeOutput>,
     stop: Arc<AtomicBool>,
     done: Arc<AtomicBool>,
+    mut hook_status: Option<ClaudeStatusWatcher>,
     #[cfg(windows)] handle: Arc<SessionHandle>,
 ) {
     loop {
@@ -781,6 +806,13 @@ fn idle_monitor_thread(
             let master = handle.master.lock().expect("master poisoned").take();
             drop(master);
             break;
+        }
+        if let Some(watcher) = hook_status.as_mut() {
+            if let Err(error) = watcher.drain(|state, source| {
+                let _ = tx.send(RuntimeOutput::StatusTransition { state, source });
+            }) {
+                log::warn!("read Claude status: {error}");
+            }
         }
         let transition = {
             let mut detector = detector.lock().expect("idle detector poisoned");
@@ -807,6 +839,7 @@ fn reader_thread(
     stop: Arc<AtomicBool>,
     handle: Arc<SessionHandle>,
     session_id: String,
+    hook_status: Option<ClaudeStatusWatcher>,
 ) {
     let detector = Arc::clone(&handle.idle_detector);
     let monitor_done = Arc::new(AtomicBool::new(false));
@@ -825,6 +858,7 @@ fn reader_thread(
                     tx,
                     stop,
                     done,
+                    hook_status,
                     #[cfg(windows)]
                     handle,
                 )
@@ -931,6 +965,16 @@ fn write_to(runtime: &PtyRuntime, session_id: &str, bytes: &[u8]) -> RuntimeResu
     let mut writer = handle.writer.lock().expect("writer poisoned");
     writer.write_all(bytes)?;
     writer.flush()?;
+    if bytes == b"\x03" || bytes == b"\x1b" {
+        if let Some(interrupt) = &handle.hook_interrupt {
+            let kind = if bytes == b"\x03" {
+                CTRL_C_INTERRUPT
+            } else {
+                ESCAPE_INTERRUPT
+            };
+            interrupt.fetch_or(kind, Ordering::Release);
+        }
+    }
     Ok(())
 }
 
@@ -1339,6 +1383,158 @@ mod tests {
             detector.on_bytes_at(1, repaint + Duration::from_millis(20)),
             Some(RunnerStatus::Busy)
         );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn claude_hook_file_feeds_runtime_output_and_closes_on_exit() {
+        let root = tempfile::tempdir().unwrap();
+        let path = super::super::claude_status::status_path(root.path(), "hooks");
+        let rt = PtyRuntime::new();
+        let mut spawn = spec("hooks", "/bin/cat", &[]);
+        spawn
+            .env
+            .insert(PATH_ENV.into(), path.to_string_lossy().into_owned());
+        spawn.env.insert(GENERATION_ENV.into(), "current".into());
+        let (session, stream) = rt.spawn(spawn).unwrap();
+        for event in [
+            "UserPromptSubmit",
+            "Stop",
+            "PreToolUse",
+            "StopFailure",
+            "Notification",
+        ] {
+            let command = super::super::claude_status::hook_command(&path, event);
+            let mut child = std::process::Command::new("/bin/sh")
+                .args(["-c", &command])
+                .env(GENERATION_ENV, "current")
+                .stdin(std::process::Stdio::piped())
+                .spawn()
+                .unwrap();
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(br#"{"notification_type":"idle_prompt"}"#)
+                .unwrap();
+            assert!(child.wait().unwrap().success());
+        }
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut statuses = Vec::new();
+        while statuses.len() < 5 {
+            assert!(
+                Instant::now() < deadline,
+                "missing hook transitions: {statuses:?}"
+            );
+            if let Ok(RuntimeOutput::StatusTransition {
+                state,
+                source: "hook",
+            }) = stream.recv_timeout(Duration::from_millis(50))
+            {
+                statuses.push(state);
+            }
+        }
+        assert_eq!(
+            statuses,
+            [
+                RunnerStatus::Busy,
+                RunnerStatus::Idle,
+                RunnerStatus::Busy,
+                RunnerStatus::Idle,
+                RunnerStatus::Idle,
+            ]
+        );
+        rt.stop(&session).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            assert!(
+                Instant::now() < deadline,
+                "hook watcher kept output channel alive"
+            );
+            if let Err(mpsc::RecvTimeoutError::Disconnected) =
+                stream.recv_timeout(Duration::from_millis(50))
+            {
+                break;
+            }
+        }
+        assert!(!path.exists());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn claude_interrupt_keys_go_idle_without_a_hook_and_allow_dialog_recovery() {
+        use std::fs::OpenOptions;
+
+        let root = tempfile::tempdir().unwrap();
+        let path = super::super::claude_status::status_path(root.path(), "interrupt");
+        let rt = PtyRuntime::new();
+        let mut spawn = spec(
+            "interrupt",
+            "/bin/sh",
+            &["-c", "trap '' INT; printf ready; exec cat"],
+        );
+        spawn
+            .env
+            .insert(PATH_ENV.into(), path.to_string_lossy().into_owned());
+        spawn.env.insert(GENERATION_ENV.into(), "current".into());
+        let (session, stream) = rt.spawn(spawn).unwrap();
+        let mut ready = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !ready.windows(5).any(|bytes| bytes == b"ready") {
+            assert!(Instant::now() < deadline, "test child did not become ready");
+            if let Ok(RuntimeOutput::Stream(bytes)) = stream.recv_timeout(IDLE_MONITOR_POLL) {
+                ready.extend(bytes);
+            }
+        }
+        let wait_for_status = |expected: RunnerStatus, expected_source: &str| {
+            let deadline = Instant::now() + Duration::from_secs(3);
+            loop {
+                assert!(
+                    Instant::now() < deadline,
+                    "missing {expected_source} {expected:?}"
+                );
+                if let Ok(RuntimeOutput::StatusTransition { state, source }) =
+                    stream.recv_timeout(IDLE_MONITOR_POLL)
+                {
+                    if state == expected && source == expected_source {
+                        break;
+                    }
+                }
+            }
+        };
+        let mut file = OpenOptions::new().append(true).open(&path).unwrap();
+        for (interrupt, source) in [(b"\x03", "input-interrupt"), (b"\x1b", "input-escape")] {
+            writeln!(file, r#"{{"generation":"current","hook_event_name":"PreToolUse","tool_name":"AskUserQuestion"}}"#).unwrap();
+            wait_for_status(RunnerStatus::Busy, "hook");
+            for bytes in [
+                b"\x1b[A".as_slice(),
+                b"x",
+                b"\x1b[200~\x03\x1b[201~",
+                b"\x1b[200~\x1b\x1b[201~",
+            ] {
+                rt.send_bytes(&session, bytes).unwrap();
+            }
+            let deadline = Instant::now() + IDLE_MONITOR_POLL * 3;
+            while Instant::now() < deadline {
+                assert!(!matches!(
+                    stream.recv_timeout(IDLE_MONITOR_POLL),
+                    Ok(RuntimeOutput::StatusTransition {
+                        source: "input-interrupt" | "input-escape",
+                        ..
+                    })
+                ));
+            }
+            rt.send_bytes(&session, interrupt).unwrap();
+            wait_for_status(RunnerStatus::Idle, source);
+        }
+        // Cancelling a dialog can continue the turn without another prompt.
+        writeln!(
+            file,
+            r#"{{"generation":"current","hook_event_name":"PreToolUse"}}"#
+        )
+        .unwrap();
+        wait_for_status(RunnerStatus::Busy, "hook");
+        rt.stop(&session).unwrap();
     }
 
     #[test]

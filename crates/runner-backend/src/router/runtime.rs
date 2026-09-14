@@ -168,17 +168,20 @@ pub fn model_effort_args(
     }
 }
 
+pub(crate) fn inject_claude_settings(runtime: Option<Runtime>, runner_args: &[String]) -> bool {
+    runtime == Some(Runtime::ClaudeCode)
+        && !runner_args
+            .iter()
+            .any(|arg| arg == "--settings" || arg.starts_with("--settings="))
+}
+
 pub fn claude_settings_args(
     runtime: Option<Runtime>,
     runner_args: &[String],
     app_data_dir: &Path,
     runner_session_id: &str,
 ) -> Vec<String> {
-    if runtime != Some(Runtime::ClaudeCode)
-        || runner_args
-            .iter()
-            .any(|arg| arg == "--settings" || arg.starts_with("--settings="))
-    {
+    if !inject_claude_settings(runtime, runner_args) {
         return Vec::new();
     }
     let drop_path = crate::session::claude_rekey::drop_path(app_data_dir, runner_session_id);
@@ -198,10 +201,32 @@ pub fn claude_settings_args(
                 "hooks": [{
                     "type": "command",
                     "command": hook_command,
+                    "timeout": crate::session::claude_status::HOOK_TIMEOUT_SECS,
                 }],
             }],
         },
     });
+    let status_path = crate::session::claude_status::status_path(app_data_dir, runner_session_id);
+    for event in [
+        "UserPromptSubmit",
+        "PreToolUse",
+        "PostToolUse",
+        "Notification",
+        "Stop",
+        "StopFailure",
+    ] {
+        let mut entry = serde_json::json!({
+            "hooks": [{
+                "type": "command",
+                "command": crate::session::claude_status::hook_command(&status_path, event),
+                "timeout": crate::session::claude_status::HOOK_TIMEOUT_SECS,
+            }],
+        });
+        if event == "Notification" {
+            entry["matcher"] = serde_json::json!("^idle_prompt$");
+        }
+        settings["hooks"][event] = serde_json::json!([entry]);
+    }
     // Claude Code gates `--permission-mode bypassPermissions` behind a
     // first-use consent dialog. Nobody is watching a Bypass spawn to
     // answer it (that is what Bypass means here), so acknowledge it in
@@ -1205,6 +1230,42 @@ mod tests {
                 "non-bypass args must not acknowledge the dialog: {other_args:?}"
             );
         }
+    }
+
+    #[test]
+    fn claude_status_hooks_have_short_timeouts_and_only_match_idle_notifications() {
+        let args = claude_settings_args(
+            Some(Runtime::ClaudeCode),
+            &[],
+            Path::new("/tmp/runner app"),
+            "session",
+        );
+        let settings: serde_json::Value = serde_json::from_str(&args[1]).unwrap();
+        for event in [
+            "SessionStart",
+            "UserPromptSubmit",
+            "PreToolUse",
+            "PostToolUse",
+            "Notification",
+            "Stop",
+            "StopFailure",
+        ] {
+            let hook = &settings["hooks"][event][0]["hooks"][0];
+            assert_eq!(hook["type"], "command", "{event}");
+            assert_eq!(hook["timeout"], 2, "{event}");
+            if event != "SessionStart" {
+                assert!(
+                    hook["command"].as_str().unwrap().ends_with("exit 0"),
+                    "{event}"
+                );
+            }
+        }
+        assert_eq!(
+            settings["hooks"]["Notification"][0]["matcher"],
+            "^idle_prompt$"
+        );
+        assert!(settings["hooks"]["StopFailure"][0].get("matcher").is_none());
+        assert!(settings["hooks"].get("SubagentStop").is_none());
     }
 
     #[test]
