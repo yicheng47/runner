@@ -175,6 +175,76 @@ pub(crate) fn inject_claude_settings(runtime: Option<Runtime>, runner_args: &[St
             .any(|arg| arg == "--settings" || arg.starts_with("--settings="))
 }
 
+pub(crate) fn inject_codex_hooks(runtime: Option<Runtime>, args: &[String], windows: bool) -> bool {
+    if windows || runtime != Some(Runtime::Codex) {
+        return false;
+    }
+    for (index, arg) in args.iter().enumerate() {
+        if arg == "--disable=hooks"
+            || (arg == "--disable" && args.get(index + 1).is_some_and(|value| value == "hooks"))
+        {
+            return false;
+        }
+        let config = if arg == "-c" || arg == "--config" {
+            args.get(index + 1).map(String::as_str)
+        } else {
+            arg.strip_prefix("--config=")
+                .or_else(|| arg.strip_prefix("-c"))
+        };
+        if let Some(config) = config {
+            // Repeated -c keys replace the invocation layer, including quoted TOML keys.
+            let config = config.strip_prefix('=').unwrap_or(config);
+            let parsed = config.parse::<toml_edit::DocumentMut>().or_else(|_| {
+                // Codex also accepts bare string values, e.g. -c model=gpt-5.4.
+                format!(
+                    "{}=true",
+                    config.split_once('=').map_or(config, |(key, _)| key)
+                )
+                .parse::<toml_edit::DocumentMut>()
+            });
+            let Ok(config) = parsed else {
+                return false;
+            };
+            if config.contains_key("hooks")
+                || config
+                    .get("features")
+                    .and_then(|features| features.get("hooks"))
+                    .and_then(toml_edit::Item::as_bool)
+                    == Some(false)
+            {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+pub fn codex_status_args(
+    runtime: Option<Runtime>,
+    runner_args: &[String],
+    app_data_dir: &Path,
+    session_id: &str,
+) -> Vec<String> {
+    if !inject_codex_hooks(runtime, runner_args, cfg!(windows)) {
+        return Vec::new();
+    }
+    let path = crate::session::hook_feed::status_path(app_data_dir, session_id);
+    let mut args = vec![
+        "--enable".into(),
+        "hooks".into(),
+        "--dangerously-bypass-hook-trust".into(),
+    ];
+    for event in crate::session::codex_status::EVENTS {
+        let command =
+            toml_edit::Value::from(crate::session::codex_status::hook_command(&path, event));
+        args.extend([
+            "-c".into(),
+            format!("hooks.{event}=[{{hooks=[{{type=\"command\",command={command},timeout=2}}]}}]"),
+        ]);
+    }
+    args
+}
+
 pub fn claude_settings_args(
     runtime: Option<Runtime>,
     runner_args: &[String],
@@ -785,6 +855,12 @@ pub fn trailing_runtime_args(
         app_data_dir,
         runner_session_id,
     ));
+    out.extend(codex_status_args(
+        runtime,
+        runner_args,
+        app_data_dir,
+        runner_session_id,
+    ));
     let prompt_for_argv = if plan_resuming { None } else { system_prompt };
     out.extend(system_prompt_args(runtime, prompt_for_argv));
     let first_turn_for_argv = if plan_resuming { None } else { first_turn };
@@ -1058,6 +1134,98 @@ pub fn claude_code_conversation_exists(cwd: Option<&str>, uuid: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn codex_hook_overrides_and_opt_out_preserve_the_invocation() {
+        for args in [
+            vec!["--disable", "hooks"],
+            vec!["--disable=hooks"],
+            vec!["-c", "features.hooks=false"],
+            vec!["--config=features={hooks=false}"],
+            vec!["-c'features'.\"hooks\" = false"],
+            vec!["-c=features.hooks=false"],
+            vec!["--config", "hooks.Stop=[]"],
+            vec!["-chooks={}"],
+            vec!["-c", "'hooks'.Stop=[]"],
+        ] {
+            let args = args.into_iter().map(String::from).collect::<Vec<_>>();
+            assert!(
+                !inject_codex_hooks(Some(Runtime::Codex), &args, false),
+                "{args:?}"
+            );
+            assert!(codex_status_args(
+                Some(Runtime::Codex),
+                &args,
+                Path::new("/unused"),
+                "session"
+            )
+            .is_empty());
+        }
+        for args in [
+            vec![],
+            vec!["-c", "model=fixture-model"],
+            vec!["--config=features.hooks=true"],
+            vec!["-c", "sandbox_mode=read-only"],
+        ] {
+            let args = args.into_iter().map(String::from).collect::<Vec<_>>();
+            assert!(
+                inject_codex_hooks(Some(Runtime::Codex), &args, false),
+                "{args:?}"
+            );
+        }
+        assert!(!inject_codex_hooks(Some(Runtime::Codex), &[], true));
+        for runtime in [
+            None,
+            Some(Runtime::ClaudeCode),
+            Some(Runtime::Trae),
+            Some(Runtime::Shell),
+        ] {
+            assert!(!inject_codex_hooks(runtime, &[], false));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn codex_injection_roundtrips_toml_and_shell_metacharacters() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir
+            .path()
+            .join("spaces \"double\" triple ''' dollar $ backtick `");
+        let args = codex_status_args(Some(Runtime::Codex), &[], &root, "session");
+        assert_eq!(
+            &args[..3],
+            &["--enable", "hooks", "--dangerously-bypass-hook-trust"]
+        );
+        for (pair, event) in args[3..]
+            .chunks_exact(2)
+            .zip(crate::session::codex_status::EVENTS)
+        {
+            assert_eq!(pair[0], "-c");
+            let config = pair[1].parse::<toml_edit::DocumentMut>().unwrap();
+            let groups = config["hooks"][event].as_array().unwrap();
+            assert_eq!(groups.len(), 1);
+            let handlers = groups.get(0).unwrap().as_inline_table().unwrap()["hooks"]
+                .as_array()
+                .unwrap();
+            assert_eq!(handlers.len(), 1);
+            let hook = handlers.get(0).unwrap().as_inline_table().unwrap();
+            assert_eq!(hook["timeout"].as_integer(), Some(2));
+            let command = hook["command"].as_str().unwrap();
+            let path = crate::session::hook_feed::status_path(&root, "session");
+            assert_eq!(
+                command,
+                crate::session::codex_status::hook_command(&path, event)
+            );
+            let result = std::process::Command::new("sh")
+                .args(["-c", command])
+                .output()
+                .unwrap();
+            assert!(result.status.success());
+            assert_eq!(result.stdout, b"{}\n");
+            assert!(result.stderr.is_empty());
+        }
+        assert!(!root.exists());
+    }
+
     use super::*;
 
     #[test]
