@@ -1,16 +1,17 @@
-use runner_backend::model::Runtime;
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
-use chrono::DateTime;
 use runner_backend::repo::node::{NodeRow, NodeType};
 
 #[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
 pub(crate) enum AttentionState {
     #[default]
     None,
+    Unavailable,
     Unread,
     Working,
+    NeedsYou,
+    Error,
 }
 
 pub(crate) const SHORTCUT_PILL_REVEAL_DELAY: Duration = Duration::from_millis(150);
@@ -127,72 +128,6 @@ pub(crate) fn should_show_shortcut_pills(
         && command_held_alone_since.is_some_and(|started_at| {
             now.saturating_duration_since(started_at) >= SHORTCUT_PILL_REVEAL_DELAY
         })
-}
-
-pub(crate) fn tab_attention_state(
-    any_running_busy: bool,
-    last_completed_at: Option<&str>,
-    last_viewed_at: Option<&str>,
-) -> AttentionState {
-    if any_running_busy {
-        return AttentionState::Working;
-    }
-    if tab_has_unread_completion(last_completed_at, last_viewed_at) {
-        AttentionState::Unread
-    } else {
-        AttentionState::None
-    }
-}
-
-pub(crate) fn direct_tab_attention_state<'a>(
-    members: impl IntoIterator<Item = (&'a str, bool)>,
-    last_completed_at: Option<&str>,
-    last_viewed_at: Option<&str>,
-) -> AttentionState {
-    let mut has_chat = false;
-    let mut any_chat_running_busy = false;
-    for (runtime, running_busy) in members {
-        if Runtime::parse(runtime) != Some(Runtime::Shell) {
-            has_chat = true;
-            any_chat_running_busy |= running_busy;
-        }
-    }
-    if has_chat {
-        tab_attention_state(any_chat_running_busy, last_completed_at, last_viewed_at)
-    } else {
-        AttentionState::None
-    }
-}
-
-fn tab_has_unread_completion(
-    last_completed_at: Option<&str>,
-    last_viewed_at: Option<&str>,
-) -> bool {
-    let Some(completed) = last_completed_at.and_then(parse_timestamp) else {
-        return false;
-    };
-    let Some(viewed) = last_viewed_at.and_then(parse_timestamp) else {
-        return true;
-    };
-    completed > viewed
-}
-
-fn parse_timestamp(value: &str) -> Option<DateTime<chrono::FixedOffset>> {
-    DateTime::parse_from_rfc3339(value).ok()
-}
-
-pub(crate) fn mission_attention_state(any_session_live: bool, idle: bool) -> AttentionState {
-    if any_session_live && !idle {
-        AttentionState::Working
-    } else {
-        AttentionState::None
-    }
-}
-
-pub(crate) fn rollup_attention_state(
-    states: impl IntoIterator<Item = AttentionState>,
-) -> AttentionState {
-    states.into_iter().max().unwrap_or_default()
 }
 
 pub(crate) fn attention_rollups(
@@ -489,59 +424,6 @@ mod tests {
     }
 
     #[test]
-    fn attention_priority_is_working_then_unread_then_clear() {
-        assert_eq!(
-            tab_attention_state(
-                true,
-                Some("2026-08-19T01:00:00Z"),
-                Some("2026-08-19T02:00:00Z")
-            ),
-            AttentionState::Working
-        );
-        assert_eq!(
-            tab_attention_state(
-                false,
-                Some("2026-08-19T02:00:00Z"),
-                Some("2026-08-19T01:00:00Z")
-            ),
-            AttentionState::Unread
-        );
-        assert_eq!(
-            tab_attention_state(
-                false,
-                Some("2026-08-19T01:00:00Z"),
-                Some("2026-08-19T02:00:00Z")
-            ),
-            AttentionState::None
-        );
-        assert_eq!(
-            mission_attention_state(true, false),
-            AttentionState::Working
-        );
-        assert_eq!(mission_attention_state(true, true), AttentionState::None);
-    }
-
-    #[test]
-    fn direct_tab_attention_ignores_shell_members() {
-        assert_eq!(
-            direct_tab_attention_state(
-                [("shell", true)],
-                Some("2026-08-19T02:00:00Z"),
-                Some("2026-08-19T01:00:00Z"),
-            ),
-            AttentionState::None,
-        );
-        assert_eq!(
-            direct_tab_attention_state([("shell", true), ("codex", false)], None, None,),
-            AttentionState::None,
-        );
-        assert_eq!(
-            direct_tab_attention_state([("shell", false), ("codex", true)], None, None,),
-            AttentionState::Working,
-        );
-    }
-
-    #[test]
     fn visible_row_numbering_skips_headers_and_collapsed_projects_then_caps_at_nine() {
         let pinned = vec![
             shortcut_tab("pin-tab"),
@@ -687,7 +569,7 @@ mod tests {
         assert_eq!(rollups[&Some("project-b".into())], AttentionState::Unread);
         assert_eq!(rollups[&None], AttentionState::None);
         assert_eq!(
-            rollup_attention_state(rollups.values().copied()),
+            rollups.values().copied().max().unwrap_or_default(),
             AttentionState::Working
         );
     }

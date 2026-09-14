@@ -17,9 +17,7 @@ mod view;
 use elements::sidebar_tab_target;
 
 pub(crate) use archive::{archive_all_confirmation_body, archive_targets_for_chats};
-pub(crate) use elements::{
-    default_session_label, direct_chat_display_status, session_label, DirectChatDisplayStatus,
-};
+pub(crate) use elements::{default_session_label, direct_chat_display_status, session_label};
 
 use super::*;
 use crate::surfaces::sidebar_logic::{

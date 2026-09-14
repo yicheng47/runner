@@ -10,7 +10,7 @@ use runner_backend::model::Runtime;
 use crate::surfaces::chat_lifecycle::{
     ended_subtitle, resolve_pane_overlay, shell_exited_subtitle, PaneOverlayState, TransitionKind,
 };
-use crate::surfaces::sidebar::{direct_chat_display_status, DirectChatDisplayStatus};
+use crate::surfaces::sidebar::direct_chat_display_status;
 
 const CHAT_PANEL_TRANSITION_MS: u64 = 200;
 pub(crate) const UNFOCUSED_PANE_OPACITY: f32 = 0.7;
@@ -387,11 +387,54 @@ impl NativeRoot {
             }
             Some(button.into_any_element())
         });
+        let single_status = (!grouped && !focused_shell)
+            .then_some(focused_entry.as_ref())
+            .flatten()
+            .map(|entry| {
+                let mut status = direct_chat_display_status(
+                    entry,
+                    self.app_store
+                        .read(cx)
+                        .session_statuses
+                        .get(&entry.session_id),
+                );
+                if let Some(transition) = self.chat_transitions.get(&entry.session_id) {
+                    status.kind = if transition.kind == TransitionKind::Resuming {
+                        runner_app::ui::agent_status::StatusKind::Resuming
+                    } else {
+                        runner_app::ui::agent_status::StatusKind::Starting
+                    };
+                    status.estimated = false;
+                }
+                let target = layout.focused_pane_id.clone();
+                let width = self
+                    .pane_bounds
+                    .get(&PaneKey::new(&layout.id, &target))
+                    .map_or(480., |size| {
+                        f32::from(size.width) / (f32::from(window.rem_size()) / 16.)
+                    });
+                div()
+                    .id("single-pane-status")
+                    .flex_none()
+                    .child(runner_app::ui::agent_status::header_status_indicator(
+                        status,
+                        status.shows_label(width),
+                        "tab-status",
+                    ))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        cx.stop_propagation();
+                        this.focus_pane(&target, cx);
+                        this.mark_active_tab_viewed(window, cx);
+                        this.focus_active_terminal(window, cx);
+                    }))
+                    .into_any_element()
+            });
         let title_actions = (!session_ids.is_empty() && !focused_secondary)
             .then(|| self.chat_action_menu.clone().into_any_element())
             .into_iter()
             .chain(control)
-            .chain(fork_action);
+            .chain(fork_action)
+            .chain(single_status);
         let keymap_overrides = self.settings(cx).keymap_overrides.clone();
         // A single-pane tab has no identity line, so the header carries its
         // split menu; once split, every identity line carries its own.
@@ -788,9 +831,18 @@ impl NativeRoot {
                 .is_some_and(|entry| Runtime::parse(&entry.agent_runtime) == Some(Runtime::Shell));
             if any_resuming {
                 Some(
-                    SessionControl::new("resume-chat-header", SessionControlKind::Resuming)
-                        .variant(SessionControlVariant::Header)
-                        .into_any_element(),
+                    SessionControl::new(
+                        "resume-chat-header",
+                        if shell {
+                            SessionControlKind::Resuming
+                        } else {
+                            SessionControlKind::Resume
+                        },
+                    )
+                    .variant(SessionControlVariant::Header)
+                    .title("Resuming…")
+                    .lifecycle_disabled(true)
+                    .into_any_element(),
                 )
             } else if status == SessionStatus::Running {
                 Some(
@@ -1785,7 +1837,7 @@ impl NativeRoot {
         &mut self,
         leaf: &PaneLeaf,
         layout: &PaneLayout,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let focused = layout.focused_pane_id == leaf.id;
@@ -1805,8 +1857,8 @@ impl NativeRoot {
         let header = grouped.then(|| {
             let split_menu = self.split_menu(SplitMenuSurface::Pane, &layout.id, &pane_id, cx);
             let grip = div()
-                .min_w(rems(20. / 16.))
-                .flex_1()
+                .w(rems(20. / 16.))
+                .flex_none()
                 .flex()
                 .items_center()
                 .justify_center()
@@ -1859,13 +1911,22 @@ impl NativeRoot {
                 let label = session_label(entry);
                 let placeholder = default_session_label(entry);
                 let status = pane_identity_shows_status(&entry.agent_runtime).then(|| {
-                    direct_chat_display_status(
+                    let mut status = direct_chat_display_status(
                         entry,
                         self.app_store
                             .read(cx)
-                            .session_activity
+                            .session_statuses
                             .get(&entry.session_id),
-                    )
+                    );
+                    if let Some(transition) = self.chat_transitions.get(&entry.session_id) {
+                        status.kind = if transition.kind == TransitionKind::Resuming {
+                            runner_app::ui::agent_status::StatusKind::Resuming
+                        } else {
+                            runner_app::ui::agent_status::StatusKind::Starting
+                        };
+                        status.estimated = false;
+                    }
+                    status
                 });
                 let disabled = self.session_lifecycle_disabled(&session_id, cx)
                     || secondary.as_ref().is_some_and(|state| state.secondary);
@@ -1938,10 +1999,32 @@ impl NativeRoot {
                             }),
                     )
                     .child(name)
-                    .children(status.map(render_pane_header_status))
                     .children(menu)
-                    .child(grip)
-                    .child(split_menu)
+                    .children(status.map(|status| {
+                        let width = self
+                            .pane_bounds
+                            .get(&PaneKey::new(&layout.id, &pane_id))
+                            .map_or(480., |size| {
+                                f32::from(size.width) / (f32::from(window.rem_size()) / 16.)
+                            });
+                        let target = pane_id.clone();
+                        div()
+                            .id(SharedString::from(format!("pane-status-{target}")))
+                            .ml_2()
+                            .flex_none()
+                            .child(runner_app::ui::agent_status::pane_status_indicator(
+                                status,
+                                status.shows_label(width),
+                                SharedString::from(format!("status-{target}")),
+                            ))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                cx.stop_propagation();
+                                this.focus_pane(&target, cx);
+                                this.mark_active_tab_viewed(window, cx);
+                                this.focus_active_terminal(window, cx);
+                            }))
+                            .into_any_element()
+                    }))
                     .into_any_element()
             } else {
                 div()
@@ -1964,8 +2047,6 @@ impl NativeRoot {
                             .text_color(theme::faint())
                             .child("Empty"),
                     )
-                    .child(grip)
-                    .child(split_menu)
                     .into_any_element()
             };
             div()
@@ -1978,50 +2059,68 @@ impl NativeRoot {
                 .border_color(theme::border())
                 .bg(theme::panel())
                 .child(identity)
+                .child(grip)
                 .child(
                     div()
-                        .ml_2()
-                        .flex_none()
-                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .min_w(px(0.))
+                        .flex_1()
+                        .flex()
+                        .items_center()
+                        .justify_end()
+                        .gap_2()
+                        .child(split_menu)
                         .child(
-                            IconButton::new(
-                                SharedString::from(format!("close-pane-{close_pane_id}")),
-                                "close.svg",
-                            )
-                            .size(IconButtonSize::Sm)
-                            .tooltip("Close pane")
-                            .on_press(move |window, cx| {
-                                let pane_id = close_pane_id.clone();
-                                let session_id = close_session_id.clone();
-                                close_root.update(cx, |this, cx| {
-                                    match (close_behavior, session_id) {
-                                        (PaneCloseBehavior::CloseTerminal, Some(session_id)) => {
-                                            this.request_close_terminal_pane(
-                                                &pane_id,
-                                                &session_id,
-                                                window,
-                                                cx,
-                                            );
-                                        }
-                                        (PaneCloseBehavior::ArchiveChat, Some(session_id)) => {
-                                            this.request_close_chat_pane(
-                                                &pane_id,
-                                                &session_id,
-                                                window,
-                                                cx,
-                                            );
-                                        }
-                                        (PaneCloseBehavior::LayoutOnly, _) => {
-                                            this.close_pane(&pane_id, window, cx);
-                                        }
-                                        (
-                                            PaneCloseBehavior::CloseTerminal
-                                            | PaneCloseBehavior::ArchiveChat,
-                                            None,
-                                        ) => {}
-                                    }
-                                });
-                            }),
+                            div()
+                                .flex_none()
+                                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                                .child(
+                                    IconButton::new(
+                                        SharedString::from(format!("close-pane-{close_pane_id}")),
+                                        "close.svg",
+                                    )
+                                    .size(IconButtonSize::Sm)
+                                    .tooltip("Close pane")
+                                    .on_press(
+                                        move |window, cx| {
+                                            let pane_id = close_pane_id.clone();
+                                            let session_id = close_session_id.clone();
+                                            close_root.update(cx, |this, cx| {
+                                                match (close_behavior, session_id) {
+                                                    (
+                                                        PaneCloseBehavior::CloseTerminal,
+                                                        Some(session_id),
+                                                    ) => {
+                                                        this.request_close_terminal_pane(
+                                                            &pane_id,
+                                                            &session_id,
+                                                            window,
+                                                            cx,
+                                                        );
+                                                    }
+                                                    (
+                                                        PaneCloseBehavior::ArchiveChat,
+                                                        Some(session_id),
+                                                    ) => {
+                                                        this.request_close_chat_pane(
+                                                            &pane_id,
+                                                            &session_id,
+                                                            window,
+                                                            cx,
+                                                        );
+                                                    }
+                                                    (PaneCloseBehavior::LayoutOnly, _) => {
+                                                        this.close_pane(&pane_id, window, cx);
+                                                    }
+                                                    (
+                                                        PaneCloseBehavior::CloseTerminal
+                                                        | PaneCloseBehavior::ArchiveChat,
+                                                        None,
+                                                    ) => {}
+                                                }
+                                            });
+                                        },
+                                    ),
+                                ),
                         ),
                 )
         });
@@ -2753,22 +2852,6 @@ fn runtime_badge(label: impl Into<SharedString>) -> AnyElement {
         .text_size(theme::text_micro())
         .text_color(theme::muted())
         .child(label.to_uppercase())
-        .into_any_element()
-}
-
-fn render_pane_header_status(status: DirectChatDisplayStatus) -> AnyElement {
-    let color = match status {
-        DirectChatDisplayStatus::Busy => theme::warning(),
-        DirectChatDisplayStatus::Idle => theme::accent(),
-        DirectChatDisplayStatus::Stopped => theme::faint(),
-        DirectChatDisplayStatus::Crashed => theme::danger(),
-    };
-    div()
-        .ml_2()
-        .flex_none()
-        .size(rems(5. / 16.))
-        .rounded_full()
-        .bg(color)
         .into_any_element()
 }
 

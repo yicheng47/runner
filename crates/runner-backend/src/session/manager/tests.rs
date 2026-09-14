@@ -107,6 +107,7 @@ struct FakeRuntime {
     /// work (a resize) between the fork and the handle install.
     spawn_hook: std::sync::Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
     stop_gate: std::sync::Mutex<Option<RuntimeGate>>,
+    write_gate: std::sync::Mutex<Option<RuntimeGate>>,
     stop_barrier: std::sync::Mutex<Option<Arc<Barrier>>>,
     /// What `status()` returns for any pane lookup. Most tests
     /// want exit_code=0 (clean stop); the kill-semantics test
@@ -296,6 +297,10 @@ impl SessionRuntime for FakeRuntime {
     }
 
     fn send_bytes(&self, session: &RuntimeSession, bytes: &[u8]) -> RuntimeResult<()> {
+        if let Some(gate) = self.write_gate.lock().unwrap().take() {
+            let _ = gate.entered.send(());
+            let _ = gate.release.recv();
+        }
         self.inputs.lock().unwrap().push(FakeInput::Bytes {
             session_id: session.session_id.clone(),
             bytes: bytes.to_vec(),
@@ -391,6 +396,9 @@ fn forward_queued_output(items: Vec<RuntimeOutput>) -> Vec<ForwardedEvent> {
         match item {
             RuntimeOutput::Stream(bytes) => fake.push_output(0, &bytes),
             RuntimeOutput::StatusTransition { state, .. } => fake.push_status(0, state),
+            RuntimeOutput::AgentObservation(_) | RuntimeOutput::StatusBridgeFailed => {
+                panic!("not a byte-batching fixture")
+            }
         }
     }
     fake.close_spawn(0);
@@ -3238,7 +3246,7 @@ fn ordered_interrupt_is_idle_only_for_a_busy_hook_session() {
 }
 
 #[test]
-fn escape_idle_preserves_input_and_completion_until_the_turn_finishes() {
+fn escape_preserves_input_but_only_continued_work_can_complete() {
     for continues in [false, true] {
         let manager = mgr_with_fake(None, fake_runtime());
         for id in ["hooks", "other"] {
@@ -3281,13 +3289,14 @@ fn escape_idle_preserves_input_and_completion_until_the_turn_finishes() {
             assert!(session.local_input_pending);
             assert_eq!(session.observed_input.unwrap().state, InputState::Drafting);
             assert_eq!(session.observed_input.unwrap().since, since);
-            assert!(session.completion_armed);
+            assert!(!session.completion_armed);
         }
         if continues {
             assert!(manager.note_forwarder_transition("hooks", SessionActivityState::Busy, "hook"));
+            manager.arm_completion("hooks");
         }
         assert!(manager.note_forwarder_transition("hooks", SessionActivityState::Idle, "hook"));
-        assert!(manager.take_completion_armed(&["hooks".into()]));
+        assert_eq!(manager.take_completion_armed(&["hooks".into()]), continues);
         assert!(!manager.take_completion_armed(&["other".into()]));
         assert!(!manager.take_completion_armed(&["hooks".into(), "other".into()]));
     }
@@ -3346,8 +3355,8 @@ fn hook_status_owns_activity_until_teardown_without_changing_submit_or_wake() {
     install_test_session_handle(&manager, "hooks");
     install_test_session_handle(&manager, "baseline");
     assert!(manager.note_forwarder_transition("hooks", SessionActivityState::Busy, "forwarder"));
-    // An unchanged first hook must still arm precedence.
-    assert!(!manager.note_forwarder_transition("hooks", SessionActivityState::Busy, "hook"));
+    // Source changes must reach attached views even when activity is unchanged.
+    assert!(manager.note_forwarder_transition("hooks", SessionActivityState::Busy, "hook"));
     for source in ["forwarder", "title"] {
         assert!(!manager.note_forwarder_transition("hooks", SessionActivityState::Idle, source));
     }
@@ -3570,7 +3579,24 @@ fn assert_status_uses_existing_direct_and_mission_consumers(source: &'static str
                     (state.to_owned(), event_source.to_owned())
                 })
             );
-            assert!(cap.status.lock().unwrap().is_empty());
+            let incremental: Vec<_> = cap
+                .status
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|event| {
+                    (
+                        (if event.state == SessionActivityState::Busy {
+                            "busy"
+                        } else {
+                            "idle"
+                        })
+                        .to_owned(),
+                        event.source.clone(),
+                    )
+                })
+                .collect();
+            assert_eq!(incremental, statuses);
         } else {
             let statuses: Vec<_> = cap
                 .status
@@ -3579,23 +3605,24 @@ fn assert_status_uses_existing_direct_and_mission_consumers(source: &'static str
                 .iter()
                 .map(|event| (event.state, event.source.clone()))
                 .collect();
-            assert_eq!(
-                statuses,
-                [
-                    (SessionActivityState::Busy, "spawn".to_owned()),
-                    (SessionActivityState::Idle, source.to_owned()),
-                    (
-                        SessionActivityState::Busy,
-                        if matches!(source, "input-interrupt" | "input-escape") {
-                            "hook"
-                        } else {
-                            source
-                        }
-                        .to_owned()
-                    ),
-                    (SessionActivityState::Idle, source.to_owned()),
-                ]
-            );
+            let mut expected = vec![
+                (SessionActivityState::Busy, "spawn".to_owned()),
+                (SessionActivityState::Idle, source.to_owned()),
+                (
+                    SessionActivityState::Busy,
+                    if matches!(source, "input-interrupt" | "input-escape") {
+                        "hook"
+                    } else {
+                        source
+                    }
+                    .to_owned(),
+                ),
+                (SessionActivityState::Idle, source.to_owned()),
+            ];
+            if matches!(source, "hook" | "input-interrupt" | "input-escape") {
+                expected.insert(1, (SessionActivityState::Busy, "hook".to_owned()));
+            }
+            assert_eq!(statuses, expected);
         }
         assert!(!mgr.activity_snapshot().contains_key(&spawned.id));
         assert!(!mgr
@@ -3935,7 +3962,7 @@ fn direct_input_gate_timeout_is_bounded_and_does_not_pin_the_queue() {
 }
 
 #[test]
-fn mission_status_transition_appends_once_without_session_status_event() {
+fn mission_status_transition_appends_once_and_matches_incremental_status() {
     let pool = pool_with_schema();
     let mission_base = Mission {
         crew_id: "c".into(),
@@ -4006,9 +4033,11 @@ fn mission_status_transition_appends_once_without_session_status_event() {
     assert_eq!(event.from, runner.handle);
     assert_eq!(event.payload["state"], "busy");
     assert_eq!(event.payload["source"], "forwarder");
-    assert!(
-        cap.status.lock().unwrap().is_empty(),
-        "mission sessions must not emit live session/status events",
+    let incremental = cap.status.lock().unwrap();
+    assert_eq!(incremental.len(), 1);
+    assert_eq!(
+        event.payload["status"],
+        serde_json::to_value(&incremental[0].status).unwrap()
     );
 }
 
@@ -4166,10 +4195,13 @@ fn mission_typing_stays_idle_until_submit() {
         mgr.activity_snapshot().get(&spawned.id),
         Some(&SessionActivityState::Busy),
     );
-    assert!(
-        cap.status.lock().unwrap().is_empty(),
-        "mission typing and submit must not emit live session/status events",
+    let incremental = cap.status.lock().unwrap();
+    assert_eq!(incremental.len(), 2);
+    assert_eq!(
+        statuses[1].payload["status"],
+        serde_json::to_value(&incremental[1].status).unwrap()
     );
+    drop(incremental);
 
     mgr.kill(&spawned.id).unwrap();
 }
@@ -5391,7 +5423,8 @@ fn forwarder_status_emit_stays_bounded_under_event_log_contention() {
     };
 
     let start = Instant::now();
-    let outcome = ctx.try_append_runner_status(RunnerStatus::Idle, "forwarder");
+    let outcome =
+        ctx.try_append_runner_status(RunnerStatus::Idle, "forwarder", &AgentStatus::default());
     let elapsed = start.elapsed();
 
     assert!(
@@ -5422,7 +5455,8 @@ fn forwarder_status_emit_stays_bounded_under_event_log_contention() {
     // Proves the test setup isn't accidentally getting Contended
     // for the wrong reason.
     blocker.unlock().unwrap();
-    let outcome = ctx.try_append_runner_status(RunnerStatus::Busy, "forwarder");
+    let outcome =
+        ctx.try_append_runner_status(RunnerStatus::Busy, "forwarder", &AgentStatus::default());
     assert!(matches!(outcome, AppendOutcome::Ok));
 }
 
@@ -5448,7 +5482,11 @@ fn forwarder_status_emit_retries_brief_event_log_contention() {
         event_log: Arc::clone(&event_log),
     };
     assert!(matches!(
-        event_log.try_append(ctx.runner_status_draft(RunnerStatus::Idle, "forwarder")),
+        event_log.try_append(ctx.runner_status_draft(
+            RunnerStatus::Idle,
+            "forwarder",
+            &AgentStatus::default()
+        )),
         Err(TryAppendError::Contended),
     ));
 
@@ -5456,7 +5494,7 @@ fn forwarder_status_emit_retries_brief_event_log_contention() {
     let retry_ctx = ctx.clone();
     let append = std::thread::spawn(move || {
         started_tx.send(()).unwrap();
-        retry_ctx.try_append_runner_status(RunnerStatus::Idle, "forwarder")
+        retry_ctx.try_append_runner_status(RunnerStatus::Idle, "forwarder", &AgentStatus::default())
     });
     started_rx.recv().unwrap();
     // Keep the unlock well inside the ~35ms retry budget so a loaded CI
@@ -5841,7 +5879,7 @@ fn spawn_argv_injects_runtime_settings_for_fresh_and_resume() {
             Some("first turn"),
             None,
         );
-        if runtime == "claude-code" {
+        if runtime == "claude-code" && !cfg!(windows) {
             let generation = spec.env[crate::session::claude_status::GENERATION_ENV].clone();
             assert!(uuid::Uuid::parse_str(&generation).is_ok());
             assert_eq!(
@@ -8447,4 +8485,176 @@ fn restart_notification_failure_warns_without_failing_the_completed_restart() {
         .unwrap()
         .contains("restarted, but its restart notification could not be recorded"));
     assert!(updated);
+}
+
+#[test]
+fn normalized_status_snapshot_wait_gate_resolution_and_bridge_failure() {
+    use crate::session::status::{HumanInteraction, WaitReason};
+    #[derive(Default)]
+    struct DeliveryEvents(Mutex<Vec<router::SessionDeliveryEvent>>);
+    impl router::SessionDeliveryListener for DeliveryEvents {
+        fn session_delivery_event(&self, _: &str, event: router::SessionDeliveryEvent) {
+            self.0.lock().unwrap().push(event);
+        }
+    }
+    let manager = mgr_with_fake(None, fake_runtime());
+    install_test_session_handle(&manager, "status");
+    let delivered = Arc::new(DeliveryEvents::default());
+    let listener: Arc<dyn router::SessionDeliveryListener> = delivered.clone();
+    manager.register_delivery_listener("status", Arc::downgrade(&listener));
+    let events = capture();
+    let mut observation = AgentObservation {
+        activity: Activity::Working,
+        source: ObservationSource::Hook,
+        ..Default::default()
+    };
+    manager.publish_observation("status", observation.clone(), events.as_ref());
+    let token = match manager.reserve_delivery("status").unwrap() {
+        router::DeliveryReservation::Ready(token) => token,
+        other => panic!("{other:?}"),
+    };
+    manager.finish_delivery("status", token);
+    observation.interactions.push(HumanInteraction {
+        id: "wait".into(),
+        reason: WaitReason::Answer,
+        owners: vec!["tool".into()],
+        since: 1,
+    });
+    manager.publish_observation("status", observation.clone(), events.as_ref());
+    assert_eq!(
+        manager.reserve_delivery("status").unwrap(),
+        router::DeliveryReservation::HumanInteraction
+    );
+    manager.mark_status_viewed(&["status".into()]);
+    assert!(manager.status_snapshot()["status"].observation.needs_you());
+    assert!(!manager.note_forwarder_transition("status", SessionActivityState::Idle, "forwarder"));
+    assert_eq!(
+        manager.status_snapshot()["status"].observation.source,
+        ObservationSource::Hook
+    );
+    manager
+        .session_state("status")
+        .unwrap()
+        .lock()
+        .unwrap()
+        .local_input_pending = true;
+    observation.interactions.clear();
+    observation.activity = Activity::Ready;
+    observation.outcome = Some(TurnOutcome::Interrupted);
+    manager.publish_observation("status", observation, events.as_ref());
+    assert_eq!(
+        manager.reserve_delivery("status").unwrap(),
+        router::DeliveryReservation::PendingInput
+    );
+    assert!(delivered
+        .0
+        .lock()
+        .unwrap()
+        .contains(&router::SessionDeliveryEvent::InputCleared));
+    manager
+        .session_state("status")
+        .unwrap()
+        .lock()
+        .unwrap()
+        .local_input_pending = false;
+    assert!(matches!(
+        manager.reserve_delivery("status").unwrap(),
+        router::DeliveryReservation::Ready(_)
+    ));
+    manager.finish_delivery("status", token);
+    manager.status_bridge_failed("status", events.as_ref());
+    let status = manager.status_snapshot()["status"].clone();
+    assert_eq!(status.observation.source, ObservationSource::Baseline);
+    assert_eq!(status.observation.activity, Activity::Idle);
+    assert!(!status.observation.needs_you());
+}
+
+#[test]
+fn bridge_loss_and_unavailable_observations_never_manufacture_a_completion() {
+    let core = crate::test_support::test_core();
+    core.db.get().unwrap().execute("INSERT INTO sessions(id, status, agent_runtime) VALUES ('status', 'running', 'claude-code')", []).unwrap();
+    install_test_session_handle(&core.sessions, "status");
+    let events = core.session_events();
+    let working = AgentObservation {
+        activity: Activity::Working,
+        source: ObservationSource::Hook,
+        ..Default::default()
+    };
+    core.sessions
+        .publish_observation("status", working.clone(), &events);
+    core.sessions.publish_observation(
+        "status",
+        AgentObservation {
+            activity: Activity::Unavailable,
+            source: ObservationSource::Hook,
+            ..Default::default()
+        },
+        &events,
+    );
+    assert!(core.sessions.agent_status("status").unread_since.is_none());
+    core.sessions
+        .publish_observation("status", working, &events);
+    core.sessions
+        .note_forwarder_transition("status", SessionActivityState::Idle, "forwarder");
+    core.sessions.status_bridge_failed("status", &events);
+    assert!(core.sessions.agent_status("status").unread_since.is_none());
+    assert!(!core.sessions.take_completion_armed(&["status".into()]));
+    assert!(!crate::repo::session_attention::any_unread(
+        &core.db.get().unwrap(),
+        &["status".into()]
+    )
+    .unwrap());
+}
+
+#[test]
+fn reserved_write_backpressure_does_not_block_status_observation() {
+    let runtime = fake_runtime();
+    let manager = mgr_with_fake(None, Arc::clone(&runtime));
+    install_test_session_handle(&manager, "blocked-write");
+    let token = match manager.reserve_delivery("blocked-write").unwrap() {
+        router::DeliveryReservation::Ready(token) => token,
+        other => panic!("{other:?}"),
+    };
+    let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    *runtime.write_gate.lock().unwrap() = Some(RuntimeGate {
+        entered: entered_tx,
+        release: release_rx,
+    });
+    let writer = Arc::clone(&manager);
+    let write =
+        std::thread::spawn(move || writer.inject_reserved("blocked-write", token, b"nudge"));
+    entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    let observer = Arc::clone(&manager);
+    let (observed_tx, observed_rx) = std::sync::mpsc::channel();
+    let observe = std::thread::spawn(move || {
+        observer.publish_observation(
+            "blocked-write",
+            AgentObservation {
+                activity: Activity::Working,
+                source: ObservationSource::Hook,
+                interactions: vec![crate::session::status::HumanInteraction {
+                    id: "approval".into(),
+                    reason: crate::session::status::WaitReason::Approval,
+                    owners: vec!["tool".into()],
+                    since: 1,
+                }],
+                ..Default::default()
+            },
+            capture().as_ref(),
+        );
+        observed_tx
+            .send(observer.agent_status("blocked-write"))
+            .unwrap();
+    });
+    let status = observed_rx.recv_timeout(Duration::from_secs(2));
+    release_tx.send(()).unwrap();
+    assert!(write.join().unwrap().unwrap());
+    observe.join().unwrap();
+    assert!(status.unwrap().observation.needs_you());
+    assert!(!manager
+        .inject_reserved("blocked-write", token, b"\r")
+        .unwrap());
+    assert_eq!(runtime.bytes_writes().len(), 1);
+    manager.finish_delivery("blocked-write", token);
 }

@@ -17,6 +17,7 @@ impl MissionWorkspace {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let session_id = session.session.id.clone();
+        let status = self.slot_agent_status(&session_id, cx);
         let overlay = resolve_slot_overlay(
             self.archiving,
             if self.resuming {
@@ -160,7 +161,8 @@ impl MissionWorkspace {
             pane = pane.child(self.render_inbox_blocked_pill(
                 session_id.clone(),
                 blocked.unread_count,
-                idle,
+                idle && !status.observation.needs_you(),
+                status.observation.needs_you(),
                 pane_width < 600. * self.settings(cx).app_zoom,
                 cx,
             ));
@@ -185,6 +187,7 @@ impl MissionWorkspace {
         session_id: String,
         unread_count: usize,
         idle: bool,
+        needs_you: bool,
         narrow: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -223,9 +226,11 @@ impl MissionWorkspace {
                     }),
             )
             .children((!narrow).then(|| {
-                div()
-                    .text_color(theme::muted())
-                    .child("— a draft in the composer is holding delivery; submit or clear it")
+                div().text_color(theme::muted()).child(if needs_you {
+                    "— respond to the agent’s prompt to release delivery"
+                } else {
+                    "— a draft in the composer is holding delivery; submit or clear it"
+                })
             }))
             .children(idle.then(|| {
                 div()

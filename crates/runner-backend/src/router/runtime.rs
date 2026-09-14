@@ -208,6 +208,12 @@ pub fn claude_settings_args(
     });
     let status_path = crate::session::claude_status::status_path(app_data_dir, runner_session_id);
     for event in [
+        "SessionStart",
+        "PermissionRequest",
+        "PermissionDenied",
+        "PostToolUseFailure",
+        "Elicitation",
+        "ElicitationResult",
         "UserPromptSubmit",
         "PreToolUse",
         "PostToolUse",
@@ -215,6 +221,9 @@ pub fn claude_settings_args(
         "Stop",
         "StopFailure",
     ] {
+        if !crate::session::claude_status::hooks_supported(cfg!(windows)) {
+            continue;
+        }
         let mut entry = serde_json::json!({
             "hooks": [{
                 "type": "command",
@@ -223,9 +232,14 @@ pub fn claude_settings_args(
             }],
         });
         if event == "Notification" {
-            entry["matcher"] = serde_json::json!("^idle_prompt$");
+            entry["matcher"] =
+                serde_json::json!("^(idle_prompt|permission_prompt|elicitation_dialog)$");
         }
-        settings["hooks"][event] = serde_json::json!([entry]);
+        if let Some(entries) = settings["hooks"][event].as_array_mut() {
+            entries.push(entry);
+        } else {
+            settings["hooks"][event] = serde_json::json!([entry]);
+        }
     }
     // Claude Code gates `--permission-mode bypassPermissions` behind a
     // first-use consent dialog. Nobody is watching a Bypass spawn to
@@ -1233,7 +1247,7 @@ mod tests {
     }
 
     #[test]
-    fn claude_status_hooks_have_short_timeouts_and_only_match_idle_notifications() {
+    fn claude_status_hooks_have_short_timeouts_and_match_verified_notifications() {
         let args = claude_settings_args(
             Some(Runtime::ClaudeCode),
             &[],
@@ -1241,6 +1255,11 @@ mod tests {
             "session",
         );
         let settings: serde_json::Value = serde_json::from_str(&args[1]).unwrap();
+        if cfg!(windows) {
+            assert_eq!(settings["hooks"].as_object().unwrap().len(), 1);
+            assert!(settings["hooks"]["SessionStart"].is_array());
+            return;
+        }
         for event in [
             "SessionStart",
             "UserPromptSubmit",
@@ -1262,7 +1281,7 @@ mod tests {
         }
         assert_eq!(
             settings["hooks"]["Notification"][0]["matcher"],
-            "^idle_prompt$"
+            "^(idle_prompt|permission_prompt|elicitation_dialog)$"
         );
         assert!(settings["hooks"]["StopFailure"][0].get("matcher").is_none());
         assert!(settings["hooks"].get("SubagentStop").is_none());

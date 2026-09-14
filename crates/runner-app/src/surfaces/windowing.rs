@@ -24,6 +24,10 @@ impl NativeRoot {
             self.core(cx),
             &self.window_label,
             self.current_subjects(),
+            self.tabs
+                .active()
+                .filter(|_| self.route == AppRoute::Chat)
+                .and_then(PaneLayout::focused_session_id),
         ) {
             self.error = Some(error.to_string());
         }
@@ -48,6 +52,11 @@ impl NativeRoot {
             runner_backend::ops::window::mark_blurred(self.core(cx), &self.window_label);
         }
         self.sync_subject_ownership(window, cx);
+        if matches!(self.route, AppRoute::Mission(_)) {
+            self.mission_workspace.update(cx, |workspace, cx| {
+                workspace.mark_active_session_viewed(window, cx);
+            });
+        }
         cx.notify();
     }
 

@@ -271,6 +271,7 @@ impl NativeRoot {
                             == Some(session_id.as_str())
                         {
                             self.chat_focus.focus(window);
+                            self.mark_active_tab_viewed(window, cx);
                         }
                     }
                 }
@@ -1235,6 +1236,7 @@ impl NativeRoot {
                 self.last_focused_runner_id = runner_id;
             }
             self.sync_active_chat_detail(cx);
+            self.report_current_subjects(cx);
             checkpoint_window_layout_deferred(cx);
             cx.notify();
         }

@@ -18,6 +18,10 @@ pub const JETBRAINS_MONO_FONTS: [&[u8]; 4] = [
     include_bytes!("../../../assets/fonts/JetBrainsMonoNerdFontMono-Bold.ttf"),
     include_bytes!("../../../assets/fonts/JetBrainsMonoNerdFontMono-BoldItalic.ttf"),
 ];
+const HAND: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 11V7a2 2 0 0 0-4 0v1"/><path d="M14 10V5a2 2 0 0 0-4 0v5"/><path d="M10 9.5V7a2 2 0 0 0-4 0v9a6 6 0 0 0 6 6h2a6 6 0 0 0 6-6v-5a2 2 0 0 0-4 0"/><path d="M6 12a2 2 0 0 0-4 0v2a8 8 0 0 0 8 8"/></svg>"#;
+const MESSAGE_CIRCLE: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/></svg>"#;
+const CIRCLE_ALERT: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 8v4m0 4h.01"/></svg>"#;
+const CIRCLE_QUESTION_MARK: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 3-3 3m.1 4h.01"/></svg>"#;
 const APP_ICON: &[u8] = include_bytes!("../../../assets/icon.png");
 
 const BRAND_MARK: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32"><svg x="3" y="3" width="9" height="9" viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" opacity=".4"/></svg><svg x="9" y="9" width="14" height="14" viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg><svg x="3" y="20" width="9" height="9" viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" opacity=".4"/></svg></svg>"#;
@@ -127,6 +131,10 @@ const ASSETS: &[(&str, &[u8])] = &[
     ("grip-horizontal.svg", GRIP_HORIZONTAL),
     ("more-horizontal.svg", MORE_HORIZONTAL),
     ("play.svg", PLAY),
+    ("hand.svg", HAND),
+    ("message-circle.svg", MESSAGE_CIRCLE),
+    ("circle-alert.svg", CIRCLE_ALERT),
+    ("circle-question-mark.svg", CIRCLE_QUESTION_MARK),
     ("square.svg", SQUARE),
     ("pause.svg", PAUSE),
     ("loader.svg", LOADER),

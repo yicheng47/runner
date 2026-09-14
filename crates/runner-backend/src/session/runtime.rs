@@ -116,6 +116,8 @@ pub enum RuntimeOutput {
     /// Live PTY bytes the agent wrote since the last `Stream` chunk. The
     /// frontend terminal **appends** them.
     Stream(Vec<u8>),
+    AgentObservation(super::status::AgentObservation),
+    StatusBridgeFailed,
     /// Forwarder-inferred busy/idle transition. `source` is
     /// `"forwarder"` for these synthetic events (the CLI's
     /// `runner status` verb emits `source: "agent"` directly into

@@ -506,7 +506,12 @@ impl SessionManager {
                 &spec.session_id,
             ));
         }
-        if router::runtime::inject_claude_settings(Runtime::parse(&runner.runtime), &runner.args) {
+        if crate::session::claude_status::hooks_supported(cfg!(windows))
+            && router::runtime::inject_claude_settings(
+                Runtime::parse(&runner.runtime),
+                &runner.args,
+            )
+        {
             let status_path =
                 crate::session::claude_status::status_path(app_data_dir, &spec.session_id);
             spec.env.insert(

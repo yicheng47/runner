@@ -208,6 +208,7 @@ impl SessionRuntime for PtyRuntime {
         let hook_status = spec
             .env
             .get(PATH_ENV)
+            .filter(|_| super::claude_status::hooks_supported(cfg!(windows)))
             .zip(spec.env.get(GENERATION_ENV))
             .and_then(|(path, generation)| {
                 match ClaudeStatusWatcher::start(std::path::Path::new(path), generation.clone()) {
@@ -808,10 +809,12 @@ fn idle_monitor_thread(
             break;
         }
         if let Some(watcher) = hook_status.as_mut() {
-            if let Err(error) = watcher.drain(|state, source| {
-                let _ = tx.send(RuntimeOutput::StatusTransition { state, source });
+            if let Err(error) = watcher.drain_observations(|observation, _source| {
+                let _ = tx.send(RuntimeOutput::AgentObservation(observation));
             }) {
                 log::warn!("read Claude status: {error}");
+                let _ = tx.send(RuntimeOutput::StatusBridgeFailed);
+                hook_status = None;
             }
         }
         let transition = {
@@ -1426,12 +1429,16 @@ mod tests {
                 Instant::now() < deadline,
                 "missing hook transitions: {statuses:?}"
             );
-            if let Ok(RuntimeOutput::StatusTransition {
-                state,
-                source: "hook",
-            }) = stream.recv_timeout(Duration::from_millis(50))
+            if let Ok(RuntimeOutput::AgentObservation(observation)) =
+                stream.recv_timeout(Duration::from_millis(50))
             {
-                statuses.push(state);
+                statuses.push(
+                    if observation.activity == super::super::status::Activity::Working {
+                        RunnerStatus::Busy
+                    } else {
+                        RunnerStatus::Idle
+                    },
+                );
             }
         }
         assert_eq!(
@@ -1493,10 +1500,20 @@ mod tests {
                     Instant::now() < deadline,
                     "missing {expected_source} {expected:?}"
                 );
-                if let Ok(RuntimeOutput::StatusTransition { state, source }) =
+                if let Ok(RuntimeOutput::AgentObservation(observation)) =
                     stream.recv_timeout(IDLE_MONITOR_POLL)
                 {
-                    if state == expected && source == expected_source {
+                    let state = if observation.activity == super::super::status::Activity::Working {
+                        RunnerStatus::Busy
+                    } else {
+                        RunnerStatus::Idle
+                    };
+                    if state == expected {
+                        assert_eq!(
+                            observation.outcome
+                                == Some(super::super::status::TurnOutcome::Interrupted),
+                            expected_source != "hook"
+                        );
                         break;
                     }
                 }
@@ -1518,10 +1535,12 @@ mod tests {
             while Instant::now() < deadline {
                 assert!(!matches!(
                     stream.recv_timeout(IDLE_MONITOR_POLL),
-                    Ok(RuntimeOutput::StatusTransition {
-                        source: "input-interrupt" | "input-escape",
-                        ..
-                    })
+                    Ok(RuntimeOutput::AgentObservation(
+                        super::super::status::AgentObservation {
+                            outcome: Some(super::super::status::TurnOutcome::Interrupted),
+                            ..
+                        }
+                    ))
                 ));
             }
             rt.send_bytes(&session, interrupt).unwrap();
@@ -1552,7 +1571,11 @@ mod tests {
         while std::time::Instant::now() < deadline {
             match stream.recv_timeout(std::time::Duration::from_millis(200)) {
                 Ok(RuntimeOutput::Stream(bytes)) => collected.extend_from_slice(&bytes),
-                Ok(RuntimeOutput::StatusTransition { .. }) => {}
+                Ok(
+                    RuntimeOutput::StatusTransition { .. }
+                    | RuntimeOutput::AgentObservation(_)
+                    | RuntimeOutput::StatusBridgeFailed,
+                ) => {}
                 Err(_) => {}
             }
             if collected.windows(5).any(|w| w == b"hello") {
@@ -1593,7 +1616,11 @@ mod tests {
                         break;
                     }
                 }
-                Ok(RuntimeOutput::Stream(_)) => {}
+                Ok(
+                    RuntimeOutput::Stream(_)
+                    | RuntimeOutput::AgentObservation(_)
+                    | RuntimeOutput::StatusBridgeFailed,
+                ) => {}
                 Err(mpsc::RecvTimeoutError::Timeout) => continue,
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
             }
@@ -1771,7 +1798,12 @@ mod tests {
             );
             match stream.recv_timeout(Duration::from_millis(50)) {
                 Ok(RuntimeOutput::Stream(bytes)) => output.extend_from_slice(&bytes),
-                Ok(RuntimeOutput::StatusTransition { .. }) | Err(_) => {}
+                Ok(
+                    RuntimeOutput::StatusTransition { .. }
+                    | RuntimeOutput::AgentObservation(_)
+                    | RuntimeOutput::StatusBridgeFailed,
+                )
+                | Err(_) => {}
             }
             let text = String::from_utf8_lossy(&output);
             if let Some(rest) = text.split("orphan=").nth(1) {
@@ -1812,7 +1844,11 @@ mod tests {
         while Instant::now() < deadline && !output.windows(5).any(|bytes| bytes == b"ready") {
             match stream.recv_timeout(Duration::from_millis(50)) {
                 Ok(RuntimeOutput::Stream(bytes)) => output.extend_from_slice(&bytes),
-                Ok(RuntimeOutput::StatusTransition { .. }) => {}
+                Ok(
+                    RuntimeOutput::StatusTransition { .. }
+                    | RuntimeOutput::AgentObservation(_)
+                    | RuntimeOutput::StatusBridgeFailed,
+                ) => {}
                 Err(_) => {}
             }
         }
@@ -2136,6 +2172,7 @@ mod tests {
                     }
                 }
                 Ok(RuntimeOutput::Stream(bytes)) => handshake.observe(&rt, &session, &bytes),
+                Ok(RuntimeOutput::AgentObservation(_) | RuntimeOutput::StatusBridgeFailed) => {}
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
             }

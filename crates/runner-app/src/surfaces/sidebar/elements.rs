@@ -417,30 +417,41 @@ pub(super) fn attention_indicator(attention: AttentionState) -> AnyElement {
                     .bg(theme::accent()),
             )
             .into_any_element(),
+        AttentionState::Unavailable | AttentionState::NeedsYou | AttentionState::Error => slot
+            .child(
+                svg()
+                    .path(match attention {
+                        AttentionState::Error => "circle-alert.svg",
+                        AttentionState::NeedsYou => "triangle-alert.svg",
+                        _ => "circle-question-mark.svg",
+                    })
+                    .size(px(12.))
+                    .text_color(match attention {
+                        AttentionState::Error => theme::danger(),
+                        AttentionState::NeedsYou => theme::warning(),
+                        _ => theme::muted(),
+                    }),
+            )
+            .into_any_element(),
         AttentionState::None => slot.into_any_element(),
     }
 }
 
-#[derive(Clone, Copy)]
-pub(crate) enum DirectChatDisplayStatus {
-    Busy,
-    Idle,
-    Stopped,
-    Crashed,
-}
-
 pub(crate) fn direct_chat_display_status(
     session: &DirectSessionEntry,
-    activity: Option<&SessionActivityState>,
-) -> DirectChatDisplayStatus {
-    match session.status {
-        SessionStatus::Stopped => DirectChatDisplayStatus::Stopped,
-        SessionStatus::Crashed => DirectChatDisplayStatus::Crashed,
-        SessionStatus::Running => match activity {
-            Some(SessionActivityState::Idle) => DirectChatDisplayStatus::Idle,
-            Some(SessionActivityState::Busy) | None => DirectChatDisplayStatus::Busy,
-        },
-    }
+    status: Option<&runner_backend::session::status::AgentStatus>,
+) -> runner_app::ui::agent_status::StatusPresentation {
+    use runner_backend::session::status::{AgentStatus, Lifecycle};
+    let mut status = status.cloned().unwrap_or(AgentStatus {
+        lifecycle: Lifecycle::Running,
+        ..Default::default()
+    });
+    status.lifecycle = match session.status {
+        SessionStatus::Stopped => Lifecycle::Stopped,
+        SessionStatus::Crashed => Lifecycle::Error,
+        SessionStatus::Running => status.lifecycle,
+    };
+    runner_app::ui::agent_status::StatusPresentation::new(&status)
 }
 
 pub(crate) fn session_label(entry: &DirectSessionEntry) -> String {

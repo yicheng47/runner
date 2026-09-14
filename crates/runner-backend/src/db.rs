@@ -165,6 +165,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
         20,
         include_str!("../migrations/0020_slot_effort_override.sql"),
     ),
+    (21, include_str!("../migrations/0021_session_attention.sql")),
 ];
 
 // Default-data seed: ships the Peer coding starter crew on first launch.
@@ -1697,6 +1698,32 @@ Talking to the human:
     }
 
     #[test]
+    fn session_attention_migrates_existing_unread_tabs_without_consuming_siblings() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        run_migrations_up_to(&mut conn, 20).unwrap();
+        conn.execute("INSERT INTO sessions(id, status, agent_runtime) VALUES ('a', 'stopped', 'codex'), ('b', 'stopped', 'codex')", []).unwrap();
+        let node = crate::repo::node::create_tab(&conn, None, "chat", 0, r#"{"slots":["a","b"]}"#)
+            .unwrap();
+        conn.execute(
+            "UPDATE nodes SET last_completed_at = '2026-09-14T00:00:00Z' WHERE id = ?1",
+            [&node.id],
+        )
+        .unwrap();
+        run_migrations(&mut conn).unwrap();
+        crate::repo::session_attention::mark_viewed(&conn, "b", "2026-09-14T00:01:00Z").unwrap();
+        let unread: Vec<(String, Option<i64>)> = conn
+            .prepare("SELECT session_id, unread_since FROM session_attention ORDER BY session_id")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert!(unread[0].1.is_some());
+        assert_eq!(unread[1].1, None);
+    }
+
+    #[test]
     fn stored_runtime_names_remain_readable_and_unchanged_without_a_migration() {
         let mut conn = Connection::open_in_memory().unwrap();
         conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
@@ -1758,7 +1785,7 @@ Talking to the human:
         let version: i64 = conn
             .query_row("SELECT MAX(version) FROM _migrations", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 20);
+        assert_eq!(version, 21);
     }
 
     #[test]

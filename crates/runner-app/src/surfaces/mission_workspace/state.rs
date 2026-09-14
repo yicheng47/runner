@@ -104,6 +104,7 @@ impl MissionWorkspace {
                                 | "mission/changed"
                                 | "router/delivery-blocked"
                                 | "session/exit"
+                                | "session/status"
                                 | "session/spawned"
                                 | "session/updated"
                                 | "session/archived"
@@ -172,6 +173,7 @@ impl MissionWorkspace {
             sessions: Vec::new(),
             events: Vec::new(),
             runner_statuses: BTreeMap::new(),
+            runner_observations: BTreeMap::new(),
             goal: None,
             feed_blocks: Vec::new(),
             feed_selection: None,
@@ -333,11 +335,19 @@ impl MissionWorkspace {
 
     pub(super) fn rebuild_event_projection(&mut self) {
         let mut statuses = BTreeMap::new();
+        let mut observations = BTreeMap::new();
         for event in &self.events {
             if event.kind != EventKind::Signal
                 || event.signal_type.as_ref().map(|kind| kind.as_str()) != Some("runner_status")
             {
                 continue;
+            }
+            if let Some(status) = event
+                .payload
+                .get("status")
+                .and_then(|value| serde_json::from_value(value.clone()).ok())
+            {
+                observations.insert(event.from.clone(), status);
             }
             let state = event
                 .payload
@@ -353,6 +363,7 @@ impl MissionWorkspace {
             }
         }
         self.runner_statuses = statuses;
+        self.runner_observations = observations;
         self.feed_blocks = group_feed_blocks(&self.events);
         if self.feed_selection.as_ref().is_some_and(|selection| {
             !self
@@ -389,6 +400,58 @@ impl MissionWorkspace {
                     .unwrap_or_default(),
             )
         };
+    }
+
+    pub(super) fn slot_agent_status(
+        &self,
+        session_id: &str,
+        cx: &App,
+    ) -> runner_backend::session::status::AgentStatus {
+        use runner_backend::session::status::{
+            Activity, AgentStatus, Lifecycle, ObservationSource,
+        };
+        let Some(session) = self
+            .sessions
+            .iter()
+            .find(|session| session.session.id == session_id)
+        else {
+            return AgentStatus::default();
+        };
+        let snapshot = &self.app_store.read(cx).session_statuses;
+        let mut status = snapshot
+            .get(session_id)
+            .cloned()
+            .or_else(|| self.runner_observations.get(&session.handle).cloned())
+            .unwrap_or_else(|| AgentStatus {
+                lifecycle: Lifecycle::Running,
+                observation: runner_backend::session::status::AgentObservation {
+                    activity: match self.runner_statuses.get(&session.handle) {
+                        Some(SessionActivityState::Busy) => Activity::Working,
+                        Some(SessionActivityState::Idle) => Activity::Idle,
+                        None => Activity::Unavailable,
+                    },
+                    source: if self.runner_statuses.contains_key(&session.handle) {
+                        ObservationSource::Baseline
+                    } else {
+                        ObservationSource::Unavailable
+                    },
+                    ..Default::default()
+                },
+                ..Default::default()
+            });
+        status.lifecycle = match session.session.status {
+            SessionStatus::Running => Lifecycle::Running,
+            SessionStatus::Stopped => Lifecycle::Stopped,
+            SessionStatus::Crashed => Lifecycle::Error,
+        };
+        if let Some(transition) = self.transitions.get(session_id) {
+            status.lifecycle = if transition.kind == MissionTransitionKind::Resuming {
+                Lifecycle::Resuming
+            } else {
+                Lifecycle::Starting
+            };
+        }
+        status
     }
 
     pub(super) fn runner_statuses(&self) -> &BTreeMap<String, SessionActivityState> {

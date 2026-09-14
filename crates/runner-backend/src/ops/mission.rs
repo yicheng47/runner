@@ -23,7 +23,7 @@ use ulid::Ulid as UlidGen;
 
 use crate::{
     error::{Error, Result},
-    model::{Mission, MissionStatus, SessionStatus, Timestamp},
+    model::{Mission, MissionStatus, Runtime, SessionStatus, Timestamp},
     ops::{crew, project, slot},
     repo,
     router::runtime::MissionPermissionMode,
@@ -102,6 +102,7 @@ pub fn list(conn: &Connection, crew_id: Option<&str>) -> Result<Vec<Mission>> {
 /// still surface unanswered cards.
 #[derive(Debug, Clone, Serialize)]
 pub struct MissionSummary {
+    pub session_statuses: Vec<(String, crate::session::status::AgentStatus)>,
     #[serde(flatten)]
     pub mission: Mission,
     pub crew_name: String,
@@ -1439,6 +1440,7 @@ pub async fn mission_list_summary_impl(
     state: &AppCore,
     crew_id: Option<String>,
 ) -> Result<Vec<MissionSummary>> {
+    let statuses = crate::ops::session::session_status_snapshot(state)?;
     let conn = state.db.get()?;
     let missions = list(&conn, crew_id.as_deref())?;
 
@@ -1478,7 +1480,24 @@ pub async fn mission_list_summary_impl(
         } else {
             None
         };
+        let session_statuses = repo::session::list_for_mission(&conn, &m.id)?
+            .into_iter()
+            .filter(|session| Runtime::parse(&session.runtime) != Some(Runtime::Shell))
+            .map(|session| {
+                let mut status = statuses
+                    .get(&session.session.id)
+                    .cloned()
+                    .unwrap_or_default();
+                status.lifecycle = match session.session.status {
+                    SessionStatus::Running => crate::session::status::Lifecycle::Running,
+                    SessionStatus::Stopped => crate::session::status::Lifecycle::Stopped,
+                    SessionStatus::Crashed => crate::session::status::Lifecycle::Error,
+                };
+                (session.session.id, status)
+            })
+            .collect();
         summaries.push(MissionSummary {
+            session_statuses,
             mission: m,
             crew_name,
             pending_ask_count,

@@ -78,6 +78,53 @@ pub fn session_kill(state: &AppCore, session_id: &str) -> Result<()> {
     state.sessions.kill(session_id)
 }
 
+pub fn session_status_snapshot(
+    state: &AppCore,
+) -> Result<BTreeMap<String, crate::session::status::AgentStatus>> {
+    use crate::session::status::{AgentStatus, Lifecycle};
+    let mut statuses = state.sessions.status_snapshot();
+    let conn = state.db.get()?;
+    let mut statement = conn.prepare("SELECT s.id, s.status, s.stopped_at, a.unread_since, a.error_acknowledged_at FROM sessions s LEFT JOIN session_attention a ON a.session_id = s.id WHERE s.archived_at IS NULL")?;
+    let rows = statement.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, Option<String>>(2)?,
+            row.get::<_, Option<i64>>(3)?,
+            row.get::<_, Option<String>>(4)?,
+        ))
+    })?;
+    for row in rows {
+        let (id, lifecycle, stopped_at, unread, acknowledged) = row?;
+        let status = statuses.entry(id).or_insert(AgentStatus {
+            lifecycle: Lifecycle::Running,
+            ..Default::default()
+        });
+        status.unread_since = unread;
+        match lifecycle.as_str() {
+            "stopped" => {
+                status.lifecycle = Lifecycle::Stopped;
+                status.error_since = None;
+            }
+            "crashed" => {
+                status.lifecycle = Lifecycle::Error;
+                let stopped = stopped_at
+                    .as_deref()
+                    .and_then(|time| chrono::DateTime::parse_from_rfc3339(time).ok())
+                    .map(|time| time.timestamp_millis());
+                let acknowledged = acknowledged
+                    .as_deref()
+                    .and_then(|time| chrono::DateTime::parse_from_rfc3339(time).ok())
+                    .map(|time| time.timestamp_millis());
+                status.error_since =
+                    stopped.filter(|time| acknowledged.is_none_or(|viewed| viewed < *time));
+            }
+            _ => {}
+        }
+    }
+    Ok(statuses)
+}
+
 pub fn session_activity_snapshot(state: &AppCore) -> BTreeMap<String, SessionActivityState> {
     state.sessions.activity_snapshot()
 }

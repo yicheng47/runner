@@ -21,6 +21,24 @@ impl MissionWorkspace {
         let Some(mission_id) = self.mission_id.clone() else {
             return;
         };
+        if (event.name == "session/exit"
+            || (event.name == "session/status"
+                && event.payload.get("status").is_some_and(|status| {
+                    status
+                        .get("unread_since")
+                        .is_some_and(|value| !value.is_null())
+                        || status
+                            .get("error_since")
+                            .is_some_and(|value| !value.is_null())
+                })))
+            && event
+                .payload
+                .get("session_id")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|id| self.active_tab == MissionTab::Session(id.to_owned()))
+        {
+            self.mark_active_session_viewed(window, cx);
+        }
         match event.name {
             "event/appended" => {
                 if event

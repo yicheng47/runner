@@ -157,7 +157,6 @@ impl MissionWorkspace {
     }
 
     fn render_runners_rail(&self, cx: &mut Context<Self>) -> AnyElement {
-        let statuses = self.runner_statuses();
         let selected = match &self.active_tab {
             MissionTab::Session(session_id) => Some(session_id.as_str()),
             MissionTab::Feed => None,
@@ -198,20 +197,18 @@ impl MissionWorkspace {
             let open_root = root.clone();
             let card_key_id = session_id.clone();
             let card_key_root = root.clone();
-            let activity = statuses.get(&session.handle).copied();
             let presence = match session.session.status {
-                SessionStatus::Crashed => RunnerPresence::Crashed,
-                SessionStatus::Stopped => RunnerPresence::Stopped,
-                SessionStatus::Running if activity == Some(SessionActivityState::Idle) => {
-                    RunnerPresence::Idle
-                }
                 SessionStatus::Running => RunnerPresence::Busy,
+                SessionStatus::Stopped => RunnerPresence::Stopped,
+                SessionStatus::Crashed => RunnerPresence::Crashed,
             };
-            let subtitle = slot_status_label(
-                session.session.status,
-                activity,
-                self.transition_kind(&session_id) == Some(MissionTransitionKind::Restarting),
-                self.slot_exit_codes.get(&session_id).copied().flatten(),
+            let status = runner_app::ui::agent_status::StatusPresentation::new(
+                &self.slot_agent_status(&session_id, cx),
+            );
+            let subtitle = runner_app::ui::agent_status::status_indicator(
+                status,
+                true,
+                SharedString::from(format!("mission-card-status-{session_id}")),
             );
             let disabled = self.stopping
                 || self.resuming
@@ -335,7 +332,11 @@ impl MissionWorkspace {
                         div()
                             .text_size(theme::text_meta())
                             .text_color(theme::muted())
-                            .child(subtitle),
+                            .when(
+                                runner_backend::model::Runtime::parse(&session.runtime)
+                                    != Some(runner_backend::model::Runtime::Shell),
+                                |card| card.child(subtitle),
+                            ),
                     )
                     .child(
                         div()

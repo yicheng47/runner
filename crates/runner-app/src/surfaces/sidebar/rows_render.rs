@@ -54,6 +54,7 @@ impl Sidebar {
             .rename
             .as_ref()
             .is_some_and(|rename| rename.target.matches(NodeType::Tab, &node.id));
+
         let target = sidebar_tab_target(&layout, &members);
         let click_tab = node.id.clone();
         let click_session = target.session_id.clone();
@@ -108,7 +109,6 @@ impl Sidebar {
                     });
                 });
                 sidebar_row_trailing_slot()
-                    .child(attention_indicator(attention))
                     .child(more_button)
                     .into_any_element()
             };
@@ -120,6 +120,17 @@ impl Sidebar {
             .children(node.pinned_position.is_some().then(pin_indicator))
             .child(sidebar_icon(leaf_icon, live))
             .child(sidebar_row_label(label.clone(), active, false))
+            .child(
+                self.render_rollup_attention(
+                    self.tab_status_rollup(&members, cx),
+                    Some(node.id.clone()),
+                    members
+                        .iter()
+                        .any(|member| self.archiving_sessions.contains(&member.session_id)),
+                    SharedString::from(format!("attention-{}", node.id)),
+                    cx,
+                ),
+            )
             .child(trailing)
             .on_click(cx.listener(move |this, _, window, cx| {
                 this.activate_sidebar_session(&click_tab, &click_session, window, cx);
@@ -165,6 +176,7 @@ impl Sidebar {
                 AppRoute::Mission(active_id) if active_id == &summary.mission.id
             )
         });
+
         let renaming = self.rename.as_ref().is_some_and(|rename| {
             rename
                 .target
@@ -195,7 +207,6 @@ impl Sidebar {
                     .into_any_element()
             } else {
                 sidebar_row_trailing_slot()
-                    .child(attention_indicator(attention))
                     .child(
                         IconButton::new(
                             SharedString::from(format!(
@@ -231,6 +242,13 @@ impl Sidebar {
             .children(node.pinned_position.is_some().then(pin_indicator))
             .child(sidebar_icon("flag.svg", summary.any_session_live))
             .child(sidebar_row_label(label.clone(), active, false))
+            .child(self.render_rollup_attention(
+                self.mission_status_rollup(&summary),
+                Some(node.id.clone()),
+                self.archiving_missions.contains(&summary.mission.id),
+                SharedString::from(format!("attention-{}", node.id)),
+                cx,
+            ))
             .child(trailing)
             .on_click(cx.listener(move |this, _, window, cx| {
                 this.active_project_id = project_id.clone();
@@ -334,7 +352,13 @@ impl Sidebar {
                 )
                 .expand(),
             )
-            .children(collapsed.then(|| attention_indicator(attention)))
+            .children(collapsed.then(|| {
+                self.render_status_attention(
+                    &nested,
+                    SharedString::from(format!("project-attention-{}", project.id)),
+                    cx,
+                )
+            }))
             .child(
                 div()
                     .flex()
@@ -706,19 +730,14 @@ impl Sidebar {
         }))
         .child(sidebar_icon(icon, icon_active))
         .child(div().min_w(px(0.)).flex_1().child(input))
-        .child(if let Some(index) = shortcut_index {
-            if self.show_shortcut_pills {
-                sidebar_row_trailing_slot()
-                    .child(tab_shortcut_pill(index, shortcut_selected))
-                    .into_any_element()
-            } else {
-                sidebar_row_trailing_slot()
-                    .child(attention_indicator(attention))
-                    .into_any_element()
-            }
-        } else {
-            attention_indicator(attention)
-        })
+        .child(attention_indicator(attention))
+        .children(
+            shortcut_index
+                .filter(|_| self.show_shortcut_pills)
+                .map(|index| {
+                    sidebar_row_trailing_slot().child(tab_shortcut_pill(index, shortcut_selected))
+                }),
+        )
         .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
             match event.keystroke.key.as_str() {
                 "enter" => {

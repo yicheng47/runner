@@ -48,6 +48,10 @@ impl MissionWorkspace {
                     continue;
                 };
                 let active = self.active_tab == MissionTab::Session(session_id.clone());
+                let status = self.slot_agent_status(session_id, cx);
+                let rollup = runner_app::ui::agent_status::StatusRollup {
+                    entries: vec![(session_id.clone(), status)],
+                };
                 let select_id = session_id.clone();
                 let close_id = session_id.clone();
                 let select_root = root.clone();
@@ -96,6 +100,15 @@ impl MissionWorkspace {
                                 .truncate()
                                 .font_family(theme::UI_MONOSPACE_FONT)
                                 .child(format!("@{}", session.handle)),
+                        )
+                        .when(
+                            runner_backend::model::Runtime::parse(&session.runtime)
+                                != Some(runner_backend::model::Runtime::Shell),
+                            |tab| {
+                                tab.child(rollup.render(SharedString::from(format!(
+                                    "mission-tab-status-{session_id}"
+                                ))))
+                            },
                         )
                         .child(
                             div()
