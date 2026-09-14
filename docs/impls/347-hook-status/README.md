@@ -4,7 +4,7 @@ Implementation program for [feature 347 — hook-based agent session status](../
 
 ## Status (2026-09-14)
 
-Design and the verified capability audit landed on `main` in `1218288`. Slice 1 — hook-driven status for Claude Code behind today's Busy/Idle vocabulary — landed in `9584330`. Next is slice 2, the status vocabulary and its UI, which is gated on Jason's review of the canvas frames rather than on any remaining unknown.
+Design and the verified capability audit landed on `main` in `1218288`. Slice 1 — hook-driven status for Claude Code behind today's Busy/Idle vocabulary — landed in `9584330`. Jason authorized slice 2, the status vocabulary and its UI, with the existing Codex crew on 2026-09-14. Mission preparation is on `feat/347-status-ui`; the [brief](../archive/gpui-rewrite/briefs/347-slice-2-status-ui.md) covers the complete slice and leaves implementation uncommitted for smoke testing. Pencil's desktop connection was unavailable during preparation, so visual verification remains outstanding.
 
 Capabilities are verified against installed binaries, not documentation: Claude Code 2.1.270, Codex 0.154.0, TRAE CLI 0.120.52, all checked 2026-09-14. The per-runtime matrix is in the spec.
 

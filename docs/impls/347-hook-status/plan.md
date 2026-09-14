@@ -6,7 +6,7 @@ Slices for [#347](https://github.com/yicheng47/runner/issues/347) ([spec](../../
 | --- | --- | --- |
 | 0 | Design and capability audit: ten canvas frames, per-runtime matrix verified against installed binaries | Landed 2026-09-14, `1218288` |
 | 1 | Claude Code hook *source* behind today's Busy/Idle — injection, status file, notify watcher, `hook` source and latch, interrupt recovery | Landed 2026-09-14, `9584330` |
-| 2 | The status vocabulary and its UI — Working / Needs you / Ready plus lifecycle and observability states, pane header, single-pane tab bar, sidebar rollups, mission workspace | Gated on frame review |
+| 2 | The status vocabulary and its UI — Working / Needs you / Ready plus lifecycle and observability states, pane header, single-pane tab bar, sidebar rollups, mission workspace | Authorized 2026-09-14; Codex crew mission preparation on `feat/347-status-ui` |
 | 3 | Codex adapter | Not started |
 | 4 | TRAE CLI adapter | Not started |
 | 5 | Deferred details, one at a time | Not started |
@@ -14,7 +14,7 @@ Slices for [#347](https://github.com/yicheng47/runner/issues/347) ([spec](../../
 
 ## Slice 2 — vocabulary and UI
 
-The one that makes the feature visible, and the only place `Answer needed` appears. Driven by Claude Code's `Notification` subtypes, which are confirmed present in 2.1.270. Big enough to want splitting: the normalized backend state model plus the pane header first, then sidebar rollups and the mission workspace. Gated on Jason's review of the frames, not on any unknown. Also the point at which slice 1's completion suppression should be reconsidered in favour of rendering an interrupt honestly.
+The one that makes the feature visible, and the only place `Answer needed` appears. Driven by Claude Code's `Notification` subtypes, which are confirmed present in 2.1.270. Implement in two internal passes: the normalized backend state model plus the pane header first, then sidebar rollups and the mission workspace. Jason authorized implementation with the existing designs on 2026-09-14; a new visual review was not performed in that session because Pencil's desktop connection was unavailable. Also the point at which slice 1's completion suppression should be reconsidered in favour of rendering an interrupt honestly. [Mission brief](../archive/gpui-rewrite/briefs/347-slice-2-status-ui.md).
 
 ## Slice 3 — Codex
 

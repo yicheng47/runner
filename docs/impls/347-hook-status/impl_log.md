@@ -5,7 +5,7 @@ Dated record for the #347 program ([README](README.md), [plan](plan.md)). Newest
 ## Current state (update with each entry)
 
 - **Landed**: slice 0 (design + capability audit) in `1218288`; slice 1 (Claude Code hook source, Busy/Idle only) in `9584330`. Both 2026-09-14.
-- **Next**: slice 2, the vocabulary and its UI — gated on Jason's review of the canvas frames, not on an unknown.
+- **Current**: slice 2, the vocabulary and its UI — authorized 2026-09-14 for the existing Codex crew, preparing on `feat/347-status-ui`.
 - **CLI versions verified against**: Claude Code 2.1.270, Codex 0.154.0, TRAE CLI 0.120.52, all checked against installed binaries 2026-09-14.
 - **Open**: Windows (slice 1's hook is POSIX-only, fails safe to the baseline); TRAE's documented immediate `idle_prompt` is unverified.
 
@@ -22,3 +22,7 @@ The capability audit was redone against installed binaries and was wrong in both
 Two mission-goal instructions turned out to be wrong and were reversed mid-flight. **Do not key Idle on `Stop`** was built on the premise that `Notification(idle_prompt)` is a turn boundary; the reviewer found `messageIdleNotifThresholdMs:60000` in the 2.1.270 binary, making it a delayed, user-disableable idle notice. Keying on `Stop` is safe because Busy/Idle gates no behaviour — a continuation costs one wrong glyph, self-corrected. **Align the two spawn gates** narrowed the rekey stale-report cleanup for runners with a user-supplied `--settings`; caught in re-review and restored.
 
 Driving the real app then found the blocker the documentation pass had missed: Claude Code publishes no interrupt event and its `Stop` excludes interruptions, so an Esc-interrupted turn stayed Busy forever with the baseline latched off — worse than the byte detector it replaced. Recovered through the input layer instead of a timeout. Escape is provisional and display-only: excluded from completion recording so it cannot fire a false turn-finished badge, and skipped in the tab's completion loop so it cannot consume a sibling pane's real one. That suppression is a slice-1 compromise; see [README](README.md#open).
+
+## 2026-09-14 — slice 2 authorized
+
+Jason requested the existing Codex crew for slice 2 after the progress check. Prepared `feat/347-status-ui` in the existing checkout and the [mission brief](../archive/gpui-rewrite/briefs/347-slice-2-status-ui.md): normalized status and Claude human-wait delivery hold, followed by every designed pane/tab/sidebar/mission surface, with a working-tree review before Jason's smoke test. Codex/TRAE adapters and title-heuristic removal remain later slices. Native Windows hooks remain baseline-only for this mission, with explicit documentation and tests required. Pencil's desktop MCP was unavailable during preparation; the brief requires retrying the connection and recording any outstanding visual verification.
