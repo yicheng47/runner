@@ -6,7 +6,7 @@ Slices for [#347](https://github.com/yicheng47/runner/issues/347) ([spec](../../
 | --- | --- | --- |
 | 0 | Design and capability audit: ten canvas frames, per-runtime matrix verified against installed binaries | Landed 2026-09-14, `1218288` |
 | 1 | Claude Code hook *source* behind today's Busy/Idle — injection, status file, notify watcher, `hook` source and latch, interrupt recovery | Landed 2026-09-14, `9584330` |
-| 2 | The status vocabulary and its UI — Working / Needs you / Ready plus lifecycle and observability states, pane header, single-pane tab bar, sidebar rollups, mission workspace | Implemented on `feat/347-status-ui`; required checks and working-tree review clean; PR workflow authorized, not landed. PR authorized after clean review; human smoke test later. |
+| 2 | The status vocabulary and its UI — Working / Needs you / Ready plus lifecycle and observability states, pane header, single-pane tab bar, sidebar rollups, mission workspace | Implemented on `feat/347-status-ui`; local checks and working-tree review clean; [PR #588](https://github.com/yicheng47/runner/pull/588) open, not landed. PR authorized after clean review; human smoke test later. |
 | 3 | Codex adapter | Not started |
 | 4 | TRAE CLI adapter | Not started |
 | 5 | Deferred details, one at a time | Not started |

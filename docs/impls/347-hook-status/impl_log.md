@@ -5,7 +5,7 @@ Dated record for the #347 program ([README](README.md), [plan](plan.md)). Newest
 ## Current state (update with each entry)
 
 - **Landed**: slice 0 (design + capability audit) in `1218288`; slice 1 (Claude Code hook source, Busy/Idle only) in `9584330`. Both 2026-09-14.
-- **Current**: slice 2 implemented and reviewed on `feat/347-status-ui`, mission `01M2EX7VV58BNFWBN7G1JQVPWC`; required checks passed and no remaining must-fix issues. PR authorized after clean review, no merge. Jason's smoke test on another PC remains pending.
+- **Current**: slice 2 implemented and reviewed in [PR #588](https://github.com/yicheng47/runner/pull/588) on `feat/347-status-ui`, mission `01M2EX7VV58BNFWBN7G1JQVPWC`; required checks passed and no remaining must-fix issues. PR authorized after clean review, no merge. Jason's smoke test on another PC remains pending.
 - **CLI versions verified against**: Claude Code 2.1.270, Codex 0.154.0, TRAE CLI 0.120.52, all checked against installed binaries 2026-09-14.
 - **Open**: native Windows hooks and smoke testing; live Claude dialog and rendered-app verification; TRAE's documented immediate `idle_prompt` is unverified. Windows baseline-only selection is explicit in slice 2.
 
@@ -61,3 +61,8 @@ Fix-pass validation passed: 716 backend and 378 app tests with the same locked C
 ## 2026-09-14 — working-tree review clean; PR authorized
 
 Reviewer explicitly reported **no remaining must-fix issues** in Runner message `01M2F0SNXS8M8QBSVRFSZVK90G` after independently rerunning all required checks (716 backend / 378 app tests, workspace and updater Clippy, formatting, diff checks). All seven must-fix findings and the accompanying follow-ups were verified closed. The implementation can now be committed, pushed, and submitted as a PR against `main` under Jason's updated authorization; any nontrivial CI fix returns to working-tree review. No merge or branch deletion is authorized. Native Windows behavior, rendered-app comparison to the design frames, end-to-end Claude dialogs, and snapshot cost under live hook traffic remain unverified. Jason's smoke test on another PC is pending and does not gate PR creation.
+
+
+## 2026-09-14 — PR #588 opened
+
+Implementation commit `fc3a608` and the preparation brief are submitted in [PR #588](https://github.com/yicheng47/runner/pull/588) against `main`. The PR records the clean working-tree review, local checks, and all remaining manual/platform limitations. Automated macOS/Windows CI results are tracked on the [PR checks](https://github.com/yicheng47/runner/pull/588/checks); nontrivial CI corrections require another Runner review. Slice 2 remains unlanded, and Jason's later smoke test on another PC remains pending. No merge or branch deletion is authorized.
