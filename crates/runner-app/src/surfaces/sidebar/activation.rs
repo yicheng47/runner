@@ -92,12 +92,17 @@ impl NativeRoot {
     }
 
     pub(crate) fn mark_active_tab_viewed(&mut self, window: &Window, cx: &mut Context<Self>) {
+        if self.route != AppRoute::Chat {
+            self.report_current_subjects(cx);
+            return;
+        }
         let Some(layout) = self.tabs.active() else {
             self.report_current_subjects(cx);
             return;
         };
         let tab_id = layout.id.clone();
         let member_ids = layout.session_ids();
+        let viewed_session_id = layout.focused_session_id().map(str::to_owned);
         if !window.is_window_active() {
             self.report_current_subjects(cx);
             runner_backend::ops::window::mark_blurred(self.core(cx), &self.window_label);
@@ -108,6 +113,7 @@ impl NativeRoot {
             &self.window_label,
             &tab_id,
             member_ids,
+            viewed_session_id.as_deref(),
         ) {
             Ok(updated) => {
                 self.app_store

@@ -21,8 +21,14 @@ pub fn cascade_reference(entries: &[WindowEntry], new_label: &str) -> Option<Str
         .map(|entry| entry.label.clone())
 }
 
-pub fn report_subjects(core: &AppCore, label: &str, subjects: Vec<Subject>) -> Result<()> {
+pub fn report_subjects(
+    core: &AppCore,
+    label: &str,
+    subjects: Vec<Subject>,
+    viewed_session_id: Option<&str>,
+) -> Result<()> {
     core.windows.set_subjects(label, subjects);
+    core.windows.set_viewed_session(label, viewed_session_id);
     let visible = core.windows.focused_direct_sessions(label);
     mark_direct_sessions_viewed(core, &visible)?;
     core.broadcast_focus_map();
@@ -82,6 +88,7 @@ mod tests {
         WindowEntry {
             label: label.to_owned(),
             subjects,
+            viewed_session_id: None,
             focused_at: Utc.timestamp_opt(seconds, 0).single().unwrap(),
             focused: true,
         }

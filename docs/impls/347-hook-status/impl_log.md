@@ -5,7 +5,7 @@ Dated record for the #347 program ([README](README.md), [plan](plan.md)). Newest
 ## Current state (update with each entry)
 
 - **Landed**: slice 0 (design + capability audit) in `1218288`; slice 1 (Claude Code hook source, Busy/Idle only) in `9584330`. Both 2026-09-14.
-- **Current**: slice 2 implemented and reviewed in [PR #588](https://github.com/yicheng47/runner/pull/588) on `feat/347-status-ui`, mission `01M2EX7VV58BNFWBN7G1JQVPWC`; required checks passed and no remaining must-fix issues. PR authorized after clean review, no merge. Jason's smoke test on another PC remains pending.
+- **Current**: slice 2 implemented and reviewed in [PR #588](https://github.com/yicheng47/runner/pull/588) on `feat/347-status-ui`, mission `01M2EX7VV58BNFWBN7G1JQVPWC`; the published PR passes macOS and Windows CI. A subsequent inline pass fixed split-pane acknowledgement in the working tree; the earlier reviewer verdict predates this follow-up. No merge. Jason's smoke test on another PC remains pending; use the [smoke checklist](../../tests/347-status-ui-smoke.md).
 - **CLI versions verified against**: Claude Code 2.1.270, Codex 0.154.0, TRAE CLI 0.120.52, all checked against installed binaries 2026-09-14.
 - **Open**: native Windows hooks and smoke testing; live Claude dialog and rendered-app verification; TRAE's documented immediate `idle_prompt` is unverified. Windows baseline-only selection is explicit in slice 2.
 
@@ -66,3 +66,101 @@ Reviewer explicitly reported **no remaining must-fix issues** in Runner message 
 ## 2026-09-14 — PR #588 opened
 
 Implementation commit `fc3a608` and the preparation brief are submitted in [PR #588](https://github.com/yicheng47/runner/pull/588) against `main`. The PR records the clean working-tree review, local checks, and all remaining manual/platform limitations. Automated macOS/Windows CI results are tracked on the [PR checks](https://github.com/yicheng47/runner/pull/588/checks); nontrivial CI corrections require another Runner review. Slice 2 remains unlanded, and Jason's later smoke test on another PC remains pending. No merge or branch deletion is authorized.
+
+## 2026-09-14 — inline follow-up: focused-pane acknowledgement
+
+Continuing PR #588 found that the UI still passed every split-pane session to acknowledgement, and window visibility treated every sibling as viewed. This defeated the per-session persistence even though the earlier backend test passed only one member. Window ownership still includes every pane, but attention now tracks the focused session separately. Tab activation, pane selection, window focus, and completion all use that session; selecting an empty pane acknowledges none. A process exit in the currently focused pane acknowledges its error attention while preserving Error lifecycle. Non-chat routes do not acknowledge the retained chat tab.
+
+Expanded the existing sibling test to pass both members and added a regression covering completion in an unfocused sibling, tab/window reactivation, error acknowledgement, empty-pane focus, and preserved terminal ownership. The full locked CI-profile backend/app suite passes: 717 backend and 378 app tests. The initial sandbox run denied three local Unix-socket binds; those tests and the final suite passed outside the sandbox. The published PR's macOS and Windows jobs also passed; that CI run does not include this uncommitted follow-up.
+
+Workspace Clippy, app/updater Clippy, formatting, and diff checks passed for the follow-up. Local logs: `/tmp/runner-588-final-tests.log`, `/tmp/runner-588-clippy.log`, and `/tmp/runner-588-clippy-updater.log`.
+
+Added the [manual smoke checklist](../../tests/347-status-ui-smoke.md) requested by Jason, with steps and expected results for dialogs, delivery, interruption, pane attention, layouts, rollups, missions, persistence, themes, and baseline runtimes. Manual checks remain pending. No additional crew, commit, push, or merge was performed during this follow-up.
+
+## 2026-09-14 — live question smoke: early detection and Escape cancellation
+
+Jason's 12:05 screenshots showed AskUserQuestion still displaying Working before the delayed notification, then retaining Answer needed after Escape returned the CLI to its prompt. The live hook file ended at PreToolUse → PermissionRequest → Notification; neither PostToolUseFailure nor Stop followed Escape. Claude 2.1.270's transcript did record a user tool_result with the matching tool_use_id, promptId, sessionId, and toolDenialKind=user-rejected, followed by a system turn_duration record. The installed binary still has the six-second notification timer; this is upstream delay, not Runner's polling interval.
+
+At Jason's request, cloned manaflow-ai/cmux into `~/repos/harness/cmux`, inspected revision `015991fbd90cef2ce16b46a58d6f1a265ef81998`. Its [Claude pre-tool handler](https://github.com/manaflow-ai/cmux/blob/015991fbd90cef2ce16b46a58d6f1a265ef81998/CLI/cmux.swift#L28714) recognizes AskUserQuestion/ExitPlanMode before notifications. Its [PermissionRequest injection](https://github.com/manaflow-ai/cmux/blob/015991fbd90cef2ce16b46a58d6f1a265ef81998/CLI/CMUXCLI%2BClaudeHookSettings.swift#L60) enters its own blocking Feed decision flow; that UI/approval ownership is not adopted by Runner.
+
+Runner now raises Answer needed immediately for a named AskUserQuestion with a tool-use ID. Ordinary permission requests remain notification-driven. This revises the initial question timing policy: an automatically answered question can briefly have early attention, then clears through its result. A cursor on the hook-supplied transcript reads a bounded recent tail initially, then complete appended records while a wait or cancellation is unresolved. Only matching main-session/current-prompt tool results resolve owners; no terminal prose is parsed. A structured user rejection records Interrupted and releases its wait, and the following turn_duration establishes Ready without completion attention. Transcript unavailability preserves the hook path and its existing conservative hold.
+
+Regression coverage reproduces Escape with no post-tool/stop hook, split transcript writes, delayed notifications after cancellation, automatic answers, stale prompts, foreign sessions, sidechains, unrelated tool/form ownership, a missing transcript, and delivery release with an independent draft. The existing tilde removal remains in the working tree, with estimates explained in tooltips. Live retesting of these changes is pending; nothing has been committed or pushed.
+
+Validation passed: all 720 backend tests, workspace/all-target Clippy with warnings denied, formatting, and diff checks. Logs: `/tmp/runner-588-question-backend.log` and `/tmp/runner-588-question-clippy.log`. The earlier 378 app tests passed after tilde removal; this follow-up changes backend hook handling only.
+
+## 2026-09-14 — other-signal audit
+
+Audited ordinary approvals, plan review, MCP forms and URL requests, tool/API failures, completion, interrupts, and background signals against cmux and installed Claude Code 2.1.270. ExitPlanMode now receives immediate Approval needed using the same named-tool path as questions. This is prompt attention only: Runner has no Plan mode selector, planning state, or plan viewer. EnterPlanMode remains an ordinary tool unless a surfaced permission notification establishes an approval wait.
+
+Closed two event-order gaps: an elicitation notification cannot recreate a wait after all its candidates have resolved, and a duplicate/unmatched ElicitationResult no longer restarts a finished turn. Post-tool results preserve Interrupted/Completed/Failed until a new prompt or PreToolUse establishes new work, preventing parallel tool completion from rearming an interrupted turn. Regression coverage checks form accept/decline/cancel, delayed notifications/results, early plan attention without duplicate interactions, and results after interruption/completion/API failure.
+
+Ordinary command approvals and MCP forms still depend on the approximately six-second notification gate. MCP URL requests use elicitation_url_dialog, which Runner does not subscribe to. The installed MCP elicitation coordinator can retain a second blocking dialog after accepting a URL; its completion notification carries the request identity only in message prose, so simply subscribing would leave an incomplete resolution path. Background attention, mode tracking, and compaction details remain outside this slice. The [smoke checklist and signal audit](../../tests/347-status-ui-smoke.md) record coverage and limits; live retesting remains pending.
+
+Validation passed: 722 backend tests and workspace/all-target Clippy with warnings denied. Logs: `/tmp/runner-588-signal-backend.log` and `/tmp/runner-588-signal-clippy.log`. All follow-up changes remain uncommitted; no app restart, commit, push, or merge was performed.
+
+## 2026-09-14 — live question retest passed
+
+Jason confirmed question detection and question cancellation are done. Marked both live checks passed in the smoke checklist. Other checks remain pending; this confirmation does not cover automatic-answer variants or the broader interruption matrix. No commit or push was requested or performed.
+
+Jason also confirmed tilde removal passed; recorded it in the live smoke results.
+
+## 2026-09-14 — selected header option C
+
+Jason selected Pencil option C and requested implementation. Saved the three alternatives in `design/runner.pen`; selected node `iP5dP` shows status after the chat action buttons with a short divider, in dark/light themes and at narrow width. The single-pane tab now orders its menu, Resume/Stop, and Fork controls before the status. Split-pane status follows its inline menu, drag, and split controls, while the close-pane control retains its trailing placement.
+
+The shared header treatment uses a 1 × 14 logical-pixel divider, 10-pixel gap, and 10-pixel normal status text. Attention/error labels remain 11 pixels. Stopped, Ready, and Idle omit their extra glyph while text is shown; icon-only headers retain the glyph and tooltip. Labeled status reserves a minimum 108-pixel slot that can grow with the text; icon-only status reserves 16 pixels. Updated the spec and manual layout check to match the selected design.
+
+Validation passed: all 378 runner-app tests, workspace/all-target Clippy, and runner-app/updater Clippy with warnings denied. The initial sandbox run blocked the native MCP socket bind; the suite passed outside the sandbox. Logs: `/tmp/runner-588-header-c-tests.log`, `/tmp/runner-588-header-c-clippy.log`, and `/tmp/runner-588-header-c-updater-clippy.log`. Native rendering of the new header still needs Jason's live check. Changes remain uncommitted; Runner was not restarted.
+
+## 2026-09-14 — duplicate resume spinner
+
+Jason's 12:38 screenshot showed the Resume action spinner alongside the new Resuming status spinner. The single-pane agent header now keeps a disabled Resume icon with a Resuming tooltip, while the status owns the only spinner at both labeled and icon-only widths. Shell headers retain their action spinner because they have no agent status. Added the resumed-state preview to selected Pencil option C (`I8PjKS`), saved the canvas, and updated the header smoke steps. Live retesting is pending.
+
+Clarified the crew-delivery smoke test for permission bypass: use AskUserQuestion to establish a real dialog, queue a crew message, verify its nudge waits, then answer/cancel and verify delivery resumes. Draft protection is checked separately at the normal CLI prompt. No crew-delivery pass has been reported yet.
+
+Validation passed: all 378 runner-app tests, workspace/all-target Clippy, app/updater Clippy, formatting, and diff checks. Logs: `/tmp/runner-588-resume-spinner-tests.log`, `/tmp/runner-588-resume-spinner-clippy.log`, and `/tmp/runner-588-resume-spinner-updater-clippy.log`. No commit, push, or Runner restart was performed.
+
+## 2026-09-14 — crew delivery smoke passed
+
+Jason confirmed the crew smoke test passed after the permission-bypass test clarification. Recorded the crew-delivery check as passed in the live smoke checklist.
+
+## 2026-09-14 — response failure label
+
+Jason pulled the Response failed presentation into this slice and pointed to Pencil node `f9fpUs`. Inspected that node through Pencil MCP: red circle-exclamation, red 11-pixel label. The shared status presentation now maps a live Failed outcome to Response failed, keeps the error treatment at narrow widths, and explains that the agent is still connected in its tooltip. This applies to pane/tab headers and mission status indicators. Recoverable tool failures retain Working; new work clears the failure; stopped/resuming/crashed lifecycle states take precedence. Existing completion suppression remains in place. Sidebar response-failure attention remains deferred. Updated the spec, slice record, and smoke checklist; live failure rendering and recovery still need a smoke pass.
+
+Validation passed: all 378 runner-app tests, workspace/all-target Clippy, app/updater Clippy, formatting, and diff checks. Logs: `/tmp/runner-588-response-failed-tests.log`, `/tmp/runner-588-response-failed-clippy.log`, and `/tmp/runner-588-response-failed-updater-clippy.log`. Changes remain uncommitted; Runner was not restarted.
+
+## 2026-09-14 — failure smoke observations
+
+Jason observed recoverable tool failures staying Working, then saw Response failed appear briefly after Claude injected a synthetic StopFailure inside an active Bash tool. Read the event names from the session-status feed for `01M2F3M4DBFEZB54PQ2VZNWRND`: lines 32–34 are StopFailure, PostToolUse, Stop. The late tool result preserves Failed, and the normal Stop changes the outcome to Completed/Ready. This is expected for a synthetic failure inside a turn that still finishes successfully. Recorded tool-failure behavior and synthetic failure rendering as passed; persistence/recovery and a real CLI-emitted fatal failure remain pending. An idle-session injection avoids the trailing normal Stop when testing persistence. No implementation change was made for this observation.
+
+## 2026-09-14 — split-pane status placement
+
+Jason’s split-pane screenshot exposed that the expanding drag-handle area pushed the divider and status to the trailing side. Moved the shared status immediately after the title menu, before that expanding area; split and close controls retain their trailing positions. Added and saved the matching preview to selected Pencil option C (`ZWAnA`), checked its screenshot and layout bounds, and clarified the spec and smoke checklist. Ready/Idle/Stopped remain text-only when labeled, as Jason chose after reverting the icon-restoration experiment.
+
+Validation passed: all 378 runner-app tests, workspace/all-target Clippy, app/updater Clippy, formatting, and diff checks. Logs: `/tmp/runner-588-pane-status-placement-tests.log`, `/tmp/runner-588-pane-status-placement-clippy.log`, and `/tmp/runner-588-pane-status-placement-updater-clippy.log`. Live layout retesting is pending; changes remain uncommitted and Runner was not restarted.
+
+## 2026-09-14 — divider-free split headers and centered drag handle
+
+Jason removed the split-pane divider and required the drag handle to stay at the pane’s horizontal center. Split-pane status now uses its natural content width after the title menu. Equal flexible left identity/status and right action areas surround a fixed 20-pixel handle; tab headers retain option C’s divider and reserved status width. Existing drag callbacks, split actions, close behavior, and click-to-focus remain. Applied the layout to the requested full Pencil frame `X7FJf` (Claude, Codex, and Empty) and compact preview `ZWAnA`. Saved and checked screenshots and bounds: the 600-pixel pane’s handle center is 300, and both 599-pixel panes center at 299.5.
+
+Validation passed for the UI changes: all 378 runner-app tests, workspace/all-target Clippy, and app/updater Clippy. Logs use `/tmp/runner-588-split-header-center-*.log`. Native drag, narrow-width, and rename smoke checks remain pending.
+
+## 2026-09-14 — late Escape after question cancellation
+
+Jason’s 13:10 screenshot showed Status unavailable after an Escape-cancelled question. The live Claude transcript contained the matching user-rejected tool result and its turn_duration record, while the hook feed contained no Stop or PostToolUseFailure. Reproduced a watcher ordering bug: after transcript recovery reached Ready/Interrupted, a late or repeated Escape or Ctrl+C still matched the interrupt guard solely because the last outcome was Interrupted, overwrote Ready with Unavailable, and left no pending transcript recovery. Interrupts now alter observation only while work or a human interaction is active. Extended the existing cancellation regression to cover both late Escape and Ctrl+C: it failed with Unavailable before the guard fix and passed afterward. This matches the live symptom; live retesting is pending.
+
+Validation passed for the Escape fix: 722 backend tests, workspace/all-target Clippy, app/updater Clippy, formatting, and diff checks. The regression failed before the fix and passed after it. Logs: `/tmp/runner-588-escape-ready-regression-before.log`, `/tmp/runner-588-escape-ready-regression-after.log`, `/tmp/runner-588-escape-ready-backend.log`, `/tmp/runner-588-escape-ready-clippy.log`, and `/tmp/runner-588-escape-ready-updater-clippy.log`. All changes remain uncommitted; Runner was not restarted.
+
+## 2026-09-14 — one visible Idle state
+
+Jason merged Ready and Idle to reduce the visible vocabulary. Removed the Ready presentation variant and map both internal Ready and Idle activity to Idle throughout headers, cards, and status tooltips. The baseline tooltip still says estimated from terminal activity; normalized activity, outcomes, completion eligibility, and delivery rules retain their existing semantics. The UI now has 11 visible status labels. Extended the existing presentation test to check that confirmed and estimated inactivity share Idle while only the baseline is marked estimated. Updated the feature spec, slice record, smoke checklist, selected Pencil option C, full frame `X7FJf`, and the status-reference frames. Corrected the touched legacy canvas notes that incorrectly said only Ready allowed crew delivery. Saved the canvas and verified the changed labels and text bounds.
+
+Validation passed: all 378 runner-app tests, workspace/all-target Clippy, app/updater Clippy, formatting, and diff checks. Logs use `/tmp/runner-588-idle-label-*.log`. Native retesting remains pending; changes are uncommitted and Runner was not restarted.
+
+## 2026-09-14 — final smoke pass and full PR review
+
+Jason confirmed the smoke test passed and authorized final review, PR update, and merge. Reviewed the entire slice-2 diff against the refreshed `origin/main`, including the accumulated inline follow-ups: hook payload transport and ownership, wait correlation and cancellation, late events and outcomes, delivery reservations and independent input gates, persisted per-pane attention, window/mission acknowledgement, rollup targeting, and single/split header layouts. No remaining must-fix findings. Rechecked Pencil option C (`iP5dP`), the requested split frame (`X7FJf`), and Response failed (`f9fpUs`). No additional code changes were needed for this review.
+
+Final local validation passed: `cargo test --locked --workspace --no-fail-fast --profile ci` (including 722 backend tests and 378 runner-app tests), workspace/all-target Clippy, app/updater Clippy, formatting, and diff checks. Logs: `/tmp/runner-588-final-tests.log`, `/tmp/runner-588-final-clippy.log`, and `/tmp/runner-588-final-updater-clippy.log`. Native Windows interactive testing and a real CLI-emitted StopFailure were not separately reported; the documented synthetic failure proves rendering only. The smoke checklist preserves those evidence limits. GitHub requires Rust / macOS; both macOS and Windows CI must pass on the final pushed commit before the authorized merge. Runner was not restarted.

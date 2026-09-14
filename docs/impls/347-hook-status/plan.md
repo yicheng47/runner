@@ -6,7 +6,7 @@ Slices for [#347](https://github.com/yicheng47/runner/issues/347) ([spec](../../
 | --- | --- | --- |
 | 0 | Design and capability audit: ten canvas frames, per-runtime matrix verified against installed binaries | Landed 2026-09-14, `1218288` |
 | 1 | Claude Code hook *source* behind today's Busy/Idle — injection, status file, notify watcher, `hook` source and latch, interrupt recovery | Landed 2026-09-14, `9584330` |
-| 2 | The status vocabulary and its UI — Working / Needs you / Ready plus lifecycle and observability states, pane header, single-pane tab bar, sidebar rollups, mission workspace | Implemented on `feat/347-status-ui`; local checks and working-tree review clean; [PR #588](https://github.com/yicheng47/runner/pull/588) open, not landed. PR authorized after clean review; human smoke test later. |
+| 2 | The status vocabulary and its UI — Working / Needs you / Idle plus lifecycle and observability states, pane header, single-pane tab bar, sidebar rollups, mission workspace | Complete in [PR #588](https://github.com/yicheng47/runner/pull/588); final inline review and local validation passed. Jason confirmed the smoke pass and authorized merge on 2026-09-14. See the PR for final-head CI and landing. |
 | 3 | Codex adapter | Not started |
 | 4 | TRAE CLI adapter | Not started |
 | 5 | Deferred details, one at a time | Not started |
@@ -14,7 +14,7 @@ Slices for [#347](https://github.com/yicheng47/runner/issues/347) ([spec](../../
 
 ## Slice 2 — vocabulary and UI
 
-The one that makes the feature visible, and the only place `Answer needed` appears. Driven by Claude Code's `Notification` subtypes, which are confirmed present in 2.1.270. Implement in two internal passes: the normalized backend state model plus the pane header first, then sidebar rollups and the mission workspace. Both passes are implemented in mission `01M2EX7VV58BNFWBN7G1JQVPWC`. Pencil reconnected and the ten design frames were inspected; rendered-app visual checks and Jason's smoke test on another PC remain pending. Interruption is now a separate outcome and never synthesizes a successful completion; its tooltip remains slice 5. Per-pane unread/error acknowledgement persists in migration 0021. After clean working-tree review and required checks, Jason authorizes a PR and CI follow-through, with no merge. [Mission brief](../archive/gpui-rewrite/briefs/347-slice-2-status-ui.md).
+The slice that makes the feature visible, including `Answer needed`. Claude Code 2.1.270 supplies named question/plan tool events and delayed surfaced-dialog notifications. Both internal passes were implemented in mission `01M2EX7VV58BNFWBN7G1JQVPWC`: normalized backend state and pane headers, then sidebar rollups and mission surfaces. Inline follow-ups reconcile cancelled questions from structured transcript records and retain finished outcomes across late tool results. The final presentation uses Idle for both confirmed and estimated inactivity, adds Response failed, and follows option C for single-pane tabs plus the centered split-pane design in `X7FJf`. Per-pane unread/error acknowledgement persists in migration 0021. Jason confirmed the smoke test passed; final inline review and local checks passed, and merge is authorized after CI. The interruption tooltip remains slice 5. [Mission brief](../archive/gpui-rewrite/briefs/347-slice-2-status-ui.md).
 
 ## Slice 3 — Codex
 
@@ -26,7 +26,7 @@ Verify the documented immediate `idle_prompt` against the binary first; Claude C
 
 ## Slice 5 — deferred details
 
-`Working · Compacting context` and `Using tools`; `Error · Response failed` (Claude Code only, via `StopFailure`); the interruption outcome in the Ready tooltip; elapsed time on a wait; the nonblocking-ask `Still working` case. Each is additive to the slice-2 layout.
+`Working · Compacting context` and `Using tools`; sidebar attention for response failures (the Claude `StopFailure` label was pulled into slice 2 on 2026-09-14); the interruption outcome in the Idle tooltip; elapsed time on a wait; the nonblocking-ask `Still working` case. Each is additive to the slice-2 layout.
 
 ## Slice 6 — remove the title heuristic
 

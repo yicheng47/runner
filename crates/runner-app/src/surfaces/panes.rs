@@ -416,7 +416,7 @@ impl NativeRoot {
                 div()
                     .id("single-pane-status")
                     .flex_none()
-                    .child(runner_app::ui::agent_status::status_indicator(
+                    .child(runner_app::ui::agent_status::header_status_indicator(
                         status,
                         status.shows_label(width),
                         "tab-status",
@@ -429,13 +429,12 @@ impl NativeRoot {
                     }))
                     .into_any_element()
             });
-        let title_actions = single_status.into_iter().chain(
-            (!session_ids.is_empty() && !focused_secondary)
-                .then(|| self.chat_action_menu.clone().into_any_element())
-                .into_iter()
-                .chain(control)
-                .chain(fork_action),
-        );
+        let title_actions = (!session_ids.is_empty() && !focused_secondary)
+            .then(|| self.chat_action_menu.clone().into_any_element())
+            .into_iter()
+            .chain(control)
+            .chain(fork_action)
+            .chain(single_status);
         let keymap_overrides = self.settings(cx).keymap_overrides.clone();
         // A single-pane tab has no identity line, so the header carries its
         // split menu; once split, every identity line carries its own.
@@ -832,9 +831,18 @@ impl NativeRoot {
                 .is_some_and(|entry| Runtime::parse(&entry.agent_runtime) == Some(Runtime::Shell));
             if any_resuming {
                 Some(
-                    SessionControl::new("resume-chat-header", SessionControlKind::Resuming)
-                        .variant(SessionControlVariant::Header)
-                        .into_any_element(),
+                    SessionControl::new(
+                        "resume-chat-header",
+                        if shell {
+                            SessionControlKind::Resuming
+                        } else {
+                            SessionControlKind::Resume
+                        },
+                    )
+                    .variant(SessionControlVariant::Header)
+                    .title("Resuming…")
+                    .lifecycle_disabled(true)
+                    .into_any_element(),
                 )
             } else if status == SessionStatus::Running {
                 Some(
@@ -1849,8 +1857,8 @@ impl NativeRoot {
         let header = grouped.then(|| {
             let split_menu = self.split_menu(SplitMenuSurface::Pane, &layout.id, &pane_id, cx);
             let grip = div()
-                .min_w(rems(20. / 16.))
-                .flex_1()
+                .w(rems(20. / 16.))
+                .flex_none()
                 .flex()
                 .items_center()
                 .justify_center()
@@ -1991,6 +1999,7 @@ impl NativeRoot {
                             }),
                     )
                     .child(name)
+                    .children(menu)
                     .children(status.map(|status| {
                         let width = self
                             .pane_bounds
@@ -2003,7 +2012,7 @@ impl NativeRoot {
                             .id(SharedString::from(format!("pane-status-{target}")))
                             .ml_2()
                             .flex_none()
-                            .child(runner_app::ui::agent_status::status_indicator(
+                            .child(runner_app::ui::agent_status::pane_status_indicator(
                                 status,
                                 status.shows_label(width),
                                 SharedString::from(format!("status-{target}")),
@@ -2016,9 +2025,6 @@ impl NativeRoot {
                             }))
                             .into_any_element()
                     }))
-                    .children(menu)
-                    .child(grip)
-                    .child(split_menu)
                     .into_any_element()
             } else {
                 div()
@@ -2041,8 +2047,6 @@ impl NativeRoot {
                             .text_color(theme::faint())
                             .child("Empty"),
                     )
-                    .child(grip)
-                    .child(split_menu)
                     .into_any_element()
             };
             div()
@@ -2055,50 +2059,68 @@ impl NativeRoot {
                 .border_color(theme::border())
                 .bg(theme::panel())
                 .child(identity)
+                .child(grip)
                 .child(
                     div()
-                        .ml_2()
-                        .flex_none()
-                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .min_w(px(0.))
+                        .flex_1()
+                        .flex()
+                        .items_center()
+                        .justify_end()
+                        .gap_2()
+                        .child(split_menu)
                         .child(
-                            IconButton::new(
-                                SharedString::from(format!("close-pane-{close_pane_id}")),
-                                "close.svg",
-                            )
-                            .size(IconButtonSize::Sm)
-                            .tooltip("Close pane")
-                            .on_press(move |window, cx| {
-                                let pane_id = close_pane_id.clone();
-                                let session_id = close_session_id.clone();
-                                close_root.update(cx, |this, cx| {
-                                    match (close_behavior, session_id) {
-                                        (PaneCloseBehavior::CloseTerminal, Some(session_id)) => {
-                                            this.request_close_terminal_pane(
-                                                &pane_id,
-                                                &session_id,
-                                                window,
-                                                cx,
-                                            );
-                                        }
-                                        (PaneCloseBehavior::ArchiveChat, Some(session_id)) => {
-                                            this.request_close_chat_pane(
-                                                &pane_id,
-                                                &session_id,
-                                                window,
-                                                cx,
-                                            );
-                                        }
-                                        (PaneCloseBehavior::LayoutOnly, _) => {
-                                            this.close_pane(&pane_id, window, cx);
-                                        }
-                                        (
-                                            PaneCloseBehavior::CloseTerminal
-                                            | PaneCloseBehavior::ArchiveChat,
-                                            None,
-                                        ) => {}
-                                    }
-                                });
-                            }),
+                            div()
+                                .flex_none()
+                                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                                .child(
+                                    IconButton::new(
+                                        SharedString::from(format!("close-pane-{close_pane_id}")),
+                                        "close.svg",
+                                    )
+                                    .size(IconButtonSize::Sm)
+                                    .tooltip("Close pane")
+                                    .on_press(
+                                        move |window, cx| {
+                                            let pane_id = close_pane_id.clone();
+                                            let session_id = close_session_id.clone();
+                                            close_root.update(cx, |this, cx| {
+                                                match (close_behavior, session_id) {
+                                                    (
+                                                        PaneCloseBehavior::CloseTerminal,
+                                                        Some(session_id),
+                                                    ) => {
+                                                        this.request_close_terminal_pane(
+                                                            &pane_id,
+                                                            &session_id,
+                                                            window,
+                                                            cx,
+                                                        );
+                                                    }
+                                                    (
+                                                        PaneCloseBehavior::ArchiveChat,
+                                                        Some(session_id),
+                                                    ) => {
+                                                        this.request_close_chat_pane(
+                                                            &pane_id,
+                                                            &session_id,
+                                                            window,
+                                                            cx,
+                                                        );
+                                                    }
+                                                    (PaneCloseBehavior::LayoutOnly, _) => {
+                                                        this.close_pane(&pane_id, window, cx);
+                                                    }
+                                                    (
+                                                        PaneCloseBehavior::CloseTerminal
+                                                        | PaneCloseBehavior::ArchiveChat,
+                                                        None,
+                                                    ) => {}
+                                                }
+                                            });
+                                        },
+                                    ),
+                                ),
                         ),
                 )
         });

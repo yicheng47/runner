@@ -420,12 +420,14 @@ pub fn node_mark_viewed(
     window_label: &str,
     id: &str,
     member_ids: Vec<String>,
+    viewed_session_id: Option<&str>,
 ) -> Result<NodeRow> {
-    state.sessions.mark_status_viewed(&member_ids);
+    let viewed_ids: Vec<_> = viewed_session_id.into_iter().map(str::to_owned).collect();
+    state.sessions.mark_status_viewed(&viewed_ids);
     {
         let conn = state.db.get()?;
         let now = Utc::now().to_rfc3339();
-        for session_id in &member_ids {
+        for session_id in &viewed_ids {
             repo::session_attention::mark_viewed(&conn, session_id, &now)?;
         }
     }
@@ -434,6 +436,9 @@ pub fn node_mark_viewed(
         window_label,
         member_ids.into_iter().map(Subject::DirectChat).collect(),
     );
+    state
+        .windows
+        .set_viewed_session(window_label, viewed_session_id);
     let conn = state.db.get()?;
     let tab =
         repo::node::get(&conn, id)?.ok_or_else(|| Error::msg(format!("node not found: {id}")))?;
@@ -876,6 +881,7 @@ mod tests {
             .windows
             .set_subjects("main", vec![Subject::DirectChat("a".to_string())]);
         state.windows.mark_focused("main");
+        state.windows.set_viewed_session("main", Some("a"));
         let events = state.session_events();
 
         state
@@ -1162,7 +1168,14 @@ mod tests {
             .unwrap()
             .unwrap();
         drop(conn);
-        let viewed = node_mark_viewed(&state, "main", &tab.id, vec!["b".into()]).unwrap();
+        let viewed = node_mark_viewed(
+            &state,
+            "main",
+            &tab.id,
+            vec!["a".into(), "b".into()],
+            Some("b"),
+        )
+        .unwrap();
         assert_eq!(viewed.last_viewed_at, completed.last_viewed_at);
         mark_direct_sessions_viewed(&state, &["b".into()]).unwrap();
         let conn = state.db.get().unwrap();
@@ -1181,6 +1194,66 @@ mod tests {
     }
 
     #[test]
+    fn split_pane_focus_preserves_sibling_completion_and_error_attention() {
+        let state = test_core();
+        let tab = create_tab(&state, &["a", "b"]);
+        let subjects = vec![
+            Subject::DirectChat("a".into()),
+            Subject::DirectChat("b".into()),
+        ];
+        crate::ops::window::report_subjects(&state, "main", subjects.clone(), Some("b")).unwrap();
+        crate::ops::window::mark_focused(&state, "main").unwrap();
+        let events = state.session_events();
+        state
+            .sessions
+            .publish_direct_activity("a", SessionActivityState::Busy, "test", &events);
+        state.sessions.arm_completion("a");
+        state
+            .sessions
+            .publish_direct_activity("a", SessionActivityState::Idle, "test", &events);
+        let conn = state.db.get().unwrap();
+        conn.execute(
+            "UPDATE sessions SET status = 'crashed', stopped_at = ?1 WHERE id = 'a'",
+            [Utc::now().to_rfc3339()],
+        )
+        .unwrap();
+        drop(conn);
+
+        node_mark_viewed(
+            &state,
+            "main",
+            &tab.id,
+            vec!["a".into(), "b".into()],
+            Some("b"),
+        )
+        .unwrap();
+        crate::ops::window::report_subjects(&state, "main", subjects.clone(), Some("b")).unwrap();
+        crate::ops::window::mark_focused(&state, "main").unwrap();
+        let statuses = crate::ops::session::session_status_snapshot(&state).unwrap();
+        assert!(statuses["a"].unread_since.is_some());
+        assert!(statuses["a"].error_since.is_some());
+        assert_eq!(
+            state.windows.primary_for(&Subject::DirectChat("a".into())),
+            Some("main".into())
+        );
+
+        crate::ops::window::report_subjects(&state, "main", subjects.clone(), None).unwrap();
+        assert!(
+            crate::ops::session::session_status_snapshot(&state).unwrap()["a"]
+                .unread_since
+                .is_some()
+        );
+        crate::ops::window::report_subjects(&state, "main", subjects, Some("a")).unwrap();
+        let statuses = crate::ops::session::session_status_snapshot(&state).unwrap();
+        assert!(statuses["a"].unread_since.is_none());
+        assert!(statuses["a"].error_since.is_none());
+        assert_eq!(
+            statuses["a"].lifecycle,
+            crate::session::status::Lifecycle::Error
+        );
+    }
+
+    #[test]
     fn activation_and_focus_return_advance_viewed_and_emit_invalidation() {
         let state = test_core();
         let tab = create_tab(&state, &["a"]);
@@ -1189,7 +1262,8 @@ mod tests {
         repo::node::record_completion(&state.db.get().unwrap(), &tab.id, false, first_completion)
             .unwrap();
 
-        let activated = node_mark_viewed(&state, "main", &tab.id, vec!["a".to_string()]).unwrap();
+        let activated =
+            node_mark_viewed(&state, "main", &tab.id, vec!["a".to_string()], Some("a")).unwrap();
         assert!(
             parsed(activated.last_viewed_at.as_deref())
                 >= parsed(activated.last_completed_at.as_deref())

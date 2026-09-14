@@ -31073,96 +31073,167 @@
                     {
                       "type": "frame",
                       "id": "VzNN7",
-                      "name": "idline",
+                      "name": "Claude pane header — no divider, centered drag handle",
                       "width": "fill_container",
                       "height": 26,
-                      "gap": 6,
+                      "fill": "$panel",
+                      "stroke": "$hairline",
+                      "strokeWidth": {
+                        "bottom": 1
+                      },
+                      "strokeAlignment": "inner",
                       "padding": [
                         0,
-                        8,
-                        0,
-                        10
+                        8
                       ],
                       "alignItems": "center",
                       "children": [
                         {
-                          "type": "icon",
-                          "id": "naQQG",
-                          "name": "i",
-                          "width": 12,
-                          "height": 12,
-                          "icon": "message-square",
-                          "library": "lucide",
-                          "fill": "$text-low"
-                        },
-                        {
-                          "type": "text",
-                          "id": "PkDHv",
-                          "name": "n",
-                          "fill": "$text-mid",
-                          "content": "Claude Code",
-                          "fontFamily": "$font-ui",
-                          "fontSize": 12,
-                          "fontWeight": "500"
-                        },
-                        {
-                          "type": "ellipse",
-                          "id": "Ry6EW",
-                          "name": "d",
-                          "fill": "$warn",
-                          "width": 5,
-                          "height": 5
-                        },
-                        {
                           "type": "frame",
-                          "id": "VbMHK",
-                          "name": "kebab",
-                          "height": "fill_container",
-                          "padding": [
-                            0,
-                            4
-                          ],
+                          "id": "sJRTn",
+                          "name": "Claude left identity and status",
+                          "width": "fill_container",
+                          "height": 20,
+                          "gap": 6,
                           "alignItems": "center",
                           "children": [
                             {
                               "type": "icon",
-                              "id": "V7vWay",
-                              "name": "d",
-                              "width": 13,
-                              "height": 13,
-                              "icon": "ellipsis",
+                              "id": "naQQG",
+                              "name": "i",
+                              "width": 12,
+                              "height": 12,
+                              "icon": "message-square",
                               "library": "lucide",
-                              "fill": "$text-mid"
+                              "fill": "$text-low"
+                            },
+                            {
+                              "type": "text",
+                              "id": "PkDHv",
+                              "name": "n",
+                              "fill": "$text-mid",
+                              "content": "Claude Code",
+                              "fontFamily": "$font-ui",
+                              "fontSize": 12,
+                              "fontWeight": "500"
+                            },
+                            {
+                              "type": "frame",
+                              "id": "VbMHK",
+                              "name": "kebab",
+                              "height": "fill_container",
+                              "padding": [
+                                0,
+                                4
+                              ],
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "icon",
+                                  "id": "V7vWay",
+                                  "name": "d",
+                                  "width": 13,
+                                  "height": 13,
+                                  "icon": "ellipsis",
+                                  "library": "lucide",
+                                  "fill": "$text-mid"
+                                }
+                              ]
+                            },
+                            {
+                              "type": "frame",
+                              "id": "ITXRo",
+                              "name": "Claude status",
+                              "height": 20,
+                              "gap": 5,
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "text",
+                                  "id": "g5oRGY",
+                                  "name": "Claude status label",
+                                  "fill": "$text-mid",
+                                  "content": "Idle",
+                                  "fontFamily": "$font-ui",
+                                  "fontSize": 10,
+                                  "fontWeight": "normal"
+                                }
+                              ]
                             }
                           ]
                         },
                         {
                           "type": "frame",
-                          "id": "sJRTn",
-                          "name": "sp",
-                          "width": "fill_container",
-                          "height": 1
-                        },
-                        {
-                          "type": "frame",
-                          "id": "xZwRI",
-                          "name": "close_view",
-                          "height": "fill_container",
-                          "padding": [
-                            0,
-                            4
-                          ],
+                          "id": "Mm3xE",
+                          "name": "Claude centered drag handle",
+                          "width": 20,
+                          "height": 20,
+                          "justifyContent": "center",
                           "alignItems": "center",
                           "children": [
                             {
                               "type": "icon",
-                              "id": "vOrda",
-                              "name": "d",
-                              "width": 13,
-                              "height": 13,
-                              "icon": "x",
+                              "id": "T09sg",
+                              "name": "Pane drag handle",
+                              "width": 12,
+                              "height": 12,
+                              "icon": "grip-horizontal",
                               "library": "lucide",
                               "fill": "$text-low"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "Q8nqOA",
+                          "name": "Claude right pane actions",
+                          "width": "fill_container",
+                          "height": 20,
+                          "gap": 8,
+                          "justifyContent": "end",
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "frame",
+                              "id": "pm4xU",
+                              "name": "Claude split pane button",
+                              "width": 20,
+                              "height": 20,
+                              "justifyContent": "center",
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "icon",
+                                  "id": "QFIre",
+                                  "name": "Claude split pane icon",
+                                  "width": 12,
+                                  "height": 12,
+                                  "icon": "columns-2",
+                                  "library": "lucide",
+                                  "fill": "$text-low"
+                                }
+                              ]
+                            },
+                            {
+                              "type": "frame",
+                              "id": "xZwRI",
+                              "name": "Claude close pane button",
+                              "width": 20,
+                              "height": 20,
+                              "justifyContent": "center",
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "icon",
+                                  "id": "vOrda",
+                                  "name": "d",
+                                  "width": 13,
+                                  "height": 13,
+                                  "icon": "x",
+                                  "library": "lucide",
+                                  "fill": "$text-low"
+                                }
+                              ]
                             }
                           ]
                         }
@@ -31308,102 +31379,124 @@
                         {
                           "type": "frame",
                           "id": "r9K5Nd",
-                          "name": "idline",
+                          "name": "Empty pane header — no divider, centered drag handle",
                           "width": "fill_container",
                           "height": 26,
-                          "gap": 6,
+                          "fill": "$panel",
+                          "stroke": "$hairline",
+                          "strokeWidth": {
+                            "bottom": 1
+                          },
+                          "strokeAlignment": "inner",
                           "padding": [
                             0,
-                            8,
-                            0,
-                            10
+                            8
                           ],
                           "alignItems": "center",
                           "children": [
                             {
-                              "type": "icon",
-                              "id": "YK9V4",
-                              "name": "i",
-                              "width": 12,
-                              "height": 12,
-                              "icon": "square-dashed",
-                              "library": "lucide",
-                              "fill": "$text-low"
-                            },
-                            {
-                              "type": "text",
-                              "id": "s1mi5",
-                              "name": "n",
-                              "fill": "$text-low",
-                              "content": "Empty",
-                              "fontFamily": "$font-ui",
-                              "fontSize": 12,
-                              "fontWeight": "500"
-                            },
-                            {
-                              "type": "ellipse",
-                              "id": "aHF1c",
-                              "x": 71,
-                              "y": 10.5,
-                              "name": "d",
-                              "enabled": false,
-                              "fill": "$accent",
-                              "width": 5,
-                              "height": 5
-                            },
-                            {
                               "type": "frame",
-                              "id": "h4qscb",
-                              "x": 82,
-                              "y": 0,
-                              "name": "kebab",
-                              "enabled": false,
-                              "height": "fill_container(26)",
-                              "padding": [
-                                0,
-                                4
-                              ],
+                              "id": "B9lRmD",
+                              "name": "Empty left identity and status",
+                              "width": "fill_container",
+                              "height": 20,
+                              "gap": 6,
                               "alignItems": "center",
                               "children": [
                                 {
                                   "type": "icon",
-                                  "id": "CjCHs",
-                                  "name": "d",
-                                  "width": 13,
-                                  "height": 13,
-                                  "icon": "ellipsis",
+                                  "id": "YK9V4",
+                                  "name": "i",
+                                  "width": 12,
+                                  "height": 12,
+                                  "icon": "square-dashed",
                                   "library": "lucide",
-                                  "fill": "$text-mid"
+                                  "fill": "$text-low"
+                                },
+                                {
+                                  "type": "text",
+                                  "id": "s1mi5",
+                                  "name": "n",
+                                  "fill": "$text-low",
+                                  "content": "Empty",
+                                  "fontFamily": "$font-ui",
+                                  "fontSize": 12,
+                                  "fontWeight": "500"
                                 }
                               ]
                             },
                             {
                               "type": "frame",
-                              "id": "B9lRmD",
-                              "name": "sp",
-                              "width": "fill_container",
-                              "height": 1
-                            },
-                            {
-                              "type": "frame",
-                              "id": "q1YM0e",
-                              "name": "close_view",
-                              "height": "fill_container",
-                              "padding": [
-                                0,
-                                4
-                              ],
+                              "id": "OSeXF",
+                              "name": "Empty centered drag handle",
+                              "width": 20,
+                              "height": 20,
+                              "justifyContent": "center",
                               "alignItems": "center",
                               "children": [
                                 {
                                   "type": "icon",
-                                  "id": "mLaOL",
-                                  "name": "d",
-                                  "width": 13,
-                                  "height": 13,
-                                  "icon": "x",
+                                  "id": "n8lTvF",
+                                  "name": "Pane drag handle",
+                                  "width": 12,
+                                  "height": 12,
+                                  "icon": "grip-horizontal",
                                   "library": "lucide",
                                   "fill": "$text-low"
+                                }
+                              ]
+                            },
+                            {
+                              "type": "frame",
+                              "id": "NZzhf",
+                              "name": "Empty right pane actions",
+                              "width": "fill_container",
+                              "height": 20,
+                              "gap": 8,
+                              "justifyContent": "end",
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "frame",
+                                  "id": "e9C5E",
+                                  "name": "Empty split pane button",
+                                  "width": 20,
+                                  "height": 20,
+                                  "justifyContent": "center",
+                                  "alignItems": "center",
+                                  "children": [
+                                    {
+                                      "type": "icon",
+                                      "id": "DNUFI",
+                                      "name": "Empty split pane icon",
+                                      "width": 12,
+                                      "height": 12,
+                                      "icon": "columns-2",
+                                      "library": "lucide",
+                                      "fill": "$text-low"
+                                    }
+                                  ]
+                                },
+                                {
+                                  "type": "frame",
+                                  "id": "q1YM0e",
+                                  "name": "Empty close pane button",
+                                  "width": 20,
+                                  "height": 20,
+                                  "justifyContent": "center",
+                                  "alignItems": "center",
+                                  "children": [
+                                    {
+                                      "type": "icon",
+                                      "id": "mLaOL",
+                                      "name": "d",
+                                      "width": 13,
+                                      "height": 13,
+                                      "icon": "x",
+                                      "library": "lucide",
+                                      "fill": "$text-low"
+                                    }
+                                  ]
                                 }
                               ]
                             }
@@ -31510,96 +31603,177 @@
                         {
                           "type": "frame",
                           "id": "xwNwE",
-                          "name": "idline",
+                          "name": "Codex pane header — no divider, centered drag handle",
                           "width": "fill_container",
                           "height": 26,
-                          "gap": 6,
+                          "fill": "$panel",
+                          "stroke": "$hairline",
+                          "strokeWidth": {
+                            "bottom": 1
+                          },
+                          "strokeAlignment": "inner",
                           "padding": [
                             0,
-                            8,
-                            0,
-                            10
+                            8
                           ],
                           "alignItems": "center",
                           "children": [
                             {
-                              "type": "icon",
-                              "id": "g0wmbR",
-                              "name": "i",
-                              "width": 12,
-                              "height": 12,
-                              "icon": "message-square",
-                              "library": "lucide",
-                              "fill": "$accent"
-                            },
-                            {
-                              "type": "text",
-                              "id": "s5YjzD",
-                              "name": "n",
-                              "fill": "$text-hi",
-                              "content": "Codex",
-                              "fontFamily": "$font-ui",
-                              "fontSize": 12,
-                              "fontWeight": "500"
-                            },
-                            {
-                              "type": "ellipse",
-                              "id": "nl0yG",
-                              "name": "d",
-                              "fill": "$warn",
-                              "width": 5,
-                              "height": 5
-                            },
-                            {
                               "type": "frame",
-                              "id": "jtP99",
-                              "name": "kebab",
-                              "height": "fill_container",
-                              "padding": [
-                                0,
-                                4
-                              ],
+                              "id": "WF2Ak",
+                              "name": "Codex left identity and status",
+                              "width": "fill_container",
+                              "height": 20,
+                              "gap": 6,
                               "alignItems": "center",
                               "children": [
                                 {
                                   "type": "icon",
-                                  "id": "N3XlxS",
-                                  "name": "d",
-                                  "width": 13,
-                                  "height": 13,
-                                  "icon": "ellipsis",
+                                  "id": "g0wmbR",
+                                  "name": "i",
+                                  "width": 12,
+                                  "height": 12,
+                                  "icon": "message-square",
                                   "library": "lucide",
-                                  "fill": "$text-mid"
+                                  "fill": "$accent"
+                                },
+                                {
+                                  "type": "text",
+                                  "id": "s5YjzD",
+                                  "name": "n",
+                                  "fill": "$text-hi",
+                                  "content": "Codex",
+                                  "fontFamily": "$font-ui",
+                                  "fontSize": 12,
+                                  "fontWeight": "500"
+                                },
+                                {
+                                  "type": "frame",
+                                  "id": "jtP99",
+                                  "name": "kebab",
+                                  "height": "fill_container",
+                                  "padding": [
+                                    0,
+                                    4
+                                  ],
+                                  "alignItems": "center",
+                                  "children": [
+                                    {
+                                      "type": "icon",
+                                      "id": "N3XlxS",
+                                      "name": "d",
+                                      "width": 13,
+                                      "height": 13,
+                                      "icon": "ellipsis",
+                                      "library": "lucide",
+                                      "fill": "$text-mid"
+                                    }
+                                  ]
+                                },
+                                {
+                                  "type": "frame",
+                                  "id": "x1bis",
+                                  "name": "Codex status",
+                                  "height": 20,
+                                  "gap": 5,
+                                  "alignItems": "center",
+                                  "children": [
+                                    {
+                                      "type": "icon",
+                                      "id": "xsjsl",
+                                      "name": "Estimated Working spinner",
+                                      "width": 12,
+                                      "height": 12,
+                                      "icon": "loader-circle",
+                                      "library": "lucide",
+                                      "fill": "$text-mid"
+                                    },
+                                    {
+                                      "type": "text",
+                                      "id": "gDBBk",
+                                      "name": "Codex status label",
+                                      "fill": "$text-mid",
+                                      "content": "Working",
+                                      "fontFamily": "$font-ui",
+                                      "fontSize": 10,
+                                      "fontWeight": "normal"
+                                    }
+                                  ]
                                 }
                               ]
                             },
                             {
                               "type": "frame",
-                              "id": "WF2Ak",
-                              "name": "sp",
-                              "width": "fill_container",
-                              "height": 1
-                            },
-                            {
-                              "type": "frame",
-                              "id": "hrxbx",
-                              "name": "close_view",
-                              "height": "fill_container",
-                              "padding": [
-                                0,
-                                4
-                              ],
+                              "id": "PQEt1",
+                              "name": "Codex centered drag handle",
+                              "width": 20,
+                              "height": 20,
+                              "justifyContent": "center",
                               "alignItems": "center",
                               "children": [
                                 {
                                   "type": "icon",
-                                  "id": "uuapN",
-                                  "name": "d",
-                                  "width": 13,
-                                  "height": 13,
-                                  "icon": "x",
+                                  "id": "hrcPO",
+                                  "name": "Pane drag handle",
+                                  "width": 12,
+                                  "height": 12,
+                                  "icon": "grip-horizontal",
                                   "library": "lucide",
                                   "fill": "$text-low"
+                                }
+                              ]
+                            },
+                            {
+                              "type": "frame",
+                              "id": "fgsVy",
+                              "name": "Codex right pane actions",
+                              "width": "fill_container",
+                              "height": 20,
+                              "gap": 8,
+                              "justifyContent": "end",
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "frame",
+                                  "id": "xXXoB",
+                                  "name": "Codex split pane button",
+                                  "width": 20,
+                                  "height": 20,
+                                  "justifyContent": "center",
+                                  "alignItems": "center",
+                                  "children": [
+                                    {
+                                      "type": "icon",
+                                      "id": "vRlAk",
+                                      "name": "Codex split pane icon",
+                                      "width": 12,
+                                      "height": 12,
+                                      "icon": "columns-2",
+                                      "library": "lucide",
+                                      "fill": "$text-low"
+                                    }
+                                  ]
+                                },
+                                {
+                                  "type": "frame",
+                                  "id": "hrxbx",
+                                  "name": "Codex close pane button",
+                                  "width": 20,
+                                  "height": 20,
+                                  "justifyContent": "center",
+                                  "alignItems": "center",
+                                  "children": [
+                                    {
+                                      "type": "icon",
+                                      "id": "uuapN",
+                                      "name": "d",
+                                      "width": 13,
+                                      "height": 13,
+                                      "icon": "x",
+                                      "library": "lucide",
+                                      "fill": "$text-low"
+                                    }
+                                  ]
                                 }
                               ]
                             }
@@ -74642,7 +74816,7 @@
           "fill": "$text-mid",
           "textGrowth": "fixed-width",
           "width": 1452,
-          "content": "Today a session is one 5px dot: amber Busy, green Idle, grey Stopped, red Crashed — guessed from a title spinner and byte traffic. Lifecycle hooks let the agent say what it is doing, so status becomes a 12px glyph with an 11px label. Working, Needs you and Ready are the everyday states; lifecycle and observability supply the rest. Muted = normal, amber = you, red = error, accent = unread — and shape plus label separates every state without relying on colour.",
+          "content": "Today a session is one 5px dot: amber Busy, green Idle, grey Stopped, red Crashed — guessed from a title spinner and byte traffic. Lifecycle hooks let the agent say what it is doing, so status becomes a 12px glyph with an 11px label. Working, Needs you and Idle are the everyday states; lifecycle and observability supply the rest. Muted = normal, amber = you, red = error, accent = unread — and shape plus label separates every state without relying on colour.",
           "lineHeight": 1.5,
           "fontFamily": "$font-ui",
           "fontSize": 11,
@@ -75016,7 +75190,7 @@
                       "id": "EGWsN",
                       "name": "label",
                       "fill": "$text-mid",
-                      "content": "Ready",
+                      "content": "Idle",
                       "fontFamily": "$font-ui",
                       "fontSize": 11,
                       "fontWeight": "500"
@@ -75630,7 +75804,7 @@
                   "fill": "$text-mid",
                   "textGrowth": "fixed-width",
                   "width": "fill_container",
-                  "content": "Baseline quiet. Never called Ready, and never a source of needs-you or a turn outcome — an estimate must not reach the one status that holds a delivery.",
+                  "content": "Baseline quiet. Uses the same Idle label; the tooltip identifies the estimate. Baseline observations create no human wait or turn outcome.",
                   "lineHeight": 1.5,
                   "fontFamily": "$font-ui",
                   "fontSize": 10,
@@ -75717,7 +75891,7 @@
           "fill": "$text-low",
           "textGrowth": "fixed-width",
           "width": 1452,
-          "content": "PRECEDENCE — ERROR › NEEDS YOU › WORKING › UNREAD › STATUS UNAVAILABLE › QUIET.   Only confirmed Ready with no unresolved interaction passes the status gate for automatic inbox delivery; Working, Needs you, Starting, Error, Stopped, unknown readiness and estimated idle all block it.   Spinners animate; human waits never blink or pulse, and every animation has a static reduced-motion equivalent.   PHASE 1 lights up Working, Approval needed, Answer needed, Ready, Starting, Stopped, Error · Process exited, Status unavailable and Unread. The tool and compaction details, Response failed, the interruption text and elapsed time are additive and land later; none of them changes the shape of a header, a row or a card.",
+          "content": "PRECEDENCE — ERROR › NEEDS YOU › WORKING › UNREAD › STATUS UNAVAILABLE › QUIET.   Open human dialogs hold automatic inbox delivery; Working and Idle add no hold. Draft protection remains independent.   Spinners animate; human waits never blink or pulse.   Current labels: Working, Idle, Approval needed, Answer needed, Needs you, Starting, Resuming, Stopped, Error, Response failed and Status unavailable. Estimated activity is explained in the tooltip. Tool/compaction details, interruption text and elapsed waits remain additive refinements.",
           "lineHeight": 1.5,
           "fontFamily": "$font-ui",
           "fontSize": 10,
@@ -76868,7 +77042,7 @@
                           "id": "fpiUz",
                           "name": "label",
                           "fill": "$text-mid",
-                          "content": "Ready",
+                          "content": "Idle",
                           "fontFamily": "$font-ui",
                           "fontSize": 11,
                           "fontWeight": "normal"
@@ -76960,7 +77134,7 @@
                   "fill": "$text-mid",
                   "textGrowth": "fixed-width",
                   "width": "fill_container",
-                  "content": "Confirmed availability. Ready with no unresolved ask is the only state the inbox delivers into.",
+                  "content": "The agent signaled that its turn ended. Idle does not gate inbox delivery; unresolved dialogs do.",
                   "lineHeight": 1.45,
                   "fontFamily": "$font-ui",
                   "fontSize": 10,
@@ -77318,7 +77492,7 @@
                   "fill": "$text-mid",
                   "textGrowth": "fixed-width",
                   "width": "fill_container",
-                  "content": "Live process, no proof. Never Ready, never an error, and the terminal still works.",
+                  "content": "Live process, no observation. Status unavailable does not establish inactivity or failure; the terminal still works.",
                   "lineHeight": 1.45,
                   "fontFamily": "$font-ui",
                   "fontSize": 10,
@@ -78581,7 +78755,7 @@
                   "id": "T17Kj",
                   "name": "t",
                   "fill": "$text-hi",
-                  "content": "Ready · Last response interrupted",
+                  "content": "Idle · Last response interrupted",
                   "fontFamily": "$font-ui",
                   "fontSize": 10,
                   "fontWeight": "500"
@@ -80166,7 +80340,7 @@
                           "id": "RtX54",
                           "name": "label",
                           "fill": "$text-mid",
-                          "content": "Ready",
+                          "content": "Idle",
                           "fontFamily": "$font-ui",
                           "fontSize": 11,
                           "fontWeight": "normal"
@@ -80239,7 +80413,7 @@
                   "fill": "$text-mid",
                   "textGrowth": "fixed-width",
                   "width": "fill_container",
-                  "content": "Confirmed availability, with the last outcome in the tooltip — Ready · Last response interrupted.",
+                  "content": "Confirmed availability, with the last outcome in the tooltip — Idle · Last response interrupted.",
                   "lineHeight": 1.45,
                   "fontFamily": "$font-ui",
                   "fontSize": 10,
@@ -80401,7 +80575,7 @@
                   "fill": "$text-mid",
                   "textGrowth": "fixed-width",
                   "width": "fill_container",
-                  "content": "Hooks are missing or the bridge failed. The terminal still works; this is never read as Ready.",
+                  "content": "The live process has no usable observation. The terminal still works; inactivity cannot be established.",
                   "lineHeight": 1.45,
                   "fontFamily": "$font-ui",
                   "fontSize": 10,
@@ -82197,7 +82371,7 @@
               "fill": "$text-low",
               "textGrowth": "fixed-width",
               "width": "fill_container",
-              "content": "Ready and viewed: quiet. No glyph, no dot, nothing to chase.",
+              "content": "Idle and viewed: quiet. No glyph, no dot, nothing to chase.",
               "lineHeight": 1.5,
               "fontFamily": "$font-ui",
               "fontSize": 10,
@@ -82583,7 +82757,7 @@
               "fill": "$text-low",
               "textGrowth": "fixed-width",
               "width": "fill_container",
-              "content": "Every pane is unavailable or estimated. Faint, never amber, and never counted as Ready.",
+              "content": "Unavailable observations use a question glyph. Estimated Idle contributes no attention and does not prove readiness.",
               "lineHeight": 1.5,
               "fontFamily": "$font-ui",
               "fontSize": 10,
@@ -84704,7 +84878,7 @@
                           "id": "j5JXkW",
                           "name": "label",
                           "fill": "$text-mid",
-                          "content": "Ready",
+                          "content": "Idle",
                           "fontFamily": "$font-ui",
                           "fontSize": 11,
                           "fontWeight": "500"
@@ -84775,7 +84949,7 @@
                   "fill": "$text-mid",
                   "textGrowth": "fixed-width",
                   "width": "fill_container",
-                  "content": "Ready. One runner being ready is not the mission being ready: mission outcomes still come from mission events, never from a last-turn boundary.",
+                  "content": "Idle. One runner being ready is not the mission being ready: mission outcomes still come from mission events, never from a last-turn boundary.",
                   "lineHeight": 1.5,
                   "fontFamily": "$font-ui",
                   "fontSize": 10,
@@ -85915,7 +86089,7 @@
           "fill": "$text-mid",
           "textGrowth": "fixed-width",
           "width": 1452,
-          "content": "The mission row aggregates its runners and must never call a whole mission Ready because one runner is — mission outcomes keep coming from mission events, and a queued inbox message is not the same thing as an agent asking you to approve or answer. Clicking the row's indicator opens the affected runner. The pending-asks and inbox surfaces stay as they are: a Runner ask that already supplies an interaction identity is counted once, not twice.",
+          "content": "The mission row aggregates its runners and must never call a whole mission Idle because one runner is — mission outcomes keep coming from mission events, and a queued inbox message is not the same thing as an agent asking you to approve or answer. Clicking the row's indicator opens the affected runner. The pending-asks and inbox surfaces stay as they are: a Runner ask that already supplies an interaction identity is counted once, not twice.",
           "lineHeight": 1.5,
           "fontFamily": "$font-ui",
           "fontSize": 10,
@@ -85959,7 +86133,7 @@
           "fill": "$text-mid",
           "textGrowth": "fixed-width",
           "width": 1452,
-          "content": "Today a session is one 5px dot: amber Busy, green Idle, grey Stopped, red Crashed — guessed from a title spinner and byte traffic. Lifecycle hooks let the agent say what it is doing, so status becomes a 12px glyph with an 11px label. Working, Needs you and Ready are the everyday states; lifecycle and observability supply the rest. Muted = normal, amber = you, red = error, accent = unread — and shape plus label separates every state without relying on colour.",
+          "content": "Today a session is one 5px dot: amber Busy, green Idle, grey Stopped, red Crashed — guessed from a title spinner and byte traffic. Lifecycle hooks let the agent say what it is doing, so status becomes a 12px glyph with an 11px label. Working, Needs you and Idle are the everyday states; lifecycle and observability supply the rest. Muted = normal, amber = you, red = error, accent = unread — and shape plus label separates every state without relying on colour.",
           "lineHeight": 1.5,
           "fontFamily": "$font-ui",
           "fontSize": 11,
@@ -86333,7 +86507,7 @@
                       "id": "WN9iD",
                       "name": "label",
                       "fill": "$text-mid",
-                      "content": "Ready",
+                      "content": "Idle",
                       "fontFamily": "$font-ui",
                       "fontSize": 11,
                       "fontWeight": "500"
@@ -86947,7 +87121,7 @@
                   "fill": "$text-mid",
                   "textGrowth": "fixed-width",
                   "width": "fill_container",
-                  "content": "Baseline quiet. Never called Ready, and never a source of needs-you or a turn outcome — an estimate must not reach the one status that holds a delivery.",
+                  "content": "Baseline quiet. Uses the same Idle label; the tooltip identifies the estimate. Baseline observations create no human wait or turn outcome.",
                   "lineHeight": 1.5,
                   "fontFamily": "$font-ui",
                   "fontSize": 10,
@@ -87034,7 +87208,7 @@
           "fill": "$text-low",
           "textGrowth": "fixed-width",
           "width": 1452,
-          "content": "PRECEDENCE — ERROR › NEEDS YOU › WORKING › UNREAD › STATUS UNAVAILABLE › QUIET.   Only confirmed Ready with no unresolved interaction passes the status gate for automatic inbox delivery; Working, Needs you, Starting, Error, Stopped, unknown readiness and estimated idle all block it.   Spinners animate; human waits never blink or pulse, and every animation has a static reduced-motion equivalent.   PHASE 1 lights up Working, Approval needed, Answer needed, Ready, Starting, Stopped, Error · Process exited, Status unavailable and Unread. The tool and compaction details, Response failed, the interruption text and elapsed time are additive and land later; none of them changes the shape of a header, a row or a card.",
+          "content": "PRECEDENCE — ERROR › NEEDS YOU › WORKING › UNREAD › STATUS UNAVAILABLE › QUIET.   Open human dialogs hold automatic inbox delivery; Working and Idle add no hold. Draft protection remains independent.   Spinners animate; human waits never blink or pulse.   Current labels: Working, Idle, Approval needed, Answer needed, Needs you, Starting, Resuming, Stopped, Error, Response failed and Status unavailable. Estimated activity is explained in the tooltip. Tool/compaction details, interruption text and elapsed waits remain additive refinements.",
           "lineHeight": 1.5,
           "fontFamily": "$font-ui",
           "fontSize": 10,
@@ -88188,7 +88362,7 @@
                           "id": "ijmWA",
                           "name": "label",
                           "fill": "$text-mid",
-                          "content": "Ready",
+                          "content": "Idle",
                           "fontFamily": "$font-ui",
                           "fontSize": 11,
                           "fontWeight": "normal"
@@ -88280,7 +88454,7 @@
                   "fill": "$text-mid",
                   "textGrowth": "fixed-width",
                   "width": "fill_container",
-                  "content": "Confirmed availability. Ready with no unresolved ask is the only state the inbox delivers into.",
+                  "content": "The agent signaled that its turn ended. Idle does not gate inbox delivery; unresolved dialogs do.",
                   "lineHeight": 1.45,
                   "fontFamily": "$font-ui",
                   "fontSize": 10,
@@ -88638,7 +88812,7 @@
                   "fill": "$text-mid",
                   "textGrowth": "fixed-width",
                   "width": "fill_container",
-                  "content": "Live process, no proof. Never Ready, never an error, and the terminal still works.",
+                  "content": "Live process, no observation. Status unavailable does not establish inactivity or failure; the terminal still works.",
                   "lineHeight": 1.45,
                   "fontFamily": "$font-ui",
                   "fontSize": 10,
@@ -89901,7 +90075,7 @@
                   "id": "C39XcN",
                   "name": "t",
                   "fill": "$text-hi",
-                  "content": "Ready · Last response interrupted",
+                  "content": "Idle · Last response interrupted",
                   "fontFamily": "$font-ui",
                   "fontSize": 10,
                   "fontWeight": "500"
@@ -90658,6 +90832,2828 @@
       "fontFamily": "$font-ui",
       "fontSize": 14,
       "fontWeight": "500"
+    },
+    {
+      "type": "frame",
+      "id": "u4F7Ya",
+      "x": 13380,
+      "y": 8103,
+      "name": "347 · Header options · A · Inline text",
+      "theme": {
+        "mode": "dark"
+      },
+      "clip": true,
+      "width": 520,
+      "fill": "$bg",
+      "layout": "vertical",
+      "gap": 18,
+      "padding": 24,
+      "children": [
+        {
+          "type": "text",
+          "id": "DZRbU",
+          "name": "Option A title",
+          "fill": "$text-hi",
+          "content": "A  /  Inline text",
+          "fontFamily": "$font-ui",
+          "fontSize": 24,
+          "fontWeight": "600"
+        },
+        {
+          "type": "text",
+          "id": "rSFpx",
+          "name": "Option A summary",
+          "fill": "$text-mid",
+          "textGrowth": "fixed-width-height",
+          "width": "fill_container",
+          "height": 36,
+          "content": "Smaller text after the title. No extra symbol for Stopped or Ready. Attention keeps its icon.",
+          "lineHeight": 1.5,
+          "fontFamily": "$font-ui",
+          "fontSize": 12,
+          "fontWeight": "normal"
+        },
+        {
+          "type": "frame",
+          "id": "VqiNp",
+          "name": "A dark state comparison",
+          "width": "fill_container",
+          "layout": "vertical",
+          "gap": 8,
+          "children": [
+            {
+              "type": "frame",
+              "id": "mb9cw",
+              "name": "A · Stopped",
+              "clip": true,
+              "width": "fill_container",
+              "height": 44,
+              "fill": "$panel",
+              "stroke": "$hairline",
+              "strokeWidth": {
+                "bottom": 1
+              },
+              "strokeAlignment": "inner",
+              "gap": 10,
+              "padding": [
+                0,
+                14
+              ],
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "icon",
+                  "id": "G38B1Z",
+                  "name": "message-square",
+                  "width": 14,
+                  "height": 14,
+                  "icon": "message-square",
+                  "library": "lucide",
+                  "fill": "$accent"
+                },
+                {
+                  "type": "text",
+                  "id": "SdtKk",
+                  "name": "tab_title",
+                  "fill": "$text-hi",
+                  "content": "Codex",
+                  "fontFamily": "$font-ui",
+                  "fontSize": 13,
+                  "fontWeight": "600"
+                },
+                {
+                  "type": "frame",
+                  "id": "l90qPX",
+                  "name": "Quiet status",
+                  "width": 108,
+                  "gap": 5,
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "T6Gif",
+                      "name": "Status text",
+                      "fill": "$text-mid",
+                      "content": "Stopped",
+                      "fontFamily": "$font-ui",
+                      "fontSize": 10,
+                      "fontWeight": "normal"
+                    }
+                  ]
+                },
+                {
+                  "type": "icon",
+                  "id": "v2tYi",
+                  "name": "ellipsis",
+                  "width": 14,
+                  "height": 14,
+                  "icon": "ellipsis",
+                  "library": "lucide",
+                  "fill": "$text-low"
+                },
+                {
+                  "type": "icon",
+                  "id": "kweyP",
+                  "name": "square",
+                  "width": 12,
+                  "height": 12,
+                  "icon": "play",
+                  "library": "lucide",
+                  "fill": "$accent"
+                },
+                {
+                  "type": "icon",
+                  "id": "R8PyQ",
+                  "name": "git-fork",
+                  "width": 13,
+                  "height": 13,
+                  "icon": "git-fork",
+                  "library": "lucide",
+                  "fill": "$text-low"
+                },
+                {
+                  "type": "frame",
+                  "id": "itp1J",
+                  "name": "sp",
+                  "width": "fill_container",
+                  "height": 1
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "Ll8mw",
+              "name": "A · Working",
+              "clip": true,
+              "width": "fill_container",
+              "height": 44,
+              "fill": "$panel",
+              "stroke": "$hairline",
+              "strokeWidth": {
+                "bottom": 1
+              },
+              "strokeAlignment": "inner",
+              "gap": 10,
+              "padding": [
+                0,
+                14
+              ],
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "icon",
+                  "id": "Lk74w",
+                  "name": "message-square",
+                  "width": 14,
+                  "height": 14,
+                  "icon": "message-square",
+                  "library": "lucide",
+                  "fill": "$accent"
+                },
+                {
+                  "type": "text",
+                  "id": "Glipi",
+                  "name": "tab_title",
+                  "fill": "$text-hi",
+                  "content": "Claude Code",
+                  "fontFamily": "$font-ui",
+                  "fontSize": 13,
+                  "fontWeight": "600"
+                },
+                {
+                  "type": "frame",
+                  "id": "MdzoK",
+                  "name": "Quiet status",
+                  "width": 108,
+                  "gap": 5,
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "ellipse",
+                      "id": "gLmjx",
+                      "name": "Working spinner",
+                      "innerRadius": 0.7,
+                      "startAngle": 95,
+                      "sweepAngle": -265,
+                      "fill": "$text-mid",
+                      "width": 11,
+                      "height": 11
+                    },
+                    {
+                      "type": "text",
+                      "id": "QLoEU",
+                      "name": "Status text",
+                      "fill": "$text-mid",
+                      "content": "Working",
+                      "fontFamily": "$font-ui",
+                      "fontSize": 10,
+                      "fontWeight": "normal"
+                    }
+                  ]
+                },
+                {
+                  "type": "icon",
+                  "id": "I6q6Vn",
+                  "name": "ellipsis",
+                  "width": 14,
+                  "height": 14,
+                  "icon": "ellipsis",
+                  "library": "lucide",
+                  "fill": "$text-low"
+                },
+                {
+                  "type": "icon",
+                  "id": "hsBpE",
+                  "name": "square",
+                  "width": 12,
+                  "height": 12,
+                  "icon": "square",
+                  "library": "lucide",
+                  "fill": "$text-mid"
+                },
+                {
+                  "type": "icon",
+                  "id": "u9B3S",
+                  "name": "git-fork",
+                  "width": 13,
+                  "height": 13,
+                  "icon": "git-fork",
+                  "library": "lucide",
+                  "fill": "$text-mid"
+                },
+                {
+                  "type": "frame",
+                  "id": "nVgvU",
+                  "name": "sp",
+                  "width": "fill_container",
+                  "height": 1
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "uHuLJ",
+              "name": "A · Ready",
+              "clip": true,
+              "width": "fill_container",
+              "height": 44,
+              "fill": "$panel",
+              "stroke": "$hairline",
+              "strokeWidth": {
+                "bottom": 1
+              },
+              "strokeAlignment": "inner",
+              "gap": 10,
+              "padding": [
+                0,
+                14
+              ],
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "icon",
+                  "id": "aiZGq",
+                  "name": "message-square",
+                  "width": 14,
+                  "height": 14,
+                  "icon": "message-square",
+                  "library": "lucide",
+                  "fill": "$accent"
+                },
+                {
+                  "type": "text",
+                  "id": "y5WPf",
+                  "name": "tab_title",
+                  "fill": "$text-hi",
+                  "content": "Claude Code",
+                  "fontFamily": "$font-ui",
+                  "fontSize": 13,
+                  "fontWeight": "600"
+                },
+                {
+                  "type": "frame",
+                  "id": "Gpb72",
+                  "name": "Quiet status",
+                  "width": 108,
+                  "gap": 5,
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "ni4dm",
+                      "name": "Status text",
+                      "fill": "$text-mid",
+                      "content": "Ready",
+                      "fontFamily": "$font-ui",
+                      "fontSize": 10,
+                      "fontWeight": "normal"
+                    }
+                  ]
+                },
+                {
+                  "type": "icon",
+                  "id": "JT7Ic",
+                  "name": "ellipsis",
+                  "width": 14,
+                  "height": 14,
+                  "icon": "ellipsis",
+                  "library": "lucide",
+                  "fill": "$text-low"
+                },
+                {
+                  "type": "icon",
+                  "id": "Y21kA",
+                  "name": "square",
+                  "width": 12,
+                  "height": 12,
+                  "icon": "square",
+                  "library": "lucide",
+                  "fill": "$text-mid"
+                },
+                {
+                  "type": "icon",
+                  "id": "taUO5",
+                  "name": "git-fork",
+                  "width": 13,
+                  "height": 13,
+                  "icon": "git-fork",
+                  "library": "lucide",
+                  "fill": "$text-mid"
+                },
+                {
+                  "type": "frame",
+                  "id": "uNJgo",
+                  "name": "sp",
+                  "width": "fill_container",
+                  "height": 1
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "WA71t",
+              "name": "A · Answer needed",
+              "clip": true,
+              "width": "fill_container",
+              "height": 44,
+              "fill": "$panel",
+              "stroke": "$hairline",
+              "strokeWidth": {
+                "bottom": 1
+              },
+              "strokeAlignment": "inner",
+              "gap": 10,
+              "padding": [
+                0,
+                14
+              ],
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "icon",
+                  "id": "WYzF2",
+                  "name": "message-square",
+                  "width": 14,
+                  "height": 14,
+                  "icon": "message-square",
+                  "library": "lucide",
+                  "fill": "$accent"
+                },
+                {
+                  "type": "text",
+                  "id": "xUxLl",
+                  "name": "tab_title",
+                  "fill": "$text-hi",
+                  "content": "Claude Code",
+                  "fontFamily": "$font-ui",
+                  "fontSize": 13,
+                  "fontWeight": "600"
+                },
+                {
+                  "type": "frame",
+                  "id": "kit69",
+                  "name": "Quiet status",
+                  "width": 108,
+                  "gap": 5,
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "icon",
+                      "id": "b5p1py",
+                      "name": "Answer icon",
+                      "width": 12,
+                      "height": 12,
+                      "icon": "message-circle",
+                      "library": "lucide",
+                      "fill": "$warn"
+                    },
+                    {
+                      "type": "text",
+                      "id": "RklR1",
+                      "name": "Status text",
+                      "fill": "$warn",
+                      "content": "Answer needed",
+                      "fontFamily": "$font-ui",
+                      "fontSize": 11,
+                      "fontWeight": "normal"
+                    }
+                  ]
+                },
+                {
+                  "type": "icon",
+                  "id": "E9iRC",
+                  "name": "ellipsis",
+                  "width": 14,
+                  "height": 14,
+                  "icon": "ellipsis",
+                  "library": "lucide",
+                  "fill": "$text-low"
+                },
+                {
+                  "type": "icon",
+                  "id": "O9n9B",
+                  "name": "square",
+                  "width": 12,
+                  "height": 12,
+                  "icon": "square",
+                  "library": "lucide",
+                  "fill": "$text-mid"
+                },
+                {
+                  "type": "icon",
+                  "id": "wEeZO",
+                  "name": "git-fork",
+                  "width": 13,
+                  "height": 13,
+                  "icon": "git-fork",
+                  "library": "lucide",
+                  "fill": "$text-mid"
+                },
+                {
+                  "type": "frame",
+                  "id": "lYUtU",
+                  "name": "sp",
+                  "width": "fill_container",
+                  "height": 1
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "text",
+          "id": "D7jQny",
+          "name": "A light caption",
+          "fill": "$text-mid",
+          "content": "LIGHT THEME",
+          "fontFamily": "$font-ui",
+          "fontSize": 10,
+          "fontWeight": "normal"
+        },
+        {
+          "type": "frame",
+          "id": "uMq1x",
+          "name": "A light previews",
+          "width": "fill_container",
+          "layout": "vertical",
+          "gap": 8,
+          "children": [
+            {
+              "type": "frame",
+              "id": "uugbF",
+              "name": "A · Stopped",
+              "theme": {
+                "mode": "light"
+              },
+              "clip": true,
+              "width": "fill_container",
+              "height": 44,
+              "fill": "$panel",
+              "stroke": "$hairline",
+              "strokeWidth": {
+                "bottom": 1
+              },
+              "strokeAlignment": "inner",
+              "gap": 10,
+              "padding": [
+                0,
+                14
+              ],
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "icon",
+                  "id": "jDael",
+                  "name": "message-square",
+                  "width": 14,
+                  "height": 14,
+                  "icon": "message-square",
+                  "library": "lucide",
+                  "fill": "$accent"
+                },
+                {
+                  "type": "text",
+                  "id": "DPBoO",
+                  "name": "tab_title",
+                  "fill": "$text-hi",
+                  "content": "Codex",
+                  "fontFamily": "$font-ui",
+                  "fontSize": 13,
+                  "fontWeight": "600"
+                },
+                {
+                  "type": "frame",
+                  "id": "SxIqx",
+                  "name": "Quiet status",
+                  "width": 108,
+                  "gap": 5,
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "RHc7w",
+                      "name": "Status text",
+                      "fill": "$text-mid",
+                      "content": "Stopped",
+                      "fontFamily": "$font-ui",
+                      "fontSize": 10,
+                      "fontWeight": "normal"
+                    }
+                  ]
+                },
+                {
+                  "type": "icon",
+                  "id": "PMr4Z",
+                  "name": "ellipsis",
+                  "width": 14,
+                  "height": 14,
+                  "icon": "ellipsis",
+                  "library": "lucide",
+                  "fill": "$text-low"
+                },
+                {
+                  "type": "icon",
+                  "id": "pcbrP",
+                  "name": "square",
+                  "width": 12,
+                  "height": 12,
+                  "icon": "play",
+                  "library": "lucide",
+                  "fill": "$accent"
+                },
+                {
+                  "type": "icon",
+                  "id": "G4KPY",
+                  "name": "git-fork",
+                  "width": 13,
+                  "height": 13,
+                  "icon": "git-fork",
+                  "library": "lucide",
+                  "fill": "$text-low"
+                },
+                {
+                  "type": "frame",
+                  "id": "A8hP1",
+                  "name": "sp",
+                  "width": "fill_container",
+                  "height": 1
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "L8EfV",
+              "name": "A · Answer needed",
+              "theme": {
+                "mode": "light"
+              },
+              "clip": true,
+              "width": "fill_container",
+              "height": 44,
+              "fill": "$panel",
+              "stroke": "$hairline",
+              "strokeWidth": {
+                "bottom": 1
+              },
+              "strokeAlignment": "inner",
+              "gap": 10,
+              "padding": [
+                0,
+                14
+              ],
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "icon",
+                  "id": "fz4To",
+                  "name": "message-square",
+                  "width": 14,
+                  "height": 14,
+                  "icon": "message-square",
+                  "library": "lucide",
+                  "fill": "$accent"
+                },
+                {
+                  "type": "text",
+                  "id": "RvXet",
+                  "name": "tab_title",
+                  "fill": "$text-hi",
+                  "content": "Claude Code",
+                  "fontFamily": "$font-ui",
+                  "fontSize": 13,
+                  "fontWeight": "600"
+                },
+                {
+                  "type": "frame",
+                  "id": "K7hIa",
+                  "name": "Quiet status",
+                  "width": 108,
+                  "gap": 5,
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "icon",
+                      "id": "aEo64",
+                      "name": "Answer icon",
+                      "width": 12,
+                      "height": 12,
+                      "icon": "message-circle",
+                      "library": "lucide",
+                      "fill": "$warn"
+                    },
+                    {
+                      "type": "text",
+                      "id": "c4YlkN",
+                      "name": "Status text",
+                      "fill": "$warn",
+                      "content": "Answer needed",
+                      "fontFamily": "$font-ui",
+                      "fontSize": 11,
+                      "fontWeight": "normal"
+                    }
+                  ]
+                },
+                {
+                  "type": "icon",
+                  "id": "YNQjr",
+                  "name": "ellipsis",
+                  "width": 14,
+                  "height": 14,
+                  "icon": "ellipsis",
+                  "library": "lucide",
+                  "fill": "$text-low"
+                },
+                {
+                  "type": "icon",
+                  "id": "WclK8",
+                  "name": "square",
+                  "width": 12,
+                  "height": 12,
+                  "icon": "square",
+                  "library": "lucide",
+                  "fill": "$text-mid"
+                },
+                {
+                  "type": "icon",
+                  "id": "hqVeu",
+                  "name": "git-fork",
+                  "width": 13,
+                  "height": 13,
+                  "icon": "git-fork",
+                  "library": "lucide",
+                  "fill": "$text-mid"
+                },
+                {
+                  "type": "frame",
+                  "id": "w45xKX",
+                  "name": "sp",
+                  "width": "fill_container",
+                  "height": 1
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "text",
+          "id": "AoVk8",
+          "name": "A narrow caption",
+          "fill": "$text-mid",
+          "content": "NARROW · 296 PX",
+          "fontFamily": "$font-ui",
+          "fontSize": 10,
+          "fontWeight": "normal"
+        },
+        {
+          "type": "frame",
+          "id": "BQPPH",
+          "name": "A · Answer needed",
+          "clip": true,
+          "width": 296,
+          "height": 44,
+          "fill": "$panel",
+          "stroke": "$hairline",
+          "strokeWidth": {
+            "bottom": 1
+          },
+          "strokeAlignment": "inner",
+          "gap": 10,
+          "padding": [
+            0,
+            14
+          ],
+          "alignItems": "center",
+          "children": [
+            {
+              "type": "icon",
+              "id": "iQ4jM",
+              "name": "message-square",
+              "width": 14,
+              "height": 14,
+              "icon": "message-square",
+              "library": "lucide",
+              "fill": "$accent"
+            },
+            {
+              "type": "text",
+              "id": "aGkDM",
+              "name": "tab_title",
+              "fill": "$text-hi",
+              "content": "Claude…",
+              "fontFamily": "$font-ui",
+              "fontSize": 13,
+              "fontWeight": "600"
+            },
+            {
+              "type": "frame",
+              "id": "C9Upo",
+              "name": "Quiet status",
+              "width": 16,
+              "gap": 5,
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "icon",
+                  "id": "OzA8y",
+                  "name": "Answer icon",
+                  "width": 12,
+                  "height": 12,
+                  "icon": "message-circle",
+                  "library": "lucide",
+                  "fill": "$warn"
+                },
+                {
+                  "type": "text",
+                  "id": "JUIcB",
+                  "x": 17,
+                  "y": 0,
+                  "name": "Status text",
+                  "enabled": false,
+                  "fill": "$warn",
+                  "content": "Answer needed",
+                  "fontFamily": "$font-ui",
+                  "fontSize": 11,
+                  "fontWeight": "normal"
+                }
+              ]
+            },
+            {
+              "type": "icon",
+              "id": "FquGP",
+              "name": "ellipsis",
+              "width": 14,
+              "height": 14,
+              "icon": "ellipsis",
+              "library": "lucide",
+              "fill": "$text-low"
+            },
+            {
+              "type": "icon",
+              "id": "Y8zkUe",
+              "name": "square",
+              "width": 12,
+              "height": 12,
+              "icon": "square",
+              "library": "lucide",
+              "fill": "$text-mid"
+            },
+            {
+              "type": "icon",
+              "id": "pqv2Q",
+              "name": "git-fork",
+              "width": 13,
+              "height": 13,
+              "icon": "git-fork",
+              "library": "lucide",
+              "fill": "$text-mid"
+            },
+            {
+              "type": "frame",
+              "id": "lz764",
+              "name": "sp",
+              "width": "fill_container",
+              "height": 1
+            }
+          ]
+        },
+        {
+          "type": "text",
+          "id": "u44AhW",
+          "name": "A tradeoff",
+          "fill": "$text-mid",
+          "textGrowth": "fixed-width",
+          "width": "fill_container",
+          "content": "Smallest change to the current layout. At 296 px, the status uses an icon and tooltip to leave room for the controls.",
+          "lineHeight": 1.5,
+          "fontFamily": "$font-ui",
+          "fontSize": 12,
+          "fontWeight": "normal"
+        }
+      ]
+    },
+    {
+      "type": "frame",
+      "id": "G9rBM",
+      "x": 13940,
+      "y": 8103,
+      "name": "347 · Header options · B · After buttons",
+      "theme": {
+        "mode": "dark"
+      },
+      "clip": true,
+      "width": 520,
+      "fill": "$bg",
+      "layout": "vertical",
+      "gap": 18,
+      "padding": 24,
+      "children": [
+        {
+          "type": "text",
+          "id": "i16x06",
+          "name": "Option B title",
+          "fill": "$text-hi",
+          "content": "B  /  After buttons",
+          "fontFamily": "$font-ui",
+          "fontSize": 24,
+          "fontWeight": "600"
+        },
+        {
+          "type": "text",
+          "id": "dMkDv",
+          "name": "Option B summary",
+          "fill": "$text-mid",
+          "textGrowth": "fixed-width-height",
+          "width": "fill_container",
+          "height": 36,
+          "content": "Move the same quiet status after the menu, Resume / Stop, and Fork buttons.",
+          "lineHeight": 1.5,
+          "fontFamily": "$font-ui",
+          "fontSize": 12,
+          "fontWeight": "normal"
+        },
+        {
+          "type": "frame",
+          "id": "RHX28",
+          "name": "B dark state comparison",
+          "width": "fill_container",
+          "layout": "vertical",
+          "gap": 8,
+          "children": [
+            {
+              "type": "frame",
+              "id": "xa6aV",
+              "name": "B · Stopped",
+              "clip": true,
+              "width": "fill_container",
+              "height": 44,
+              "fill": "$panel",
+              "stroke": "$hairline",
+              "strokeWidth": {
+                "bottom": 1
+              },
+              "strokeAlignment": "inner",
+              "gap": 10,
+              "padding": [
+                0,
+                14
+              ],
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "icon",
+                  "id": "YZScX",
+                  "name": "message-square",
+                  "width": 14,
+                  "height": 14,
+                  "icon": "message-square",
+                  "library": "lucide",
+                  "fill": "$accent"
+                },
+                {
+                  "type": "text",
+                  "id": "egh0O",
+                  "name": "tab_title",
+                  "fill": "$text-hi",
+                  "content": "Codex",
+                  "fontFamily": "$font-ui",
+                  "fontSize": 13,
+                  "fontWeight": "600"
+                },
+                {
+                  "type": "icon",
+                  "id": "PDXR8",
+                  "name": "ellipsis",
+                  "width": 14,
+                  "height": 14,
+                  "icon": "ellipsis",
+                  "library": "lucide",
+                  "fill": "$text-low"
+                },
+                {
+                  "type": "icon",
+                  "id": "ARLlw",
+                  "name": "square",
+                  "width": 12,
+                  "height": 12,
+                  "icon": "play",
+                  "library": "lucide",
+                  "fill": "$accent"
+                },
+                {
+                  "type": "icon",
+                  "id": "i7o1Vt",
+                  "name": "git-fork",
+                  "width": 13,
+                  "height": 13,
+                  "icon": "git-fork",
+                  "library": "lucide",
+                  "fill": "$text-low"
+                },
+                {
+                  "type": "frame",
+                  "id": "i4zF0",
+                  "name": "Quiet status",
+                  "width": 108,
+                  "gap": 5,
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "l6Gs9u",
+                      "name": "Status text",
+                      "fill": "$text-mid",
+                      "content": "Stopped",
+                      "fontFamily": "$font-ui",
+                      "fontSize": 10,
+                      "fontWeight": "normal"
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "vhg7v",
+                  "name": "sp",
+                  "width": "fill_container",
+                  "height": 1
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "xQSIe",
+              "name": "B · Working",
+              "clip": true,
+              "width": "fill_container",
+              "height": 44,
+              "fill": "$panel",
+              "stroke": "$hairline",
+              "strokeWidth": {
+                "bottom": 1
+              },
+              "strokeAlignment": "inner",
+              "gap": 10,
+              "padding": [
+                0,
+                14
+              ],
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "icon",
+                  "id": "SPqaR",
+                  "name": "message-square",
+                  "width": 14,
+                  "height": 14,
+                  "icon": "message-square",
+                  "library": "lucide",
+                  "fill": "$accent"
+                },
+                {
+                  "type": "text",
+                  "id": "mFCL2",
+                  "name": "tab_title",
+                  "fill": "$text-hi",
+                  "content": "Claude Code",
+                  "fontFamily": "$font-ui",
+                  "fontSize": 13,
+                  "fontWeight": "600"
+                },
+                {
+                  "type": "icon",
+                  "id": "GtgUH",
+                  "name": "ellipsis",
+                  "width": 14,
+                  "height": 14,
+                  "icon": "ellipsis",
+                  "library": "lucide",
+                  "fill": "$text-low"
+                },
+                {
+                  "type": "icon",
+                  "id": "i20sfw",
+                  "name": "square",
+                  "width": 12,
+                  "height": 12,
+                  "icon": "square",
+                  "library": "lucide",
+                  "fill": "$text-mid"
+                },
+                {
+                  "type": "icon",
+                  "id": "fz5Ea",
+                  "name": "git-fork",
+                  "width": 13,
+                  "height": 13,
+                  "icon": "git-fork",
+                  "library": "lucide",
+                  "fill": "$text-mid"
+                },
+                {
+                  "type": "frame",
+                  "id": "V6pQdH",
+                  "name": "Quiet status",
+                  "width": 108,
+                  "gap": 5,
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "ellipse",
+                      "id": "gu89a",
+                      "name": "Working spinner",
+                      "innerRadius": 0.7,
+                      "startAngle": 95,
+                      "sweepAngle": -265,
+                      "fill": "$text-mid",
+                      "width": 11,
+                      "height": 11
+                    },
+                    {
+                      "type": "text",
+                      "id": "K8zPEM",
+                      "name": "Status text",
+                      "fill": "$text-mid",
+                      "content": "Working",
+                      "fontFamily": "$font-ui",
+                      "fontSize": 10,
+                      "fontWeight": "normal"
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "rIkk4",
+                  "name": "sp",
+                  "width": "fill_container",
+                  "height": 1
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "Bu688",
+              "name": "B · Ready",
+              "clip": true,
+              "width": "fill_container",
+              "height": 44,
+              "fill": "$panel",
+              "stroke": "$hairline",
+              "strokeWidth": {
+                "bottom": 1
+              },
+              "strokeAlignment": "inner",
+              "gap": 10,
+              "padding": [
+                0,
+                14
+              ],
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "icon",
+                  "id": "FKPza",
+                  "name": "message-square",
+                  "width": 14,
+                  "height": 14,
+                  "icon": "message-square",
+                  "library": "lucide",
+                  "fill": "$accent"
+                },
+                {
+                  "type": "text",
+                  "id": "f3mHQy",
+                  "name": "tab_title",
+                  "fill": "$text-hi",
+                  "content": "Claude Code",
+                  "fontFamily": "$font-ui",
+                  "fontSize": 13,
+                  "fontWeight": "600"
+                },
+                {
+                  "type": "icon",
+                  "id": "DEd5B",
+                  "name": "ellipsis",
+                  "width": 14,
+                  "height": 14,
+                  "icon": "ellipsis",
+                  "library": "lucide",
+                  "fill": "$text-low"
+                },
+                {
+                  "type": "icon",
+                  "id": "mslNj",
+                  "name": "square",
+                  "width": 12,
+                  "height": 12,
+                  "icon": "square",
+                  "library": "lucide",
+                  "fill": "$text-mid"
+                },
+                {
+                  "type": "icon",
+                  "id": "mBhlv",
+                  "name": "git-fork",
+                  "width": 13,
+                  "height": 13,
+                  "icon": "git-fork",
+                  "library": "lucide",
+                  "fill": "$text-mid"
+                },
+                {
+                  "type": "frame",
+                  "id": "wBIZl",
+                  "name": "Quiet status",
+                  "width": 108,
+                  "gap": 5,
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "oNt1o",
+                      "name": "Status text",
+                      "fill": "$text-mid",
+                      "content": "Ready",
+                      "fontFamily": "$font-ui",
+                      "fontSize": 10,
+                      "fontWeight": "normal"
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "r2XgJ",
+                  "name": "sp",
+                  "width": "fill_container",
+                  "height": 1
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "Hv6N8",
+              "name": "B · Answer needed",
+              "clip": true,
+              "width": "fill_container",
+              "height": 44,
+              "fill": "$panel",
+              "stroke": "$hairline",
+              "strokeWidth": {
+                "bottom": 1
+              },
+              "strokeAlignment": "inner",
+              "gap": 10,
+              "padding": [
+                0,
+                14
+              ],
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "icon",
+                  "id": "U1UTO",
+                  "name": "message-square",
+                  "width": 14,
+                  "height": 14,
+                  "icon": "message-square",
+                  "library": "lucide",
+                  "fill": "$accent"
+                },
+                {
+                  "type": "text",
+                  "id": "k3sg1",
+                  "name": "tab_title",
+                  "fill": "$text-hi",
+                  "content": "Claude Code",
+                  "fontFamily": "$font-ui",
+                  "fontSize": 13,
+                  "fontWeight": "600"
+                },
+                {
+                  "type": "icon",
+                  "id": "aBhuI",
+                  "name": "ellipsis",
+                  "width": 14,
+                  "height": 14,
+                  "icon": "ellipsis",
+                  "library": "lucide",
+                  "fill": "$text-low"
+                },
+                {
+                  "type": "icon",
+                  "id": "EEdvX",
+                  "name": "square",
+                  "width": 12,
+                  "height": 12,
+                  "icon": "square",
+                  "library": "lucide",
+                  "fill": "$text-mid"
+                },
+                {
+                  "type": "icon",
+                  "id": "pTanj",
+                  "name": "git-fork",
+                  "width": 13,
+                  "height": 13,
+                  "icon": "git-fork",
+                  "library": "lucide",
+                  "fill": "$text-mid"
+                },
+                {
+                  "type": "frame",
+                  "id": "PF3ZK",
+                  "name": "Quiet status",
+                  "width": 108,
+                  "gap": 5,
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "icon",
+                      "id": "LWys5",
+                      "name": "Answer icon",
+                      "width": 12,
+                      "height": 12,
+                      "icon": "message-circle",
+                      "library": "lucide",
+                      "fill": "$warn"
+                    },
+                    {
+                      "type": "text",
+                      "id": "l75NxC",
+                      "name": "Status text",
+                      "fill": "$warn",
+                      "content": "Answer needed",
+                      "fontFamily": "$font-ui",
+                      "fontSize": 11,
+                      "fontWeight": "normal"
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "r8TC48",
+                  "name": "sp",
+                  "width": "fill_container",
+                  "height": 1
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "text",
+          "id": "tkRUa",
+          "name": "B light caption",
+          "fill": "$text-mid",
+          "content": "LIGHT THEME",
+          "fontFamily": "$font-ui",
+          "fontSize": 10,
+          "fontWeight": "normal"
+        },
+        {
+          "type": "frame",
+          "id": "w1uP1",
+          "name": "B light previews",
+          "width": "fill_container",
+          "layout": "vertical",
+          "gap": 8,
+          "children": [
+            {
+              "type": "frame",
+              "id": "Qb22p",
+              "name": "B · Stopped",
+              "theme": {
+                "mode": "light"
+              },
+              "clip": true,
+              "width": "fill_container",
+              "height": 44,
+              "fill": "$panel",
+              "stroke": "$hairline",
+              "strokeWidth": {
+                "bottom": 1
+              },
+              "strokeAlignment": "inner",
+              "gap": 10,
+              "padding": [
+                0,
+                14
+              ],
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "icon",
+                  "id": "C2zJv",
+                  "name": "message-square",
+                  "width": 14,
+                  "height": 14,
+                  "icon": "message-square",
+                  "library": "lucide",
+                  "fill": "$accent"
+                },
+                {
+                  "type": "text",
+                  "id": "X0fNl",
+                  "name": "tab_title",
+                  "fill": "$text-hi",
+                  "content": "Codex",
+                  "fontFamily": "$font-ui",
+                  "fontSize": 13,
+                  "fontWeight": "600"
+                },
+                {
+                  "type": "icon",
+                  "id": "eUSYl",
+                  "name": "ellipsis",
+                  "width": 14,
+                  "height": 14,
+                  "icon": "ellipsis",
+                  "library": "lucide",
+                  "fill": "$text-low"
+                },
+                {
+                  "type": "icon",
+                  "id": "jBSpo",
+                  "name": "square",
+                  "width": 12,
+                  "height": 12,
+                  "icon": "play",
+                  "library": "lucide",
+                  "fill": "$accent"
+                },
+                {
+                  "type": "icon",
+                  "id": "V4uJw",
+                  "name": "git-fork",
+                  "width": 13,
+                  "height": 13,
+                  "icon": "git-fork",
+                  "library": "lucide",
+                  "fill": "$text-low"
+                },
+                {
+                  "type": "frame",
+                  "id": "R8NUq",
+                  "name": "Quiet status",
+                  "width": 108,
+                  "gap": 5,
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "QlWT6",
+                      "name": "Status text",
+                      "fill": "$text-mid",
+                      "content": "Stopped",
+                      "fontFamily": "$font-ui",
+                      "fontSize": 10,
+                      "fontWeight": "normal"
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "snJVx",
+                  "name": "sp",
+                  "width": "fill_container",
+                  "height": 1
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "Zd4hy",
+              "name": "B · Answer needed",
+              "theme": {
+                "mode": "light"
+              },
+              "clip": true,
+              "width": "fill_container",
+              "height": 44,
+              "fill": "$panel",
+              "stroke": "$hairline",
+              "strokeWidth": {
+                "bottom": 1
+              },
+              "strokeAlignment": "inner",
+              "gap": 10,
+              "padding": [
+                0,
+                14
+              ],
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "icon",
+                  "id": "JjWw0",
+                  "name": "message-square",
+                  "width": 14,
+                  "height": 14,
+                  "icon": "message-square",
+                  "library": "lucide",
+                  "fill": "$accent"
+                },
+                {
+                  "type": "text",
+                  "id": "hIO3g",
+                  "name": "tab_title",
+                  "fill": "$text-hi",
+                  "content": "Claude Code",
+                  "fontFamily": "$font-ui",
+                  "fontSize": 13,
+                  "fontWeight": "600"
+                },
+                {
+                  "type": "icon",
+                  "id": "G6CE3K",
+                  "name": "ellipsis",
+                  "width": 14,
+                  "height": 14,
+                  "icon": "ellipsis",
+                  "library": "lucide",
+                  "fill": "$text-low"
+                },
+                {
+                  "type": "icon",
+                  "id": "eTa6m",
+                  "name": "square",
+                  "width": 12,
+                  "height": 12,
+                  "icon": "square",
+                  "library": "lucide",
+                  "fill": "$text-mid"
+                },
+                {
+                  "type": "icon",
+                  "id": "P0VVq",
+                  "name": "git-fork",
+                  "width": 13,
+                  "height": 13,
+                  "icon": "git-fork",
+                  "library": "lucide",
+                  "fill": "$text-mid"
+                },
+                {
+                  "type": "frame",
+                  "id": "XG3Rc",
+                  "name": "Quiet status",
+                  "width": 108,
+                  "gap": 5,
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "icon",
+                      "id": "tNlHH",
+                      "name": "Answer icon",
+                      "width": 12,
+                      "height": 12,
+                      "icon": "message-circle",
+                      "library": "lucide",
+                      "fill": "$warn"
+                    },
+                    {
+                      "type": "text",
+                      "id": "sh07f",
+                      "name": "Status text",
+                      "fill": "$warn",
+                      "content": "Answer needed",
+                      "fontFamily": "$font-ui",
+                      "fontSize": 11,
+                      "fontWeight": "normal"
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "CXH4X",
+                  "name": "sp",
+                  "width": "fill_container",
+                  "height": 1
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "text",
+          "id": "Wyy8O",
+          "name": "B narrow caption",
+          "fill": "$text-mid",
+          "content": "NARROW · 296 PX",
+          "fontFamily": "$font-ui",
+          "fontSize": 10,
+          "fontWeight": "normal"
+        },
+        {
+          "type": "frame",
+          "id": "GWKwV",
+          "name": "B · Answer needed",
+          "clip": true,
+          "width": 296,
+          "height": 44,
+          "fill": "$panel",
+          "stroke": "$hairline",
+          "strokeWidth": {
+            "bottom": 1
+          },
+          "strokeAlignment": "inner",
+          "gap": 10,
+          "padding": [
+            0,
+            14
+          ],
+          "alignItems": "center",
+          "children": [
+            {
+              "type": "icon",
+              "id": "tSME3",
+              "name": "message-square",
+              "width": 14,
+              "height": 14,
+              "icon": "message-square",
+              "library": "lucide",
+              "fill": "$accent"
+            },
+            {
+              "type": "text",
+              "id": "XXydq",
+              "name": "tab_title",
+              "fill": "$text-hi",
+              "content": "Claude…",
+              "fontFamily": "$font-ui",
+              "fontSize": 13,
+              "fontWeight": "600"
+            },
+            {
+              "type": "icon",
+              "id": "SKDfk",
+              "name": "ellipsis",
+              "width": 14,
+              "height": 14,
+              "icon": "ellipsis",
+              "library": "lucide",
+              "fill": "$text-low"
+            },
+            {
+              "type": "icon",
+              "id": "YbYgO",
+              "name": "square",
+              "width": 12,
+              "height": 12,
+              "icon": "square",
+              "library": "lucide",
+              "fill": "$text-mid"
+            },
+            {
+              "type": "icon",
+              "id": "arKwA",
+              "name": "git-fork",
+              "width": 13,
+              "height": 13,
+              "icon": "git-fork",
+              "library": "lucide",
+              "fill": "$text-mid"
+            },
+            {
+              "type": "frame",
+              "id": "TaUk9",
+              "name": "Quiet status",
+              "width": 16,
+              "gap": 5,
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "icon",
+                  "id": "blVkH",
+                  "name": "Answer icon",
+                  "width": 12,
+                  "height": 12,
+                  "icon": "message-circle",
+                  "library": "lucide",
+                  "fill": "$warn"
+                },
+                {
+                  "type": "text",
+                  "id": "RLhTf",
+                  "x": 17,
+                  "y": 0,
+                  "name": "Status text",
+                  "enabled": false,
+                  "fill": "$warn",
+                  "content": "Answer needed",
+                  "fontFamily": "$font-ui",
+                  "fontSize": 11,
+                  "fontWeight": "normal"
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "z1eSz",
+              "name": "sp",
+              "width": "fill_container",
+              "height": 1
+            }
+          ]
+        },
+        {
+          "type": "text",
+          "id": "HlkI4",
+          "name": "B tradeoff",
+          "fill": "$text-mid",
+          "textGrowth": "fixed-width",
+          "width": "fill_container",
+          "content": "The title and controls stay together. Status text follows the last button with the same spacing as the controls.",
+          "lineHeight": 1.5,
+          "fontFamily": "$font-ui",
+          "fontSize": 12,
+          "fontWeight": "normal"
+        }
+      ]
+    },
+    {
+      "type": "frame",
+      "id": "iP5dP",
+      "x": 14500,
+      "y": 8103,
+      "name": "347 · Header options · C · Selected — after buttons + divider",
+      "theme": {
+        "mode": "dark"
+      },
+      "clip": true,
+      "width": 520,
+      "fill": "$bg",
+      "layout": "vertical",
+      "gap": 18,
+      "padding": 24,
+      "children": [
+        {
+          "type": "text",
+          "id": "aJbJX",
+          "name": "Option C title",
+          "fill": "$text-hi",
+          "content": "C  /  With divider",
+          "fontFamily": "$font-ui",
+          "fontSize": 24,
+          "fontWeight": "600"
+        },
+        {
+          "type": "text",
+          "id": "O2weuP",
+          "name": "Option C summary",
+          "fill": "$text-mid",
+          "textGrowth": "fixed-width-height",
+          "width": "fill_container",
+          "height": 36,
+          "content": "Selected · Status follows the buttons. A short divider separates actions from information.",
+          "lineHeight": 1.5,
+          "fontFamily": "$font-ui",
+          "fontSize": 12,
+          "fontWeight": "normal"
+        },
+        {
+          "type": "frame",
+          "id": "xMil1",
+          "name": "C dark state comparison",
+          "width": "fill_container",
+          "layout": "vertical",
+          "gap": 8,
+          "children": [
+            {
+              "type": "frame",
+              "id": "UPym1",
+              "name": "C · Stopped",
+              "clip": true,
+              "width": "fill_container",
+              "height": 44,
+              "fill": "$panel",
+              "stroke": "$hairline",
+              "strokeWidth": {
+                "bottom": 1
+              },
+              "strokeAlignment": "inner",
+              "gap": 10,
+              "padding": [
+                0,
+                14
+              ],
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "icon",
+                  "id": "SPfyR",
+                  "name": "message-square",
+                  "width": 14,
+                  "height": 14,
+                  "icon": "message-square",
+                  "library": "lucide",
+                  "fill": "$accent"
+                },
+                {
+                  "type": "text",
+                  "id": "KsPra",
+                  "name": "tab_title",
+                  "fill": "$text-hi",
+                  "content": "Codex",
+                  "fontFamily": "$font-ui",
+                  "fontSize": 13,
+                  "fontWeight": "600"
+                },
+                {
+                  "type": "icon",
+                  "id": "h9FLcu",
+                  "name": "ellipsis",
+                  "width": 14,
+                  "height": 14,
+                  "icon": "ellipsis",
+                  "library": "lucide",
+                  "fill": "$text-low"
+                },
+                {
+                  "type": "icon",
+                  "id": "xuUAb",
+                  "name": "square",
+                  "width": 12,
+                  "height": 12,
+                  "icon": "play",
+                  "library": "lucide",
+                  "fill": "$accent"
+                },
+                {
+                  "type": "icon",
+                  "id": "h6Y68n",
+                  "name": "git-fork",
+                  "width": 13,
+                  "height": 13,
+                  "icon": "git-fork",
+                  "library": "lucide",
+                  "fill": "$text-low"
+                },
+                {
+                  "type": "rectangle",
+                  "id": "dDHkX",
+                  "name": "Actions and status divider",
+                  "fill": "$line-strong",
+                  "width": 1,
+                  "height": 14
+                },
+                {
+                  "type": "frame",
+                  "id": "fUPIH",
+                  "name": "Quiet status",
+                  "width": 108,
+                  "gap": 5,
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "uO247",
+                      "name": "Status text",
+                      "fill": "$text-mid",
+                      "content": "Stopped",
+                      "fontFamily": "$font-ui",
+                      "fontSize": 10,
+                      "fontWeight": "normal"
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "dS2Np",
+                  "name": "sp",
+                  "width": "fill_container",
+                  "height": 1
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "I8PjKS",
+              "name": "C · Resuming — one spinner",
+              "clip": true,
+              "width": "fill_container",
+              "height": 44,
+              "fill": "$panel",
+              "stroke": "$hairline",
+              "strokeWidth": {
+                "bottom": 1
+              },
+              "strokeAlignment": "inner",
+              "gap": 10,
+              "padding": [
+                0,
+                14
+              ],
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "icon",
+                  "id": "E26ne",
+                  "name": "message-square",
+                  "width": 14,
+                  "height": 14,
+                  "icon": "message-square",
+                  "library": "lucide",
+                  "fill": "$accent"
+                },
+                {
+                  "type": "text",
+                  "id": "amq3b",
+                  "name": "tab_title",
+                  "fill": "$text-hi",
+                  "content": "Claude Code",
+                  "fontFamily": "$font-ui",
+                  "fontSize": 13,
+                  "fontWeight": "600"
+                },
+                {
+                  "type": "icon",
+                  "id": "JSR3E",
+                  "name": "ellipsis",
+                  "width": 14,
+                  "height": 14,
+                  "icon": "ellipsis",
+                  "library": "lucide",
+                  "fill": "$text-low"
+                },
+                {
+                  "type": "icon",
+                  "id": "wRB0V",
+                  "name": "Disabled Resume button",
+                  "opacity": 0.4,
+                  "width": 12,
+                  "height": 12,
+                  "icon": "play",
+                  "library": "lucide",
+                  "fill": "$accent"
+                },
+                {
+                  "type": "icon",
+                  "id": "YYSDS",
+                  "name": "git-fork",
+                  "width": 13,
+                  "height": 13,
+                  "icon": "git-fork",
+                  "library": "lucide",
+                  "fill": "$text-low"
+                },
+                {
+                  "type": "rectangle",
+                  "id": "L1C0gC",
+                  "name": "Actions and status divider",
+                  "fill": "$line-strong",
+                  "width": 1,
+                  "height": 14
+                },
+                {
+                  "type": "frame",
+                  "id": "Yjwe0",
+                  "name": "Quiet status",
+                  "width": 108,
+                  "gap": 5,
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "ellipse",
+                      "id": "ARada",
+                      "name": "Resuming spinner",
+                      "innerRadius": 0.7,
+                      "startAngle": 95,
+                      "sweepAngle": -265,
+                      "fill": "$text-mid",
+                      "width": 11,
+                      "height": 11
+                    },
+                    {
+                      "type": "text",
+                      "id": "mqQwk",
+                      "name": "Status text",
+                      "fill": "$text-mid",
+                      "content": "Resuming",
+                      "fontFamily": "$font-ui",
+                      "fontSize": 10,
+                      "fontWeight": "normal"
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "i0ZlJ",
+                  "name": "sp",
+                  "width": "fill_container",
+                  "height": 1
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "K40Ak",
+              "name": "C · Working",
+              "clip": true,
+              "width": "fill_container",
+              "height": 44,
+              "fill": "$panel",
+              "stroke": "$hairline",
+              "strokeWidth": {
+                "bottom": 1
+              },
+              "strokeAlignment": "inner",
+              "gap": 10,
+              "padding": [
+                0,
+                14
+              ],
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "icon",
+                  "id": "t8qUvJ",
+                  "name": "message-square",
+                  "width": 14,
+                  "height": 14,
+                  "icon": "message-square",
+                  "library": "lucide",
+                  "fill": "$accent"
+                },
+                {
+                  "type": "text",
+                  "id": "zgsWt",
+                  "name": "tab_title",
+                  "fill": "$text-hi",
+                  "content": "Claude Code",
+                  "fontFamily": "$font-ui",
+                  "fontSize": 13,
+                  "fontWeight": "600"
+                },
+                {
+                  "type": "icon",
+                  "id": "cANey",
+                  "name": "ellipsis",
+                  "width": 14,
+                  "height": 14,
+                  "icon": "ellipsis",
+                  "library": "lucide",
+                  "fill": "$text-low"
+                },
+                {
+                  "type": "icon",
+                  "id": "RYYBR",
+                  "name": "square",
+                  "width": 12,
+                  "height": 12,
+                  "icon": "square",
+                  "library": "lucide",
+                  "fill": "$text-mid"
+                },
+                {
+                  "type": "icon",
+                  "id": "zdke5",
+                  "name": "git-fork",
+                  "width": 13,
+                  "height": 13,
+                  "icon": "git-fork",
+                  "library": "lucide",
+                  "fill": "$text-mid"
+                },
+                {
+                  "type": "rectangle",
+                  "id": "A0wNV",
+                  "name": "Actions and status divider",
+                  "fill": "$line-strong",
+                  "width": 1,
+                  "height": 14
+                },
+                {
+                  "type": "frame",
+                  "id": "MXBOw",
+                  "name": "Quiet status",
+                  "width": 108,
+                  "gap": 5,
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "ellipse",
+                      "id": "YSTZz",
+                      "name": "Working spinner",
+                      "innerRadius": 0.7,
+                      "startAngle": 95,
+                      "sweepAngle": -265,
+                      "fill": "$text-mid",
+                      "width": 11,
+                      "height": 11
+                    },
+                    {
+                      "type": "text",
+                      "id": "thFmR",
+                      "name": "Status text",
+                      "fill": "$text-mid",
+                      "content": "Working",
+                      "fontFamily": "$font-ui",
+                      "fontSize": 10,
+                      "fontWeight": "normal"
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "g0wSMf",
+                  "name": "sp",
+                  "width": "fill_container",
+                  "height": 1
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "hHzt8",
+              "name": "C · Idle",
+              "clip": true,
+              "width": "fill_container",
+              "height": 44,
+              "fill": "$panel",
+              "stroke": "$hairline",
+              "strokeWidth": {
+                "bottom": 1
+              },
+              "strokeAlignment": "inner",
+              "gap": 10,
+              "padding": [
+                0,
+                14
+              ],
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "icon",
+                  "id": "BiiB4",
+                  "name": "message-square",
+                  "width": 14,
+                  "height": 14,
+                  "icon": "message-square",
+                  "library": "lucide",
+                  "fill": "$accent"
+                },
+                {
+                  "type": "text",
+                  "id": "JpMlE",
+                  "name": "tab_title",
+                  "fill": "$text-hi",
+                  "content": "Claude Code",
+                  "fontFamily": "$font-ui",
+                  "fontSize": 13,
+                  "fontWeight": "600"
+                },
+                {
+                  "type": "icon",
+                  "id": "ksHR7",
+                  "name": "ellipsis",
+                  "width": 14,
+                  "height": 14,
+                  "icon": "ellipsis",
+                  "library": "lucide",
+                  "fill": "$text-low"
+                },
+                {
+                  "type": "icon",
+                  "id": "vINZ8",
+                  "name": "square",
+                  "width": 12,
+                  "height": 12,
+                  "icon": "square",
+                  "library": "lucide",
+                  "fill": "$text-mid"
+                },
+                {
+                  "type": "icon",
+                  "id": "goSqz",
+                  "name": "git-fork",
+                  "width": 13,
+                  "height": 13,
+                  "icon": "git-fork",
+                  "library": "lucide",
+                  "fill": "$text-mid"
+                },
+                {
+                  "type": "rectangle",
+                  "id": "f7Bo3a",
+                  "name": "Actions and status divider",
+                  "fill": "$line-strong",
+                  "width": 1,
+                  "height": 14
+                },
+                {
+                  "type": "frame",
+                  "id": "vvYFx",
+                  "name": "Quiet status",
+                  "width": 108,
+                  "gap": 5,
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "Hkk9K",
+                      "name": "Status text",
+                      "fill": "$text-mid",
+                      "content": "Idle",
+                      "fontFamily": "$font-ui",
+                      "fontSize": 10,
+                      "fontWeight": "normal"
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "J5QHP",
+                  "name": "sp",
+                  "width": "fill_container",
+                  "height": 1
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "f2K54v",
+              "name": "C · Answer needed",
+              "clip": true,
+              "width": "fill_container",
+              "height": 44,
+              "fill": "$panel",
+              "stroke": "$hairline",
+              "strokeWidth": {
+                "bottom": 1
+              },
+              "strokeAlignment": "inner",
+              "gap": 10,
+              "padding": [
+                0,
+                14
+              ],
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "icon",
+                  "id": "rqZxd",
+                  "name": "message-square",
+                  "width": 14,
+                  "height": 14,
+                  "icon": "message-square",
+                  "library": "lucide",
+                  "fill": "$accent"
+                },
+                {
+                  "type": "text",
+                  "id": "WmSk7",
+                  "name": "tab_title",
+                  "fill": "$text-hi",
+                  "content": "Claude Code",
+                  "fontFamily": "$font-ui",
+                  "fontSize": 13,
+                  "fontWeight": "600"
+                },
+                {
+                  "type": "icon",
+                  "id": "wm66P",
+                  "name": "ellipsis",
+                  "width": 14,
+                  "height": 14,
+                  "icon": "ellipsis",
+                  "library": "lucide",
+                  "fill": "$text-low"
+                },
+                {
+                  "type": "icon",
+                  "id": "a1LptZ",
+                  "name": "square",
+                  "width": 12,
+                  "height": 12,
+                  "icon": "square",
+                  "library": "lucide",
+                  "fill": "$text-mid"
+                },
+                {
+                  "type": "icon",
+                  "id": "OHnT7",
+                  "name": "git-fork",
+                  "width": 13,
+                  "height": 13,
+                  "icon": "git-fork",
+                  "library": "lucide",
+                  "fill": "$text-mid"
+                },
+                {
+                  "type": "rectangle",
+                  "id": "ytETl",
+                  "name": "Actions and status divider",
+                  "fill": "$line-strong",
+                  "width": 1,
+                  "height": 14
+                },
+                {
+                  "type": "frame",
+                  "id": "jwoj8",
+                  "name": "Quiet status",
+                  "width": 108,
+                  "gap": 5,
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "icon",
+                      "id": "kz2Ze",
+                      "name": "Answer icon",
+                      "width": 12,
+                      "height": 12,
+                      "icon": "message-circle",
+                      "library": "lucide",
+                      "fill": "$warn"
+                    },
+                    {
+                      "type": "text",
+                      "id": "vGayV",
+                      "name": "Status text",
+                      "fill": "$warn",
+                      "content": "Answer needed",
+                      "fontFamily": "$font-ui",
+                      "fontSize": 11,
+                      "fontWeight": "normal"
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "KW5m5",
+                  "name": "sp",
+                  "width": "fill_container",
+                  "height": 1
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "ZWAnA",
+              "name": "C · Split-pane header — no divider, centered drag handle",
+              "width": "fill_container",
+              "height": 44,
+              "fill": "$panel",
+              "stroke": "$hairline",
+              "strokeWidth": {
+                "bottom": 1
+              },
+              "strokeAlignment": "inner",
+              "padding": [
+                0,
+                14
+              ],
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "frame",
+                  "id": "Ni2Dv",
+                  "name": "Split pane left identity and status",
+                  "width": "fill_container",
+                  "height": 20,
+                  "gap": 10,
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "icon",
+                      "id": "aFTAj",
+                      "name": "Split pane runtime icon",
+                      "width": 14,
+                      "height": 14,
+                      "icon": "message-square",
+                      "library": "lucide",
+                      "fill": "$accent"
+                    },
+                    {
+                      "type": "text",
+                      "id": "fvBSk",
+                      "name": "Split pane title",
+                      "fill": "$text-hi",
+                      "content": "Claude Code",
+                      "fontFamily": "$font-ui",
+                      "fontSize": 13,
+                      "fontWeight": "600"
+                    },
+                    {
+                      "type": "icon",
+                      "id": "d8UZlF",
+                      "name": "Split pane title menu",
+                      "width": 14,
+                      "height": 14,
+                      "icon": "ellipsis",
+                      "library": "lucide",
+                      "fill": "$text-low"
+                    },
+                    {
+                      "type": "frame",
+                      "id": "AgCNm",
+                      "name": "Split pane status",
+                      "gap": 5,
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "mfhPW",
+                          "name": "Split pane Idle label",
+                          "fill": "$text-mid",
+                          "content": "Idle",
+                          "fontFamily": "$font-ui",
+                          "fontSize": 10,
+                          "fontWeight": "normal"
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "AB5Tl",
+                  "name": "Centered pane drag handle",
+                  "width": 20,
+                  "height": 20,
+                  "justifyContent": "center",
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "icon",
+                      "id": "Ap53Q",
+                      "name": "Pane drag handle",
+                      "width": 12,
+                      "height": 12,
+                      "icon": "grip-horizontal",
+                      "library": "lucide",
+                      "fill": "$text-low"
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "BiSnY",
+                  "name": "Split pane right actions",
+                  "width": "fill_container",
+                  "height": 20,
+                  "gap": 10,
+                  "justifyContent": "end",
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "icon",
+                      "id": "R4S85",
+                      "name": "Pane split menu",
+                      "width": 14,
+                      "height": 14,
+                      "icon": "columns-2",
+                      "library": "lucide",
+                      "fill": "$text-low"
+                    },
+                    {
+                      "type": "icon",
+                      "id": "ZiQT1",
+                      "name": "Close pane",
+                      "width": 14,
+                      "height": 14,
+                      "icon": "x",
+                      "library": "lucide",
+                      "fill": "$text-low"
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "text",
+          "id": "yiSHO",
+          "name": "C light caption",
+          "fill": "$text-mid",
+          "content": "LIGHT THEME",
+          "fontFamily": "$font-ui",
+          "fontSize": 10,
+          "fontWeight": "normal"
+        },
+        {
+          "type": "frame",
+          "id": "Ggx0N",
+          "name": "C light previews",
+          "width": "fill_container",
+          "layout": "vertical",
+          "gap": 8,
+          "children": [
+            {
+              "type": "frame",
+              "id": "x0mXH",
+              "name": "C · Stopped",
+              "theme": {
+                "mode": "light"
+              },
+              "clip": true,
+              "width": "fill_container",
+              "height": 44,
+              "fill": "$panel",
+              "stroke": "$hairline",
+              "strokeWidth": {
+                "bottom": 1
+              },
+              "strokeAlignment": "inner",
+              "gap": 10,
+              "padding": [
+                0,
+                14
+              ],
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "icon",
+                  "id": "IQmG2",
+                  "name": "message-square",
+                  "width": 14,
+                  "height": 14,
+                  "icon": "message-square",
+                  "library": "lucide",
+                  "fill": "$accent"
+                },
+                {
+                  "type": "text",
+                  "id": "X8cZsT",
+                  "name": "tab_title",
+                  "fill": "$text-hi",
+                  "content": "Codex",
+                  "fontFamily": "$font-ui",
+                  "fontSize": 13,
+                  "fontWeight": "600"
+                },
+                {
+                  "type": "icon",
+                  "id": "UqGVr",
+                  "name": "ellipsis",
+                  "width": 14,
+                  "height": 14,
+                  "icon": "ellipsis",
+                  "library": "lucide",
+                  "fill": "$text-low"
+                },
+                {
+                  "type": "icon",
+                  "id": "kJYfz",
+                  "name": "square",
+                  "width": 12,
+                  "height": 12,
+                  "icon": "play",
+                  "library": "lucide",
+                  "fill": "$accent"
+                },
+                {
+                  "type": "icon",
+                  "id": "sqlbl",
+                  "name": "git-fork",
+                  "width": 13,
+                  "height": 13,
+                  "icon": "git-fork",
+                  "library": "lucide",
+                  "fill": "$text-low"
+                },
+                {
+                  "type": "rectangle",
+                  "id": "wM0YI",
+                  "name": "Actions and status divider",
+                  "fill": "$line-strong",
+                  "width": 1,
+                  "height": 14
+                },
+                {
+                  "type": "frame",
+                  "id": "b600b",
+                  "name": "Quiet status",
+                  "width": 108,
+                  "gap": 5,
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "q18y7n",
+                      "name": "Status text",
+                      "fill": "$text-mid",
+                      "content": "Stopped",
+                      "fontFamily": "$font-ui",
+                      "fontSize": 10,
+                      "fontWeight": "normal"
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "KHahB",
+                  "name": "sp",
+                  "width": "fill_container",
+                  "height": 1
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "WE8PL",
+              "name": "C · Answer needed",
+              "theme": {
+                "mode": "light"
+              },
+              "clip": true,
+              "width": "fill_container",
+              "height": 44,
+              "fill": "$panel",
+              "stroke": "$hairline",
+              "strokeWidth": {
+                "bottom": 1
+              },
+              "strokeAlignment": "inner",
+              "gap": 10,
+              "padding": [
+                0,
+                14
+              ],
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "icon",
+                  "id": "OaKLt",
+                  "name": "message-square",
+                  "width": 14,
+                  "height": 14,
+                  "icon": "message-square",
+                  "library": "lucide",
+                  "fill": "$accent"
+                },
+                {
+                  "type": "text",
+                  "id": "BkXkd",
+                  "name": "tab_title",
+                  "fill": "$text-hi",
+                  "content": "Claude Code",
+                  "fontFamily": "$font-ui",
+                  "fontSize": 13,
+                  "fontWeight": "600"
+                },
+                {
+                  "type": "icon",
+                  "id": "Li5xO",
+                  "name": "ellipsis",
+                  "width": 14,
+                  "height": 14,
+                  "icon": "ellipsis",
+                  "library": "lucide",
+                  "fill": "$text-low"
+                },
+                {
+                  "type": "icon",
+                  "id": "LZGlS",
+                  "name": "square",
+                  "width": 12,
+                  "height": 12,
+                  "icon": "square",
+                  "library": "lucide",
+                  "fill": "$text-mid"
+                },
+                {
+                  "type": "icon",
+                  "id": "VDKbB",
+                  "name": "git-fork",
+                  "width": 13,
+                  "height": 13,
+                  "icon": "git-fork",
+                  "library": "lucide",
+                  "fill": "$text-mid"
+                },
+                {
+                  "type": "rectangle",
+                  "id": "bBSlk",
+                  "name": "Actions and status divider",
+                  "fill": "$line-strong",
+                  "width": 1,
+                  "height": 14
+                },
+                {
+                  "type": "frame",
+                  "id": "Q05fb",
+                  "name": "Quiet status",
+                  "width": 108,
+                  "gap": 5,
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "icon",
+                      "id": "MxM6F",
+                      "name": "Answer icon",
+                      "width": 12,
+                      "height": 12,
+                      "icon": "message-circle",
+                      "library": "lucide",
+                      "fill": "$warn"
+                    },
+                    {
+                      "type": "text",
+                      "id": "lFdIC",
+                      "name": "Status text",
+                      "fill": "$warn",
+                      "content": "Answer needed",
+                      "fontFamily": "$font-ui",
+                      "fontSize": 11,
+                      "fontWeight": "normal"
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "yPXQ9",
+                  "name": "sp",
+                  "width": "fill_container",
+                  "height": 1
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "text",
+          "id": "NLBVW",
+          "name": "C narrow caption",
+          "fill": "$text-mid",
+          "content": "NARROW · 296 PX",
+          "fontFamily": "$font-ui",
+          "fontSize": 10,
+          "fontWeight": "normal"
+        },
+        {
+          "type": "frame",
+          "id": "B0fWZ",
+          "name": "C · Answer needed",
+          "clip": true,
+          "width": 296,
+          "height": 44,
+          "fill": "$panel",
+          "stroke": "$hairline",
+          "strokeWidth": {
+            "bottom": 1
+          },
+          "strokeAlignment": "inner",
+          "gap": 10,
+          "padding": [
+            0,
+            14
+          ],
+          "alignItems": "center",
+          "children": [
+            {
+              "type": "icon",
+              "id": "M4hYMr",
+              "name": "message-square",
+              "width": 14,
+              "height": 14,
+              "icon": "message-square",
+              "library": "lucide",
+              "fill": "$accent"
+            },
+            {
+              "type": "text",
+              "id": "biaEs",
+              "name": "tab_title",
+              "fill": "$text-hi",
+              "content": "Claude…",
+              "fontFamily": "$font-ui",
+              "fontSize": 13,
+              "fontWeight": "600"
+            },
+            {
+              "type": "icon",
+              "id": "xNkTF",
+              "name": "ellipsis",
+              "width": 14,
+              "height": 14,
+              "icon": "ellipsis",
+              "library": "lucide",
+              "fill": "$text-low"
+            },
+            {
+              "type": "icon",
+              "id": "c7ol6",
+              "name": "square",
+              "width": 12,
+              "height": 12,
+              "icon": "square",
+              "library": "lucide",
+              "fill": "$text-mid"
+            },
+            {
+              "type": "icon",
+              "id": "khru3",
+              "name": "git-fork",
+              "width": 13,
+              "height": 13,
+              "icon": "git-fork",
+              "library": "lucide",
+              "fill": "$text-mid"
+            },
+            {
+              "type": "rectangle",
+              "id": "oyL4p",
+              "name": "Actions and status divider",
+              "fill": "$line-strong",
+              "width": 1,
+              "height": 14
+            },
+            {
+              "type": "frame",
+              "id": "BzCGd",
+              "name": "Quiet status",
+              "width": 16,
+              "gap": 5,
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "icon",
+                  "id": "FM0RH",
+                  "name": "Answer icon",
+                  "width": 12,
+                  "height": 12,
+                  "icon": "message-circle",
+                  "library": "lucide",
+                  "fill": "$warn"
+                },
+                {
+                  "type": "text",
+                  "id": "JCQQb",
+                  "x": 17,
+                  "y": 0,
+                  "name": "Status text",
+                  "enabled": false,
+                  "fill": "$warn",
+                  "content": "Answer needed",
+                  "fontFamily": "$font-ui",
+                  "fontSize": 11,
+                  "fontWeight": "normal"
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "L8pQD",
+              "name": "sp",
+              "width": "fill_container",
+              "height": 1
+            }
+          ]
+        },
+        {
+          "type": "text",
+          "id": "qANvV",
+          "name": "C tradeoff",
+          "fill": "$text-mid",
+          "textGrowth": "fixed-width",
+          "width": "fill_container",
+          "content": "Clear separation and stable button positions. A short divider adds structure; narrow panes use an icon and tooltip.",
+          "lineHeight": 1.5,
+          "fontFamily": "$font-ui",
+          "fontSize": 12,
+          "fontWeight": "normal"
+        }
+      ]
     }
   ],
   "themes": {

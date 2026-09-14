@@ -1,7 +1,7 @@
 use gpui::prelude::*;
 use gpui::{div, rems, svg, AnyElement, ElementId};
 use runner_backend::session::status::{
-    Activity, AgentStatus, Lifecycle, ObservationSource, WaitReason,
+    Activity, AgentStatus, Lifecycle, ObservationSource, TurnOutcome, WaitReason,
 };
 
 use crate::{
@@ -14,13 +14,13 @@ pub enum StatusKind {
     Starting,
     Resuming,
     Working,
-    Ready,
     Idle,
     Approval,
     Answer,
     NeedsYou,
     Stopped,
     Error,
+    ResponseFailed,
     Unavailable,
 }
 
@@ -46,11 +46,12 @@ impl StatusPresentation {
                         WaitReason::Answer => StatusKind::Answer,
                         WaitReason::Unknown => StatusKind::NeedsYou,
                     }
+                } else if observation.outcome == Some(TurnOutcome::Failed) {
+                    StatusKind::ResponseFailed
                 } else {
                     match observation.activity {
                         Activity::Working => StatusKind::Working,
-                        Activity::Ready => StatusKind::Ready,
-                        Activity::Idle => StatusKind::Idle,
+                        Activity::Ready | Activity::Idle => StatusKind::Idle,
                         Activity::Unavailable => StatusKind::Unavailable,
                     }
                 }
@@ -69,13 +70,13 @@ impl StatusPresentation {
             StatusKind::Starting => "Starting",
             StatusKind::Resuming => "Resuming",
             StatusKind::Working => "Working",
-            StatusKind::Ready => "Ready",
             StatusKind::Idle => "Idle",
             StatusKind::Approval => "Approval needed",
             StatusKind::Answer => "Answer needed",
             StatusKind::NeedsYou => "Needs you",
             StatusKind::Stopped => "Stopped",
             StatusKind::Error => "Error",
+            StatusKind::ResponseFailed => "Response failed",
             StatusKind::Unavailable => "Status unavailable",
         }
     }
@@ -87,6 +88,10 @@ impl StatusPresentation {
         )
     }
 
+    pub fn is_error(self) -> bool {
+        matches!(self.kind, StatusKind::Error | StatusKind::ResponseFailed)
+    }
+
     pub fn tooltip(self) -> String {
         if self.estimated {
             return format!("{} · estimated from terminal activity", self.label());
@@ -96,6 +101,7 @@ impl StatusPresentation {
             StatusKind::Answer => "Waiting for your answer".into(),
             StatusKind::NeedsYou => "Waiting for your input in the terminal".into(),
             StatusKind::Unavailable => "Status unavailable · Agent is still connected".into(),
+            StatusKind::ResponseFailed => "Response failed · Agent is still connected".into(),
             StatusKind::Error => self.exit_code.map_or_else(
                 || "Process exited unexpectedly".into(),
                 |code| format!("Process exited · code {code}"),
@@ -106,7 +112,7 @@ impl StatusPresentation {
 
     pub fn shows_label(self, width: f32) -> bool {
         width
-            >= if self.needs_you() || self.kind == StatusKind::Error {
+            >= if self.needs_you() || self.is_error() {
                 320.
             } else {
                 480.
@@ -117,7 +123,7 @@ impl StatusPresentation {
 pub fn status_glyph(status: StatusPresentation, id: impl Into<ElementId>) -> AnyElement {
     let color = if status.needs_you() {
         theme::warning()
-    } else if status.kind == StatusKind::Error {
+    } else if status.is_error() {
         theme::danger()
     } else {
         theme::muted()
@@ -126,7 +132,7 @@ pub fn status_glyph(status: StatusPresentation, id: impl Into<ElementId>) -> Any
         StatusKind::Starting | StatusKind::Resuming | StatusKind::Working => {
             spinner(id, 12., color)
         }
-        StatusKind::Ready | StatusKind::Idle => div()
+        StatusKind::Idle => div()
             .size(rems(8. / 16.))
             .rounded_full()
             .border_1()
@@ -138,7 +144,7 @@ pub fn status_glyph(status: StatusPresentation, id: impl Into<ElementId>) -> Any
                 StatusKind::Answer => "message-circle.svg",
                 StatusKind::NeedsYou => "triangle-alert.svg",
                 StatusKind::Stopped => "square.svg",
-                StatusKind::Error => "circle-alert.svg",
+                StatusKind::Error | StatusKind::ResponseFailed => "circle-alert.svg",
                 _ => "circle-question-mark.svg",
             })
             .size(rems(12. / 16.))
@@ -158,14 +164,6 @@ pub fn status_glyph(status: StatusPresentation, id: impl Into<ElementId>) -> Any
                 .justify_center()
                 .child(icon),
         )
-        .when(status.estimated, |row| {
-            row.child(
-                div()
-                    .text_size(rems(9. / 16.))
-                    .text_color(theme::muted())
-                    .child("~"),
-            )
-        })
         .into_any_element()
 }
 
@@ -174,10 +172,52 @@ pub fn status_indicator(
     label: bool,
     id: impl Into<ElementId>,
 ) -> AnyElement {
-    let id = id.into();
+    render_status_indicator(status, label, id.into(), false)
+}
+
+pub fn pane_status_indicator(
+    status: StatusPresentation,
+    label: bool,
+    id: impl Into<ElementId>,
+) -> AnyElement {
+    render_status_indicator(status, label, id.into(), true)
+}
+
+pub fn header_status_indicator(
+    status: StatusPresentation,
+    label: bool,
+    id: impl Into<ElementId>,
+) -> AnyElement {
+    div()
+        .flex_none()
+        .flex()
+        .items_center()
+        .gap(rems(10. / 16.))
+        .child(
+            div()
+                .flex_none()
+                .w(rems(1. / 16.))
+                .h(rems(14. / 16.))
+                .bg(theme::border_strong()),
+        )
+        .child(
+            div()
+                .flex_none()
+                .min_w(rems(if label { 108. } else { 16. } / 16.))
+                .child(pane_status_indicator(status, label, id)),
+        )
+        .into_any_element()
+}
+
+fn render_status_indicator(
+    status: StatusPresentation,
+    label: bool,
+    id: ElementId,
+    header: bool,
+) -> AnyElement {
     let color = if status.needs_you() {
         theme::warning()
-    } else if status.kind == StatusKind::Error {
+    } else if status.is_error() {
         theme::danger()
     } else {
         theme::muted()
@@ -187,11 +227,20 @@ pub fn status_indicator(
         .flex()
         .items_center()
         .gap(rems(5. / 16.))
-        .child(status_glyph(status, (id.clone(), "glyph")))
+        .when(
+            !header || !label || !matches!(status.kind, StatusKind::Stopped | StatusKind::Idle),
+            |row| row.child(status_glyph(status, (id.clone(), "glyph"))),
+        )
         .when(label, |row| {
             row.child(
                 div()
-                    .text_size(rems(11. / 16.))
+                    .text_size(rems(
+                        if header && !status.needs_you() && !status.is_error() {
+                            10.
+                        } else {
+                            11.
+                        } / 16.,
+                    ))
                     .text_color(color)
                     .whitespace_nowrap()
                     .child(status.label()),
@@ -206,8 +255,8 @@ mod tests {
     use runner_backend::session::status::AgentObservation;
 
     #[test]
-    fn baseline_idle_never_claims_ready_and_narrow_labels_preserve_attention() {
-        let status = AgentStatus {
+    fn idle_shares_one_label_and_narrow_labels_preserve_attention() {
+        let mut status = AgentStatus {
             lifecycle: Lifecycle::Running,
             observation: AgentObservation {
                 activity: Activity::Idle,
@@ -218,8 +267,20 @@ mod tests {
         };
         let presentation = StatusPresentation::new(&status);
         assert_eq!(presentation.kind, StatusKind::Idle);
+        assert_eq!(presentation.label(), "Idle");
         assert!(presentation.estimated);
+        assert_eq!(
+            presentation.tooltip(),
+            "Idle · estimated from terminal activity"
+        );
         assert!(!presentation.shows_label(360.));
+        status.observation.activity = Activity::Ready;
+        status.observation.source = ObservationSource::Hook;
+        let confirmed = StatusPresentation::new(&status);
+        assert_eq!(confirmed.kind, presentation.kind);
+        assert_eq!(confirmed.label(), presentation.label());
+        assert!(!confirmed.estimated);
+        assert_eq!(confirmed.tooltip(), "Idle");
         let approval = StatusPresentation {
             kind: StatusKind::Approval,
             estimated: false,

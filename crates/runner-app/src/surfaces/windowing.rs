@@ -24,6 +24,10 @@ impl NativeRoot {
             self.core(cx),
             &self.window_label,
             self.current_subjects(),
+            self.tabs
+                .active()
+                .filter(|_| self.route == AppRoute::Chat)
+                .and_then(PaneLayout::focused_session_id),
         ) {
             self.error = Some(error.to_string());
         }

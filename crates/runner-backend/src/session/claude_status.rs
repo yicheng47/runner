@@ -1,5 +1,5 @@
 use std::fs::{self, File, OpenOptions};
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::Arc;
@@ -131,6 +131,7 @@ struct StatusReport {
     notification_type: Option<String>,
     payload_file: Option<String>,
     session_id: Option<String>,
+    transcript_path: Option<PathBuf>,
     prompt_id: Option<String>,
     agent_id: Option<String>,
     tool_use_id: Option<String>,
@@ -146,6 +147,8 @@ struct ClaudeObservation {
     value: AgentObservation,
     session_id: Option<String>,
     prompt_id: Option<String>,
+    transcript_path: Option<PathBuf>,
+    cancelled_tool_result: bool,
     tools: BTreeMap<String, String>,
     permission_tools: Vec<String>,
     elicitations: BTreeMap<String, String>,
@@ -160,6 +163,7 @@ impl ClaudeObservation {
         if report.hook_event_name == "SessionStart" {
             let owned = self.value.source == ObservationSource::Hook;
             self.session_id = report.session_id;
+            self.transcript_path = report.transcript_path;
             self.prompt_id = None;
             self.clear_turn();
             self.value.activity = Activity::Unavailable;
@@ -180,16 +184,24 @@ impl ClaudeObservation {
         {
             return None;
         }
+        if let Some(path) = report.transcript_path {
+            self.transcript_path = Some(path);
+        }
         match report.hook_event_name.as_str() {
             "UserPromptSubmit" => {
                 self.clear_turn();
                 self.work();
             }
             "PreToolUse" => {
+                self.work();
                 if let (Some(id), Some(name)) = (report.tool_use_id, report.tool_name) {
+                    match name.as_str() {
+                        "AskUserQuestion" => self.wait(WaitReason::Answer, vec![id.clone()]),
+                        "ExitPlanMode" => self.wait(WaitReason::Approval, vec![id.clone()]),
+                        _ => {}
+                    }
                     self.tools.insert(id, name);
                 }
-                self.work();
             }
             "PermissionRequest" => {
                 if let Some(name) = report.tool_name {
@@ -220,7 +232,7 @@ impl ClaudeObservation {
                 if report.is_interrupt {
                     self.value.activity = Activity::Unavailable;
                     self.value.outcome = Some(TurnOutcome::Interrupted);
-                } else {
+                } else if self.value.outcome.is_none() {
                     self.work();
                 }
             }
@@ -234,11 +246,12 @@ impl ClaudeObservation {
                     let (id, _) = candidates.next()?;
                     candidates.next().is_none().then(|| id.clone())
                 });
-                if let Some(id) = id {
-                    self.elicitations.remove(&id);
-                    self.resolve(&id);
+                let id = id?;
+                self.elicitations.remove(&id)?;
+                self.resolve(&id);
+                if self.value.outcome.is_none() {
+                    self.work();
                 }
-                self.work();
             }
             "Notification" => match report.notification_type.as_deref() {
                 Some("permission_prompt") => {
@@ -268,6 +281,9 @@ impl ClaudeObservation {
                     self.wait(reason, owners);
                 }
                 Some("elicitation_dialog") => {
+                    if self.value.activity != Activity::Working || self.elicitations.is_empty() {
+                        return None;
+                    }
                     self.wait(
                         WaitReason::Answer,
                         self.elicitations.keys().cloned().collect(),
@@ -298,13 +314,74 @@ impl ClaudeObservation {
     fn work(&mut self) {
         self.value.activity = Activity::Working;
         self.value.outcome = None;
+        self.cancelled_tool_result = false;
     }
 
     fn clear_turn(&mut self) {
+        self.cancelled_tool_result = false;
         self.value.interactions.clear();
         self.tools.clear();
         self.permission_tools.clear();
         self.elicitations.clear();
+    }
+
+    fn observe_transcript(&mut self, entry: &serde_json::Value) -> Option<AgentObservation> {
+        let session_id = self.session_id.as_deref()?;
+        if entry.get("sessionId").and_then(|value| value.as_str()) != Some(session_id)
+            || entry.get("isSidechain").and_then(|value| value.as_bool()) == Some(true)
+            || entry
+                .get("promptId")
+                .and_then(|value| value.as_str())
+                .is_some_and(|id| {
+                    self.prompt_id
+                        .as_deref()
+                        .is_some_and(|current| current != id)
+                })
+        {
+            return None;
+        }
+        let before = self.value.clone();
+        if entry.get("type").and_then(|value| value.as_str()) == Some("user") {
+            if let Some(blocks) = entry
+                .pointer("/message/content")
+                .and_then(|value| value.as_array())
+            {
+                for block in blocks {
+                    if block.get("type").and_then(|value| value.as_str()) != Some("tool_result") {
+                        continue;
+                    }
+                    let Some(id) = block.get("tool_use_id").and_then(|value| value.as_str()) else {
+                        continue;
+                    };
+                    if !self
+                        .value
+                        .interactions
+                        .iter()
+                        .any(|wait| wait.owners.iter().any(|owner| owner == id))
+                    {
+                        continue;
+                    }
+                    self.tools.remove(id);
+                    self.permission_tools.retain(|owner| owner != id);
+                    self.resolve(id);
+                    if entry.get("toolDenialKind").and_then(|value| value.as_str())
+                        == Some("user-rejected")
+                    {
+                        self.cancelled_tool_result = true;
+                        self.value.activity = Activity::Unavailable;
+                        self.value.outcome = Some(TurnOutcome::Interrupted);
+                    }
+                }
+            }
+        } else if entry.get("type").and_then(|value| value.as_str()) == Some("system")
+            && entry.get("subtype").and_then(|value| value.as_str()) == Some("turn_duration")
+            && self.cancelled_tool_result
+            && !self.value.needs_you()
+        {
+            self.value.activity = Activity::Ready;
+            self.cancelled_tool_result = false;
+        }
+        (before != self.value).then(|| self.value.clone())
     }
 
     fn resolve(&mut self, id: &str) {
@@ -365,9 +442,33 @@ pub(crate) struct ClaudeStatusWatcher {
     dirty: Arc<AtomicBool>,
     interrupt: Arc<AtomicU8>,
     last_read: Instant,
+    transcript: Option<TranscriptTail>,
     _watcher: RecommendedWatcher,
     // Drop the reader and watcher before deleting their files, including on Windows.
     _files: StatusFiles,
+}
+
+struct TranscriptTail {
+    path: PathBuf,
+    reader: BufReader<File>,
+    pending: Vec<u8>,
+}
+
+impl TranscriptTail {
+    fn open(path: &Path) -> std::io::Result<Self> {
+        let mut file = File::open(path)?;
+        let start = file.metadata()?.len().saturating_sub(1024 * 1024);
+        file.seek(SeekFrom::Start(start))?;
+        let mut reader = BufReader::new(file);
+        if start > 0 {
+            reader.read_until(b'\n', &mut Vec::new())?;
+        }
+        Ok(Self {
+            path: path.to_owned(),
+            reader,
+            pending: Vec::new(),
+        })
+    }
 }
 
 impl ClaudeStatusWatcher {
@@ -407,6 +508,7 @@ impl ClaudeStatusWatcher {
             dirty,
             interrupt: Arc::new(AtomicU8::new(0)),
             last_read: Instant::now(),
+            transcript: None,
             _watcher: watcher,
             _files: files,
         })
@@ -425,6 +527,7 @@ impl ClaudeStatusWatcher {
             && self.last_read.elapsed() < Duration::from_secs(1)
             && interrupted == 0
         {
+            self.drain_transcript(&mut transition);
             return Ok(());
         }
         if !self.path.exists() {
@@ -478,8 +581,7 @@ impl ClaudeStatusWatcher {
         if interrupted != 0
             && self.observation.value.source == ObservationSource::Hook
             && (self.observation.value.activity == Activity::Working
-                || self.observation.value.needs_you()
-                || self.observation.value.outcome == Some(TurnOutcome::Interrupted))
+                || self.observation.value.needs_you())
         {
             let source = if interrupted & CTRL_C_INTERRUPT != 0 {
                 "input-interrupt"
@@ -490,7 +592,38 @@ impl ClaudeStatusWatcher {
             self.observation.value.outcome = Some(TurnOutcome::Interrupted);
             transition(self.observation.value.clone(), source);
         }
+        self.drain_transcript(&mut transition);
         Ok(())
+    }
+
+    fn drain_transcript(&mut self, transition: &mut impl FnMut(AgentObservation, &'static str)) {
+        if !self.observation.value.needs_you() && !self.observation.cancelled_tool_result {
+            return;
+        }
+        let Some(path) = self.observation.transcript_path.as_ref() else {
+            return;
+        };
+        if self
+            .transcript
+            .as_ref()
+            .is_none_or(|tail| tail.path != *path)
+        {
+            self.transcript = TranscriptTail::open(path).ok();
+        }
+        let Some(tail) = self.transcript.as_mut() else {
+            return;
+        };
+        while let Ok(count) = tail.reader.read_until(b'\n', &mut tail.pending) {
+            if count == 0 || tail.pending.last() != Some(&b'\n') {
+                break;
+            }
+            if let Ok(entry) = serde_json::from_slice(&tail.pending) {
+                if let Some(value) = self.observation.observe_transcript(&entry) {
+                    transition(value, "hook");
+                }
+            }
+            tail.pending.clear();
+        }
     }
     #[cfg(test)]
     fn drain(&mut self, mut transition: impl FnMut(RunnerStatus, &'static str)) -> Result<()> {
@@ -556,6 +689,190 @@ mod tests {
         assert!(!hooks_supported(true));
         assert!(hooks_supported(false));
         assert_eq!(hooks_supported(cfg!(windows)), cfg!(unix));
+    }
+
+    #[test]
+    fn question_is_immediate_and_transcript_resolution_is_correlated() {
+        let mut model = ClaudeObservation::default();
+        observe(
+            &mut model,
+            "SessionStart",
+            serde_json::json!({"session_id":"main"}),
+        );
+        observe(
+            &mut model,
+            "UserPromptSubmit",
+            serde_json::json!({"prompt_id":"current"}),
+        );
+        let question = observe(
+            &mut model,
+            "PreToolUse",
+            serde_json::json!({"tool_name":"AskUserQuestion","tool_use_id":"question"}),
+        )
+        .unwrap();
+        assert_eq!(question.interactions[0].reason, WaitReason::Answer);
+        assert_eq!(question.interactions[0].owners, ["question"]);
+        let result = serde_json::json!({"type":"user","sessionId":"main","promptId":"current","message":{"content":[{"type":"tool_result","tool_use_id":"question","is_error":true}]},"toolDenialKind":"user-rejected"});
+        for (key, value) in [
+            ("sessionId", serde_json::json!("other")),
+            ("promptId", serde_json::json!("old")),
+            ("isSidechain", serde_json::json!(true)),
+        ] {
+            let mut unrelated = result.clone();
+            unrelated[key] = value;
+            assert!(model.observe_transcript(&unrelated).is_none());
+            assert!(model.value.needs_you());
+        }
+        let mut unrelated = result.clone();
+        unrelated["message"]["content"][0]["tool_use_id"] = "other".into();
+        assert!(model.observe_transcript(&unrelated).is_none());
+
+        observe(
+            &mut model,
+            "Elicitation",
+            serde_json::json!({"elicitation_id":"form","mcp_server_name":"server"}),
+        );
+        observe(
+            &mut model,
+            "Notification",
+            serde_json::json!({"notification_type":"elicitation_dialog"}),
+        );
+        let cancelled = model.observe_transcript(&result).unwrap();
+        assert_eq!(cancelled.outcome, Some(TurnOutcome::Interrupted));
+        assert_eq!(cancelled.interactions.len(), 1);
+        assert_eq!(cancelled.interactions[0].owners, ["form"]);
+        assert!(model
+            .observe_transcript(
+                &serde_json::json!({"type":"system","subtype":"turn_duration","sessionId":"main"})
+            )
+            .is_none());
+        assert!(model.value.needs_you());
+    }
+
+    #[test]
+    fn escape_cancellation_clears_without_a_stop_or_post_tool_hook() {
+        let root = tempfile::tempdir().unwrap();
+        let transcript = root.path().join("transcript.jsonl");
+        let mut transcript_file = File::create(&transcript).unwrap();
+        writeln!(transcript_file, "{}", "x".repeat(1024 * 1024 + 10)).unwrap();
+        let path = status_path(root.path(), "question");
+        let mut watcher = ClaudeStatusWatcher::start(&path, "current".into()).unwrap();
+        let mut file = OpenOptions::new().append(true).open(&path).unwrap();
+        for payload in [
+            serde_json::json!({"hook_event_name":"SessionStart","session_id":"main","transcript_path":transcript}),
+            serde_json::json!({"hook_event_name":"UserPromptSubmit","prompt_id":"turn"}),
+            serde_json::json!({"hook_event_name":"PreToolUse","tool_name":"AskUserQuestion","tool_use_id":"question"}),
+        ] {
+            let mut payload = payload;
+            payload["generation"] = "current".into();
+            writeln!(file, "{payload}").unwrap();
+        }
+        let mut observations = Vec::new();
+        watcher
+            .drain_observations(|value, _| observations.push(value))
+            .unwrap();
+        assert!(observations.last().unwrap().needs_you());
+        watcher
+            .interrupt_signal()
+            .store(ESCAPE_INTERRUPT, Ordering::Release);
+        watcher
+            .drain_observations(|value, _| observations.push(value))
+            .unwrap();
+        assert!(observations.last().unwrap().needs_you());
+
+        let result = serde_json::json!({"type":"user","sessionId":"main","promptId":"turn","isSidechain":false,"toolDenialKind":"user-rejected","message":{"content":[{"type":"tool_result","tool_use_id":"question","is_error":true}]}}).to_string();
+        write!(transcript_file, "{}", &result[..20]).unwrap();
+        watcher.dirty.store(false, Ordering::Release);
+        watcher
+            .drain_observations(|value, _| observations.push(value))
+            .unwrap();
+        assert!(observations.last().unwrap().needs_you());
+        writeln!(transcript_file, "{}", &result[20..]).unwrap();
+        watcher
+            .drain_observations(|value, _| observations.push(value))
+            .unwrap();
+        assert!(!observations.last().unwrap().needs_you());
+        assert_eq!(observations.last().unwrap().activity, Activity::Unavailable);
+        writeln!(
+            transcript_file,
+            "{}",
+            serde_json::json!({"type":"system","subtype":"turn_duration","sessionId":"main"})
+        )
+        .unwrap();
+        watcher
+            .drain_observations(|value, _| observations.push(value))
+            .unwrap();
+        assert_eq!(observations.last().unwrap().activity, Activity::Ready);
+        assert_eq!(
+            observations.last().unwrap().outcome,
+            Some(TurnOutcome::Interrupted)
+        );
+        assert!(!watcher.observation.cancelled_tool_result);
+        for interrupt in [ESCAPE_INTERRUPT, CTRL_C_INTERRUPT] {
+            watcher
+                .interrupt_signal()
+                .store(interrupt, Ordering::Release);
+            watcher
+                .drain_observations(|value, _| observations.push(value))
+                .unwrap();
+            assert_eq!(observations.last().unwrap().activity, Activity::Ready);
+            assert_eq!(
+                observations.last().unwrap().outcome,
+                Some(TurnOutcome::Interrupted)
+            );
+        }
+        writeln!(
+            file,
+            "{}",
+            report("Notification", Some("permission_prompt"), "current")
+        )
+        .unwrap();
+        watcher.dirty.store(true, Ordering::Release);
+        watcher
+            .drain_observations(|value, _| observations.push(value))
+            .unwrap();
+        assert!(!observations.last().unwrap().needs_you());
+        assert!(!observations
+            .iter()
+            .any(|value| value.outcome == Some(TurnOutcome::Completed)));
+    }
+
+    #[test]
+    fn answered_question_and_unreadable_transcript_preserve_hook_delivery() {
+        let mut model = ClaudeObservation::default();
+        observe(
+            &mut model,
+            "SessionStart",
+            serde_json::json!({"session_id":"main"}),
+        );
+        observe(
+            &mut model,
+            "PreToolUse",
+            serde_json::json!({"tool_name":"AskUserQuestion","tool_use_id":"question"}),
+        );
+        let answered = model.observe_transcript(&serde_json::json!({"type":"user","sessionId":"main","message":{"content":[{"type":"tool_result","tool_use_id":"question"}]}})).unwrap();
+        assert!(!answered.needs_you());
+        assert_eq!(answered.outcome, None);
+        assert_eq!(answered.activity, Activity::Working);
+
+        let root = tempfile::tempdir().unwrap();
+        let path = status_path(root.path(), "missing-transcript");
+        let mut watcher = ClaudeStatusWatcher::start(&path, "current".into()).unwrap();
+        watcher.observation = model;
+        watcher.observation.transcript_path = Some(root.path().join("missing.jsonl"));
+        observe(
+            &mut watcher.observation,
+            "PreToolUse",
+            serde_json::json!({"tool_name":"AskUserQuestion","tool_use_id":"next"}),
+        );
+        watcher.drain_observations(|_, _| {}).unwrap();
+        assert!(watcher.observation.value.needs_you());
+        let mut file = OpenOptions::new().append(true).open(&path).unwrap();
+        writeln!(file, "{}", serde_json::json!({"generation":"current","hook_event_name":"PostToolUse","tool_use_id":"next"})).unwrap();
+        watcher.dirty.store(true, Ordering::Release);
+        watcher.drain_observations(|_, _| {}).unwrap();
+        assert!(!watcher.observation.value.needs_you());
+        assert_eq!(watcher.observation.value.source, ObservationSource::Hook);
     }
 
     #[test]
@@ -704,12 +1021,16 @@ mod tests {
                 "PreToolUse",
                 serde_json::json!({"tool_use_id":"human", "tool_name":tool}),
             );
+            assert_eq!(model.value.interactions[0].reason, reason);
+            let interaction_id = model.value.interactions[0].id.clone();
             observe(
                 &mut model,
                 "Notification",
                 serde_json::json!({"notification_type":"permission_prompt"}),
             );
             assert_eq!(model.value.interactions[0].reason, reason);
+            assert_eq!(model.value.interactions[0].id, interaction_id);
+            assert_eq!(model.value.interactions.len(), 1);
             observe(
                 &mut model,
                 "Elicitation",
@@ -739,6 +1060,73 @@ mod tests {
                 serde_json::json!({"elicitation_id":"mcp-1","mcp_server_name":"server"}),
             );
             assert!(!model.value.needs_you());
+        }
+    }
+
+    #[test]
+    fn late_form_notifications_and_results_do_not_restore_resolved_waits() {
+        for action in ["accept", "decline", "cancel"] {
+            let mut model = ClaudeObservation::default();
+            observe(&mut model, "UserPromptSubmit", serde_json::json!({}));
+            observe(
+                &mut model,
+                "Elicitation",
+                serde_json::json!({"mcp_server_name":"server"}),
+            );
+            observe(
+                &mut model,
+                "Notification",
+                serde_json::json!({"notification_type":"elicitation_dialog"}),
+            );
+            assert!(model.value.needs_you());
+            observe(
+                &mut model,
+                "ElicitationResult",
+                serde_json::json!({"mcp_server_name":"server", "action":action}),
+            );
+            assert!(!model.value.needs_you());
+            assert!(observe(
+                &mut model,
+                "Notification",
+                serde_json::json!({"notification_type":"elicitation_dialog"}),
+            )
+            .is_none());
+            assert!(!model.value.needs_you());
+            observe(&mut model, "Stop", serde_json::json!({}));
+            assert!(observe(
+                &mut model,
+                "ElicitationResult",
+                serde_json::json!({"mcp_server_name":"server", "action":action}),
+            )
+            .is_none());
+            assert_eq!(model.value.activity, Activity::Ready);
+            assert_eq!(model.value.outcome, Some(TurnOutcome::Completed));
+            assert!(observe(
+                &mut model,
+                "Notification",
+                serde_json::json!({"notification_type":"elicitation_dialog"}),
+            )
+            .is_none());
+        }
+    }
+
+    #[test]
+    fn tool_results_preserve_finished_turns_until_new_work_starts() {
+        for (event, outcome) in [
+            ("Stop", TurnOutcome::Completed),
+            ("StopFailure", TurnOutcome::Failed),
+        ] {
+            let mut model = ClaudeObservation::default();
+            observe(&mut model, "UserPromptSubmit", serde_json::json!({}));
+            observe(&mut model, event, serde_json::json!({}));
+            for event in ["PostToolUse", "PostToolUseFailure", "PermissionDenied"] {
+                observe(&mut model, event, serde_json::json!({"tool_use_id":"late"}));
+                assert_eq!(model.value.activity, Activity::Ready);
+                assert_eq!(model.value.outcome, Some(outcome));
+            }
+            observe(&mut model, "PreToolUse", serde_json::json!({}));
+            assert_eq!(model.value.activity, Activity::Working);
+            assert_eq!(model.value.outcome, None);
         }
     }
 
@@ -789,6 +1177,14 @@ mod tests {
         );
         assert_eq!(model.value.outcome, Some(TurnOutcome::Interrupted));
         assert!(model.value.needs_you());
+        observe(
+            &mut model,
+            "PostToolUse",
+            serde_json::json!({"tool_use_id":"question"}),
+        );
+        assert!(!model.value.needs_you());
+        assert_eq!(model.value.activity, Activity::Unavailable);
+        assert_eq!(model.value.outcome, Some(TurnOutcome::Interrupted));
         observe(&mut model, "Stop", serde_json::json!({}));
         assert_eq!(model.value.outcome, Some(TurnOutcome::Interrupted));
     }
