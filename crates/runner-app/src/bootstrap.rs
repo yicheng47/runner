@@ -78,7 +78,14 @@ fn paths_for_home(home: &Path, debug: bool) -> NativePaths {
     }
 }
 
-pub fn boot_core(paths: &NativePaths) -> Result<AppCore> {
+/// Boots the application core. `model_runtimes` are the discoverable
+/// runtimes the user has enabled; startup may query their model catalogs
+/// once executable discovery resolves. Executable discovery itself always
+/// covers every runtime.
+pub fn boot_core(
+    paths: &NativePaths,
+    model_runtimes: Vec<runner_backend::model::Runtime>,
+) -> Result<AppCore> {
     std::fs::create_dir_all(&paths.app_data_dir)
         .with_context(|| format!("create {}", paths.app_data_dir.display()))?;
     // Mission shims exec `$APPDATA/bin/runner` and the MCP configs point at
@@ -172,6 +179,7 @@ pub fn boot_core(paths: &NativePaths) -> Result<AppCore> {
         runtime_shell_env,
         runtime_discovery,
         false,
+        model_runtimes,
     );
     Ok(core)
 }
@@ -339,7 +347,7 @@ mod tests {
     fn native_mcp_server_binds_and_removes_the_app_data_socket() {
         let temp = tempfile::tempdir().unwrap();
         let paths = NativePaths::new(temp.path().join("data"), temp.path().join("logs"));
-        let core = boot_core(&paths).unwrap();
+        let core = boot_core(&paths, Vec::new()).unwrap();
         let socket_path = paths.app_data_dir.join("mcp.sock");
 
         let server = NativeMcpServer::start(&core).unwrap();

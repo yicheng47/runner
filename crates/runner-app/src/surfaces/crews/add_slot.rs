@@ -182,6 +182,7 @@ impl NativeRoot {
                         form.runtime_select.update(cx, |select, select_cx| {
                             select.set_options(options, select_cx)
                         });
+                        this.sync_add_slot_catalog(cx);
                     }
                     Err(error) => form.error = Some(error),
                 }
@@ -236,6 +237,9 @@ impl NativeRoot {
                 });
             }
         }
+        if selection_changed {
+            self.sync_add_slot_catalog(cx);
+        }
         if query_changed || selection_changed {
             cx.notify();
         }
@@ -255,20 +259,50 @@ impl NativeRoot {
         form.runtime_select.update(cx, |select, select_cx| {
             select.set_options(options, select_cx)
         });
-        cx.notify();
+        self.sync_add_slot_catalog(cx);
     }
 
     fn select_add_slot_runtime(&mut self, value: String, cx: &mut Context<Self>) {
         let Some(form) = self.crew_surfaces.add_slot.as_mut() else {
             return;
         };
-        form.runtime_override = value.clone();
+        form.runtime_override = value;
         form.model_override
             .update(cx, |input, input_cx| input.reset("", input_cx));
-        form.model_field.update(cx, |field, field_cx| {
-            field.set_suggestions(runtime_models(&form.runtimes, &value), field_cx)
+        self.sync_add_slot_catalog(cx);
+    }
+
+    fn sync_add_slot_catalog(&mut self, cx: &mut Context<Self>) {
+        let Some(form) = self.crew_surfaces.add_slot.as_mut() else {
+            return;
+        };
+        let runtime = if form.runtime_override.is_empty() {
+            selected_add_slot_runner(form)
+                .map(|runner| runner.runner.runtime.clone())
+                .unwrap_or_default()
+        } else {
+            form.runtime_override.clone()
+        };
+        form.model_field.update(cx, |field, cx| {
+            field.set_suggestions(runtime_models(&form.runtimes, &runtime), cx)
         });
+        self.request_model_catalog(&runtime, cx);
         cx.notify();
+    }
+
+    pub(crate) fn refresh_add_slot_runtimes(&mut self, cx: &mut Context<Self>) {
+        let Ok(catalog) = runner_backend::ops::runtime::runtime_catalog(self.core(cx)) else {
+            return;
+        };
+        let Some(form) = self.crew_surfaces.add_slot.as_mut() else {
+            return;
+        };
+        form.runtimes = catalog;
+        let options = add_slot_runtime_options(&form.runtimes, selected_add_slot_runner(form));
+        form.runtime_select.update(cx, |select, select_cx| {
+            select.set_options(options, select_cx)
+        });
+        self.sync_add_slot_catalog(cx);
     }
 
     fn close_add_slot(&mut self, window: &mut Window, cx: &mut Context<Self>) {

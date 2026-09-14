@@ -6,7 +6,6 @@ use super::logic::permission_modes;
 use super::logic::permission_options;
 use super::logic::resolve_runner_edit;
 use super::logic::runner_edit_runtime_options;
-use super::logic::runtime_efforts;
 use super::logic::runtime_entry;
 use super::logic::runtime_model_placeholder;
 use super::logic::runtime_models;
@@ -26,6 +25,27 @@ use super::*;
 use crate::*;
 
 impl NativeRoot {
+    pub(super) fn sync_runner_edit_efforts(&mut self, cx: &mut Context<Self>) {
+        let Some(form) = self.runner_surfaces.edit.as_mut() else {
+            return;
+        };
+        let options = effort_options(
+            &form.runtimes,
+            &form.runtime,
+            &form.runner,
+            form.slot.is_some(),
+            form.model.read(cx).text(),
+        );
+        if !options.iter().any(|option| option.value == form.effort) {
+            form.effort.clear();
+        }
+        form.effort_select.update(cx, |select, cx| {
+            select.set_disabled(form.submitting || options.len() <= 1, cx);
+            select.set_options(options, cx);
+            select.set_value(form.effort.clone(), cx);
+        });
+    }
+
     pub(crate) fn refresh_runner_form_runtimes(&mut self, cx: &mut Context<Self>) {
         let (selectable, agents_checking, agents_error) =
             crate::surfaces::start_chat::load_selectable_runtimes(self.core(cx), self.settings(cx));
@@ -62,7 +82,7 @@ impl NativeRoot {
                     }
                 }
                 let model_placeholder =
-                    runtime_model_placeholder(&form.runtimes, &next_runtime, false);
+                    runtime_model_placeholder(&form.runtimes, &next_runtime, None);
                 form.model.update(cx, |input, input_cx| {
                     input.set_placeholder(model_placeholder, input_cx)
                 });
@@ -110,28 +130,20 @@ impl NativeRoot {
                     select.set_value(runtime_value, select_cx);
                     select.set_placeholder(placeholder, select_cx);
                 });
-                let model_placeholder =
-                    runtime_model_placeholder(&form.runtimes, &form.runtime, form.slot.is_some());
+                let model_placeholder = runtime_model_placeholder(
+                    &form.runtimes,
+                    &form.runtime,
+                    form.slot.as_ref().map(|_| &form.runner),
+                );
                 form.model.update(cx, |input, input_cx| {
                     input.set_placeholder(model_placeholder, input_cx)
                 });
                 form.model_field.update(cx, |field, field_cx| {
                     field.set_suggestions(runtime_models(&form.runtimes, &form.runtime), field_cx)
                 });
-                form.effort_select.update(cx, |select, select_cx| {
-                    select.set_options(
-                        effort_options(
-                            &form.runtimes,
-                            &form.runtime,
-                            &form.runner,
-                            form.slot.is_some(),
-                        ),
-                        select_cx,
-                    );
-                    select.set_value(form.effort.clone(), select_cx);
-                });
             }
         }
+        self.sync_runner_edit_efforts(cx);
         cx.notify();
     }
 
@@ -145,6 +157,7 @@ impl NativeRoot {
             .first()
             .map(|runtime| runtime.name.to_string())
             .unwrap_or_default();
+        self.request_model_catalog(&runtime, cx);
         let command = runtime_entry(&runtimes, &runtime)
             .map(|runtime| runtime.command.clone())
             .unwrap_or_default();
@@ -173,7 +186,7 @@ impl NativeRoot {
         let model_field = cx.new(|model_cx| {
             ModelField::new(model.clone(), runtime_models(&runtimes, &runtime), model_cx)
         });
-        let model_placeholder = runtime_model_placeholder(&runtimes, &runtime, false);
+        let model_placeholder = runtime_model_placeholder(&runtimes, &runtime, None);
         model.update(cx, |input, input_cx| {
             input.set_placeholder(model_placeholder, input_cx)
         });
@@ -323,14 +336,9 @@ impl NativeRoot {
     ) {
         let (mut runtimes, agents_checking, agents_error) =
             crate::surfaces::start_chat::load_selectable_runtimes(self.core(cx), self.settings(cx));
-        let mut resolution = resolve_runner_edit(&runner, slot.as_ref());
+        let resolution = resolve_runner_edit(&runner, slot.as_ref());
         ensure_runtime_present(self.core(cx), &mut runtimes, &resolution.runtime);
-        if !runtime_efforts(&runtimes, &resolution.runtime)
-            .iter()
-            .any(|option| option.value == resolution.effort)
-        {
-            resolution.effort.clear();
-        }
+        self.request_model_catalog(&resolution.runtime, cx);
         let display_name = cx.new(|input_cx| {
             TextField::new(
                 input_cx.focus_handle(),
@@ -373,8 +381,11 @@ impl NativeRoot {
                 model_cx,
             )
         });
-        let model_placeholder =
-            runtime_model_placeholder(&runtimes, &resolution.runtime, slot.is_some());
+        let model_placeholder = runtime_model_placeholder(
+            &runtimes,
+            &resolution.runtime,
+            slot.as_ref().map(|_| &runner),
+        );
         model.update(cx, |input, input_cx| {
             input.set_placeholder(model_placeholder, input_cx)
         });
@@ -432,7 +443,13 @@ impl NativeRoot {
                 "edit-runner-effort",
                 select_cx.focus_handle(),
                 resolution.effort.clone(),
-                effort_options(&runtimes, &resolution.runtime, &runner, slot.is_some()),
+                effort_options(
+                    &runtimes,
+                    &resolution.runtime,
+                    &runner,
+                    slot.is_some(),
+                    &resolution.model,
+                ),
                 Rc::new(move |value, _, cx| {
                     effort_root.update(cx, |this, cx| {
                         if let Some(form) = this.runner_surfaces.edit.as_mut() {
@@ -477,7 +494,7 @@ impl NativeRoot {
         let scroll = ScrollHandle::new();
         let scroll_owner = cx.entity_id();
         let scrollbar = cx.new(|_| Scrollbar::app(scroll.clone(), scroll_owner));
-        let subscriptions = vec![cx.observe(&display_name, |this, input, cx| {
+        let mut subscriptions = vec![cx.observe(&display_name, |this, input, cx| {
             let valid = !input.read(cx).text().trim().is_empty();
             let Some(form) = this.runner_surfaces.edit.as_mut() else {
                 return;
@@ -487,6 +504,9 @@ impl NativeRoot {
                 cx.notify();
             }
         })];
+        subscriptions.push(cx.observe(&model, |this, _, cx| {
+            this.sync_runner_edit_efforts(cx);
+        }));
         self.runner_surfaces.edit = Some(RunnerEditForm {
             runner,
             slot,
@@ -523,6 +543,7 @@ impl NativeRoot {
             error: None,
             _subscriptions: subscriptions,
         });
+        self.sync_runner_edit_efforts(cx);
         display_name.read(cx).focus_handle().focus(window);
         cx.notify();
     }

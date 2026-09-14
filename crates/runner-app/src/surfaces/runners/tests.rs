@@ -53,12 +53,8 @@ fn runner_handle_validation_matches_the_shipped_contract() {
 fn runtime_default_labels_include_known_values() {
     let runtimes = [runtime_with_defaults(Some("gpt-5.6-sol"), Some("xhigh"))];
     assert_eq!(
-        runtime_model_placeholder(&runtimes, "codex", false),
+        runtime_model_placeholder(&runtimes, "codex", None),
         "default (gpt-5.6-sol)"
-    );
-    assert_eq!(
-        runtime_model_placeholder(&runtimes, "codex", true),
-        "default"
     );
     assert_eq!(
         runtime_default_effort_label(&runtimes, "codex"),
@@ -67,7 +63,7 @@ fn runtime_default_labels_include_known_values() {
 
     let runtimes = [runtime_with_defaults(None, None)];
     assert_eq!(
-        runtime_model_placeholder(&runtimes, "codex", false),
+        runtime_model_placeholder(&runtimes, "codex", None),
         "default"
     );
     assert_eq!(

@@ -21,6 +21,8 @@ pub struct RuntimeCatalogOption {
     pub value: String,
     pub label: String,
     pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supported_efforts: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -36,6 +38,26 @@ pub struct RuntimeCatalogEntry {
     pub default_effort: Option<String>,
     pub models: Vec<RuntimeCatalogOption>,
     pub efforts: Vec<RuntimeCatalogOption>,
+}
+
+impl RuntimeCatalogEntry {
+    pub fn efforts_for_model(&self, model: &str) -> Vec<RuntimeCatalogOption> {
+        let model = model.trim();
+        let supported = self
+            .models
+            .iter()
+            .find(|entry| entry.value == model)
+            .and_then(|entry| entry.supported_efforts.as_ref());
+        self.efforts
+            .iter()
+            .filter(|effort| {
+                effort.value.is_empty()
+                    || (!model.is_empty()
+                        && supported.is_none_or(|levels| levels.contains(&effort.value)))
+            })
+            .cloned()
+            .collect()
+    }
 }
 
 pub fn runtime_list() -> Vec<RuntimeDefinition> {
@@ -80,7 +102,6 @@ pub fn runtime_set_override(
         log::info!("runtime override saved: runtime={runtime} path={path}");
     }
     state.events.emit("runtime/changed", &());
-    refresh_models_after_override(state, runtime);
     runtime_status_list(state).map_err(persistence_error)
 }
 
@@ -91,34 +112,62 @@ pub fn runtime_clear_override(state: &AppCore, runtime: Runtime) -> Result<Runti
     crate::db::set_runtime_override(&state.db, runtime.key(), None)?;
     log::info!("runtime override cleared: runtime={runtime}");
     state.events.emit("runtime/changed", &());
-    refresh_models_after_override(state, runtime);
     runtime_status_list(state)
 }
 
-fn refresh_models_after_override(state: &AppCore, runtime: Runtime) {
-    if runtime != Runtime::Codex {
-        return;
-    }
-    let state = state.clone();
-    std::thread::spawn(move || {
-        crate::runtime_status::models::refresh(
+pub fn runtime_request_models(state: &AppCore, runtimes: &[Runtime]) {
+    // A source is only identifiable once executable discovery has resolved
+    // the launch environment. Until then the persisted catalogs still publish.
+    let ready = state
+        .runtime_discovery
+        .read()
+        .is_ok_and(|discovery| !discovery.checking && discovery.result.is_some());
+    if !ready {
+        crate::runtime_status::models::load_cached(
             &state.db,
-            &state.runtime_shell_env,
             &state.runtime_discovery,
-            false,
             &state.events,
         );
-    });
+        return;
+    }
+    crate::runtime_status::models::request(
+        &state.db,
+        &state.runtime_shell_env,
+        &state.runtime_discovery,
+        &state.events,
+        runtimes,
+        false,
+    );
 }
 
-pub fn runtime_refresh(state: &AppCore) -> Result<RuntimeStatusResponse> {
+/// Re-runs executable discovery for every runtime, and model discovery for
+/// the enabled runtimes the caller passes.
+pub fn runtime_refresh(
+    state: &AppCore,
+    model_runtimes: &[Runtime],
+) -> Result<RuntimeStatusResponse> {
     crate::runtime_status::refresh_background_discovery(
         state.events.clone(),
         Arc::clone(&state.db),
         Arc::clone(&state.runtime_shell_env),
         Arc::clone(&state.runtime_discovery),
+        model_runtimes.to_vec(),
     )?;
     runtime_status_list(state)
+}
+
+/// Whether a runtime is one of the agents Runner ships enabled by default.
+/// Startup reads it to decide which model catalogs may be queried before any
+/// surface is open.
+pub fn runtime_default_enabled(runtime: Runtime) -> bool {
+    runtime_catalog_options()
+        .iter()
+        .any(|entry| entry.name == runtime && entry.default_enabled)
+}
+
+/// The runtimes whose models Runner can discover at all.
+pub fn model_discovery_runtimes() -> Vec<Runtime> {
+    crate::runtime_status::models::DISCOVERY_RUNTIMES.to_vec()
 }
 
 pub fn runtime_catalog(state: &AppCore) -> Result<Vec<RuntimeCatalogEntry>> {
@@ -155,11 +204,17 @@ pub fn runtime_catalog(state: &AppCore) -> Result<Vec<RuntimeCatalogEntry>> {
                 runtime.available = *available;
                 runtime.default_model.clone_from(default_model);
                 runtime.default_effort.clone_from(default_effort);
-                if runtime.name == Runtime::Codex {
-                    if let Some(models) = discovery.models.for_command(command.as_deref()) {
-                        runtime.models = std::iter::once(default_model_option())
-                            .chain(models.iter().cloned())
-                            .collect();
+                if let Some(catalog) = command.as_deref().and_then(|command| {
+                    discovery.models.catalog(
+                        runtime.name,
+                        &crate::runtime_status::models::source(runtime.name, command),
+                    )
+                }) {
+                    runtime.models = std::iter::once(default_model_option())
+                        .chain(catalog.models.iter().cloned())
+                        .collect();
+                    if runtime.default_model.is_none() {
+                        runtime.default_model.clone_from(&catalog.default_model);
                     }
                 }
             }
@@ -192,6 +247,7 @@ fn option(value: &str, label: &str, description: &str) -> RuntimeCatalogOption {
         value: value.into(),
         label: label.into(),
         description: Some(description.into()),
+        supported_efforts: None,
     }
 }
 
@@ -200,6 +256,7 @@ fn plain_option(value: &str, label: &str) -> RuntimeCatalogOption {
         value: value.into(),
         label: label.into(),
         description: None,
+        supported_efforts: None,
     }
 }
 
@@ -351,6 +408,31 @@ fn persistence_error(error: Error) -> OverrideValidationError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn effort_filter_keeps_default_and_falls_back_for_unknown_capabilities() {
+        let mut runtime = runtime_catalog_options().remove(0);
+        let model = runtime.models[1].value.clone();
+        let values = |runtime: &RuntimeCatalogEntry, model: &str| {
+            runtime
+                .efforts_for_model(model)
+                .into_iter()
+                .map(|option| option.value)
+                .collect::<Vec<_>>()
+        };
+        let fallback = values(&runtime, &model);
+        assert_eq!(values(&runtime, ""), [""]);
+        runtime.models[1].supported_efforts = Some(vec!["low".into(), "high".into()]);
+        assert_eq!(values(&runtime, &model), ["", "low", "high"]);
+        assert_eq!(values(&runtime, "custom-model"), fallback);
+        runtime.default_model = Some(model.clone());
+        assert_eq!(values(&runtime, ""), [""]);
+        assert_eq!(values(&runtime, "  "), [""]);
+        runtime.models[1].supported_efforts = Some(Vec::new());
+        assert_eq!(values(&runtime, &model), [""]);
+        runtime.models[1].supported_efforts = None;
+        assert_eq!(values(&runtime, &model), fallback);
+    }
 
     #[test]
     fn catalog_matches_supported_runtime_order_and_defaults() {

@@ -125,6 +125,7 @@ pub(crate) struct StartChatModal {
     agents_error: Option<String>,
     submitting: bool,
     error: Option<String>,
+    _model_subscription: gpui::Subscription,
 }
 
 impl StartChatModal {
@@ -797,6 +798,11 @@ impl NativeRoot {
         let cancel_focus = cx.focus_handle();
         let submit_focus = cx.focus_handle();
         let title_focus = title_input.read(cx).focus_handle();
+        let model_subscription = cx.observe(&model_input, |this, _, cx| {
+            if let Some(modal) = this.start_chat_modal.as_mut() {
+                sync_effort_control(modal, cx);
+            }
+        });
 
         self.sidebar_preview_open = false;
         self.start_chat_modal = Some(StartChatModal {
@@ -829,11 +835,19 @@ impl NativeRoot {
             agents_error,
             submitting: false,
             error: error.take(),
+            _model_subscription: model_subscription,
         });
         if let Some(modal) = self.start_chat_modal.as_mut() {
             sync_runtime_controls(modal, cx);
         }
         title_focus.focus(window);
+        if let Some(runtime) = self
+            .start_chat_modal
+            .as_ref()
+            .and_then(|modal| modal.active_runtime())
+        {
+            self.request_model_catalog(runtime.name.key(), cx);
+        }
         cx.notify();
     }
 
@@ -991,6 +1005,13 @@ impl NativeRoot {
             input.set_placeholder(placeholder, input_cx)
         });
         let _ = write_start_chat_mode(&app_data_dir, mode);
+        if let Some(runtime) = self
+            .start_chat_modal
+            .as_ref()
+            .and_then(|modal| modal.active_runtime())
+        {
+            self.request_model_catalog(runtime.name.key(), cx);
+        }
         cx.notify();
     }
 
@@ -1044,6 +1065,13 @@ impl NativeRoot {
                 sync_runtime_controls(modal, cx);
             }
             StartChatSelection::Effort => modal.effort = value.to_owned(),
+        }
+        if let Some(runtime) = self
+            .start_chat_modal
+            .as_ref()
+            .and_then(|modal| modal.active_runtime())
+        {
+            self.request_model_catalog(runtime.name.key(), cx);
         }
         cx.notify();
     }
@@ -1701,18 +1729,41 @@ fn sync_runtime_controls(modal: &mut StartChatModal, cx: &mut Context<NativeRoot
         .as_ref()
         .map(|runtime| runtime.models.as_slice())
         .unwrap_or_default();
-    let efforts = runtime
-        .as_ref()
-        .map(|runtime| runtime.efforts.as_slice())
-        .unwrap_or_default();
     modal.model_field.update(cx, |field, field_cx| {
         field.set_suggestions(models, field_cx);
         field.set_disabled(modal.submitting || runtime.is_none(), field_cx);
     });
+    let placeholder = runtime
+        .as_ref()
+        .and_then(|runtime| runtime.default_model.as_deref())
+        .map(|model| format!("default ({model})"))
+        .unwrap_or_else(|| "default".into());
+    modal.model.update(cx, |input, input_cx| {
+        input.set_placeholder(placeholder, input_cx)
+    });
+    sync_effort_control(modal, cx);
+}
+
+fn sync_effort_control(modal: &mut StartChatModal, cx: &mut Context<NativeRoot>) {
+    let mut efforts = modal
+        .active_runtime()
+        .map(|runtime| runtime.efforts_for_model(modal.model.read(cx).text()))
+        .unwrap_or_default();
+    if let Some(effort) = modal
+        .active_runtime()
+        .and_then(|runtime| runtime.default_effort.as_deref())
+    {
+        if let Some(option) = efforts.iter_mut().find(|option| option.value.is_empty()) {
+            option.label = format!("Default ({effort})");
+        }
+    }
+    if !efforts.iter().any(|option| option.value == modal.effort) {
+        modal.effort.clear();
+    }
     modal.effort_select.update(cx, |select, select_cx| {
-        select.set_options(option_select_options(efforts), select_cx);
+        select.set_options(option_select_options(&efforts), select_cx);
         select.set_value(modal.effort.clone(), select_cx);
-        select.set_disabled(modal.submitting || efforts.is_empty(), select_cx);
+        select.set_disabled(modal.submitting || efforts.len() <= 1, select_cx);
     });
 }
 
@@ -2146,6 +2197,7 @@ mod tests {
                     value: (*value).into(),
                     label: (*value).into(),
                     description: None,
+                    supported_efforts: None,
                 })
                 .collect(),
         }
