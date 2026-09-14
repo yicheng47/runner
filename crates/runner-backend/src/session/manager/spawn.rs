@@ -499,11 +499,24 @@ impl SessionManager {
         } else {
             first_turn
         };
+        // Rekey reports from an earlier spawn must be cleared even with custom settings.
         if Runtime::parse(&runner.runtime) == Some(Runtime::ClaudeCode) {
             let _ = std::fs::remove_file(crate::session::claude_rekey::drop_path(
                 app_data_dir,
                 &spec.session_id,
             ));
+        }
+        if router::runtime::inject_claude_settings(Runtime::parse(&runner.runtime), &runner.args) {
+            let status_path =
+                crate::session::claude_status::status_path(app_data_dir, &spec.session_id);
+            spec.env.insert(
+                crate::session::claude_status::PATH_ENV.into(),
+                status_path.to_string_lossy().into_owned(),
+            );
+            spec.env.insert(
+                crate::session::claude_status::GENERATION_ENV.into(),
+                uuid::Uuid::new_v4().to_string(),
+            );
         }
         let mut composed: Vec<String> = Vec::new();
         if plan.prepend {

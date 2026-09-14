@@ -9,6 +9,7 @@
 // for the rationale.
 
 pub(crate) mod claude_rekey;
+pub(crate) mod claude_status;
 pub mod codex_capture;
 pub(crate) mod codex_trust;
 pub mod launch;

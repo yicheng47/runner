@@ -392,7 +392,7 @@ impl SessionEvents for CoreSessionEvents {
         self.events.emit("session/updated", ev);
     }
     fn status(&self, ev: &SessionActivityEvent) {
-        if ev.state == SessionActivityState::Idle {
+        if ev.state == SessionActivityState::Idle && ev.source != "input-escape" {
             if let Some(sessions) = self.sessions.upgrade() {
                 if let Err(error) = crate::ops::node::record_session_completion(
                     &self.db,
@@ -591,6 +591,8 @@ struct SessionState {
     activity_revision: u64,
     suppress_local_input_busy: bool,
     title_status_armed: bool,
+    hook_status_armed: bool,
+    provisional_idle: bool,
     local_input_pending: bool,
     observed_input: Option<ObservedInput>,
     last_local_input_at: Option<Instant>,
@@ -614,6 +616,8 @@ impl SessionState {
             && self.activity.is_none()
             && !self.suppress_local_input_busy
             && !self.title_status_armed
+            && !self.hook_status_armed
+            && !self.provisional_idle
             && !self.local_input_pending
             && self.observed_input.is_none()
             && self.last_local_input_at.is_none()
@@ -801,6 +805,9 @@ impl SessionManager {
         pool: Arc<DbPool>,
         events: Arc<dyn SessionEvents>,
     ) -> Result<()> {
+        if let Err(error) = super::claude_status::clear_leftovers(app_data_dir) {
+            log::warn!("clear stale Claude status files: {error}");
+        }
         let watcher =
             super::claude_rekey::ClaudeSessionKeyWatcher::start(app_data_dir, pool, events)?;
         *self.claude_session_key_watcher.lock().unwrap() = Some(watcher);
@@ -1052,6 +1059,8 @@ impl SessionManager {
             state.observed_input = None;
             state.last_local_input_at = None;
             state.handle = Some(handle);
+            state.hook_status_armed = false;
+            state.provisional_idle = false;
             state.mission_status_sink = mission_status_sink;
             state.killed = false;
             state.activity_revision = state.activity_revision.wrapping_add(1);
@@ -1126,6 +1135,28 @@ impl SessionManager {
     ) -> bool {
         let session = self.session_state_or_insert(session_id);
         let mut session = session.lock().unwrap();
+        if source == "hook" {
+            if session.handle.is_none() || session.killed {
+                return false;
+            }
+            session.hook_status_armed = true;
+        }
+        if matches!(source, "input-interrupt" | "input-escape") {
+            if !session.hook_status_armed
+                || session.handle.is_none()
+                || session.killed
+                || (session.activity != Some(SessionActivityState::Busy)
+                    && !(source == "input-interrupt" && session.provisional_idle))
+            {
+                return false;
+            }
+            if source == "input-interrupt" {
+                session.completion_armed = false;
+            }
+        }
+        if session.hook_status_armed && matches!(source, "forwarder" | "title") {
+            return false;
+        }
         if source == "forwarder" && session.title_status_armed {
             return false;
         }
@@ -1135,10 +1166,13 @@ impl SessionManager {
         {
             return false;
         }
+        let resolved_provisional_idle =
+            session.provisional_idle && source == "hook" && state == SessionActivityState::Idle;
+        session.provisional_idle = source == "input-escape";
         if state == SessionActivityState::Idle {
             session.suppress_local_input_busy = false;
         }
-        if session.activity == Some(state) {
+        if session.activity == Some(state) && !resolved_provisional_idle {
             return false;
         }
         session.activity = Some(state);
@@ -1207,6 +1241,9 @@ impl SessionManager {
         let mut armed = false;
         for session in sessions {
             let mut session = session.lock().unwrap();
+            if session.provisional_idle {
+                continue;
+            }
             armed |= session.completion_armed;
             session.completion_armed = false;
         }

@@ -957,6 +957,40 @@ mod tests {
     }
 
     #[test]
+    fn provisional_escape_does_not_trigger_or_consume_completion() {
+        use crate::session::manager::{SessionActivityEvent, SessionEvents};
+
+        let state = test_core();
+        let tab = create_tab(&state, &["a"]);
+        let mut rx = state.events.subscribe();
+        let events = state.session_events();
+        state
+            .sessions
+            .note_forwarder_transition("a", SessionActivityState::Idle, "test");
+        state.sessions.arm_completion("a");
+        events.status(&SessionActivityEvent {
+            session_id: "a".into(),
+            state: SessionActivityState::Idle,
+            source: "input-escape".into(),
+        });
+        let row = repo::node::get(&state.db.get().unwrap(), &tab.id)
+            .unwrap()
+            .unwrap();
+        assert!(row.last_completed_at.is_none());
+        assert_eq!(drain_attention_count(&mut rx), 0);
+        events.status(&SessionActivityEvent {
+            session_id: "a".into(),
+            state: SessionActivityState::Idle,
+            source: "hook".into(),
+        });
+        let row = repo::node::get(&state.db.get().unwrap(), &tab.id)
+            .unwrap()
+            .unwrap();
+        assert!(row.last_completed_at.is_some());
+        assert_eq!(drain_attention_count(&mut rx), 1);
+    }
+
+    #[test]
     fn completion_arm_is_consumed_after_recording() {
         let state = test_core();
         let tab = create_tab(&state, &["a"]);
