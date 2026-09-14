@@ -3,6 +3,9 @@
 > Tracking issue: [#347](https://github.com/yicheng47/runner/issues/347)
 > Priority: P1. Platforms: macOS and Windows.
 > Decision, 2026-09-13: next step after v0.8.9. The release keeps the merged title-spinner and byte-activity heuristics from [#585](https://github.com/yicheng47/runner/pull/585) unchanged.
+> Design direction, 2026-09-14: define the richer status model and its UI before implementation. Working, Needs you, and Ready are the everyday states. This supersedes the earlier decision to defer needs-you presentation. Proposal for review; runtime capability verification is still required.
+> Mechanism decision, 2026-09-14: the hook bridge is a port of cmux's working implementation, not a new design — per-invocation CLI injection, fire-and-forget hook scripts, and a Runner-owned script directory. cmux is GPL-3.0-or-later and Runner is GPL-3.0, so deriving from it is clean with attribution. What is ours is the product design: the status model and the surfaces on the canvas. See [Mechanism: port, do not invent](#mechanism-port-do-not-invent).
+> Scope decision, 2026-09-14: ship the minimum each runtime can actually prove, and grow the vocabulary as capabilities are verified — see [Minimum viable coverage](#minimum-viable-coverage). Runner never gains an approval or answer control of its own, in this feature or later: showing that a session is waiting on you, and focusing that pane when you click it, is the whole of Runner's job. The CLI keeps its prompt.
 
 ## Motivation
 
@@ -12,41 +15,237 @@ Use lifecycle events from Claude Code and Codex to determine agent status. Both 
 
 ## Scope
 
-- Start with accurate Busy/Idle for Runner-spawned Claude Code and Codex sessions. Keep existing status consumers and mission routing, with one backend owner for normalized activity and its source. A needs-you state can follow once actual human-wait events are verified; it is not required to replace the detector.
+- Design Working / Needs you / Ready for Runner-spawned Claude Code, Codex and TRAE CLI sessions, alongside startup, stopped, error, and unavailable-status presentation. Implement the subset each runtime can prove first; an unprovable detail is left out, never guessed. Keep one backend owner for normalized activity and its source; expose only the details each adapter can prove. Update existing status consumers and mission routing together.
 - Use per-runtime adapters to turn lifecycle events into session transitions. Prompt submission starts work; confirmed main-agent turn completion ends it. Handle cancellation, failure, exit, and resume explicitly. `SessionStart` alone does not prove either readiness or ongoing work.
-- Distinguish main-agent events from subagent events. A subagent finishing cannot make its parent Idle. Bind reports to the owning Runner session and process generation so a delayed event from a replaced process cannot change the new session.
+- Distinguish main-agent events from subagent events. A subagent finishing cannot make its parent Ready. Bind reports to the owning Runner session and process generation so a delayed event from a replaced process cannot change the new session.
 - Account for hook ordering and continuations. A `Stop` hook can be blocked by another hook and continue the turn; it must not unconditionally announce final readiness. A `PermissionRequest` may be automatically approved without showing a human prompt; it must not unconditionally mean waiting for the user.
-- Prefer the small cmux-style command-hook bridge into Runner's existing CLI/IPC and session event path. Verify whether that path can carry authenticated, session-scoped reports before introducing another receiver. Bound failures so reporting cannot prevent the agent from progressing.
+- Port cmux's command-hook bridge into Runner's existing CLI/IPC and session event path rather than designing a transport. Verify whether that path can carry authenticated, session-scoped reports before introducing another receiver. Bounding failures is a property of the ported mechanism, not something to re-derive.
 - Compose hooks additively for each spawn and preserve the user's hooks, configuration, authentication, conversation storage, and resume behavior. Verify Claude's additional settings and Codex's current hook configuration route. Do not assume that `-c` accepts hook definitions or that redirecting `CODEX_HOME` to a mirror preserves everything. No global configuration rewrite as an incidental installation step.
 - Support native macOS and Windows, including executable paths with spaces, command quoting, and the actual hook shell used by each CLI. No Unix-shell-only helper dependency.
 
+## Status model
+
+The primary question is whether the agent is working, needs a decision, or can accept another turn. Keep three everyday states; explain tool activity and the reason for a wait with secondary text. Do not create a separate colored status for each tool or infer thinking, reading, writing, or testing from terminal prose.
+
+| State | Meaning | Visible label and detail | Treatment |
+| --- | --- | --- | --- |
+| Working | A main-agent turn or explicitly observed operation is active. | `Working`; optional `Using tools` or `Compacting context` when verified. | Muted spinner. Reserve amber for human attention. |
+| Needs you | An unresolved interaction requires the user, with evidence that the interaction actually reached the user. | `Approval needed`, `Answer needed`, or `Needs you` when the reason is unavailable. Plan approval uses `Approval needed`. | Amber hand for approval; amber message bubble for an answer; amber triangle when the reason is unavailable, because the circle-exclamation belongs to Error. |
+| Ready | The live agent is confirmed available for another turn. | `Ready`. A last-turn outcome can say `Response finished` or `Interrupted` in the tooltip. | Small muted hollow circle. New unread output retains the separate accent dot. |
+
+Lifecycle and observability supply the remaining presentation cases; these are not more kinds of agent work.
+
+| Case | Meaning and presentation |
+| --- | --- |
+| Starting / Resuming | Runner is launching or reattaching the process. Muted spinner with the corresponding label. `SessionStart` alone does not establish Ready. Once attachment finishes, absent activity evidence resolves to Status unavailable rather than an indefinite Starting animation. |
+| Stopped | The process ended normally or Runner stopped it. Muted square and `Stopped`; retain the existing resume/restart controls. |
+| Error | A confirmed terminal turn failure needs recovery, or the process crashed. Red circle-exclamation and `Error`; detail distinguishes `Response failed` from `Process exited · code N`. A failed tool that the agent can recover from remains Working. |
+| Status unavailable | The process is live but activity cannot be established, or an explicit bridge failure invalidates the last observation. Muted circle-question and `Status unavailable`; terminal use remains available. This never means Ready or a failed agent. |
+
+Track process lifecycle, agent activity, last-turn outcome, attention, and observation source separately rather than adding every combination to one status enum. Ready describes availability, not successful completion of the user's task. Completed, interrupted, and failed are outcomes; unread is attention. A live session can fail a response without crashing, and an interrupted session can become Ready without a successful-result notification.
+
+For a blocking interaction, Needs you takes precedence over Working even if another tool is still running. For an explicitly nonblocking question, preserve Working and add needs-you attention; display `Answer needed` with `Still working` in its tooltip. Keep unresolved interaction identities until each is answered, dismissed, cancelled, or invalidated by the owning turn/process. Merely focusing the pane does not clear them. Ordinary prose ending in a question is not a structured human-wait signal.
+
+### Transitions and routing
+
+- An accepted prompt or verified work continuation enters Working and clears the previous outcome. A keypress or attempted submit alone does not prove that the agent accepted input.
+- A verified human interaction adds needs-you attention and, when blocking, enters Needs you. A correlated answer/approval/dismissal clears that interaction. Return to Working only when continuation is established; if another interaction remains, retain its attention.
+- Confirmed main-agent turn completion with no blocking continuation enters Ready and records the outcome. Completion while its pane is not being viewed creates unread attention. A subagent stop or a single completed tool cannot end the parent turn.
+- Interruption ends the active attempt, but return to Ready only when prompt availability is established. No new completion dot or error alert for a user-requested interruption. If readiness cannot be established, show Status unavailable with the interruption in the tooltip.
+- Confirmed unrecovered turn failure shows Error until new accepted work, explicit recovery, or session end. An observed automatic retry remains Working. Process exit always overrides live activity and clears obsolete waits.
+- Working does not block automatic inbox delivery, and Ready is not a precondition for it. Delivery injects a nudge — `[inbox] unread messages — run \`runner msg read\` to view.` — not the message body, which lives in the inbox projection. A nudge typed into a working agent is queued by its TUI and read on the next turn, and a lost one is recovered by the existing reconciliation nudge. Gating the doorbell on a confirmed Ready would add a stall for no benefit and would silently strand any runtime whose readiness cannot be confirmed, which is the failure [#359](https://github.com/yicheng47/runner/issues/359) removed.
+- Needs you is the one status that blocks delivery, because an open approval or question dialog consumes keystrokes. A nudge injected at `Do you want to proceed?` is not queued text; it is an answer to that prompt. Block while an interaction is unresolved, queue the delivery, and release it when the interaction clears — the existing outbox and retry path already do exactly this for a human draft.
+- Every other gate stays as it is: the draft check, the recent-typing window, in-flight, and the unavailable-session check are unchanged, and they remain the only conditions that matter for the rest of the model. Manual terminal interaction remains available throughout.
+- Last-turn completion and idle readiness do not complete a mission. Mission outcomes continue to use mission events. Queued inbox messages are distinct from an agent asking the user for approval or an answer.
+
+### Capability evidence and open adapter questions
+
+All three agent runtimes were checked against the binaries installed on 2026-09-14 — Claude Code 2.1.270, Codex 0.154.0, and TRAE CLI 0.120.52 — using each one's own hook reference. This replaces the earlier documentation-only audit, which was wrong in both directions: it treated TRAE as a Codex derivative with no hook story, and it credited Codex with question and surfaced-prompt events it does not have.
+
+| Capability | Claude Code | Codex | TRAE CLI |
+| --- | --- | --- | --- |
+| Events published | 32 | 12 | 13 |
+| Work starts, tools, compaction | `UserPromptSubmit`, `PreToolUse` / `PostToolUse`, `PreCompact` / `PostCompact` | same four, same names | same, plus `post_tool_use_failure` |
+| Surfaced permission wait, distinct from a raw request | `Notification(permission_prompt)`, with `PermissionRequest` and `PermissionDenied` alongside | **no** — `PermissionRequest` only, so a hook-resolved request is indistinguishable without a settle interval | `notification(permission_prompt)` before the dialog, plus `permission_request` when it is actually shown |
+| Agent asking a question | `Notification(elicitation_dialog)`, plus `Elicitation` / `ElicitationResult` and an `agent_needs_input` subtype | **no event of any kind** | `notification(elicitation_dialog)`, documented as firing only for `AskUserQuestion` |
+| Final turn boundary, after continuation hooks | `Notification(idle_prompt)` | **no** — only `Stop`, which another hook can continue | `notification(idle_prompt)`, documented as firing only when no stop hook asked to continue and never for a subagent |
+| Fatal turn failure | `StopFailure`, "the turn ends due to an API error" | no | no |
+| User interruption | not published as its own event | `Interrupt` | not in the 13 |
+| Main versus subagent | `SubagentStart` / `SubagentStop` | `SubagentStart` / `SubagentStop` | `subagent_start` / `subagent_stop`, plus `agent_id` on every payload |
+| Installing a hook | settings-file hooks need no trust step; workspace trust applies to project skill and subagent frontmatter hooks | **explicit trust required** — "before a non-managed hook can run, Codex requires you to review and trust the exact hook definition", managed via `/hooks` and hashed per definition in `~/.codex/config.toml` | merges by execution identity across user and project config, no trust gate |
+| Hook config | `hooks` in `settings.json`, PascalCase event keys | `~/.codex/hooks.json`, PascalCase keys, normalised to snake_case internally | `hooks` list in `~/.trae/traecli.yaml` or `.trae/traecli.yaml`, or `hooks.json`; event names accept snake_case, camelCase or PascalCase |
+
+Claude Code closes all five gaps. TRAE closes four, lacking only fatal failure versus retry. Codex closes two: it can say work started and it can say a permission was requested, but it cannot distinguish a surfaced prompt from an auto-resolved one, cannot report a question at all, and has no boundary that survives a continuation hook.
+
+Codex needs one concession, not two. Its `PermissionRequest` needs the hold-and-cancel interval described in the coverage table, because nothing else separates a shown prompt from one a hook answered — and that matters, because Needs you is the status that gates delivery. Its `Stop` needs no settle interval: Ready is a display state, not a delivery precondition, so a `Stop` that a continuation hook overturns costs a briefly wrong glyph and nothing else. The heuristic is confined to Codex and is never described in the UI as a confirmed state.
+
+The Codex trust gate turns out not to bind us, and the earlier claim here that `--dangerously-bypass-hook-trust` is unacceptable was wrong. cmux injects its Codex hooks per invocation on the command line — `--enable hooks --dangerously-bypass-hook-trust -c hooks.<Event>=[{hooks=[{type="command",command='''<path>''',timeout=<ms>}]}]` — and because nothing is persisted into `~/.codex/hooks.json`, there is nothing for the user to trust. The gate exists to stop unvetted *stored* definitions from running; the flag's own help says it is "intended only for automation that already vets hook sources", which is precisely a launcher passing its own hooks to a process it spawned. Runner always owns the spawn, so this path is available and is strictly less invasive than the alternative.
+
+The alternative is the one to avoid. cmux has working code to write `trusted_hash` entries into `~/.codex/config.toml` and remove them again, and has deliberately left it unshipped: its own tracking spec calls silently editing the user's trust entries and `hooks.json` at launch "a standing modification to external tooling config that should not be done silently", and names an explicit install affordance or a launch hint as the acceptable forms. That matches the rule already in scope here — no global configuration rewrite as an incidental installation step — so per-invocation injection is the design, and any persistent install stays an explicit, user-initiated action.
+
+Two implementation lessons from the same source are worth taking wholesale. **Fire-and-forget solves the synchronous-hook problem.** cmux's hook writes stdin to a temp file, backgrounds the real CLI call with `nohup`, prints `{}` and exits immediately, and arms an inner `sleep`-based watchdog to kill the worker, with the runtime's own `timeout` as an outer bound — 10s for lifecycle events, 120s for `PreToolUse` and `PermissionRequest` where a human may be deciding. A reporter built this way cannot sit in front of a turn no matter how slow the receiver is. **And prefer a script file to an inline snippet**: cmux found that some Codex-compatible runtimes exec the `command` string directly rather than through a shell, so an inline snippet dies with "No such file or directory", while a bare executable path works under both. Those scripts live in a cmux-owned directory, never in the user's agent config — the same separation Runner should keep.
+
+The local cmux adapters corroborate the permission caveat: `CLI/FeedEventClassifier.swift` treats Codex permission requests as telemetry because its approval reviewer can resolve them. cmux is an integration reference, not proof that every mapping meets Runner's readiness contract.
+
+### TRAE CLI, checked against the installed binary
+
+Everything above is a documentation audit. TRAE CLI is the one runtime actually inspected: `trae-cli 0.120.52`, built 2026-08-12, installed 2026-09-14. Its own manual (`traecli doc hooks`) documents 13 lifecycle events, and the shape is Claude Code's, not Codex's — `hook_event_name` in PascalCase, `hookSpecificOutput`, `agent_id`, `transcript_path`, and `--permission-mode default|plan|bypass_permissions`. The earlier assumption that TRAE is Codex-shaped came from Runner's MCP writer and was wrong about everything except that one file.
+
+It answers four of the five gaps outright, for this runtime — everything except fatal failure versus retry, which has no event:
+
+- **Surfaced permission wait.** `notification` carries `notification_type: permission_prompt`, documented as firing *before* the approval dialog appears, and a separate `permission_request` event fires when the dialog is actually up. A raw request and a shown prompt are therefore distinguishable without a timing heuristic.
+- **Agent asking a question.** `notification` carries `notification_type: elicitation_dialog`, documented as firing only when the agent calls `AskUserQuestion`. `Answer needed` needs no inference here.
+- **Final turn boundary.** `notification` carries `notification_type: idle_prompt`, documented as firing only when the main agent has finished a turn *and no stop hook asked to continue*, and explicitly not when a subagent ends. That is exactly the Ready boundary this spec said had to be established before inbox delivery, supplied by the runtime rather than reconstructed. It also settles which event to key on: **never `stop`**. A `stop` hook that exits 2 makes the agent continue with stderr as the next user message, and `decision: "block"` with a `reason` does the same, so `stop` cannot mean the turn ended. `idle_prompt` is emitted after those have had their say.
+
+Also available and directly useful: `pre_compact` / `post_compact` for `Working · Compacting context`; `post_tool_use_failure` for the recoverable-tool-failure case that must stay Working; `subagent_start` / `subagent_stop` plus `agent_id` for the main-versus-subagent rule; and `session_start` with `source` (`startup` / `resume` / `clear`) and `session_end` with `reason` for the generation binding. Not available: any equivalent of `StopFailure`, so `Error · Response failed` stays unreachable on TRAE as well.
+
+The hook contract itself is settled, and it is friendly to a reporter that only observes. A hook that needs no feedback exits 0 and writes nothing; stdout is only interpreted when it is valid JSON, and non-JSON output is treated as empty. Exit code 2 blocks the operation, and any other non-zero code is a non-blocking error that is logged while the agent continues. So a reporting hook that never exits 2 and never prints JSON cannot alter a turn, which is the bounded-failure property the scope section asks for. Runner must also never emit `continue: false`, `decision: "block"`, or a `permissionDecision` — those are the intervention channels, and this feature only watches.
+
+One hard requirement comes with that: **hooks run synchronously and have no default timeout**, so an unbounded reporter blocks the agent. Every hook Runner installs must carry an explicit short `timeout`. An `http` hook defaults to 30s, which is far too long to sit in front of a turn.
+
+Additive configuration, gap one, is answered here too. Hooks merge across user and project levels, deduplicated by execution identity — `type` + `command` for command hooks, `type` + `url` + `headers` + `allowed_env_vars` for http hooks — with the higher-priority level winning for a matching identity. A Runner hook whose command string is its own therefore composes beside the user's hooks instead of replacing them, and re-registering is idempotent.
+
+Two more things worth carrying into the bridge design. Hooks are configured as a `hooks` array in `~/.trae/traecli.yaml` or `.trae/traecli.yaml` (or a `hooks.json`), with `matchers` accepting snake_case, camelCase or PascalCase event names interchangeably. And a hook may be `type: http`, which POSTs the identical JSON payload to a URL with configurable headers — a local receiver sidesteps the command-quoting and path-with-spaces problem that the scope section raises for native Windows, and it fails non-blockingly by design. Confirm whether Claude Code and Codex offer the same before assuming one transport for all three.
+
+Because TRAE mirrors Claude Code's vocabulary, its documented semantics are a strong prior for what to look for in Claude Code's `Notification` events — but a prior is not a verification, and Claude Code still has to be checked on its own.
+
+One gap survives this pass and is not resolvable from documentation: whether Claude Code's `Notification(idle_prompt)` and `StopFailure` fire with the timing the design assumes. Everything else is now a known quantity per runtime. Where a runtime cannot expose a boundary, the state is left unshown or explicitly labelled as an estimate; do not add transcript parsing, terminal-text classification, or a timeout that pretends to confirm it. Rich status coverage differs by runtime; [Minimum viable coverage](#minimum-viable-coverage) says what ships.
+
+### Mechanism: port, do not invent
+
+The transport is a solved problem in a GPL-3.0-or-later codebase we can derive from, so the only thing this feature designs from scratch is what the user sees. Take from cmux:
+
+- **Per-invocation CLI injection.** Pass hooks as `-c hooks.<Event>=[…]` on the command line of the process Runner spawns, with `--enable hooks --dangerously-bypass-hook-trust` on Codex. Nothing is persisted, nothing needs trusting, and the user's own hooks and config are untouched. TRAE and Claude Code get the equivalent for their own config surfaces.
+- **Fire-and-forget hook bodies.** Write stdin to a temp file, background the real call, print `{}`, exit. Arm an inner watchdog to kill the worker and set the runtime's own `timeout` as an outer bound — short for lifecycle events, long only where a human may be deciding. This is what makes a synchronous hook safe.
+- **A script file in a Runner-owned directory**, never an inline snippet and never inside the user's agent config. Some runtimes exec the `command` string directly instead of through a shell, where an inline snippet fails outright; a bare executable path works under both, and it sidesteps the quoting and paths-with-spaces problem on native Windows.
+- **TOML multi-line literals** (`'''…'''`) for the injected value, which preserve bytes verbatim, with a guard for the one sequence they cannot contain.
+
+Do not port cmux's product decisions. Its feed, its approval reviewer, and its classifier answer a different question than Working / Needs you / Ready, and its Codex permission classifier treats requests as telemetry for reasons specific to its own approval flow. The status model and every surface in [UI design](#ui-design) are Runner's.
+
+Explicitly not ported: writing `trusted_hash` entries into `~/.codex/config.toml` or installing into `~/.codex/hooks.json`. cmux built that and left it unshipped on purpose, and the same reasoning holds here.
+
+### Minimum viable coverage
+
+Ship the states that fall out of the events both CLIs already document, and leave every refinement to a later phase. A state that cannot be proven is not shown, and it is never approximated.
+
+Phase 1 vocabulary, the everyday three plus what Runner already owns:
+
+| State | Evidence | Notes |
+| --- | --- | --- |
+| Working | Prompt submission and tool events. | The plain label only. No `Using tools`, no `Compacting context` yet. |
+| Needs you — `Approval needed` | The permission event, when no decision follows it promptly. | One amber state with one reason. Because a hook can resolve a request without a human ever seeing it, hold the amber for a short interval and cancel it if a decision arrives first; the spike fixes that interval against real auto-approvals, and the same interval covers auto-answered questions. |
+| Needs you — `Answer needed` | The question event, on the same hold-and-cancel as an approval. | Structurally the same interaction, so it costs one event name and one glyph. Map per tool rather than with a blanket ask state: a question takes the bubble and `Answer needed`, a plan approval takes the hand and `Approval needed`. Both block the turn, so neither needs the nonblocking case. |
+| Ready | The turn-completion event, with no continuation. | Display only — it gates nothing, so a wrong Ready is a cosmetic error rather than a delivery bug. No new outcome text in the tooltip yet. |
+| Starting, Stopped, Error `Process exited · code N` | Runner's own `SessionStatus`. | Already known without any hook. Free. |
+| Status unavailable | A live process with no observation at all. | Rare, because the baseline detector is always running underneath. Not the state for a runtime that simply has no adapter — that is `Working · estimated`. |
+| Unread response | Existing accent dot. | Unchanged. |
+
+Deferred until the spike or a later runtime version proves them: `Working · Compacting context` and `Using tools`; `Error · Response failed` as distinct from a process exit; the interruption outcome in the Ready tooltip; elapsed time on a wait; and the nonblocking-ask `Still working` case, which is the only part of the answer story that waits — every ask phase 1 can see blocks the turn. Each is designed on the canvas and each is additive — none of them changes the phase-1 shape of a header, a row, or a card.
+
+Per-runtime expectation going in:
+
+| Runtime | Phase 1 target |
+| --- | --- |
+| Claude Code | The full phase-1 vocabulary and then some — it is the only runtime that can also reach `Error · Response failed`, via `StopFailure`. Surfaced prompt, question and final boundary all arrive as `Notification` subtypes, so nothing here is inferred. Build the reference adapter against this and TRAE together. It remains the runtime most users will see first. |
+| Codex | Working, a debounced `Approval needed`, and a Ready taken from `Stop` — which a continuation hook can overturn, costing a briefly wrong glyph and nothing more, since Ready gates no behaviour. No `Answer needed` at all, because no event exists. Hook trust is not a blocker: hooks are injected per invocation on the command line of a process Runner spawned, so nothing is persisted and nothing needs trusting. This is still the runtime that constrains the feature, on events rather than on installation. |
+| TRAE CLI | The full phase-1 vocabulary except `Error · Response failed`, verified against the installed binary. Its `notification` subtypes supply the surfaced prompt, the question and the final boundary directly. Experimental in Runner, on by default only on macOS and unvalidated on Windows, so it must not be the only runtime phase 1 supports. |
+| Shell | No agent status in either the pane header or the tab bar. Process detection is [#586](./586-shell-status-detection.md). |
+
+## UI design
+
+The canvas is `design/runner.pen`, the active product canvas, following the same `Spec — … (issue) · v1` convention that #567, #570 and #574 used. Frames, 2026-09-14:
+
+| Frame | Node | What it settles |
+| --- | --- | --- |
+| Spec — Session status (347) · v1 · vocabulary | `esVJZ` | Every state as glyph, label, secondary text and treatment, in three bands: everyday, lifecycle, observability. |
+| Spec — Session status (347) · v1 · pane header | `Z9PuC` | Today's 5px dot against the glyph-and-label header, narrow-width degradation at 480/360/296px, and the tooltip set. |
+| Spec — Session status (347) · v1 · single-pane tab | `TCevM` | Where status lives when a tab holds one pane and there is no pane header. |
+| Spec — Session status (347) · v1 · sidebar rollups | `FTDZ6` | The trailing attention slot for single-pane tabs, multi-pane rollups, and collapsed projects and sections. |
+| Spec — Session status (347) · v1 · mission workspace | `CC4wy` | Runner cards, the mission tab strip, and the mission row rollup. |
+| Runner chat — approval wait · 2-pane (347) | `nygy1` | Full screen: one pane holding a permission prompt, one working, with the sidebar rollup. |
+| Runner chat — approval wait · single pane (347) | `MdmRR` | Full screen: the same wait on a one-pane tab, carried by the tab bar. |
+| Light — Session status vocabulary (347) | `wLIlB` | The vocabulary in the light theme; amber, red and accent all shift with the theme tokens. |
+| Light — Session status pane header (347) | `mFFha` | The pane header and its narrow widths in the light theme. |
+| Light — Runner chat approval wait · single pane (347) | `E4lcBK` | The single-pane screen in the light theme. |
+
+The frames draw the full target vocabulary; [Minimum viable coverage](#minimum-viable-coverage) says which states phase 1 actually lights up. The glyphs reuse the existing lucide vocabulary, and four of them are not in `crates/runner-app/src/assets.rs` yet: `hand`, `message-circle`, `circle-alert` and `circle-question-mark`. `square.svg` and `triangle-alert.svg` are already there, and the spinner and the hollow Ready circle are drawn, not iconography.
+
+### Pane header
+
+Replace the existing five-pixel color-only status dot after the session title with a 12-pixel icon and an 11-pixel label. Keep the current header height and controls. Put status after the flexible, truncating title; avoid shifting the controls during transitions. A normal header shows `Working`, `Ready`, `Approval needed`, or `Answer needed`; work details live in the tooltip rather than a constantly changing title.
+
+A pane header only exists from two panes up — `pane_identity_visible` is false below that — so a one-pane tab shows no status anywhere on the chat surface today, and its sidebar row is the only signal a user has. Give the tab bar the status while the tab holds one pane: same glyph, same label, same tooltip, after the truncating title and before the kebab, so the kebab, stop and fork controls keep their positions. Splitting hands status down to the pane headers and the tab bar drops it, because every pane's own header is then on screen; collapsing back to one pane returns it. The state itself never changes on a split, only where it is drawn. A shell tab shows no agent status in either place, matching `pane_identity_shows_status` today; process detection for shells is [#586](./586-shell-status-detection.md).
+
+At narrow widths, remove normal-state text before truncating the title further; keep the status icon and tooltip. Reserve room for the attention label when possible; below 320 logical pixels, icon-only is allowed for every state. Preserve the full accessible label. Allow status labels to grow for translation rather than assuming a fixed English width.
+
+Tooltips explain the state in plain language: `Waiting for you to approve a command`, `Waiting for your answer`, `Working · Compacting context`, `Ready · Last response interrupted`, or `Status unavailable · Agent is still connected`. Show one short reason when available, not raw hook names or full command payloads. Elapsed time is useful only for a wait, for example `Waiting for 2m`; silence never changes the state.
+
+Clicking a needs-you indicator focuses the corresponding terminal pane. The agent CLI continues to own approval and answer controls. Runner does not duplicate the question, auto-answer it, or synthesize an approval keypress. Avoid a new banner consuming terminal rows for information already visible in the header.
+
+### Sidebar tabs and project rollups
+
+Keep the current compact row layout and runtime/layout icon. The trailing attention slot shows, in priority order: an unresolved error, needs-you, working, unread completion, status unavailable, or nothing. A ready viewed tab stays quiet. Status unavailable ranks last because it is missing knowledge rather than a call for attention, but it still has to be drawn — an empty slot reads as quiet and ready, which is the one thing an unobserved session is not. An estimated working session rolls up as working and keeps its estimate marker; estimated idle contributes nothing and never counts as ready. A tooltip lists concurrent conditions, such as `1 approval needed · 1 working · 1 unread response`, so the dominant icon does not erase the other states. Project and section rollups use the same ordering. Error attention is acknowledged by viewing the affected pane; the pane's Error status remains until recovery. Needs-you attention persists until resolution.
+
+Clicking the attention indicator opens the affected pane, preserving the existing row-click tab behavior. If multiple panes need attention, choose the oldest unresolved error first, then the oldest unresolved request; use pane order as a stable tie-breaker. Do not rotate the target simply because it was clicked. A collapsed project indicator expands the project and reveals the affected tab. Keep attention visible while row actions or shortcut pills appear; reserve separate space instead of replacing the warning with an ellipsis or shortcut.
+
+A row is too narrow for a label, so the glyph carries the state and the tooltip names it. The label appears only where there is room for it: pane headers, the single-pane tab bar, and runner cards.
+
+Unread completion remains the existing accent dot; clear it when that response's pane is actually viewed, not merely because another pane in the tab is active. A new turn may hide the dot behind a working indicator without deleting its unread record. Restoring normal status must not recreate a previously acknowledged completion.
+
+### Mission workspace
+
+Use the same icon, label, and meaning in runner cards and pane headers. The card header's trailing corner is already spoken for — #542 gave it Stop and Restart — so status lives on the subtitle line and never competes for that cluster. The subtitle can carry a detail because it has the room: at the real rail width the card is 240 pixels, leaving 216 for the line, which fits `Working · Compacting context` with margin; anything longer truncates there rather than growing the card. The avatar's presence dot goes back to meaning only what it can prove — the process is live or it is not — and stops carrying agent activity, which is what makes the amber-versus-accent split disappear. Its alpha carries activity today, a dimmed `#00FF9C66` when idle against a solid `#00FF9C` when live, and that is the other half of the same inconsistency. Each runner tab in the mission tab strip gets the same glyph on the same rules as a sidebar row: glyph only, label in the tooltip. The mission sidebar row aggregates runner attention; it must not describe an entire mission as Ready when only one runner is ready. Its tooltip reports counts. Clicking its attention indicator opens the affected runner. Preserve the existing pending-asks and inbox surfaces and avoid double-counting the same Runner ask if it already supplies an interaction identity.
+
+### Visual rules
+
+- Use existing theme tokens: muted text for normal activity/readiness/unavailability, warning for human attention, danger for error, accent for unread completion. This intentionally removes the current inconsistency where Busy is amber in chat headers but accent-colored on mission avatars. Semantic colors follow the selected theme; do not add fixed colors to status components.
+- Shape plus label or tooltip must distinguish each state. Spinner = Working/Starting; hollow circle = Ready; hand = approval; message bubble = answer; triangle = a wait whose reason is unavailable; square = Stopped; circle-exclamation = Error; circle-question = Status unavailable. Working and Starting differ by their label and tooltip.
+- Animate only ongoing work/startup, with a static equivalent for reduced motion. Human waits do not blink or pulse. Screen-reader labels carry state and reason; announce a new wait or error once rather than on each timer update.
+- Do not add sound, OS notifications, a status dashboard, permission controls, tool-history panels, or configurable status palettes in this feature.
+
 ## Source precedence and migration
 
-The v0.8.9 detector is documented in [architecture §5.10](../arch/arch.md#510-busy--idle-inference) and the [archived #584 spec](./archive/584-title-status-detection.md). This issue replaces that agent detector in a later release; it does not change the 0.8.9 release contents.
+The v0.8.9 detector is documented in [architecture §5.10](../arch/arch.md#510-busy--idle-inference) and the [archived #584 spec](./archive/584-title-status-detection.md). This issue layers on top of that detector in a later release rather than replacing it, and does not change the 0.8.9 release contents.
 
-Once a supported adapter is active, lifecycle status owns the session. PTY output, title updates, and a silence timeout cannot override it. Long silence during a healthy turn is normal, not evidence that hooks failed or the agent is Idle. Track missing capability or explicit bridge failure separately from silence; never label an unobserved state as confirmed readiness for inbox delivery. Preserve the existing submit/wake behavior only where it agrees with the lifecycle model, with its precedence covered by tests.
+Status has two layers, and the lower one is permanent. **The baseline is terminal observation** — byte activity plus title-spinner classification, the v0.8.9 detector — and it is never removed. It runs for every agent session, needs nothing from the runtime, and answers one question: is output moving. **The upgrade is a hook adapter**, which answers the real questions, and it exists per runtime. This is a layering, not a migration: nothing gets deleted when the adapters land.
 
-Remove title-spinner classification when the hook detector lands. Terminal titles remain display data under [#587](./587-terminal-provided-titles.md). For unsupported runtimes, any retained byte detector is explicitly a heuristic source; it is not a fallback that silently takes ownership from an active hook adapter. Specify the unavailable-adapter and bridge-failure behavior before rollout, including what status consumers and routing do when readiness is unknown.
+The consequence that matters for the roadmap is that **a new runtime is supported the day it is added, without an adapter**. It gets the baseline immediately, and an adapter later if and when its CLI turns out to have usable hooks. Adapter work is never a precondition for shipping a runtime, and a runtime with no hook story is not a gap in this feature — it is the lower layer doing its job. The same holds in reverse: a runtime whose hooks regress, or whose bridge fails mid-session, falls back rather than going dark.
+
+Precedence between the layers:
+
+- An active adapter owns the session. PTY output, title updates, and a silence timeout cannot override it. Long silence during a healthy turn is normal, not evidence that hooks failed or that the agent is Idle.
+- With no adapter, or after an explicit bridge failure, the baseline owns the session. It is always labelled as an estimate — `Working · estimated` or `Idle · estimated` in the tooltip, with a `~` against the glyph on the canvas — so the user can tell a measurement from a guess.
+- The baseline can only ever produce Working and Idle. It never produces Ready, needs-you, a turn outcome, or an error, and therefore never holds a delivery. That keeps an estimate away from the one status with consequences.
+- Status unavailable is not the state for "this runtime has no hooks" — that is baseline-estimated. It is reserved for a live process with no observation at all, which is rare once the baseline is always present.
+
+The permanent part of the baseline is **byte activity**: any process that produces output, with no assumption about what the CLI writes. Title-spinner classification is not a peer of it but an opportunistic refinement inside it, and it is transitional. `classify_title` is generic — a title beginning `U+2800`–`U+28FF` is Busy — and self-arming, so a runtime that never animates is never affected, but its entire evidence base is two fixtures, `codex-title-working.ndjson` and `claude-session.ndjson`, from the two runtimes that are getting adapters first. Where it works it is about to be superseded, and where it would be needed — a new runtime with no hooks — it may not fire at all. It is also presentation Runner does not control, able to degrade silently when a CLI changes its title format, and [#587](./587-terminal-provided-titles.md) is about to make the same channel user-visible display data.
+
+Remove title-spinner classification at the end of phase 4, on a named condition rather than someday: **when every runtime that animates its title has an adapter**. That is Claude Code and Codex, both in phase 1. Keep it if a runtime turns up that animates its title and has no usable hooks; it is twelve lines and comes back cheaply. Preserve the existing submit/wake behaviour, with its precedence over both layers covered by tests. Delivery behaviour is deliberately not made stricter by this feature; the only new condition is the needs-you hold, which no baseline-only session can trigger, so unsupported runners keep delivering exactly as they do today.
 
 Shell command status is separate work under [#586](./586-shell-status-detection.md): process detection first, optional semantic shell integration later. Neither shell foreground detection nor OSC 133 reveals the lifecycle inside an interactive agent.
 
 ## Implementation phases
 
-1. Verify the supported CLI event contracts and additive configuration routes, then specify state/source precedence and unavailable-adapter behavior.
-2. Implement the session-scoped command bridge and Claude Code/Codex adapters through the existing backend status path; remove title-spinner classification as the adapters replace it.
-3. Validate lifecycle edge cases and inbox eligibility on macOS and Windows before rollout. Richer needs-you presentation remains a follow-up.
+1. Review the frames above across direct chats, single-pane and split tabs, sidebar rollups, and missions; they landed 2026-09-14 and this review is what phase 1 is waiting on.
+2. Port the bridge mechanism and confirm the two timings documentation cannot settle: that Claude Code's `Notification(idle_prompt)` really arrives after competing `Stop` hooks have run, and what settle interval Codex needs before a `Stop` can be treated as Ready. Both are measured with the ported hook itself rather than a throwaway script, because the mechanism is no longer the unknown.
+3. Build what the port does not give us: the per-runtime adapters that turn events into transitions, the normalized state with its source ownership, generation binding, and the main-versus-subagent rule, carried through the existing backend status path. Only capabilities phase 2 confirmed are enabled. Title-spinner classification stays as the baseline layer; the adapter takes precedence over it rather than replacing it.
+4. Apply the phase-1 presentation and routing gates to all consumers. Validate lifecycle edge cases, unavailable capabilities, and inbox eligibility on macOS and Windows before rollout.
+5. Add the deferred details as later verification allows, one at a time. Each is additive to the phase-1 layout and none of them is a reason to delay phase 1.
 
 ## Verification
 
-- Exercise prompt → quiet tool → completion with continued terminal animation in both CLIs. Status stays Busy through quiet work and becomes Idle on the verified completion boundary, independently of title settings.
-- Exercise repeated turns, user cancellation, errors, process exit, resume, and process replacement. Old-generation and subagent completion events cannot make an active main turn Idle.
+- Exercise prompt → quiet tool → completion with continued terminal animation in both CLIs. Status stays Working through quiet work and becomes Ready on the verified completion boundary, independently of title settings.
+- Exercise repeated turns, user cancellation, errors, process exit, resume, and process replacement. Old-generation and subagent completion events cannot make an active main turn Ready.
 - Exercise automatic approval, a real human approval prompt, and a stop hook that requests continuation. Do not confuse approval telemetry or an attempted stop with readiness.
 - Test duplicate reports, event ordering, absent hooks, and bridge failure. Silence alone never switches an active hook session back to byte inference.
 - Verify existing user hooks still execute and configuration/authentication/resume storage remains intact. Test paths with spaces on macOS and native Windows.
-- Cover mission inbox eligibility as well as direct-chat status, and run the relevant backend/terminal tests and workspace Clippy. Any later needs-you UI requires a Pencil design first.
+- Cover mission delivery as well as direct-chat status: a nudge must still reach a working agent, an unsupported runner, and a session whose readiness is unknown, and must be held only while an approval or question is unresolved, then released when it clears.
+- Verify approval/answer attention survives pane focus, concurrent work, and project collapse, then clears on the correct resolution. An automatically answered question or approved request must not flash amber.
+- Verify successful completion, interruption, recoverable tool failure, fatal turn failure, and process crash produce different outcomes. One pane finishing must not clear another pane's active wait.
+- Review the Pencil frames in dark/light themes and narrow panes. Check title truncation, stable header controls, action/shortcut visibility, non-color distinctions, and reduced motion. At implementation time, run relevant backend/terminal and runner-app tests plus workspace Clippy.
 
 ## References
 
 - [Codex hooks](https://developers.openai.com/codex/hooks) and [Claude Code hooks](https://code.claude.com/docs/en/hooks) — event and configuration contracts must be verified at implementation time.
-- cmux: `CLI/CMUXCLI+AgentHookDefinitions.swift` and `CLI/FeedEventClassifier.swift` in the local `~/repos/gui/cmux` clone; the Codex permission classifier explicitly accounts for automatic approval.
+- cmux (`~/repos/gui/cmux`, [manaflow-ai/cmux](https://github.com/manaflow-ai/cmux), GPL-3.0-or-later — compatible with Runner's GPL-3.0, so derivation is clean with attribution): `CLI/CMUXCLI+CodexFireAndForgetHooks.swift` is the mechanism to port, `CLI/CMUXCLI+AgentHookDefinitions.swift` the event/timeout table, `CLI/FeedEventClassifier.swift` the classifier whose product decisions are *not* ours, and `docs/agent-session-tracking-spec.md` the record of why config-rewriting installation was left unshipped.
 - [Original hook proposal](./archive/52-hook-based-session-status.md) — historical design, superseded by this spec; its Tauri receiver, assumed event mapping, and silence-based freshness decay are not implementation requirements.
