@@ -7,10 +7,10 @@ Slices for [#347](https://github.com/yicheng47/runner/issues/347) ([spec](../../
 | 0 | Design and capability audit: ten canvas frames, per-runtime matrix verified against installed binaries | Landed 2026-09-14, `1218288` |
 | 1 | Claude Code hook *source* behind today's Busy/Idle — injection, status file, notify watcher, `hook` source and latch, interrupt recovery | Landed 2026-09-14, `9584330` |
 | 2 | The status vocabulary and its UI | Merged via [PR #588](https://github.com/yicheng47/runner/pull/588), `36dc888`; Jason passed smoke. |
-| 3 | Codex adapter | Uncommitted on `feat/347-codex-hooks`; working-tree review clean, Jason's app smoke pending. Lifecycle/interrupt support; no unproven human-wait holds. |
-| 4 | TRAE CLI adapter | Not started |
+| 3 | Codex adapter and Claude follow-ups | Merged via [PR #589](https://github.com/yicheng47/runner/pull/589), `3dd37b0`; review, both-platform CI, and all reported smoke tests passed. Codex human-wait holds remain unsupported. |
+| 4 | TRAE CLI adapter | Not planned — Runner hook integration unsupported; no enterprise account for validation. |
 | 5 | Deferred details, one at a time | Not started |
-| 6 | Remove title-spinner classification | Trigger: after slice 3 |
+| 6 | Remove title-spinner classification | Only for runtime/platform combinations with validated hook coverage; preserve unsupported-platform fallback. |
 
 ## Slice 2 — vocabulary and UI
 
@@ -24,9 +24,9 @@ Implemented work, completion/continuation, generation/session/turn ownership, ch
 
 The earlier “no question event” and “hold-and-cancel interval” claims were wrong. Native 0.154.0 emits PreToolUse(request_user_input) even when rejected, and a valid Plan call plus rollout context can precede a user hook denial without a visible dialog. PermissionRequest likewise precedes automatic approval. No safe surfaced-wait boundary was found within the supported hook/rollout path, so this slice has no Approval needed/Answer needed or Codex human-wait delivery protection. The opt-in Default-mode question can be nonblocking, with that distinction absent from its hook payload. [Evidence and focused smoke](../../tests/347-codex-hooks-smoke.md).
 
-## Slice 4 — TRAE CLI
+## Slice 4 — TRAE CLI (not planned)
 
-Verify the documented immediate `idle_prompt` against the binary first; Claude Code's manual would have supported the same claim an hour before its binary contradicted it. Config surface is a `hooks` list in `~/.trae/traecli.yaml` or `.trae/traecli.yaml`, or a `hooks.json`, merged by execution identity so composition is safe. Experimental in Runner, macOS-default-on, unvalidated on Windows.
+Runner hook integration is unsupported. Jason no longer has an enterprise account to test TRAE CLI and removed this adapter from the plan on 2026-09-14 after PR #589 merged. Keep estimated byte-activity/title status and existing process lifecycle behavior. The upstream manual audit is retained as historical evidence only; it does not promise future implementation.
 
 ## Slice 5 — deferred details
 
@@ -34,7 +34,7 @@ Verify the documented immediate `idle_prompt` against the binary first; Claude C
 
 ## Slice 6 — remove the title heuristic
 
-Delete title-spinner classification when every runtime that animates its title has an adapter — Claude Code and Codex, so after slice 3. Byte activity stays as the permanent baseline. Keep the heuristic if a runtime turns up that animates and has no usable hooks; it is twelve lines and comes back cheaply.
+Remove title-spinner classification only where the runtime and platform have validated hook coverage. Windows and unsupported runtimes still use the existing title and byte-activity baseline; do not remove their fallback merely because the macOS adapters shipped. Byte activity remains the permanent baseline.
 
 ## Unscheduled
 

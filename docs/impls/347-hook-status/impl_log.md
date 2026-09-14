@@ -5,9 +5,9 @@ Dated record for the #347 program ([README](README.md), [plan](plan.md)). Newest
 ## Current state (update with each entry)
 
 - **Landed**: slice 0 (design + capability audit) in `1218288`; slice 1 (Claude Code hook source, Busy/Idle only) in `9584330`. Both 2026-09-14.
-- **Current**: slice 2 / PR #588 merged at `36dc88881e84119df63241e045f4870eb888a920`. Slice 3 is verified and ready for PR/merge on `feat/347-codex-hooks`; the crew review was clean before the subsequent inline Claude fixes. Jason confirmed Codex smoke and immediate Claude approval detection passed. Jason also passed the ordinary Claude Escape/Ctrl+C retest and authorized final verification, PR and merge.
+- **Current**: slice 2 / PR #588 merged at `36dc888`; slice 3 and Claude approval/interruption follow-ups merged via [PR #589](https://github.com/yicheng47/runner/pull/589) at `3dd37b0aaf035d0b7e946a800e450a760831cbfa`. Both CI jobs and Jason's Codex/Claude smoke tests passed. TRAE hook integration is now explicitly unsupported and removed from the plan.
 - **CLI versions verified against**: Claude Code 2.1.270, Codex 0.154.0, TRAE CLI 0.120.52. Slice 3 corrected the earlier Codex audit using both requested reference sources and native TUI localhost fixtures.
-- **Open**: Windows status hooks (agreed follow-up); Codex surfaced human-wait observability and delivery protection; TRAE's documented immediate idle_prompt.
+- **Open**: Windows status hooks (agreed follow-up); Codex surfaced human-wait observability and delivery protection; remaining status details and platform-aware title-heuristic cleanup. TRAE is not a planned adapter.
 
 ## 2026-09-14 — design and capability audit landed
 
@@ -211,3 +211,9 @@ Jason confirmed the approval fix works, then reproduced ordinary Escape cancella
 Validation passed: `cargo test --locked -p runner-backend --profile ci` (740 tests plus doc tests), `cargo clippy --locked --workspace --all-targets --profile ci -- -D warnings`, `cargo clippy --locked -p runner-app --all-targets --profile ci --features updater -- -D warnings`, `cargo fmt --all -- --check`, and `git diff --check`. Logs: `/tmp/runner-347-interrupt-backend-tests.log`, `/tmp/runner-347-interrupt-clippy.log`, `/tmp/runner-347-final-clippy-updater.log`. Coverage includes immediate approval, structured tool ownership, mixed question/approval identity, approve/deny/Escape cleanup, early ordinary cancellation without transcript/Stop, repeated interruption, late tool events and resumed work. No app consumer changed; the prior 378 app tests remain the local app-suite evidence.
 
 Jason confirmed Codex smoke, Claude approval smoke and the new ordinary-interruption smoke all passed, then explicitly authorized final verification, PR and merge. Final inline review found no remaining must-fix issue; this review includes the Claude follow-ups which postdate the crew's clean verdict. Windows status-hook support is an agreed follow-up, not a CLI capability limitation: the existing Claude SessionStart rekey hook and fullscreen/theme settings are still configured on Windows. No app restart or new checkout was performed. The completed mission's leftover monitor was stopped.
+
+## 2026-09-14 — PR #589 merged; TRAE removed from the adapter plan
+
+PR #589 merged at `3dd37b0aaf035d0b7e946a800e450a760831cbfa` after both Rust / macOS and Rust / Windows passed on `a05be205065c29a170e0e6364a1ae2132f0da00e`. Jason had confirmed Codex, immediate Claude approval and ordinary Claude interruption smoke passed. Local main was fast-forwarded to the merge without creating or removing a checkout or restarting Runner.
+
+After the merge, Jason requested that TRAE CLI be marked unsupported for Runner hooks because he no longer has an enterprise account for validation. Removed slice 4 from planned implementation, updated the support matrix and program record, and kept the earlier upstream manual audit explicitly historical. TRAE retains estimated byte/title activity and process lifecycle behavior; no runtime code change is needed because no TRAE adapter was enabled. Windows status hooks remain a separate follow-up, and title-heuristic removal must preserve platforms/runtimes without validated hook coverage. These post-merge documentation edits are included in the authorized 0.9.0 release preparation.
