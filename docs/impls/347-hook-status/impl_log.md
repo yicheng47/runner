@@ -5,9 +5,9 @@ Dated record for the #347 program ([README](README.md), [plan](plan.md)). Newest
 ## Current state (update with each entry)
 
 - **Landed**: slice 0 (design + capability audit) in `1218288`; slice 1 (Claude Code hook source, Busy/Idle only) in `9584330`. Both 2026-09-14.
-- **Current**: slice 2 / PR #588 merged at `36dc88881e84119df63241e045f4870eb888a920`. Slice 3 is uncommitted on `feat/347-codex-hooks`; the crew review was clean before the subsequent inline Claude fixes. Jason confirmed Codex smoke and immediate Claude approval detection passed. Jason also passed the ordinary Claude Escape/Ctrl+C retest and authorized final verification, PR and merge.
+- **Current**: slice 2 / PR #588 merged at `36dc88881e84119df63241e045f4870eb888a920`. Slice 3 is verified and ready for PR/merge on `feat/347-codex-hooks`; the crew review was clean before the subsequent inline Claude fixes. Jason confirmed Codex smoke and immediate Claude approval detection passed. Jason also passed the ordinary Claude Escape/Ctrl+C retest and authorized final verification, PR and merge.
 - **CLI versions verified against**: Claude Code 2.1.270, Codex 0.154.0, TRAE CLI 0.120.52. Slice 3 corrected the earlier Codex audit using both requested reference sources and native TUI localhost fixtures.
-- **Open**: Windows status hooks (agreed follow-up); Codex surfaced human-wait observability and delivery protection; TRAE's documented immediate idle_prompt. Changes remain uncommitted.
+- **Open**: Windows status hooks (agreed follow-up); Codex surfaced human-wait observability and delivery protection; TRAE's documented immediate idle_prompt.
 
 ## 2026-09-14 — design and capability audit landed
 
