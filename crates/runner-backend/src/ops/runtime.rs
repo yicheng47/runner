@@ -16,7 +16,7 @@ pub struct RuntimeDefinition {
     pub native_fork: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
 pub struct RuntimeCatalogOption {
     pub value: String,
     pub label: String,
@@ -80,6 +80,7 @@ pub fn runtime_set_override(
         log::info!("runtime override saved: runtime={runtime} path={path}");
     }
     state.events.emit("runtime/changed", &());
+    refresh_models_after_override(state, runtime);
     runtime_status_list(state).map_err(persistence_error)
 }
 
@@ -90,7 +91,24 @@ pub fn runtime_clear_override(state: &AppCore, runtime: Runtime) -> Result<Runti
     crate::db::set_runtime_override(&state.db, runtime.key(), None)?;
     log::info!("runtime override cleared: runtime={runtime}");
     state.events.emit("runtime/changed", &());
+    refresh_models_after_override(state, runtime);
     runtime_status_list(state)
+}
+
+fn refresh_models_after_override(state: &AppCore, runtime: Runtime) {
+    if runtime != Runtime::Codex {
+        return;
+    }
+    let state = state.clone();
+    std::thread::spawn(move || {
+        crate::runtime_status::models::refresh(
+            &state.db,
+            &state.runtime_shell_env,
+            &state.runtime_discovery,
+            false,
+            &state.events,
+        );
+    });
 }
 
 pub fn runtime_refresh(state: &AppCore) -> Result<RuntimeStatusResponse> {
@@ -115,17 +133,35 @@ pub fn runtime_catalog(state: &AppCore) -> Result<Vec<RuntimeCatalogEntry>> {
             );
             (
                 runtime.name,
-                (available, runtime.default_model, runtime.default_effort),
+                (
+                    available,
+                    runtime.default_model,
+                    runtime.default_effort,
+                    runtime.effective_command,
+                ),
             )
         })
         .collect();
+    let discovery = state
+        .runtime_discovery
+        .read()
+        .map_err(|_| Error::msg("runtime discovery lock poisoned"))?;
     Ok(runtime_catalog_options()
         .into_iter()
         .map(|mut runtime| {
-            if let Some((available, default_model, default_effort)) = statuses.get(&runtime.name) {
+            if let Some((available, default_model, default_effort, command)) =
+                statuses.get(&runtime.name)
+            {
                 runtime.available = *available;
                 runtime.default_model.clone_from(default_model);
                 runtime.default_effort.clone_from(default_effort);
+                if runtime.name == Runtime::Codex {
+                    if let Some(models) = discovery.models.for_command(command.as_deref()) {
+                        runtime.models = std::iter::once(default_model_option())
+                            .chain(models.iter().cloned())
+                            .collect();
+                    }
+                }
             }
             runtime
         })
@@ -167,7 +203,7 @@ fn plain_option(value: &str, label: &str) -> RuntimeCatalogOption {
     }
 }
 
-fn default_model() -> RuntimeCatalogOption {
+fn default_model_option() -> RuntimeCatalogOption {
     option("", "default", "Use the agent's own default model.")
 }
 
@@ -230,11 +266,16 @@ fn runtime_catalog_options() -> Vec<RuntimeCatalogEntry> {
             default_model: None,
             default_effort: None,
             models: vec![
-                default_model(),
+                default_model_option(),
+                option(
+                    "gpt-6-astra",
+                    "gpt-6-astra",
+                    "Our most capable model for complex, demanding work.",
+                ),
                 option(
                     "gpt-5.6-sol",
                     "gpt-5.6-sol",
-                    "Latest frontier agentic coding model.",
+                    "Reliable agentic workhorse for everyday tasks.",
                 ),
                 option(
                     "gpt-5.6-terra",
@@ -276,7 +317,7 @@ fn runtime_catalog_options() -> Vec<RuntimeCatalogEntry> {
             default_model: None,
             default_effort: None,
             models: vec![
-                default_model(),
+                default_model_option(),
                 option("fable", "fable", "Latest Claude Fable."),
                 option("opus", "opus", "Latest Claude Opus."),
                 option("sonnet", "sonnet", "Latest Claude Sonnet."),
@@ -294,7 +335,7 @@ fn runtime_catalog_options() -> Vec<RuntimeCatalogEntry> {
             available: false,
             default_model: None,
             default_effort: None,
-            models: vec![default_model()],
+            models: vec![default_model_option()],
             efforts: common_efforts(),
         },
     ]
@@ -332,6 +373,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             [
                 "",
+                "gpt-6-astra",
                 "gpt-5.6-sol",
                 "gpt-5.6-terra",
                 "gpt-5.6-luna",

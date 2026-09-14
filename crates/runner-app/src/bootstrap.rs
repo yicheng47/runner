@@ -171,6 +171,7 @@ pub fn boot_core(paths: &NativePaths) -> Result<AppCore> {
         Arc::clone(&pool),
         runtime_shell_env,
         runtime_discovery,
+        false,
     );
     Ok(core)
 }

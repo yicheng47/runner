@@ -10,6 +10,8 @@ use crate::session::launch;
 use crate::shell_path::{DiscoveryOutcome, DiscoveryResult, DiscoveryState, LoginShellEnv};
 use serde::Serialize;
 
+pub(crate) mod models;
+
 pub type SharedShellEnv = Arc<RwLock<LoginShellEnv>>;
 pub type SharedDiscoveryState = Arc<RwLock<DiscoveryState>>;
 
@@ -404,6 +406,7 @@ pub fn start_background_discovery(
     pool: Arc<DbPool>,
     shell_env: SharedShellEnv,
     discovery: SharedDiscoveryState,
+    force_models: bool,
 ) {
     std::thread::spawn(move || {
         let result = crate::shell_path::resolve_login_shell_env();
@@ -415,6 +418,7 @@ pub fn start_background_discovery(
         }
         log_runtime_paths(&pool, &shell_env);
         events.emit("runtime/changed", &());
+        models::refresh(&pool, &shell_env, &discovery, force_models, &events);
     });
 }
 
@@ -434,7 +438,7 @@ pub fn refresh_background_discovery(
         state.checking = true;
     }
     events.emit("runtime/changed", &());
-    start_background_discovery(events, pool, shell_env, discovery);
+    start_background_discovery(events, pool, shell_env, discovery, true);
     Ok(true)
 }
 
@@ -494,6 +498,7 @@ mod tests {
             }),
             seeded_shell: None,
             last_known_good_captured_at: None,
+            models: Default::default(),
         }))
     }
 

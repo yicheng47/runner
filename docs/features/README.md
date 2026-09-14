@@ -13,6 +13,7 @@ Since the GPUI rewrite shipped as `v0.6.0` (2026-08-23) there is one line of wor
 
 ## Index
 
+- [590 — Runtime model discovery and cache](./590-runtime-model-discovery.md) — Codex discovery with a persistent 10-minute cache first; demand-driven background refresh, shared queries, configuration identity, per-model effort, and additional runtime discovery remain tracked here ([#590](https://github.com/yicheng47/runner/issues/590), P2).
 - [347 — Hook-based agent session status](./347-hook-based-session-status.md) — design in progress: Working / Needs you / Ready, approval and answer attention, lifecycle/error states, and consistent pane/sidebar/mission presentation; Claude Code and Codex lifecycle hooks replace title-spinner classification with explicit capability and source ownership ([#347](https://github.com/yicheng47/runner/issues/347), P1).
 - [586 — Shell status: process detection first](./586-shell-status-detection.md) — try shell foreground/child process detection with Unix and Windows limits; semantic shell integration is a later improvement ([#586](https://github.com/yicheng47/runner/issues/586), P2).
 - [587 — Display terminal-provided titles](./587-terminal-provided-titles.md) — show child-supplied OSC 0/2 titles in pane and tab labels on macOS and Windows, with explicit user names taking precedence; live title text stays separate from activity detection and routing ([#587](https://github.com/yicheng47/runner/issues/587), P2).
