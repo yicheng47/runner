@@ -27,6 +27,7 @@ use portable_pty::ChildKiller;
 use super::claude_status::{
     ClaudeStatusWatcher, CTRL_C_INTERRUPT, ESCAPE_INTERRUPT, GENERATION_ENV, PATH_ENV,
 };
+use super::codex_status::CodexStatusWatcher;
 use super::launch;
 #[cfg(any(unix, test))]
 use super::process::process_exists;
@@ -89,6 +90,30 @@ impl PtyRuntime {
 impl Default for PtyRuntime {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+enum HookStatusWatcher {
+    Claude(ClaudeStatusWatcher),
+    Codex(CodexStatusWatcher),
+}
+
+impl HookStatusWatcher {
+    fn interrupt_signal(&self) -> Option<Arc<AtomicU8>> {
+        match self {
+            Self::Claude(watcher) => Some(watcher.interrupt_signal()),
+            Self::Codex(_) => None,
+        }
+    }
+
+    fn drain_observations(
+        &mut self,
+        transition: impl FnMut(super::status::AgentObservation, &'static str),
+    ) -> crate::error::Result<()> {
+        match self {
+            Self::Claude(watcher) => watcher.drain_observations(transition),
+            Self::Codex(watcher) => watcher.drain_observations(transition),
+        }
     }
 }
 
@@ -212,7 +237,7 @@ impl SessionRuntime for PtyRuntime {
             .zip(spec.env.get(GENERATION_ENV))
             .and_then(|(path, generation)| {
                 match ClaudeStatusWatcher::start(std::path::Path::new(path), generation.clone()) {
-                    Ok(watcher) => Some(watcher),
+                    Ok(watcher) => Some(HookStatusWatcher::Claude(watcher)),
                     Err(error) => {
                         log::warn!(
                             "Claude status bridge unavailable for {}: {error}",
@@ -222,6 +247,23 @@ impl SessionRuntime for PtyRuntime {
                     }
                 }
             });
+        let hook_status = hook_status.or_else(|| {
+            if !super::hook_feed::hooks_supported(cfg!(windows)) {
+                return None;
+            }
+            let path = spec.env.get(super::codex_status::PATH_ENV)?;
+            let generation = spec.env.get(super::codex_status::GENERATION_ENV)?;
+            match CodexStatusWatcher::start(std::path::Path::new(path), generation.clone()) {
+                Ok(watcher) => Some(HookStatusWatcher::Codex(watcher)),
+                Err(error) => {
+                    log::warn!(
+                        "Codex status bridge unavailable for {}: {error}",
+                        spec.session_id
+                    );
+                    None
+                }
+            }
+        });
         let mut child = pair
             .slave
             .spawn_command(cmd)
@@ -285,7 +327,7 @@ impl SessionRuntime for PtyRuntime {
             idle_detector: Arc::new(Mutex::new(IdleDetector::new(DEFAULT_IDLE_THRESHOLD))),
             hook_interrupt: hook_status
                 .as_ref()
-                .map(ClaudeStatusWatcher::interrupt_signal),
+                .and_then(HookStatusWatcher::interrupt_signal),
             pid,
             process_tree,
             command: format_command_summary(&spec.command, &spec.args),
@@ -790,7 +832,7 @@ fn idle_monitor_thread(
     tx: mpsc::Sender<RuntimeOutput>,
     stop: Arc<AtomicBool>,
     done: Arc<AtomicBool>,
-    mut hook_status: Option<ClaudeStatusWatcher>,
+    mut hook_status: Option<HookStatusWatcher>,
     #[cfg(windows)] handle: Arc<SessionHandle>,
 ) {
     loop {
@@ -812,7 +854,7 @@ fn idle_monitor_thread(
             if let Err(error) = watcher.drain_observations(|observation, _source| {
                 let _ = tx.send(RuntimeOutput::AgentObservation(observation));
             }) {
-                log::warn!("read Claude status: {error}");
+                log::warn!("read agent status: {error}");
                 let _ = tx.send(RuntimeOutput::StatusBridgeFailed);
                 hook_status = None;
             }
@@ -842,7 +884,7 @@ fn reader_thread(
     stop: Arc<AtomicBool>,
     handle: Arc<SessionHandle>,
     session_id: String,
-    hook_status: Option<ClaudeStatusWatcher>,
+    hook_status: Option<HookStatusWatcher>,
 ) {
     let detector = Arc::clone(&handle.idle_detector);
     let monitor_done = Arc::new(AtomicBool::new(false));
@@ -1390,6 +1432,94 @@ mod tests {
 
     #[test]
     #[cfg(unix)]
+    fn codex_hook_runtime_events_bridge_failure_and_teardown() {
+        use super::super::{
+            codex_status, hook_feed,
+            status::{Activity, TurnOutcome},
+        };
+        let root = tempfile::tempdir().unwrap();
+        let path = hook_feed::status_path(root.path(), "codex-hooks");
+        let rt = PtyRuntime::new();
+        let mut spawn = spec("codex-hooks", "/bin/cat", &[]);
+        spawn.env.insert(
+            codex_status::PATH_ENV.into(),
+            path.to_string_lossy().into_owned(),
+        );
+        spawn
+            .env
+            .insert(codex_status::GENERATION_ENV.into(), "current".into());
+        let (session, stream) = rt.spawn(spawn).unwrap();
+        assert!(lookup(&rt, &session.session_id)
+            .unwrap()
+            .hook_interrupt
+            .is_none());
+        for event in ["UserPromptSubmit", "Stop", "PreToolUse", "Interrupt"] {
+            let command = codex_status::hook_command(&path, event);
+            let mut child = std::process::Command::new("sh")
+                .args(["-c", &command])
+                .env(codex_status::GENERATION_ENV, "current")
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::null())
+                .spawn()
+                .unwrap();
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(br#"{"session_id":"main","turn_id":"one"}"#)
+                .unwrap();
+            assert!(child.wait().unwrap().success());
+        }
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut values = Vec::new();
+        while values.len() < 4 && Instant::now() < deadline {
+            if let Ok(RuntimeOutput::AgentObservation(value)) =
+                stream.recv_timeout(Duration::from_millis(50))
+            {
+                values.push(value);
+            }
+        }
+        std::fs::remove_file(&path).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut failed = false;
+        while !failed && Instant::now() < deadline {
+            failed = matches!(
+                stream.recv_timeout(Duration::from_millis(50)),
+                Ok(RuntimeOutput::StatusBridgeFailed)
+            );
+        }
+        rt.stop(&session).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut closed = false;
+        while !closed && Instant::now() < deadline {
+            closed = matches!(
+                stream.recv_timeout(Duration::from_millis(50)),
+                Err(mpsc::RecvTimeoutError::Disconnected)
+            );
+        }
+        assert!(failed);
+        assert!(closed);
+        assert_eq!(
+            values.iter().map(|v| v.activity).collect::<Vec<_>>(),
+            [
+                Activity::Working,
+                Activity::Ready,
+                Activity::Working,
+                Activity::Unavailable
+            ]
+        );
+        assert_eq!(
+            values.last().unwrap().outcome,
+            Some(TurnOutcome::Interrupted)
+        );
+        assert_eq!(
+            std::fs::read_dir(path.parent().unwrap()).unwrap().count(),
+            0
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
     fn claude_hook_file_feeds_runtime_output_and_closes_on_exit() {
         let root = tempfile::tempdir().unwrap();
         let path = super::super::claude_status::status_path(root.path(), "hooks");
@@ -1509,6 +1639,14 @@ mod tests {
                         RunnerStatus::Idle
                     };
                     if state == expected {
+                        assert_eq!(
+                            observation.activity,
+                            if expected == RunnerStatus::Busy {
+                                super::super::status::Activity::Working
+                            } else {
+                                super::super::status::Activity::Ready
+                            }
+                        );
                         assert_eq!(
                             observation.outcome
                                 == Some(super::super::status::TurnOutcome::Interrupted),

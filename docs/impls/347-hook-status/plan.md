@@ -6,19 +6,23 @@ Slices for [#347](https://github.com/yicheng47/runner/issues/347) ([spec](../../
 | --- | --- | --- |
 | 0 | Design and capability audit: ten canvas frames, per-runtime matrix verified against installed binaries | Landed 2026-09-14, `1218288` |
 | 1 | Claude Code hook *source* behind today's Busy/Idle — injection, status file, notify watcher, `hook` source and latch, interrupt recovery | Landed 2026-09-14, `9584330` |
-| 2 | The status vocabulary and its UI — Working / Needs you / Idle plus lifecycle and observability states, pane header, single-pane tab bar, sidebar rollups, mission workspace | Complete in [PR #588](https://github.com/yicheng47/runner/pull/588); final inline review and local validation passed. Jason confirmed the smoke pass and authorized merge on 2026-09-14. See the PR for final-head CI and landing. |
-| 3 | Codex adapter | Not started |
+| 2 | The status vocabulary and its UI | Merged via [PR #588](https://github.com/yicheng47/runner/pull/588), `36dc888`; Jason passed smoke. |
+| 3 | Codex adapter | Uncommitted on `feat/347-codex-hooks`; working-tree review clean, Jason's app smoke pending. Lifecycle/interrupt support; no unproven human-wait holds. |
 | 4 | TRAE CLI adapter | Not started |
 | 5 | Deferred details, one at a time | Not started |
 | 6 | Remove title-spinner classification | Trigger: after slice 3 |
 
 ## Slice 2 — vocabulary and UI
 
-The slice that makes the feature visible, including `Answer needed`. Claude Code 2.1.270 supplies named question/plan tool events and delayed surfaced-dialog notifications. Both internal passes were implemented in mission `01M2EX7VV58BNFWBN7G1JQVPWC`: normalized backend state and pane headers, then sidebar rollups and mission surfaces. Inline follow-ups reconcile cancelled questions from structured transcript records and retain finished outcomes across late tool results. The final presentation uses Idle for both confirmed and estimated inactivity, adds Response failed, and follows option C for single-pane tabs plus the centered split-pane design in `X7FJf`. Per-pane unread/error acknowledgement persists in migration 0021. Jason confirmed the smoke test passed; final inline review and local checks passed, and merge is authorized after CI. The interruption tooltip remains slice 5. [Mission brief](../archive/gpui-rewrite/briefs/347-slice-2-status-ui.md).
+The slice that makes the feature visible, including `Answer needed`. Claude Code 2.1.270 supplies named question/plan tool events and delayed surfaced-dialog notifications. Both internal passes were implemented in mission `01M2EX7VV58BNFWBN7G1JQVPWC`: normalized backend state and pane headers, then sidebar rollups and mission surfaces. Inline follow-ups reconcile cancelled questions from structured transcript records and retain finished outcomes across late tool results. The final presentation uses Idle for both confirmed and estimated inactivity, adds Response failed, and follows option C for single-pane tabs plus the centered split-pane design in `X7FJf`. Per-pane unread/error acknowledgement persists in migration 0021. Jason confirmed the smoke test passed; final inline review, local checks and CI passed, and PR #588 is merged. The interruption tooltip remains slice 5. [Mission brief](../archive/gpui-rewrite/briefs/347-slice-2-status-ui.md).
 
 ## Slice 3 — Codex
 
-Needs `--enable hooks --dangerously-bypass-hook-trust` with hooks passed as `-c` overrides, so nothing is persisted and the trust gate never applies. `PermissionRequest` is raw only, so it needs the hold-and-cancel interval. No `Answer needed` — Codex publishes no question event of any kind. `Interrupt` exists here and does not on the other two.
+Per-invocation `--enable hooks --dangerously-bypass-hook-trust` and additive `-c hooks.<Event>` definitions; no persistent hook/trust/config/home changes. Explicit invocation hook configuration/opt-out selects baseline-only. Reuse Claude's feed transport and normalized runtime/status path on macOS; Windows remains baseline-only.
+
+Implemented work, completion/continuation, generation/session/turn ownership, child isolation, native interruption plus correlated turn_aborted readiness, teardown and bridge-loss fallback. Stop is display-only; late results cannot overwrite interruption/completion and old turn submissions cannot rebind ownership. Independent draft protection remains unchanged.
+
+The earlier “no question event” and “hold-and-cancel interval” claims were wrong. Native 0.154.0 emits PreToolUse(request_user_input) even when rejected, and a valid Plan call plus rollout context can precede a user hook denial without a visible dialog. PermissionRequest likewise precedes automatic approval. No safe surfaced-wait boundary was found within the supported hook/rollout path, so this slice has no Approval needed/Answer needed or Codex human-wait delivery protection. The opt-in Default-mode question can be nonblocking, with that distinction absent from its hook payload. [Evidence and focused smoke](../../tests/347-codex-hooks-smoke.md).
 
 ## Slice 4 — TRAE CLI
 
@@ -34,4 +38,4 @@ Delete title-spinner classification when every runtime that animates its title h
 
 ## Unscheduled
 
-**Windows native hook transport.** Slice 2 makes baseline-only selection explicit and tests it, retaining the existing rekey hook. The shared status model and UI apply on Windows; the POSIX status helper does not. A native bridge and native Windows verification remain separate carries. See [README](README.md#open).
+**Windows status-hook integration — agreed follow-up (Jason, 2026-09-14).** Enable Claude/Codex status injection and observation after validating their Windows hook execution, paths, payload writes and cleanup. This is a Runner integration gap; the CLIs support hooks, and Claude fullscreen/theme settings plus the existing SessionStart rekey hook are already configured on Windows. Reuse that execution path where suitable instead of assuming a separate helper is mandatory. Shared status/UI remains available through the baseline until native verification passes. See [README](README.md#open).

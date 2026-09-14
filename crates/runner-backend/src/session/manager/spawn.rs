@@ -524,6 +524,22 @@ impl SessionManager {
             );
         }
         let mut composed: Vec<String> = Vec::new();
+        if router::runtime::inject_codex_hooks(
+            Runtime::parse(&runner.runtime),
+            &runner.args,
+            cfg!(windows),
+        ) {
+            spec.env.insert(
+                crate::session::codex_status::PATH_ENV.into(),
+                crate::session::hook_feed::status_path(app_data_dir, &spec.session_id)
+                    .to_string_lossy()
+                    .into_owned(),
+            );
+            spec.env.insert(
+                crate::session::codex_status::GENERATION_ENV.into(),
+                uuid::Uuid::new_v4().to_string(),
+            );
+        }
         if plan.prepend {
             composed.extend(plan.args.iter().cloned());
             composed.append(&mut spec.args);

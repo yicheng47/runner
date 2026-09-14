@@ -2768,15 +2768,21 @@ fn codex_resume_skips_first_prompt_injection() {
     let spec = fake
         .last_spawn_spec()
         .expect("codex resume should spawn through FakeRuntime");
+    let mut expected = vec![
+        "resume".into(),
+        prior_key.clone(),
+        "-c".into(),
+        "check_for_update_on_startup=false".into(),
+    ];
+    expected.extend(router::runtime::codex_status_args(
+        Some(Runtime::Codex),
+        &[],
+        Path::new("/tmp"),
+        &session_id,
+    ));
     assert_eq!(
-        spec.args,
-        vec![
-            "resume".to_string(),
-            prior_key.clone(),
-            "-c".to_string(),
-            "check_for_update_on_startup=false".to_string(),
-        ],
-        "codex resume must bind argv to the resumed row's own agent_session_key",
+        spec.args, expected,
+        "resume must bind to its own native session key and status feed"
     );
     assert!(
         !spec.args.contains(&sibling_key),
@@ -7015,8 +7021,17 @@ fn mission_spawn_with_matching_override_keeps_args_and_pins_runtime() {
 
     assert_eq!(pinned_spec.command, baseline_spec.command);
     assert_eq!(
-        pinned_spec.args, baseline_spec.args,
-        "matching override must spawn byte-identical args",
+        pinned_spec
+            .args
+            .iter()
+            .map(|arg| arg.replace(&pinned_spec.session_id, "SESSION"))
+            .collect::<Vec<_>>(),
+        baseline_spec
+            .args
+            .iter()
+            .map(|arg| arg.replace(&baseline_spec.session_id, "SESSION"))
+            .collect::<Vec<_>>(),
+        "matching override must preserve args apart from the owning status path",
     );
     assert_eq!(pinned_spec.command, "codex-custom");
 
@@ -8657,4 +8672,154 @@ fn reserved_write_backpressure_does_not_block_status_observation() {
         .unwrap());
     assert_eq!(runtime.bytes_writes().len(), 1);
     manager.finish_delivery("blocked-write", token);
+}
+
+#[test]
+fn codex_spawn_composes_hooks_without_changing_user_home_and_respects_overrides() {
+    use crate::session::codex_status::{GENERATION_ENV, PATH_ENV};
+    let root = tempfile::tempdir().unwrap();
+    for args in [
+        vec![],
+        vec!["--config", "hooks.Stop=[]"],
+        vec!["--disable", "hooks"],
+    ] {
+        let mut runner = runner("codex", &args);
+        runner.runtime = "codex".into();
+        let mut generations = Vec::new();
+        for key in [None, Some("11111111-1111-4111-8111-111111111111")] {
+            let mut spec = SpawnSpec {
+                session_id: "codex-spawn".into(),
+                cwd: None,
+                command: runner.command.clone(),
+                args: runner.args.clone(),
+                env: BTreeMap::from([("CODEX_HOME".into(), "user home".into())]),
+                mission: false,
+                shim_dir: None,
+                bundled_bin_dir: None,
+                shell_path: None,
+                initial_size: None,
+            };
+            SessionManager::apply_runtime_args(
+                &mut spec,
+                &runner,
+                &router::runtime::resume_plan(Some(Runtime::Codex), key),
+                root.path(),
+                Some("first turn"),
+                None,
+            );
+            assert_eq!(spec.env["CODEX_HOME"], "user home");
+            let injected = args.is_empty() && !cfg!(windows);
+            assert_eq!(spec.env.contains_key(PATH_ENV), injected);
+            assert_eq!(spec.env.contains_key(GENERATION_ENV), injected);
+            assert_eq!(
+                spec.args
+                    .iter()
+                    .any(|arg| arg.starts_with("hooks.UserPromptSubmit=")),
+                injected
+            );
+            assert!(!spec
+                .env
+                .contains_key(crate::session::claude_status::PATH_ENV));
+            if injected {
+                let generation = spec.env[GENERATION_ENV].clone();
+                assert!(uuid::Uuid::parse_str(&generation).is_ok());
+                generations.push(generation);
+                assert_eq!(
+                    spec.env[PATH_ENV],
+                    crate::session::hook_feed::status_path(root.path(), "codex-spawn")
+                        .to_string_lossy()
+                );
+            }
+            assert_eq!(
+                spec.args.iter().any(|arg| arg == "first turn"),
+                key.is_none()
+            );
+            for arg in &runner.args {
+                assert!(spec.args.contains(arg));
+            }
+        }
+        if generations.len() == 2 {
+            assert_ne!(generations[0], generations[1]);
+        }
+    }
+    assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
+}
+
+#[test]
+fn codex_observations_preserve_delivery_and_drafts_and_interrupt_attention() {
+    use crate::session::codex_status::CodexStatusWatcher;
+    use std::io::Write;
+    let core = crate::test_support::test_core();
+    core.db.get().unwrap().execute("INSERT INTO sessions(id, status, agent_runtime) VALUES ('codex-status', 'running', 'codex')", []).unwrap();
+    install_test_session_handle(&core.sessions, "codex-status");
+    core.sessions.note_forwarder_transition(
+        "codex-status",
+        SessionActivityState::Busy,
+        "forwarder",
+    );
+    let path = core.app_data_dir.join("codex-delivery.ndjson");
+    let mut watcher = CodexStatusWatcher::start(&path, "current".into()).unwrap();
+    for event in [
+        "UserPromptSubmit",
+        "PreToolUse",
+        "PermissionRequest",
+        "Interrupt",
+        "PostToolUse",
+        "Stop",
+    ] {
+        writeln!(std::fs::OpenOptions::new().append(true).open(&path).unwrap(), "{}", serde_json::json!({"generation":"current","hook_event_name":event,"session_id":"main","turn_id":"one","tool_name":"request_user_input","tool_use_id":"question"})).unwrap();
+    }
+    let events = core.session_events();
+    let mut count = 0;
+    watcher
+        .drain_observations(|value, _| {
+            count += 1;
+            core.sessions
+                .publish_observation("codex-status", value.clone(), &events);
+            let token = match core.sessions.reserve_delivery("codex-status").unwrap() {
+                router::DeliveryReservation::Ready(token) => token,
+                other => panic!("{other:?}"),
+            };
+            core.sessions.finish_delivery("codex-status", token);
+            let state = core.sessions.session_state("codex-status").unwrap();
+            state.lock().unwrap().local_input_pending = true;
+            core.sessions
+                .publish_observation("codex-status", value, &events);
+            assert_eq!(
+                core.sessions.reserve_delivery("codex-status").unwrap(),
+                router::DeliveryReservation::PendingInput
+            );
+            assert!(state.lock().unwrap().local_input_pending);
+            state.lock().unwrap().local_input_pending = false;
+        })
+        .unwrap();
+    assert_eq!(count, 3);
+    assert_eq!(
+        core.sessions
+            .agent_status("codex-status")
+            .observation
+            .outcome,
+        Some(TurnOutcome::Interrupted)
+    );
+    assert!(core
+        .sessions
+        .agent_status("codex-status")
+        .unread_since
+        .is_none());
+    assert!(!core
+        .sessions
+        .take_completion_armed(&["codex-status".into()]));
+    core.sessions.status_bridge_failed("codex-status", &events);
+    assert_eq!(
+        core.sessions
+            .agent_status("codex-status")
+            .observation
+            .source,
+        ObservationSource::Baseline
+    );
+    assert!(core
+        .sessions
+        .agent_status("codex-status")
+        .unread_since
+        .is_none());
 }
