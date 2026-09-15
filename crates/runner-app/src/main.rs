@@ -5,6 +5,7 @@ mod theme_snapshot;
 mod app_settings;
 mod app_store;
 mod assets;
+mod chat_icon;
 mod file_links;
 mod keymap;
 mod list_controls;
@@ -56,6 +57,7 @@ use runner_terminal::terminal::{TerminalSession, TerminalView};
 use app_settings::{settings_path, AppSettings};
 use app_store::{global_app_store, AppStore, GlobalAppStore, StoreRefreshKind, StoreRevisions};
 use assets::{Assets, INTER_FONTS, JETBRAINS_MONO_FONTS};
+use chat_icon::ChatIcon;
 use runner_app::updater::{global_updater, GlobalUpdater, Updater};
 use terminal::{TerminalElement, TerminalInteraction};
 use toast::ToastHost;
@@ -143,7 +145,8 @@ struct PaneDrag {
     tab_id: String,
     pane_id: String,
     label: String,
-    icon: &'static str,
+    icon: ChatIcon,
+    live: bool,
 }
 
 impl Render for PaneDrag {
@@ -164,10 +167,10 @@ impl Render for PaneDrag {
             .text_color(theme::text())
             .child(
                 gpui::svg()
-                    .path(self.icon)
+                    .path(self.icon.path)
                     .size(rems(12. / 16.))
                     .flex_none()
-                    .text_color(theme::text()),
+                    .text_color(self.icon.color(theme::text(), self.live)),
             )
             .child(div().min_w(px(0.)).truncate().child(self.label.clone()))
     }

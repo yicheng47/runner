@@ -157,7 +157,16 @@ impl Sidebar {
         if renaming {
             return base;
         }
-        self.decorate_draggable_row(base, &node, label, drop_kind, parent_id, visible_ids, cx)
+        self.decorate_draggable_row(
+            base,
+            &node,
+            label,
+            Some((leaf_icon, live)),
+            drop_kind,
+            parent_id,
+            visible_ids,
+            cx,
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -196,7 +205,7 @@ impl Sidebar {
                 NodeType::Mission,
                 &summary.mission.id,
                 None,
-                ("flag.svg", summary.any_session_live),
+                (ChatIcon::generic("flag.svg"), summary.any_session_live),
                 attention,
                 shortcut_index,
                 active,
@@ -243,7 +252,10 @@ impl Sidebar {
                 false,
             )
             .children(node.pinned_position.is_some().then(pin_indicator))
-            .child(sidebar_icon("flag.svg", summary.any_session_live))
+            .child(sidebar_icon(
+                ChatIcon::generic("flag.svg"),
+                summary.any_session_live,
+            ))
             .child(sidebar_row_label(label.clone(), active, false))
             .child(self.render_rollup_attention(
                 self.mission_status_rollup(&summary),
@@ -275,7 +287,16 @@ impl Sidebar {
         if renaming {
             return base;
         }
-        self.decorate_draggable_row(base, &node, label, drop_kind, parent_id, visible_ids, cx)
+        self.decorate_draggable_row(
+            base,
+            &node,
+            label,
+            None,
+            drop_kind,
+            parent_id,
+            visible_ids,
+            cx,
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -314,7 +335,7 @@ impl Sidebar {
                 } else {
                     "chevron-down.svg"
                 }),
-                ("folder-code.svg", live),
+                (ChatIcon::generic("folder-code.svg"), live),
                 if collapsed {
                     attention
                 } else {
@@ -346,7 +367,7 @@ impl Sidebar {
                     })
                     .group_hover("sidebar-row-actions", |icon| icon.text_color(theme::text())),
             )
-            .child(sidebar_icon("folder-code.svg", live))
+            .child(sidebar_icon(ChatIcon::generic("folder-code.svg"), live))
             .child(
                 Tooltip::new(
                     SharedString::from(format!("project-cwd-{}", project.id)),
@@ -434,6 +455,7 @@ impl Sidebar {
                     SidebarNodeDrag {
                         node_id: drag_node_id,
                         label: drag_label,
+                        icon: None,
                     },
                     move |drag: &SidebarNodeDrag, _, _, cx| {
                         drag_root.update(cx, |this, cx| {
@@ -636,6 +658,7 @@ impl Sidebar {
         row: AnyElement,
         node: &NodeRow,
         label: String,
+        icon: Option<(ChatIcon, bool)>,
         kind: DropKind,
         parent_id: Option<String>,
         visible_ids: Vec<String>,
@@ -644,6 +667,7 @@ impl Sidebar {
         let drag = SidebarNodeDrag {
             node_id: node.id.clone(),
             label,
+            icon,
         };
         let drag_root = cx.entity();
         let hovered_id = node.id.clone();
@@ -704,7 +728,7 @@ impl Sidebar {
         kind: NodeType,
         id: &str,
         disclosure_icon: Option<&'static str>,
-        icon: (&'static str, bool),
+        icon: (ChatIcon, bool),
         attention: AttentionState,
         shortcut_index: Option<u8>,
         shortcut_selected: bool,
@@ -717,7 +741,7 @@ impl Sidebar {
         else {
             return div().into_any_element();
         };
-        let (icon, icon_active) = icon;
+        let (icon, live) = icon;
         let input = rename.input.clone();
         sidebar_row_shell(
             SharedString::from(format!("sidebar-rename-{id}")),
@@ -731,7 +755,7 @@ impl Sidebar {
                 .flex_none()
                 .text_color(theme::text())
         }))
-        .child(sidebar_icon(icon, icon_active))
+        .child(sidebar_icon(icon, live))
         .child(div().min_w(px(0.)).flex_1().child(input))
         .child(attention_indicator(attention))
         .children(

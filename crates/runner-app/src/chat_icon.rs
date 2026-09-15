@@ -1,0 +1,79 @@
+use gpui::Hsla;
+use runner_backend::model::Runtime;
+
+use crate::theme;
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct ChatIcon {
+    pub path: &'static str,
+    tint: Option<Hsla>,
+}
+
+impl ChatIcon {
+    pub fn generic(path: &'static str) -> Self {
+        Self { path, tint: None }
+    }
+
+    pub fn for_runtime(runtime: &str) -> Self {
+        let (path, tint) = match Runtime::parse(runtime) {
+            Some(Runtime::ClaudeCode) => ("claude.svg", gpui::rgb(0xd97757).into()),
+            Some(Runtime::Codex) => ("openai.svg", theme::text()),
+            Some(Runtime::Trae) => ("trae.svg", gpui::rgb(0x32f08c).into()),
+            Some(Runtime::Shell) => return Self::generic("square-terminal.svg"),
+            None => return Self::generic("message-square.svg"),
+        };
+        Self {
+            path,
+            tint: Some(tint),
+        }
+    }
+
+    pub fn color(self, fallback: Hsla, live: bool) -> Hsla {
+        self.tint.map_or(fallback, |tint| {
+            theme::with_alpha(tint, if live { 1. } else { 0.45 })
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn provider_marks_keep_their_tint_and_dim_only_when_not_live() {
+        let _theme = crate::theme_snapshot::ThemeGuard::new();
+        for variant in [
+            theme::ThemeVariant::Carbon,
+            theme::ThemeVariant::RunnerLight,
+        ] {
+            theme::set_active_variant(variant);
+            for (runtime, path, tint) in [
+                ("claude-code", "claude.svg", gpui::rgb(0xd97757).into()),
+                ("codex", "openai.svg", theme::text()),
+                ("trae", "trae.svg", gpui::rgb(0x32f08c).into()),
+            ] {
+                let icon = ChatIcon::for_runtime(runtime);
+                assert_eq!(icon.path, path);
+                for fallback in [theme::accent(), theme::muted(), theme::faint()] {
+                    assert_eq!(icon.color(fallback, true), tint);
+                    assert_eq!(icon.color(fallback, false), theme::with_alpha(tint, 0.45));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn shell_and_unknown_runtimes_preserve_the_surface_color() {
+        let _theme = crate::theme_snapshot::ThemeGuard::new();
+        for (runtime, path) in [
+            ("shell", "square-terminal.svg"),
+            ("unknown", "message-square.svg"),
+            ("", "message-square.svg"),
+        ] {
+            let icon = ChatIcon::for_runtime(runtime);
+            assert_eq!(icon.path, path);
+            assert_eq!(icon.color(theme::accent(), true), theme::accent());
+            assert_eq!(icon.color(theme::muted(), false), theme::muted());
+        }
+    }
+}

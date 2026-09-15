@@ -389,15 +389,13 @@ pub(super) fn tab_menu_entries(
     entries
 }
 
-pub(super) fn sidebar_tab_icon(pane_count: usize, single_runtime: Option<&str>) -> &'static str {
+pub(super) fn sidebar_tab_icon(pane_count: usize, single_runtime: Option<&str>) -> ChatIcon {
     if pane_count >= 3 {
-        "columns-3.svg"
+        ChatIcon::generic("columns-3.svg")
     } else if pane_count > 1 {
-        "columns-2.svg"
-    } else if single_runtime == Some(Runtime::Shell.key()) {
-        "square-terminal.svg"
+        ChatIcon::generic("columns-2.svg")
     } else {
-        "message-square.svg"
+        ChatIcon::for_runtime(single_runtime.unwrap_or_default())
     }
 }
 

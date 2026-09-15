@@ -154,6 +154,7 @@ pub(crate) struct ProjectModal {
 struct SidebarNodeDrag {
     node_id: String,
     label: String,
+    icon: Option<(ChatIcon, bool)>,
 }
 
 impl Render for SidebarNodeDrag {
@@ -169,7 +170,12 @@ impl Render for SidebarNodeDrag {
             .shadow_lg()
             .text_size(theme::text_body())
             .text_color(theme::text())
-            .child(self.label.clone())
+            .when(self.icon.is_some(), |row| row.flex().items_center().gap_2())
+            .children(
+                self.icon
+                    .map(|(icon, live)| elements::sidebar_icon(icon, live)),
+            )
+            .child(div().min_w(px(0.)).truncate().child(self.label.clone()))
     }
 }
 

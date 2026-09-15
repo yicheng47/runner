@@ -469,10 +469,25 @@ impl NativeRoot {
                     })
                     .into_any_element()
             });
+        let header_icon = workspace_header_icon(
+            grouped,
+            focused_session_id.as_deref(),
+            focused_entry
+                .as_ref()
+                .map(|entry| entry.agent_runtime.as_str()),
+        );
         let header = WorkspaceHeader::new(
             px(self.workspace_titlebar_padding(window, cx)),
-            workspace_header_icon(grouped, focused_shell),
+            header_icon.path,
             label,
+        )
+        .icon_color(
+            header_icon.color(
+                theme::accent(),
+                focused_entry
+                    .as_ref()
+                    .is_some_and(|entry| entry.status == SessionStatus::Running),
+            ),
         )
         .sidebar_toggle(sidebar_toggle)
         .title_actions(title_actions)
@@ -1884,6 +1899,9 @@ impl NativeRoot {
                                 icon: pane_identity_icon(
                                     entry.as_ref().map(|entry| entry.agent_runtime.as_str()),
                                 ),
+                                live: entry
+                                    .as_ref()
+                                    .is_some_and(|entry| entry.status == SessionStatus::Running),
                             },
                             |drag: &PaneDrag, _, _, cx: &mut App| cx.new(|_| drag.clone()),
                         ),
@@ -1899,6 +1917,7 @@ impl NativeRoot {
                     .map(|rename| rename.input.clone())
             });
             let identity = if let Some(entry) = entry.as_ref() {
+                let icon = pane_identity_icon(Some(&entry.agent_runtime));
                 let session_id = entry.session_id.clone();
                 let live = self.attached_title(&session_id, cx);
                 let label = session_label_live(entry, live.as_deref());
@@ -1991,14 +2010,17 @@ impl NativeRoot {
                     .items_center()
                     .child(
                         svg()
-                            .path(pane_identity_icon(Some(&entry.agent_runtime)))
+                            .path(icon.path)
                             .size(rems(12. / 16.))
                             .flex_none()
-                            .text_color(if focused {
-                                theme::accent()
-                            } else {
-                                theme::faint()
-                            }),
+                            .text_color(icon.color(
+                                if focused {
+                                    theme::accent()
+                                } else {
+                                    theme::faint()
+                                },
+                                entry.status == SessionStatus::Running,
+                            )),
                     )
                     .child(name)
                     .children(menu)
@@ -2036,7 +2058,7 @@ impl NativeRoot {
                     .items_center()
                     .child(
                         svg()
-                            .path(pane_identity_icon(None))
+                            .path(pane_identity_icon(None).path)
                             .size(rems(12. / 16.))
                             .flex_none()
                             .text_color(theme::faint()),
@@ -2708,13 +2730,17 @@ fn split_menu_items(
     .collect()
 }
 
-fn workspace_header_icon(grouped: bool, focused_shell: bool) -> &'static str {
+fn workspace_header_icon(
+    grouped: bool,
+    focused_session_id: Option<&str>,
+    focused_runtime: Option<&str>,
+) -> ChatIcon {
     if grouped {
-        "square-split-horizontal.svg"
-    } else if focused_shell {
-        "square-terminal.svg"
+        ChatIcon::generic("square-split-horizontal.svg")
+    } else if focused_session_id.is_none() {
+        ChatIcon::generic("square-dashed.svg")
     } else {
-        "message-square.svg"
+        ChatIcon::for_runtime(focused_runtime.unwrap_or_default())
     }
 }
 
@@ -2726,12 +2752,11 @@ fn pane_body_opacity(grouped: bool, focused: bool) -> f32 {
     }
 }
 
-fn pane_identity_icon(runtime: Option<&str>) -> &'static str {
-    match runtime {
-        Some(runtime) if Runtime::parse(runtime) == Some(Runtime::Shell) => "square-terminal.svg",
-        Some(_) => "message-square.svg",
-        None => "square-dashed.svg",
-    }
+fn pane_identity_icon(runtime: Option<&str>) -> ChatIcon {
+    runtime.map_or_else(
+        || ChatIcon::generic("square-dashed.svg"),
+        ChatIcon::for_runtime,
+    )
 }
 
 fn pane_identity_shows_status(runtime: &str) -> bool {
@@ -3099,18 +3124,23 @@ mod tests {
 
     #[test]
     fn pane_identity_branches_for_chat_terminal_and_empty_panes() {
-        assert_eq!(pane_identity_icon(Some("codex")), "message-square.svg");
+        assert_eq!(pane_identity_icon(Some("codex")).path, "openai.svg");
+        assert_eq!(pane_identity_icon(Some("claude-code")).path, "claude.svg");
+        assert_eq!(pane_identity_icon(Some("trae")).path, "trae.svg");
         assert_eq!(
-            pane_identity_icon(Some("claude-code")),
+            pane_identity_icon(Some("unknown")).path,
             "message-square.svg"
         );
         assert!(pane_identity_shows_status("codex"));
 
-        assert_eq!(pane_identity_icon(Some("shell")), "square-terminal.svg");
+        assert_eq!(
+            pane_identity_icon(Some("shell")).path,
+            "square-terminal.svg"
+        );
         assert!(!pane_identity_shows_status("shell"));
         assert!(!side_panel_open(true, true));
 
-        assert_eq!(pane_identity_icon(None), "square-dashed.svg");
+        assert_eq!(pane_identity_icon(None).path, "square-dashed.svg");
         assert_eq!(pane_close_behavior(None), PaneCloseBehavior::LayoutOnly);
     }
 
@@ -3124,16 +3154,31 @@ mod tests {
 
     #[test]
     fn workspace_header_icon_follows_the_split_then_the_focused_runtime() {
+        for (runtime, path) in [
+            (Some("shell"), "square-terminal.svg"),
+            (Some("claude-code"), "claude.svg"),
+            (Some("codex"), "openai.svg"),
+            (Some("trae"), "trae.svg"),
+            (Some("unknown"), "message-square.svg"),
+            (None, "message-square.svg"),
+        ] {
+            assert_eq!(
+                workspace_header_icon(true, Some("session"), runtime).path,
+                "square-split-horizontal.svg"
+            );
+            assert_eq!(
+                workspace_header_icon(false, Some("session"), runtime).path,
+                path
+            );
+        }
         assert_eq!(
-            workspace_header_icon(true, true),
-            "square-split-horizontal.svg"
+            workspace_header_icon(false, None, None).path,
+            "square-dashed.svg"
         );
         assert_eq!(
-            workspace_header_icon(true, false),
+            workspace_header_icon(true, None, None).path,
             "square-split-horizontal.svg"
         );
-        assert_eq!(workspace_header_icon(false, true), "square-terminal.svg");
-        assert_eq!(workspace_header_icon(false, false), "message-square.svg");
     }
 
     #[test]

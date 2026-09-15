@@ -64,11 +64,22 @@ enum PaletteDestination {
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct PaletteItem {
     kind: PaletteKind,
+    runtime: Option<String>,
+    live: bool,
     id: String,
     label: String,
     destination: PaletteDestination,
     search_text: String,
     order: usize,
+}
+
+impl PaletteItem {
+    fn icon(&self) -> ChatIcon {
+        self.runtime.as_deref().map_or_else(
+            || ChatIcon::generic(self.kind.icon()),
+            ChatIcon::for_runtime,
+        )
+    }
 }
 
 fn chat_label(handle: Option<&str>, display_name: &str, title: Option<&str>) -> String {
@@ -112,6 +123,8 @@ fn palette_items(
         Vec::with_capacity(missions.len() + chats.len() + runners.len() + crews.len() + 2);
     items.push(PaletteItem {
         kind: PaletteKind::Command,
+        runtime: None,
+        live: false,
         id: "new-terminal".into(),
         label: "New terminal".into(),
         destination: PaletteDestination::NewTerminal,
@@ -124,6 +137,8 @@ fn palette_items(
             .enumerate()
             .map(|(order, summary)| PaletteItem {
                 kind: PaletteKind::Mission,
+                runtime: None,
+                live: false,
                 id: summary.mission.id.clone(),
                 label: summary.mission.title.clone(),
                 destination: PaletteDestination::Mission(summary.mission.id.clone()),
@@ -134,6 +149,8 @@ fn palette_items(
     );
     items.extend(chats.iter().enumerate().map(|(order, chat)| PaletteItem {
         kind: session_palette_kind(&chat.agent_runtime),
+        runtime: Some(chat.agent_runtime.clone()),
+        live: chat.status == SessionStatus::Running,
         id: chat.session_id.clone(),
         label: chat_label(
             chat.handle.as_deref(),
@@ -155,6 +172,8 @@ fn palette_items(
             .enumerate()
             .map(|(order, runner)| PaletteItem {
                 kind: PaletteKind::Runner,
+                runtime: None,
+                live: false,
                 id: runner.id.clone(),
                 label: format!("@{}", runner.handle),
                 destination: PaletteDestination::Runner(runner.handle.clone()),
@@ -165,6 +184,8 @@ fn palette_items(
     items.extend(crews.iter().enumerate().map(|(order, crew)| {
         PaletteItem {
             kind: PaletteKind::Crew,
+            runtime: None,
+            live: false,
             id: crew.crew.id.clone(),
             label: crew.crew.name.clone(),
             destination: PaletteDestination::Crew(crew.crew.id.clone()),
@@ -179,6 +200,8 @@ fn palette_items(
     }));
     items.push(PaletteItem {
         kind: PaletteKind::Settings,
+        runtime: None,
+        live: false,
         id: "settings".into(),
         label: "Settings".into(),
         destination: PaletteDestination::Settings,
@@ -408,6 +431,7 @@ impl Render for CommandPaletteState {
                 let active = index == self.active_index;
                 let hover_palette = cx.entity();
                 let click_palette = hover_palette.clone();
+                let icon = item.icon();
                 div()
                     .id(SharedString::from(format!(
                         "command-palette-{}-{}",
@@ -455,10 +479,10 @@ impl Render for CommandPaletteState {
                             .gap(rems(10. / 16.))
                             .child(
                                 svg()
-                                    .path(item.kind.icon())
+                                    .path(icon.path)
                                     .size(rems(14. / 16.))
                                     .flex_none()
-                                    .text_color(theme::muted()),
+                                    .text_color(icon.color(theme::muted(), item.live)),
                             )
                             .child(
                                 div()
@@ -600,6 +624,8 @@ mod tests {
     fn item(kind: PaletteKind, id: &str, search_text: &str, order: usize) -> PaletteItem {
         PaletteItem {
             kind,
+            runtime: None,
+            live: false,
             id: id.into(),
             label: id.into(),
             destination: PaletteDestination::Settings,
@@ -693,5 +719,54 @@ mod tests {
     fn shell_sessions_are_terminal_palette_items_not_chats() {
         assert_eq!(session_palette_kind("shell"), PaletteKind::Terminal);
         assert_eq!(session_palette_kind("codex"), PaletteKind::Chat);
+    }
+
+    #[test]
+    fn chat_results_preserve_runtime_and_liveness_from_the_session() {
+        let _theme = crate::theme_snapshot::ThemeGuard::new();
+        let mut chat = DirectSessionEntry {
+            session_id: "session".into(),
+            project_id: None,
+            runner_id: Some("runner".into()),
+            handle: Some("coder".into()),
+            agent_runtime: "codex".into(),
+            agent_command: "codex".into(),
+            display_name: "Codex".into(),
+            status: SessionStatus::Running,
+            title: Some("Renamed chat".into()),
+            live_title: None,
+            cwd: None,
+            started_at: None,
+            stopped_at: None,
+            resumable: true,
+            native_fork: true,
+            forkable: false,
+            agent_session_key: None,
+            pinned: false,
+            archived_at: None,
+        };
+        for (runtime, path) in [
+            ("claude-code", "claude.svg"),
+            ("codex", "openai.svg"),
+            ("trae", "trae.svg"),
+            ("shell", "square-terminal.svg"),
+            ("unknown", "message-square.svg"),
+        ] {
+            chat.agent_runtime = runtime.into();
+            for status in [
+                SessionStatus::Running,
+                SessionStatus::Stopped,
+                SessionStatus::Crashed,
+            ] {
+                chat.status = status;
+                let items = palette_items(&[], std::slice::from_ref(&chat), &[], &[]);
+                let result = items.iter().find(|item| item.id == "session").unwrap();
+                assert_eq!(result.icon().path, path);
+                assert_eq!(result.runtime.as_deref(), Some(runtime));
+                assert_eq!(result.live, status == SessionStatus::Running);
+                assert_eq!(items[0].icon().path, "square-terminal.svg");
+                assert_eq!(items[0].icon().color(theme::muted(), false), theme::muted());
+            }
+        }
     }
 }
