@@ -454,6 +454,22 @@ pub(crate) fn direct_chat_display_status(
     runner_app::ui::agent_status::StatusPresentation::new(&status)
 }
 
+pub(super) fn tab_label_live(
+    layout: &PaneLayout,
+    sessions: &[DirectSessionEntry],
+    live_title: impl Fn(&str) -> Option<String>,
+) -> String {
+    if let Some(name) = &layout.name {
+        return name.clone();
+    }
+    layout
+        .session_ids()
+        .iter()
+        .find_map(|id| sessions.iter().find(|entry| entry.session_id == *id))
+        .map(|entry| session_label_live(entry, live_title(&entry.session_id).as_deref()))
+        .unwrap_or_else(|| "Empty tab".into())
+}
+
 pub(crate) fn session_label(entry: &DirectSessionEntry) -> String {
     session_label_live(entry, None)
 }

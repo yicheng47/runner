@@ -6,6 +6,7 @@ use super::elements::command_held_alone;
 use super::elements::default_session_label_parts;
 use super::elements::other_modifiers_held;
 use super::elements::sidebar_fork_menu_target;
+use super::elements::tab_label_live;
 use super::menus::mission_menu_entries;
 use super::menus::project_create_menu_entries;
 use super::menus::project_menu_entries;
@@ -183,6 +184,53 @@ fn session_titles_respect_manual_names_persistence_and_resets() {
     );
     entry.status = SessionStatus::Stopped;
     assert_eq!(session_label(&entry), "Cars");
+}
+
+#[test]
+fn tab_titles_use_live_words_before_the_session_snapshot_refreshes() {
+    let mut entry = direct_session("chat", "codex", SessionStatus::Running);
+    entry.cwd = Some("/tmp/project".into());
+    let layout = PaneLayout::single(Some("chat"), &[]);
+    for (live, expected) in [
+        (None, "codex"),
+        (Some("project"), "codex"),
+        (Some("Discuss cars | project"), "Discuss cars"),
+    ] {
+        assert_eq!(
+            tab_label_live(&layout, &[entry.clone()], |_| live.map(str::to_owned)),
+            expected
+        );
+    }
+    entry.live_title = Some("Old topic".into());
+    assert_eq!(
+        tab_label_live(&layout, &[entry.clone()], |_| Some("New topic".into())),
+        "New topic"
+    );
+    entry.title = Some("My chat".into());
+    assert_eq!(
+        tab_label_live(&layout, &[entry], |_| Some("New topic".into())),
+        "My chat"
+    );
+}
+
+#[test]
+fn split_tab_titles_follow_layout_order_and_manual_names_instead_of_focus() {
+    let first = direct_session("first", "codex", SessionStatus::Running);
+    let second = direct_session("second", "claude-code", SessionStatus::Running);
+    let sessions = [second, first];
+    let live = |id: &str| Some(if id == "first" { "Cars" } else { "Planes" }.into());
+    let mut layout = two_pane_layout("first", "second");
+    for id in ["first", "second"] {
+        assert!(layout.focus_session(id));
+        assert_eq!(tab_label_live(&layout, &sessions, live), "Cars");
+    }
+    layout.name = Some("My workspace".into());
+    assert_eq!(tab_label_live(&layout, &sessions, live), "My workspace");
+    layout.name = None;
+    layout.remove_session("first");
+    assert_eq!(tab_label_live(&layout, &sessions, live), "Planes");
+    layout.remove_session("second");
+    assert_eq!(tab_label_live(&layout, &sessions, live), "Empty tab");
 }
 
 #[test]

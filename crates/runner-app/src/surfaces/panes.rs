@@ -334,15 +334,7 @@ impl NativeRoot {
         let focused_secondary = focused_session_id
             .as_deref()
             .is_some_and(|session_id| self.cached_chat_secondary_state(session_id).secondary);
-        let label = if grouped {
-            self.tab_label(&layout, cx)
-        } else {
-            session_ids
-                .first()
-                .and_then(|session_id| self.session_entry(session_id, cx))
-                .map(session_label)
-                .unwrap_or_else(|| "Empty tab".into())
-        };
+        let label = self.tab_label(&layout, cx);
         let lifecycle_busy = session_ids
             .iter()
             .filter(|session_id| {

@@ -4,12 +4,12 @@ use super::elements::empty_sidebar_label;
 use super::elements::pin_indicator;
 use super::elements::project_row_action;
 use super::elements::project_row_label;
-use super::elements::session_label_live;
 use super::elements::sidebar_icon;
 use super::elements::sidebar_row_label;
 use super::elements::sidebar_row_shell;
 use super::elements::sidebar_row_trailing_slot;
 use super::elements::sidebar_tab_target;
+use super::elements::tab_label_live;
 use super::elements::tab_shortcut_pill;
 use super::menus::sidebar_tab_icon;
 
@@ -51,22 +51,7 @@ impl Sidebar {
             .iter()
             .any(|member| member.status == SessionStatus::Running);
         let pane_count = layout.root.leaves().len();
-        let label = layout.name.clone().unwrap_or_else(|| {
-            // The first pane in layout order speaks for an unnamed tab: moving
-            // focus inside a tab must never relabel it in the rail (#587).
-            let first = layout
-                .root
-                .leaves()
-                .first()
-                .and_then(|pane| pane.session_id.clone());
-            let leader = first
-                .as_deref()
-                .and_then(|id| members.iter().find(|member| member.session_id == id))
-                .or_else(|| members.first());
-            leader.map_or_else(String::new, |member| {
-                session_label_live(member, self.live_title(&member.session_id, cx).as_deref())
-            })
-        });
+        let label = tab_label_live(&layout, &members, |id| self.live_title(id, cx));
         let renaming = self
             .rename
             .as_ref()

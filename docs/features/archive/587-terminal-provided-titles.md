@@ -28,13 +28,15 @@ Shell tabs keep the child’s terminal title verbatim apart from bounded single-
 
 ## Surfaces and lifecycle
 
-Pane headers, sidebar rows, the command palette, and archived chats use the same session precedence. A grouped tab with no explicit name uses its first pane in layout order; changing focus inside the tab cannot rename it. Group names keep the existing dormant-on-unsplit behavior. Mission identities stay **@handle**, with the conversation title available in the tooltip.
+Tab headers and sidebar rows share the same live title selection. Pane headers, the command palette, and archived chats use the same session precedence. A grouped tab with no explicit name uses its first pane in layout order; changing focus inside the tab cannot rename it. Group names keep the existing dormant-on-unsplit behavior. Mission identities stay **@handle**, with the conversation title available in the tooltip.
 
 The terminal bridge exposes titles for hidden sessions and other windows, so title repainting does not depend on the active pane. Exited panes retain their last title and terminal buffer, with the existing ended styling. Replacing a pane with another session inherits nothing.
 
 Migration 0022 (`0022_session_live_title.sql`) adds `sessions.live_title`. It remains separate from the user-authored `sessions.title`; no extra source flag or backfill is needed.
 
 Agent titles survive empty/reset events, process exit, app relaunch, and resuming the same conversation. Starting a fresh conversation clears `sessions.live_title`. Writes are guarded by the process start timestamp so an old process cannot overwrite the new conversation. Provider updates are deduplicated before persistence, so repeated titles and spinner frames do not rewrite the database.
+
+Archiving the last pane removes the tab node. Late exit/focus callbacks treat a missing tab as a no-op before changing focus or attention state, preventing the `node not found` toast. The node lookup and persisted attention update share one transaction.
 
 Title text does not change runner names, crew handles, mission identity, activity, completion/unread indicators, or routing. The existing status classifier continues to receive the raw terminal title independently of label filtering.
 
@@ -44,9 +46,9 @@ Reviewed locally against Orca (`src/shared/tab-title-resolution.ts`, `agent-tab-
 
 ## Verification
 
-Validated on macOS, 2026-09-15: 1,226 tests passed across `runner-app`, `runner-backend`, and `runner-terminal` (one existing manual measurement ignored). Workspace Clippy, updater-enabled app Clippy, formatting, and diff whitespace checks passed.
+Validated on macOS, 2026-09-15: the latest runs passed 383 `runner-app` tests and 758 `runner-backend` tests. The provider-title pass also passed 88 `runner-terminal` tests (one existing manual measurement ignored). Workspace Clippy, formatting, and the dev build passed; updater-enabled app Clippy also passed during the provider-title validation.
 
-Automated coverage includes title precedence, directory and status rejection, decorated topic cleanup, Unicode title cleanup and bounded single-line labels, deduplicated title persistence, migration from the existing version 0021 schema, database reopen, fresh versus resumed conversations, and shell exclusion. Recorded OSC 0/2 sequences cover BEL and ST terminators, split reads, spinner deduplication (including Claude’s `◐–◓` frames), and title-stack resets.
+Automated coverage includes shared header/sidebar title selection before stored session data refreshes, focus-independent split-tab names, late callbacks after split-tab archival, title precedence, directory and status rejection, decorated topic cleanup, Unicode title cleanup and bounded single-line labels, deduplicated title persistence, migration from the existing version 0021 schema, database reopen, fresh versus resumed conversations, and shell exclusion. Recorded OSC 0/2 sequences cover BEL and ST terminators, split reads, spinner deduplication (including Claude’s `◐–◓` frames), and title-stack resets.
 
 Live smoke tests:
 
@@ -55,7 +57,8 @@ Live smoke tests:
 - Send follow-up messages, wait for completion, and trigger an approval: status changes and spinner frames leave the topic intact.
 - Rename to **My cars**: it survives subsequent provider updates. Clear the name to restore the current automatic title.
 - Switch tabs/windows, exit, and resume the same conversation: the useful name remains. Start a fresh conversation: the old automatic name is cleared.
-- Split a tab and change pane focus: its unnamed tab label stays tied to the first pane. Confirm mission handles stay fixed and shell titles retain their normal behavior.
+- Split a tab and change pane focus: its header and sidebar label match and stay tied to the first pane. Confirm mission handles stay fixed and shell titles retain their normal behavior.
+- Archive a running split tab: it disappears without an error toast and its chats remain available in Settings → Archived.
 - Repeat provider-title checks on Windows; the naming policy is the same on both platforms.
 
-Jason confirmed the macOS live smoke test passed on 2026-09-15, including the Codex naming flow and Claude spinner cleanup, before the prompt fallback was removed. The provider-only revision still needs a live smoke check; native Windows smoke testing also remains a manual check.
+Jason confirmed the macOS live smoke tests passed on 2026-09-15, including the final provider-only naming flow, matching header/sidebar labels, Claude spinner cleanup, and split-tab archival. Native Windows smoke testing remains a manual check.
