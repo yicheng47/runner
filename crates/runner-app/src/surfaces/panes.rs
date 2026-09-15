@@ -1908,7 +1908,8 @@ impl NativeRoot {
             });
             let identity = if let Some(entry) = entry.as_ref() {
                 let session_id = entry.session_id.clone();
-                let label = session_label(entry);
+                let live = self.attached_title(&session_id);
+                let label = session_label_live(entry, live.as_deref());
                 let placeholder = default_session_label(entry);
                 let status = pane_identity_shows_status(&entry.agent_runtime).then(|| {
                     let mut status = direct_chat_display_status(

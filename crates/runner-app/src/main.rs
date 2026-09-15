@@ -501,6 +501,15 @@ struct NativeRoot {
 }
 
 impl NativeRoot {
+    /// The `OSC 0/2` title the session's program is reporting, for surfaces
+    /// that label a session by what it says it is doing (#587). Empty until
+    /// the child reports one, and gone with the pane it belonged to.
+    pub(crate) fn attached_title(&self, session_id: &str) -> Option<String> {
+        self.attached
+            .get(session_id)
+            .map(|chat| chat.terminal.title())
+    }
+
     pub(crate) fn request_model_catalog(&self, runtime: &str, cx: &Context<Self>) {
         if let Some(runtime) = runner_backend::model::Runtime::parse(runtime)
             .filter(|runtime| self.settings(cx).model_runtimes().contains(runtime))

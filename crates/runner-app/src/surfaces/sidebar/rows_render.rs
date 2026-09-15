@@ -4,6 +4,7 @@ use super::elements::empty_sidebar_label;
 use super::elements::pin_indicator;
 use super::elements::project_row_action;
 use super::elements::project_row_label;
+use super::elements::session_label_live;
 use super::elements::sidebar_icon;
 use super::elements::sidebar_row_label;
 use super::elements::sidebar_row_shell;
@@ -22,6 +23,17 @@ use runner_backend::ops::mission::MissionSummary;
 use runner_backend::repo::node::{NodeRow, NodeType};
 
 impl Sidebar {
+    /// The title the session's program is reporting right now, read from the
+    /// shell's attached terminal. `None` once a session has no live terminal —
+    /// a stopped row keeps whatever label it resolved to without one.
+    fn live_title(&self, session_id: &str, cx: &App) -> Option<String> {
+        self.shell
+            .upgrade()?
+            .read(cx)
+            .attached_title(session_id)
+            .filter(|title| !title.is_empty())
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(super) fn render_tab_row(
         &self,
@@ -44,11 +56,20 @@ impl Sidebar {
             .any(|member| member.status == SessionStatus::Running);
         let pane_count = layout.root.leaves().len();
         let label = layout.name.clone().unwrap_or_else(|| {
-            members
-                .iter()
-                .map(session_label)
-                .collect::<Vec<_>>()
-                .join(" + ")
+            // The first pane in layout order speaks for an unnamed tab: moving
+            // focus inside a tab must never relabel it in the rail (#587).
+            let first = layout
+                .root
+                .leaves()
+                .first()
+                .and_then(|pane| pane.session_id.clone());
+            let leader = first
+                .as_deref()
+                .and_then(|id| members.iter().find(|member| member.session_id == id))
+                .or_else(|| members.first());
+            leader.map_or_else(String::new, |member| {
+                session_label_live(member, self.live_title(&member.session_id, cx).as_deref())
+            })
         });
         let renaming = self
             .rename

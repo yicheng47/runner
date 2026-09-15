@@ -163,6 +163,16 @@ struct SequenceState {
     last_output_at: Option<Instant>,
 }
 
+/// The label half of an `OSC 0/2` title: the words, without the frame of
+/// animation in front of them. Agents republish a spinning prefix several
+/// times a second, so stripping it collapses every frame onto one string and
+/// the label redraws only when the wording actually changes. `classify_title`
+/// reads the same prefix as status, which is why it is given the raw title.
+fn sanitize_title(raw: &str) -> String {
+    raw.trim_matches(|c: char| ('\u{2800}'..='\u{28ff}').contains(&c) || c.is_whitespace())
+        .to_owned()
+}
+
 fn classify_title(title: &str) -> Option<RunnerStatus> {
     if title.trim().is_empty() {
         return None;
@@ -362,6 +372,7 @@ impl TerminalSession {
 
         let term_for_events = Arc::downgrade(&term);
         let scheme_for_events = Arc::clone(&scheme);
+        let waker_for_events = Arc::clone(&session.waker);
         thread::Builder::new()
             .name(format!("native-term-events-{session_id}"))
             .spawn(move || {
@@ -412,6 +423,7 @@ impl TerminalSession {
                             write(reply.as_bytes());
                         }
                         Event::Title(new_title) => {
+                            // Status classifies the raw title: the spinner prefix is the signal.
                             if let Some(state) = title_status.observe(&new_title) {
                                 if let Err(error) =
                                     core.sessions.report_declared_status(&session_id, state)
@@ -419,10 +431,29 @@ impl TerminalSession {
                                     log::warn!("report title status for {session_id}: {error}");
                                 }
                             }
-                            *title.lock().unwrap() = new_title;
+                            let cleaned = sanitize_title(&new_title);
+                            let changed = {
+                                let mut held = title.lock().unwrap();
+                                let changed = *held != cleaned;
+                                if changed {
+                                    *held = cleaned;
+                                }
+                                changed
+                            };
+                            if changed {
+                                (waker_for_events)();
+                            }
                         }
                         Event::ResetTitle => {
-                            title.lock().unwrap().clear();
+                            let cleared = {
+                                let mut held = title.lock().unwrap();
+                                let cleared = !held.is_empty();
+                                held.clear();
+                                cleared
+                            };
+                            if cleared {
+                                (waker_for_events)();
+                            }
                         }
                         _ => {}
                     }
@@ -1259,7 +1290,8 @@ mod tests {
     };
 
     use super::{
-        classify_title, LinkTarget, TerminalBridge, TerminalSession, TitleStatus, UserInputMode,
+        classify_title, sanitize_title, LinkTarget, TerminalBridge, TerminalSession, TitleStatus,
+        UserInputMode,
     };
     use crate::replay::visible_lines;
     use runner_backend::session::runtime::{
@@ -1267,6 +1299,26 @@ mod tests {
         SessionStatus, SpawnSpec,
     };
     use runner_backend::AppCore;
+
+    #[test]
+    fn sanitize_title_drops_spinner_frames_so_the_label_holds_still() {
+        for glyph in ['\u{2800}', '⠋', '\u{28ff}'] {
+            assert_eq!(
+                sanitize_title(&format!("{glyph} Fixing the parser")),
+                "Fixing the parser"
+            );
+        }
+        // Every frame of an animation collapses onto one string.
+        assert_eq!(sanitize_title("⠋ Reviewing"), sanitize_title("⠙ Reviewing"));
+        // Only the animated prefix goes: the child's own wording is its own.
+        assert_eq!(
+            sanitize_title("✳ Reviewing 587 — 3 tools"),
+            "✳ Reviewing 587 — 3 tools"
+        );
+        assert_eq!(sanitize_title("  cargo test  "), "cargo test");
+        assert_eq!(sanitize_title("⠹"), "");
+        assert_eq!(sanitize_title("   "), "");
+    }
 
     #[test]
     fn title_classifier_only_recognizes_a_leading_spinner() {
