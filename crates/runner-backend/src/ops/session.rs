@@ -324,6 +324,16 @@ impl DirectSessionEntry {
                     .filter(|title| !title.trim().is_empty())
                     .map(str::to_owned);
             }
+            // A runner-backed chat is an identity, not a topic. Runner
+            // injects the runner's system prompt as the first turn
+            // (there is no system-prompt flag for codex or trae), so the
+            // agent titles every chat from the same runner identically.
+            // #587 already keeps the handle on mission surfaces for this
+            // reason: identity is the thing you address, so it may not
+            // move under you. A name the user typed still wins above.
+            if self.handle.is_some() {
+                return None;
+            }
             live.and_then(|title| crate::session::title::provider_title(title, self.cwd.as_deref()))
                 .or_else(|| {
                     self.live_title.as_deref().and_then(|title| {
@@ -1516,6 +1526,57 @@ mod tests {
         let row = get_direct(&conn, &id).unwrap().unwrap();
         assert_eq!(row.agent_session_key.as_deref(), Some(key.as_str()));
         assert!(row.resumable);
+    }
+
+    #[test]
+    fn runner_backed_chats_keep_their_handle_over_a_provider_title() {
+        let entry = |handle: Option<&str>, runtime: &str| {
+            let mut row = repo::session::SessionRowDb::new_running(ulid::Ulid::new().to_string());
+            row.agent_runtime = Some(runtime.into());
+            row.agent_command = Some(runtime.into());
+            row.live_title = Some("Housekeeping assistant setup".into());
+            direct_entry_from_repo(
+                repo::session::DirectSessionRow {
+                    row,
+                    runner_handle: handle.map(str::to_owned),
+                    runner_display_name: handle.map(|_| "Housekeeper".to_owned()),
+                    runner_runtime: None,
+                    runner_command: None,
+                },
+                false,
+            )
+            .unwrap()
+        };
+
+        // Runner injects the runner's system prompt as the first turn, so
+        // every chat from one runner is titled identically. Identity wins.
+        let backed = entry(Some("housekeeper"), "claude-code");
+        assert_eq!(backed.preferred_title(None), None);
+        assert_eq!(backed.preferred_title(Some("Fix the parser")), None);
+
+        // A name the user typed still outranks the handle.
+        let mut named = entry(Some("housekeeper"), "claude-code");
+        named.title = Some("Release prep".into());
+        assert_eq!(named.preferred_title(None).as_deref(), Some("Release prep"));
+
+        // Runtime-only chats have no persona injected, so their title is
+        // the user's own first turn and stays useful.
+        let plain = entry(None, "codex");
+        assert_eq!(
+            plain.preferred_title(None).as_deref(),
+            Some("Housekeeping assistant setup")
+        );
+        assert_eq!(
+            plain.preferred_title(Some("Fix the parser")).as_deref(),
+            Some("Fix the parser")
+        );
+
+        // Shell keeps its terminal title either way.
+        let shell = entry(Some("term"), "shell");
+        assert_eq!(
+            shell.preferred_title(Some("~/repos/runner")).as_deref(),
+            Some("~/repos/runner")
+        );
     }
 
     #[test]
