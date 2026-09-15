@@ -648,8 +648,8 @@ impl Render for ArchivedConfirmOverlay {
 }
 
 fn chat_title(chat: &DirectSessionEntry) -> String {
-    if let Some(title) = chat.title.as_ref().filter(|title| !title.is_empty()) {
-        return title.clone();
+    if let Some(title) = chat.preferred_title(None) {
+        return title;
     }
     let timestamp = chat
         .started_at
@@ -790,6 +790,8 @@ mod tests {
             display_name: "Codex".into(),
             status: SessionStatus::Stopped,
             title: title.map(str::to_owned),
+            live_title: None,
+            prompt_title: None,
             cwd: Some(cwd.into()),
             started_at: Some("2026-08-01T00:00:00Z".parse().unwrap()),
             stopped_at: None,

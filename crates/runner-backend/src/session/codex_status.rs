@@ -39,6 +39,7 @@ pub(crate) fn hook_command(path: &Path, event: &str) -> String {
 
 #[derive(Default, Deserialize)]
 struct StatusReport {
+    prompt: Option<String>,
     #[serde(default)]
     hook_event_name: String,
     session_id: Option<String>,
@@ -49,6 +50,7 @@ struct StatusReport {
 
 #[derive(Default)]
 struct CodexObservation {
+    pending_title: Option<String>,
     value: AgentObservation,
     session_id: Option<String>,
     turn_id: Option<String>,
@@ -104,6 +106,12 @@ impl CodexObservation {
             }
             self.value.outcome = None;
             self.value.activity = Activity::Working;
+            if self.pending_title.is_none() {
+                self.pending_title = report
+                    .prompt
+                    .as_deref()
+                    .and_then(super::title::prompt_title);
+            }
         } else {
             if self.turn_id.as_ref() != Some(&turn_id) {
                 return None;
@@ -182,6 +190,10 @@ impl CodexStatusWatcher {
         })
     }
 
+    pub(crate) fn take_prompt_title(&mut self) -> Option<String> {
+        self.observation.pending_title.take()
+    }
+
     pub(crate) fn drain_observations(
         &mut self,
         mut transition: impl FnMut(AgentObservation, &'static str),
@@ -244,6 +256,27 @@ mod tests {
 
     fn abort(turn: &str) -> Value {
         json!({"type":"event_msg","payload":{"type":"turn_aborted","turn_id":turn,"reason":"interrupted"}})
+    }
+
+    #[test]
+    fn prompt_titles_only_come_from_accepted_main_session_submissions() {
+        let mut state = CodexObservation::default();
+        observe(&mut state, report("SessionStart", ""));
+        let mut prompt = report("UserPromptSubmit", "one");
+        prompt["prompt"] = json!("Let's discuss cars");
+        let mut other = prompt.clone();
+        other["agent_id"] = json!("child");
+        observe(&mut state, other);
+        let mut stale = prompt.clone();
+        stale["session_id"] = json!("another");
+        observe(&mut state, stale);
+        assert_eq!(state.pending_title, None);
+        observe(&mut state, prompt);
+        assert_eq!(state.pending_title.as_deref(), Some("Discuss cars"));
+        let mut later = report("UserPromptSubmit", "two");
+        later["prompt"] = json!("Change the subject");
+        observe(&mut state, later);
+        assert_eq!(state.pending_title.as_deref(), Some("Discuss cars"));
     }
 
     #[test]

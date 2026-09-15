@@ -99,13 +99,15 @@ impl Sidebar {
         let revisions = self.app_store.read(cx).revisions;
         let previous = self.store_revisions;
         self.store_revisions = revisions;
+        let titles_changed =
+            self.live_titles_changed(revisions.terminal_wake != previous.terminal_wake, cx);
         if revisions.nodes != previous.nodes
             || revisions.projects != previous.projects
             || revisions.missions != previous.missions
             || revisions.sessions != previous.sessions
             || revisions.activity != previous.activity
             || revisions.settings != previous.settings
-            || self.live_titles_changed(revisions.terminal_wake != previous.terminal_wake, cx)
+            || titles_changed
         {
             cx.notify();
         }
@@ -122,7 +124,7 @@ impl Sidebar {
         let Some(shell) = self.shell.upgrade() else {
             return false;
         };
-        let titles = shell.read(cx).attached_titles();
+        let titles = shell.read(cx).attached_titles(cx);
         if titles == self.live_titles {
             return false;
         }

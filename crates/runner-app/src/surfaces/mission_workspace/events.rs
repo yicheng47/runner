@@ -177,7 +177,6 @@ impl MissionWorkspace {
                 if mission_event || drawer_event {
                     if event.name == "session/exit" {
                         if let Some(session_id) = session_id.as_deref() {
-                            self.attached.remove(session_id);
                             self.delivery_blocked.remove(session_id);
                             if self.transition_kind(session_id)
                                 != Some(MissionTransitionKind::Restarting)

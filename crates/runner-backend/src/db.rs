@@ -166,6 +166,10 @@ const MIGRATIONS: &[(i64, &str)] = &[
         include_str!("../migrations/0020_slot_effort_override.sql"),
     ),
     (21, include_str!("../migrations/0021_session_attention.sql")),
+    (
+        22,
+        include_str!("../migrations/0022_session_auto_titles.sql"),
+    ),
 ];
 
 // Default-data seed: ships the Peer coding starter crew on first launch.
@@ -1634,6 +1638,26 @@ Talking to the human:
     }
 
     #[test]
+    fn migration_0022_preserves_names_and_leaves_auto_titles_unset() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        run_migrations_up_to(&mut conn, 21).unwrap();
+        conn.execute(
+            "INSERT INTO sessions (id, status, title) VALUES ('chat', 'stopped', 'Codex')",
+            [],
+        )
+        .unwrap();
+        run_migrations(&mut conn).unwrap();
+        let names: (Option<String>, Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT title, live_title, prompt_title FROM sessions WHERE id = 'chat'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(names, (Some("Codex".into()), None, None));
+    }
+
+    #[test]
     fn migrations_are_idempotent_on_reopen() {
         use tempfile::tempdir;
         let dir = tempdir().unwrap();
@@ -1785,7 +1809,7 @@ Talking to the human:
         let version: i64 = conn
             .query_row("SELECT MAX(version) FROM _migrations", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 21);
+        assert_eq!(version, 22);
     }
 
     #[test]

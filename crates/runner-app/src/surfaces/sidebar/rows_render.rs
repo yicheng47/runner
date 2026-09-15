@@ -23,15 +23,11 @@ use runner_backend::ops::mission::MissionSummary;
 use runner_backend::repo::node::{NodeRow, NodeType};
 
 impl Sidebar {
-    /// The title the session's program is reporting right now, read from the
-    /// shell's attached terminal. `None` once a session has no live terminal —
-    /// a stopped row keeps whatever label it resolved to without one.
     fn live_title(&self, session_id: &str, cx: &App) -> Option<String> {
         self.shell
             .upgrade()?
             .read(cx)
-            .attached_title(session_id)
-            .filter(|title| !title.is_empty())
+            .attached_title(session_id, cx)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -139,6 +135,7 @@ impl Sidebar {
                 false,
             )
             .children(node.pinned_position.is_some().then(pin_indicator))
+            .when(!live, |row| row.text_color(theme::faint()))
             .child(sidebar_icon(leaf_icon, live))
             .child(sidebar_row_label(label.clone(), active, false))
             .child(

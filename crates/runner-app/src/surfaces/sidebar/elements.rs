@@ -458,19 +458,9 @@ pub(crate) fn session_label(entry: &DirectSessionEntry) -> String {
     session_label_live(entry, None)
 }
 
-/// The label for a session, given the title its program is reporting right
-/// now. A name the user typed outranks it; with no name and no live title the
-/// composed default stands. `live` is `None` wherever the caller has no
-/// attached terminal to ask — a stopped row, or a surface that never had one.
 pub(crate) fn session_label_live(entry: &DirectSessionEntry, live: Option<&str>) -> String {
     entry
-        .title
-        .clone()
-        .or_else(|| {
-            live.map(str::trim)
-                .filter(|title| !title.is_empty())
-                .map(str::to_owned)
-        })
+        .preferred_title(live)
         .unwrap_or_else(|| default_session_label(entry))
 }
 

@@ -396,7 +396,9 @@ fn forward_queued_output(items: Vec<RuntimeOutput>) -> Vec<ForwardedEvent> {
         match item {
             RuntimeOutput::Stream(bytes) => fake.push_output(0, &bytes),
             RuntimeOutput::StatusTransition { state, .. } => fake.push_status(0, state),
-            RuntimeOutput::AgentObservation(_) | RuntimeOutput::StatusBridgeFailed => {
+            RuntimeOutput::PromptTitle(_)
+            | RuntimeOutput::AgentObservation(_)
+            | RuntimeOutput::StatusBridgeFailed => {
                 panic!("not a byte-batching fixture")
             }
         }
@@ -419,6 +421,57 @@ fn forward_queued_output(items: Vec<RuntimeOutput>) -> Vec<ForwardedEvent> {
     .unwrap();
     let events = std::mem::take(&mut *capture.0.lock().unwrap());
     events
+}
+
+#[test]
+fn forwarder_persists_only_the_first_prompt_title_and_notifies_the_ui() {
+    let pool = pool_with_schema();
+    let conn = pool.get().unwrap();
+    let mut row = crate::repo::session::SessionRowDb::new_running("prompt-title".into());
+    row.agent_runtime = Some("codex".into());
+    row.started_at = Some(Utc::now());
+    row.title = Some("Manual name".into());
+    crate::repo::session::insert(&conn, &row).unwrap();
+    let fake = fake_runtime();
+    let mgr = mgr_with_fake(None, Arc::clone(&fake));
+    let (rt_session, output) = fake
+        .spawn(SpawnSpec {
+            session_id: row.id.clone(),
+            ..Default::default()
+        })
+        .unwrap();
+    {
+        let spawns = fake.spawns.lock().unwrap();
+        let tx = spawns[0].tx.as_ref().unwrap();
+        for title in ["Discuss cars", "Another prompt"] {
+            tx.send(RuntimeOutput::PromptTitle(title.into())).unwrap();
+        }
+    }
+    fake.close_spawn(0);
+    let cap = capture();
+    mgr.start_forwarder_thread(
+        row.id.clone(),
+        None,
+        rt_session,
+        output,
+        pool.clone(),
+        cap.clone(),
+        runner("fake", &[]),
+        false,
+        false,
+        None,
+    )
+    .join()
+    .unwrap();
+    let saved = crate::repo::session::get_row(&conn, &row.id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(saved.prompt_title.as_deref(), Some("Discuss cars"));
+    assert_eq!(saved.title.as_deref(), Some("Manual name"));
+    let events = cap.updated.lock().unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].session_id, row.id);
+    assert_eq!(events[0].mission_id, None);
 }
 
 #[test]

@@ -20,5 +20,6 @@ pub(crate) mod process;
 pub mod pty_runtime;
 pub mod runtime;
 pub mod status;
+pub mod title;
 
 pub use manager::{CompleteSpawnOutcome, PendingMissionSpawn, SessionManager};

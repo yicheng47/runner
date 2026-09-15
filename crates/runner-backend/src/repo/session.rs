@@ -61,6 +61,8 @@ pub struct SessionRowDb {
     #[serde(with = "crate::repo::serde::rfc3339_opt")]
     pub archived_at: Option<Timestamp>,
     pub title: Option<String>,
+    pub live_title: Option<String>,
+    pub prompt_title: Option<String>,
     #[serde(with = "crate::repo::serde::rfc3339_opt")]
     pub pinned_at: Option<Timestamp>,
     /// PTY-runtime metadata (`pty`, legacy tmux) — not the agent kind;
@@ -99,6 +101,8 @@ impl SessionRowDb {
             agent_session_key: None,
             archived_at: None,
             title: None,
+            live_title: None,
+            prompt_title: None,
             pinned_at: None,
             runtime: None,
             runtime_socket: None,
@@ -131,6 +135,8 @@ pub const COLUMNS: &[&str] = &[
     "agent_session_key",
     "archived_at",
     "title",
+    "live_title",
+    "prompt_title",
     "pinned_at",
     "runtime",
     "runtime_socket",
@@ -243,6 +249,8 @@ pub fn resume_in_place(
                 started_at = ?2,
                 stopped_at = NULL,
                 agent_session_key = CASE WHEN ?6 THEN ?3 ELSE COALESCE(?3, agent_session_key) END,
+                live_title = CASE WHEN ?6 THEN NULL ELSE live_title END,
+                prompt_title = CASE WHEN ?6 THEN NULL ELSE prompt_title END,
                 last_cols = ?4,
                 last_rows = ?5
           WHERE id = ?1",
@@ -612,6 +620,36 @@ pub fn set_title(conn: &Connection, id: &str, title: Option<&str>) -> rusqlite::
     )
 }
 
+pub fn set_live_title(
+    conn: &Connection,
+    id: &str,
+    title: Option<&str>,
+    expected_started_at: Option<&str>,
+) -> rusqlite::Result<usize> {
+    conn.execute(
+        "UPDATE sessions SET live_title = ?2
+          WHERE id = ?1
+            AND started_at IS ?3
+            AND live_title IS NOT ?2
+            AND COALESCE(agent_runtime, (SELECT runtime FROM runners WHERE id = runner_id)) != 'shell'",
+        rusqlite::params![id, title, expected_started_at],
+    )
+}
+
+pub fn set_prompt_title(
+    conn: &Connection,
+    id: &str,
+    title: &str,
+    expected_started_at: Option<&str>,
+) -> rusqlite::Result<usize> {
+    conn.execute(
+        "UPDATE sessions SET prompt_title = ?2
+          WHERE id = ?1 AND started_at IS ?3 AND prompt_title IS NULL
+            AND COALESCE(agent_runtime, (SELECT runtime FROM runners WHERE id = runner_id)) != 'shell'",
+        rusqlite::params![id, title, expected_started_at],
+    )
+}
+
 pub fn set_pinned_at(
     conn: &Connection,
     id: &str,
@@ -628,6 +666,8 @@ pub fn set_pinned_at(
 #[derive(Debug, Clone)]
 pub struct MissionSessionRow {
     pub session: Session,
+    pub live_title: Option<String>,
+    pub prompt_title: Option<String>,
     pub agent_session_key: Option<String>,
     pub handle: String,
     pub runtime: String,
@@ -685,8 +725,12 @@ pub fn list_for_mission(
         let runtime: String = row.get("runner_runtime")?;
         let lead: bool = row.get("lead")?;
         let agent_session_key = db_row.agent_session_key.clone();
+        let live_title = db_row.live_title.clone();
+        let prompt_title = db_row.prompt_title.clone();
         Ok(MissionSessionRow {
             session: session_from_row_db(db_row)?,
+            live_title,
+            prompt_title,
             agent_session_key,
             handle,
             runtime,
@@ -828,6 +872,8 @@ mod tests {
             agent_session_key: Some("2f6e0f2e-key".into()),
             archived_at: Some(now),
             title: Some("my chat".into()),
+            live_title: Some("Fixing the parser".into()),
+            prompt_title: Some("Fixing the parser".into()),
             pinned_at: Some(now),
             runtime: Some("pty".into()),
             runtime_socket: Some("sock".into()),
@@ -847,6 +893,129 @@ mod tests {
 
     fn minimal_row() -> SessionRowDb {
         SessionRowDb::new_running("sess-min".into())
+    }
+
+    #[test]
+    fn live_titles_survive_reopen_and_resume_but_not_a_fresh_conversation() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("runner.db");
+        let started = Utc::now();
+        let stamp = started.to_rfc3339();
+        {
+            let pool = db::open_pool(&path).unwrap();
+            let conn = pool.get().unwrap();
+            let mut row = minimal_row();
+            row.agent_runtime = Some("codex".into());
+            row.agent_command = Some("codex".into());
+            row.started_at = Some(started);
+            row.title = Some("Manual name".into());
+            row.agent_session_key = Some("conversation".into());
+            insert(&conn, &row).unwrap();
+            assert_eq!(
+                set_prompt_title(&conn, &row.id, "Talk about cars", Some(&stamp)).unwrap(),
+                1
+            );
+            assert_eq!(
+                set_prompt_title(&conn, &row.id, "Later prompt", Some(&stamp)).unwrap(),
+                0
+            );
+            assert_eq!(
+                set_live_title(&conn, &row.id, Some("Cars"), Some(&stamp)).unwrap(),
+                1
+            );
+            assert_eq!(
+                set_live_title(&conn, &row.id, Some("Cars"), Some(&stamp)).unwrap(),
+                0
+            );
+            set_exit_status(&conn, &row.id, SessionStatus::Stopped, Utc::now()).unwrap();
+        }
+        let pool = db::open_pool(&path).unwrap();
+        let conn = pool.get().unwrap();
+        let row = get_row(&conn, "sess-min").unwrap().unwrap();
+        assert_eq!(row.live_title.as_deref(), Some("Cars"));
+        assert_eq!(row.prompt_title.as_deref(), Some("Talk about cars"));
+        assert_eq!(row.title.as_deref(), Some("Manual name"));
+        let resumed = started + chrono::Duration::seconds(1);
+        resume_in_place(&conn, &row.id, resumed, None, false, 80, 24).unwrap();
+        assert_eq!(
+            get_row(&conn, &row.id)
+                .unwrap()
+                .unwrap()
+                .prompt_title
+                .as_deref(),
+            Some("Talk about cars")
+        );
+        assert_eq!(
+            get_row(&conn, &row.id)
+                .unwrap()
+                .unwrap()
+                .live_title
+                .as_deref(),
+            Some("Cars")
+        );
+        let fresh = resumed + chrono::Duration::seconds(1);
+        resume_in_place(&conn, &row.id, fresh, None, true, 80, 24).unwrap();
+        assert_eq!(
+            set_live_title(&conn, &row.id, Some("Stale title"), Some(&stamp)).unwrap(),
+            0
+        );
+        let row = get_row(&conn, &row.id).unwrap().unwrap();
+        assert_eq!(row.live_title, None);
+        assert_eq!(row.prompt_title, None);
+        assert_eq!(
+            set_prompt_title(&conn, &row.id, "Stale prompt", Some(&stamp)).unwrap(),
+            0
+        );
+        assert_eq!(row.title.as_deref(), Some("Manual name"));
+        assert_eq!(row.agent_session_key, None);
+        let stamp = fresh.to_rfc3339();
+        assert_eq!(
+            set_prompt_title(&conn, &row.id, "New conversation", Some(&stamp)).unwrap(),
+            1
+        );
+        assert_eq!(
+            set_live_title(&conn, &row.id, Some("New topic"), Some(&stamp)).unwrap(),
+            1
+        );
+        assert_eq!(
+            set_live_title(&conn, &row.id, None, Some(&stamp)).unwrap(),
+            1
+        );
+        assert_eq!(
+            set_live_title(&conn, &row.id, None, Some(&stamp)).unwrap(),
+            0
+        );
+        assert_eq!(get_row(&conn, &row.id).unwrap().unwrap().live_title, None);
+    }
+
+    #[test]
+    fn shell_titles_are_never_persisted_for_direct_or_runner_sessions() {
+        let pool = db::open_in_memory().unwrap();
+        let conn = pool.get().unwrap();
+        seed_runner(&conn, "shell-runner", "shell");
+        conn.execute(
+            "UPDATE runners SET runtime = 'shell' WHERE id = 'shell-runner'",
+            [],
+        )
+        .unwrap();
+        for direct in [true, false] {
+            let mut row = SessionRowDb::new_running(format!("shell-{direct}"));
+            if direct {
+                row.agent_runtime = Some("shell".into());
+            } else {
+                row.runner_id = Some("shell-runner".into());
+            }
+            insert(&conn, &row).unwrap();
+            assert_eq!(
+                set_live_title(&conn, &row.id, Some("Shell prompt"), None).unwrap(),
+                0
+            );
+            assert_eq!(
+                set_prompt_title(&conn, &row.id, "Shell prompt", None).unwrap(),
+                0
+            );
+            assert_eq!(get_row(&conn, &row.id).unwrap().unwrap().live_title, None);
+        }
     }
 
     #[test]

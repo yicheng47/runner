@@ -424,7 +424,6 @@ impl MissionWorkspace {
             return Ok(());
         }
         if status != SessionStatus::Running {
-            self.attached.remove(session_id);
             return Ok(());
         }
         if self.attached.contains_key(session_id) {

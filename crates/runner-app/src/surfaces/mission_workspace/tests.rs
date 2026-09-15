@@ -164,6 +164,8 @@ fn sidebar_and_mission_fills_follow_carbon_and_runner_light() {
     }
 
     let archived_slot = SessionRow {
+        live_title: None,
+        prompt_title: None,
         session: runner_backend::model::Session {
             id: "archived-slot".into(),
             mission_id: Some("mission".into()),

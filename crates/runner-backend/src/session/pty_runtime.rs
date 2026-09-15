@@ -106,6 +106,13 @@ impl HookStatusWatcher {
         }
     }
 
+    fn take_prompt_title(&mut self) -> Option<String> {
+        match self {
+            Self::Claude(watcher) => watcher.take_prompt_title(),
+            Self::Codex(watcher) => watcher.take_prompt_title(),
+        }
+    }
+
     fn drain_observations(
         &mut self,
         transition: impl FnMut(super::status::AgentObservation, &'static str),
@@ -857,6 +864,8 @@ fn idle_monitor_thread(
                 log::warn!("read agent status: {error}");
                 let _ = tx.send(RuntimeOutput::StatusBridgeFailed);
                 hook_status = None;
+            } else if let Some(title) = watcher.take_prompt_title() {
+                let _ = tx.send(RuntimeOutput::PromptTitle(title));
             }
         }
         let transition = {
@@ -1466,19 +1475,23 @@ mod tests {
                 .stdin
                 .take()
                 .unwrap()
-                .write_all(br#"{"session_id":"main","turn_id":"one"}"#)
+                .write_all(
+                    br#"{"session_id":"main","turn_id":"one","prompt":"Let's discuss cars"}"#,
+                )
                 .unwrap();
             assert!(child.wait().unwrap().success());
         }
         let deadline = Instant::now() + Duration::from_secs(3);
         let mut values = Vec::new();
-        while values.len() < 4 && Instant::now() < deadline {
-            if let Ok(RuntimeOutput::AgentObservation(value)) =
-                stream.recv_timeout(Duration::from_millis(50))
-            {
-                values.push(value);
+        let mut title = None;
+        while (values.len() < 4 || title.is_none()) && Instant::now() < deadline {
+            match stream.recv_timeout(Duration::from_millis(50)) {
+                Ok(RuntimeOutput::AgentObservation(value)) => values.push(value),
+                Ok(RuntimeOutput::PromptTitle(value)) => title = Some(value),
+                _ => {}
             }
         }
+        assert_eq!(title.as_deref(), Some("Discuss cars"));
         std::fs::remove_file(&path).unwrap();
         let deadline = Instant::now() + Duration::from_secs(3);
         let mut failed = false;
@@ -1711,6 +1724,7 @@ mod tests {
                 Ok(RuntimeOutput::Stream(bytes)) => collected.extend_from_slice(&bytes),
                 Ok(
                     RuntimeOutput::StatusTransition { .. }
+                    | RuntimeOutput::PromptTitle(_)
                     | RuntimeOutput::AgentObservation(_)
                     | RuntimeOutput::StatusBridgeFailed,
                 ) => {}
@@ -1756,6 +1770,7 @@ mod tests {
                 }
                 Ok(
                     RuntimeOutput::Stream(_)
+                    | RuntimeOutput::PromptTitle(_)
                     | RuntimeOutput::AgentObservation(_)
                     | RuntimeOutput::StatusBridgeFailed,
                 ) => {}
@@ -1938,6 +1953,7 @@ mod tests {
                 Ok(RuntimeOutput::Stream(bytes)) => output.extend_from_slice(&bytes),
                 Ok(
                     RuntimeOutput::StatusTransition { .. }
+                    | RuntimeOutput::PromptTitle(_)
                     | RuntimeOutput::AgentObservation(_)
                     | RuntimeOutput::StatusBridgeFailed,
                 )
@@ -1984,6 +2000,7 @@ mod tests {
                 Ok(RuntimeOutput::Stream(bytes)) => output.extend_from_slice(&bytes),
                 Ok(
                     RuntimeOutput::StatusTransition { .. }
+                    | RuntimeOutput::PromptTitle(_)
                     | RuntimeOutput::AgentObservation(_)
                     | RuntimeOutput::StatusBridgeFailed,
                 ) => {}
@@ -2310,7 +2327,11 @@ mod tests {
                     }
                 }
                 Ok(RuntimeOutput::Stream(bytes)) => handshake.observe(&rt, &session, &bytes),
-                Ok(RuntimeOutput::AgentObservation(_) | RuntimeOutput::StatusBridgeFailed) => {}
+                Ok(
+                    RuntimeOutput::PromptTitle(_)
+                    | RuntimeOutput::AgentObservation(_)
+                    | RuntimeOutput::StatusBridgeFailed,
+                ) => {}
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
             }

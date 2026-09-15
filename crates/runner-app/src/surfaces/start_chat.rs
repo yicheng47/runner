@@ -1169,7 +1169,7 @@ impl NativeRoot {
         );
         let model = normalized_value(modal.model.read(cx).text());
         let effort = normalized_value(&modal.effort);
-        let title = modal.title.read(cx).text().trim().to_owned();
+        let title = user_chat_title(modal.title.read(cx));
         let project_id = modal.project_id.clone();
         let request = build_start_request(
             modal.mode,
@@ -1244,7 +1244,7 @@ impl NativeRoot {
                 )?,
             };
             spawned_id = Some(spawned.id.clone());
-            if !title.is_empty() {
+            if let Some(title) = title {
                 if let Err(error) = runner_backend::ops::session::session_rename(
                     self.core(cx),
                     &spawned.id,
@@ -1920,6 +1920,13 @@ fn default_title_for_runtime(label: &str) -> String {
     label.to_owned()
 }
 
+fn user_chat_title(input: &TextField) -> Option<String> {
+    input
+        .edited()
+        .then(|| normalized_value(input.text()))
+        .flatten()
+}
+
 fn auto_title_after_selection(edited: bool, current: &str, derived: String) -> String {
     if edited {
         current.to_owned()
@@ -2201,6 +2208,23 @@ mod tests {
                 })
                 .collect(),
         }
+    }
+
+    #[test]
+    fn new_chat_only_saves_names_the_user_edited() {
+        let mut cx = gpui::TestAppContext::single();
+        let title = cx.new(|cx| TextField::new(cx.focus_handle(), "Codex", "", false));
+        title.update(&mut cx, |input, cx| {
+            assert_eq!(user_chat_title(input), None);
+            input.reset("@coder", cx);
+            assert_eq!(user_chat_title(input), None);
+            input.set_text("  Cars  ", cx);
+            assert_eq!(user_chat_title(input).as_deref(), Some("Cars"));
+            input.set_text("Codex", cx);
+            assert_eq!(user_chat_title(input).as_deref(), Some("Codex"));
+            input.set_text("   ", cx);
+            assert_eq!(user_chat_title(input), None);
+        });
     }
 
     #[test]
