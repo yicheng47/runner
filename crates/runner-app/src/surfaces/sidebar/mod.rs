@@ -235,6 +235,7 @@ pub(crate) struct Sidebar {
     create_menu: Entity<PopoverMenu>,
     context_menu: Option<Entity<ContextMenu>>,
     rename: Option<SidebarRename>,
+    live_titles: HashMap<String, String>,
     archiving_sessions: HashSet<String>,
     archiving_missions: HashSet<String>,
     active_project_id: Option<String>,
