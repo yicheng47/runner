@@ -338,16 +338,19 @@ pub(super) fn project_row_label(label: String) -> AnyElement {
         .into_any_element()
 }
 
-pub(super) fn sidebar_icon(path: &'static str, active: bool) -> AnyElement {
+pub(super) fn sidebar_icon(icon: ChatIcon, live: bool) -> AnyElement {
     svg()
-        .path(path)
+        .path(icon.path)
         .size(rems(12. / 16.))
         .flex_none()
-        .text_color(if active {
-            theme::accent()
-        } else {
-            theme::muted()
-        })
+        .text_color(icon.color(
+            if live {
+                theme::accent()
+            } else {
+                theme::muted()
+            },
+            live,
+        ))
         .into_any_element()
 }
 

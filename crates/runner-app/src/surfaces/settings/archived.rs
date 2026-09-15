@@ -19,6 +19,7 @@ use runner_backend::ops::session::DirectSessionEntry;
 use objc2_foundation::{NSDate, NSDateFormatter, NSString};
 
 use crate::app_store::AppStore;
+use crate::chat_icon::ChatIcon;
 use crate::theme;
 use crate::NativeRoot;
 
@@ -51,10 +52,19 @@ enum ArchivedKind {
 #[derive(Clone, Debug)]
 struct ArchivedItem {
     kind: ArchivedKind,
+    runtime: Option<String>,
     id: String,
     title: String,
     cwd: Option<String>,
     archived_at: DateTime<Utc>,
+}
+
+impl ArchivedItem {
+    fn icon(&self) -> ChatIcon {
+        self.runtime
+            .as_deref()
+            .map_or_else(|| ChatIcon::generic("rocket.svg"), ChatIcon::for_runtime)
+    }
 }
 
 pub(crate) struct ArchivedPane {
@@ -386,13 +396,10 @@ impl ArchivedPane {
             .focus(|row| row.bg(theme::with_alpha(theme::raised(), 0.4)))
             .child(
                 svg()
-                    .path(match item.kind {
-                        ArchivedKind::Mission => "rocket.svg",
-                        ArchivedKind::Chat => "message-square.svg",
-                    })
+                    .path(item.icon().path)
                     .size(rems(14. / 16.))
                     .flex_none()
-                    .text_color(theme::faint()),
+                    .text_color(item.icon().color(theme::faint(), false)),
             )
             .child(
                 div()
@@ -668,6 +675,7 @@ fn merge_archived_items(missions: &[Mission], chats: &[DirectSessionEntry]) -> V
         .filter_map(|mission| {
             mission.archived_at.map(|archived_at| ArchivedItem {
                 kind: ArchivedKind::Mission,
+                runtime: None,
                 id: mission.id.clone(),
                 title: mission.title.clone(),
                 cwd: mission.cwd.clone(),
@@ -677,6 +685,7 @@ fn merge_archived_items(missions: &[Mission], chats: &[DirectSessionEntry]) -> V
         .chain(chats.iter().filter_map(|chat| {
             chat.archived_at.map(|archived_at| ArchivedItem {
                 kind: ArchivedKind::Chat,
+                runtime: Some(chat.agent_runtime.clone()),
                 id: chat.session_id.clone(),
                 title: chat_title(chat),
                 cwd: chat.cwd.clone(),
@@ -826,6 +835,45 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["c1", "m1"]
         );
+    }
+
+    #[test]
+    fn archived_chat_marks_keep_the_runtime_and_are_dimmed() {
+        let _theme = crate::theme_snapshot::ThemeGuard::new();
+        let mut chat = chat(
+            "c1",
+            Some("Renamed chat"),
+            "/work/chat",
+            "2026-08-21T01:00:00Z",
+        );
+        chat.runner_id = Some("runner".into());
+        for (runtime, path, tint) in [
+            ("claude-code", "claude.svg", gpui::rgb(0xd97757).into()),
+            ("codex", "openai.svg", theme::text()),
+            ("trae", "trae.svg", gpui::rgb(0x32f08c).into()),
+        ] {
+            chat.agent_runtime = runtime.into();
+            let items = merge_archived_items(&[], std::slice::from_ref(&chat));
+            assert_eq!(items[0].runtime.as_deref(), Some(runtime));
+            assert_eq!(items[0].icon().path, path);
+            assert_eq!(
+                items[0].icon().color(theme::faint(), false),
+                theme::with_alpha(tint, 0.45)
+            );
+        }
+        chat.agent_runtime = "unknown".into();
+        let items = merge_archived_items(
+            &[mission(
+                "m1",
+                "Mission",
+                "/work/mission",
+                "2026-08-20T01:00:00Z",
+            )],
+            &[chat],
+        );
+        assert_eq!(items[0].icon().path, "message-square.svg");
+        assert_eq!(items[1].icon().path, "rocket.svg");
+        assert_eq!(items[1].icon().color(theme::faint(), false), theme::faint());
     }
 
     #[test]

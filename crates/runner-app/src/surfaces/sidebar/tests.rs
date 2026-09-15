@@ -591,10 +591,18 @@ fn tab_and_mission_menus_have_the_trimmed_item_lists() {
             session_id: "shell-1".into(),
         }
     );
-    assert_eq!(sidebar_tab_icon(1, Some("shell")), "square-terminal.svg");
-    assert_eq!(sidebar_tab_icon(1, Some("codex")), "message-square.svg");
-    assert_eq!(sidebar_tab_icon(2, Some("shell")), "columns-2.svg");
-    assert_eq!(sidebar_tab_icon(3, Some("shell")), "columns-3.svg");
+    for (runtime, path) in [
+        (Some("shell"), "square-terminal.svg"),
+        (Some("claude-code"), "claude.svg"),
+        (Some("codex"), "openai.svg"),
+        (Some("trae"), "trae.svg"),
+        (Some("unknown"), "message-square.svg"),
+        (None, "message-square.svg"),
+    ] {
+        assert_eq!(sidebar_tab_icon(1, runtime).path, path);
+        assert_eq!(sidebar_tab_icon(2, runtime).path, "columns-2.svg");
+        assert_eq!(sidebar_tab_icon(3, runtime).path, "columns-3.svg");
+    }
 
     let mission_entries =
         mission_menu_entries("mission-node-1", false, "mission-1", "My mission".into());
