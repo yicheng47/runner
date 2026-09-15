@@ -33,24 +33,34 @@ pub fn provider_title(raw: &str, cwd: Option<&str>) -> Option<String> {
     }
 }
 
+fn is_chrome(c: char) -> bool {
+    c.is_whitespace()
+        || ('\u{2800}'..='\u{28ff}').contains(&c)
+        || ('◐'..='◓').contains(&c)
+        || matches!(
+            c,
+            '✳' | '✻' | '✽' | '✶' | '✢' | '·' | '●' | '◌' | '⚠' | '✓' | '\u{fe0f}' | '\u{fe0e}'
+        )
+}
+
 fn trim_chrome(text: &str) -> &str {
-    text.trim_matches(|c: char| {
-        c.is_whitespace()
-            || ('\u{2800}'..='\u{28ff}').contains(&c)
-            || ('◐'..='◓').contains(&c)
-            || matches!(
-                c,
-                '✳' | '✻' | '✽' | '✶' | '✢' | '·' | '●' | '◌' | '⚠' | '✓' | '\u{fe0f}' | '\u{fe0e}'
-            )
-    })
+    text.trim_matches(is_chrome)
+}
+
+/// A status word plus the cage a provider blinks it in. Codex alternates
+/// `[ ! ] Action Required` and `[ . ] Action Required` once a second to
+/// blink its title (codex-rs `tui/src/chatwidget/status_surfaces.rs`), so
+/// recognizing one phase and not the other makes our label flicker at the
+/// same rate. Trim the cage and whatever sits inside it, rather than the
+/// fillings we happen to have seen.
+fn trim_caged_chrome(text: &str) -> &str {
+    text.trim_matches(|c: char| is_chrome(c) || matches!(c, '[' | ']' | '!' | '.' | '…'))
 }
 
 fn decoration(text: &str, cwd: Option<&str>) -> bool {
     let lower = text.to_ascii_lowercase();
     if matches!(
-        lower
-            .trim_start_matches(['[', ']', '!', ' '])
-            .trim_end_matches(['.', '…']),
+        trim_caged_chrome(&lower),
         "" | "codex"
             | "claude"
             | "claude code"
@@ -108,6 +118,29 @@ mod tests {
         }
     }
 
+    /// Codex blinks its Action Required prefix between `[ ! ]` and `[ . ]`
+    /// once a second. Whatever we do with one phase we must do with the
+    /// other, or the label flickers at Codex's blink rate rather than
+    /// holding still.
+    #[test]
+    fn codex_action_required_blink_phases_agree() {
+        let cwd = Some("/Users/jason/repos/yicheng47");
+        for suffix in ["", " | yicheng47", " | Discuss cars | yicheng47"] {
+            let visible = format!("[ ! ] Action Required{suffix}");
+            let hidden = format!("[ . ] Action Required{suffix}");
+            assert_eq!(
+                provider_title(&visible, cwd),
+                provider_title(&hidden, cwd),
+                "blink phases disagree for {suffix:?}"
+            );
+        }
+        assert_eq!(provider_title("[ . ] Action Required", cwd), None);
+        assert_eq!(
+            provider_title("[ . ] Action Required | Discuss cars | yicheng47", cwd).as_deref(),
+            Some("Discuss cars")
+        );
+    }
+
     #[test]
     fn separates_topics_from_provider_chrome() {
         let cwd = Some("/Users/jason/repos/yicheng47");
@@ -122,6 +155,7 @@ mod tests {
             "C:\\repos\\runner",
             "Codex | working | yicheng47",
             "[ ! ] Action Required | yicheng47",
+            "[ . ] Action Required | yicheng47",
             "[   ] Action Required | yicheng47",
             "⚠️ Waiting for approval",
         ] {
@@ -134,6 +168,7 @@ mod tests {
             "✳ Discuss cars - yicheng47",
             "Discuss cars ⠹ | yicheng47",
             "[ ! ] Action Required | Discuss cars | yicheng47",
+            "[ . ] Action Required | Discuss cars | yicheng47",
             "/Users/jason/repos/yicheng47 | Discuss cars",
         ] {
             assert_eq!(
