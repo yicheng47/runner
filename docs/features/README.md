@@ -32,7 +32,7 @@ Since the GPUI rewrite shipped as `v0.6.0` (2026-08-23) there is one line of wor
 
 Shipped specs live in [`archive/`](./archive/), in spec-number order. See the directory listing for what's there.
 
-- [587 — Conversation titles for agent tabs](./archive/587-terminal-provided-titles.md) — implemented in [#594](https://github.com/yicheng47/runner/pull/594): manual names take precedence over cleaned provider titles and stable prompt fallbacks, with agent titles preserved through relaunch/resume.
+- [587 — Conversation titles for agent tabs](./archive/587-terminal-provided-titles.md) — implemented in [#594](https://github.com/yicheng47/runner/pull/594): manual names take precedence over cleaned provider titles; runtime defaults remain until a useful title arrives, and provider titles survive relaunch/resume.
 
 - [584 — Title-spinner status heuristic](./archive/584-title-status-detection.md) — implemented by #585 and included unchanged in v0.8.9; the next agent detector is #347. The [old hook proposal (52)](./archive/52-hook-based-session-status.md) remains historical context for the reopened issue.
 

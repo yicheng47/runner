@@ -149,7 +149,6 @@ fn direct_session(id: &str, runtime: &str, status: SessionStatus) -> DirectSessi
         status,
         title: None,
         live_title: None,
-        prompt_title: None,
         cwd: None,
         started_at: None,
         stopped_at: None,
@@ -187,19 +186,18 @@ fn session_titles_respect_manual_names_persistence_and_resets() {
 }
 
 #[test]
-fn agent_names_follow_manual_provider_prompt_and_default_order() {
+fn agent_names_follow_manual_provider_and_default_order() {
     let mut entry = direct_session("chat", "codex", SessionStatus::Running);
     entry.cwd = Some("/Users/jason/repos/yicheng47".into());
     let default = default_session_label(&entry);
     for raw in ["Codex", "yicheng47", "⠋ Working | yicheng47"] {
         assert_eq!(session_label_live(&entry, Some(raw)), default);
     }
-    entry.prompt_title = Some("Discuss cars".into());
     entry.live_title = Some("yicheng47".into());
-    assert_eq!(session_label(&entry), "Discuss cars");
+    assert_eq!(session_label(&entry), default);
     assert_eq!(
         session_label_live(&entry, Some("Ready | yicheng47")),
-        "Discuss cars"
+        default
     );
     assert_eq!(
         session_label_live(&entry, Some("Electric cars | yicheng47")),

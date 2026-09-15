@@ -91,14 +91,6 @@ impl SessionManager {
     ) -> thread::JoinHandle<()> {
         let manager_t: Arc<SessionManager> = Arc::clone(self);
         let started_at = std::time::Instant::now();
-        let title_generation = pool
-            .get()
-            .map_err(crate::error::Error::from)
-            .and_then(|conn| {
-                Ok(crate::repo::session::get_row(&conn, &session_id)?
-                    .and_then(|row| row.started_at)
-                    .map(|time| time.to_rfc3339()))
-            });
         // Capture the cancellation flag before moving `output` into
         // the thread. `kill` flips this flag so the consumer
         // breaks out within ~500ms even if the reader/EOF
@@ -162,33 +154,6 @@ impl SessionManager {
                         if first_turn_pending {
                             first_turn_pending =
                                 manager_t.deliver_windows_batch_first_turn(&session_id, &bytes);
-                        }
-                    }
-                    Ok(RuntimeOutput::PromptTitle(title)) => {
-                        if let Ok(generation) = &title_generation {
-                            let result =
-                                pool.get()
-                                    .map_err(crate::error::Error::from)
-                                    .and_then(|conn| {
-                                        Ok(crate::repo::session::set_prompt_title(
-                                            &conn,
-                                            &session_id,
-                                            &title,
-                                            generation.as_deref(),
-                                        )?)
-                                    });
-                            match result {
-                                Ok(changed) if changed > 0 => {
-                                    events.updated(&SessionUpdatedEvent {
-                                        session_id: session_id.clone(),
-                                        mission_id: mission_id.clone(),
-                                    })
-                                }
-                                Err(error) => {
-                                    log::warn!("persist prompt title for {session_id}: {error}")
-                                }
-                                _ => {}
-                            }
                         }
                     }
                     Ok(RuntimeOutput::AgentObservation(observation)) => {

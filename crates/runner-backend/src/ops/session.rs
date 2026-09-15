@@ -32,7 +32,6 @@ pub struct SessionRow {
     #[serde(flatten)]
     pub session: Session,
     pub live_title: Option<String>,
-    pub prompt_title: Option<String>,
     /// Handle of the runner this session instantiates — denormalized so the
     /// frontend can render `@coder`-style labels without a second lookup.
     pub handle: String,
@@ -64,7 +63,6 @@ pub fn list_for_mission(conn: &rusqlite::Connection, mission_id: &str) -> Result
         .map(|row| SessionRow {
             session: row.session,
             live_title: row.live_title,
-            prompt_title: row.prompt_title,
             handle: row.handle,
             runtime: row.runtime,
             lead: row.lead,
@@ -289,7 +287,6 @@ pub struct DirectSessionEntry {
     /// handle + start time. Set via `session_rename`.
     pub title: Option<String>,
     pub live_title: Option<String>,
-    pub prompt_title: Option<String>,
     /// Per-chat cwd override stored on the row at spawn. NULL means
     /// the chat falls back to the runner's `working_dir` on
     /// resume/spawn. Surfaced for the chat header's meta line.
@@ -333,7 +330,6 @@ impl DirectSessionEntry {
                         crate::session::title::provider_title(title, self.cwd.as_deref())
                     })
                 })
-                .or_else(|| self.prompt_title.clone())
         })
     }
 }
@@ -383,7 +379,6 @@ fn direct_entry_from_repo(
         status: d.row.status,
         title: d.row.title,
         live_title: d.row.live_title,
-        prompt_title: d.row.prompt_title,
         cwd: d.row.cwd,
         started_at: d.row.started_at,
         stopped_at: d.row.stopped_at,

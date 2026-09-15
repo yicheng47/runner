@@ -37,7 +37,6 @@ exit 0
 
 #[derive(Debug, Default, Deserialize)]
 struct StatusReport {
-    prompt: Option<String>,
     #[serde(default)]
     hook_event_name: String,
     notification_type: Option<String>,
@@ -61,7 +60,6 @@ struct PendingTool {
 
 #[derive(Default)]
 struct ClaudeObservation {
-    pending_title: Option<String>,
     value: AgentObservation,
     session_id: Option<String>,
     prompt_id: Option<String>,
@@ -108,12 +106,6 @@ impl ClaudeObservation {
         match report.hook_event_name.as_str() {
             "UserPromptSubmit" => {
                 self.clear_turn();
-                if self.pending_title.is_none() {
-                    self.pending_title = report
-                        .prompt
-                        .as_deref()
-                        .and_then(super::title::prompt_title);
-                }
                 self.work();
             }
             "PreToolUse" => {
@@ -422,10 +414,6 @@ impl ClaudeStatusWatcher {
         Arc::clone(&self.interrupt)
     }
 
-    pub(crate) fn take_prompt_title(&mut self) -> Option<String> {
-        self.observation.pending_title.take()
-    }
-
     pub(crate) fn drain_observations(
         &mut self,
         mut transition: impl FnMut(AgentObservation, &'static str),
@@ -554,36 +542,6 @@ mod tests {
         assert!(!hooks_supported(true));
         assert!(hooks_supported(false));
         assert_eq!(hooks_supported(cfg!(windows)), cfg!(unix));
-    }
-
-    #[test]
-    fn prompt_titles_ignore_subagents_and_keep_the_first_usable_prompt() {
-        let mut model = ClaudeObservation::default();
-        observe(
-            &mut model,
-            "SessionStart",
-            serde_json::json!({"session_id":"main"}),
-        );
-        for fields in [
-            serde_json::json!({"session_id":"main", "agent_id":"child", "prompt":"Wrong title"}),
-            serde_json::json!({"session_id":"other", "prompt":"Wrong title"}),
-            serde_json::json!({"session_id":"main", "prompt":"/model"}),
-        ] {
-            observe(&mut model, "UserPromptSubmit", fields);
-            assert_eq!(model.pending_title, None);
-        }
-        observe(
-            &mut model,
-            "UserPromptSubmit",
-            serde_json::json!({"session_id":"main", "prompt":"Please fix the parser"}),
-        );
-        assert_eq!(model.pending_title.as_deref(), Some("Fix the parser"));
-        observe(
-            &mut model,
-            "UserPromptSubmit",
-            serde_json::json!({"session_id":"main", "prompt":"A later message"}),
-        );
-        assert_eq!(model.pending_title.as_deref(), Some("Fix the parser"));
     }
 
     #[test]

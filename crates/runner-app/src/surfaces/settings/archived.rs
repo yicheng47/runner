@@ -791,7 +791,6 @@ mod tests {
             status: SessionStatus::Stopped,
             title: title.map(str::to_owned),
             live_title: None,
-            prompt_title: None,
             cwd: Some(cwd.into()),
             started_at: Some("2026-08-01T00:00:00Z".parse().unwrap()),
             stopped_at: None,

@@ -2339,7 +2339,6 @@ mod tests {
             status: SessionStatus::Running,
             title: None,
             live_title: None,
-            prompt_title: None,
             cwd: None,
             started_at: None,
             stopped_at: None,

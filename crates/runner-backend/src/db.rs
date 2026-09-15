@@ -168,7 +168,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (21, include_str!("../migrations/0021_session_attention.sql")),
     (
         22,
-        include_str!("../migrations/0022_session_auto_titles.sql"),
+        include_str!("../migrations/0022_session_live_title.sql"),
     ),
 ];
 
@@ -1638,7 +1638,7 @@ Talking to the human:
     }
 
     #[test]
-    fn migration_0022_preserves_names_and_leaves_auto_titles_unset() {
+    fn migration_0022_preserves_names_and_leaves_live_titles_unset() {
         let mut conn = Connection::open_in_memory().unwrap();
         run_migrations_up_to(&mut conn, 21).unwrap();
         conn.execute(
@@ -1647,14 +1647,14 @@ Talking to the human:
         )
         .unwrap();
         run_migrations(&mut conn).unwrap();
-        let names: (Option<String>, Option<String>, Option<String>) = conn
+        let names: (Option<String>, Option<String>) = conn
             .query_row(
-                "SELECT title, live_title, prompt_title FROM sessions WHERE id = 'chat'",
+                "SELECT title, live_title FROM sessions WHERE id = 'chat'",
                 [],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .unwrap();
-        assert_eq!(names, (Some("Codex".into()), None, None));
+        assert_eq!(names, (Some("Codex".into()), None));
     }
 
     #[test]

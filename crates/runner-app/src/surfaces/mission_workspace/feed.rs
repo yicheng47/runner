@@ -39,8 +39,7 @@ impl MissionWorkspace {
                         session.session.cwd.as_deref(),
                     )
                 })
-            })
-            .or_else(|| session.prompt_title.clone());
+            });
         match title {
             Some(title) => format!("@{} · {title}", session.handle),
             None => format!("@{}", session.handle),
