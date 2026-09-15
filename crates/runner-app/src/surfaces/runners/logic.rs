@@ -269,7 +269,7 @@ pub(super) fn permission_mode_description(runtime: &str, mode: PermissionMode) -
         (Some(Runtime::Codex), PermissionMode::Bypass) => "Never ask while keeping Codex's workspace-write sandbox (`--ask-for-approval never`).",
         (Some(Runtime::Trae), PermissionMode::Default) => "TRAE CLI's built-in approval cadence.",
         (Some(Runtime::Trae), PermissionMode::Auto) => {
-            "Use TRAE CLI's native auto-reviewer (`--permission-mode auto`)."
+            "No native Auto mode; uses TRAE CLI's configured default."
         }
         (Some(Runtime::Trae), PermissionMode::Bypass) => {
             "Bypass TRAE CLI permission prompts (`--permission-mode bypass_permissions`)."

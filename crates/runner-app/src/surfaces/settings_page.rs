@@ -516,7 +516,7 @@ fn missions_settings_pane(
                                     .child(mission_permissions),
                             )
                             .subtitle(
-                                "Applied to every slot when a mission starts. Bypass never prompts — nobody is watching a mission slot to answer. Direct chats keep their runner's own mode.",
+                                "Applied to every slot when a mission starts. Bypass never prompts — nobody is watching a mission slot to answer. Direct chats assert no permission posture — each agent uses its own default.",
                             )
                             .into_any_element(),
                         ])),

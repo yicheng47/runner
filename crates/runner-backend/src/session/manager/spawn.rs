@@ -1219,8 +1219,13 @@ impl SessionManager {
             resolve_runtime_override(runner, runtime_override, model_override, effort_override)?;
         let pinned = resolution.pinned;
         let agent_options_overridden = resolution.effective.is_some();
-        let runner =
+        let mut runner =
             self.resolve_runner_executable(resolution.effective.as_ref().unwrap_or(runner), &pool)?;
+        // Permission posture belongs to MissionPermissionMode (feature
+        // 596): attended chats strip the row's permission flags and
+        // append nothing, leaving every other arg alone.
+        runner.args =
+            router::runtime::strip_permission_flags(Runtime::parse(&runner.runtime), &runner.args);
 
         // Agent-native session resume: `spawn_direct` always opens a *new*
         // chat. The runtime adapter self-assigns a fresh
@@ -1561,7 +1566,7 @@ impl SessionManager {
             )));
         }
 
-        let runner = if let Some(runner) = runner_template {
+        let mut runner = if let Some(runner) = runner_template {
             let runner = match resolve_runtime_override(
                 &runner,
                 source.agent_runtime.as_deref(),
@@ -1583,6 +1588,12 @@ impl SessionManager {
                 &pool,
             )?
         };
+
+        // Permission posture belongs to MissionPermissionMode (feature
+        // 596): a fork is still an attended chat, so strip permission
+        // flags and leave every other arg alone.
+        runner.args =
+            router::runtime::strip_permission_flags(Runtime::parse(&runner.runtime), &runner.args);
 
         let resolved_cwd = resolve_spawn_cwd(source.cwd.as_deref(), runner.working_dir.as_deref());
         let Some(chat_cwd) = resolved_cwd.as_deref() else {
@@ -2096,7 +2107,7 @@ impl SessionManager {
         // spawn (runtime override, feature 41) re-apply it here so the
         // respawn keeps this session's engine regardless of later
         // slot/override edits.
-        let runner = if let Some(runner_id) = snap.runner_id.as_deref() {
+        let mut runner = if let Some(runner_id) = snap.runner_id.as_deref() {
             let conn = pool.get()?;
             let runner = crate::ops::runner::get(&conn, runner_id)?;
             let mut runner = match resolve_runtime_override(
@@ -2135,6 +2146,16 @@ impl SessionManager {
                 &pool,
             )?
         };
+
+        // Permission posture belongs to MissionPermissionMode (feature
+        // 596): resumed chats are attended, including runtime-only
+        // chats. Strip permission flags and leave every other arg alone.
+        if snap.mission_id.is_none() {
+            runner.args = router::runtime::strip_permission_flags(
+                Runtime::parse(&runner.runtime),
+                &runner.args,
+            );
+        }
 
         // Resume plan: hand the prior agent_session_key back to the
         // runtime adapter so claude-code uses `--resume <uuid>` and

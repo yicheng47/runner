@@ -36,7 +36,7 @@ Every chat spawn path strips the runner row's permission flags and appends nothi
 
 - **Nothing is stored differently.** Rows keep their `args` verbatim, there is no migration, and `ops::runner::create`/`update` keep baking the chosen mode. The runner form's dropdown still means something, because `MissionPermissionMode::RunnerDefault` reads the row.
 - **Mission spawns are untouched.** `MissionPermissionMode` stays the single place a permission posture is decided, including its codex-specific Bypass arm (`danger-full-access` rather than `workspace-write`).
-- **No UI change.** This is spawn-path behavior only.
+- **No UI surface or behavior change.** Correct the stale permission descriptions in Settings and the Trae runner form; keep the offered permission modes unchanged. This is spawn-path behavior only.
 
 ### The invalid Trae value
 

@@ -2007,6 +2007,10 @@ fn mission_spawn_converges_claude_row_to_the_app_wide_permission_mode() {
     runner.handle = "perm-claude".into();
 
     let bypass = mission_spawn_args(&runner, MissionPermissionMode::Bypass);
+    assert_eq!(
+        &bypass[..4],
+        ["--model", "opus", "--permission-mode", "bypassPermissions"]
+    );
     assert!(
         has_arg_pair(&bypass, "--permission-mode", "bypassPermissions"),
         "{bypass:?}"
@@ -2018,6 +2022,7 @@ fn mission_spawn_converges_claude_row_to_the_app_wide_permission_mode() {
     assert!(has_arg_pair(&bypass, "--model", "opus"), "{bypass:?}");
 
     let auto = mission_spawn_args(&runner, MissionPermissionMode::Auto);
+    assert_eq!(&auto[..4], ["--model", "opus", "--permission-mode", "auto"]);
     assert!(has_arg_pair(&auto, "--permission-mode", "auto"), "{auto:?}");
     assert!(
         !has_arg_pair(&auto, "--permission-mode", "plan"),
@@ -2026,6 +2031,7 @@ fn mission_spawn_converges_claude_row_to_the_app_wide_permission_mode() {
     assert!(has_arg_pair(&auto, "--model", "opus"), "{auto:?}");
 
     let runner_default = mission_spawn_args(&runner, MissionPermissionMode::RunnerDefault);
+    assert_eq!(&runner_default[..runner.args.len()], runner.args);
     assert!(
         has_arg_pair(&runner_default, "--permission-mode", "plan"),
         "{runner_default:?}"
@@ -2055,6 +2061,15 @@ fn mission_spawn_converges_codex_row_to_the_app_wide_permission_mode() {
     runner.handle = "perm-codex".into();
 
     let bypass = mission_spawn_args(&runner, MissionPermissionMode::Bypass);
+    assert_eq!(
+        &bypass[..4],
+        [
+            "--ask-for-approval",
+            "never",
+            "--sandbox",
+            "danger-full-access"
+        ]
+    );
     assert!(
         has_arg_pair(&bypass, "--ask-for-approval", "never"),
         "{bypass:?}"
@@ -2074,6 +2089,15 @@ fn mission_spawn_converges_codex_row_to_the_app_wide_permission_mode() {
     );
 
     let auto = mission_spawn_args(&runner, MissionPermissionMode::Auto);
+    assert_eq!(
+        &auto[..4],
+        [
+            "--ask-for-approval",
+            "on-request",
+            "--sandbox",
+            "workspace-write"
+        ]
+    );
     assert!(
         has_arg_pair(&auto, "--ask-for-approval", "on-request"),
         "{auto:?}"
@@ -2084,6 +2108,7 @@ fn mission_spawn_converges_codex_row_to_the_app_wide_permission_mode() {
     );
 
     let runner_default = mission_spawn_args(&runner, MissionPermissionMode::RunnerDefault);
+    assert_eq!(&runner_default[..runner.args.len()], runner.args);
     assert!(
         has_arg_pair(&runner_default, "--ask-for-approval", "on-request"),
         "{runner_default:?}"
@@ -2092,6 +2117,23 @@ fn mission_spawn_converges_codex_row_to_the_app_wide_permission_mode() {
         has_arg_pair(&runner_default, "--sandbox", "workspace-write"),
         "{runner_default:?}"
     );
+}
+
+#[test]
+fn mission_spawn_converges_trae_row_to_the_app_wide_permission_mode() {
+    let mut runner = runner("trae-custom", &["--permission-mode", "auto", "--debug"]);
+    runner.runtime = "trae".into();
+
+    let bypass = mission_spawn_args(&runner, MissionPermissionMode::Bypass);
+    assert_eq!(
+        &bypass[..3],
+        ["--debug", "--permission-mode", "bypass_permissions"]
+    );
+    let auto = mission_spawn_args(&runner, MissionPermissionMode::Auto);
+    assert_chat_has_no_permission_flags(&auto);
+    assert_eq!(auto[0], "--debug");
+    let runner_default = mission_spawn_args(&runner, MissionPermissionMode::RunnerDefault);
+    assert_eq!(&runner_default[..runner.args.len()], runner.args);
 }
 
 #[test]
@@ -2259,19 +2301,201 @@ fn direct_spawn_ignores_the_mission_permission_mode() {
             .unwrap();
         let args = fake.last_spawn_spec().unwrap().args;
         assert!(
-            has_arg_pair(&args, "--permission-mode", "plan"),
+            !args.iter().any(|arg| arg == "--permission-mode"),
             "{mode:?}: {args:?}"
         );
         assert!(
             !args
                 .iter()
-                .any(|arg| arg == "bypassPermissions" || arg == "auto"),
+                .any(|arg| arg == "bypassPermissions" || arg == "auto" || arg == "plan"),
             "{mode:?}: {args:?}"
         );
         seen.push(without_per_session_args(&args));
         mgr.kill(&spawned.id).unwrap();
     }
     assert!(seen.windows(2).all(|pair| pair[0] == pair[1]), "{seen:?}");
+}
+
+fn assert_chat_has_no_permission_flags(args: &[String]) {
+    for flag in [
+        "--permission-mode",
+        "--dangerously-skip-permissions",
+        "--ask-for-approval",
+        "--sandbox",
+    ] {
+        assert!(
+            !args
+                .iter()
+                .any(|arg| arg == flag || arg.starts_with(&format!("{flag}="))),
+            "{args:?}"
+        );
+    }
+}
+
+#[test]
+fn direct_chat_spawn_and_resume_strip_permission_flags_and_preserve_row_args() {
+    for (runtime, permission_args, effort_args) in [
+        (
+            "claude-code",
+            vec![
+                "--permission-mode",
+                "auto",
+                "--permission-mode=plan",
+                "--dangerously-skip-permissions",
+            ],
+            vec!["--effort", "high"],
+        ),
+        (
+            "codex",
+            vec![
+                "--ask-for-approval",
+                "never",
+                "--sandbox",
+                "workspace-write",
+                "--ask-for-approval=on-request",
+                "--sandbox=read-only",
+            ],
+            vec!["-c", "model_reasoning_effort=high"],
+        ),
+        (
+            "trae",
+            vec![
+                "--permission-mode",
+                "auto",
+                "--permission-mode=bypass_permissions",
+            ],
+            vec!["-c", "model_reasoning_effort=high"],
+        ),
+    ] {
+        let pool = pool_with_schema();
+        let app_data = tempfile::tempdir().unwrap();
+        let mut kept = vec!["--debug", "--model", "test-model"];
+        kept.extend(effort_args);
+        kept.extend(["--user-flag", "custom-value"]);
+        let mut args = kept.clone();
+        args.splice(1..1, permission_args);
+        let mut runner = runner("agent-custom", &args);
+        runner.runtime = runtime.into();
+        let stored_args = serde_json::to_string(&runner.args).unwrap();
+        {
+            let conn = pool.get().unwrap();
+            conn.execute(
+                "INSERT INTO runners
+                    (id, handle, display_name, runtime, command, args_json, created_at, updated_at)
+                 VALUES (?1, 'tester', 'Tester', ?2, ?3, ?4, ?5, ?5)",
+                params![
+                    runner.id,
+                    runtime,
+                    runner.command,
+                    stored_args,
+                    Utc::now().to_rfc3339()
+                ],
+            )
+            .unwrap();
+        }
+        let fake = fake_runtime();
+        let mgr = mgr_with_fake(None, Arc::clone(&fake));
+        let spawned = mgr
+            .spawn_direct(
+                &runner,
+                None,
+                None,
+                None,
+                None,
+                Some(app_data.path().to_str().unwrap()),
+                None,
+                None,
+                app_data.path(),
+                Arc::clone(&pool),
+                capture(),
+                None,
+            )
+            .unwrap();
+        let args = fake.last_spawn_spec().unwrap().args;
+        assert_chat_has_no_permission_flags(&args);
+        assert_eq!(&args[..kept.len()], kept);
+
+        fake.close_spawn(0);
+        wait_for_session_exit(&mgr, &pool, &spawned.id);
+        mgr.resume(
+            &spawned.id,
+            None,
+            None,
+            app_data.path(),
+            Arc::clone(&pool),
+            capture(),
+        )
+        .unwrap();
+        let args = fake.last_spawn_spec().unwrap().args;
+        assert_chat_has_no_permission_flags(&args);
+        assert_eq!(&args[..kept.len()], kept);
+        let persisted_args: String = pool
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT args_json FROM runners WHERE id = ?1",
+                params![runner.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(persisted_args, stored_args);
+        mgr.kill(&spawned.id).unwrap();
+    }
+}
+
+#[test]
+fn runtime_only_chat_spawn_and_resume_assert_no_permission_posture() {
+    for runtime in ["claude-code", "codex", "trae"] {
+        let pool = pool_with_schema();
+        let app_data = tempfile::tempdir().unwrap();
+        let runner = runtime_direct_runner(
+            runtime,
+            Some("agent-custom"),
+            Some("test-model"),
+            Some("high"),
+        )
+        .unwrap();
+        let fake = fake_runtime();
+        let mgr = mgr_with_fake(None, Arc::clone(&fake));
+        let spawned = mgr
+            .spawn_runtime_direct(
+                &runner,
+                None,
+                Some(app_data.path().to_str().unwrap()),
+                None,
+                None,
+                app_data.path(),
+                Arc::clone(&pool),
+                capture(),
+            )
+            .unwrap();
+        let args = fake.last_spawn_spec().unwrap().args;
+        assert_chat_has_no_permission_flags(&args);
+        assert!(has_arg_pair(&args, "--model", "test-model"));
+        let effort = if runtime == "claude-code" {
+            ("--effort", "high")
+        } else {
+            ("-c", "model_reasoning_effort=high")
+        };
+        assert!(has_arg_pair(&args, effort.0, effort.1));
+
+        fake.close_spawn(0);
+        wait_for_session_exit(&mgr, &pool, &spawned.id);
+        mgr.resume(
+            &spawned.id,
+            None,
+            None,
+            app_data.path(),
+            Arc::clone(&pool),
+            capture(),
+        )
+        .unwrap();
+        let args = fake.last_spawn_spec().unwrap().args;
+        assert_chat_has_no_permission_flags(&args);
+        assert!(has_arg_pair(&args, "--model", "test-model"));
+        assert!(has_arg_pair(&args, effort.0, effort.1));
+        mgr.kill(&spawned.id).unwrap();
+    }
 }
 
 #[test]
@@ -7204,7 +7428,7 @@ fn claude_direct_chat_fork_spawns_tui_directly_with_copied_row() {
                 (id, handle, display_name, runtime, command, args_json,
                  env_json, working_dir, system_prompt, created_at, updated_at)
              VALUES (?1, 'forker', 'Forker', 'claude-code', ?2,
-                     '[\"--runner-flag\"]', ?3,
+                     '[\"--permission-mode\",\"auto\",\"--runner-flag\",\"--dangerously-skip-permissions\"]', ?3,
                      '/tmp', 'Forker persona', ?4, ?4)",
             params![
                 runner_id,
@@ -7273,6 +7497,7 @@ fn claude_direct_chat_fork_spawns_tui_directly_with_copied_row() {
 
     let assigned_key = fork.agent_session_key.as_deref().unwrap();
     let spec = fake.last_spawn_spec().expect("fork should spawn the TUI");
+    assert_chat_has_no_permission_flags(&spec.args);
     assert_eq!(spec.command, command);
     assert_eq!(
         &spec.args[..11],
@@ -7390,6 +7615,7 @@ fn codex_direct_chat_fork_captures_headless_key_then_resumes_without_watcher() {
 
     let spec = fake.last_spawn_spec().expect("resume should spawn the TUI");
     assert_eq!(&spec.args[..2], &["resume", fork_key.as_str()]);
+    assert_chat_has_no_permission_flags(&spec.args);
     assert!(!spec.args.contains(&"fork".to_string()));
     assert!(mgr.codex_capture_context(&spawned.id).is_none());
     let fork = crate::repo::session::get_row(&pool.get().unwrap(), &spawned.id)
