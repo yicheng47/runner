@@ -466,10 +466,20 @@ impl NativeRoot {
         let permission_mode = if slot.is_some() {
             PermissionMode::Default
         } else {
-            runner_backend::router::runtime::infer_permission_mode(
+            let inferred = runner_backend::router::runtime::infer_permission_mode(
                 Runtime::parse(&runner.runtime),
                 &runner.args,
-            )
+            );
+            // A row can carry a mode this runtime no longer offers —
+            // a Trae row saved with the old `--permission-mode auto`
+            // still infers as Auto (#599). Show the fallback rather
+            // than a value that is not in the list; saving then
+            // rewrites the row.
+            if permission_modes(&resolution.runtime).contains(&inferred) {
+                inferred
+            } else {
+                PermissionMode::Default
+            }
         };
         let permission_root = root.clone();
         let permission_select = cx.new(|select_cx| {

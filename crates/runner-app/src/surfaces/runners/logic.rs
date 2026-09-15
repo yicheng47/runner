@@ -206,11 +206,15 @@ pub(super) fn permission_modes(runtime: &str) -> &'static [PermissionMode] {
             PermissionMode::Auto,
             PermissionMode::Bypass,
         ],
-        Some(Runtime::Codex) | Some(Runtime::Trae) => &[
+        Some(Runtime::Codex) => &[
             PermissionMode::Default,
             PermissionMode::Auto,
             PermissionMode::Bypass,
         ],
+        // TRAE CLI has no auto-approve middle ground — `default`,
+        // `plan`, `bypass_permissions` — so offering Auto would write
+        // nothing and read back as Default (#599).
+        Some(Runtime::Trae) => &[PermissionMode::Default, PermissionMode::Bypass],
         Some(Runtime::Shell) | None => &[],
     }
 }
@@ -268,13 +272,12 @@ pub(super) fn permission_mode_description(runtime: &str, mode: PermissionMode) -
         (Some(Runtime::Codex), PermissionMode::Auto) => "Auto-run in the workspace and ask only when the model decides approval is needed (`--ask-for-approval on-request`).",
         (Some(Runtime::Codex), PermissionMode::Bypass) => "Never ask while keeping Codex's workspace-write sandbox (`--ask-for-approval never`).",
         (Some(Runtime::Trae), PermissionMode::Default) => "TRAE CLI's built-in approval cadence.",
-        (Some(Runtime::Trae), PermissionMode::Auto) => {
-            "No native Auto mode; uses TRAE CLI's configured default."
-        }
         (Some(Runtime::Trae), PermissionMode::Bypass) => {
             "Bypass TRAE CLI permission prompts (`--permission-mode bypass_permissions`)."
         }
-        (Some(Runtime::Codex | Runtime::Trae), PermissionMode::AcceptEdits) | (Some(Runtime::Shell) | None, _) => "",
+        (Some(Runtime::Codex | Runtime::Trae), PermissionMode::AcceptEdits)
+        | (Some(Runtime::Trae), PermissionMode::Auto)
+        | (Some(Runtime::Shell) | None, _) => "",
     }
 }
 
