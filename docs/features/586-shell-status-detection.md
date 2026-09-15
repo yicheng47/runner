@@ -38,4 +38,4 @@ Bundled injection must preserve each shell's startup chain and user configuratio
 
 - Runner: `crates/runner-backend/src/session/process/{unix,windows}.rs`, `session/pty_runtime.rs`, `session/manager/`, and `ops/session.rs`.
 - Ghostty: `src/shell-integration/` and `src/termio/shell_integration.zig` in `~/repos/gui/ghostty`; Zellij: foreground process discovery in `~/repos/gui/zellij`. Zellij's process discovery is not an agent Busy/Idle protocol.
-- [#584](./archive/584-title-status-detection.md) records the shipping title heuristic; [#587](./587-terminal-provided-titles.md) displays titles without interpreting them as activity.
+- [#584](./archive/584-title-status-detection.md) records the shipping title heuristic; [#587](./archive/587-terminal-provided-titles.md) displays titles without interpreting them as activity.

@@ -501,6 +501,32 @@ struct NativeRoot {
 }
 
 impl NativeRoot {
+    /// The `OSC 0/2` title the session's program is reporting, for surfaces
+    /// that label a session by what it says it is doing (#587).
+    pub(crate) fn attached_title(&self, session_id: &str, cx: &App) -> Option<String> {
+        self.app_store
+            .read(cx)
+            .bridge
+            .session(session_id)
+            .map(|terminal| terminal.title())
+            .or_else(|| {
+                self.attached
+                    .get(session_id)
+                    .map(|chat| chat.terminal.title())
+            })
+    }
+
+    /// Every attached session's reported title, for surfaces that must tell a
+    /// title change apart from ordinary terminal output: a wake fires on every
+    /// burst of bytes, and only a few of those carry new words.
+    pub(crate) fn attached_titles(&self, cx: &App) -> HashMap<String, String> {
+        self.attached
+            .iter()
+            .map(|(id, chat)| (id.clone(), chat.terminal.title()))
+            .chain(self.app_store.read(cx).bridge.titles())
+            .collect()
+    }
+
     pub(crate) fn request_model_catalog(&self, runtime: &str, cx: &Context<Self>) {
         if let Some(runtime) = runner_backend::model::Runtime::parse(runtime)
             .filter(|runtime| self.settings(cx).model_runtimes().contains(runtime))

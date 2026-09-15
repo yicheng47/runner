@@ -24,6 +24,6 @@ No shell detector was implemented in #585. A quiet `sleep 4` can still read Idle
 
 - [#347 — Hook-based agent status](../347-hook-based-session-status.md): use Claude Code and Codex lifecycle events; remove spinner classification when that replacement lands. Do not let output silence override a healthy hook-driven turn.
 - [#586 — Shell status](../586-shell-status-detection.md): try process detection first, with explicit Unix/Windows limits; consider Ghostty-style semantic shell integration later.
-- [#587 — Terminal-provided titles](../587-terminal-provided-titles.md): display child-supplied text and animation independently of activity, routing, and persistent names.
+- [#587 — Terminal-provided titles](./587-terminal-provided-titles.md): display child-supplied text and animation independently of activity, routing, and persistent names.
 
 The earlier draft treated title text as an authoritative declaration, promised exact shell detection, and described foreground detection as dropped in favor of immediate shell injection. Those claims are superseded by the decisions above. This archive records the shipped scope, not an implementation plan for the hook replacement.

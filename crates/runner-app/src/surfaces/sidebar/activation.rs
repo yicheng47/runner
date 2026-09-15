@@ -4,20 +4,9 @@ use crate::*;
 
 impl NativeRoot {
     pub(crate) fn tab_label(&self, layout: &PaneLayout, cx: &App) -> String {
-        if let Some(name) = &layout.name {
-            return name.clone();
-        }
-        let labels = layout
-            .session_ids()
-            .into_iter()
-            .filter_map(|session_id| self.session_entry(&session_id, cx))
-            .map(session_label)
-            .collect::<Vec<_>>();
-        if labels.is_empty() {
-            "Empty tab".into()
-        } else {
-            labels.join(" + ")
-        }
+        super::elements::tab_label_live(layout, &self.app_store.read(cx).sessions, |id| {
+            self.attached_title(id, cx)
+        })
     }
 
     pub(crate) fn prune_sidebar_collapse_state(&mut self, cx: &mut Context<Self>) {
@@ -115,10 +104,11 @@ impl NativeRoot {
             member_ids,
             viewed_session_id.as_deref(),
         ) {
-            Ok(updated) => {
+            Ok(Some(updated)) => {
                 self.app_store
                     .update(cx, |store, store_cx| store.replace_node(updated, store_cx));
             }
+            Ok(None) => {}
             Err(error) => self.error = Some(error.to_string()),
         }
     }

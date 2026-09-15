@@ -246,7 +246,6 @@ impl NativeRoot {
         match event.name {
             "session/exit" => {
                 if let Some(session_id) = session_id {
-                    self.attached.remove(&session_id);
                     let exit_code = event
                         .payload
                         .get("exit_code")
@@ -939,10 +938,20 @@ impl NativeRoot {
             errors.push(error.to_string());
         }
         let active_ids = layout.all_session_ids();
+        let ended_ids = self
+            .tabs
+            .tabs()
+            .iter()
+            .flat_map(PaneLayout::all_session_ids)
+            .filter(|id| {
+                self.session_entry(id, cx)
+                    .is_some_and(|entry| entry.status != SessionStatus::Running)
+            });
         let owned_ids = active_ids
             .iter()
             .filter(|session_id| !self.chat_secondaries.contains_key(*session_id))
             .cloned()
+            .chain(ended_ids)
             .collect::<HashSet<_>>();
         self.attached
             .retain(|session_id, _| owned_ids.contains(session_id));
@@ -998,7 +1007,6 @@ impl NativeRoot {
             .map(|entry| entry.status)
             .with_context(|| format!("direct chat not found: {session_id}"))?;
         if status != SessionStatus::Running {
-            self.attached.remove(session_id);
             return Ok(());
         }
         if self.attached.contains_key(session_id) {
@@ -2330,6 +2338,7 @@ mod tests {
             display_name: runtime.into(),
             status: SessionStatus::Running,
             title: None,
+            live_title: None,
             cwd: None,
             started_at: None,
             stopped_at: None,

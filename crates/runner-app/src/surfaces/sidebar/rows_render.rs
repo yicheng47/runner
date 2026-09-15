@@ -9,6 +9,7 @@ use super::elements::sidebar_row_label;
 use super::elements::sidebar_row_shell;
 use super::elements::sidebar_row_trailing_slot;
 use super::elements::sidebar_tab_target;
+use super::elements::tab_label_live;
 use super::elements::tab_shortcut_pill;
 use super::menus::sidebar_tab_icon;
 
@@ -22,6 +23,13 @@ use runner_backend::ops::mission::MissionSummary;
 use runner_backend::repo::node::{NodeRow, NodeType};
 
 impl Sidebar {
+    fn live_title(&self, session_id: &str, cx: &App) -> Option<String> {
+        self.shell
+            .upgrade()?
+            .read(cx)
+            .attached_title(session_id, cx)
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(super) fn render_tab_row(
         &self,
@@ -43,13 +51,7 @@ impl Sidebar {
             .iter()
             .any(|member| member.status == SessionStatus::Running);
         let pane_count = layout.root.leaves().len();
-        let label = layout.name.clone().unwrap_or_else(|| {
-            members
-                .iter()
-                .map(session_label)
-                .collect::<Vec<_>>()
-                .join(" + ")
-        });
+        let label = tab_label_live(&layout, &members, |id| self.live_title(id, cx));
         let renaming = self
             .rename
             .as_ref()
@@ -118,6 +120,7 @@ impl Sidebar {
                 false,
             )
             .children(node.pinned_position.is_some().then(pin_indicator))
+            .when(!live, |row| row.text_color(theme::faint()))
             .child(sidebar_icon(leaf_icon, live))
             .child(sidebar_row_label(label.clone(), active, false))
             .child(

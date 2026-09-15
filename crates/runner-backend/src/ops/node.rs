@@ -421,16 +421,28 @@ pub fn node_mark_viewed(
     id: &str,
     member_ids: Vec<String>,
     viewed_session_id: Option<&str>,
-) -> Result<NodeRow> {
+) -> Result<Option<NodeRow>> {
     let viewed_ids: Vec<_> = viewed_session_id.into_iter().map(str::to_owned).collect();
-    state.sessions.mark_status_viewed(&viewed_ids);
-    {
-        let conn = state.db.get()?;
+    let row = {
+        let mut conn = state.db.get()?;
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        // An exit/focus callback can arrive after archiving removed its tab.
+        let Some(tab) = repo::node::get(&tx, id)? else {
+            return Ok(None);
+        };
         let now = Utc::now().to_rfc3339();
         for session_id in &viewed_ids {
-            repo::session_attention::mark_viewed(&conn, session_id, &now)?;
+            repo::session_attention::mark_viewed(&tx, session_id, &now)?;
         }
-    }
+        let row = if repo::session_attention::any_unread(&tx, &repo::node::session_ids(&tab))? {
+            Some(tab)
+        } else {
+            repo::node::mark_viewed(&tx, id, Utc::now())?
+        };
+        tx.commit()?;
+        row
+    };
+    state.sessions.mark_status_viewed(&viewed_ids);
     state.windows.mark_focused(window_label);
     state.windows.set_subjects(
         window_label,
@@ -439,15 +451,6 @@ pub fn node_mark_viewed(
     state
         .windows
         .set_viewed_session(window_label, viewed_session_id);
-    let conn = state.db.get()?;
-    let tab =
-        repo::node::get(&conn, id)?.ok_or_else(|| Error::msg(format!("node not found: {id}")))?;
-    let row = if repo::session_attention::any_unread(&conn, &repo::node::session_ids(&tab))? {
-        tab
-    } else {
-        repo::node::mark_viewed(&conn, id, Utc::now())?
-            .ok_or_else(|| Error::msg(format!("node not found: {id}")))?
-    };
     state.events.emit(
         ATTENTION_CHANGED_EVENT,
         &serde_json::json!({ "tab_id": id }),
@@ -1159,6 +1162,51 @@ mod tests {
     }
 
     #[test]
+    fn late_view_after_archiving_a_split_tab_is_a_noop() {
+        let state = test_core();
+        let tab = create_tab(&state, &["a", "b"]);
+        let next = create_tab(&state, &["next"]);
+        node_mark_viewed(&state, "main", &next.id, vec!["next".into()], Some("next"))
+            .unwrap()
+            .unwrap();
+        {
+            let conn = state.db.get().unwrap();
+            conn.execute(
+                "UPDATE sessions SET status = 'stopped' WHERE id IN ('a', 'b')",
+                [],
+            )
+            .unwrap();
+            repo::session_attention::record_completion(&conn, "b", false, 100).unwrap();
+        }
+        for id in ["a", "b"] {
+            crate::ops::session::session_archive(&state, id).unwrap();
+        }
+        let mut events = state.events.subscribe();
+
+        let result = node_mark_viewed(
+            &state,
+            "main",
+            &tab.id,
+            vec!["a".into(), "b".into()],
+            Some("b"),
+        );
+
+        assert!(result.unwrap().is_none());
+        assert_eq!(state.windows.focused_direct_sessions("main"), ["next"]);
+        assert_eq!(drain_attention_count(&mut events), 0);
+        let conn = state.db.get().unwrap();
+        assert!(repo::node::get(&conn, &tab.id).unwrap().is_none());
+        assert!(repo::session_attention::any_unread(&conn, &["b".into()]).unwrap());
+        for id in ["a", "b"] {
+            assert!(repo::session::get_row(&conn, id)
+                .unwrap()
+                .unwrap()
+                .archived_at
+                .is_some());
+        }
+    }
+
+    #[test]
     fn viewing_one_pane_preserves_persisted_sibling_unread() {
         let state = test_core();
         let tab = create_tab(&state, &["a", "b"]);
@@ -1175,6 +1223,7 @@ mod tests {
             vec!["a".into(), "b".into()],
             Some("b"),
         )
+        .unwrap()
         .unwrap();
         assert_eq!(viewed.last_viewed_at, completed.last_viewed_at);
         mark_direct_sessions_viewed(&state, &["b".into()]).unwrap();
@@ -1226,6 +1275,7 @@ mod tests {
             vec!["a".into(), "b".into()],
             Some("b"),
         )
+        .unwrap()
         .unwrap();
         crate::ops::window::report_subjects(&state, "main", subjects.clone(), Some("b")).unwrap();
         crate::ops::window::mark_focused(&state, "main").unwrap();
@@ -1262,8 +1312,9 @@ mod tests {
         repo::node::record_completion(&state.db.get().unwrap(), &tab.id, false, first_completion)
             .unwrap();
 
-        let activated =
-            node_mark_viewed(&state, "main", &tab.id, vec!["a".to_string()], Some("a")).unwrap();
+        let activated = node_mark_viewed(&state, "main", &tab.id, vec!["a".to_string()], Some("a"))
+            .unwrap()
+            .unwrap();
         assert!(
             parsed(activated.last_viewed_at.as_deref())
                 >= parsed(activated.last_completed_at.as_deref())

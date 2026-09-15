@@ -31,6 +31,8 @@ pub(crate) use panes::{
 };
 pub(crate) use runners::RunnerSurfaces;
 pub(crate) use settings_page::{SettingsPane, SettingsState};
-pub(crate) use sidebar::{default_session_label, session_label, ProjectModal, Sidebar};
+pub(crate) use sidebar::{
+    default_session_label, session_label, session_label_live, ProjectModal, Sidebar,
+};
 pub(crate) use start_chat::StartChatModal;
 pub(crate) use start_mission::StartMissionModalState;

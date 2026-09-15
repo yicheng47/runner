@@ -51,6 +51,7 @@ impl Sidebar {
             create_menu,
             context_menu: None,
             rename: None,
+            live_titles: HashMap::new(),
             archiving_sessions: HashSet::new(),
             archiving_missions: HashSet::new(),
             active_project_id,
@@ -98,15 +99,37 @@ impl Sidebar {
         let revisions = self.app_store.read(cx).revisions;
         let previous = self.store_revisions;
         self.store_revisions = revisions;
+        let titles_changed =
+            self.live_titles_changed(revisions.terminal_wake != previous.terminal_wake, cx);
         if revisions.nodes != previous.nodes
             || revisions.projects != previous.projects
             || revisions.missions != previous.missions
             || revisions.sessions != previous.sessions
             || revisions.activity != previous.activity
             || revisions.settings != previous.settings
+            || titles_changed
         {
             cx.notify();
         }
+    }
+
+    /// Whether any attached session is reporting different words than the rail
+    /// last drew. A terminal wake fires on every burst of output, so the rail
+    /// must not repaint on the wake itself — only when a title really changed
+    /// (#587).
+    fn live_titles_changed(&mut self, woke: bool, cx: &App) -> bool {
+        if !woke {
+            return false;
+        }
+        let Some(shell) = self.shell.upgrade() else {
+            return false;
+        };
+        let titles = shell.read(cx).attached_titles(cx);
+        if titles == self.live_titles {
+            return false;
+        }
+        self.live_titles = titles;
+        true
     }
 
     pub(super) fn report_error(&self, error: String, cx: &mut Context<Self>) {

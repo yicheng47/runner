@@ -334,15 +334,7 @@ impl NativeRoot {
         let focused_secondary = focused_session_id
             .as_deref()
             .is_some_and(|session_id| self.cached_chat_secondary_state(session_id).secondary);
-        let label = if grouped {
-            self.tab_label(&layout, cx)
-        } else {
-            session_ids
-                .first()
-                .and_then(|session_id| self.session_entry(session_id, cx))
-                .map(session_label)
-                .unwrap_or_else(|| "Empty tab".into())
-        };
+        let label = self.tab_label(&layout, cx);
         let lifecycle_busy = session_ids
             .iter()
             .filter(|session_id| {
@@ -711,7 +703,7 @@ impl NativeRoot {
             }
         } else if let Some(session_id) = session_ids.first() {
             if let Some(entry) = self.session_entry(session_id, cx) {
-                let current = session_label(entry);
+                let current = entry.title.clone().unwrap_or_default();
                 items.push(
                     UiMenuItem::new(if entry.pinned { "Unpin" } else { "Pin" })
                         .icon(if entry.pinned {
@@ -1557,7 +1549,7 @@ impl NativeRoot {
                                     {
                                         this.begin_pane_rename(
                                             session_id,
-                                            session_label(&entry),
+                                            entry.title.clone().unwrap_or_default(),
                                             default_session_label(&entry),
                                             window,
                                             cx,
@@ -1908,7 +1900,9 @@ impl NativeRoot {
             });
             let identity = if let Some(entry) = entry.as_ref() {
                 let session_id = entry.session_id.clone();
-                let label = session_label(entry);
+                let live = self.attached_title(&session_id, cx);
+                let label = session_label_live(entry, live.as_deref());
+                let manual_title = entry.title.clone().unwrap_or_default();
                 let placeholder = default_session_label(entry);
                 let status = pane_identity_shows_status(&entry.agent_runtime).then(|| {
                     let mut status = direct_chat_display_status(
@@ -1962,7 +1956,9 @@ impl NativeRoot {
                         .truncate()
                         .text_size(theme::text_ui())
                         .font_weight(FontWeight::MEDIUM)
-                        .text_color(if focused {
+                        .text_color(if entry.status != SessionStatus::Running {
+                            theme::faint()
+                        } else if focused {
                             theme::text()
                         } else {
                             theme::muted()
@@ -1974,10 +1970,16 @@ impl NativeRoot {
                             }
                             cx.stop_propagation();
                             let session_id = session_id.clone();
-                            let label = label.clone();
+                            let manual_title = manual_title.clone();
                             let placeholder = placeholder.clone();
                             rename_root.update(cx, |this, cx| {
-                                this.begin_pane_rename(session_id, label, placeholder, window, cx)
+                                this.begin_pane_rename(
+                                    session_id,
+                                    manual_title,
+                                    placeholder,
+                                    window,
+                                    cx,
+                                )
                             });
                         })
                         .into_any_element()
@@ -2955,6 +2957,7 @@ mod tests {
             display_name: runtime.into(),
             status: SessionStatus::Running,
             title: None,
+            live_title: None,
             cwd: None,
             started_at: None,
             stopped_at: None,

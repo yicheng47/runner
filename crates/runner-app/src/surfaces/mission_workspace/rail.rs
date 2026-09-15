@@ -308,7 +308,11 @@ impl MissionWorkspace {
                                         RunnerAvatar::new(session.handle.clone(), 25.)
                                             .presence(presence),
                                     )
-                                    .child(
+                                    .child(Tooltip::new(
+                                        SharedString::from(format!(
+                                            "mission-runner-title-{session_id}"
+                                        )),
+                                        self.session_title_tooltip(session, cx),
                                         div()
                                             .min_w(px(0.))
                                             .truncate()
@@ -320,7 +324,7 @@ impl MissionWorkspace {
                                                     .color(),
                                             )
                                             .child(format!("@{}", session.handle)),
-                                    )
+                                    ))
                                     .children(
                                         (session.handle == lead_handle)
                                             .then(runner_app::ui::lead_badge),

@@ -17,6 +17,7 @@ use alacritty_terminal::term::{Config, Term, TermMode};
 use alacritty_terminal::vte::ansi::{CursorShape, CursorStyle, Processor};
 use anyhow::{Context as _, Result};
 use regex::Regex;
+use runner_backend::model::Runtime;
 use runner_backend::session::manager::{
     ExitEvent, OutputEvent, SessionEvents, SessionSpawnedEvent, SessionUpdatedEvent,
 };
@@ -161,6 +162,19 @@ struct SequenceState {
     tui_ready_seq: u64,
     first_paint_seq: u64,
     last_output_at: Option<Instant>,
+}
+
+fn sanitize_title(raw: &str) -> String {
+    raw.chars()
+        .take(512)
+        .map(|c| {
+            if c.is_control() || matches!(c, '\u{2028}' | '\u{2029}') {
+                ' '
+            } else {
+                c
+            }
+        })
+        .collect()
 }
 
 fn classify_title(title: &str) -> Option<RunnerStatus> {
@@ -325,7 +339,29 @@ impl TerminalSession {
             proxy,
         )));
         let size = Arc::new(Mutex::new((cols, rows)));
-        let title = Arc::new(Mutex::new(String::new()));
+        let (agent, row) = {
+            let conn = core.db.get()?;
+            let runtime = runner_backend::repo::session::effective_runtime(&conn, &session_id)?
+                .as_deref()
+                .and_then(Runtime::parse);
+            (
+                runtime.is_some_and(|runtime| runtime != Runtime::Shell),
+                runner_backend::repo::session::get_row(&conn, &session_id)?,
+            )
+        };
+        let started_at = row
+            .as_ref()
+            .and_then(|row| row.started_at)
+            .map(|time| time.to_rfc3339());
+        let title_cwd = row.as_ref().and_then(|row| row.cwd.clone());
+        let title = Arc::new(Mutex::new(
+            row.filter(|_| agent)
+                .and_then(|row| row.live_title)
+                .and_then(|title| {
+                    runner_backend::session::title::provider_title(&title, title_cwd.as_deref())
+                })
+                .unwrap_or_default(),
+        ));
         let scheme = Arc::new(SchemeState::default());
         let terminal_palette = Arc::new(Mutex::new(PaletteState::new(palette::RUNNER)));
         let viewers = Arc::new(AtomicUsize::new(0));
@@ -362,6 +398,7 @@ impl TerminalSession {
 
         let term_for_events = Arc::downgrade(&term);
         let scheme_for_events = Arc::clone(&scheme);
+        let waker_for_events = Arc::clone(&session.waker);
         thread::Builder::new()
             .name(format!("native-term-events-{session_id}"))
             .spawn(move || {
@@ -411,7 +448,12 @@ impl TerminalSession {
                             });
                             write(reply.as_bytes());
                         }
-                        Event::Title(new_title) => {
+                        Event::Title(_) | Event::ResetTitle => {
+                            let new_title = match event {
+                                Event::Title(title) => title,
+                                _ => String::new(),
+                            };
+                            // Status classifies the raw title: the spinner prefix is the signal.
                             if let Some(state) = title_status.observe(&new_title) {
                                 if let Err(error) =
                                     core.sessions.report_declared_status(&session_id, state)
@@ -419,10 +461,44 @@ impl TerminalSession {
                                     log::warn!("report title status for {session_id}: {error}");
                                 }
                             }
-                            *title.lock().unwrap() = new_title;
-                        }
-                        Event::ResetTitle => {
-                            title.lock().unwrap().clear();
+                            let cleaned = if agent {
+                                let Some(title) = runner_backend::session::title::provider_title(
+                                    &new_title,
+                                    title_cwd.as_deref(),
+                                ) else {
+                                    continue;
+                                };
+                                title
+                            } else {
+                                sanitize_title(&new_title)
+                            };
+                            let changed = {
+                                let mut held = title.lock().unwrap();
+                                let changed = *held != cleaned;
+                                if changed {
+                                    *held = cleaned.clone();
+                                }
+                                changed
+                            };
+                            if changed {
+                                if agent {
+                                    let persisted =
+                                        (!cleaned.is_empty()).then_some(cleaned.as_str());
+                                    if let Err(error) =
+                                        runner_backend::ops::session::session_set_live_title(
+                                            &core,
+                                            &session_id,
+                                            persisted,
+                                            started_at.as_deref(),
+                                        )
+                                    {
+                                        log::warn!(
+                                            "persist terminal title for {session_id}: {error}"
+                                        );
+                                    }
+                                }
+                                (waker_for_events)();
+                            }
                         }
                         _ => {}
                     }
@@ -1139,6 +1215,15 @@ impl TerminalBridge {
         self.sessions.lock().unwrap().get(session_id).cloned()
     }
 
+    pub fn titles(&self) -> HashMap<String, String> {
+        self.sessions
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(id, terminal)| (id.clone(), terminal.title()))
+            .collect()
+    }
+
     pub fn set_palette(&self, palette: palette::TerminalPalette) {
         let sessions = self.sessions.lock().unwrap();
         let mut current = self.palette.lock().unwrap();
@@ -1259,7 +1344,8 @@ mod tests {
     };
 
     use super::{
-        classify_title, LinkTarget, TerminalBridge, TerminalSession, TitleStatus, UserInputMode,
+        classify_title, sanitize_title, LinkTarget, TerminalBridge, TerminalSession, TitleStatus,
+        UserInputMode,
     };
     use crate::replay::visible_lines;
     use runner_backend::session::runtime::{
@@ -1267,6 +1353,123 @@ mod tests {
         SessionStatus, SpawnSpec,
     };
     use runner_backend::AppCore;
+
+    #[test]
+    fn shell_title_sanitization_preserves_content_and_bounds_the_label() {
+        assert_eq!(sanitize_title("  ⠋ shell ⠹  "), "  ⠋ shell ⠹  ");
+        assert_eq!(sanitize_title("A\nB\tC\u{2028}D"), "A B C D");
+        assert_eq!(sanitize_title(&"界".repeat(600)).chars().count(), 512);
+    }
+
+    fn flush_terminal_events(terminal: &TerminalSession) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        terminal
+            .events
+            .send(alacritty_terminal::event::Event::TextAreaSizeRequest(
+                Arc::new(move |_| {
+                    tx.send(()).unwrap();
+                    String::new()
+                }),
+            ))
+            .unwrap();
+        rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+    }
+
+    #[test]
+    fn terminal_titles_persist_topics_and_ignore_directory_status_and_reset() {
+        use runner_backend::repo::session::{self, SessionRowDb};
+        let temp = tempfile::tempdir().unwrap();
+        let core = test_core(temp.path());
+        let conn = core.db.get().unwrap();
+        let mut row = SessionRowDb::new_running("replay-race".into());
+        row.agent_runtime = Some("codex".into());
+        row.agent_command = Some("codex".into());
+        row.title = Some("Manual name".into());
+        row.cwd = Some("/Users/jason/repos/yicheng47".into());
+        row.live_title = Some("Previous topic".into());
+        session::insert(&conn, &row).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE title_writes (title TEXT);
+            CREATE TRIGGER record_title AFTER UPDATE OF live_title ON sessions
+            BEGIN INSERT INTO title_writes VALUES (NEW.live_title); END;",
+        )
+        .unwrap();
+        let terminal =
+            TerminalSession::attach(core.clone(), row.id.clone(), 80, 24, Arc::new(|| {})).unwrap();
+        assert_eq!(terminal.title(), "Previous topic");
+        for (seq, data, expected, writes) in [
+            (1, "\x1b[22;0t\x1b]0;⠋ Cars\x07", "Cars", 1),
+            (2, "\x1b]0;⠙ Cars\x1b\\\x1b]2;Cars\x07", "Cars", 1),
+            (3, "\x1b]2;Electric", "Cars", 1),
+            (4, " cars\x1b\\", "Electric cars", 2),
+            (5, "\x1b]0;\x07", "Electric cars", 2),
+            (6, "\x1b]2;New topic | yicheng47\x07", "New topic", 3),
+            (7, "\x1b[23;0t", "New topic", 3),
+            (8, "\x1b]0;yicheng47\x07", "New topic", 3),
+            (
+                9,
+                "\x1b]0;[ ! ] Action Required | yicheng47\x07",
+                "New topic",
+                3,
+            ),
+            (10, "\x1b]0;◐ Airplane type\x07", "Airplane type", 4),
+            (11, "\x1b]0;◑ Airplane type\x07", "Airplane type", 4),
+            (12, "\x1b]0;◒ Airplane type\x07", "Airplane type", 4),
+            (13, "\x1b]0;◓ Airplane type\x07", "Airplane type", 4),
+            (14, "\x1b]0;✳ Airplane type\x07", "Airplane type", 4),
+        ] {
+            terminal.feed_output(&output(seq, data)).unwrap();
+            flush_terminal_events(&terminal);
+            assert_eq!(terminal.title(), expected);
+            let stored = session::get_row(&conn, &row.id).unwrap().unwrap();
+            assert_eq!(
+                stored.live_title.as_deref(),
+                (!expected.is_empty()).then_some(expected)
+            );
+            assert_eq!(stored.title.as_deref(), Some("Manual name"));
+            let count: usize = conn
+                .query_row("SELECT COUNT(*) FROM title_writes", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(count, writes);
+        }
+        terminal
+            .feed_output(&output(15, "\x1b]0;Last topic\x07"))
+            .unwrap();
+        flush_terminal_events(&terminal);
+        let detail = runner_backend::ops::session::session_get(&core, &row.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(detail.live_title.as_deref(), Some("Last topic"));
+        let reopened = TerminalSession::attach(core, row.id, 80, 24, Arc::new(|| {})).unwrap();
+        assert_eq!(reopened.title(), "Last topic");
+    }
+
+    #[test]
+    fn shell_titles_keep_braille_without_persistence() {
+        use runner_backend::repo::session::{self, SessionRowDb};
+        let temp = tempfile::tempdir().unwrap();
+        let core = test_core(temp.path());
+        let conn = core.db.get().unwrap();
+        let mut row = SessionRowDb::new_running("replay-race".into());
+        row.agent_runtime = Some("shell".into());
+        session::insert(&conn, &row).unwrap();
+        let terminal =
+            TerminalSession::attach(core.clone(), row.id.clone(), 80, 24, Arc::new(|| {})).unwrap();
+        terminal
+            .feed_output(&output(1, "\x1b]2;  ⠋ shell ⠹  \x07"))
+            .unwrap();
+        flush_terminal_events(&terminal);
+        assert_eq!(terminal.title(), "⠋ shell ⠹");
+        assert_eq!(
+            session::get_row(&conn, &row.id)
+                .unwrap()
+                .unwrap()
+                .live_title,
+            None
+        );
+        let reopened = TerminalSession::attach(core, row.id, 80, 24, Arc::new(|| {})).unwrap();
+        assert_eq!(reopened.title(), "");
+    }
 
     #[test]
     fn title_classifier_only_recognizes_a_leading_spinner() {

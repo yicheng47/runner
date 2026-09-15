@@ -138,13 +138,13 @@ fn palette_items(
         label: chat_label(
             chat.handle.as_deref(),
             &chat.display_name,
-            chat.title.as_deref(),
+            chat.preferred_title(None).as_deref(),
         ),
         destination: PaletteDestination::Chat(chat.session_id.clone()),
         search_text: chat_search_text(
             chat.handle.as_deref(),
             &chat.display_name,
-            chat.title.as_deref(),
+            chat.preferred_title(None).as_deref(),
             chat.cwd.as_deref(),
         ),
         order,

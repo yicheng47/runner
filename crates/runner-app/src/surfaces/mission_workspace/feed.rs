@@ -14,6 +14,38 @@ use crate::surfaces::mission_markdown::{
 use crate::*;
 
 impl MissionWorkspace {
+    pub(super) fn session_title_tooltip(&self, session: &SessionRow, cx: &App) -> String {
+        let title = self
+            .attached
+            .get(&session.session.id)
+            .map(|chat| chat.terminal.title())
+            .or_else(|| {
+                self.app_store
+                    .read(cx)
+                    .bridge
+                    .session(&session.session.id)
+                    .map(|terminal| terminal.title())
+            })
+            .and_then(|title| {
+                runner_backend::session::title::provider_title(
+                    &title,
+                    session.session.cwd.as_deref(),
+                )
+            })
+            .or_else(|| {
+                session.live_title.as_deref().and_then(|title| {
+                    runner_backend::session::title::provider_title(
+                        title,
+                        session.session.cwd.as_deref(),
+                    )
+                })
+            });
+        match title {
+            Some(title) => format!("@{} · {title}", session.handle),
+            None => format!("@{}", session.handle),
+        }
+    }
+
     pub(super) fn render_mission_tabs(
         &self,
         feed_active: bool,
@@ -58,7 +90,7 @@ impl MissionWorkspace {
                 let close_root = root.clone();
                 strip = strip.child(Tooltip::new(
                     SharedString::from(format!("mission-tab-tooltip-{session_id}")),
-                    format!("@{}", session.handle),
+                    self.session_title_tooltip(session, cx),
                     div()
                         .id(SharedString::from(format!("mission-tab-{session_id}")))
                         .relative()

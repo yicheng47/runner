@@ -6,6 +6,7 @@ use super::elements::command_held_alone;
 use super::elements::default_session_label_parts;
 use super::elements::other_modifiers_held;
 use super::elements::sidebar_fork_menu_target;
+use super::elements::tab_label_live;
 use super::menus::mission_menu_entries;
 use super::menus::project_create_menu_entries;
 use super::menus::project_menu_entries;
@@ -148,6 +149,7 @@ fn direct_session(id: &str, runtime: &str, status: SessionStatus) -> DirectSessi
         display_name: runtime.into(),
         status,
         title: None,
+        live_title: None,
         cwd: None,
         started_at: None,
         stopped_at: None,
@@ -158,6 +160,113 @@ fn direct_session(id: &str, runtime: &str, status: SessionStatus) -> DirectSessi
         pinned: false,
         archived_at: None,
     }
+}
+
+#[test]
+fn session_titles_respect_manual_names_persistence_and_resets() {
+    let mut entry = direct_session("chat", "codex", SessionStatus::Running);
+    let default = default_session_label(&entry);
+    assert_eq!(session_label_live(&entry, None), default);
+    entry.live_title = Some("Cars".into());
+    assert_eq!(session_label(&entry), "Cars");
+    assert_eq!(
+        session_label_live(&entry, Some("Electric cars")),
+        "Electric cars"
+    );
+    assert_eq!(session_label_live(&entry, Some("")), "Cars");
+    entry.title = Some("My chat".into());
+    assert_eq!(session_label_live(&entry, Some("Electric cars")), "My chat");
+    assert_eq!(session_label_live(&entry, Some("")), "My chat");
+    entry.title = None;
+    assert_eq!(
+        session_label_live(&entry, Some("Electric cars")),
+        "Electric cars"
+    );
+    entry.status = SessionStatus::Stopped;
+    assert_eq!(session_label(&entry), "Cars");
+}
+
+#[test]
+fn tab_titles_use_live_words_before_the_session_snapshot_refreshes() {
+    let mut entry = direct_session("chat", "codex", SessionStatus::Running);
+    entry.cwd = Some("/tmp/project".into());
+    let layout = PaneLayout::single(Some("chat"), &[]);
+    for (live, expected) in [
+        (None, "codex"),
+        (Some("project"), "codex"),
+        (Some("Discuss cars | project"), "Discuss cars"),
+    ] {
+        assert_eq!(
+            tab_label_live(&layout, &[entry.clone()], |_| live.map(str::to_owned)),
+            expected
+        );
+    }
+    entry.live_title = Some("Old topic".into());
+    assert_eq!(
+        tab_label_live(&layout, &[entry.clone()], |_| Some("New topic".into())),
+        "New topic"
+    );
+    entry.title = Some("My chat".into());
+    assert_eq!(
+        tab_label_live(&layout, &[entry], |_| Some("New topic".into())),
+        "My chat"
+    );
+}
+
+#[test]
+fn split_tab_titles_follow_layout_order_and_manual_names_instead_of_focus() {
+    let first = direct_session("first", "codex", SessionStatus::Running);
+    let second = direct_session("second", "claude-code", SessionStatus::Running);
+    let sessions = [second, first];
+    let live = |id: &str| Some(if id == "first" { "Cars" } else { "Planes" }.into());
+    let mut layout = two_pane_layout("first", "second");
+    for id in ["first", "second"] {
+        assert!(layout.focus_session(id));
+        assert_eq!(tab_label_live(&layout, &sessions, live), "Cars");
+    }
+    layout.name = Some("My workspace".into());
+    assert_eq!(tab_label_live(&layout, &sessions, live), "My workspace");
+    layout.name = None;
+    layout.remove_session("first");
+    assert_eq!(tab_label_live(&layout, &sessions, live), "Planes");
+    layout.remove_session("second");
+    assert_eq!(tab_label_live(&layout, &sessions, live), "Empty tab");
+}
+
+#[test]
+fn agent_names_follow_manual_provider_and_default_order() {
+    let mut entry = direct_session("chat", "codex", SessionStatus::Running);
+    entry.cwd = Some("/Users/jason/repos/yicheng47".into());
+    let default = default_session_label(&entry);
+    for raw in ["Codex", "yicheng47", "⠋ Working | yicheng47"] {
+        assert_eq!(session_label_live(&entry, Some(raw)), default);
+    }
+    entry.live_title = Some("yicheng47".into());
+    assert_eq!(session_label(&entry), default);
+    assert_eq!(
+        session_label_live(&entry, Some("Ready | yicheng47")),
+        default
+    );
+    assert_eq!(
+        session_label_live(&entry, Some("Electric cars | yicheng47")),
+        "Electric cars"
+    );
+    entry.live_title = Some("Electric cars | yicheng47".into());
+    for raw in ["", "⠋ Working", "yicheng47"] {
+        assert_eq!(session_label_live(&entry, Some(raw)), "Electric cars");
+    }
+    entry.title = Some("My cars".into());
+    assert_eq!(session_label_live(&entry, Some("New topic")), "My cars");
+    entry.title = None;
+    entry.status = SessionStatus::Stopped;
+    assert_eq!(session_label(&entry), "Electric cars");
+
+    let shell = direct_session("shell", "shell", SessionStatus::Running);
+    assert_eq!(session_label_live(&shell, Some("⠋ /tmp")), "⠋ /tmp");
+    assert_eq!(
+        session_label_live(&shell, Some("")),
+        default_session_label(&shell)
+    );
 }
 
 struct SidebarScrollLayoutTest {
