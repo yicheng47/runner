@@ -359,9 +359,10 @@ pub fn claude_settings_args(
 /// - **Bypass** — `--ask-for-approval never --sandbox
 ///   workspace-write`. Never ask.
 ///
-/// trae (3 modes — native presets declared by `traecli --help`):
+/// trae accepts `default` (ask), `plan` (plan-only), and
+/// `bypass_permissions` (never ask). It has no auto-approve middle ground:
 /// - **Default** — no flag; use TRAE CLI's configured default.
-/// - **Auto** — `--permission-mode auto`.
+/// - **Auto** / **AcceptEdits** — no flag; no native equivalent.
 /// - **Bypass** — `--permission-mode bypass_permissions`.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
@@ -406,9 +407,6 @@ pub fn permission_mode_args(runtime: Option<Runtime>, mode: PermissionMode) -> V
         (Some(Runtime::ClaudeCode), PermissionMode::Bypass) => {
             vec!["--permission-mode".into(), "bypassPermissions".into()]
         }
-        (Some(Runtime::Trae), PermissionMode::Auto) => {
-            vec!["--permission-mode".into(), "auto".into()]
-        }
         (Some(Runtime::Trae), PermissionMode::Bypass) => {
             vec!["--permission-mode".into(), "bypass_permissions".into()]
         }
@@ -417,7 +415,7 @@ pub fn permission_mode_args(runtime: Option<Runtime>, mode: PermissionMode) -> V
         // returns empty (codex has no equivalent) so a user who
         // somehow lands AcceptEdits on a codex row reads as Default.
         (Some(Runtime::Codex), PermissionMode::AcceptEdits)
-        | (Some(Runtime::Trae), PermissionMode::AcceptEdits) => Vec::new(),
+        | (Some(Runtime::Trae), PermissionMode::AcceptEdits | PermissionMode::Auto) => Vec::new(),
         (Some(Runtime::Codex), PermissionMode::Auto) => vec![
             "--ask-for-approval".into(),
             "on-request".into(),
@@ -511,8 +509,8 @@ pub fn apply_permission_mode(
 }
 
 /// App-wide permission mode for mission slots (feature 527). Read at
-/// spawn time for every mission slot; direct chats keep their runner
-/// row's own mode. `RunnerDefault` leaves the row's args untouched.
+/// spawn time for every mission slot; attended chats assert no
+/// permission posture. `RunnerDefault` leaves the row's args untouched.
 #[derive(
     Debug,
     Clone,
@@ -651,7 +649,8 @@ fn mode_pair_matches(runtime: Option<Runtime>, args: &[String], mode: Permission
 }
 
 /// (flag, Some(expected_value)) pairs we use to *recognize* a mode
-/// in a stored args list. Hand-synced with `permission_mode_args`.
+/// in a stored args list. Hand-synced with `permission_mode_args`,
+/// except for legacy pairs retained until the next save.
 /// `Default` has no pairs — its "match" is "no other mode's pair
 /// fully matched." Modes a runtime doesn't natively support (e.g.
 /// AcceptEdits on codex) return empty pairs, so they never match
@@ -675,6 +674,7 @@ fn mode_match_pairs(
         (Some(Runtime::ClaudeCode), PermissionMode::Bypass) => {
             &[("--permission-mode", Some("bypassPermissions"))]
         }
+        // Recognize the legacy invalid Auto flag until the runner is saved again.
         (Some(Runtime::Trae), PermissionMode::Auto) => &[("--permission-mode", Some("auto"))],
         (Some(Runtime::Trae), PermissionMode::Bypass) => {
             &[("--permission-mode", Some("bypass_permissions"))]
@@ -1827,10 +1827,7 @@ mod tests {
             ],
         );
         assert!(permission_mode_args(Some(Runtime::Trae), PermissionMode::AcceptEdits).is_empty());
-        assert_eq!(
-            permission_mode_args(Some(Runtime::Trae), PermissionMode::Auto),
-            vec!["--permission-mode".to_string(), "auto".to_string()],
-        );
+        assert!(permission_mode_args(Some(Runtime::Trae), PermissionMode::Auto).is_empty());
         assert_eq!(
             permission_mode_args(Some(Runtime::Trae), PermissionMode::Bypass),
             vec![
@@ -1944,24 +1941,21 @@ mod tests {
     }
 
     #[test]
-    fn apply_permission_mode_trae_round_trips_auto_to_default() {
-        let user = vec!["--debug".to_string()];
+    fn apply_permission_mode_trae_auto_strips_the_legacy_invalid_flag() {
+        let user = vec![
+            "--debug".to_string(),
+            "--permission-mode".to_string(),
+            "auto".to_string(),
+        ];
         let auto = apply_permission_mode(Some(Runtime::Trae), &user, PermissionMode::Auto);
-        assert_eq!(
-            auto,
-            vec![
-                "--debug".to_string(),
-                "--permission-mode".to_string(),
-                "auto".to_string(),
-            ],
-        );
+        assert_eq!(auto, vec!["--debug".to_string()]);
         assert_eq!(
             infer_permission_mode(Some(Runtime::Trae), &auto),
-            PermissionMode::Auto
+            PermissionMode::Default
         );
         assert_eq!(
             apply_permission_mode(Some(Runtime::Trae), &auto, PermissionMode::Default),
-            user,
+            auto,
         );
     }
 
@@ -2118,7 +2112,7 @@ mod tests {
         );
         assert_eq!(
             mission_permission_mode_args(Some(Runtime::Trae), M::Auto),
-            Some(vec!["--permission-mode".to_string(), "auto".to_string()]),
+            Some(vec![]),
         );
         for runtime in ["claude-code", "codex", "trae", "shell", "unknown"] {
             assert_eq!(

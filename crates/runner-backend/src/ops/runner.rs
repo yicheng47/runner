@@ -1152,7 +1152,7 @@ mod tests {
     }
 
     #[test]
-    fn create_and_update_apply_trae_native_permission_mode() {
+    fn create_trae_auto_omits_flags_and_update_bakes_bypass() {
         let pool = ctx();
         let conn = pool.get().unwrap();
         let r = create(
@@ -1172,14 +1172,7 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(
-            r.args,
-            vec![
-                "--debug".to_string(),
-                "--permission-mode".to_string(),
-                "auto".to_string(),
-            ],
-        );
+        assert_eq!(r.args, vec!["--debug".to_string()]);
 
         let r = update(
             &conn,
