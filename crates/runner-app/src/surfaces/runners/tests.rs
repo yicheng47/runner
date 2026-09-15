@@ -119,3 +119,32 @@ fn different_runtime_uses_runtime_defaults_unless_overridden() {
         }
     );
 }
+
+#[test]
+fn trae_does_not_offer_a_mode_it_cannot_write() {
+    use super::logic::{permission_mode_description, permission_modes};
+    use runner_backend::router::runtime::PermissionMode;
+
+    // TRAE CLI has no auto-approve middle ground, so Auto would write
+    // nothing and read back as Default (#599).
+    assert_eq!(
+        permission_modes("trae"),
+        &[PermissionMode::Default, PermissionMode::Bypass]
+    );
+    assert!(!permission_modes("trae").contains(&PermissionMode::Auto));
+    assert!(permission_mode_description("trae", PermissionMode::Auto).is_empty());
+
+    // Codex keeps its own Auto — it maps to a real flag pair.
+    assert!(permission_modes("codex").contains(&PermissionMode::Auto));
+    assert!(permission_modes("claude-code").contains(&PermissionMode::Auto));
+
+    // Every offered mode describes itself.
+    for runtime in ["claude-code", "codex", "trae"] {
+        for mode in permission_modes(runtime) {
+            assert!(
+                !permission_mode_description(runtime, *mode).is_empty(),
+                "{runtime} {mode:?} has no description"
+            );
+        }
+    }
+}
