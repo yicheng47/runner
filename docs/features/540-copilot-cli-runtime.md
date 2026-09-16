@@ -8,7 +8,7 @@
 
 Several Runner users have asked for GitHub Copilot support. What a Copilot subscriber can run in a terminal is GitHub Copilot CLI: the `@github/copilot` npm package, command `copilot`, 1.0.83 as of 2026-09-16. It is an interactive coding agent with file edits, shell, MCP, custom agents, skills, plugins and a plan mode, gated on a Copilot Pro/Business/Enterprise seat. It is a TUI on a PTY, so it fits Runner's runtime adapter the way claude-code, codex, and TRAE do, and it opens Runner to teams whose only model access is a Copilot seat.
 
-This is the fourth agent runtime and the first added after [#347](./347-hook-based-session-status.md), [#587](./archive/587-terminal-provided-titles.md), [#590](./590-runtime-model-discovery.md), [#593](./593-provider-chat-icons.md) and [#596](./596-chat-permission-posture.md) landed, so it is also the first time the full per-runtime surface is written down in one place. The inventory below is that list; keep it current so the next runtime is a checklist rather than an archaeology dig.
+This is the fourth agent runtime and the first added after [#347](./347-hook-based-session-status.md), [#587](./archive/587-terminal-provided-titles.md), [#590](./archive/590-runtime-model-discovery.md), [#593](./593-provider-chat-icons.md) and [#596](./596-chat-permission-posture.md) landed, so it is also the first time the full per-runtime surface is written down in one place. The inventory below is that list; keep it current so the next runtime is a checklist rather than an archaeology dig.
 
 ## What a new runtime touches
 
@@ -121,7 +121,7 @@ Rough size: about thirty Rust files, of which ten are compiler-forced match arms
 - Native fork. `--session-id` plus a copied `session-state` directory might be one; unprobed.
 - Global skill on/off for Copilot.
 - Installing the CLI or handling authentication and the subscription; a Not found row keeps its caption.
-- Model discovery through the CLI ([#590](./590-runtime-model-discovery.md) shape); v1 ships the static list.
+- Model discovery through the CLI ([#590](./archive/590-runtime-model-discovery.md) shape); v1 ships the static list.
 
 ## Decisions
 

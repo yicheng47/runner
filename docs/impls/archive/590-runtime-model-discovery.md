@@ -1,6 +1,6 @@
 # 590 — Model discovery continuation
 
-Continue [PR #591](https://github.com/yicheng47/runner/pull/591) for [#590](https://github.com/yicheng47/runner/issues/590) on `fix/codex-model-discovery`. The starting implementation is `15e9834bf03c5c8a4a1d00230862b3477ca789fb`. The [feature spec](../features/590-runtime-model-discovery.md) defines the current scope.
+Continue [PR #591](https://github.com/yicheng47/runner/pull/591) for [#590](https://github.com/yicheng47/runner/issues/590) on `fix/codex-model-discovery`. The starting implementation is `15e9834bf03c5c8a4a1d00230862b3477ca789fb`. The [feature spec](../../features/archive/590-runtime-model-discovery.md) defines the current scope.
 
 Jason stopped the original Claude crew and requested inline completion, then explicitly requested removing the overbuilt parts on 2026-09-14. This replaces the original mission brief. Implementation stayed inline in the existing checkout. Jason confirmed the final macOS smoke test passed and authorized committing, updating PR #591, merging it, and preparing v0.9.1. Native Windows manual verification remains pending.
 

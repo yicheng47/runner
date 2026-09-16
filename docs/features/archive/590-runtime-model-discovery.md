@@ -1,6 +1,6 @@
 # 590 — Runtime model discovery and cache
 
-Tracking: [#590](https://github.com/yicheng47/runner/issues/590) · P2 · In progress. Initial implementation: [PR #591](https://github.com/yicheng47/runner/pull/591).
+Tracking: [#590](https://github.com/yicheng47/runner/issues/590) · P2 · Shipped in [PR #591](https://github.com/yicheng47/runner/pull/591) on 2026-09-14 and closed 2026-09-16; the native Windows smoke (checklist item 6) is outstanding as a follow-up, and Copilot discovery is a follow-up under [540](../540-copilot-cli-runtime.md).
 
 ## Goal and scope
 
@@ -8,7 +8,7 @@ Runner's hardcoded Codex catalog omitted models exposed by the installed CLI. Us
 
 Scope reduced with Jason on 2026-09-14: one cached catalog per runtime, small CLI adapters, and existing picker updates. The CLI owns provider and configuration interpretation. Runner does not inspect provider URLs, credentials, profiles, configuration files, or project settings for model discovery. Runner-specific commands, arguments, and environment overrides share the runtime's standard suggestions; custom model text remains available and the CLI validates it at launch. Jason subsequently approved a narrow addition: cache the effort metadata already returned with each model and filter existing effort dropdowns from it. Provider/configuration inspection remains outside this change.
 
-TRAE CLI keeps its current Default-only suggestions, custom model input, configured defaults, effort choices, and launch behavior. No TRAE query or cache is added. Shell has no catalog. Additional runtimes and the Windows hook work under [#347](./347-hook-based-session-status.md) remain separate.
+TRAE CLI keeps its current Default-only suggestions, custom model input, configured defaults, effort choices, and launch behavior. No TRAE query or cache is added. Shell has no catalog. Additional runtimes and the Windows hook work under [#347](../347-hook-based-session-status.md) remain separate.
 
 ## Queries
 
