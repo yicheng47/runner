@@ -548,6 +548,20 @@ impl SessionManager {
                 uuid::Uuid::new_v4().to_string(),
             );
         }
+        if Runtime::parse(&runner.runtime) == Some(Runtime::Copilot)
+            && crate::session::hook_feed::hooks_supported(cfg!(windows))
+        {
+            spec.env.insert(
+                crate::session::copilot_status::PATH_ENV.into(),
+                crate::session::hook_feed::status_path(app_data_dir, &spec.session_id)
+                    .to_string_lossy()
+                    .into_owned(),
+            );
+            spec.env.insert(
+                crate::session::copilot_status::GENERATION_ENV.into(),
+                uuid::Uuid::new_v4().to_string(),
+            );
+        }
         if plan.prepend {
             composed.extend(plan.args.iter().cloned());
             composed.append(&mut spec.args);

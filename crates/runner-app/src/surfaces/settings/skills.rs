@@ -23,6 +23,17 @@ use crate::theme;
 
 const CLAUDE_CAPTION: &str = "Toggles hide a skill from every new Claude Code session, inside Runner or not; the only write is the skillOverrides key in ~/.claude/settings.json. Click a row to read a skill, hover it to edit. Bundled skills (code-review, loop, …) and project skills always load and are not listed.";
 const CODEX_CAPTION: &str = "Toggles hide a skill from every new Codex session, inside Runner or not; the only write is a [[skills.config]] entry in ~/.codex/config.toml. Click a row to read a skill, hover it to edit. Codex's system skills (~/.codex/skills/.system) and plugin skills always load and are not listed.";
+const COPILOT_CAPTION: &str = "Every skill in these roots loads in every new GitHub Copilot CLI session; Runner does not toggle Copilot skills yet. Click a row to read a skill, hover it to edit. Project skills (.github/skills, .agents/skills) and plugin skills always load and are not listed.";
+const READ_ONLY_CAPTION: &str = "Every skill in these roots loads in every new session; Runner does not toggle skills for this agent. Click a row to read a skill, hover it to edit.";
+
+fn catalog_caption(runtime: Runtime) -> &'static str {
+    match runtime {
+        Runtime::ClaudeCode => CLAUDE_CAPTION,
+        Runtime::Codex => CODEX_CAPTION,
+        Runtime::Copilot => COPILOT_CAPTION,
+        _ => READ_ONLY_CAPTION,
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct SkillBadge {
@@ -100,7 +111,7 @@ fn catalog_meta(catalog: &SkillCatalog) -> String {
             .join(" · "),
         catalog.entries.len()
     );
-    if !catalog.entries.is_empty() {
+    if !catalog.entries.is_empty() && supports_global_skill_toggle(catalog.runtime) {
         text.push_str(&format!(
             " · {} off",
             catalog
@@ -195,7 +206,7 @@ impl SkillsPane {
                 }),
                 cx,
             )
-            .width(px(160.))
+            .width(px(200.))
         });
         let search = cx.new(|cx| {
             TextField::new(cx.focus_handle(), "", "Search skills…", false)
@@ -418,11 +429,7 @@ impl Render for SkillsPane {
                                 .text_size(theme::text_meta())
                                 .line_height(rems(1.))
                                 .text_color(theme::faint())
-                                .child(if catalog.runtime == Runtime::ClaudeCode {
-                                    CLAUDE_CAPTION
-                                } else {
-                                    CODEX_CAPTION
-                                }),
+                                .child(catalog_caption(catalog.runtime)),
                         ),
                 )
             })

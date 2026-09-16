@@ -4,7 +4,7 @@ use std::rc::Rc;
 
 use gpui::prelude::*;
 use gpui::{
-    div, px, rems, AnyElement, Context, Div, Entity, FontWeight, PathPromptOptions, Render,
+    div, px, rems, svg, AnyElement, Context, Div, Entity, FontWeight, PathPromptOptions, Render,
     SharedString, Subscription, WeakEntity, Window,
 };
 use runner_app::ui::button::spinner;
@@ -21,6 +21,7 @@ use runner_backend::shell_path::DiscoveryOutcome;
 
 use crate::app_settings::AppSettings;
 use crate::app_store::AppStore;
+use crate::chat_icon::ChatIcon;
 use crate::theme;
 use crate::NativeRoot;
 
@@ -640,6 +641,7 @@ impl AgentsPane {
         presentation.show_reset |= field
             .as_ref()
             .is_some_and(|field| !field.read(cx).text().trim().is_empty());
+        let mark = ChatIcon::for_runtime(runtime.name.key());
         let card_selector = format!("AGENT_CARD_{}", runtime.name);
         div()
             .debug_selector(|| card_selector)
@@ -653,6 +655,13 @@ impl AgentsPane {
                     .flex()
                     .items_center()
                     .gap(rems(10. / 16.))
+                    .child(
+                        svg()
+                            .path(mark.path)
+                            .size(rems(1.))
+                            .flex_none()
+                            .text_color(mark.color(theme::text(), true)),
+                    )
                     .child(
                         div()
                             .text_size(theme::text_body())

@@ -254,6 +254,21 @@ pub fn codex_status_args(
     args
 }
 
+pub fn copilot_status_args(runtime: Option<Runtime>, app_data_dir: &Path) -> Vec<String> {
+    if runtime != Some(Runtime::Copilot)
+        || !crate::session::hook_feed::hooks_supported(cfg!(windows))
+        || !crate::session::copilot_status::plugin_available(app_data_dir)
+    {
+        return Vec::new();
+    }
+    vec![
+        "--plugin-dir".into(),
+        crate::session::copilot_status::plugin_dir(app_data_dir)
+            .to_string_lossy()
+            .into_owned(),
+    ]
+}
+
 pub fn claude_settings_args(
     runtime: Option<Runtime>,
     runner_args: &[String],
@@ -895,6 +910,7 @@ pub fn trailing_runtime_args(
     }
     if runtime == Some(Runtime::Copilot) {
         out.push("--no-auto-update".into());
+        out.extend(copilot_status_args(runtime, app_data_dir));
     }
     out.extend(claude_settings_args(
         runtime,
@@ -1959,6 +1975,27 @@ mod tests {
             ["--add-dir", "/mission"]
         );
         assert!(mission_bus_sandbox_args(Some(Runtime::Copilot), None).is_empty());
+    }
+
+    #[test]
+    fn copilot_status_plugin_args_require_a_complete_installed_plugin() {
+        let root = tempfile::tempdir().unwrap();
+        assert!(copilot_status_args(Some(Runtime::Copilot), root.path()).is_empty());
+        crate::session::copilot_status::install_plugin(root.path()).unwrap();
+        let args = copilot_status_args(Some(Runtime::Copilot), root.path());
+        if cfg!(windows) {
+            assert!(args.is_empty());
+        } else {
+            assert_eq!(
+                args,
+                [
+                    "--plugin-dir".to_owned(),
+                    crate::session::copilot_status::plugin_dir(root.path())
+                        .to_string_lossy()
+                        .into_owned(),
+                ]
+            );
+        }
     }
 
     #[test]

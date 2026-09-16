@@ -4,14 +4,14 @@ Plan for feature [540](../features/540-copilot-cli-runtime.md) ([#540](https://g
 
 ## Status (2026-09-16)
 
-Phase 0 done: `cmp/MarkCopilot` (`QGeFI`) and the frame `Spec — GitHub Copilot CLI runtime (540) · v1` (`OBtYk`) on `design/runner.pen`; Jason chose GitHub's Copilot Purple `#8534F3` for the mark. Mission 1 (codex peer, `01M2M1Z7AMVEG6JJQ9Y6JJHY5T`) reviewed clean the same day and was checkpointed as `b1f5437` on `feat/540-copilot-runtime`; Jason's smoke pass is deferred, so the branch is not merged. Mission 2 is briefed and stacked on that commit.
+Phase 0 done: `cmp/MarkCopilot` (`QGeFI`) and the frame `Spec — GitHub Copilot CLI runtime (540) · v1` (`OBtYk`) on `design/runner.pen`; Jason chose GitHub's Copilot Purple `#8534F3` for the mark. Mission 1 (codex peer, `01M2M1Z7AMVEG6JJQ9Y6JJHY5T`) reviewed clean the same day and was checkpointed as `b1f5437` on `feat/540-copilot-runtime`; Jason's smoke pass is deferred, so the branch is not merged. Mission 1 merged as [PR #607](https://github.com/yicheng47/runner/pull/607) (`a308719`) after Jason moved Copilot to the third Agents row. Mission 2 reviewed clean the same day and Jason passed its smoke; it lands together with the Agents-row provider marks and the Skills pane fixes (Copilot caption, wider runtime picker, no "off" count without toggles).
 
 ## Missions
 
 | Mission | Scope | Crew | State |
 | --- | --- | --- | --- |
-| 1 | Spec phases 1 and 2: enum, adapter argv, trust preseed, defaults, catalog, MCP client, title filter, mark, permission copy, every enumerating test, README and arch docs. No hook adapter, no fixture. | codex peer, [brief](./archive/gpui-rewrite/briefs/540-m1-copilot-runtime.md) | Reviewed clean 2026-09-16, checkpoint `b1f5437`; smoke deferred |
-| 2 | Spec phase 3: the hook status adapter on macOS — Runner-owned `--plugin-dir` plugin, `copilot_status.rs`, `HookStatusWatcher::Copilot`, decision 3's event mapping — as a slice under `docs/impls/347-hook-status/`. | codex peer, [brief](./archive/gpui-rewrite/briefs/540-m2-copilot-hook-status.md) | Started 2026-09-16 |
+| 1 | Spec phases 1 and 2: enum, adapter argv, trust preseed, defaults, catalog, MCP client, title filter, mark, permission copy, every enumerating test, README and arch docs. No hook adapter, no fixture. | codex peer, [brief](./archive/gpui-rewrite/briefs/540-m1-copilot-runtime.md) | Merged via [PR #607](https://github.com/yicheng47/runner/pull/607), `a308719`; Jason's smoke passed 2026-09-16 |
+| 2 | Spec phase 3: the hook status adapter on macOS — Runner-owned `--plugin-dir` plugin, `copilot_status.rs`, `HookStatusWatcher::Copilot`, decision 3's event mapping — as a slice under `docs/impls/347-hook-status/`. | codex peer, [brief](./archive/gpui-rewrite/briefs/540-m2-copilot-hook-status.md) | Reviewed clean 2026-09-16 (`01M2MASYZ4ZSBEXGAC66Q5H3YB`); Jason's smoke passed; landed with the Agents marks and Skills pane fixes |
 | 3 | Spec phase 4: smoke on macOS and JASONPC, the terminal fixture, archive the spec. | Jason + inline | Not started |
 
 ## Decisions that bind
