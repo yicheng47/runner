@@ -28,6 +28,7 @@ use super::claude_status::{
     ClaudeStatusWatcher, CTRL_C_INTERRUPT, ESCAPE_INTERRUPT, GENERATION_ENV, PATH_ENV,
 };
 use super::codex_status::CodexStatusWatcher;
+use super::copilot_status::CopilotStatusWatcher;
 use super::launch;
 #[cfg(any(unix, test))]
 use super::process::process_exists;
@@ -96,6 +97,7 @@ impl Default for PtyRuntime {
 enum HookStatusWatcher {
     Claude(ClaudeStatusWatcher),
     Codex(CodexStatusWatcher),
+    Copilot(CopilotStatusWatcher),
 }
 
 impl HookStatusWatcher {
@@ -103,6 +105,7 @@ impl HookStatusWatcher {
         match self {
             Self::Claude(watcher) => Some(watcher.interrupt_signal()),
             Self::Codex(_) => None,
+            Self::Copilot(watcher) => Some(watcher.interrupt_signal()),
         }
     }
 
@@ -113,6 +116,7 @@ impl HookStatusWatcher {
         match self {
             Self::Claude(watcher) => watcher.drain_observations(transition),
             Self::Codex(watcher) => watcher.drain_observations(transition),
+            Self::Copilot(watcher) => watcher.drain_observations(transition),
         }
     }
 }
@@ -258,6 +262,36 @@ impl SessionRuntime for PtyRuntime {
                 Err(error) => {
                     log::warn!(
                         "Codex status bridge unavailable for {}: {error}",
+                        spec.session_id
+                    );
+                    None
+                }
+            }
+        });
+        let hook_status = hook_status.or_else(|| {
+            if !super::hook_feed::hooks_supported(cfg!(windows)) {
+                return None;
+            }
+            let path = spec.env.get(super::copilot_status::PATH_ENV)?;
+            let generation = spec.env.get(super::copilot_status::GENERATION_ENV)?;
+            let home = match super::copilot_trust::copilot_home(
+                spec.env.get("COPILOT_HOME").map(String::as_str),
+            ) {
+                Ok(home) => home,
+                Err(error) => {
+                    log::warn!(
+                        "Copilot status transcript unavailable for {}: {error}",
+                        spec.session_id
+                    );
+                    return None;
+                }
+            };
+            match CopilotStatusWatcher::start(std::path::Path::new(path), generation.clone(), home)
+            {
+                Ok(watcher) => Some(HookStatusWatcher::Copilot(watcher)),
+                Err(error) => {
+                    log::warn!(
+                        "Copilot status bridge unavailable for {}: {error}",
                         spec.session_id
                     );
                     None
@@ -1512,6 +1546,115 @@ mod tests {
             values.last().unwrap().outcome,
             Some(TurnOutcome::Interrupted)
         );
+        assert_eq!(
+            std::fs::read_dir(path.parent().unwrap()).unwrap().count(),
+            0
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn copilot_hook_runtime_uses_shared_reporter_interrupt_and_bridge_fallback() {
+        use super::super::{
+            copilot_status, hook_feed,
+            status::{Activity, TurnOutcome},
+        };
+        let root = tempfile::tempdir().unwrap();
+        copilot_status::install_plugin(root.path()).unwrap();
+        let path = hook_feed::status_path(root.path(), "copilot-hooks");
+        let rt = PtyRuntime::new();
+        let mut spawn = spec("copilot-hooks", "/bin/cat", &[]);
+        spawn.env.insert(
+            copilot_status::PATH_ENV.into(),
+            path.to_string_lossy().into_owned(),
+        );
+        spawn
+            .env
+            .insert(copilot_status::GENERATION_ENV.into(), "current".into());
+        spawn.env.insert(
+            "COPILOT_HOME".into(),
+            root.path()
+                .join("copilot-home")
+                .to_string_lossy()
+                .into_owned(),
+        );
+        let (session, stream) = rt.spawn(spawn).unwrap();
+        assert!(lookup(&rt, &session.session_id)
+            .unwrap()
+            .hook_interrupt
+            .is_some());
+        for (event, payload) in [
+            ("UserPromptSubmit", serde_json::json!({"session_id":"main"})),
+            (
+                "Stop",
+                serde_json::json!({"session_id":"main","stop_reason":"end_turn"}),
+            ),
+            (
+                "PreToolUse",
+                serde_json::json!({
+                    "session_id":"main",
+                    "tool_name":"Bash",
+                    "tool_input":{"command":"sleep 1"},
+                }),
+            ),
+        ] {
+            let mut child = std::process::Command::new("sh")
+                .arg(copilot_status::reporter_path(root.path()))
+                .arg(&path)
+                .arg(event)
+                .env(copilot_status::GENERATION_ENV, "current")
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::null())
+                .spawn()
+                .unwrap();
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(&serde_json::to_vec(&payload).unwrap())
+                .unwrap();
+            assert!(child.wait().unwrap().success());
+        }
+        rt.send_bytes(&session, b"\x1b").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut values = Vec::new();
+        while values.len() < 4 && Instant::now() < deadline {
+            if let Ok(RuntimeOutput::AgentObservation(value)) =
+                stream.recv_timeout(Duration::from_millis(50))
+            {
+                values.push(value);
+            }
+        }
+        std::fs::remove_file(copilot_status::reporter_path(root.path())).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut failed = false;
+        while !failed && Instant::now() < deadline {
+            failed = matches!(
+                stream.recv_timeout(Duration::from_millis(50)),
+                Ok(RuntimeOutput::StatusBridgeFailed)
+            );
+        }
+        rt.stop(&session).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut closed = false;
+        while !closed && Instant::now() < deadline {
+            closed = matches!(
+                stream.recv_timeout(Duration::from_millis(50)),
+                Err(mpsc::RecvTimeoutError::Disconnected)
+            );
+        }
+        assert!(failed);
+        assert!(closed);
+        assert_eq!(
+            values.len(),
+            4,
+            "expected four Copilot observations: {values:?}"
+        );
+        assert_eq!(values[0].activity, Activity::Working);
+        assert_eq!(values[1].activity, Activity::Ready);
+        assert_eq!(values[2].activity, Activity::Working);
+        assert_eq!(values[3].activity, Activity::Ready);
+        assert_eq!(values[3].outcome, Some(TurnOutcome::Interrupted));
         assert_eq!(
             std::fs::read_dir(path.parent().unwrap()).unwrap().count(),
             0

@@ -202,8 +202,8 @@ Carbon and Runner Light are Runner's own themes; Catppuccin Mocha and Latte ride
 | Chats, missions, resume after relaunch | ✓ | ✓ | ✓ | ✓ |
 | Runs on Windows | ✓ | ✓ | ✓ ¹ | — ² |
 | Fork a chat | ✓ | ✓ | — | — |
-| Working / Idle from the agent's hooks ³ | ✓ | ✓ | — | — |
-| Needs you: approval and question dialogs shown ³ | ✓ | — | — | — |
+| Working / Idle from the agent's hooks ³ | ✓ | ✓ | ✓ | — |
+| Needs you: approval and question dialogs shown ³ | ✓ | — | ✓ | — |
 | Model list read from the CLI | ✓ | ✓ | — | — |
 | Permission modes | Default · Accept edits · Auto · Bypass | Default · Auto · Bypass | Default · Accept edits · Bypass | Default · Bypass |
 | Skills pane | catalog + on/off | catalog + on/off | catalog | — |

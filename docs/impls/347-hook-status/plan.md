@@ -11,7 +11,7 @@ Slices for [#347](https://github.com/yicheng47/runner/issues/347) ([spec](../../
 | 4 | TRAE CLI adapter | Not planned — Runner hook integration unsupported; no enterprise account for validation. |
 | 5 | Deferred details, one at a time | Not started |
 | 6 | Remove title-spinner classification | Only for runtime/platform combinations with validated hook coverage; preserve unsupported-platform fallback. |
-| 7 | GitHub Copilot CLI adapter | Briefed 2026-09-16 as [540 mission 2](../archive/gpui-rewrite/briefs/540-m2-copilot-hook-status.md): per-invocation `--plugin-dir` injection, Claude-shaped events with `Notification(permission_prompt | elicitation_dialog)` observed live. |
+| 7 | GitHub Copilot CLI adapter | Implemented on `feat/540-copilot-runtime` in [540 mission 2](../archive/gpui-rewrite/briefs/540-m2-copilot-hook-status.md); working-tree review clean in Runner message `01M2MASYZ4ZSBEXGAC66Q5H3YB`, Jason's manual smoke passed 2026-09-16. |
 
 ## Slice 2 — vocabulary and UI
 
@@ -37,6 +37,12 @@ Runner hook integration is unsupported. Jason no longer has an enterprise accoun
 
 Remove title-spinner classification only where the runtime and platform have validated hook coverage. Windows and unsupported runtimes still use the existing title and byte-activity baseline; do not remove their fallback merely because the macOS adapters shipped. Byte activity remains the permanent baseline.
 
+## Slice 7 — GitHub Copilot CLI
+
+Runner regenerates `<app data>/copilot-hooks` at startup and mounts it additively on each macOS Copilot invocation. The static reporter inherits a per-session feed path and generation, reuses the shared bounded side-file transport, and leaves user configuration untouched. A user `disableAllHooks` setting emits no reports and therefore never latches the baseline off. Windows remains baseline-only.
+
+Copilot 1.0.83 maps prompt/tool/compaction events to Working and `Stop(end_turn)` to Idle, corrected by later work after a continuation. PermissionRequest alone never waits; a surfaced `Notification(permission_prompt)` raises Approval needed. `PreToolUse(AskUserQuestion)` raises Answer needed immediately and `Notification(elicitation_dialog)` confirms it. Tool results or correlated transcript completion clear ownership, including Escape/Ctrl+C cancellation through Runner's input signal. Subagent events do not affect the parent. `ErrorOccurred` stays unmapped until a real fatal model-call payload is captured. [Evidence and focused smoke](../../tests/540-copilot-hooks-smoke.md).
+
 ## Unscheduled
 
-**Windows status-hook integration — agreed follow-up (Jason, 2026-09-14).** Enable Claude/Codex status injection and observation after validating their Windows hook execution, paths, payload writes and cleanup. This is a Runner integration gap; the CLIs support hooks, and Claude fullscreen/theme settings plus the existing SessionStart rekey hook are already configured on Windows. Reuse that execution path where suitable instead of assuming a separate helper is mandatory. Shared status/UI remains available through the baseline until native verification passes. See [README](README.md#open).
+**Windows status-hook integration — agreed follow-up (Jason, 2026-09-14).** Enable Claude/Codex/Copilot status injection and observation after validating their Windows hook execution, paths, payload writes and cleanup. This is a Runner integration gap; the CLIs support hooks, and Claude fullscreen/theme settings plus the existing SessionStart rekey hook are already configured on Windows. Reuse that execution path where suitable instead of assuming a separate helper is mandatory. Shared status/UI remains available through the baseline until native verification passes. See [README](README.md#open).

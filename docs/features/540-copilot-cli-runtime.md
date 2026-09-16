@@ -59,7 +59,7 @@ Everything keyed on `Runtime` in code, grouped by the surface a user sees. Sites
 | `session/title.rs` `decoration` | Add `"github copilot"` and `"copilot"` to the chrome list. Copilot titles are `GitHub Copilot` at startup, then `<first prompt text> - GitHub Copilot`, then a generated topic such as `Run Shell Command Echo - GitHub Copilot`; the suffix must strip and the bare product name must not become a tab name. Tests with the three observed shapes. |
 | Title-spinner baseline (`runner-terminal` `TitleStatus`) | Copilot never emits a braille title, so the spinner heuristic never arms; the byte detector is the only baseline. Its footer animates while working (`● Working · 625 B esc interrupt`), so byte activity reads Working correctly. Whether the idle footer animates too is a verification item. |
 | `session/copilot_status.rs` (new) + `pty_runtime.rs` `HookStatusWatcher::Copilot` | The hook adapter (phase 3). Injection is `--plugin-dir <app data>/copilot-hooks`, a Runner-owned plugin with `plugin.json` and `hooks/hooks.json` whose commands call a Runner-owned reporter script with the per-session `RUNNER_COPILOT_STATUS_PATH` and `RUNNER_COPILOT_STATUS_GENERATION` from the spawn environment; the feed and watcher are the shared `hook_feed` transport. Event mapping is in decision 3. |
-| `session/manager/spawn.rs` `apply_runtime_args` | Insert the two env vars when hooks are supported and the runner's own args do not already pass `--plugin-dir` or an explicit opt-out. |
+| `session/manager/spawn.rs` `apply_runtime_args` | Insert the two env vars whenever hooks are supported. A runner's own `--plugin-dir` stays additive; there is no invocation opt-out, and user `disableAllHooks` falls back to the baseline by emitting no reports. |
 | `ops/session.rs` `preferred_title` | No code change: a runner-backed chat keeps its handle because Copilot has no system-prompt flag either ([#603](https://github.com/yicheng47/runner/pull/603)); update the comment that says "codex or trae". |
 
 ### Chat identity and forms (`runner-app`)
@@ -139,7 +139,7 @@ Rough size: about thirty Rust files, of which ten are compiler-forced match arms
 
 ### Phase 0 — design (done 2026-09-16)
 
-`cmp/MarkCopilot` (`QGeFI`) sits beside the Claude, Codex and Trae marks on `design/runner.pen`, and the frame `Spec — GitHub Copilot CLI runtime (540) · v1` (`OBtYk`) shows the mark at 12/14/16/24 px beside the shipped marks, the rail before and after, the Agents row with the new words, the three permission modes with their dropdown copy, the tint decision, and the light theme. No other new UI: the Agents row, pickers, permission dropdown and Skills pane reuse existing components.
+`cmp/MarkCopilot` (`QGeFI`) sits beside the Claude, Codex and Trae marks on `design/runner.pen`, and the frame `Spec — GitHub Copilot CLI runtime (540) · v1` (`OBtYk`) shows the mark at 12/14/16/24 px beside the shipped marks, the rail before and after, the Agents row with the new words, the three permission modes with their dropdown copy, the tint decision, and the light theme. The `Settings — Agents` frame (`n1krgH`) shows the four rows in catalog order with each provider mark at 16 px before the name, which the Agents pane now draws; otherwise the pickers, permission dropdown and Skills pane reuse existing components.
 
 ### Phase 1 — adapter (`runner-backend`)
 

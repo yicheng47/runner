@@ -199,7 +199,7 @@ impl McpPane {
                 }),
                 cx,
             )
-            .width(px(160.))
+            .width(px(200.))
         });
         let search = cx.new(|cx| {
             TextField::new(cx.focus_handle(), "", "Search servers…", false)

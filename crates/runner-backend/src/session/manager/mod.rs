@@ -829,7 +829,7 @@ impl SessionManager {
         *self.mission_permission_mode.read().unwrap()
     }
 
-    pub fn start_claude_session_key_watcher(
+    pub fn start_runtime_watchers(
         &self,
         app_data_dir: &Path,
         pool: Arc<DbPool>,
@@ -837,6 +837,11 @@ impl SessionManager {
     ) -> Result<()> {
         if let Err(error) = super::claude_status::clear_leftovers(app_data_dir) {
             log::warn!("clear stale Claude status files: {error}");
+        }
+        if super::hook_feed::hooks_supported(cfg!(windows)) {
+            if let Err(error) = super::copilot_status::install_plugin(app_data_dir) {
+                log::warn!("install Copilot status plugin: {error}");
+            }
         }
         let watcher =
             super::claude_rekey::ClaudeSessionKeyWatcher::start(app_data_dir, pool, events)?;

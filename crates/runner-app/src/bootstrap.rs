@@ -148,12 +148,12 @@ pub fn boot_core(
         app_version: crate::version::display_version(),
     };
 
-    if let Err(error) = core.sessions.start_claude_session_key_watcher(
+    if let Err(error) = core.sessions.start_runtime_watchers(
         &core.app_data_dir,
         Arc::clone(&core.db),
         Arc::new(core.session_events()),
     ) {
-        eprintln!("Runner Claude session-key watcher startup failed: {error}");
+        eprintln!("Runner session watcher startup failed: {error}");
     }
 
     futures::executor::block_on(ops::mission::mount_all_running_mission_routers(&core));

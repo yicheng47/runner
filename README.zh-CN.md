@@ -202,8 +202,8 @@ Carbon 和 Runner Light 是 Runner 自己的主题，Catppuccin Mocha 和 Latte 
 | 聊天、mission、重启后恢复会话 | ✓ | ✓ | ✓ | ✓ |
 | 在 Windows 上运行 | ✓ | ✓ | ✓ ¹ | — ² |
 | 分叉聊天 | ✓ | ✓ | — | — |
-| 由 agent 自身的 hook 驱动 Working / Idle 状态 ³ | ✓ | ✓ | — | — |
-| Needs you：显示审批和提问对话框 ³ | ✓ | — | — | — |
+| 由 agent 自身的 hook 驱动 Working / Idle 状态 ³ | ✓ | ✓ | ✓ | — |
+| Needs you：显示审批和提问对话框 ³ | ✓ | — | ✓ | — |
 | 从 CLI 读取模型列表 | ✓ | ✓ | — | — |
 | 权限模式 | Default · Accept edits · Auto · Bypass | Default · Auto · Bypass | Default · Accept edits · Bypass | Default · Bypass |
 | Skills 面板 | 目录 + 开关 | 目录 + 开关 | 目录 | — |

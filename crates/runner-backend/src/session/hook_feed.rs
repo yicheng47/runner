@@ -68,13 +68,16 @@ pub(super) fn script_path(path: &Path) -> PathBuf {
     path.with_extension("sh")
 }
 
-struct StatusFiles(PathBuf);
+struct StatusFiles {
+    path: PathBuf,
+    owned_script: Option<PathBuf>,
+}
 
 impl Drop for StatusFiles {
     fn drop(&mut self) {
-        if let Some(parent) = self.0.parent() {
+        if let Some(parent) = self.path.parent() {
             if let Ok(entries) = fs::read_dir(parent) {
-                let prefix = format!("{}.", self.0.file_name().unwrap().to_string_lossy());
+                let prefix = format!("{}.", self.path.file_name().unwrap().to_string_lossy());
                 for entry in entries.flatten() {
                     let name = entry.file_name();
                     let name = name.to_string_lossy();
@@ -84,11 +87,12 @@ impl Drop for StatusFiles {
                 }
             }
         }
-        for path in [
-            script_path(&self.0),
-            self.0.with_extension("sh.tmp"),
-            self.0.clone(),
-        ] {
+        let mut paths = vec![self.path.clone()];
+        if let Some(script) = self.owned_script.as_ref() {
+            paths.push(script.clone());
+            paths.push(self.path.with_extension("sh.tmp"));
+        }
+        for path in paths {
             if let Err(error) = fs::remove_file(&path) {
                 if error.kind() != std::io::ErrorKind::NotFound {
                     log::warn!("remove agent status file {}: {error}", path.display());
@@ -100,6 +104,7 @@ impl Drop for StatusFiles {
 
 pub(super) struct HookFeed {
     path: PathBuf,
+    reporter_path: PathBuf,
     reader: BufReader<File>,
     pub(super) pending: Vec<u8>,
     generation: String,
@@ -112,11 +117,42 @@ pub(super) struct HookFeed {
 impl HookFeed {
     pub(super) fn start(path: &Path, generation: String, script_body: &str) -> Result<Self> {
         fs::create_dir_all(path.parent().expect("status file has a parent"))?;
-        let files = StatusFiles(path.to_owned());
         let script = script_path(path);
+        let files = StatusFiles {
+            path: path.to_owned(),
+            owned_script: Some(script.clone()),
+        };
         let temporary = path.with_extension("sh.tmp");
         fs::write(&temporary, script_body)?;
         fs::rename(temporary, script)?;
+        Self::start_with_reporter(path, generation, script_path(path), files)
+    }
+
+    pub(super) fn start_external(
+        path: &Path,
+        generation: String,
+        reporter_path: &Path,
+    ) -> Result<Self> {
+        fs::create_dir_all(path.parent().expect("status file has a parent"))?;
+        let files = StatusFiles {
+            path: path.to_owned(),
+            owned_script: None,
+        };
+        Self::start_with_reporter(path, generation, reporter_path.to_owned(), files)
+    }
+
+    fn start_with_reporter(
+        path: &Path,
+        generation: String,
+        reporter_path: PathBuf,
+        files: StatusFiles,
+    ) -> Result<Self> {
+        if !reporter_path.exists() {
+            return Err(Error::msg(format!(
+                "agent status reporter unavailable: {}",
+                reporter_path.display()
+            )));
+        }
         let file = OpenOptions::new()
             .read(true)
             .write(true)
@@ -139,6 +175,7 @@ impl HookFeed {
             })?;
         Ok(Self {
             path: path.to_owned(),
+            reporter_path,
             reader: BufReader::new(file),
             pending: Vec::new(),
             generation,
@@ -156,7 +193,7 @@ impl HookFeed {
         {
             return Ok(());
         }
-        if !self.path.exists() || !script_path(&self.path).exists() {
+        if !self.path.exists() || !self.reporter_path.exists() {
             return Err(Error::msg("agent status bridge unavailable"));
         }
         self.last_read = Instant::now();

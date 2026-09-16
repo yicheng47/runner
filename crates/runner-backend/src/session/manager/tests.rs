@@ -9074,7 +9074,19 @@ fn codex_observations_preserve_delivery_and_drafts_and_interrupt_attention() {
 fn copilot_direct_spawn_persists_key_before_spawn_and_resume_never_replays_first_turn() {
     let pool = pool_with_schema();
     let app_data = tempfile::tempdir().unwrap();
-    let mut runner = runner("copilot", &["--user-flag", "kept", "--yolo"]);
+    if crate::session::hook_feed::hooks_supported(cfg!(windows)) {
+        crate::session::copilot_status::install_plugin(app_data.path()).unwrap();
+    }
+    let mut runner = runner(
+        "copilot",
+        &[
+            "--user-flag",
+            "kept",
+            "--plugin-dir",
+            "/user/plugin",
+            "--yolo",
+        ],
+    );
     runner.runtime = "copilot".into();
     crate::repo::runner::insert(&pool.get().unwrap(), &(&runner).into()).unwrap();
     let fake = fake_runtime();
@@ -9115,19 +9127,46 @@ fn copilot_direct_spawn_persists_key_before_spawn_and_resume_never_replays_first
             |row| row.get(0),
         )
         .unwrap();
-    let args = fake.last_spawn_spec().unwrap().args;
-    assert_eq!(
-        args,
-        [
-            "--user-flag",
-            "kept",
-            "--session-id",
-            key.as_str(),
-            "--no-auto-update",
-            "-i",
-            "persona first turn"
-        ]
-    );
+    let fresh_spec = fake.last_spawn_spec().unwrap();
+    let args = fresh_spec.args;
+    let fresh_generation = fresh_spec
+        .env
+        .get(crate::session::copilot_status::GENERATION_ENV)
+        .cloned();
+    let plugin_dir = crate::session::copilot_status::plugin_dir(app_data.path())
+        .to_string_lossy()
+        .into_owned();
+    if cfg!(windows) {
+        assert!(!fresh_spec
+            .env
+            .contains_key(crate::session::copilot_status::PATH_ENV));
+        assert!(!fresh_spec
+            .env
+            .contains_key(crate::session::copilot_status::GENERATION_ENV));
+    } else {
+        assert_eq!(
+            fresh_spec.env[crate::session::copilot_status::PATH_ENV],
+            crate::session::hook_feed::status_path(app_data.path(), &spawned.id).to_string_lossy()
+        );
+        assert!(uuid::Uuid::parse_str(
+            &fresh_spec.env[crate::session::copilot_status::GENERATION_ENV]
+        )
+        .is_ok());
+    }
+    let mut expected = vec![
+        "--user-flag".to_owned(),
+        "kept".to_owned(),
+        "--plugin-dir".to_owned(),
+        "/user/plugin".to_owned(),
+        "--session-id".to_owned(),
+        key.clone(),
+        "--no-auto-update".to_owned(),
+    ];
+    if !cfg!(windows) {
+        expected.extend(["--plugin-dir".to_owned(), plugin_dir.clone()]);
+    }
+    expected.extend(["-i".to_owned(), "persona first turn".to_owned()]);
+    assert_eq!(args, expected);
     assert!(fake.inputs.lock().unwrap().is_empty());
     mgr.kill(&spawned.id).unwrap();
     mgr.resume(
@@ -9139,17 +9178,33 @@ fn copilot_direct_spawn_persists_key_before_spawn_and_resume_never_replays_first
         capture(),
     )
     .unwrap();
-    let args = fake.last_spawn_spec().unwrap().args;
-    assert_eq!(
-        args,
-        [
-            "--user-flag",
-            "kept",
-            "--session-id",
-            key.as_str(),
-            "--no-auto-update"
-        ]
-    );
+    let resumed_spec = fake.last_spawn_spec().unwrap();
+    let args = resumed_spec.args;
+    if cfg!(windows) {
+        assert!(!resumed_spec
+            .env
+            .contains_key(crate::session::copilot_status::PATH_ENV));
+    } else {
+        let resumed_generation = &resumed_spec.env[crate::session::copilot_status::GENERATION_ENV];
+        assert!(uuid::Uuid::parse_str(resumed_generation).is_ok());
+        assert_ne!(
+            fresh_generation.as_deref(),
+            Some(resumed_generation.as_str())
+        );
+    }
+    let mut expected = vec![
+        "--user-flag".to_owned(),
+        "kept".to_owned(),
+        "--plugin-dir".to_owned(),
+        "/user/plugin".to_owned(),
+        "--session-id".to_owned(),
+        key,
+        "--no-auto-update".to_owned(),
+    ];
+    if !cfg!(windows) {
+        expected.extend(["--plugin-dir".to_owned(), plugin_dir]);
+    }
+    assert_eq!(args, expected);
     mgr.kill(&spawned.id).unwrap();
 }
 
