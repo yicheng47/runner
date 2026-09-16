@@ -84,9 +84,12 @@ fn set_global_enabled_at(
     if runtime == Runtime::Codex {
         return set_codex_enabled_at(home, codex_home, skill_path, enabled);
     }
+    if runtime == Runtime::Copilot {
+        return set_copilot_enabled_at(home, skill_path, enabled);
+    }
     if runtime != Runtime::ClaudeCode {
         return Err(Error::msg(
-            "global skill on/off is only supported for Claude Code and Codex",
+            "global skill on/off is only supported for Claude Code, Codex and GitHub Copilot CLI",
         ));
     }
     let entry = find_entry(&catalog_at(home, None, runtime)?, skill_path)?;
@@ -117,6 +120,40 @@ fn set_global_enabled_at(
     std::fs::create_dir_all(home.join(".claude"))?;
     std::fs::write(path, text)?;
     catalog_at(home, None, runtime)
+}
+
+fn set_copilot_enabled_at(home: &Path, skill_path: &Path, enabled: bool) -> Result<SkillCatalog> {
+    let entry = find_entry(&catalog_at(home, None, Runtime::Copilot)?, skill_path)?;
+    let path = crate::runtime_defaults::copilot_settings_path(home);
+    let mut settings: serde_json::Value = match std::fs::read_to_string(&path) {
+        Ok(text) => serde_json::from_str(&text)
+            .map_err(|error| Error::msg(format!("parse {}: {error}", path.display())))?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => serde_json::json!({}),
+        Err(error) => return Err(error.into()),
+    };
+    let object = settings
+        .as_object_mut()
+        .ok_or_else(|| Error::msg("settings.json is not a JSON object"))?;
+    let disabled = object
+        .entry("disabledSkills")
+        .or_insert_with(|| serde_json::json!([]))
+        .as_array_mut()
+        .ok_or_else(|| Error::msg("disabledSkills is not a JSON array"))?;
+    if enabled {
+        disabled.retain(|value| value.as_str() != Some(entry.name.as_str()));
+        if disabled.is_empty() {
+            object.shift_remove("disabledSkills");
+        }
+    } else if !disabled
+        .iter()
+        .any(|value| value.as_str() == Some(entry.name.as_str()))
+    {
+        disabled.push(serde_json::json!(entry.name));
+    }
+    let text = format!("{}\n", serde_json::to_string_pretty(&settings)?);
+    std::fs::create_dir_all(home.join(".copilot"))?;
+    std::fs::write(path, text)?;
+    catalog_at(home, None, Runtime::Copilot)
 }
 
 fn set_codex_enabled_at(
@@ -289,6 +326,90 @@ mod tests {
         std::fs::create_dir_all(&path).unwrap();
         std::fs::write(path.join("SKILL.md"), "# Original\r\n").unwrap();
         (home, path)
+    }
+
+    fn copilot_fixture() -> (tempfile::TempDir, PathBuf) {
+        let home = tempfile::tempdir().unwrap();
+        let path = home.path().join(".copilot/skills/demo");
+        std::fs::create_dir_all(&path).unwrap();
+        std::fs::write(
+            path.join("SKILL.md"),
+            "---\nname: demo-skill\ndescription: demo\n---\n# Original\n",
+        )
+        .unwrap();
+        (home, path)
+    }
+
+    fn copilot_settings(home: &Path) -> String {
+        std::fs::read_to_string(home.join(".copilot/settings.json")).unwrap()
+    }
+
+    #[test]
+    fn copilot_toggle_writes_disabled_skills_by_frontmatter_name_and_preserves_siblings() {
+        let (home, skill_path) = copilot_fixture();
+        let original =
+            "{\n  \"model\": \"gpt-5.4\",\n  \"footer\": {\n    \"showQuota\": true\n  }\n}\n";
+        std::fs::write(home.path().join(".copilot/settings.json"), original).unwrap();
+        let off =
+            set_global_enabled_at(home.path(), None, Runtime::Copilot, &skill_path, false).unwrap();
+        assert_eq!(off.entries[0].name, "demo-skill");
+        assert_eq!(off.entries[0].global, GlobalState::Off);
+        assert_eq!(
+            copilot_settings(home.path()),
+            "{\n  \"model\": \"gpt-5.4\",\n  \"footer\": {\n    \"showQuota\": true\n  },\n  \"disabledSkills\": [\n    \"demo-skill\"\n  ]\n}\n"
+        );
+        let on =
+            set_global_enabled_at(home.path(), None, Runtime::Copilot, &skill_path, true).unwrap();
+        assert_eq!(on.entries[0].global, GlobalState::On);
+        assert_eq!(copilot_settings(home.path()), original);
+    }
+
+    #[test]
+    fn copilot_toggle_keeps_unrelated_names_and_never_duplicates() {
+        let (home, skill_path) = copilot_fixture();
+        std::fs::write(
+            home.path().join(".copilot/settings.json"),
+            "{\"disabledSkills\":[\"other\",\"demo-skill\",\"demo-skill\"]}",
+        )
+        .unwrap();
+        set_global_enabled_at(home.path(), None, Runtime::Copilot, &skill_path, false).unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&copilot_settings(home.path())).unwrap(),
+            json!({"disabledSkills": ["other", "demo-skill", "demo-skill"]})
+        );
+        set_global_enabled_at(home.path(), None, Runtime::Copilot, &skill_path, true).unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&copilot_settings(home.path())).unwrap(),
+            json!({"disabledSkills": ["other"]})
+        );
+    }
+
+    #[test]
+    fn copilot_toggle_creates_missing_settings_and_rejects_bad_shapes_without_writes() {
+        let (home, skill_path) = copilot_fixture();
+        set_global_enabled_at(home.path(), None, Runtime::Copilot, &skill_path, false).unwrap();
+        assert_eq!(
+            copilot_settings(home.path()),
+            "{\n  \"disabledSkills\": [\n    \"demo-skill\"\n  ]\n}\n"
+        );
+        set_global_enabled_at(home.path(), None, Runtime::Copilot, &skill_path, true).unwrap();
+        assert_eq!(copilot_settings(home.path()), "{}\n");
+        for raw in ["{\"disabledSkills\": 3}", "[]", "{\"model\": "] {
+            std::fs::write(home.path().join(".copilot/settings.json"), raw).unwrap();
+            assert!(
+                set_global_enabled_at(home.path(), None, Runtime::Copilot, &skill_path, false)
+                    .is_err()
+            );
+            assert_eq!(copilot_settings(home.path()), raw);
+        }
+        assert!(set_global_enabled_at(
+            home.path(),
+            None,
+            Runtime::Copilot,
+            &home.path().join(".copilot/skills/missing"),
+            false
+        )
+        .is_err());
     }
 
     fn codex_fixture() -> (tempfile::TempDir, PathBuf) {
@@ -953,7 +1074,7 @@ mod tests {
         )
         .is_err());
         assert!(!home.path().join(".codex").exists());
-        for runtime in [Runtime::Trae, Runtime::Copilot, Runtime::Shell] {
+        for runtime in [Runtime::Trae, Runtime::Shell] {
             assert!(set_global_enabled_at(
                 home.path(),
                 None,

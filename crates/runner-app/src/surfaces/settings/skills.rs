@@ -23,7 +23,7 @@ use crate::theme;
 
 const CLAUDE_CAPTION: &str = "Toggles hide a skill from every new Claude Code session, inside Runner or not; the only write is the skillOverrides key in ~/.claude/settings.json. Click a row to read a skill, hover it to edit. Bundled skills (code-review, loop, …) and project skills always load and are not listed.";
 const CODEX_CAPTION: &str = "Toggles hide a skill from every new Codex session, inside Runner or not; the only write is a [[skills.config]] entry in ~/.codex/config.toml. Click a row to read a skill, hover it to edit. Codex's system skills (~/.codex/skills/.system) and plugin skills always load and are not listed.";
-const COPILOT_CAPTION: &str = "Every skill in these roots loads in every new GitHub Copilot CLI session; Runner does not toggle Copilot skills yet. Click a row to read a skill, hover it to edit. Project skills (.github/skills, .agents/skills) and plugin skills always load and are not listed.";
+const COPILOT_CAPTION: &str = "Toggles hide a skill from every new GitHub Copilot CLI session, inside Runner or not; the only write is the disabledSkills list in ~/.copilot/settings.json, the list `copilot plugins disable --skill` keeps. Click a row to read a skill, hover it to edit. Project skills (.github/skills, .agents/skills) and plugin skills always load and are not listed.";
 const READ_ONLY_CAPTION: &str = "Every skill in these roots loads in every new session; Runner does not toggle skills for this agent. Click a row to read a skill, hover it to edit.";
 
 fn catalog_caption(runtime: Runtime) -> &'static str {
@@ -97,7 +97,10 @@ fn matches_search(entry: &SkillEntry, query: &str) -> bool {
 }
 
 fn supports_global_skill_toggle(runtime: Runtime) -> bool {
-    matches!(runtime, Runtime::ClaudeCode | Runtime::Codex)
+    matches!(
+        runtime,
+        Runtime::ClaudeCode | Runtime::Codex | Runtime::Copilot
+    )
 }
 
 fn catalog_meta(catalog: &SkillCatalog) -> String {
@@ -900,10 +903,10 @@ impl SkillDetail {
                                         div().text_size(theme::text_caption())
                                             .line_height(rems(15. / 16.))
                                             .text_color(theme::faint())
-                                            .child(if skill.runtime == Runtime::Codex {
-                                                "Applies to new Codex sessions. Writes only this skill’s [[skills.config]] entry in Codex config.toml; Claude Code is unchanged."
-                                            } else {
-                                                "Applies to every new Claude Code session, inside Runner or not. Writes only skillOverrides in ~/.claude/settings.json."
+                                            .child(match skill.runtime {
+                                                Runtime::Codex => "Applies to new Codex sessions. Writes only this skill’s [[skills.config]] entry in Codex config.toml; Claude Code is unchanged.",
+                                                Runtime::Copilot => "Applies to every new GitHub Copilot CLI session, inside Runner or not. Writes only the disabledSkills list in ~/.copilot/settings.json.",
+                                                _ => "Applies to every new Claude Code session, inside Runner or not. Writes only skillOverrides in ~/.claude/settings.json.",
                                             }),
                                     ),
                             )
@@ -1390,7 +1393,7 @@ mod tests {
     }
 
     #[test]
-    fn copilot_detail_omits_unsupported_global_enabled_state() {
+    fn copilot_detail_shows_the_global_enabled_row() {
         let temp = tempfile::tempdir().unwrap();
         let mut cx = gpui::TestAppContext::single();
         let store = test_store(temp.path(), &mut cx);
@@ -1416,8 +1419,8 @@ mod tests {
         .unwrap();
         visual.run_until_parked();
 
-        assert!(!supports_global_skill_toggle(Runtime::Copilot));
-        assert!(visual.debug_bounds("SKILL_ENABLED_ROW").is_none());
+        assert!(supports_global_skill_toggle(Runtime::Copilot));
+        assert!(visual.debug_bounds("SKILL_ENABLED_ROW").is_some());
     }
 
     #[test]

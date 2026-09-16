@@ -16,10 +16,14 @@ pub fn runtime_defaults(runtime: Runtime, home: &Path) -> RuntimeDefaults {
     match runtime {
         Runtime::Codex => toml_defaults(&codex_config_path(home)),
         Runtime::ClaudeCode => json_defaults(&claude_settings_path(home), false),
-        Runtime::Copilot => json_defaults(&home.join(COPILOT_SETTINGS_RELATIVE_PATH), true),
+        Runtime::Copilot => json_defaults(&copilot_settings_path(home), true),
         Runtime::Trae => toml_defaults(&trae_config_path(home)),
         Runtime::Shell => RuntimeDefaults::default(),
     }
+}
+
+pub(crate) fn copilot_settings_path(home: &Path) -> PathBuf {
+    home.join(COPILOT_SETTINGS_RELATIVE_PATH)
 }
 
 pub(crate) fn codex_config_path(home: &Path) -> PathBuf {

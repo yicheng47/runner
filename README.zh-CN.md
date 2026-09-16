@@ -206,7 +206,7 @@ Carbon 和 Runner Light 是 Runner 自己的主题，Catppuccin Mocha 和 Latte 
 | Needs you：显示审批和提问对话框 ³ | ✓ | — | ✓ | — |
 | 从 CLI 读取模型列表 | ✓ | ✓ | — | — |
 | 权限模式 | Default · Accept edits · Auto · Bypass | Default · Auto · Bypass | Default · Accept edits · Bypass | Default · Bypass |
-| Skills 面板 | 目录 + 开关 | 目录 + 开关 | 目录 | — |
+| Skills 面板 | 目录 + 开关 | 目录 + 开关 | 目录 + 开关 | — |
 | 把 Runner 注册为 MCP 服务 | ✓ | ✓ | ✓ | ✓ |
 | 终端渲染有夹具测试覆盖 | ✓ | ✓ | — | — |
 
