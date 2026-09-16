@@ -815,7 +815,7 @@ impl Render for AgentsPane {
                     .text_size(theme::text_ui())
                     .line_height(rems(18. / 16.))
                     .text_color(theme::faint())
-                    .child("Disabled agents stay configured but are hidden from agent pickers. Overrides apply to new sessions that use the agent's default command; runners with a custom command keep it."),
+                    .child("Disabled agents stay configured but are hidden from agent pickers. Overrides apply to new sessions that use the agent's default command; roles with a custom command keep it."),
             )
             .children(self.error.clone().map(|error| {
                 div()

@@ -384,7 +384,7 @@ fn mission_tab(
 /// The permission mode a mission started with, read from the first
 /// `mission_start` signal's payload (feature 527). Missions recorded
 /// before the key existed have no section. Rendered as the spec's
-/// human label: `bypass`, `auto`, or `runner default`.
+/// human label: `bypass`, `auto`, or `role default`.
 fn mission_permission_mode_label(events: &[Event]) -> Option<String> {
     events
         .iter()
@@ -395,7 +395,7 @@ fn mission_permission_mode_label(events: &[Event]) -> Option<String> {
         .and_then(|event| event.payload.get("permission_mode"))
         .and_then(serde_json::Value::as_str)
         .map(|mode| match mode {
-            "role-default" => "runner default".to_owned(),
+            "role-default" | "runner-default" => "role default".to_owned(),
             _ => mode.replace('-', " "),
         })
 }

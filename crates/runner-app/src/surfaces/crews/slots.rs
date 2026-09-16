@@ -166,11 +166,11 @@ impl NativeRoot {
                                 )),
                                 if runtime_overridden {
                                     format!(
-                                        "Runtime override — runner default is {}",
+                                        "Runtime override — role default is {}",
                                         slot.role.runtime
                                     )
                                 } else {
-                                    "Runtime (runner default)".to_owned()
+                                    "Runtime (role default)".to_owned()
                                 },
                                 RuntimeBadge::new(effective_runtime).overridden(runtime_overridden),
                             ))
@@ -271,7 +271,7 @@ impl NativeRoot {
             })
             .icon("star.svg")
             .disabled(slot.slot.lead),
-            UiMenuItem::new("Edit runner").icon("square-pen.svg"),
+            UiMenuItem::new("Edit role").icon("square-pen.svg"),
             UiMenuItem::new("Remove from crew")
                 .icon("trash.svg")
                 .separator_before(true)

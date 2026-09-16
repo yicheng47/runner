@@ -18,7 +18,7 @@
 </p>
 
 <p align="center">
-  <strong>Spawn a runner. Create your crew. Ship the feature.</strong>
+  <strong>Write a role. Create your crew. Ship the feature.</strong>
   <br />
   A native terminal that orchestrates coding agents. Claude Code and Codex keep their own TUI; Runner adds sessions, skills, and crews.
 </p>
@@ -55,8 +55,8 @@
 
 Runner is a native desktop app for running several CLI coding agents at once. Claude Code and Codex keep their own TUI in a real terminal; Runner is the layer around them.
 
-- **Runner** — a reusable agent configuration: runtime, role, system prompt, working directory.
-- **Crew** — runners composed into named slots with one lead, plus the team conventions every mission inherits.
+- **Role** — a reusable agent configuration: runtime, system prompt, working directory.
+- **Crew** — roles composed into named slots with one lead, plus the team conventions every mission inherits.
 - **Mission** — a crew working one goal: one live terminal per slot, coordinating over an event feed that persists and replays, with `ask_human` when a decision is yours.
 - **Chat** — a single agent in a real terminal, no mission required; tabs hold up to three side by side.
 - **MCP** — everything above is also a tool, so your agents can run Runner themselves.
@@ -95,7 +95,7 @@ https://github.com/user-attachments/assets/fb3669a4-010d-42d0-9555-2a3ba3223c75
 
 ### Crews — roles, prompts, one lead
 
-A **runner** is a reusable agent configuration: runtime, role, system prompt, working directory. A **crew** composes runners into named slots with exactly one lead, plus team conventions and a definition of done that every mission inherits.
+A **role** is a reusable agent configuration: runtime, system prompt, working directory. A **crew** composes roles into named slots with exactly one lead, plus team conventions and a definition of done that every mission inherits.
 
 </td>
 </tr>
@@ -108,7 +108,7 @@ A **runner** is a reusable agent configuration: runtime, role, system prompt, wo
 
 ### Missions — a crew working one goal
 
-Starting a mission spawns one live PTY per slot into a tabbed workspace. The **feed** is where the crew coordinates: an append-only event log, every signal persisted and replayable, so missions survive a quit or crash, and `ask_human` questions surface there for you. Each **slot** is a real terminal one tab over, the agent's own TUI, where you can watch, type, or stop, resume, and restart that runner on its own.
+Starting a mission spawns one live PTY per slot into a tabbed workspace. The **feed** is where the crew coordinates: an append-only event log, every signal persisted and replayable, so missions survive a quit or crash, and `ask_human` questions surface there for you. Each **slot** is a real terminal one tab over, the agent's own TUI, where you can watch, type, or stop, resume, and restart that session on its own.
 
 [Architecture →](./docs/arch/arch.md)
 
@@ -123,7 +123,7 @@ Starting a mission spawns one live PTY per slot into a tabbed workspace. The **f
 
 ### Chats — tabs, split panes, folders
 
-Every chat is a real 1:1 PTY with a runner, no mission required. Split a tab as far as the window allows — right or down from any pane, `⌘D` and `⇧⌘D` — and drag a pane by its grip to reorder; terminal tabs split the same way, straight into another shell. The sidebar groups tabs into collapsible folders; every tab shows a spinner while a pane is still working and a dot when one finished while you were elsewhere, so a wall of parallel agents stays scannable.
+Every chat is a real 1:1 PTY with a role, no mission required. Split a tab as far as the window allows — right or down from any pane, `⌘D` and `⇧⌘D` — and drag a pane by its grip to reorder; terminal tabs split the same way, straight into another shell. The sidebar groups tabs into collapsible folders; every tab shows a spinner while a pane is still working and a dot when one finished while you were elsewhere, so a wall of parallel agents stays scannable.
 
 </td>
 </tr>
@@ -190,7 +190,7 @@ Carbon and Runner Light are Runner's own themes; Catppuccin Mocha and Latte ride
 ### Also in the box
 
 - **Projects** — bind a working directory once; chats and missions started inside a project inherit its cwd and stay grouped in their own sidebar section. Agents can create, rename, file into, and delete projects over MCP too.
-- **Mission controls** — stop, resume, or restart a single slot without restarting the mission; a restarted runner comes back fresh with its original brief. Missions run in Bypass permission mode by default, with Accept-edits and Default a setting away, and never stall on an agent's first-run consent dialog.
+- **Mission controls** — stop, resume, or restart a single slot without restarting the mission; a restarted session comes back fresh with its original brief. Missions run in Bypass permission mode by default, with Accept-edits and Default a setting away, and never stall on an agent's first-run consent dialog.
 - **Sessions that outlive the app** — quitting or crashing does not kill your agents; the next launch reattaches to the sessions still running, and a quit while work is in flight asks first.
 - **Real terminals** — every pane is a real PTY on an `alacritty_terminal` grid drawn on the GPU: the agents' own colours, mouse reporting, IME input (Pinyin included), copy, file-path paste, 10,000 lines of scrollback. Click a file path to open it in your editor; select some output and ask about it in a side thread; ⌘+ and ⌘− zoom the app from 60% to 200%.
 - **Bundled `runner` CLI** — spawned agents message each other, check the crew roster, and post signals from inside their own PTYs.
@@ -220,9 +220,9 @@ Install the agent CLIs separately. Runner detects them on `PATH`, with per-agent
 
 ## Example crew
 
-The **default Runner shape** is a two-runner peer-coding loop: one implements, one reviews, and the loop runs on the working-tree diff until the review is clean — no architect, no dispatch overhead, just the tightest loop that still has a second pair of eyes. Runner seeds this crew on first launch; the source lives in [`examples/peer-coding/`](./examples/peer-coding/).
+The **default Runner shape** is a two-role peer-coding loop: one implements, one reviews, and the loop runs on the working-tree diff until the review is clean — no architect, no dispatch overhead, just the tightest loop that still has a second pair of eyes. Runner seeds this crew on first launch; the source lives in [`examples/peer-coding/`](./examples/peer-coding/).
 
-| Runner | Runtime | Role | System prompt |
+| Role | Runtime | Responsibility | System prompt |
 | --- | --- | --- | --- |
 | **@coder** (lead) | `codex` | Branches, implements, runs the checks, hands the diff to the reviewer, fixes findings. | [`coder.md`](./examples/peer-coding/coder.md) |
 | **@reviewer** | `codex` | Reads the working-tree diff, reports must-fix issues with file:line pointers, never edits code. | [`reviewer.md`](./examples/peer-coding/reviewer.md) |

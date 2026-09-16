@@ -27,7 +27,7 @@ impl NativeRoot {
         ];
         let items = vec![
             UiMenuItem::new("Edit details").icon("pencil.svg"),
-            UiMenuItem::new("Delete runner")
+            UiMenuItem::new("Delete role")
                 .icon("trash.svg")
                 .destructive(true),
         ];

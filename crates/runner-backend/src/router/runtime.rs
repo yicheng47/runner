@@ -601,7 +601,7 @@ impl MissionPermissionMode {
         match self {
             Self::Bypass => "Bypass",
             Self::Auto => "Auto",
-            Self::RoleDefault => "Runner default",
+            Self::RoleDefault => "Role default",
         }
     }
 }

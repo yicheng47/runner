@@ -319,7 +319,7 @@ impl MissionWorkspace {
         });
         let rail_action = (!self.settings(cx).mission_rail_open).then(|| {
             IconButton::new("open-mission-rail", "panel-right-hidden.svg")
-                .tooltip("Open runners panel")
+                .tooltip("Open sessions panel")
                 .on_press(move |_, cx| {
                     open_rail_root.update(cx, |this, cx| {
                         this.update_app_settings(cx, true, |settings| {

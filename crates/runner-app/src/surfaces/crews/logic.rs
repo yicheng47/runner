@@ -24,7 +24,7 @@ pub(super) fn section_label(label: &'static str) -> AnyElement {
 }
 
 pub(super) fn slot_section_description() -> StyledText {
-    let description = "Positions in the crew. Each slot binds a handle to a runner. The LEAD is the crew's face — receives human messages by default and dispatches back to other slots.";
+    let description = "Positions in the crew. Each slot binds a handle to a role. The LEAD is the crew's face — receives human messages by default and dispatches back to other slots.";
     let lead_start = description
         .find("LEAD")
         .expect("slot description contains LEAD");
@@ -145,11 +145,10 @@ pub(super) fn add_slot_runtime_options(
     selected: Option<&RoleWithActivity>,
 ) -> Vec<SelectOption> {
     let default = selected
-        .map(|role| format!("Runner default ({})", role.role.runtime))
-        .unwrap_or_else(|| "Runner default".into());
-    let mut options = vec![
-        SelectOption::new("", default).description("Use the runtime configured on the runner.")
-    ];
+        .map(|role| format!("Role default ({})", role.role.runtime))
+        .unwrap_or_else(|| "Role default".into());
+    let mut options =
+        vec![SelectOption::new("", default).description("Use the runtime configured on the role.")];
     options.extend(runtimes.iter().map(|runtime| {
         SelectOption::new(runtime.name.to_string(), runtime.display_name.clone())
             .description(runtime.description.clone())

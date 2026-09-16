@@ -47,19 +47,19 @@ Runner is a local macOS desktop app. A user configures a **crew** of CLI coding 
 
 **Three layers inside the box.**
 
-*Orchestration (lifecycle only).* **MissionManager** (`ops::mission`) starts, stops, archives and resets missions, composes each runner's system prompt at spawn, and re-mounts router + bus state for `running` missions on launch. Once a mission is up it goes quiet; it is not in the runtime data path.
+*Orchestration (lifecycle only).* **MissionManager** (`ops::mission`) starts, stops, archives and resets missions, composes each role's system prompt at spawn, and re-mounts router + bus state for `running` missions on launch. Once a mission is up it goes quiet; it is not in the runtime data path.
 
 *Runtime (the hot path).* **SessionManager** owns each PTY master, the blocking reader thread, the serialized writer, the idle detector and the session's last applied size. **EventBus** tails the per-mission NDJSON file with `notify`, parses each new line, hands it to the **Router** for handler dispatch and republishes a `mission/changed` notification for the UI. "Projections" — inbox, pending HITL cards, status map — are in-memory rollups over the same event stream.
 
 *Presentation (the app crate).* **`AppStore`** holds read snapshots of the rows the UI renders and turns `AppEvent`s into scoped GPUI notifications. **`TerminalBridge`** (in `crates/runner-terminal`) owns one `alacritty_terminal::Term` per live session for the session's lifetime; panes borrow the terminal, they never own it. The terminal element paints the grid, and keys, IME composition and mouse events go straight back to the PTY writer.
 
-**Two channels out of the core, deliberately different.** Terminal bytes take the synchronous path: the PTY reader thread calls `SessionEvents::output` and the bridge feeds the session's `Term` under its lock — no queue, no encoding, nothing to lag. Everything else (row changes, mission events, session lifecycle, router warnings) goes through a `tokio::sync::broadcast` of `AppEvent`s consumed by the `native-app-events` thread, which updates `AppStore` and wakes GPUI. Names in use today: `mission/changed`, `mission/resync`, `session/spawned`, `session/exit`, `session/updated`, `session/archived`, `session/status`, `session/warning`, `runner/changed`, `runner/activity`, `crew/changed`, `slot/changed`, `project/changed`, `chat/layout-changed`, `router/delivery-blocked`, `app/woke`.
+**Two channels out of the core, deliberately different.** Terminal bytes take the synchronous path: the PTY reader thread calls `SessionEvents::output` and the bridge feeds the session's `Term` under its lock — no queue, no encoding, nothing to lag. Everything else (row changes, mission events, session lifecycle, router warnings) goes through a `tokio::sync::broadcast` of `AppEvent`s consumed by the `native-app-events` thread, which updates `AppStore` and wakes GPUI. Names in use today: `mission/changed`, `mission/resync`, `session/spawned`, `session/exit`, `session/updated`, `session/archived`, `session/status`, `session/warning`, `role/changed`, `role/activity`, `crew/changed`, `slot/changed`, `project/changed`, `chat/layout-changed`, `router/delivery-blocked`, `app/woke`.
 
 **One session.** The session row is one slot's PTY process: SessionManager holds the master file descriptor; the child runs the agent binary with a real tty on stdin/stdout/stderr. The env vars are what make the bundled `runner` CLI work inside that child — when the agent runs `runner msg post …`, the CLI reads `RUNNER_MISSION_ID` + `RUNNER_EVENT_LOG` from its environment, builds the JSON line, and `flock`-appends to the right file. No daemon, no socket; the CLI opens the file directly.
 
-**Closing the loop.** Child invokes `runner` CLI → CLI appends a line to `events.ndjson` → `notify` wakes the EventBus → the line goes to (a) the Router and (b) the UI as `mission/changed`. If a handler needs to wake a runner, it writes bytes into that session's PTY through SessionManager's writer. The bus is the spine: all coordination flows through one append-only file, which is why it's debuggable with `tail -f | jq`.
+**Closing the loop.** Child invokes `runner` CLI → CLI appends a line to `events.ndjson` → `notify` wakes the EventBus → the line goes to (a) the Router and (b) the UI as `mission/changed`. If a handler needs to wake a session, it writes bytes into that session's PTY through SessionManager's writer. The bus is the spine: all coordination flows through one append-only file, which is why it's debuggable with `tail -f | jq`.
 
-**What's not in the hot path.** SQLite holds configuration and session-lifecycle metadata (runners, crews, slots, projects, the sidebar tree, mission rows, session rows with PID, runtime metadata and last size). Live coordination state lives in the NDJSON file or in the router's memory; live screen state lives in the `Term`s.
+**What's not in the hot path.** SQLite holds configuration and session-lifecycle metadata (roles, crews, slots, projects, the sidebar tree, mission rows, session rows with PID, runtime metadata and last size). Live coordination state lives in the NDJSON file or in the router's memory; live screen state lives in the `Term`s.
 
 **The invariant this picture encodes.** There is exactly one piece of mutable shared state per mission: `events.ndjson`. Every other component is a writer to it (the `runner` CLI; the router for `human_question` / `mission_warning`), a reader of it (EventBus → router + UI), or a per-session PTY pipeline that doesn't touch it. On restart Runner re-opens the file and reconstructs router/feed projections from replay. PTY children do not survive app restart; their rows become resumable stopped sessions, and sessions flagged `resume_on_launch` are re-spawned at startup.
 
@@ -74,7 +74,7 @@ Crate boundaries are in [`AGENTS.md`](../../AGENTS.md); this is the shape *insid
 | `mission_workspace/` | 14 | 839 | state, routing, attach, drawer, events, actions, input, view, feed, composer, terminal pane, rail |
 | `sidebar/` | 13 | 891 | state, activation, archive, rows, shortcuts, menus, project, drag, view, row renders, elements |
 | `crews/` | 10 | 750 | list, editor, editor sections, create, add slot, slots, overlays, logic |
-| `runners/` | 10 | 562 | forms, create, edit, delete, list, detail, menu, logic |
+| `roles/` | 10 | 562 | forms, create, edit, delete, list, detail, menu, logic |
 
 `chat.rs`, `panes.rs`, `settings_page.rs` and `start_chat.rs` are still single files. The ones that have since outgrown the shape are tracked in [#582](https://github.com/yicheng47/runner/issues/582).
 
@@ -97,7 +97,7 @@ Crate boundaries are in [`AGENTS.md`](../../AGENTS.md); this is the shape *insid
 | Event transport | **Append-only NDJSON per mission** | Tailable, crash-durable, replayable; `flock(LOCK_EX)` for cross-process append atomicity. |
 | File watching | **`notify`** | The bus tails the NDJSON file and republishes lines. |
 | Bundled CLI | **`runner`** (`cli/`) | Agents talk to the bus through it — `runner signal …`, `runner msg post …`, `runner msg read`. Dropped at `$APPDATA/bin/runner` on first run, PATH-prepended per spawn. |
-| MCP | **`rmcp`** server over local IPC + `runner-mcp` stdio bridge | Runner.app owns stateful tool execution (crews, runners, slots, projects, missions, direct sessions); external clients spawn `runner-mcp`, which bridges stdio to `$APPDATA/mcp.sock` on Unix or `\\.\pipe\com.wycstudios.runner[-dev]` on Windows. |
+| MCP | **`rmcp`** server over local IPC + `runner-mcp` stdio bridge | Runner.app owns stateful tool execution (crews, roles, slots, projects, missions, direct sessions); external clients spawn `runner-mcp`, which bridges stdio to `$APPDATA/mcp.sock` on Unix or `\\.\pipe\com.wycstudios.runner[-dev]` on Windows. |
 | Logging | **`tracing`** + rotating file layer + panic hook | `~/Library/Logs/com.wycstudios.runner/runner.log`; release filter `info`, debug builds `debug`, `RUST_LOG` overrides. |
 | Updater | **Sparkle 2.9.5** via `objc2` (`updater` feature) | `SPUStandardUpdaterController`, EdDSA-signed appcasts on GitHub Releases, with separate production and nightly feeds — see §14. |
 | Packaging | `script/bundle-mac` | `.app` assembly, Developer ID codesign, notarization, DMG; `CFBundleVersion` is the build stamp. |
@@ -109,17 +109,17 @@ Crate boundaries are in [`AGENTS.md`](../../AGENTS.md); this is the shape *insid
 
 Domain objects split into two layers:
 
-- **Configuration** — persistent, user-edited. Outlives missions. Runner, Crew, Slot, crew addendum, Project, the sidebar tree.
+- **Configuration** — persistent, user-edited. Outlives missions. Role, Crew, Slot, crew addendum, Project, the sidebar tree.
 - **Runtime** — created at mission start, torn down at mission end. Mission, Session, the in-memory router state, the per-mission shared context.
 
-The key insight: **a Runner is config; a Session is its runtime instance** — same pattern as Crew (config) → Mission (runtime). A runner never runs on its own. A runner runs *inside a mission* as a session (or as a one-off direct-chat session outside any mission).
+The key insight: **a Role is config; a Session is its runtime instance** — same pattern as Crew (config) → Mission (runtime). A role is instantiated as a session *inside a mission* or as a one-off direct-chat session outside any mission.
 
 ### 3.1 Relationship diagram
 
 ```
 ┌─ Configuration (persistent) ─────────┐    ┌─ Runtime (mission-scoped) ──────────────┐
 │                                      │    │                                         │
-│   Runner ──── Slot (per-crew handle, │    │   Session ─► PTY process                │
+│   Role   ──── Slot (per-crew handle, │    │   Session ─► PTY process                │
 │      ▲             lead flag,        ┼────┼─►  (one per slot per mission;            │
 │      │             runtime/model/    │    │      lives & dies with the mission)     │
 │      │             effort overrides) │    │                                         │
@@ -141,32 +141,32 @@ The key insight: **a Runner is config; a Session is its runtime instance** — s
 
 A mission is a container. Everything in the runtime column is either the container itself (Mission) or an object whose lifecycle is scoped by it.
 
-### 3.2 Runner — *one configured agent*
+### 3.2 Role — *one configured agent*
 
-A reusable template: handle, display name, runtime, command + args, working dir, system prompt (persona), env, optional model and effort. Known runtimes use the `Runtime` enum in code (`ClaudeCode`, `Codex`, `Trae`, `Copilot`, `Shell`); SQLite runtime names remain plain strings, and legacy or arbitrary names, including `qoder` rows from before v0.6.7, stay unchanged and readable without a migration. Dispatch parses those names while preserving the existing behavior for unknown runtimes. **Top-level, not nested under a crew.** The same runner template can be used by many crews simultaneously, and can also be the subject of standalone direct-chat sessions.
+A reusable template: handle, display name, runtime, command + args, working dir, system prompt (persona), env, optional model and effort. Known runtimes use the `Runtime` enum in code (`ClaudeCode`, `Codex`, `Trae`, `Copilot`, `Shell`); SQLite runtime names remain plain strings, and legacy or arbitrary names, including `qoder` rows from before v0.6.7, stay unchanged and readable without a migration. Dispatch parses those names while preserving the existing behavior for unknown runtimes. **Top-level, not nested under a crew.** The same role can be used by many crews simultaneously, and can also be the subject of standalone direct-chat sessions.
 
-A runner has two identifying fields:
+A role has two identifying fields:
 
-- **`handle`** — a lowercase slug (`coder`, `reviewer`). Required, **globally unique**, immutable once set. The handle is the runner's identity in direct chats and in `from` fields when the session is not in a crew.
+- **`handle`** — a lowercase slug (`coder`, `reviewer`). Required, **globally unique**, immutable once set. The handle is the role's identity in direct chats and in `from` fields when the session is not in a crew.
 - **`display_name`** — free-form UI label. Editable; presentation-only.
 
-Keeping these separate means renaming a runner for the UI doesn't break briefs or historical events.
+Keeping these separate means renaming a role for the UI doesn't break briefs or historical events.
 
-Runtime argv is composed by the adapter in `router/runtime.rs` from the stored runner args, and is not itself stored: the permission mode (`--permission-mode` / Codex `--ask-for-approval` + `--sandbox` / Copilot `--yolo`) follows `MissionPermissionMode` for mission slots, while attended chats strip permission flags without replacement; the adapter adds model and effort flags, Codex and Copilot's `--add-dir` grant for the mission directory, the first-turn body, and — for claude-code — one compact `--settings` JSON that selects Claude Code's alternate-screen renderer (`"tui":"fullscreen"`), installs the `/clear` rekey hook, and, when the effective mode is Bypass, acknowledges Claude Code's bypass consent dialog (`"skipDangerousModePermissionPrompt":true`) so a mission slot never waits on it, unless the runner's own args already pass `--settings`. Runner owns the renderer for the sessions it spawns; `--settings` outranks the user's `~/.claude/settings.json`. Copilot always receives `--no-auto-update`; on macOS it also receives an additive `--plugin-dir <app data>/copilot-hooks` backed by a Runner-owned plugin regenerated at startup. The plugin takes its per-session feed path and generation from the spawn environment, so repeated user `--plugin-dir` flags compose and no file under `~/.copilot` is changed. A user `disableAllHooks` setting produces no feed and leaves the terminal-activity baseline in control.
+Runtime argv is composed by the adapter in `router/runtime.rs` from the stored role args, and is not itself stored: the permission mode (`--permission-mode` / Codex `--ask-for-approval` + `--sandbox` / Copilot `--yolo`) follows `MissionPermissionMode` for mission slots, while attended chats strip permission flags without replacement; the adapter adds model and effort flags, Codex and Copilot's `--add-dir` grant for the mission directory, the first-turn body, and — for claude-code — one compact `--settings` JSON that selects Claude Code's alternate-screen renderer (`"tui":"fullscreen"`), installs the `/clear` rekey hook, and, when the effective mode is Bypass, acknowledges Claude Code's bypass consent dialog (`"skipDangerousModePermissionPrompt":true`) so a mission slot never waits on it, unless the role's own args already pass `--settings`. Runner owns the renderer for the sessions it spawns; `--settings` outranks the user's `~/.claude/settings.json`. Copilot always receives `--no-auto-update`; on macOS it also receives an additive `--plugin-dir <app data>/copilot-hooks` backed by a Runner-owned plugin regenerated at startup. The plugin takes its per-session feed path and generation from the spawn environment, so repeated user `--plugin-dir` flags compose and no file under `~/.copilot` is changed. A user `disableAllHooks` setting produces no feed and leaves the terminal-activity baseline in control.
 
 ### 3.3 Crew — *a configured team, composed of slots*
 
 A named, persistent group of **slots**. Carries the default mission goal and the optional team-conventions addendum. It does not run. It is blueprint.
 
-Crews are composed of **slots**, not runners directly. A slot is the indirection that lets the same runner template participate in many crews:
+Crews are composed of **slots**, not roles directly. A slot is the indirection that lets the same role participate in many crews:
 
 - **`slot_handle`** — the slot's in-crew handle (`@impl`, `@lead`). Required, unique within the crew. This is what crewmates address each other by — `runner msg post --to impl`.
-- **`runner_id`** — which runner template fills the slot.
+- **`role_id`** — which role fills the slot.
 - **`position`** — display order within the crew.
 - **`lead`** — exactly one slot per crew carries `lead = 1`, enforced by a unique partial index (§10.1).
 - **`runtime_override`, `model_override`, `effort_override`** — per-slot deviations from the template, so one crew can run the same persona on two runtimes.
 
-**Why slot vs runner.** Users curate a small library of runner templates and re-use them across crews and direct chats. Tying the in-crew handle and lead flag to the runner template would force duplicating configs every time a runner shows up in a new crew.
+**Why slot vs role.** Users curate a small library of roles and re-use them across crews and direct chats. Tying the in-crew handle and lead flag to the role would force duplicating configs every time a role shows up in a new crew.
 
 **Lead is also the default HITL gateway.** When a worker needs human input, it does not ask the human directly — it emits an `ask_lead` signal. The router wakes the lead, who decides whether to answer from their own context or escalate via `ask_human`. The human's answer flows back to the lead, who forwards it to the original worker as a directed message. See §8.3. Workers *may* emit `ask_human` directly as a fallback, but the worker preamble (§6) instructs them to go through the lead.
 
@@ -176,7 +176,7 @@ A mission is the only runtime container in the system. Everything alive at runti
 
 - A **Session** per slot (the PTY processes — §3.5).
 - The **coordination bus** — the NDJSON event log carrying signals and messages.
-- The **router's in-memory state** — pending HITL asks, latest runner availability, per-slot delivery outboxes.
+- The **router's in-memory state** — pending HITL asks, latest session availability, per-slot delivery outboxes.
 - The **shared context** — composed system prompts (brief, roster, coordination notes, optional team conventions) injected at spawn.
 
 Lifecycle:
@@ -186,18 +186,18 @@ Lifecycle:
 - **Archive**: Runner appends `mission_stopped`, marks the row `completed`, sets `archived_at`, kills any live PTYs (verified dead before the row flips), and unmounts router/bus state. Archived missions are hidden from active lists and render read-only.
 - **Reset**: kills the slots and re-spawns them against the same mission row and log; forks read the persisted last size so they open at the width the pane had.
 
-**Mission cwd is authoritative.** Each mission carries its own `cwd` column. Spawned slots inherit `mission.cwd` regardless of what the runner template's `working_dir` says — that field is only used in direct chats. Starting from a project copies the project's cwd into the row.
+**Mission cwd is authoritative.** Each mission carries its own `cwd` column. Spawned slots inherit `mission.cwd` regardless of what the role's `working_dir` says — that field is only used in direct chats. Starting from a project copies the project's cwd into the row.
 
 Concurrent missions on the same crew are allowed — a crew is a reusable template, and per-mission state (sessions, the bus, the runner-CLI shim path, the roster sidecar) is fully namespaced by `mission_id`.
 
 ### 3.5 Session — *one slot's PTY process*
 
-The runtime instance of a slot inside a mission, a runner-backed direct chat, or a runtime-only direct chat. A Session is to a slot/runner/runtime what a Mission is to a Crew: the *run* of a *configuration*.
+The runtime instance of a slot inside a mission, a role-backed direct chat, or a runtime-only direct chat. A Session is to a slot/role/runtime what a Mission is to a Crew: the *run* of a *configuration*.
 
 Two flavors, distinguished by whether `mission_id` is set on the session row:
 
-- **Mission session** — spawned when a mission starts; one session per slot. It participates in the crew's bus, sees broadcasts, can receive stdin injection from the router. `RUNNER_HANDLE` carries the *slot* handle, not the runner template's global handle.
-- **Direct-chat session** — spawned ad-hoc without a parent mission, backed by a runner template or a bare runtime selection. `mission_id` is null and the working directory lives on the session row. The agent is **not on any coordination bus**. Runner-backed chats keep `runner_id`; runtime-only chats store `runner_id = NULL` plus `agent_runtime` / `agent_command`.
+- **Mission session** — spawned when a mission starts; one session per slot. It participates in the crew's bus, sees broadcasts, can receive stdin injection from the router. `RUNNER_HANDLE` carries the *slot* handle, not the role's global handle.
+- **Direct-chat session** — spawned ad-hoc without a parent mission, backed by a role or a bare runtime selection. `mission_id` is null and the working directory lives on the session row. The agent is **not on any coordination bus**. Role-backed chats keep `role_id`; runtime-only chats store `role_id = NULL` plus `agent_runtime` / `agent_command`.
 
 A session owns, in the core:
 
@@ -235,9 +235,9 @@ Preferences persist in `$APPDATA/ui-settings.json`, read by the app at launch. T
 
 **Updates** is the slim form of `main`'s pane: check now, the automatic-checks toggle, last-check time. Sparkle's standard user driver owns the found/download/install dialogs. Not ported from `main`: the Arc-style "New Runner version available" pill above the sidebar Settings row (hover → card, per-launch dismiss, auto-install checkbox). It needs an `SPUUpdaterDelegate` so the app learns an update was found; tracked as M6.9 in [`../impls/gpui-rewrite/m6-consolidation.md`](../impls/archive/gpui-rewrite/m6-consolidation.md).
 
-## 4. Coordination primitives — *what flows between runners*
+## 4. Coordination primitives — *what flows between crew members*
 
-Runners don't share a programming model; they share an IM-like surface.
+Crew members don't share a programming model; they share an IM-like surface.
 
 | Primitive | Role | Shipped | Planned |
 |---|---|:---:|:---:|
@@ -257,7 +257,7 @@ Short, typed, router-visible. Grammar: past-tense verb (or asker verbs like `ask
 
 Prose, addressed either to the mission (broadcast) or to a specific crewmate (direct).
 
-- **Broadcast** — `runner msg post "<text>"`. Goes to every other runner's inbox; a human-authored broadcast goes to every runner.
+- **Broadcast** — `runner msg post "<text>"`. Goes to every other crew member's inbox; a human-authored broadcast goes to every crew member.
 - **Direct** — `runner msg post --to <slot_handle> "<text>"`. Goes to that slot's inbox only.
 
 Messages are **flat by design** — one stream per mission, no thread scoping, no fact primitive. Durable conclusions belong in project files, code, commits, or message prose. Signals are typed and small; messages are prose the router does not parse — but it does *notice* them (§8.5).
@@ -273,7 +273,7 @@ inbox(h) = all events in the mission where
 
 `runner msg read` returns the calling slot's inbox, sorted by ULID. `--since <ts>` restricts to messages newer than a given ULID/timestamp so agents can poll without re-reading history.
 
-**The inbox is pull-based, with a nudge.** The body of a message is only ever read when the recipient runs `msg read`. What the router does on a new message is write one line into the recipient's PTY — `[inbox] new message from @coder — run \`runner msg read\` to view.` — subject to the delivery gate in §8.5, so an agent that is mid-turn or a human who is mid-draft is not interrupted. The recipient also learns to read its inbox through the platform preamble (§6 Layer 1), which instructs every runner to check at natural task boundaries.
+**The inbox is pull-based, with a nudge.** The body of a message is only ever read when the recipient runs `msg read`. What the router does on a new message is write one line into the recipient's PTY — `[inbox] new message from @coder — run \`runner msg read\` to view.` — subject to the delivery gate in §8.5, so an agent that is mid-turn or a human who is mid-draft is not interrupted. The recipient also learns to read its inbox through the platform preamble (§6 Layer 1), which instructs every crew member to check at natural task boundaries.
 
 ### 4.4 Event — *the unifying transport*
 
@@ -293,7 +293,7 @@ Every coordination primitive is persisted as an **event** — one line in the pe
 }
 ```
 
-`kind` discriminates. For `kind: "signal"`, `type` carries the verb; for `kind: "message"`, the prose lives in `payload.text`. Runners interact through CLI verbs (`runner signal`, `runner msg`), not the event schema directly. Event-log primitives (ULIDs with a monotonic floor, the `flock` append, tail repair of a torn last line) live in `crates/runner-core`.
+`kind` discriminates. For `kind: "signal"`, `type` carries the verb; for `kind: "message"`, the prose lives in `payload.text`. Crew members interact through CLI verbs (`runner signal`, `runner msg`), not the event schema directly. Event-log primitives (ULIDs with a monotonic floor, the `flock` append, tail repair of a torn last line) live in `crates/runner-core`.
 
 ## 5. PTY session runtime
 
@@ -380,7 +380,7 @@ Restart records a human `slot_restarted` signal followed by a `runner` message a
 - Keys are encoded from the `Term`'s mode (application cursor keys, bracketed paste, Shift+Enter as `ESC CR`, ⌥ as Meta); IME composition is native, with marked text drawn in the grid; mouse reporting modes 1000/1002/1003/1006 are honored and Shift bypasses them for selection and scrollback; selection and copy are the element's own.
 - **Resize** is immediate. The pane that owns the terminal's size pushes each measured size from `prepaint`; `TerminalSession::resize` resizes the `Term` (reflowing history) and the PTY ioctl fires on the same call, every frame of a drag, for every runtime. A 175 ms settle thread only persists the final size once per storm. Nothing clears the grid on resize: the TUI's own SIGWINCH repaint plus alacritty's reflow is the whole story (M6.6 — the earlier "clear and replay" contract duplicated history, because `ESC[2J` on the primary screen is `clear_viewport`, which scrolls the viewport into scrollback).
 
-**Human takeover is a first-class capability.** At any moment the human can type directly into any runner's stdin — the same writer the router uses. The pane is a real terminal, not a log viewer: special keys pass through untouched, and the agent cannot tell whether bytes came from the router, the human, or its normal terminal input.
+**Human takeover is a first-class capability.** At any moment the human can type directly into any session's stdin — the same writer the router uses. The pane is a real terminal, not a log viewer: special keys pass through untouched, and the agent cannot tell whether bytes came from the router, the human, or its normal terminal input.
 
 The mission feed is read-mostly: it renders coordination events and historical human-authored events, has no free-form composer, and its only input is the choice control on a pending `human_question` card. External orchestrators post `human_said` through MCP when they need to relay an operator instruction programmatically.
 
@@ -392,9 +392,9 @@ Since M6.8 the same is true of the screen. `TerminalBridge` holds a strong `Arc<
 
 **Rows persist across app restart; PTY children do not.** On quit, `stop_running_sessions_on_quit` kills every process group (SIGHUP, then SIGKILL) and joins the forwarders; the startup orphan sweep is the crash fallback and a failing sweep is fatal at boot. On next launch Runner re-mounts router/bus state for `running` missions, replays the logs, demotes stale `running` session rows to `stopped`, and re-spawns sessions flagged `resume_on_launch`. Resume spawns a fresh PTY against the same session row; for claude-code/codex/trae/copilot, `agent_session_key` lets the agent CLI continue its own conversation when supported.
 
-Copilot assigns a UUID before spawning and persists it as `agent_session_key`, then passes `--session-id <uuid>` for both fresh starts and resumes. The conversation probe checks `$COPILOT_HOME` (otherwise `~/.copilot`), `session-state/<uuid>/events.jsonl`; a missing transcript starts fresh with the same id and includes the cold-start first turn. Before every Copilot spawn, Runner seeds the exact cwd in `config.json` `trustedFolders`, keeping the leading `//` header and unrelated values; `--yolo` alone does not bypass folder trust. Default and Accept edits runner modes respectively write no permission flag and `--allow-tool=write`; Auto is not offered. Chats strip all Copilot permission flags.
+Copilot assigns a UUID before spawning and persists it as `agent_session_key`, then passes `--session-id <uuid>` for both fresh starts and resumes. The conversation probe checks `$COPILOT_HOME` (otherwise `~/.copilot`), `session-state/<uuid>/events.jsonl`; a missing transcript starts fresh with the same id and includes the cold-start first turn. Before every Copilot spawn, Runner seeds the exact cwd in `config.json` `trustedFolders`, keeping the leading `//` header and unrelated values; `--yolo` alone does not bypass folder trust. Default and Accept edits role permission modes respectively write no permission flag and `--allow-tool=write`; Auto is not offered. Chats strip all Copilot permission flags.
 
-Fork creates a new direct-chat row without writing the source row, key, PTY, or conversation file. The new row copies the source's project, runner, cwd, runtime, command, model, and effort columns. Claude Code starts the visible TUI directly with `--resume <source> --fork-session --session-id <new>` and a caller-assigned key; Codex runs a bounded headless `exec fork` until it has a lineage-validated `thread.started` key, persists that key, marks the temporary row stopped, and starts the visible PTY through the ordinary resume path. A direct-spawn, materialization, or resume failure removes both the fork row and its tab. The runtime definition's `native_fork` capability enables Claude Code and Codex and excludes TRAE and Copilot. An untouched Claude fork is intentionally copy-on-write: manual resume falls back to a fresh chat and launch-time resume reports it unavailable; re-fork the source instead of adding recovery state.
+Fork creates a new direct-chat row without writing the source row, key, PTY, or conversation file. The new row copies the source's project, role, cwd, runtime, command, model, and effort columns. Claude Code starts the visible TUI directly with `--resume <source> --fork-session --session-id <new>` and a caller-assigned key; Codex runs a bounded headless `exec fork` until it has a lineage-validated `thread.started` key, persists that key, marks the temporary row stopped, and starts the visible PTY through the ordinary resume path. A direct-spawn, materialization, or resume failure removes both the fork row and its tab. The runtime definition's `native_fork` capability enables Claude Code and Codex and excludes TRAE and Copilot. An untouched Claude fork is intentionally copy-on-write: manual resume falls back to a fresh chat and launch-time resume reports it unavailable; re-fork the source instead of adding recovery state.
 
 ### 5.6 Writer serialization
 
@@ -438,7 +438,7 @@ Every spawned session receives a composed system prompt — different shape for 
 
 1. **Layer 1 — platform preamble** (code-owned). For workers: a fixed block describing the `runner` CLI verbs and the inbox convention. For the lead: the launch prompt composed at `mission_goal` time (§6.3).
 2. **Layer 2 — crew team conventions** (`crews.system_prompt_addendum`, optional). Spliced under `== Team conventions ==`.
-3. **Layer 3 — runner persona** (`runners.system_prompt`). Spliced under `== Your brief ==`.
+3. **Layer 3 — role prompt** (`roles.system_prompt`). Spliced under `== Your brief ==`.
 
 ### 6.2 What each session sees
 
@@ -466,7 +466,7 @@ One line per event, append-only, one file per mission. Debuggable (`tail -f | jq
 
 #### 7.1.1 Concurrent-write correctness
 
-Multiple runners can invoke `runner signal` / `runner msg` at the same time from different PTYs, and the core writes router-generated events (`human_question`, `mission_warning`, `runner_status`) to the same file:
+Multiple crew members can invoke `runner signal` / `runner msg` at the same time from different PTYs, and the core writes router-generated events (`human_question`, `mission_warning`, `runner_status`) to the same file:
 
 1. Open the log with `O_APPEND | O_WRONLY | O_CREAT`.
 2. `flock(fd, LOCK_EX)`.
@@ -492,7 +492,7 @@ On router boot: open the mission's file, fold `human_question` / `human_response
 
 ## 8. Signal router
 
-The router is a flat dispatcher, not a policy engine. There is no per-crew `{when, do}` rule list. The lead runner owns coordination judgment; the router owns parent-process plumbing that a child PTY cannot do itself.
+The router is a flat dispatcher, not a policy engine. There is no per-crew `{when, do}` rule list. The lead owns coordination judgment; the router owns parent-process plumbing that a child PTY cannot do itself.
 
 Stdin pushes are deliberately silent: the router writes bytes into the target PTY but does not synthesize `stdin_injected` audit events. The event log records the signal or message that caused the push, plus `human_question` / `human_response` for HITL cards and `mission_warning` when a delivery cannot happen.
 
@@ -504,7 +504,7 @@ Stdin pushes are deliberately silent: the router writes bytes into the target PT
 | `human_said` | Inject MCP-provided `payload.text` to `payload.target` if present, otherwise to the lead. |
 | `ask_lead` | Inject the worker's `{ question, context }` to the lead. |
 | `ask_human` | Append a `human_question` event for the UI. |
-| `human_response` | Look up the matching `question_id` and inject the answer to the runner that emitted the original `ask_human`. |
+| `human_response` | Look up the matching `question_id` and inject the answer to the session that emitted the original `ask_human`. |
 | `runner_status` | Update the latest-status map from `payload.state`. If a non-lead reports `idle`, inject a short availability update to the lead. |
 | message (any) | Inject a one-line inbox nudge to the recipient (directed) or to every other roster member (broadcast); a message to the virtual `human` handle is rendered in the feed and not nudged. |
 | `inbox_read` | Internal — owned by the bus's projection layer to track read watermarks. |
@@ -552,7 +552,7 @@ Causality is carried in-payload rather than on the envelope. The canonical `ques
 
 ### 8.4 Read-mostly mission feed
 
-The mission feed answers what is happening across the crew; the selected terminal pane is where the operator talks to a runner. Runners cannot address a virtual `human` message recipient: `runner msg post --to human` fails with guidance to answer in TUI output. The feed keeps its render paths for historical `human_said`, `human_response`, and messages addressed to `human`, so old logs replay unchanged.
+The mission feed answers what is happening across the crew; the selected terminal pane is where the operator talks to a crew member. Crew members cannot address a virtual `human` message recipient: `runner msg post --to human` fails with guidance to answer in TUI output. The feed keeps its render paths for historical `human_said`, `human_response`, and messages addressed to `human`, so old logs replay unchanged.
 
 ### 8.5 Who does delivery, and when
 
@@ -603,7 +603,7 @@ Direct-chat sessions don't get the bundled CLI on PATH — there is no bus, no r
 
 ### 9.5 External control: MCP, not the CLI
 
-Outside agents and tools operate Runner itself through the MCP server the app hosts on `$APPDATA/mcp.sock` (bridged from stdio by `runner-mcp`): `crew_*`, `runner_*`, `slot_*`, `project_*` (including `project_create`, `project_rename`, and `project_delete`), `mission_set_project`, `mission_*` (start, stop, archive, reset, status, feed, post human message/signal, pin, rename) and `session_start_direct`, `session_resume`, and `session_restart`. This is how a Claude Code session drives a crew mission from the outside — the loop the rewrite itself was built with.
+Outside agents and tools operate Runner itself through the MCP server the app hosts on `$APPDATA/mcp.sock` (bridged from stdio by `runner-mcp`): `crew_*`, `role_*`, `slot_*`, `project_*` (including `project_create`, `project_rename`, and `project_delete`), `mission_set_project`, `mission_*` (start, stop, archive, reset, status, feed, post human message/signal, pin, rename) and `session_start_direct`, `session_resume`, and `session_restart`. This is how a Claude Code session drives a crew mission from the outside — the loop the rewrite itself was built with.
 
 ## 10. Data model
 
@@ -619,7 +619,7 @@ crews (
   created_at TEXT, updated_at TEXT
 );
 
-runners (
+roles (
   id TEXT PRIMARY KEY,
   handle TEXT NOT NULL UNIQUE,        -- globally unique slug; §3.2
   display_name TEXT NOT NULL,
@@ -636,7 +636,7 @@ runners (
 slots (
   id TEXT PRIMARY KEY,
   crew_id TEXT NOT NULL REFERENCES crews(id) ON DELETE CASCADE,
-  runner_id TEXT NOT NULL REFERENCES runners(id) ON DELETE CASCADE,
+  role_id TEXT NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
   slot_handle TEXT NOT NULL,          -- in-crew handle; unique within crew
   position INTEGER NOT NULL,
   lead INTEGER NOT NULL DEFAULT 0,
@@ -684,7 +684,7 @@ sessions (
   id TEXT PRIMARY KEY,
   mission_id TEXT REFERENCES missions(id) ON DELETE SET NULL,   -- NULL = direct chat
   project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,
-  runner_id TEXT REFERENCES runners(id) ON DELETE CASCADE,
+  role_id TEXT REFERENCES roles(id) ON DELETE CASCADE,
   slot_id TEXT,
   cwd TEXT,
   status TEXT NOT NULL,               -- running | stopped | crashed
@@ -718,7 +718,7 @@ Migrations live in `crates/runner-backend/migrations/` (`0001_init.sql` … `002
 ~/Library/Logs/com.wycstudios.runner/runner.log   # rotating app log + panic backtraces
 ```
 
-The data directory is the one the Tauri app used, so a cutover install finds its runners, crews, missions and sessions in place; only the webview's localStorage preferences are left behind. Direct chats are off-disk beyond their row in `sessions`; mission sessions share their mission's directory and the only durable artifact is `events.ndjson`. Screen state lives in memory (§5.8).
+The data directory is the one the Tauri app used, so a cutover install finds its roles, crews, missions and sessions in place; only the webview's localStorage preferences are left behind. Direct chats are off-disk beyond their row in `sessions`; mission sessions share their mission's directory and the only durable artifact is `events.ndjson`. Screen state lives in memory (§5.8).
 
 ## 11. Process and thread model
 
@@ -775,7 +775,7 @@ A panic in a PTY reader thread only affects that session: the forwarder ends, th
 ## 12. Architectural bets
 
 1. **Mission is the runtime unit.** Crew is config; mission is a run.
-2. **Slot is the indirection** that lets one runner template participate in many crews and direct chats without duplication.
+2. **Slot is the indirection** that lets one role participate in many crews and direct chats without duplication.
 3. **PTY in-process via `portable-pty`, not pipes, not tmux.** TUI fidelity is non-negotiable.
 4. **NDJSON file per mission, not a broker.** Debuggable and crash-durable.
 5. **CLI wrapper for spawned agents; MCP for external controllers.**

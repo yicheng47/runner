@@ -13,56 +13,56 @@ Today, coordinating two agents means juggling terminal windows, eyeballing logs,
 A local desktop app where one person can:
 
 1. Assemble a **crew** of CLI coding agents on their own machine.
-2. Give each **runner** a role and a brief (the role's system prompt).
-3. **Launch a mission** — one activation of the whole crew — and watch every runner's live output in one window.
-4. Let runners **coordinate** through two channels: **signals** (typed, router-visible) and **messages** (prose, runner-to-runner or runner-to-human).
-5. Get pulled in through the **lead runner** when a decision needs a human.
+2. Define each **role** with a runtime and a brief (its system prompt).
+3. **Launch a mission** — one activation of the whole crew — and watch every session's live output in one window.
+4. Let crew members **coordinate** through two channels: **signals** (typed, router-visible) and **messages** (prose, between crew members or addressed to the human).
+5. Get pulled in through the **lead** when a decision needs a human.
 
-The same app also supports **direct chats** — one-on-one sessions with a single runner outside any mission — for quick "I just want to ask `@architect` something" loops without standing up a whole crew.
+The same app also supports **direct chats** — one-on-one sessions with a single agent outside any mission — for quick "I just want to ask `@architect` something" loops without standing up a whole crew.
 
 ## 3. Vocabulary
 
 These are the words the product surfaces to the user; they also map 1:1 to the architecture model (`arch.md` §3).
 
-- **Runner** — a configured CLI agent (binary + args + role brief). Top-level config; reusable across crews.
-- **Crew** — a named set of runner *slots* with exactly one lead.
-- **Slot** — a position inside a crew, filled by a runner template. The slot carries the per-crew handle (`@impl`, `@reviewer`, …) and the lead flag. Two slots in different crews can both be filled by the same runner template.
+- **Role** — a configured CLI agent (binary + args + role brief). Top-level config; reusable across crews.
+- **Crew** — a named set of *slots*, each filled by a role, with exactly one lead.
+- **Slot** — a position inside a crew, filled by a role. The slot carries the per-crew handle (`@impl`, `@reviewer`, …) and the lead flag. Two slots in different crews can both be filled by the same role.
 - **Mission** — one live activation of a crew. Everyone spawns together, shares a coordination bus, ends together.
-- **Session** — the live PTY process for one slot inside a mission, one runner-backed direct chat, or one runtime-only direct chat.
-- **Signal** — a typed notification runners emit for the router to handle. Verb grammar (`ask_lead`, `ask_human`, `mission_goal`, `runner_status`).
+- **Session** — the live PTY process for one slot inside a mission, one role-backed direct chat, or one runtime-only direct chat.
+- **Signal** — a typed notification crew members emit for the router to handle. Verb grammar (`ask_lead`, `ask_human`, `mission_goal`, `runner_status`).
 - **Message** — prose posted to the mission. Broadcast or directed (`--to <handle>`).
-- **Inbox** — each runner's projection of the mission: broadcasts plus directs addressed to me. Pull-based — runners check it on convention; nothing auto-interrupts a working runner.
-- **Lead runner** — the human's counterpart in the crew. The mission goal lands on the lead; the lead dispatches work; the lead is the default HITL gateway when workers need a human.
-- **Direct chat** — an off-bus, one-on-one PTY session with a single runner. No mission, no router, no inbox.
+- **Inbox** — each crew member's projection of the mission: broadcasts plus directs addressed to me. Pull-based — crew members check it on convention; nothing auto-interrupts a working session.
+- **Lead** — the human's counterpart in the crew. The mission goal lands on the lead; the lead dispatches work; the lead is the default HITL gateway when workers need a human.
+- **Direct chat** — an off-bus, one-on-one PTY session with a single agent. No mission, no router, no inbox.
 
 ## 4. Product surfaces
 
 The user-facing surfaces, described by the value they deliver, not by their implementation. Cross-references point at the arch doc for the "how."
 
-### 4.1 Crew and runner library
+### 4.1 Crew and role library
 
-- Create, edit, delete runner templates (handle, display name, runtime, command + args, working dir, system prompt, env).
-- Compose crews from those runners by adding slots. Exactly one slot per crew is the lead. The same runner template can sit in many crews simultaneously.
-- Optional per-crew **team conventions** addendum (`crew.system_prompt_addendum`) — Layer 2 of the prompt stack, spliced between the platform-injected coordination preamble (Layer 1) and the runner's persona (Layer 3). Lets a crew share house rules without editing every runner. See [arch §6](../arch/arch.md#6-system-prompt-composition).
+- Create, edit, delete roles (handle, display name, runtime, command + args, working dir, system prompt, env).
+- Compose crews from those roles by adding slots. Exactly one slot per crew is the lead. The same role can sit in many crews simultaneously.
+- Optional per-crew **team conventions** addendum (`crew.system_prompt_addendum`) — Layer 2 of the prompt stack, spliced between the platform-injected coordination preamble (Layer 1) and the role's system prompt (Layer 3). Lets a crew share house rules without editing every role. See [arch §6](../arch/arch.md#6-system-prompt-composition).
 
 ### 4.2 Missions
 
 - One-click **Start Mission** on a crew. The mission spawns one session per slot and opens the mission workspace.
-- A mission has its own goal (optional override of the crew default) and its own working directory — the mission cwd is the authoritative working dir for every spawned slot, overriding the runner template's `working_dir`.
+- A mission has its own goal (optional override of the crew default) and its own working directory — the mission cwd is the authoritative working dir for every spawned slot, overriding the role's `working_dir`.
 - Concurrent missions on the same crew are allowed; each one is fully namespaced (its own session set, event log, router state).
 - **Stop Mission** kills the live PTYs but keeps the mission row running and resumable. Resume respawns stopped/crashed slots from their persisted session rows.
 - **Archive Mission** is the terminal end state: it appends `mission_stopped`, marks the mission completed, sets `archived_at`, hides it from active lists, and leaves the workspace read-only by direct URL.
 - **Sessions outlive the UI window, not the app process.** Closing or navigating away from the mission workspace does not kill sessions. Quitting Runner kills the in-process PTYs; on next launch, stale running rows are demoted to stopped and the user resumes them explicitly.
 
-### 4.3 Live per-runner terminals (with human takeover)
+### 4.3 Live session terminals (with human takeover)
 
 - One PTY per slot, rendered with xterm.js for full TUI fidelity with first-class agent runtimes such as claude-code and codex.
-- The xterm pane is a real terminal, not a log viewer. The human can type into any runner's stdin at any time — answer a prompt, correct a bad plan, kill a tool call, or just chat mid-flight. Human and router share the same writer path, so they are symmetric.
-- Per-runner busy/idle is inferred from PTY-byte silence — agents do not have to call a status verb. Works for any TUI.
+- The xterm pane is a real terminal, not a log viewer. The human can type into any session's stdin at any time — answer a prompt, correct a bad plan, kill a tool call, or just chat mid-flight. Human and router share the same writer path, so they are symmetric.
+- Per-session busy/idle is inferred from PTY-byte silence — agents do not have to call a status verb. Works for any TUI.
 
 ### 4.4 Coordination — signals and messages
 
-- Runners emit signals via `runner signal <type> [--payload <json>]` and post prose via `runner msg post [--to <handle>] "<text>"`.
+- Crew members emit signals via `runner signal <type> [--payload <json>]` and post prose via `runner msg post [--to <handle>] "<text>"`.
 - Both flow through one append-only NDJSON file per mission. The file is tailable with `tail -f` for debugging.
 - Signals drive fixed router handlers (wake the lead on `mission_goal`, surface HITL cards on `ask_human`, etc.). Messages are pull-based — the recipient picks them up on the next `runner msg read`.
 - Messages stay flat. The product does not need separate thread or fact primitives; durable conclusions should land in the repo, docs, commits, or ordinary mission prose.
@@ -75,7 +75,7 @@ The user-facing surfaces, described by the value they deliver, not by their impl
 
 ### 4.6 Mission workspace UI
 
-- **Runner rail** — every slot in the crew with a busy/idle dot. Click to focus its terminal.
+- **Sessions rail** — every slot in the crew with a busy/idle dot. Click to focus its terminal.
 - **Focused terminal** — xterm.js view of the selected slot.
 - **Event feed** — chronological view of messages plus user-visible signals for the mission. Router-internal signals (`inbox_read`, agent-source `runner_status`) are filtered.
 - **HITL cards** — pending `ask_human` prompts, always visible.
@@ -83,8 +83,8 @@ The user-facing surfaces, described by the value they deliver, not by their impl
 
 ### 4.7 Direct chats
 
-- Start a chat with a runner template or directly with a runtime (`claude-code`, `codex`) plus a working directory. No mission, no router, no bus — it's just a PTY between the human and the agent CLI. Useful for quick one-shots.
-- Direct chat rows persist across app restarts. The live PTY does not; stopped rows can be resumed, and runtime-only chats reconstruct their ephemeral runner config from `agent_runtime` / `agent_command`.
+- Start a chat with a role or directly with a runtime (`claude-code`, `codex`) plus a working directory. No mission, no router, no bus — it's just a PTY between the human and the agent CLI. Useful for quick one-shots.
+- Direct chat rows persist across app restarts. The live PTY does not; stopped rows can be resumed, and runtime-only chats reconstruct their ephemeral role config from `agent_runtime` / `agent_command`.
 
 ### 4.8 App life
 
@@ -94,7 +94,7 @@ The user-facing surfaces, described by the value they deliver, not by their impl
 
 ### 4.9 External control
 
-- **MCP** — external Claude Code, Codex, and TRAE sessions can inspect and operate Runner through the bundled `runner-mcp` bridge: project discovery, crew/runner/slot CRUD, project-aware mission/direct-chat creation, and mission lifecycle, feed, and status tools. Runner.app remains the state owner; MCP is a local control surface, not a remote server.
+- **MCP** — external Claude Code, Codex, and TRAE sessions can inspect and operate Runner through the bundled `runner-mcp` bridge: project discovery, crew/role/slot CRUD, project-aware mission/direct-chat creation, and mission lifecycle, feed, and status tools. Runner.app remains the state owner; MCP is a local control surface, not a remote server.
 
 ## 5. The demo loop
 
@@ -124,7 +124,7 @@ These are intentionally out of scope — they belong to a different product or a
 - Remote runners / SSH / multi-host coordination bus.
 - Sandboxing beyond the child process's own permissions.
 - Cost tracking / observability dashboards.
-- Marketplace of runner templates.
+- Marketplace of roles.
 - Multi-human collaboration on the same mission.
 - Thread/fact primitives for mission coordination.
 - Secrets management beyond plain env vars.

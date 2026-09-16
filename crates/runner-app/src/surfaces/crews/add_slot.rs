@@ -44,7 +44,7 @@ impl NativeRoot {
         let runtimes =
             runner_backend::ops::runtime::runtime_catalog(self.core(cx)).unwrap_or_default();
         let query = cx.new(|input_cx| {
-            TextField::new(input_cx.focus_handle(), "", "Search runners...", false)
+            TextField::new(input_cx.focus_handle(), "", "Search roles...", false)
                 .text_size(theme::text_body())
         });
         let slot_handle = cx.new(|input_cx| {
@@ -451,7 +451,7 @@ impl NativeRoot {
                 .py_3()
                 .text_size(theme::text_ui())
                 .text_color(theme::faint())
-                .child("Loading runners...")
+                .child("Loading roles...")
                 .into_any_element()]
         } else if filtered.is_empty() {
             vec![div()
@@ -460,9 +460,9 @@ impl NativeRoot {
                 .text_size(theme::text_ui())
                 .text_color(theme::faint())
                 .child(if form.roles.is_empty() {
-                    "No runners yet. Create one first, then add it here."
+                    "No roles yet. Create one first, then add it here."
                 } else {
-                    "No runners match this search."
+                    "No roles match this search."
                 })
                 .into_any_element()]
         } else {
@@ -576,7 +576,7 @@ impl NativeRoot {
                         div()
                             .text_size(theme::text_ui())
                             .font_weight(FontWeight::SEMIBOLD)
-                            .child("Runner"),
+                            .child("Role"),
                     )
                     .child(
                         div()
@@ -636,7 +636,7 @@ impl NativeRoot {
                                             });
                                         }
                                     })
-                                    .child("+ Create new runner..."),
+                                    .child("+ Create new role..."),
                             )
                             .child(
                                 div()
@@ -660,7 +660,7 @@ impl NativeRoot {
                 Field::new("add-slot-runtime", "Runtime", form.runtime_select.clone())
                     .focus_target(form.runtime_select.read(cx).focus_handle())
                     .hint(
-                        "engine this slot runs — overriding keeps the runner's persona but uses the runtime's default command and flags",
+                        "engine this slot runs — overriding keeps the role's prompt but uses the runtime's default command and flags",
                         form.runtime_hint_focus.clone(),
                     ),
             )
@@ -732,7 +732,7 @@ impl NativeRoot {
                         div()
                             .text_size(theme::text_meta())
                             .text_color(theme::muted())
-                            .child("Uses the selected runner's default prompt. Per-slot overrides are not editable in the MVP."),
+                            .child("Uses the selected role's default prompt. Per-slot overrides are not editable in the MVP."),
                     ),
             );
         let footer = div()

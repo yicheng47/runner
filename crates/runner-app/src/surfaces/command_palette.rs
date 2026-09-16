@@ -32,7 +32,7 @@ impl PaletteKind {
             Self::Mission => "mission",
             Self::Chat => "chat",
             Self::Terminal => "terminal",
-            Self::Role => "runner",
+            Self::Role => "role",
             Self::Crew => "crew",
             Self::Settings => "settings",
         }
@@ -44,7 +44,7 @@ impl PaletteKind {
             Self::Mission => "flag.svg",
             Self::Chat => "message-square.svg",
             Self::Terminal => "square-terminal.svg",
-            Self::Role => "terminal.svg",
+            Self::Role => "user.svg",
             Self::Crew => "users.svg",
             Self::Settings => "settings.svg",
         }
@@ -503,7 +503,7 @@ impl Render for CommandPaletteState {
                 .text_size(theme::text_ui())
                 .text_color(theme::faint())
                 .child(if self.query.trim().is_empty() {
-                    "No commands, missions, chats, runners, or crews yet."
+                    "No commands, missions, chats, roles, or crews yet."
                 } else {
                     "No matches."
                 })

@@ -73,7 +73,7 @@ impl NativeRoot {
             TextField::new(
                 input_cx.focus_handle(),
                 cwd,
-                "Runner default or home directory",
+                "Role default or home directory",
                 true,
             )
             .text_size(theme::text_ui())
@@ -431,7 +431,7 @@ impl NativeRoot {
                     .mt(rems(-14. / 16.))
                     .text_size(theme::text_meta())
                     .text_color(theme::warning())
-                    .child("This crew has no runners. Add at least one before starting a mission.")
+                    .child("This crew has no roles. Add at least one before starting a mission.")
             }))
             .child(
                 Field::new(
@@ -475,7 +475,7 @@ impl NativeRoot {
                         ),
                 )
                 .emphasized(true)
-                .subtitle("Each runner starts here. Leave blank to use its default directory or your home directory."),
+                .subtitle("Each role starts here. Leave blank to use its default directory or your home directory."),
             )
             .child(
                 div()
@@ -533,7 +533,7 @@ impl NativeRoot {
                                     .text_size(theme::text_meta())
                                     .font_weight(FontWeight::NORMAL)
                                     .text_color(theme::faint())
-                                    .child("env overrides · per-runner args · attach files"),
+                                    .child("env overrides · per-role args · attach files"),
                             ),
                     )
                     .children(modal.advanced_open.then(|| {
@@ -655,10 +655,10 @@ fn start_mission_crew_options(
             let description = if crew.crew.id == selected_id && !roster.is_empty() {
                 summarize_crew(crew, roster)
             } else if crew.role_count == 0 {
-                "No runners in this crew.".into()
+                "No roles in this crew.".into()
             } else {
                 format!(
-                    "{} runner{}",
+                    "{} role{}",
                     crew.role_count,
                     if crew.role_count == 1 { "" } else { "s" }
                 )

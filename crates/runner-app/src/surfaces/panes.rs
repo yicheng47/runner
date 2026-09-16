@@ -145,9 +145,9 @@ impl NativeRoot {
         };
         let label = session_label(detail);
         let back_label = if detail.handle.is_some() {
-            "Back to runner"
+            "Back to role"
         } else {
-            "Back to runners"
+            "Back to roles"
         };
         let handle = detail.handle.clone();
         let root = cx.entity();
@@ -955,7 +955,7 @@ impl NativeRoot {
                 system_prompt,
             ) = if let Some(role) = role.as_ref() {
                 (
-                    "Runner",
+                    "Role",
                     format!("@{}", role.handle),
                     true,
                     role.runtime.clone(),

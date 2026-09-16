@@ -90,8 +90,8 @@ Two copy fixes to take while in this modal:
 1. [x] Table rename plus migration, `slots.role_id` and `sessions.role_id`.
 2. [x] Backend rename, `ops/runner.rs` → `ops/role.rs`.
 3. [x] MCP tools and their descriptions.
-4. [ ] UI copy, and `surfaces/runners/` → `surfaces/roles/`.
-5. [ ] Docs, both READMEs together.
+4. [x] UI copy, and `surfaces/runners/` → `surfaces/roles/`.
+5. [x] Docs, both READMEs together.
 
 ## Verification
 

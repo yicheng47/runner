@@ -18,8 +18,8 @@ impl NativeRoot {
         if self.crew_surfaces.create.is_some() {
             return;
         }
-        let name = cx
-            .new(|input_cx| TextField::new(input_cx.focus_handle(), "", "runners-feature", false));
+        let name =
+            cx.new(|input_cx| TextField::new(input_cx.focus_handle(), "", "roles-feature", false));
         let purpose = cx.new(|input_cx| {
             TextField::textarea(
                 input_cx.focus_handle(),
@@ -169,7 +169,7 @@ impl NativeRoot {
                             .text_size(theme::text_ui())
                             .font_weight(FontWeight::NORMAL)
                             .text_color(theme::muted())
-                            .child("Group of runners that work missions together."),
+                            .child("Roles that work missions together."),
                     ),
             )
             .child(

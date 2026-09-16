@@ -258,8 +258,8 @@ fn permissions_section_reads_the_recorded_mission_start_mode() {
     for (recorded, shown) in [
         ("bypass", "bypass"),
         ("auto", "auto"),
-        ("role-default", "runner default"),
-        ("runner-default", "runner default"),
+        ("role-default", "role default"),
+        ("runner-default", "role default"),
     ] {
         let start = signal(
             "mission_start",

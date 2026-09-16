@@ -140,8 +140,8 @@ impl RoleSurfaces {
         let search = cx.new(move |search_cx| {
             SearchInput::new(
                 "",
-                "Search runners",
-                "Search runners…",
+                "Search roles",
+                "Search roles…",
                 Rc::new(move |query, cx| {
                     search_root.update(cx, |this, cx| this.set_role_query(query, cx));
                 }),

@@ -48,12 +48,12 @@ impl NativeRoot {
         let confirm_root = root.clone();
         let cancel_root = root;
         ConfirmDialog::new(
-            format!("Delete runner @{}?", confirm.handle),
+            format!("Delete role @{}?", confirm.handle),
             format!(
-                "This removes @{} from every crew it's in and deletes archived session history for that runner. Unarchived chats must be archived first. Crews and missions are kept.",
+                "This removes @{} from every crew it's in and deletes archived session history for that role. Unarchived chats must be archived first. Crews and missions are kept.",
                 confirm.handle
             ),
-            "Delete runner",
+            "Delete role",
             "Deleting…",
             self.role_surfaces.delete_busy,
             Rc::new(move |_, cx| {
@@ -98,7 +98,7 @@ impl NativeRoot {
                         }
                         this.load_role_page(cx);
                         this.show_toast(
-                            format!("Deleted runner @{handle}."),
+                            format!("Deleted role @{handle}."),
                             crate::toast::ToastTone::Success,
                             cx,
                         );

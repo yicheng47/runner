@@ -1342,7 +1342,7 @@ impl SessionManager {
         // nothing.
         if !Self::session_row_exists(&pool, &session_id) {
             return Err(Error::msg(format!(
-                "direct-chat session {session_id} row vanished before spawn — runner deleted?"
+                "direct-chat session {session_id} row vanished before spawn — role deleted?"
             )));
         }
 
@@ -1377,7 +1377,7 @@ impl SessionManager {
                 );
             }
             return Err(Error::msg(format!(
-                "direct-chat session {session_id} row vanished mid-spawn — runner deleted?"
+                "direct-chat session {session_id} row vanished mid-spawn — role deleted?"
             )));
         }
 
@@ -1704,7 +1704,7 @@ impl SessionManager {
         let gate_elapsed = gate_started_at.elapsed();
         if !Self::session_row_exists(&pool, &session_id) {
             return Err(Error::msg(format!(
-                "forked session {session_id} row vanished before spawn — runner deleted?"
+                "forked session {session_id} row vanished before spawn — role deleted?"
             )));
         }
 
@@ -1748,7 +1748,7 @@ impl SessionManager {
                         mission_id: None,
                     });
                     return Err(Error::msg(format!(
-                        "forked session {session_id} row vanished mid-spawn — runner deleted?"
+                        "forked session {session_id} row vanished mid-spawn — role deleted?"
                     )));
                 }
 

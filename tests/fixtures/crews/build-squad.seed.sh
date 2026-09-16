@@ -7,7 +7,7 @@
 #
 # This shell script seeds against any DB you point it at and is the
 # fixture used by manual testing. The Rust production seed
-# (`db::seed_default_crew`) writes the two-runner Peer coding example;
+# (`db::seed_default_crew`) writes the two-role Peer coding example;
 # this fixture intentionally keeps the richer Build squad shape for
 # manual routing and fan-out tests.
 #

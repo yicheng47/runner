@@ -159,20 +159,20 @@ pub(super) fn validate_system_prompt(prompt: Option<&str>) -> Result<()> {
 // body [a-z0-9_-]. See `docs/arch/arch.md` §3.2 (Role — handle).
 pub(super) fn validate_handle(handle: &str) -> Result<()> {
     if handle.is_empty() || handle.len() > 32 {
-        return Err(Error::msg("runner handle must be 1-32 chars"));
+        return Err(Error::msg("role handle must be 1-32 chars"));
     }
     let bytes = handle.as_bytes();
     let first_ok = bytes[0].is_ascii_lowercase() || bytes[0].is_ascii_digit();
     if !first_ok {
         return Err(Error::msg(
-            "runner handle must start with a lowercase letter or digit",
+            "role handle must start with a lowercase letter or digit",
         ));
     }
     for b in bytes {
         let ok = b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'-' || *b == b'_';
         if !ok {
             return Err(Error::msg(
-                "runner handle must be lowercase letters, digits, '-' or '_'",
+                "role handle must be lowercase letters, digits, '-' or '_'",
             ));
         }
     }
@@ -194,8 +194,8 @@ pub(super) fn validate_env_keys<S: std::hash::BuildHasher>(
         }
         if crate::session::launch::is_reserved_env_name(k) {
             return Err(Error::msg(format!(
-                "env var name {k:?} is reserved by the runner launcher \
-                 (the deterministic PATH must win over any per-runner override; \
+                "env var name {k:?} is reserved by the Runner launcher \
+                 (the deterministic PATH must win over any per-role override; \
                  if you need extra dirs on PATH, configure them in your shell rc)"
             )));
         }
@@ -231,7 +231,7 @@ pub fn list_with_activity_page(
 }
 
 pub fn get(conn: &Connection, id: &str) -> Result<Role> {
-    repo::role::get(conn, id)?.ok_or_else(|| Error::msg(format!("runner not found: {id}")))
+    repo::role::get(conn, id)?.ok_or_else(|| Error::msg(format!("role not found: {id}")))
 }
 
 /// Look up a role by its `handle`. Used by `/roles/:handle` so the URL
@@ -240,7 +240,7 @@ pub fn get(conn: &Connection, id: &str) -> Result<Role> {
 /// 0 or 1 rows.
 pub fn get_by_handle(conn: &Connection, handle: &str) -> Result<Role> {
     repo::role::get_by_handle(conn, handle)?
-        .ok_or_else(|| Error::msg(format!("runner not found: @{handle}")))
+        .ok_or_else(|| Error::msg(format!("role not found: @{handle}")))
 }
 
 pub fn create(conn: &Connection, input: CreateRoleInput) -> Result<Role> {
@@ -406,7 +406,7 @@ pub(crate) fn ensure_delete_allowed(conn: &Connection, id: &str) -> Result<()> {
     let session_ids = repo::role::unarchived_direct_session_ids(conn, id)?;
     if !session_ids.is_empty() {
         return Err(Error::msg(format!(
-            "runner {id} has unarchived chats; archive them before deleting this runner: {}",
+            "role {id} has unarchived chats; archive them before deleting this role: {}",
             session_ids.join(", ")
         )));
     }
@@ -436,7 +436,7 @@ pub fn delete(conn: &mut Connection, id: &str) -> Result<()> {
     repo::role::delete_sessions(&tx, id)?;
     let affected = repo::role::delete(&tx, id)?;
     if affected != 1 {
-        return Err(Error::msg(format!("runner not found: {id}")));
+        return Err(Error::msg(format!("role not found: {id}")));
     }
     // CASCADE fired: every slot row referencing this role is gone.
 

@@ -45,7 +45,7 @@ impl NativeRoot {
                 .py_2()
                 .text_size(theme::text_title())
                 .text_color(theme::danger())
-                .child(format!("Runner @{handle} not found."))
+                .child(format!("Role @{handle} not found."))
                 .into_any_element()
         };
         let header_role = role.clone();
@@ -103,7 +103,7 @@ impl NativeRoot {
                                                     });
                                                 }
                                             })
-                                            .child("Runners"),
+                                            .child("Roles"),
                                     )
                                     .child(div().text_color(theme::border_strong()).child("›"))
                                     .child(
@@ -125,7 +125,7 @@ impl NativeRoot {
                                     .gap_2()
                                     .child(
                                         Button::new("edit-role", "Edit")
-                                            .tooltip("Edit runner")
+                                            .tooltip("Edit role")
                                             .disabled(header_role.is_none())
                                             .on_press(move |window, cx| {
                                                 if let Some(role) = header_role.clone() {
@@ -141,7 +141,7 @@ impl NativeRoot {
                                             if pending { "Starting…" } else { "Chat now" },
                                         )
                                         .variant(ButtonVariant::Primary)
-                                        .tooltip("Start a one-on-one PTY with this runner")
+                                        .tooltip("Start a one-on-one PTY with this role")
                                         .disabled(chat_role.is_none() || pending)
                                         .on_press(
                                             move |window, cx| {
@@ -270,7 +270,7 @@ impl NativeRoot {
                     .gap_4()
                     .child(detail_card(
                         "Default system prompt",
-                        Some("Used whenever this runner spawns. Override per crew/mission slot later (v0.x)."),
+                        Some("Used whenever this role spawns. Override per crew/mission slot later (v0.x)."),
                         if let Some(prompt) = role.system_prompt.clone() {
                             div()
                                 .font_family(theme::UI_MONOSPACE_FONT)
@@ -288,7 +288,7 @@ impl NativeRoot {
                                 .into_any_element()
                         },
                     ))
-                    .child(detail_card("Crews using this runner", None, crew_rows))
+                    .child(detail_card("Crews using this role", None, crew_rows))
                     .child(detail_card(
                         "Chat now",
                         Some("Spawn a one-on-one PTY. Chats don't join any mission's coordination bus."),
@@ -315,7 +315,7 @@ impl NativeRoot {
                                 div()
                                     .text_size(theme::text_meta())
                                     .text_color(theme::faint())
-                                    .child("Inherits the runner's working directory. Click Edit to change it, or override per-chat from the chat itself."),
+                                    .child("Inherits the role's working directory. Click Edit to change it, or override per-chat from the chat itself."),
                             ),
                     )),
             )

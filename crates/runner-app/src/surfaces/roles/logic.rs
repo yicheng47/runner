@@ -145,7 +145,7 @@ pub(super) fn role_edit_runtime_options(
         let label = runtime_entry(runtimes, &role.runtime)
             .map(|runtime| runtime.display_name.as_str())
             .unwrap_or(&role.runtime);
-        options.push(SelectOption::new("", format!("Runner default ({label})")));
+        options.push(SelectOption::new("", format!("Role default ({label})")));
     }
     options.extend(
         runtimes
@@ -180,8 +180,8 @@ pub(super) fn effort_options(
                     role.effort
                         .as_deref()
                         .or_else(|| runtime_entry(runtimes, runtime)?.default_effort.as_deref())
-                        .map(|effort| format!("Runner default ({effort})"))
-                        .unwrap_or_else(|| "Runner default".into())
+                        .map(|effort| format!("Role default ({effort})"))
+                        .unwrap_or_else(|| "Role default".into())
                 } else {
                     runtime_default_effort_label(runtimes, runtime)
                 }
@@ -269,7 +269,7 @@ pub(super) fn permission_mode_description(runtime: &str, mode: PermissionMode) -
         }
         (Some(Runtime::ClaudeCode), PermissionMode::AcceptEdits) => "Auto-accept file edits and common filesystem commands; still ask for shell, network, and writes outside the workspace. Available on every plan.",
         (Some(Runtime::ClaudeCode), PermissionMode::Auto) => "Real auto with a server-side classifier. Requires Max / Team / Enterprise / API plan + a supported model (Opus 4.7 on Max). Not available on Pro.",
-        (Some(Runtime::ClaudeCode), PermissionMode::Bypass) => "Skip every check. Runner accepts Claude Code's bypass disclaimer for the sessions it spawns; a runner that passes its own --settings still sees the dialog.",
+        (Some(Runtime::ClaudeCode), PermissionMode::Bypass) => "Skip every check. Runner accepts Claude Code's bypass disclaimer for the sessions it spawns; a role that passes its own --settings still sees the dialog.",
         (Some(Runtime::Codex), PermissionMode::Default) => {
             "Codex's built-in approval cadence (untrusted commands)."
         }

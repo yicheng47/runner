@@ -116,7 +116,7 @@ impl SessionControl {
             SessionControlKind::Resuming => "Resuming…",
             SessionControlKind::Stop => "Stop",
             SessionControlKind::Restart => "Restart",
-            SessionControlKind::Back => "Back to runner",
+            SessionControlKind::Back => "Back to role",
         }
     }
 }

@@ -308,7 +308,7 @@ impl NativeRoot {
                     .flex()
                     .items_center()
                     .gap_2()
-                    .child("Edit runner")
+                    .child("Edit role")
                     .child(
                         div()
                             .rounded_sm()
@@ -325,7 +325,7 @@ impl NativeRoot {
             .child(
                 IconButton::new("close-role-edit", "close.svg")
                     .focus_handle(form.close_focus.clone())
-                    .tooltip("Close runner editor")
+                    .tooltip("Close role editor")
                     .disabled(submitting)
                     .on_press(move |window, cx| {
                         close_root.update(cx, |this, cx| this.close_role_edit(window, cx));
@@ -334,7 +334,7 @@ impl NativeRoot {
         let model_hint = if edits_slot {
             if form.runtime == form.role.runtime {
                 format!(
-                    "slot override · blank inherits runner default ({})",
+                    "slot override · blank inherits role default ({})",
                     form.role.model.as_deref().unwrap_or("default")
                 )
             } else {
@@ -346,7 +346,7 @@ impl NativeRoot {
         let effort_hint = if edits_slot {
             if form.runtime == form.role.runtime {
                 format!(
-                    "slot override · blank inherits runner default ({})",
+                    "slot override · blank inherits role default ({})",
                     form.role.effort.as_deref().unwrap_or("default")
                 )
             } else {
@@ -375,7 +375,7 @@ impl NativeRoot {
                             .focus_target(form.runtime_select.read(cx).focus_handle())
                             .when(edits_slot, |field| {
                                 field.hint(
-                                    "slot override · Runner default follows the template; an explicit agent pins this slot's engine",
+                                    "slot override · blank follows the role's agent; an explicit agent pins this slot's engine",
                                     form.runtime_hint_focus.clone(),
                                 )
                             }),

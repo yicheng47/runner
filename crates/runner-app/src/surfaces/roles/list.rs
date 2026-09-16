@@ -248,7 +248,7 @@ impl NativeRoot {
                     .text_size(theme::text_title())
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(theme::text())
-                    .child(format!("No runners match \"{query}\"")),
+                    .child(format!("No roles match \"{query}\"")),
             )
             .child(
                 div()
@@ -271,12 +271,12 @@ impl NativeRoot {
         let empty_state = EmptyStateCard::new(
             svg()
                 .flex_none()
-                .path("terminal.svg")
+                .path("user.svg")
                 .size(rems(22. / 16.))
                 .text_color(theme::accent()),
-            "No runners yet",
-            "A runner is a reusable CLI agent — claude-code, codex, a custom shell — that crews pull in. Add one to start composing crews.",
-            Button::new("empty-new-role", "+ New runner")
+            "No roles yet",
+            "A role is a reusable CLI agent — claude-code, codex, a custom shell — that crews pull in. Add one to start composing crews.",
+            Button::new("empty-new-role", "+ New role")
                 .variant(ButtonVariant::Primary)
                 .on_press(move |window, cx| {
                     empty_create_root.update(cx, |this, cx| {
@@ -285,9 +285,9 @@ impl NativeRoot {
                 }),
         );
         PaginatedListPage::new(
-            "Runners",
+            "Roles",
             div().child("Reusable CLI agents — pick one for a crew slot or chat directly."),
-            Button::new("new-role", "+ New runner")
+            Button::new("new-role", "+ New role")
                 .variant(ButtonVariant::Primary)
                 .on_press(move |window, cx| {
                     create_root.update(cx, |this, cx| this.open_create_role(window, cx));

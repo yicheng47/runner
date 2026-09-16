@@ -369,7 +369,7 @@ impl Sidebar {
                     })
                 }
                 WorkspaceEntry::Role => {
-                    workspace_row("workspace-role", "terminal.svg", "runner", active, {
+                    workspace_row("workspace-role", "user.svg", "role", active, {
                         let shell = self.shell.clone();
                         move |window, cx| {
                             if let Some(shell) = shell.upgrade() {

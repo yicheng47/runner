@@ -160,7 +160,7 @@ fn validate_crew_goal(goal: Option<&str>) -> Result<()> {
         if g.len() > crate::ops::mission::MAX_MISSION_GOAL_BYTES {
             return Err(Error::msg(format!(
                 "crew goal is {} bytes; max {} ({} KB). Trim the goal text or move \
-                 long-form context into the runner brief / per-task messages.",
+                 long-form context into the role brief / per-task messages.",
                 g.len(),
                 crate::ops::mission::MAX_MISSION_GOAL_BYTES,
                 crate::ops::mission::MAX_MISSION_GOAL_BYTES / 1024,

@@ -160,7 +160,7 @@ impl NativeRoot {
                     .text_size(theme::text_ui())
                     .line_height(rems(19. / 16.))
                     .text_color(theme::muted())
-                    .child("Search checks names, purposes, goals, system prompts, slot handles, runner handles, and runtimes."),
+                    .child("Search checks names, purposes, goals, system prompts, slot handles, role handles, and runtimes."),
             )
             .child(
                 Button::new("clear-crew-search", "Clear search")
@@ -180,7 +180,7 @@ impl NativeRoot {
                 .size(rems(22. / 16.))
                 .text_color(theme::accent()),
             "No crews yet",
-            "A crew is a named group of runners working a goal together. Spin up your first one to get started.",
+            "A crew is a named group of roles working a goal together. Spin up your first one to get started.",
             Button::new("empty-new-crew", "+ New crew")
                 .variant(ButtonVariant::Primary)
                 .on_press(move |window, cx| {
@@ -191,7 +191,7 @@ impl NativeRoot {
         );
         PaginatedListPage::new(
             "Crews",
-            div().child("Named groups of runners with a shared goal."),
+            div().child("Named groups of roles with a shared goal."),
             Button::new("new-crew", "+ New crew")
                 .variant(ButtonVariant::Primary)
                 .on_press(move |window, cx| {
@@ -231,9 +231,9 @@ impl NativeRoot {
         let key_crew_id = crew_id.clone();
         let menu_item = item.clone();
         let count = if item.role_count == 1 {
-            "1 runner".to_owned()
+            "1 role".to_owned()
         } else {
-            format!("{} runners", item.role_count)
+            format!("{} roles", item.role_count)
         };
         let members = if item.members.is_empty() {
             vec![div()

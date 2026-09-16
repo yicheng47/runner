@@ -175,7 +175,7 @@ pub fn list(conn: &Connection, crew_id: &str) -> Result<Vec<SlotWithRole>> {
         let role = roles_by_id
             .get(&slot.role_id)
             .cloned()
-            .ok_or_else(|| Error::msg(format!("runner not found: {}", slot.role_id)))?;
+            .ok_or_else(|| Error::msg(format!("role not found: {}", slot.role_id)))?;
         out.push(SlotWithRole { slot, role });
     }
     Ok(out)
@@ -215,7 +215,7 @@ pub fn create(
         return Err(Error::msg(format!("crew not found: {crew_id}")));
     }
     if !role_exists(conn, role_id)? {
-        return Err(Error::msg(format!("runner not found: {role_id}")));
+        return Err(Error::msg(format!("role not found: {role_id}")));
     }
     let slot_handle = slot_handle.trim();
     if slot_handle.is_empty() {
@@ -670,7 +670,7 @@ mod tests {
         repo::role::delete(&conn, &role).unwrap();
 
         let error = list(&conn, &crew).unwrap_err();
-        assert_eq!(error.to_string(), format!("runner not found: {role}"));
+        assert_eq!(error.to_string(), format!("role not found: {role}"));
     }
 
     #[test]

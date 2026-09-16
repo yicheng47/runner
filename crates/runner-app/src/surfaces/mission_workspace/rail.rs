@@ -84,7 +84,7 @@ impl MissionWorkspace {
             .child(
                 div().ml_auto().child(
                     IconButton::new("collapse-mission-rail", "panel-right-open.svg")
-                        .tooltip("Collapse runners panel")
+                        .tooltip("Collapse sessions panel")
                         .on_press(move |_, cx| {
                             collapse_root.update(cx, |this, cx| {
                                 this.update_app_settings(cx, true, |settings| {
@@ -179,14 +179,14 @@ impl MissionWorkspace {
             .flex()
             .flex_col()
             .gap_3()
-            .child(rail_section_label("Runner sessions"));
+            .child(rail_section_label("Sessions"));
         if self.sessions.is_empty() {
             return list
                 .child(
                     div()
                         .text_size(theme::text_ui())
                         .text_color(theme::faint())
-                        .child("No runner sessions yet."),
+                        .child("No sessions yet."),
                 )
                 .into_any_element();
         }

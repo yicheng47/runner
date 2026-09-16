@@ -707,8 +707,7 @@ impl NativeRoot {
             &self.settings(cx).default_working_dir,
         );
         let title_input = cx.new(|input_cx| {
-            TextField::new(input_cx.focus_handle(), title, "e.g. quick-debug", false)
-                .text_size(theme::text_body())
+            TextField::new(input_cx.focus_handle(), "", title, false).text_size(theme::text_body())
         });
         let (project_id, project_cwd) = project_start_scope(project.as_ref());
         let cwd_input = cx.new(|input_cx| {
@@ -734,7 +733,7 @@ impl NativeRoot {
             .min_menu_width(px(FIELD_WIDTH))
             .detailed(true)
             .monospace(true)
-            .placeholder("No runners yet")
+            .placeholder("No roles yet")
             .disabled(roles.is_empty())
         });
         let role_runtime_options = role_runtime_options(
@@ -1334,7 +1333,7 @@ impl NativeRoot {
             .child(
                 Field::new(
                     "start-chat-role-field",
-                    "Runner",
+                    "Role",
                     div()
                         .flex()
                         .flex_col()
@@ -1345,7 +1344,7 @@ impl NativeRoot {
                                 div()
                                     .text_size(theme::text_meta())
                                     .text_color(theme::warning())
-                                    .child("No runners yet. Create one from the runner page first."),
+                                    .child("No roles yet. Create one from the Roles page first."),
                             )
                         }),
                 )
@@ -1360,7 +1359,7 @@ impl NativeRoot {
                 )
                     .focus_target(modal.role_runtime_select.read(cx).focus_handle())
                     .emphasized(true)
-                    .subtitle("Overriding runs this persona on another agent; its model and effort become configurable below."),
+                    .subtitle("Overriding runs this role on another agent; its model and effort become configurable below."),
             )
             .when_some(modal.override_runtime().cloned(), |fields, runtime| {
                 fields.child(render_shared_model_effort_fields(
@@ -1476,7 +1475,7 @@ impl NativeRoot {
                         cx,
                     ))
                     .child(self.render_mode_button(
-                        "Runner",
+                        "Role",
                         ChatMode::Role,
                         mode,
                         submitting,
@@ -1537,7 +1536,7 @@ impl NativeRoot {
                             .text_size(theme::text_ui())
                             .font_weight(FontWeight::NORMAL)
                             .text_color(theme::muted())
-                            .child("Spawns a direct PTY in the selected directory."),
+                            .child("A one-on-one terminal with an agent, no mission required."),
                     ),
             )
             .child(
@@ -1705,7 +1704,7 @@ fn role_runtime_options(
     let suffix = role
         .map(|role| format!(" ({})", runtime_display_name(runtimes, &role.runtime)))
         .unwrap_or_default();
-    std::iter::once(SelectOption::new("", format!("Runner default{suffix}")))
+    std::iter::once(SelectOption::new("", format!("Role default{suffix}")))
         .chain(runtime_options(runtimes))
         .collect()
 }
@@ -1927,26 +1926,10 @@ fn user_chat_title(input: &TextField) -> Option<String> {
         .flatten()
 }
 
-fn auto_title_after_selection(edited: bool, current: &str, derived: String) -> String {
-    if edited {
-        current.to_owned()
-    } else {
-        derived
-    }
-}
-
-fn update_auto_title(title: &Entity<TextField>, derived: String, cx: &mut Context<NativeRoot>) {
-    let (edited, next) = {
-        let input = title.read(cx);
-        (
-            input.edited(),
-            auto_title_after_selection(input.edited(), input.text(), derived),
-        )
-    };
-    if edited {
-        return;
-    }
-    title.update(cx, |input, input_cx| input.reset(next, input_cx));
+fn update_auto_title(title: &Entity<TextField>, derived: String, cx: &mut gpui::App) {
+    title.update(cx, |input, input_cx| {
+        input.set_placeholder(derived, input_cx);
+    });
 }
 
 fn cwd_placeholder(mode: ChatMode, role: Option<&Role>, default_path: &str) -> String {
@@ -2213,30 +2196,53 @@ mod tests {
     #[test]
     fn new_chat_only_saves_names_the_user_edited() {
         let mut cx = gpui::TestAppContext::single();
-        let title = cx.new(|cx| TextField::new(cx.focus_handle(), "Codex", "", false));
+        let title = cx.new(|cx| TextField::new(cx.focus_handle(), "", "Codex", false));
         title.update(&mut cx, |input, cx| {
+            assert_eq!(input.text(), "");
+            assert!(!input.edited());
             assert_eq!(user_chat_title(input), None);
-            input.reset("@coder", cx);
+            input.set_placeholder("@coder", cx);
             assert_eq!(user_chat_title(input), None);
             input.set_text("  Cars  ", cx);
             assert_eq!(user_chat_title(input).as_deref(), Some("Cars"));
             input.set_text("Codex", cx);
             assert_eq!(user_chat_title(input).as_deref(), Some("Codex"));
+            input.set_text("", cx);
+            assert_eq!(user_chat_title(input), None);
             input.set_text("   ", cx);
             assert_eq!(user_chat_title(input), None);
         });
     }
 
     #[test]
-    fn title_auto_derives_until_the_user_edits_it() {
-        assert_eq!(
-            auto_title_after_selection(false, "@coder", default_title_for_role("reviewer")),
-            "@reviewer"
-        );
-        assert_eq!(
-            auto_title_after_selection(true, "my chat", default_title_for_runtime("Codex")),
-            "my chat"
-        );
+    fn title_selection_changes_preserve_blank_and_user_edited_text() {
+        let mut cx = gpui::TestAppContext::single();
+        let title = cx.new(|cx| {
+            TextField::new(
+                cx.focus_handle(),
+                "",
+                default_title_for_role("coder"),
+                false,
+            )
+        });
+        cx.update(|cx| {
+            update_auto_title(&title, default_title_for_role("reviewer"), cx);
+            assert_eq!(title.read(cx).text(), "");
+            assert!(!title.read(cx).edited());
+            assert_eq!(user_chat_title(title.read(cx)), None);
+
+            title.update(cx, |input, cx| input.set_text("my chat", cx));
+            update_auto_title(&title, default_title_for_runtime("Codex"), cx);
+            assert_eq!(user_chat_title(title.read(cx)).as_deref(), Some("my chat"));
+
+            title.update(cx, |input, cx| input.set_text("", cx));
+            update_auto_title(&title, default_title_for_role("coder"), cx);
+            assert_eq!(title.read(cx).text(), "");
+            assert_eq!(user_chat_title(title.read(cx)), None);
+            update_auto_title(&title, default_title_for_runtime("Claude Code"), cx);
+            assert_eq!(title.read(cx).text(), "");
+            assert_eq!(user_chat_title(title.read(cx)), None);
+        });
     }
 
     #[test]

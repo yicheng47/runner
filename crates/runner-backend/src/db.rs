@@ -349,7 +349,7 @@ fn seed_default_crew(tx: &rusqlite::Transaction) -> Result<()> {
         params![
             SEED_CREW_ID,
             "Peer coding crew",
-            "A two-runner coder/reviewer loop for a single implementation task. \
+            "A two-role coder/reviewer loop for a single implementation task. \
              The coder ships the change; the reviewer audits it; the coder fixes \
              findings until review is clean.",
             "Definition of done: implemented, relevant checks passed, and reviewer \

@@ -199,7 +199,7 @@ impl NativeRoot {
                         div()
                             .text_size(theme::text_heading())
                             .font_weight(FontWeight::SEMIBOLD)
-                            .child("New runner"),
+                            .child("New role"),
                     )
                     .child(
                         div()
@@ -212,7 +212,7 @@ impl NativeRoot {
             .child(
                 IconButton::new("close-create-role", "close.svg")
                     .focus_handle(form.close_focus.clone())
-                    .tooltip("Close new runner")
+                    .tooltip("Close new role")
                     .disabled(submitting)
                     .on_press(move |window, cx| {
                         close_root.update(cx, |this, cx| this.close_create_role(window, cx));
@@ -349,7 +349,7 @@ impl NativeRoot {
                     if submitting {
                         "Creating…"
                     } else {
-                        "Create runner"
+                        "Create role"
                     },
                 )
                 .focus_handle(form.submit_focus.clone())

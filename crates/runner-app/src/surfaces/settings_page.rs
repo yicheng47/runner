@@ -529,7 +529,7 @@ fn mission_permission_mode_description(mode: MissionPermissionMode) -> &'static 
     match mode {
         MissionPermissionMode::Bypass => "Default. No prompts; codex gets full access.",
         MissionPermissionMode::Auto => "The runtime's classifier decides; may stall on a prompt.",
-        MissionPermissionMode::RoleDefault => "Whatever each runner row carries.",
+        MissionPermissionMode::RoleDefault => "Whatever each role carries.",
     }
 }
 
@@ -1735,7 +1735,7 @@ impl NativeRoot {
                 file_link_row.into_any_element(),
                 SettingsRow::new("App zoom", zoom)
                     .subtitle(
-                        "Whole-app scale. Doesn't apply to the runner terminal canvas — see Terminal pane.",
+                        "Whole-app scale. Doesn't apply to the terminal canvas — see Terminal pane.",
                     )
                     .into_any_element(),
             ]))

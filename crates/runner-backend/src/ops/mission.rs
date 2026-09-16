@@ -140,7 +140,7 @@ fn validate_mission_goal(goal: &str) -> Result<()> {
     if goal.len() > MAX_MISSION_GOAL_BYTES {
         return Err(Error::msg(format!(
             "mission goal is {} bytes; max {} ({} KB). Trim the goal text or move \
-             long-form context into the runner brief / per-task messages.",
+             long-form context into the role brief / per-task messages.",
             goal.len(),
             MAX_MISSION_GOAL_BYTES,
             MAX_MISSION_GOAL_BYTES / 1024,
@@ -164,7 +164,7 @@ pub(crate) fn ensure_first_turn_fits(slot_handle: &str, body: &str) -> Result<()
     if body.len() > max {
         return Err(Error::msg(format!(
             "composed first-turn prompt for slot `{slot_handle}` is {} bytes; exceeds the \
-             {} KB runtime argv ceiling. Trim this crew's runner brief, mission goal, or team \
+             {} KB runtime argv ceiling. Trim this crew's role brief, mission goal, or team \
              conventions.",
             body.len(),
             max / 1024,
@@ -507,7 +507,7 @@ fn post_human_message(
             .any(|member| member.slot.slot_handle == target)
         {
             return Err(Error::msg(format!(
-                "runner @{target} is not in the mission crew roster"
+                "@{target} is not in the mission roster"
             )));
         }
     }
@@ -1549,7 +1549,7 @@ mod tests {
     }
 
     fn add_role(conn: &mut Connection, crew_id: &str, handle: &str) -> String {
-        // Runners are config templates; in-mission identity is on
+        // Roles are config templates; in-mission identity is on
         // the slot. Test fixtures use the role handle as both the
         // template name and the slot_handle for simplicity.
         let r = runner_cmd::create(
