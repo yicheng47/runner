@@ -202,8 +202,8 @@ Carbon 和 Runner Light 是 Runner 自己的主题，Catppuccin Mocha 和 Latte 
 | 聊天、mission、重启后恢复会话 | ✓ | ✓ | ✓ | ✓ |
 | 在 Windows 上运行 | ✓ | ✓ | ✓ ¹ | — ² |
 | 分叉聊天 | ✓ | ✓ | — | — |
-| 由 agent 自身的 hook 驱动 Working / Idle 状态 ³ | ✓ | ✓ | ✓ | — |
-| Needs you：显示审批和提问对话框 ³ | ✓ | — | ✓ | — |
+| 由 agent 自身的 hook 驱动 Working / Idle 状态 | ✓ | ✓ | ✓ | — |
+| Needs you：显示审批和提问对话框 | ✓ | — | ✓ | — |
 | 从 CLI 读取模型列表 | ✓ | ✓ | — | — |
 | 权限模式 | Default · Accept edits · Auto · Bypass | Default · Auto · Bypass | Default · Accept edits · Bypass | Default · Bypass |
 | Skills 面板 | 目录 + 开关 | 目录 + 开关 | 目录 + 开关 | — |
@@ -212,7 +212,6 @@ Carbon 和 Runner Light 是 Runner 自己的主题，Catppuccin Mocha 和 Latte 
 
 ¹ GitHub Copilot CLI 在 Windows 上原生运行，但尚未在 Windows 上做过冒烟测试。
 ² TRAE CLI 在 Windows 上默认禁用，其集成尚未验证。
-³ 仅 macOS。在 Windows 上，所有 agent 的状态都由终端输出估算，且无法检测对话框，直到 Windows 的 hook 支持落地。
 
 Claude Code 和 Codex 是主要支持的 agent，启动和催促时序做过调优。GitHub Copilot CLI 需要 Copilot 订阅。TRAE CLI 用得较少，可能有粗糙之处。欢迎提 [issue](https://github.com/yicheng47/runner/issues)。
 

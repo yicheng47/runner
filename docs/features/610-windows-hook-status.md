@@ -1,7 +1,7 @@
-# 610 — Hook-based session status on Windows, plus the 347 follow-ups
+# 610 — Hook-based session status on Windows
 
 > Tracking issue: [#610](https://github.com/yicheng47/runner/issues/610)
-> Priority: P1. Platforms: Windows for phase 1; macOS and Windows for the rest.
+> Priority: P1. Platforms: Windows. The cross-platform follow-ups were split out on 2026-09-16: the deferred status details are [#624](https://github.com/yicheng47/runner/issues/624) and the title-heuristic removal is [#625](https://github.com/yicheng47/runner/issues/625).
 > Continues [347](./archive/347-hook-based-session-status.md), which shipped the hook-based status model on macOS for Claude Code, Codex and GitHub Copilot CLI (PRs #588, #589, #609) and closed on 2026-09-16. The program record, slice plan and log stay in [`docs/impls/347-hook-status/`](../impls/archive/347-hook-status/README.md).
 > Implementation plan: [`docs/impls/610-windows-hook-status.md`](../impls/610-windows-hook-status.md) — the Windows hook contract measured on JASONPC on 2026-09-16 and the mission split.
 
@@ -22,11 +22,11 @@ Enable the Claude Code, Codex and Copilot status bridges on Windows, one runtime
 
 ### Phase 2 — deferred details
 
-Slice 5 of the program record: `Working · Compacting context` and `Using tools`; sidebar attention for response failures; the interruption outcome in the Idle tooltip; elapsed time on a wait; the nonblocking-ask `Still working` case. Each is additive to the shipped layout.
+Moved to [#624](https://github.com/yicheng47/runner/issues/624) on 2026-09-16: cross-platform status UI, not part of the port.
 
 ### Phase 3 — drop the title heuristic
 
-Remove title-spinner classification only where a runtime and platform have validated hook coverage; keep the baseline everywhere else.
+Moved to [#625](https://github.com/yicheng47/runner/issues/625) on 2026-09-16: one shared removal after this issue's mission 1 merges and its Windows smoke passes.
 
 ### Known unsupported, out of scope until observable
 

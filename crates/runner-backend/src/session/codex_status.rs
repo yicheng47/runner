@@ -30,7 +30,25 @@ printf '{"generation":"%s","hook_event_name":"%s","payload_file":"%s"}\n' "$RUNN
 exit 0
 "#;
 
+/// The Windows reporter, written per session to `<feed>.ps1`: nine copies inline in
+/// `-c` values would push an npm `codex.cmd` launch past cmd.exe's 8,191-character line.
+pub(crate) fn windows_reporter() -> String {
+    hook_feed::powershell_reporter("$args[0]", GENERATION_ENV, "$args[1]")
+}
+
 pub(crate) fn hook_command(path: &Path, event: &str) -> String {
+    if cfg!(windows) {
+        // A script block is not subject to execution policy, unlike running the file.
+        return format!(
+            "try{{& ([ScriptBlock]::Create([IO.File]::ReadAllText({}))) {} {}}}\
+             catch{{[Console]::OpenStandardInput().CopyTo([IO.Stream]::Null)}};'{{}}'",
+            hook_feed::powershell_quote(&hook_feed::hook_path(&hook_feed::powershell_script_path(
+                path
+            ))),
+            hook_feed::powershell_quote(&hook_feed::hook_path(path)),
+            hook_feed::powershell_quote(event),
+        );
+    }
     format!(
         "({}); printf '{{}}\\n'; exit 0",
         hook_feed::hook_command(path, event)
@@ -176,7 +194,11 @@ pub(crate) struct CodexStatusWatcher {
 impl CodexStatusWatcher {
     pub(crate) fn start(path: &Path, generation: String) -> Result<Self> {
         Ok(Self {
-            feed: HookFeed::start(path, generation, APPEND_SCRIPT)?,
+            feed: if cfg!(windows) {
+                HookFeed::start_powershell(path, generation, &windows_reporter())?
+            } else {
+                HookFeed::start(path, generation, APPEND_SCRIPT)?
+            },
             observation: CodexObservation::default(),
             transcript: None,
         })
@@ -565,5 +587,78 @@ mod tests {
         assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0);
         run_hook(&path, "Stop", &vec![b'x'; 256 * 1024]);
         assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
+    #[cfg(windows)]
+    fn run_powershell_hook(shell: &str, path: &Path, event: &str, payload: &[u8]) -> bool {
+        let Some(output) = hook_feed::run_powershell(
+            shell,
+            &hook_command(path, event),
+            &[(GENERATION_ENV, "current")],
+            payload,
+        ) else {
+            return false;
+        };
+        assert!(output.status.success(), "{shell}: {output:?}");
+        assert_eq!(output.stdout, b"{}\r\n", "{shell}");
+        assert!(output.stderr.is_empty(), "{shell}: {output:?}");
+        true
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn real_powershell_reporter_large_malformed_partial_generation_quoting_and_teardown() {
+        for shell in hook_feed::POWERSHELLS {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir
+                .path()
+                .join("quote ' triple ''' dollar $ backtick ` space 你好.ndjson");
+            let path = PathBuf::from(hook_feed::hook_path(&path));
+            let mut watcher = CodexStatusWatcher::start(&path, "current".into()).unwrap();
+            let mut large = report("UserPromptSubmit", "one");
+            large["prompt"] = json!(format!("你好 {}", "x\n".repeat(128 * 1024)));
+            if !run_powershell_hook(
+                shell,
+                &path,
+                "UserPromptSubmit",
+                &serde_json::to_vec_pretty(&large).unwrap(),
+            ) {
+                continue;
+            }
+            run_powershell_hook(shell, &path, "Stop", b"not JSON");
+            run_powershell_hook(shell, &path, "Stop", br#"{"hook_event_name":42}"#);
+            run_powershell_hook(
+                shell,
+                &path,
+                "Stop",
+                &serde_json::to_vec(&report("PreToolUse", "one")).unwrap(),
+            );
+            let mut stale = report("Stop", "one");
+            stale["generation"] = json!("old");
+            append(&path, &stale);
+            let stop = format!("{}\n", report("Stop", "one"));
+            let mut file = OpenOptions::new().append(true).open(&path).unwrap();
+            file.write_all(&stop.as_bytes()[..20]).unwrap();
+            let mut values = Vec::new();
+            watcher
+                .drain_observations(|value, _| values.push(value))
+                .unwrap();
+            assert_eq!(values.len(), 1, "{shell}");
+            assert_eq!(values[0].activity, Activity::Working);
+            file.write_all(&stop.as_bytes()[20..]).unwrap();
+            drop(file);
+            watcher.feed.dirty.store(true, Ordering::Release);
+            watcher
+                .drain_observations(|value, _| values.push(value))
+                .unwrap();
+            assert_eq!(values.last().unwrap().activity, Activity::Ready);
+            fs::remove_file(&path).unwrap();
+            watcher.feed.dirty.store(true, Ordering::Release);
+            assert!(watcher.drain_observations(|_, _| {}).is_err());
+            drop(watcher);
+            assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0);
+            run_powershell_hook(shell, &path, "Stop", &vec![b'x'; 256 * 1024]);
+            assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0);
+        }
     }
 }

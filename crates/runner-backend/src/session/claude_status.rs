@@ -538,13 +538,6 @@ mod tests {
     }
 
     #[test]
-    fn windows_is_explicitly_baseline_only() {
-        assert!(!hooks_supported(true));
-        assert!(hooks_supported(false));
-        assert_eq!(hooks_supported(cfg!(windows)), cfg!(unix));
-    }
-
-    #[test]
     fn question_is_immediate_and_transcript_resolution_is_correlated() {
         let mut model = ClaudeObservation::default();
         observe(
@@ -1613,5 +1606,89 @@ mod tests {
         assert!(output.status.success());
         assert!(output.stdout.is_empty());
         assert!(output.stderr.is_empty());
+    }
+
+    /// Git for Windows' `sh`, the shell Claude Code runs hooks under on Windows.
+    #[cfg(windows)]
+    fn git_sh() -> Option<PathBuf> {
+        let probe = |sh: &Path| {
+            std::process::Command::new(sh)
+                .args(["-c", "exit 0"])
+                .output()
+                .is_ok_and(|output| output.status.success())
+        };
+        if probe(Path::new("sh")) {
+            return Some("sh".into());
+        }
+        let exec_path = std::process::Command::new("git")
+            .arg("--exec-path")
+            .output()
+            .ok()?;
+        let exec_path = PathBuf::from(String::from_utf8(exec_path.stdout).ok()?.trim());
+        let sh = exec_path.ancestors().nth(3)?.join("usr/bin/sh.exe");
+        probe(&sh).then_some(sh)
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn git_sh_runs_the_injected_commands_with_forward_slash_feeds() {
+        let Some(sh) = git_sh() else {
+            eprintln!("skipping: Git for Windows sh is not on PATH or beside git");
+            return;
+        };
+        let root = tempfile::tempdir().unwrap();
+        let path = status_path(&root.path().join("Jason's status $dir"), "session");
+        let path = PathBuf::from(super::super::hook_feed::hook_path(&path));
+        let mut watcher = ClaudeStatusWatcher::start(&path, "current".into()).unwrap();
+        let run = |path: &Path, event: &str, payload: &[u8]| {
+            let mut child = std::process::Command::new(&sh)
+                .args(["-c", &hook_command(path, event)])
+                .env(GENERATION_ENV, "current")
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .unwrap();
+            child.stdin.take().unwrap().write_all(payload).unwrap();
+            let output = child.wait_with_output().unwrap();
+            assert!(output.status.success(), "{event}: {output:?}");
+            assert!(output.stdout.is_empty(), "{event}: {output:?}");
+            assert!(output.stderr.is_empty(), "{event}: {output:?}");
+        };
+        let large = serde_json::json!({
+            "notification_type": "idle_prompt",
+            "tool_response": format!("你好 {}", "x".repeat(256 * 1024)),
+        });
+        let large = serde_json::to_vec_pretty(&large).unwrap();
+        for event in [
+            "UserPromptSubmit",
+            "PreToolUse",
+            "PostToolUse",
+            "Notification",
+            "Stop",
+            "StopFailure",
+        ] {
+            run(&path, event, &large);
+        }
+        assert_eq!(fs::read_to_string(&path).unwrap().lines().count(), 6);
+        let mut states = Vec::new();
+        watcher.drain(|state, _| states.push(state)).unwrap();
+        assert_eq!(
+            states,
+            [
+                RunnerStatus::Busy,
+                RunnerStatus::Busy,
+                RunnerStatus::Busy,
+                RunnerStatus::Idle,
+                RunnerStatus::Idle,
+                RunnerStatus::Idle,
+            ]
+        );
+        fs::remove_file(script_path(&path)).unwrap();
+        watcher.feed.dirty.store(true, Ordering::Release);
+        assert!(watcher.drain(|_, _| {}).is_err());
+        drop(watcher);
+        assert_eq!(fs::read_dir(path.parent().unwrap()).unwrap().count(), 0);
+        run(&path, "Stop", &large);
     }
 }

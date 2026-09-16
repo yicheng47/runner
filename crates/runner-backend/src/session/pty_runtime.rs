@@ -237,7 +237,12 @@ impl SessionRuntime for PtyRuntime {
         let hook_status = spec
             .env
             .get(PATH_ENV)
-            .filter(|_| super::claude_status::hooks_supported(cfg!(windows)))
+            .filter(|_| {
+                super::claude_status::hooks_supported(
+                    Some(crate::model::Runtime::ClaudeCode),
+                    cfg!(windows),
+                )
+            })
             .zip(spec.env.get(GENERATION_ENV))
             .and_then(|(path, generation)| {
                 match ClaudeStatusWatcher::start(std::path::Path::new(path), generation.clone()) {
@@ -252,7 +257,8 @@ impl SessionRuntime for PtyRuntime {
                 }
             });
         let hook_status = hook_status.or_else(|| {
-            if !super::hook_feed::hooks_supported(cfg!(windows)) {
+            if !super::hook_feed::hooks_supported(Some(crate::model::Runtime::Codex), cfg!(windows))
+            {
                 return None;
             }
             let path = spec.env.get(super::codex_status::PATH_ENV)?;
@@ -269,7 +275,10 @@ impl SessionRuntime for PtyRuntime {
             }
         });
         let hook_status = hook_status.or_else(|| {
-            if !super::hook_feed::hooks_supported(cfg!(windows)) {
+            if !super::hook_feed::hooks_supported(
+                Some(crate::model::Runtime::Copilot),
+                cfg!(windows),
+            ) {
                 return None;
             }
             let path = spec.env.get(super::copilot_status::PATH_ENV)?;
@@ -2524,5 +2533,285 @@ mod tests {
         assert_eq!(recorded_pid, None);
         assert!(stopped_at.is_some());
         assert!(process_exists(pid as i32));
+    }
+
+    /// Spawns a quiet ConPTY child carrying the status env, runs `hooks` from
+    /// separate processes, and returns what the monitor thread observed before
+    /// `bridge` was removed. Asserts bridge loss and a closed stream on stop.
+    #[cfg(windows)]
+    fn windows_hook_bridge(
+        id: &str,
+        env: &[(&str, String)],
+        hooks: impl FnOnce(),
+        expected: usize,
+        bridge: &std::path::Path,
+    ) -> Vec<super::super::status::AgentObservation> {
+        let rt = PtyRuntime::new();
+        let mut spawn = spec(id, "cmd", &["/d", "/c", "ping -n 30 127.0.0.1 >nul"]);
+        for (key, value) in env {
+            spawn.env.insert((*key).into(), value.clone());
+        }
+        let (session, stream) = rt.spawn(spawn).unwrap();
+        let mut handshake = HostHandshake::default();
+        let mut recv = |timeout| match stream.recv_timeout(timeout) {
+            Ok(RuntimeOutput::Stream(bytes)) => {
+                handshake.observe(&rt, &session, &bytes);
+                None
+            }
+            other => Some(other),
+        };
+        hooks();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut values = Vec::new();
+        while values.len() < expected && Instant::now() < deadline {
+            if let Some(Ok(RuntimeOutput::AgentObservation(value))) =
+                recv(Duration::from_millis(50))
+            {
+                values.push(value);
+            }
+        }
+        std::fs::remove_file(bridge).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut failed = false;
+        while !failed && Instant::now() < deadline {
+            failed = matches!(
+                recv(Duration::from_millis(50)),
+                Some(Ok(RuntimeOutput::StatusBridgeFailed))
+            );
+        }
+        rt.stop(&session).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut closed = false;
+        while !closed && Instant::now() < deadline {
+            closed = matches!(
+                recv(Duration::from_millis(50)),
+                Some(Err(mpsc::RecvTimeoutError::Disconnected))
+            );
+        }
+        assert!(failed, "{id}: bridge loss not reported");
+        assert!(closed, "{id}: hook watcher kept the output channel alive");
+        values
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn codex_powershell_hooks_bridge_failure_and_teardown_windows() {
+        use super::super::{
+            codex_status, hook_feed,
+            status::{Activity, TurnOutcome},
+        };
+        let root = tempfile::tempdir().unwrap();
+        let path = hook_feed::status_path(&root.path().join("Jason's app data"), "codex-hooks");
+        let feed = hook_feed::hook_path(&path);
+        let values = windows_hook_bridge(
+            "codex-hooks",
+            &[
+                (codex_status::PATH_ENV, feed.clone()),
+                (codex_status::GENERATION_ENV, "current".into()),
+            ],
+            || {
+                for event in ["UserPromptSubmit", "Stop", "PreToolUse", "Interrupt"] {
+                    let output = hook_feed::run_powershell(
+                        "pwsh",
+                        &codex_status::hook_command(std::path::Path::new(&feed), event),
+                        &[(codex_status::GENERATION_ENV, "current")],
+                        br#"{"session_id":"main","turn_id":"one"}"#,
+                    )
+                    .expect("pwsh is required for the Codex Windows bridge");
+                    assert!(output.status.success(), "{output:?}");
+                }
+            },
+            4,
+            &hook_feed::powershell_script_path(&path),
+        );
+        assert_eq!(
+            values.iter().map(|v| v.activity).collect::<Vec<_>>(),
+            [
+                Activity::Working,
+                Activity::Ready,
+                Activity::Working,
+                Activity::Unavailable
+            ]
+        );
+        assert_eq!(
+            values.last().unwrap().outcome,
+            Some(TurnOutcome::Interrupted)
+        );
+        assert_eq!(
+            std::fs::read_dir(path.parent().unwrap()).unwrap().count(),
+            0
+        );
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn copilot_powershell_plugin_hooks_bridge_failure_and_teardown_windows() {
+        use super::super::{copilot_status, hook_feed, status::Activity};
+        let root = tempfile::tempdir().unwrap();
+        copilot_status::install_plugin(root.path()).unwrap();
+        let hooks: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(copilot_status::plugin_dir(root.path()).join("hooks/hooks.json"))
+                .unwrap(),
+        )
+        .unwrap();
+        let path = hook_feed::status_path(root.path(), "copilot-hooks");
+        let env = [
+            (copilot_status::PATH_ENV, hook_feed::hook_path(&path)),
+            (copilot_status::GENERATION_ENV, "current".into()),
+            (
+                "COPILOT_HOME",
+                root.path()
+                    .join("copilot-home")
+                    .to_string_lossy()
+                    .into_owned(),
+            ),
+        ];
+        let values = windows_hook_bridge(
+            "copilot-hooks",
+            &env,
+            || {
+                for (event, payload) in [
+                    ("UserPromptSubmit", serde_json::json!({"session_id":"main"})),
+                    (
+                        "Stop",
+                        serde_json::json!({"session_id":"main","stop_reason":"end_turn"}),
+                    ),
+                    (
+                        "PreToolUse",
+                        serde_json::json!({
+                            "session_id":"main",
+                            "tool_name":"powershell",
+                            "tool_input":{"command":"Start-Sleep 1"},
+                        }),
+                    ),
+                ] {
+                    let env = env
+                        .iter()
+                        .map(|(k, v)| (*k, v.as_str()))
+                        .collect::<Vec<_>>();
+                    let output = hook_feed::run_powershell(
+                        "pwsh",
+                        hooks["hooks"][event][0]["hooks"][0]["powershell"]
+                            .as_str()
+                            .unwrap(),
+                        &env,
+                        &serde_json::to_vec(&payload).unwrap(),
+                    )
+                    .expect("pwsh is required for the Copilot Windows bridge");
+                    assert!(output.status.success(), "{output:?}");
+                }
+            },
+            3,
+            &copilot_status::reporter_path(root.path()),
+        );
+        assert_eq!(
+            values.iter().map(|v| v.activity).collect::<Vec<_>>(),
+            [Activity::Working, Activity::Ready, Activity::Working]
+        );
+        assert_eq!(
+            std::fs::read_dir(path.parent().unwrap()).unwrap().count(),
+            0
+        );
+    }
+
+    /// npm installs Codex and Claude Code as `.cmd` shims, which launch through cmd.exe
+    /// and its 8,191-character line. The composed hook argv must arrive intact.
+    #[cfg(windows)]
+    #[test]
+    fn hook_status_argv_survives_a_batch_shim_launch_windows() {
+        use crate::model::Runtime;
+        use crate::router::runtime::{permission_mode_args, trailing_runtime_args, PermissionMode};
+        let dir = tempfile::tempdir().unwrap();
+        let app_data = std::path::Path::new(
+            r"C:\Users\Jason Wang (Runner Windows Smoke)\AppData\Roaming\com.wycstudios.runner-dev",
+        );
+        let batch = dir.path().join("agent shim.cmd");
+        std::fs::write(
+            &batch,
+            "@echo off\r\n\"%RUNNER_BATCH_TEST_EXE%\" --exact session::pty_runtime::tests::hook_argv_batch_probe --nocapture -- %*\r\n",
+        )
+        .unwrap();
+        for (runtime, resume) in [
+            (
+                Runtime::Codex,
+                vec!["resume", "019a0aab-ed06-f74f-180c-2b4b9a39a56e"],
+            ),
+            (
+                Runtime::ClaudeCode,
+                vec!["--resume", "64dec93a-961b-4647-9882-7068119c144c"],
+            ),
+        ] {
+            let mut args = resume.into_iter().map(String::from).collect::<Vec<_>>();
+            args.extend(permission_mode_args(Some(runtime), PermissionMode::Bypass));
+            args.extend(trailing_runtime_args(
+                Some(runtime),
+                &[],
+                app_data,
+                "01M2NCJRAFFVFJQBA0NGDWMDXR",
+                true,
+                Some("fixture-model-with-a-long-name"),
+                Some("xhigh"),
+                None,
+                None,
+            ));
+            args.extend([
+                "--add-dir".to_owned(),
+                app_data
+                    .join(r"missions\01M2NCJRAFFVFJQBA0NGDWMDXR")
+                    .to_string_lossy()
+                    .into_owned(),
+            ]);
+            let length = args.iter().map(|arg| arg.len() + 3).sum::<usize>();
+            eprintln!("{runtime:?} batch argv is about {length} characters");
+            let out = dir.path().join(format!("{runtime:?}.json"));
+            let mut launch = spec(
+                "batch-hooks",
+                batch.to_str().unwrap(),
+                &args.iter().map(String::as_str).collect::<Vec<_>>(),
+            );
+            launch.cwd = Some(dir.path().to_path_buf());
+            launch.env.insert(
+                "RUNNER_BATCH_TEST_EXE".into(),
+                std::env::current_exe()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned(),
+            );
+            launch.env.insert(
+                "RUNNER_BATCH_TEST_OUT".into(),
+                out.to_string_lossy().into_owned(),
+            );
+            let rt = PtyRuntime::new();
+            let (session, stream) = rt.spawn(launch).unwrap();
+            let mut handshake = HostHandshake::default();
+            let deadline = Instant::now() + Duration::from_secs(15);
+            while Instant::now() < deadline && !out.exists() {
+                if let Ok(RuntimeOutput::Stream(bytes)) =
+                    stream.recv_timeout(Duration::from_millis(100))
+                {
+                    handshake.observe(&rt, &session, &bytes);
+                }
+            }
+            rt.stop(&session).unwrap();
+            let received: Vec<String> =
+                serde_json::from_slice(&std::fs::read(&out).unwrap_or_default())
+                    .unwrap_or_else(|_| panic!("{runtime:?}: the batch shim never ran the probe"));
+            assert_eq!(received, args, "{runtime:?}");
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn hook_argv_batch_probe() {
+        let Some(out) = std::env::var_os("RUNNER_BATCH_TEST_OUT") else {
+            return;
+        };
+        let args = std::env::args()
+            .skip_while(|arg| arg != "--")
+            .skip(1)
+            .collect::<Vec<_>>();
+        let temporary = std::path::PathBuf::from(&out).with_extension("tmp");
+        std::fs::write(&temporary, serde_json::to_vec(&args).unwrap()).unwrap();
+        std::fs::rename(temporary, out).unwrap();
     }
 }

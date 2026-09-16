@@ -185,7 +185,9 @@ pub(crate) fn inject_claude_settings(runtime: Option<Runtime>, role_args: &[Stri
 }
 
 pub(crate) fn inject_codex_hooks(runtime: Option<Runtime>, args: &[String], windows: bool) -> bool {
-    if windows || runtime != Some(Runtime::Codex) {
+    if runtime != Some(Runtime::Codex)
+        || !crate::session::hook_feed::hooks_supported(runtime, windows)
+    {
         return false;
     }
     for (index, arg) in args.iter().enumerate() {
@@ -256,7 +258,7 @@ pub fn codex_status_args(
 
 pub fn copilot_status_args(runtime: Option<Runtime>, app_data_dir: &Path) -> Vec<String> {
     if runtime != Some(Runtime::Copilot)
-        || !crate::session::hook_feed::hooks_supported(cfg!(windows))
+        || !crate::session::hook_feed::hooks_supported(runtime, cfg!(windows))
         || !crate::session::copilot_status::plugin_available(app_data_dir)
     {
         return Vec::new();
@@ -315,7 +317,7 @@ pub fn claude_settings_args(
         "Stop",
         "StopFailure",
     ] {
-        if !crate::session::claude_status::hooks_supported(cfg!(windows)) {
+        if !crate::session::claude_status::hooks_supported(runtime, cfg!(windows)) {
             continue;
         }
         let mut entry = serde_json::json!({
@@ -1285,7 +1287,7 @@ mod tests {
                 "{args:?}"
             );
         }
-        assert!(!inject_codex_hooks(Some(Runtime::Codex), &[], true));
+        assert!(inject_codex_hooks(Some(Runtime::Codex), &[], true));
         for runtime in [
             None,
             Some(Runtime::ClaudeCode),
@@ -1294,6 +1296,7 @@ mod tests {
             Some(Runtime::Shell),
         ] {
             assert!(!inject_codex_hooks(runtime, &[], false));
+            assert!(!inject_codex_hooks(runtime, &[], true));
         }
     }
 
@@ -1338,6 +1341,130 @@ mod tests {
             assert!(result.stderr.is_empty());
         }
         assert!(!root.exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn codex_injection_on_windows_calls_the_session_reporter_script() {
+        use crate::session::codex_status::{self, EVENTS};
+        use crate::session::hook_feed::{hook_path, powershell_script_path, status_path};
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("spaces triple ''' dollar $ backtick `");
+        let args = codex_status_args(Some(Runtime::Codex), &[], &root, "session");
+        assert_eq!(
+            &args[..3],
+            &["--enable", "hooks", "--dangerously-bypass-hook-trust"]
+        );
+        assert_eq!(args.len(), 3 + 2 * EVENTS.len());
+        let path = status_path(&root, "session");
+        let quote = |path: &std::path::Path| hook_path(path).replace('\'', "''");
+        for (pair, event) in args[3..].chunks_exact(2).zip(EVENTS) {
+            assert_eq!(pair[0], "-c");
+            let command = codex_status::hook_command(&path, event);
+            assert_eq!(
+                command,
+                format!(
+                    "try{{& ([ScriptBlock]::Create([IO.File]::ReadAllText('{}'))) '{}' '{event}'}}\
+                     catch{{[Console]::OpenStandardInput().CopyTo([IO.Stream]::Null)}};'{{}}'",
+                    quote(&powershell_script_path(&path)),
+                    quote(&path),
+                )
+            );
+            assert_eq!(
+                pair[1],
+                format!(
+                    "hooks.{event}=[{{hooks=[{{type=\"command\",command={},timeout=2}}]}}]",
+                    toml_edit::Value::from(command.clone())
+                )
+            );
+            let config = pair[1].parse::<toml_edit::DocumentMut>().unwrap();
+            let hook = config["hooks"][event]
+                .as_array()
+                .unwrap()
+                .get(0)
+                .unwrap()
+                .as_inline_table()
+                .unwrap()["hooks"]
+                .as_array()
+                .unwrap()
+                .get(0)
+                .unwrap()
+                .as_inline_table()
+                .unwrap();
+            assert_eq!(hook["command"].as_str(), Some(command.as_str()));
+            assert!(!command.contains('"') && !command.contains('\\'));
+        }
+        // Without its script (setup failed or the session ended) the hook drains stdin.
+        let command = codex_status::hook_command(&path, "Stop");
+        for shell in crate::session::hook_feed::POWERSHELLS {
+            if let Some(output) = crate::session::hook_feed::run_powershell(
+                shell,
+                &command,
+                &[],
+                &vec![b'x'; 256 * 1024],
+            ) {
+                assert!(output.status.success(), "{shell}: {output:?}");
+                assert_eq!(output.stdout, b"{}\r\n");
+                assert!(output.stderr.is_empty(), "{shell}: {output:?}");
+            }
+        }
+        assert!(!root.exists());
+
+        let app_data = std::path::Path::new(
+            r"C:\Users\Jason Wang (Runner Windows Smoke)\AppData\Roaming\com.wycstudios.runner-dev",
+        );
+        let args = codex_status_args(
+            Some(Runtime::Codex),
+            &[],
+            app_data,
+            "01M2NCJRAFFVFJQBA0NGDWMDXR",
+        );
+        let line = args.iter().map(|arg| arg.len() + 3).sum::<usize>();
+        assert!(line < 8191, "Codex hook argv is {line} characters");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn claude_settings_on_windows_carry_sh_status_hooks_with_forward_slash_feeds() {
+        let root = Path::new(r"C:\Users\Jason Wang\it's runner app");
+        let args = claude_settings_args(Some(Runtime::ClaudeCode), &[], root, "session");
+        let settings: serde_json::Value = serde_json::from_str(&args[1]).unwrap();
+        let status_path = crate::session::claude_status::status_path(root, "session");
+        let rekey = settings["hooks"]["SessionStart"][0]["hooks"][0]["command"]
+            .as_str()
+            .unwrap();
+        assert!(rekey.contains(r"C:\Users\Jason Wang"), "{rekey}");
+        for event in [
+            "SessionStart",
+            "PermissionRequest",
+            "PermissionDenied",
+            "PostToolUseFailure",
+            "Elicitation",
+            "ElicitationResult",
+            "UserPromptSubmit",
+            "PreToolUse",
+            "PostToolUse",
+            "Notification",
+            "Stop",
+            "StopFailure",
+        ] {
+            let entries = settings["hooks"][event].as_array().unwrap();
+            let status = entries.last().unwrap()["hooks"][0]["command"]
+                .as_str()
+                .unwrap();
+            assert_eq!(
+                status,
+                format!(
+                    "(sh 'C:/Users/Jason Wang/it'\\''s runner app/session-status/session.sh' \
+                     'C:/Users/Jason Wang/it'\\''s runner app/session-status/session.ndjson' \
+                     '{event}' || cat >/dev/null) 2>/dev/null; exit 0"
+                ),
+            );
+            assert_eq!(
+                status,
+                crate::session::claude_status::hook_command(&status_path, event)
+            );
+        }
     }
 
     use super::*;
@@ -1537,11 +1664,6 @@ mod tests {
             "session",
         );
         let settings: serde_json::Value = serde_json::from_str(&args[1]).unwrap();
-        if cfg!(windows) {
-            assert_eq!(settings["hooks"].as_object().unwrap().len(), 1);
-            assert!(settings["hooks"]["SessionStart"].is_array());
-            return;
-        }
         for event in [
             "SessionStart",
             "UserPromptSubmit",
@@ -1988,19 +2110,15 @@ mod tests {
         assert!(copilot_status_args(Some(Runtime::Copilot), root.path()).is_empty());
         crate::session::copilot_status::install_plugin(root.path()).unwrap();
         let args = copilot_status_args(Some(Runtime::Copilot), root.path());
-        if cfg!(windows) {
-            assert!(args.is_empty());
-        } else {
-            assert_eq!(
-                args,
-                [
-                    "--plugin-dir".to_owned(),
-                    crate::session::copilot_status::plugin_dir(root.path())
-                        .to_string_lossy()
-                        .into_owned(),
-                ]
-            );
-        }
+        assert_eq!(
+            args,
+            [
+                "--plugin-dir".to_owned(),
+                crate::session::copilot_status::plugin_dir(root.path())
+                    .to_string_lossy()
+                    .into_owned(),
+            ]
+        );
     }
 
     #[test]

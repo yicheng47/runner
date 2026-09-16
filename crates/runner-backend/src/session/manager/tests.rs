@@ -5794,16 +5794,15 @@ fn spawn_argv_injects_runtime_settings_for_fresh_and_resume() {
             Some("first turn"),
             None,
         );
-        if runtime == "claude-code" && !cfg!(windows) {
+        if runtime == "claude-code" {
             let generation = spec.env[crate::session::claude_status::GENERATION_ENV].clone();
             assert!(uuid::Uuid::parse_str(&generation).is_ok());
             assert_eq!(
                 spec.env[crate::session::claude_status::PATH_ENV],
-                crate::session::claude_status::status_path(
+                crate::session::hook_feed::hook_path(&crate::session::claude_status::status_path(
                     &fixture_tmp_dir().join("runner-app-data"),
                     "settings-argv",
-                )
-                .to_string_lossy(),
+                )),
             );
         } else {
             assert!(!spec
@@ -8548,7 +8547,7 @@ fn codex_spawn_composes_hooks_without_changing_user_home_and_respects_overrides(
                 None,
             );
             assert_eq!(spec.env["CODEX_HOME"], "user home");
-            let injected = args.is_empty() && !cfg!(windows);
+            let injected = args.is_empty();
             assert_eq!(spec.env.contains_key(PATH_ENV), injected);
             assert_eq!(spec.env.contains_key(GENERATION_ENV), injected);
             assert_eq!(
@@ -8566,8 +8565,10 @@ fn codex_spawn_composes_hooks_without_changing_user_home_and_respects_overrides(
                 generations.push(generation);
                 assert_eq!(
                     spec.env[PATH_ENV],
-                    crate::session::hook_feed::status_path(root.path(), "codex-spawn")
-                        .to_string_lossy()
+                    crate::session::hook_feed::hook_path(&crate::session::hook_feed::status_path(
+                        root.path(),
+                        "codex-spawn"
+                    ))
                 );
             }
             assert_eq!(
@@ -8668,9 +8669,7 @@ fn codex_observations_preserve_delivery_and_drafts_and_interrupt_attention() {
 fn copilot_direct_spawn_persists_key_before_spawn_and_resume_never_replays_first_turn() {
     let pool = pool_with_schema();
     let app_data = tempfile::tempdir().unwrap();
-    if crate::session::hook_feed::hooks_supported(cfg!(windows)) {
-        crate::session::copilot_status::install_plugin(app_data.path()).unwrap();
-    }
+    crate::session::copilot_status::install_plugin(app_data.path()).unwrap();
     let mut role = role(
         "copilot",
         &[
@@ -8730,24 +8729,18 @@ fn copilot_direct_spawn_persists_key_before_spawn_and_resume_never_replays_first
     let plugin_dir = crate::session::copilot_status::plugin_dir(app_data.path())
         .to_string_lossy()
         .into_owned();
-    if cfg!(windows) {
-        assert!(!fresh_spec
-            .env
-            .contains_key(crate::session::copilot_status::PATH_ENV));
-        assert!(!fresh_spec
-            .env
-            .contains_key(crate::session::copilot_status::GENERATION_ENV));
-    } else {
-        assert_eq!(
-            fresh_spec.env[crate::session::copilot_status::PATH_ENV],
-            crate::session::hook_feed::status_path(app_data.path(), &spawned.id).to_string_lossy()
-        );
-        assert!(uuid::Uuid::parse_str(
-            &fresh_spec.env[crate::session::copilot_status::GENERATION_ENV]
-        )
-        .is_ok());
-    }
-    let mut expected = vec![
+    assert_eq!(
+        fresh_spec.env[crate::session::copilot_status::PATH_ENV],
+        crate::session::hook_feed::hook_path(&crate::session::hook_feed::status_path(
+            app_data.path(),
+            &spawned.id
+        ))
+    );
+    assert!(
+        uuid::Uuid::parse_str(&fresh_spec.env[crate::session::copilot_status::GENERATION_ENV])
+            .is_ok()
+    );
+    let expected = vec![
         "--user-flag".to_owned(),
         "kept".to_owned(),
         "--plugin-dir".to_owned(),
@@ -8755,11 +8748,11 @@ fn copilot_direct_spawn_persists_key_before_spawn_and_resume_never_replays_first
         "--session-id".to_owned(),
         key.clone(),
         "--no-auto-update".to_owned(),
+        "--plugin-dir".to_owned(),
+        plugin_dir.clone(),
+        "-i".to_owned(),
+        "persona first turn".to_owned(),
     ];
-    if !cfg!(windows) {
-        expected.extend(["--plugin-dir".to_owned(), plugin_dir.clone()]);
-    }
-    expected.extend(["-i".to_owned(), "persona first turn".to_owned()]);
     assert_eq!(args, expected);
     assert!(fake.inputs.lock().unwrap().is_empty());
     mgr.kill(&spawned.id).unwrap();
@@ -8774,19 +8767,13 @@ fn copilot_direct_spawn_persists_key_before_spawn_and_resume_never_replays_first
     .unwrap();
     let resumed_spec = fake.last_spawn_spec().unwrap();
     let args = resumed_spec.args;
-    if cfg!(windows) {
-        assert!(!resumed_spec
-            .env
-            .contains_key(crate::session::copilot_status::PATH_ENV));
-    } else {
-        let resumed_generation = &resumed_spec.env[crate::session::copilot_status::GENERATION_ENV];
-        assert!(uuid::Uuid::parse_str(resumed_generation).is_ok());
-        assert_ne!(
-            fresh_generation.as_deref(),
-            Some(resumed_generation.as_str())
-        );
-    }
-    let mut expected = vec![
+    let resumed_generation = &resumed_spec.env[crate::session::copilot_status::GENERATION_ENV];
+    assert!(uuid::Uuid::parse_str(resumed_generation).is_ok());
+    assert_ne!(
+        fresh_generation.as_deref(),
+        Some(resumed_generation.as_str())
+    );
+    let expected = vec![
         "--user-flag".to_owned(),
         "kept".to_owned(),
         "--plugin-dir".to_owned(),
@@ -8794,10 +8781,9 @@ fn copilot_direct_spawn_persists_key_before_spawn_and_resume_never_replays_first
         "--session-id".to_owned(),
         key,
         "--no-auto-update".to_owned(),
+        "--plugin-dir".to_owned(),
+        plugin_dir,
     ];
-    if !cfg!(windows) {
-        expected.extend(["--plugin-dir".to_owned(), plugin_dir]);
-    }
     assert_eq!(args, expected);
     mgr.kill(&spawned.id).unwrap();
 }
