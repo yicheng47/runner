@@ -4,14 +4,14 @@ Plan for feature [540](../features/540-copilot-cli-runtime.md) ([#540](https://g
 
 ## Status (2026-09-16)
 
-Phase 0 done: `cmp/MarkCopilot` (`QGeFI`) and the frame `Spec — GitHub Copilot CLI runtime (540) · v1` (`OBtYk`) on `design/runner.pen`; Jason chose GitHub's Copilot Purple `#8534F3` for the mark. Mission 1 briefed and started on the codex peer crew on branch `feat/540-copilot-runtime`.
+Phase 0 done: `cmp/MarkCopilot` (`QGeFI`) and the frame `Spec — GitHub Copilot CLI runtime (540) · v1` (`OBtYk`) on `design/runner.pen`; Jason chose GitHub's Copilot Purple `#8534F3` for the mark. Mission 1 (codex peer, `01M2M1Z7AMVEG6JJQ9Y6JJHY5T`) reviewed clean the same day and was checkpointed as `b1f5437` on `feat/540-copilot-runtime`; Jason's smoke pass is deferred, so the branch is not merged. Mission 2 is briefed and stacked on that commit.
 
 ## Missions
 
 | Mission | Scope | Crew | State |
 | --- | --- | --- | --- |
-| 1 | Spec phases 1 and 2: enum, adapter argv, trust preseed, defaults, catalog, MCP client, title filter, mark, permission copy, every enumerating test, README and arch docs. No hook adapter, no fixture. | codex peer, [brief](./archive/gpui-rewrite/briefs/540-m1-copilot-runtime.md) | Started 2026-09-16 |
-| 2 | Spec phase 3: the hook status adapter on macOS — Runner-owned `--plugin-dir` plugin, `copilot_status.rs`, `HookStatusWatcher::Copilot`, decision 3's event mapping — as a slice under `docs/impls/347-hook-status/`. | tbd | Not started |
+| 1 | Spec phases 1 and 2: enum, adapter argv, trust preseed, defaults, catalog, MCP client, title filter, mark, permission copy, every enumerating test, README and arch docs. No hook adapter, no fixture. | codex peer, [brief](./archive/gpui-rewrite/briefs/540-m1-copilot-runtime.md) | Reviewed clean 2026-09-16, checkpoint `b1f5437`; smoke deferred |
+| 2 | Spec phase 3: the hook status adapter on macOS — Runner-owned `--plugin-dir` plugin, `copilot_status.rs`, `HookStatusWatcher::Copilot`, decision 3's event mapping — as a slice under `docs/impls/347-hook-status/`. | codex peer, [brief](./archive/gpui-rewrite/briefs/540-m2-copilot-hook-status.md) | Started 2026-09-16 |
 | 3 | Spec phase 4: smoke on macOS and JASONPC, the terminal fixture, archive the spec. | Jason + inline | Not started |
 
 ## Decisions that bind
