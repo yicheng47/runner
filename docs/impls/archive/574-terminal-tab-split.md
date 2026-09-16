@@ -19,7 +19,7 @@ A terminal tab — every filled pane a shell — splits like a chat tab: the sam
 2. **Gate.** `split_decision` loses `terminal_only` and `NotSplittable`; `split_menu_items` and both `split_pane` routes follow. `split_action` becomes `(!grouped)`, so a single-shell tab's header shows the icon. The existing test is rewritten: a terminal tab is judged by size like a chat tab.
 3. **Split spawns.** In `split_pane`, after `layout.split` returns the new pane id, when the tab is a terminal tab: keep a clone of the pre-split layout as `original`, take `project_id` and `cwd` from the split-from pane's session entry (fall back to `terminal_start_location`), and call `spawn_terminal_in_pane(new_pane_id, original, project_id, cwd, window, cx)` — it persists the split together with the shell and rolls back on failure. Otherwise the empty-stub path as today, unchanged.
 4. **New terminal.** In `new_terminal`'s Tab arm an empty pane is still filled; with none, call `split_pane(focused_pane_id, Row, …)` instead of `prepare_new_pane`, so the floor applies and the shell spawns through step 3. Delete `prepare_new_pane` if nothing else calls it.
-5. **Docs.** `arch.md:199`: the "chats only" sentence becomes the tab-kind rule. Smoke test `:23` rewritten (the icon shows, `⌘D` gives a shell) and one §4 line. The 570 archived spec's "A split holds chats only" bullet gets "Superseded by [574](../574-terminal-tab-split.md)".
+5. **Docs.** `arch.md:199`: the "chats only" sentence becomes the tab-kind rule. Smoke test `:23` rewritten (the icon shows, `⌘D` gives a shell) and one §4 line. The 570 archived spec's "A split holds chats only" bullet gets "Superseded by [574](574-terminal-tab-split.md)".
 
 ## Rules of the road
 

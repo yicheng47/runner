@@ -2,7 +2,7 @@
 
 ## Status
 
-Planned. Tracking issue [#344](https://github.com/yicheng47/runner/issues/344) plus the width-divergence findings from the 2026-07-25 rendering investigation. Builds directly on impl [0024](archive/0024-resume-scrollback-preservation.md) (per-runtime ring policy) and reuses its vocabulary: ring as single source of truth, synthetic chunks, `runtime_purges_on_resume` gate.
+Planned. Tracking issue [#344](https://github.com/yicheng47/runner/issues/344) plus the width-divergence findings from the 2026-07-25 rendering investigation. Builds directly on impl [0024](0024-resume-scrollback-preservation.md) (per-runtime ring policy) and reuses its vocabulary: ring as single source of truth, synthetic chunks, `runtime_purges_on_resume` gate.
 
 ## Problem
 

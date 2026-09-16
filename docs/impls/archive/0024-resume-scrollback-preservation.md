@@ -94,5 +94,5 @@ Contract 3 is real for codex but wrong for claude-code: codex repaints the whole
 
 - Issue #267 — Claude Code output history not accessible from Runner (parent problem; durable JSONL surface remains open there).
 - Measurements (2026-07-09, claude-code 2.1.205 / codex-cli 0.143.0): `claude --resume` repaints only the last ~4 turns of a 20-turn session; `codex resume` repaints the full history of a short session and a ~77-turn tail of a 169-turn session. Neither enters the alternate screen.
-- impl [0009](archive/0009-terminal-alt-screen-reattach.md), [0011](archive/0011-pty-host-terminal-runtime.md), [0020](0020-direct-chat-split-view.md) — the repaint/stacking artifact history behind the purge-on-resume and clear-on-resize policies.
+- impl [0009](0009-terminal-alt-screen-reattach.md), [0011](0011-pty-host-terminal-runtime.md), [0020](0020-direct-chat-split-view.md) — the repaint/stacking artifact history behind the purge-on-resume and clear-on-resize policies.
 - `docs/features/21-resume-cwd-sessions.md:25` — the original (claude-optimistic) assumption that the resumed agent repaints its own history.

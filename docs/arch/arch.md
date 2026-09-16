@@ -1,10 +1,10 @@
 # Runner — Architecture
 
-> Companion to [`../product/vision.md`](../product/vision.md). The vision doc defines *what* we're building and why; this doc defines *how* it works — tech stack, the model concepts the code is built around, and the protocol / schema decisions that make the model work. Rewritten 2026-08-22 (M6.5) for the native GPUI app (shipped as `v0.6.0` on 2026-08-23; §14 updated then); the Tauri + xterm.js era version is in history (`git show 0e5ea18:docs/arch/arch.md`) and the port that replaced it is recorded in [`../impls/gpui-rewrite/`](../impls/gpui-rewrite/README.md).
+> Companion to [`../product/vision.md`](../product/vision.md). The vision doc defines *what* we're building and why; this doc defines *how* it works — tech stack, the model concepts the code is built around, and the protocol / schema decisions that make the model work. Rewritten 2026-08-22 (M6.5) for the native GPUI app (shipped as `v0.6.0` on 2026-08-23; §14 updated then); the Tauri + xterm.js era version is in history (`git show 0e5ea18:docs/arch/arch.md`) and the port that replaced it is recorded in [`../impls/archive/gpui-rewrite/`](../impls/archive/gpui-rewrite/README.md).
 
 ## 1. Overview
 
-Runner is a local macOS desktop app. A user configures a **crew** of CLI coding agents, launches a **mission** to activate it, and watches the crew coordinate in real time. The app is one native process: a GPUI user interface, a Rust application core (`crates/runner-backend`), an `alacritty_terminal` grid per live session, SQLite for configuration, and a per-mission NDJSON file for live coordination state. There is no webview, no IPC bridge, and no serialization between the PTY and the screen.
+Runner is a local desktop app for macOS and Windows. A user configures a **crew** of CLI coding agents, launches a **mission** to activate it, and watches the crew coordinate in real time. The app is one native process: a GPUI user interface, a Rust application core (`crates/runner-backend`), an `alacritty_terminal` grid per live session, SQLite for configuration, and a per-mission NDJSON file for live coordination state. There is no webview, no IPC bridge, and no serialization between the PTY and the screen.
 
 ### 1.1 Runtime picture
 
@@ -71,10 +71,10 @@ Crate boundaries are in [`AGENTS.md`](../../AGENTS.md); this is the shape *insid
 
 | Surface | Files | Largest | Concerns beyond `mod.rs` and `tests.rs` |
 |---|---|---|---|
-| `mission_workspace/` | 14 | 839 | state, routing, attach, drawer, events, actions, input, view, feed, composer, terminal pane, rail |
-| `sidebar/` | 13 | 891 | state, activation, archive, rows, shortcuts, menus, project, drag, view, row renders, elements |
-| `crews/` | 10 | 750 | list, editor, editor sections, create, add slot, slots, overlays, logic |
-| `roles/` | 10 | 562 | forms, create, edit, delete, list, detail, menu, logic |
+| `mission_workspace/` | 14 | 884 | state, routing, attach, drawer, events, actions, input, view, feed, composer, terminal pane, rail |
+| `sidebar/` | 13 | 1049 | state, activation, archive, rows, shortcuts, menus, project, drag, view, row renders, elements |
+| `crews/` | 10 | 777 | list, editor, editor sections, create, add slot, slots, overlays, logic |
+| `roles/` | 10 | 570 | forms, create, edit, delete, list, detail, menu, logic |
 
 `chat.rs`, `panes.rs`, `settings_page.rs` and `start_chat.rs` are still single files. The ones that have since outgrown the shape are tracked in [#582](https://github.com/yicheng47/runner/issues/582).
 
@@ -93,7 +93,7 @@ Crate boundaries are in [`AGENTS.md`](../../AGENTS.md); this is the shape *insid
 | Terminal renderer | custom GPUI element (`runner-app/src/terminal/element.rs`) | Walks the `Term` grid per frame, shapes runs through GPUI's text system; bundled JetBrainsMono Nerd Font Mono is the default face, Menlo the alternative. |
 | Application core | **Rust** crate `runner-backend`, UI-agnostic | SQLite, session manager, event bus, router, MCP server. The same crate could host another front end; the app crate is a consumer. |
 | PTY runtime | **`portable-pty`** (in-process) | One blocking OS thread per session reads the master; writes are serialized per session. |
-| Persistence | **SQLite via `rusqlite`** + `r2d2` pool, WAL | Config + session lifecycle only. Migrations in `crates/runner-backend/migrations/` (0001–0020). |
+| Persistence | **SQLite via `rusqlite`** + `r2d2` pool, WAL | Config + session lifecycle only. Migrations in `crates/runner-backend/migrations/` (0001–0023). |
 | Event transport | **Append-only NDJSON per mission** | Tailable, crash-durable, replayable; `flock(LOCK_EX)` for cross-process append atomicity. |
 | File watching | **`notify`** | The bus tails the NDJSON file and republishes lines. |
 | Bundled CLI | **`runner`** (`cli/`) | Agents talk to the bus through it — `runner signal …`, `runner msg post …`, `runner msg read`. Dropped at `$APPDATA/bin/runner` on first run, PATH-prepended per spawn. |
@@ -231,7 +231,7 @@ Settings is a full-window route rendered in place of the app shell, with its own
 
 Settings → MCP reads the union of Claude Code, Codex, TRAE CLI, and GitHub Copilot CLI's global server entries directly from their config files, with no Runner-side server store. A runtime dropdown selects a detected, enabled agent; toggles register or unregister the named server for that agent, copying the first registered entry in agent order when turning it on. Runner's own server is pinned first, and a manual registration choice persists in `initialized_mcp_clients` so the default pass respects an opt-out. The detail modal shows each agent's native entry and any conflicting definition; its JSON/TOML editor can also translate the change to the other registered agents while preserving their unmodelled keys. Each write changes only the named entry and preserves the rest of the file, including formatting and comments; adding servers and auth flows stay with the agents' own tooling. Reads refresh on entry, Refresh, and after writes; running sessions pick up changes on their next launch. Copilot's registration is `~/.copilot/mcp-config.json` under `mcpServers`, with a `local` entry containing `command`, empty `args`, and `tools: ["*"]`; the file is created when absent. See [#555](../features/archive/555-mcp-settings.md).
 
-Preferences persist in `$APPDATA/ui-settings.json`, read by the app at launch. They do **not** migrate from the Tauri app, which kept them in the webview's localStorage; a first native launch starts from defaults (both apps default resume-on-launch off).
+Preferences persist in `$APPDATA/ui-settings.json`, read by the app at launch; a first launch starts from defaults (resume-on-launch off).
 
 **Updates** is the slim form of `main`'s pane: check now, the automatic-checks toggle, last-check time. Sparkle's standard user driver owns the found/download/install dialogs. Not ported from `main`: the Arc-style "New Runner version available" pill above the sidebar Settings row (hover → card, per-launch dismiss, auto-install checkbox). It needs an `SPUUpdaterDelegate` so the app learns an update was found; tracked as M6.9 in [`../impls/gpui-rewrite/m6-consolidation.md`](../impls/archive/gpui-rewrite/m6-consolidation.md).
 
@@ -694,13 +694,20 @@ sessions (
   runtime_window TEXT, runtime_pane TEXT, runtime_cursor INTEGER, -- (legacy tmux columns, unused)
   agent_session_key TEXT,             -- the agent CLI's own conversation id, for Resume
   agent_runtime TEXT, agent_command TEXT, agent_model TEXT, agent_effort TEXT,
+  live_title TEXT,                    -- the agent's own conversation title, when it reports one
   last_cols INTEGER, last_rows INTEGER,   -- last applied PTY size (§5.8)
   resume_on_launch INTEGER NOT NULL DEFAULT 0,
   archived_at TEXT, title TEXT, pinned_at TEXT
 );
+
+session_attention (
+  session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+  unread_since INTEGER,               -- ms epoch: finished while its tab was not viewed
+  error_acknowledged_at TEXT
+);
 ```
 
-Migrations live in `crates/runner-backend/migrations/` (`0001_init.sql` … `0020_slot_effort_override.sql`). Forward-only; new migrations are allocated there and the Tauri app never sees them, which is why the cutover is a one-way door for the database (M6.3's index migration is deferred to cutover for that reason).
+Migrations live in `crates/runner-backend/migrations/` (`0001_init.sql` … `0023_roles.sql`) and are forward-only: an older Runner cannot open a database a newer one has migrated, which the 0023 table rename accepted deliberately. Two rules from that rename hold for every table. Every SQL statement that names a table lives behind a `repo/` function, so `ops/`, `session/` and `mcp/` speak only in domain terms; the gate is a grep for the table and column names inside SQL strings, which must hit only `repo/` and the migrations. A persisted value whose spelling changes is written in the new form and read in both, with nothing frozen under the old name for compatibility's sake: `role-default` reads `runner-default`, the start-chat mode `role` reads `runner`, the saved route `/roles` reads `/runners`.
 
 ### 10.2 Filesystem
 
@@ -718,7 +725,7 @@ Migrations live in `crates/runner-backend/migrations/` (`0001_init.sql` … `002
 ~/Library/Logs/com.wycstudios.runner/runner.log   # rotating app log + panic backtraces
 ```
 
-The data directory is the one the Tauri app used, so a cutover install finds its roles, crews, missions and sessions in place; only the webview's localStorage preferences are left behind. Direct chats are off-disk beyond their row in `sessions`; mission sessions share their mission's directory and the only durable artifact is `events.ndjson`. Screen state lives in memory (§5.8).
+The data directory has been the same since the Tauri app, so every upgrade finds its roles, crews, missions and sessions in place. Direct chats are off-disk beyond their row in `sessions`; mission sessions share their mission's directory and the only durable artifact is `events.ndjson`. Screen state lives in memory (§5.8).
 
 ## 11. Process and thread model
 
@@ -798,7 +805,7 @@ A panic in a PTY reader thread only affects that session: the forwarder ends, th
 
 ## 14. Program state — line, landing, channels
 
-Release-channel contract with one nightly release and shared app identity (#504/#505, following #502); the first live cut and installed upgrades remain pending after landing:
+Release-channel contract with one nightly release and shared app identity (#504/#505, following #502); the first live cut ran on 2026-09-08 and the old Windows release is gone:
 
 - **`main`** is the native app and the only line of work; the Tauri + React line ended at `276a3a4` and its last release, `v0.5.2`, bridges into `v0.6.0` on its next update check. Work lands as a task branch → PR → the one required check (`Rust / macOS`) → merge → a docs landing commit. The human smoke-tests before the PR; crews do not launch the app.
 - **Versions.** Nightly is a rolling development channel, shown as `Nightly (<short-sha>)`; it is independent of an official release number. Official releases alone get `vX.Y.Z` version tags. `CFBundleVersion` is the UTC build stamp `YYYYMMDD.HHMM` on both macOS channels, which Sparkle compares; `CFBundleShortVersionString` is the short commit on nightly and `X.Y.Z` on production. Sparkle supplies the `Runner` app name in its native alert; Runner’s own update displays format the commit as `Nightly (<sha>)`. Windows installers use `nightly.<sha>.<stamp>` and update by the trailing stamp, while the app and update offer show `Nightly (<sha>)`. The three lockstep crate versions remain ordinary package metadata (`0.8.2` at #502's baseline); nightlies do not bump them or require a `-nightly` suffix. `runner-core` and the CLI remain independently versioned. Unstamped `make run` builds show `<crate-version> (dev)`.
@@ -808,6 +815,6 @@ Release-channel contract with one nightly release and shared app identity (#504/
 - **Tauri bridge (until 0.7.0).** `v0.6.0` carries `Runner.app.tar.gz` + its minisign `.sig` (key id `23fee1fa29746d59`, the one embedded in 0.5.x) + `latest.json`; every later 0.6.x release re-uploads the same `latest.json` (both platform keys at the absolute `v0.6.0` URL) so a dormant 0.5.x install hops Tauri → 0.6.0 → Sparkle. **Hard cutoff at 0.7.0**: no `latest.json`; a 0.5.x install still dormant installs the DMG by hand.
 - **Windows integration.** Both platforms develop from `main`, with CI on PRs and main pushes. `release.yml` computes one identity, builds the macOS artifacts and Windows x64 installer separately, and creates one draft only after both builds and CI pass. Windows binaries and installers are Authenticode-signed through Certum SimplySign in CI and carry minisign update signatures; see [Code signing](./windows.md#code-signing). `bundle-windows.ps1 -Channel production` bakes the stable release channel and base display version; the default nightly channel uses `nightly` and displays `Nightly (<sha>)`. The updater compares the trailing UTC stamp, including older bare-version/`X.Y.Z-nightly` installers and new commit-based nightlies. Both channels retain `%APPDATA%\com.wycstudios.runner`; see [Windows update behavior](./windows.md#update-behavior).
 - **Isolation.** Nightly and production use the same macOS bundle id and `Runner.app` name, retaining the data directory in §10.2. Installing a nightly over Runner switches that install to the nightly feed; installing a stable DMG switches it back. Production Sparkle reads only `releases/latest/download/appcast.xml`; nightly Sparkle reads `releases/download/nightly/appcast.xml`. The feed address provides channel isolation. Public nightlies are discoverable on the releases page, but prereleases never become latest stable. Updates require the user’s install action; dispatch can lead to a nightly update offer and Windows background download, but does not itself restart the app.
-- **One-time transition.** Install the first unified Mac nightly by hand over `Runner.app`, then delete `Runner Nightly.app`; Sparkle cannot install across the old and new bundle identifiers. Install the first unified Windows nightly on the PC by hand because the installed build still reads `nightly-win`. Once the PC reads `nightly`, delete the old `nightly-win` release and tag by hand. There is no transition mirror, and the workflow never reads or writes the old release. Dormant Windows installs that miss this hop must reinstall from `nightly` after the old release is deleted.
+- **One-time transition.** The `nightly-win` release and tag no longer exist, so a dormant Windows install that missed the hop reinstalls from `nightly`; the workflow never read or wrote the old release. On macOS the first unified DMG goes over `Runner.app` by hand and `Runner Nightly.app` is deleted, because Sparkle cannot install across bundle identifiers.
 
-History of how this was decided: [`../impls/gpui-rewrite/README.md`](../impls/gpui-rewrite/README.md) (condensed) and [`../impls/archive/gpui-rewrite/plan.md`](../impls/archive/gpui-rewrite/plan.md) §Release channels (full); what remains: [`../impls/gpui-rewrite/m6-remainder.md`](../impls/gpui-rewrite/m6-remainder.md).
+History of how this was decided: [`../impls/archive/gpui-rewrite/README.md`](../impls/archive/gpui-rewrite/README.md) (condensed) and [`../impls/archive/gpui-rewrite/plan.md`](../impls/archive/gpui-rewrite/plan.md) §Release channels (full); the M6 remainder queue, all landed by 2026-08-27: [`../impls/archive/gpui-rewrite/m6-remainder.md`](../impls/archive/gpui-rewrite/m6-remainder.md).

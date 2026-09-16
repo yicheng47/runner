@@ -58,7 +58,7 @@ Runner is a native desktop app for running several CLI coding agents at once. Cl
 - **Role** — a reusable agent configuration: runtime, system prompt, working directory.
 - **Crew** — roles composed into named slots with one lead, plus the team conventions every mission inherits.
 - **Mission** — a crew working one goal: one live terminal per slot, coordinating over an event feed that persists and replays, with `ask_human` when a decision is yours.
-- **Chat** — a single agent in a real terminal, no mission required; tabs hold up to three side by side.
+- **Chat** — a single agent in a real terminal, no mission required; split a tab as far as the window allows.
 - **MCP** — everything above is also a tool, so your agents can run Runner themselves.
 
 Written in Rust on [gpui-ce](https://github.com/gpui-ce/gpui-ce), the community fork of [Zed](https://zed.dev)'s GPUI, with `alacritty_terminal` for the grid and SQLite for state. No webview. Everything runs and persists on your machine.

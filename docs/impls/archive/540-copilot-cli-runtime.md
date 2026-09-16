@@ -16,7 +16,7 @@ Phase 0 done: `cmp/MarkCopilot` (`QGeFI`) and the frame `Spec — GitHub Copilot
 
 ## Decisions that bind
 
-The spec's decisions 1–9. In particular for mission 1: keys are caller-assigned with no capture thread (8); the trust seed runs before every spawn and touches only `trustedFolders` (2); chats assert no permission posture (4, [#596](../../features/596-chat-permission-posture.md)); the static model list comes from the installed binary's `copilot help config` (5); the mark is `#8534F3` fixed in both themes (9).
+The spec's decisions 1–9. In particular for mission 1: keys are caller-assigned with no capture thread (8); the trust seed runs before every spawn and touches only `trustedFolders` (2); chats assert no permission posture (4, [#596](../../features/archive/596-chat-permission-posture.md)); the static model list comes from the installed binary's `copilot help config` (5); the mark is `#8534F3` fixed in both themes (9).
 
 ## Log
 
