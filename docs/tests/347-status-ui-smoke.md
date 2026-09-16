@@ -1,6 +1,6 @@
 # 347 — Slice 2 status UI smoke checklist
 
-Scope: [PR #588](https://github.com/yicheng47/runner/pull/588), [feature spec](../features/347-hook-based-session-status.md), and [implementation log](../impls/347-hook-status/impl_log.md). These are manual checks; none is marked passed by automated tests.
+Scope: [PR #588](https://github.com/yicheng47/runner/pull/588), [feature spec](../features/archive/347-hook-based-session-status.md), and [implementation log](../impls/347-hook-status/impl_log.md). These are manual checks; none is marked passed by automated tests.
 
 Jason confirmed the slice-2 smoke test passed on 2026-09-14 after the final cancellation and header revisions, and authorized final review, PR update, and merge. The final report was an overall pass; it did not separately enumerate platforms or optional failure-injection variants.
 

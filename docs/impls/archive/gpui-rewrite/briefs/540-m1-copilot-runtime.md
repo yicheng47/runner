@@ -1,6 +1,6 @@
 # 540 — Mission 1: GitHub Copilot CLI as a runtime, adapter and surfaces
 
-Jason requested a Codex crew mission on 2026-09-16. Work in `/Users/jason/repos/yicheng47/runner` on the existing branch `feat/540-copilot-runtime`, which already carries this brief and the impl plan. Read `AGENTS.md`, `docs/features/540-copilot-cli-runtime.md` (its "What a new runtime touches" tables are this mission's checklist and its "Probe evidence" section is the ground truth for every flag, path and file shape), `docs/impls/540-copilot-cli-runtime.md`, and `docs/impls/archive/0036-trae-runtime.md` for the last time a runtime was added. The TRAE plan's capture-thread parts do not apply here: Copilot keys are caller-assigned like claude-code.
+Jason requested a Codex crew mission on 2026-09-16. Work in `/Users/jason/repos/yicheng47/runner` on the existing branch `feat/540-copilot-runtime`, which already carries this brief and the impl plan. Read `AGENTS.md`, `docs/features/archive/540-copilot-cli-runtime.md` (its "What a new runtime touches" tables are this mission's checklist and its "Probe evidence" section is the ground truth for every flag, path and file shape), `docs/impls/540-copilot-cli-runtime.md`, and `docs/impls/archive/0036-trae-runtime.md` for the last time a runtime was added. The TRAE plan's capture-thread parts do not apply here: Copilot keys are caller-assigned like claude-code.
 
 ## Ownership and authorization
 

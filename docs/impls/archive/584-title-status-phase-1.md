@@ -1,6 +1,6 @@
 # 584 — Phase 1: session status from the title spinner
 
-Tracking issue: [#584](https://github.com/yicheng47/runner/issues/584). Spec: [584](../../features/archive/584-title-status-detection.md). Implemented in [#585](https://github.com/yicheng47/runner/pull/585), included in v0.8.9. This is the original mission brief; its commands and proposed later phases are historical. Current follow-ups are [hooks (#347)](../../features/347-hook-based-session-status.md), [shell process detection (#586)](../../features/586-shell-status-detection.md), and [title display (#587)](../../features/archive/587-terminal-provided-titles.md).
+Tracking issue: [#584](https://github.com/yicheng47/runner/issues/584). Spec: [584](../../features/archive/584-title-status-detection.md). Implemented in [#585](https://github.com/yicheng47/runner/pull/585), included in v0.8.9. This is the original mission brief; its commands and proposed later phases are historical. Current follow-ups are [hooks (#347)](../../features/archive/347-hook-based-session-status.md), [shell process detection (#586)](../../features/586-shell-status-detection.md), and [title display (#587)](../../features/archive/587-terminal-provided-titles.md).
 
 **Phase 1 only.** Spinner detection for agent runtimes. Baseline divergence for shells is phase 2 and is explicitly out of scope — do not attempt it, do not add a hook for it.
 
