@@ -206,7 +206,7 @@ Carbon and Runner Light are Runner's own themes; Catppuccin Mocha and Latte ride
 | Needs you: approval and question dialogs shown ³ | ✓ | — | ✓ | — |
 | Model list read from the CLI | ✓ | ✓ | — | — |
 | Permission modes | Default · Accept edits · Auto · Bypass | Default · Auto · Bypass | Default · Accept edits · Bypass | Default · Bypass |
-| Skills pane | catalog + on/off | catalog + on/off | catalog | — |
+| Skills pane | catalog + on/off | catalog + on/off | catalog + on/off | — |
 | Runner registered as an MCP server | ✓ | ✓ | ✓ | ✓ |
 | Terminal rendering covered by fixtures | ✓ | ✓ | — | — |
 

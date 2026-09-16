@@ -229,6 +229,9 @@ pub fn skill_catalog(
                 .and_then(|text| text.parse::<toml_edit::DocumentMut>().ok())
         })
         .flatten();
+    let copilot_disabled = (runtime == Runtime::Copilot)
+        .then(|| copilot_disabled_skills(home))
+        .flatten();
     let overrides = if runtime == Runtime::ClaudeCode {
         std::fs::read_to_string(home.join(".claude/settings.json"))
             .ok()
@@ -293,6 +296,12 @@ pub fn skill_catalog(
                 if let Some(document) = &codex_overrides {
                     entry.global = codex_global_state(document, &entry);
                 }
+                if copilot_disabled
+                    .as_ref()
+                    .is_some_and(|disabled| disabled.iter().any(|name| name == &entry.name))
+                {
+                    entry.global = GlobalState::Off;
+                }
                 catalog.entries.push(entry);
             }
         }
@@ -331,6 +340,20 @@ fn codex_manual(text: &str) -> bool {
         }
     }
     manual
+}
+
+pub(crate) fn copilot_disabled_skills(home: &Path) -> Option<Vec<String>> {
+    let text =
+        std::fs::read_to_string(crate::runtime_defaults::copilot_settings_path(home)).ok()?;
+    let settings = crate::runtime_defaults::jsonc_document(&text).ok()?;
+    Some(
+        settings
+            .get("disabledSkills")?
+            .as_array()?
+            .iter()
+            .filter_map(|value| value.as_str().map(str::to_owned))
+            .collect(),
+    )
 }
 
 fn read_entry(path: &Path, marker: &str, runtime: Runtime) -> SkillEntry {
@@ -628,7 +651,7 @@ mod tests {
     }
 
     #[test]
-    fn copilot_catalog_uses_both_personal_roots_without_global_toggles() {
+    fn copilot_catalog_reads_disabled_skills_from_settings() {
         let home = tempfile::tempdir().unwrap();
         for (root, name) in [
             (".copilot/skills", "copilot-skill"),
@@ -647,6 +670,23 @@ mod tests {
             ]
         );
         assert_eq!(catalog.entries.len(), 2);
+        assert!(catalog
+            .entries
+            .iter()
+            .all(|entry| entry.global == GlobalState::On));
+        let settings = home.path().join(".copilot/settings.json");
+        std::fs::write(
+            &settings,
+            "// Copilot settings\n{\n  \"model\": \"gpt-5.4\",\n  \"disabledSkills\": [\"shared-skill\", 3]\n}\n",
+        )
+        .unwrap();
+        let catalog = skill_catalog(Runtime::Copilot, home.path(), None).unwrap();
+        assert_eq!(catalog.entries[0].name, "copilot-skill");
+        assert_eq!(catalog.entries[0].global, GlobalState::On);
+        assert_eq!(catalog.entries[1].name, "shared-skill");
+        assert_eq!(catalog.entries[1].global, GlobalState::Off);
+        std::fs::write(&settings, "{\"disabledSkills\": \"shared-skill\"").unwrap();
+        let catalog = skill_catalog(Runtime::Copilot, home.path(), None).unwrap();
         assert!(catalog
             .entries
             .iter()
