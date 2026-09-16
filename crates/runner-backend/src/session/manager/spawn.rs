@@ -514,14 +514,16 @@ impl SessionManager {
                 &spec.session_id,
             ));
         }
-        if crate::session::claude_status::hooks_supported(cfg!(windows))
-            && router::runtime::inject_claude_settings(Runtime::parse(&role.runtime), &role.args)
+        if crate::session::claude_status::hooks_supported(
+            Runtime::parse(&role.runtime),
+            cfg!(windows),
+        ) && router::runtime::inject_claude_settings(Runtime::parse(&role.runtime), &role.args)
         {
             let status_path =
                 crate::session::claude_status::status_path(app_data_dir, &spec.session_id);
             spec.env.insert(
                 crate::session::claude_status::PATH_ENV.into(),
-                status_path.to_string_lossy().into_owned(),
+                crate::session::hook_feed::hook_path(&status_path),
             );
             spec.env.insert(
                 crate::session::claude_status::GENERATION_ENV.into(),
@@ -536,9 +538,10 @@ impl SessionManager {
         ) {
             spec.env.insert(
                 crate::session::codex_status::PATH_ENV.into(),
-                crate::session::hook_feed::status_path(app_data_dir, &spec.session_id)
-                    .to_string_lossy()
-                    .into_owned(),
+                crate::session::hook_feed::hook_path(&crate::session::hook_feed::status_path(
+                    app_data_dir,
+                    &spec.session_id,
+                )),
             );
             spec.env.insert(
                 crate::session::codex_status::GENERATION_ENV.into(),
@@ -546,13 +549,14 @@ impl SessionManager {
             );
         }
         if Runtime::parse(&role.runtime) == Some(Runtime::Copilot)
-            && crate::session::hook_feed::hooks_supported(cfg!(windows))
+            && crate::session::hook_feed::hooks_supported(Some(Runtime::Copilot), cfg!(windows))
         {
             spec.env.insert(
                 crate::session::copilot_status::PATH_ENV.into(),
-                crate::session::hook_feed::status_path(app_data_dir, &spec.session_id)
-                    .to_string_lossy()
-                    .into_owned(),
+                crate::session::hook_feed::hook_path(&crate::session::hook_feed::status_path(
+                    app_data_dir,
+                    &spec.session_id,
+                )),
             );
             spec.env.insert(
                 crate::session::copilot_status::GENERATION_ENV.into(),

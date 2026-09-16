@@ -202,8 +202,8 @@ Carbon and Runner Light are Runner's own themes; Catppuccin Mocha and Latte ride
 | Chats, missions, resume after relaunch | ✓ | ✓ | ✓ | ✓ |
 | Runs on Windows | ✓ | ✓ | ✓ ¹ | — ² |
 | Fork a chat | ✓ | ✓ | — | — |
-| Working / Idle from the agent's hooks ³ | ✓ | ✓ | ✓ | — |
-| Needs you: approval and question dialogs shown ³ | ✓ | — | ✓ | — |
+| Working / Idle from the agent's hooks | ✓ | ✓ | ✓ | — |
+| Needs you: approval and question dialogs shown | ✓ | — | ✓ | — |
 | Model list read from the CLI | ✓ | ✓ | — | — |
 | Permission modes | Default · Accept edits · Auto · Bypass | Default · Auto · Bypass | Default · Accept edits · Bypass | Default · Bypass |
 | Skills pane | catalog + on/off | catalog + on/off | catalog + on/off | — |
@@ -212,7 +212,6 @@ Carbon and Runner Light are Runner's own themes; Catppuccin Mocha and Latte ride
 
 ¹ GitHub Copilot CLI runs natively on Windows but has not been smoke-tested there yet.
 ² TRAE CLI is disabled by default on Windows; its integration has not been validated.
-³ macOS only. On Windows every agent's status is estimated from terminal output and dialogs are not detected, until Windows hook support lands.
 
 Claude Code and Codex are the primary agents, with tuned launch and nudge timing. GitHub Copilot CLI needs a Copilot subscription. TRAE CLI sees less use and may have rough edges. [Issues](https://github.com/yicheng47/runner/issues) are welcome.
 

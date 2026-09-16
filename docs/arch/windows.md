@@ -2,7 +2,7 @@
 
 Runner supports Windows x64 from 0.8.0. macOS and Windows are developed together on `main`, with separate platform chrome and shared application behavior. The [Windows port record](../impls/archive/windows-nightly/README.md) is archived; this document covers ongoing development and packaging.
 
-GitHub Copilot CLI is enabled by default on Windows as well as macOS. Runner detects the native `copilot` binary or an npm `.cmd` shim; native binaries receive their first turn through `-i`, while batch shims use the existing verified paste fallback. Copilot requires a subscription; npm installations require Node.js 22. Caller-assigned `--session-id` keys and the JSONC-preserving folder-trust seed work on both platforms. Copilot uses estimated terminal status; hook status and its native smoke acceptance remain follow-up work.
+GitHub Copilot CLI is enabled by default on Windows as well as macOS. Runner detects the native `copilot` binary or an npm `.cmd` shim; native binaries receive their first turn through `-i`, while batch shims use the existing verified paste fallback. Copilot requires a subscription; npm installations require Node.js 22. Caller-assigned `--session-id` keys and the JSONC-preserving folder-trust seed work on both platforms. Copilot, Claude Code and Codex report hook-based status on Windows as on macOS ([#610](../features/610-windows-hook-status.md)); Claude Code runs its status hooks under Git Bash, and Codex and Copilot under PowerShell.
 
 ## Local Windows development
 

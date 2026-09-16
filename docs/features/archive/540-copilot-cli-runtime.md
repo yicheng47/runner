@@ -1,7 +1,7 @@
 # 540 — GitHub Copilot CLI runtime
 
 > Tracking issue: [#540](https://github.com/yicheng47/runner/issues/540)
-> Shipped 2026-09-16: adapter and surfaces in [#607](https://github.com/yicheng47/runner/pull/607), hook status, Agents marks and Skills pane fixes in [#609](https://github.com/yicheng47/runner/pull/609), the terminal fixture `copilot-first-turn.ndjson` with this archive. Windows is enabled but not yet smoke-tested there (README footnote); Windows hook status is [#610](https://github.com/yicheng47/runner/issues/610). Phase 5 follow-ups get their own issues.
+> Shipped 2026-09-16: adapter and surfaces in [#607](https://github.com/yicheng47/runner/pull/607), hook status, Agents marks and Skills pane fixes in [#609](https://github.com/yicheng47/runner/pull/609), the terminal fixture `copilot-first-turn.ndjson` with this archive. Windows smoke passed on JASONPC on 2026-09-16 together with its hook status, which removed the README footnote; Windows hook status is [#610](https://github.com/yicheng47/runner/issues/610). Phase 5 follow-ups get their own issues.
 > Priority: P2. Platforms: macOS and Windows; hook status lands on macOS first, as it did for Claude Code and Codex.
 > Revived 2026-09-16. Parked on 2026-09-10 behind [539](../539-pi-runtime.md) because pi reaches Copilot models; Jason reopened it for GitHub's own CLI agent. Every claim below was re-probed on 2026-09-16 against the installed `copilot` 1.0.83 on macOS with a live session, not only `--help`, so the earlier audit is superseded where they differ.
 

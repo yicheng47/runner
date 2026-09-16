@@ -76,6 +76,18 @@ fn write_plugin_file(path: &Path, contents: &[u8]) -> Result<()> {
     Ok(())
 }
 
+// Copilot runs this slot instead of `command` on Windows.
+fn powershell_command(event: &str) -> String {
+    format!(
+        "{};exit 0",
+        super::hook_feed::powershell_reporter(
+            &format!("$env:{PATH_ENV}"),
+            GENERATION_ENV,
+            &super::hook_feed::powershell_quote(event),
+        )
+    )
+}
+
 pub(crate) fn install_plugin(app_data_dir: &Path) -> Result<()> {
     let plugin_dir = plugin_dir(app_data_dir);
     fs::create_dir_all(plugin_dir.join("hooks"))?;
@@ -98,6 +110,7 @@ pub(crate) fn install_plugin(app_data_dir: &Path) -> Result<()> {
             "hooks": [{
                 "type": "command",
                 "command": command,
+                "powershell": powershell_command(event),
                 "timeout": 2,
             }],
         });
@@ -609,6 +622,14 @@ mod tests {
                     )
                 )
             );
+            let powershell = entry["hooks"][0]["powershell"].as_str().unwrap();
+            assert_eq!(powershell, powershell_command(event));
+            assert!(powershell.starts_with(&format!(
+                "$ErrorActionPreference='Stop';$f=$env:{PATH_ENV};$g=$env:{GENERATION_ENV};"
+            )));
+            assert!(powershell.ends_with(";exit 0"));
+            assert!(powershell.contains(&format!("'{event}'")));
+            assert!(!powershell.contains('"'));
         }
         assert_eq!(
             hooks["hooks"]["Notification"][0]["matcher"],
@@ -1109,5 +1130,76 @@ mod tests {
             watcher.observation.value.source,
             ObservationSource::Unavailable
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn powershell_entry_drains_missing_path_handles_spaces_large_payload_and_teardown() {
+        use super::super::hook_feed::{hook_path, run_powershell, POWERSHELLS};
+        for shell in POWERSHELLS {
+            let root = tempfile::tempdir().unwrap();
+            let app_data = root.path().join("Jason's runner app data");
+            install_plugin(&app_data).unwrap();
+            let hooks: Value =
+                serde_json::from_slice(&fs::read(hooks_path(&app_data)).unwrap()).unwrap();
+            let command = |event: &str| {
+                hooks["hooks"][event][0]["hooks"][0]["powershell"]
+                    .as_str()
+                    .unwrap()
+                    .to_owned()
+            };
+            let Some(missing) = run_powershell(
+                shell,
+                &command("Stop"),
+                &[(PATH_ENV, ""), (GENERATION_ENV, "current")],
+                &vec![b'x'; 256 * 1024],
+            ) else {
+                continue;
+            };
+            assert!(missing.status.success(), "{shell}: {missing:?}");
+            assert!(missing.stdout.is_empty() && missing.stderr.is_empty());
+
+            let path = super::super::hook_feed::status_path(&app_data, "session with spaces");
+            let path = PathBuf::from(hook_path(&path));
+            let mut watcher = CopilotStatusWatcher::start(
+                &path,
+                "current".into(),
+                root.path().join("copilot-home"),
+            )
+            .unwrap();
+            let mut payload = report("UserPromptSubmit");
+            payload["prompt"] = json!(format!("你好 {}", "x\n".repeat(128 * 1024)));
+            let env = [
+                (PATH_ENV, hook_path(&path)),
+                (GENERATION_ENV, "current".into()),
+            ];
+            let env = env
+                .iter()
+                .map(|(k, v)| (*k, v.as_str()))
+                .collect::<Vec<_>>();
+            let output = run_powershell(
+                shell,
+                &command("UserPromptSubmit"),
+                &env,
+                &serde_json::to_vec_pretty(&payload).unwrap(),
+            )
+            .unwrap();
+            assert!(output.status.success(), "{shell}: {output:?}");
+            assert!(output.stdout.is_empty() && output.stderr.is_empty());
+            let mut values = Vec::new();
+            watcher
+                .drain_observations(|value, _| values.push(value))
+                .unwrap();
+            assert_eq!(values.last().unwrap().activity, Activity::Working);
+
+            fs::remove_file(reporter_path(&app_data)).unwrap();
+            watcher.feed.dirty.store(true, Ordering::Release);
+            assert!(watcher.drain_observations(|_, _| {}).is_err());
+            drop(watcher);
+            assert_eq!(fs::read_dir(path.parent().unwrap()).unwrap().count(), 0);
+            let late = run_powershell(shell, &command("Stop"), &env, b"{}").unwrap();
+            assert!(late.status.success());
+            assert_eq!(fs::read_dir(path.parent().unwrap()).unwrap().count(), 0);
+        }
     }
 }
