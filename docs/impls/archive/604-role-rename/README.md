@@ -1,10 +1,12 @@
 # Rename the runner entity to role — program record
 
-Implementation record for [feature 604](../../features/604-rename-runner-to-role.md) ([#604](https://github.com/yicheng47/runner/issues/604)). The spec says *what*; this directory says *how, in what order, and what has landed*. Same shape as the [hook-status](../347-hook-status/README.md) record: this file is the condensed state and the decisions that bind, [plan.md](plan.md) is the mission plan, [impl_log.md](impl_log.md) is the dated log. Briefs live in [`docs/impls/archive/gpui-rewrite/briefs/`](../archive/gpui-rewrite/briefs/).
+Archived after [#618](https://github.com/yicheng47/runner/pull/618) merged on 2026-09-16 (`8fefe12`). The entity is `role` in the database, the backend, the MCP tools, the UI and the docs; the product stays Runner.
+
+Implementation record for [feature 604](../../../features/archive/604-rename-runner-to-role.md) ([#604](https://github.com/yicheng47/runner/issues/604)). The spec says *what*; this directory says *how, in what order, and what has landed*. Same shape as the [hook-status](../../347-hook-status/README.md) record: this file is the condensed state and the decisions that bind, [plan.md](plan.md) is the mission plan, [impl_log.md](impl_log.md) is the dated log. Briefs live in [`docs/impls/archive/gpui-rewrite/briefs/`](../gpui-rewrite/briefs/).
 
 ## Status (2026-09-16)
 
-Both missions are implemented and reviewed clean by the codex peer crew and by Claude, on `feat/604-m1-backend` as [PR #618](https://github.com/yicheng47/runner/pull/618) against `main`. Mission 1 renamed the data, backend and MCP layers; mission 2 renamed the words users read, moved `surfaces/runners/` to `surfaces/roles/`, and aligned AGENTS.md, both READMEs, the vision doc and the arch doc. Jason's smoke test on the migrated dev database added the role glyph and a layout fix on the role detail page. Migration 0023 has run on the macOS dev database with every row intact; the Windows dev-database migration is outstanding.
+Both missions shipped in [PR #618](https://github.com/yicheng47/runner/pull/618), merged 2026-09-16. Mission 1 renamed the data, backend and MCP layers; mission 2 renamed the words users read, moved `surfaces/runners/` to `surfaces/roles/`, and aligned AGENTS.md, both READMEs, the vision doc and the arch doc. Jason's smoke test on the migrated dev database added the role glyph and a layout fix on the role detail page. Migration 0023 has run on the macOS dev database with every row intact; the Windows dev-database migration is outstanding.
 
 ## Decisions that bind
 
@@ -18,7 +20,7 @@ Both missions are implemented and reviewed clean by the codex peer crew and by C
 
 ## Open
 
-- Merge #618, archive the spec and this record, then the release that carries the MCP cutover.
+- The release that carries the MCP cutover; until then installed apps keep the `runner_*` tool names.
 - On JASONPC the first `.\make.cmd run` migrates the Windows dev database, which doubles as the Windows check.
 - Follow-ups outside this feature: `runner_status` → `session_status` with read compatibility, the router's first-turn prompt still saying "lead runner", and the design canvas labels.
 - The leftover branch `feat/604-role-rename` (brief commit only) can be deleted.

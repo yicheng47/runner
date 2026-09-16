@@ -1,6 +1,7 @@
 # 604 — Rename the runner entity to role
 
 > Tracking issue: [#604](https://github.com/yicheng47/runner/issues/604)
+> Status: shipped 2026-09-16 in [#618](https://github.com/yicheng47/runner/pull/618) (merge `8fefe12`; record [`604-role-rename/`](../../impls/archive/604-role-rename/README.md); missions `01M2MJ8WE488AJNN0NAHHF3QZ8` and `01M2MT7QCKQBC6EPKEXBPXCPGW` on codex-crew).
 > Priority: P1 — the overload is visible in shipped UI and every new user pays for it.
 > Platforms: macOS and Windows.
 > Decision, 2026-09-15: the entity becomes `role`; the product stays **Runner**. The CLI keeps `runner signal` / `runner msg`, and "worker" keeps its existing mission meaning.
