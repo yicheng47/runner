@@ -1,6 +1,6 @@
 # 590 — Runtime model discovery and cache
 
-Tracking: [#590](https://github.com/yicheng47/runner/issues/590) · P2 · Shipped in [PR #591](https://github.com/yicheng47/runner/pull/591) on 2026-09-14 and closed 2026-09-16; the native Windows smoke (checklist item 6) is outstanding as a follow-up, and Copilot discovery is a follow-up under [540](../540-copilot-cli-runtime.md).
+Tracking: [#590](https://github.com/yicheng47/runner/issues/590) · P2 · Shipped in [PR #591](https://github.com/yicheng47/runner/pull/591) on 2026-09-14 and closed 2026-09-16; the native Windows smoke (checklist item 6) is outstanding as a follow-up, and Copilot discovery is a follow-up under [540](./540-copilot-cli-runtime.md).
 
 ## Goal and scope
 

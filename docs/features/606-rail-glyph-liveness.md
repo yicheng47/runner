@@ -6,7 +6,7 @@
 
 ## Motivation
 
-The sidebar rail runs two rules at once. Folder, shell and mission-flag glyphs say "a session is running in here" with the accent green, while provider marks ([#593](./593-provider-chat-icons.md)) say identity with a fixed hue and say "live" with opacity. In a mixed rail the green folders and flag read as a state or a brand, and they are neither. The Trae mark, one hue from the accent, collides with them. With Copilot purple arriving ([540](./540-copilot-cli-runtime.md)) the rail would carry four identity hues plus a fifth colour that means something else.
+The sidebar rail runs two rules at once. Folder, shell and mission-flag glyphs say "a session is running in here" with the accent green, while provider marks ([#593](./593-provider-chat-icons.md)) say identity with a fixed hue and say "live" with opacity. In a mixed rail the green folders and flag read as a state or a brand, and they are neither. The Trae mark, one hue from the accent, collides with them. With Copilot purple arriving ([540](./archive/540-copilot-cli-runtime.md)) the rail would carry four identity hues plus a fifth colour that means something else.
 
 The folder glyph is a single `folder-code` outline for collapsed and expanded projects alike, so the chevron is the only thing that changes when a project opens, and the `<>` badge says "code" about every project, which is every project.
 

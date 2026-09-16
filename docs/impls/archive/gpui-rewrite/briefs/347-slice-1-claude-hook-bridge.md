@@ -1,6 +1,6 @@
 # 347 — Slice 1: hook-driven status for Claude Code
 
-Tracking issue: [#347](https://github.com/yicheng47/runner/issues/347). Spec: [347](../features/347-hook-based-session-status.md).
+Tracking issue: [#347](https://github.com/yicheng47/runner/issues/347). Spec: [347](../../../../features/archive/347-hook-based-session-status.md).
 
 **Slice 1 only.** Replace the *source* of agent status for Claude Code sessions with lifecycle hooks, behind the status vocabulary that ships today. No new states, no UI change, no delivery-gate change, no Codex or TRAE adapter. Those are later slices and are explicitly out of scope — do not start them.
 
