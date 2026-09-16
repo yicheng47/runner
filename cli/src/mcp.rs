@@ -5,10 +5,11 @@ use runner_core::app_paths::IpcEndpoint;
 
 use rmcp::handler::server::ServerHandler;
 use rmcp::model::{
-    CallToolRequestParams, CallToolResult, ErrorData, Implementation, ListToolsResult,
-    PaginatedRequestParams, ProtocolVersion, ServerCapabilities, ServerInfo,
+    CallToolRequestParams, CallToolResult, ErrorData, Implementation, InitializeRequestParams,
+    InitializeResult, ListToolsResult, PaginatedRequestParams, ProtocolVersion, ServerCapabilities,
+    ServerInfo,
 };
-use rmcp::service::{RequestContext, RoleServer};
+use rmcp::service::{serve_directly, RequestContext, RoleServer};
 use rmcp::ServiceExt;
 use tokio::time::timeout;
 
@@ -33,18 +34,21 @@ pub fn run() -> i32 {
     };
 
     rt.block_on(async {
-        let handler = RunnerMcpProxy;
         let stdout = tokio::io::BufWriter::new(tokio::io::stdout());
-        match handler.serve((tokio::io::stdin(), stdout)).await {
-            Ok(server) => match server.waiting().await {
-                Ok(_) => 0,
-                Err(e) => {
-                    eprintln!("runner-mcp: stdio session ended with error: {e}");
-                    1
-                }
-            },
+        // GitHub Copilot CLI sends a custom `server/discover` request before
+        // `initialize`, and rmcp's handshake exits on any first message that is
+        // not `initialize`. Serving directly routes every message through the
+        // handler instead: unknown requests get method-not-found and
+        // `initialize` is answered by `RunnerMcpProxy::initialize` (#621).
+        let server = serve_directly::<RoleServer, _, _, _, _>(
+            RunnerMcpProxy,
+            (tokio::io::stdin(), stdout),
+            None,
+        );
+        match server.waiting().await {
+            Ok(_) => 0,
             Err(e) => {
-                eprintln!("runner-mcp: failed to initialize stdio MCP server: {e}");
+                eprintln!("runner-mcp: stdio session ended with error: {e}");
                 1
             }
         }
@@ -64,6 +68,24 @@ impl ServerHandler for RunnerMcpProxy {
             .with_instructions(
                 "Runner MCP proxy. Open Runner.app to execute workspace and mission tools.",
             )
+    }
+
+    /// The negotiation rmcp's own handshake performs: a client on an older
+    /// version gets that version back, anything else gets ours.
+    async fn initialize(
+        &self,
+        request: InitializeRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<InitializeResult, ErrorData> {
+        let mut info = self.get_info();
+        info.protocol_version = match request.protocol_version.partial_cmp(&info.protocol_version) {
+            Some(std::cmp::Ordering::Less) => request.protocol_version.clone(),
+            _ => info.protocol_version,
+        };
+        if context.peer.peer_info().is_none() {
+            context.peer.set_peer_info(request);
+        }
+        Ok(info)
     }
 
     async fn list_tools(
@@ -145,4 +167,70 @@ fn proxy_init_error(e: impl std::fmt::Display) -> ErrorData {
 
 fn proxy_service_error(e: impl std::fmt::Display) -> ErrorData {
     ErrorData::internal_error(format!("Runner.app MCP call failed: {e}"), None)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+    async fn drive(lines: &[&str]) -> Vec<serde_json::Value> {
+        let (client, server) = tokio::io::duplex(64 * 1024);
+        let (server_read, server_write) = tokio::io::split(server);
+        let running = serve_directly::<RoleServer, _, _, _, _>(
+            RunnerMcpProxy,
+            (server_read, server_write),
+            None,
+        );
+        let (client_read, mut client_write) = tokio::io::split(client);
+        let mut client_read = BufReader::new(client_read).lines();
+        let mut replies = Vec::new();
+        for line in lines {
+            client_write.write_all(line.as_bytes()).await.unwrap();
+            client_write.write_all(b"\n").await.unwrap();
+            client_write.flush().await.unwrap();
+            if line.contains("\"id\"") {
+                let reply = client_read.next_line().await.unwrap().unwrap();
+                replies.push(serde_json::from_str(&reply).unwrap());
+            }
+        }
+        drop(client_write);
+        drop(client_read);
+        let _ = running.waiting().await;
+        replies
+    }
+
+    #[tokio::test]
+    async fn copilot_discovery_before_initialize_is_refused_without_ending_the_session() {
+        let replies = drive(&[
+            r#"{"jsonrpc":"2.0","id":0,"method":"server/discover","params":{}}"#,
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"copilot","version":"1.0.83"}}}"#,
+            r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#,
+        ])
+        .await;
+        assert_eq!(replies.len(), 2, "{replies:?}");
+        assert_eq!(replies[0]["id"], 0);
+        assert_eq!(replies[0]["error"]["code"], -32601, "{:?}", replies[0]);
+        assert_eq!(replies[1]["id"], 1);
+        let result = &replies[1]["result"];
+        assert_eq!(result["protocolVersion"], "2025-06-18");
+        assert_eq!(result["serverInfo"]["name"], "runner");
+        assert!(result["capabilities"]["tools"].is_object(), "{result:?}");
+    }
+
+    #[tokio::test]
+    async fn a_client_on_a_newer_version_gets_the_bridge_version() {
+        for version in ["2025-11-25", "2026-07-28"] {
+            let replies = drive(&[&format!(
+                r#"{{"jsonrpc":"2.0","id":1,"method":"initialize","params":{{"protocolVersion":"{version}","capabilities":{{}},"clientInfo":{{"name":"probe","version":"0"}}}}}}"#
+            )])
+            .await;
+            assert_eq!(
+                replies[0]["result"]["protocolVersion"],
+                ProtocolVersion::LATEST.as_str(),
+                "{version}: {:?}",
+                replies[0]
+            );
+        }
+    }
 }
