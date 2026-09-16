@@ -28,7 +28,7 @@ Run against the development database with `make run`. One Runner instance, no cr
 - [ ] On a terminal tab, choose **New terminal** from the palette with a focused *empty* pane → the terminal lands there and the layout does not change.
 - [ ] On a terminal tab, choose it with a focused *filled* pane while a different pane sits empty → it fills **the existing empty pane** rather than growing the split.
 - [ ] Choose **New terminal** with a chat tab active, from any route → it goes to that tab's drawer. With a terminal tab active and all panes filled → it splits right through the same **Too small to split** floor as the split menu and shortcuts. An available mission drawer still takes priority while viewing that mission.
-- [ ] With a terminal tab active, navigate to Runners, Crews or Settings, then choose **New terminal** from the palette → the app returns to that tab and fills an empty pane or splits right through the size floor. Repeat with a chat tab active → it returns to the tab with the drawer open and the new shell active, without changing the split layout.
+- [ ] With a terminal tab active, navigate to Roles, Crews or Settings, then choose **New terminal** from the palette → the app returns to that tab and fills an empty pane or splits right through the size floor. Repeat with a chat tab active → it returns to the tab with the drawer open and the new shell active, without changing the split layout.
 
 ## 2. It is a real login shell
 

@@ -1,6 +1,6 @@
 # 347 — Slice 2: status vocabulary and UI
 
-Tracking issue: [#347](https://github.com/yicheng47/runner/issues/347). Read the [spec](../../../../features/archive/347-hook-based-session-status.md), [program record](../../../347-hook-status/README.md), [slice plan](../../../347-hook-status/plan.md), and [implementation log](../../../347-hook-status/impl_log.md) before editing. Use the existing branch `feat/347-status-ui` in `/Users/jason/repos/yicheng47/runner`. Slice 1 is already on this branch through `9584330`.
+Tracking issue: [#347](https://github.com/yicheng47/runner/issues/347). Read the [spec](../../../../features/archive/347-hook-based-session-status.md), [program record](../../347-hook-status/README.md), [slice plan](../../347-hook-status/plan.md), and [implementation log](../../347-hook-status/impl_log.md) before editing. Use the existing branch `feat/347-status-ui` in `/Users/jason/repos/yicheng47/runner`. Slice 1 is already on this branch through `9584330`.
 
 Jason authorized slice 2 with the existing Codex crew on 2026-09-14 after the status check identified the canvas-review gate. Proceed with the existing design; this authorization does not claim a new visual review occurred. The supervising session could not connect to Pencil's desktop MCP. Retry the Pencil connection before implementing presentation, and record any unavailable visual verification explicitly. The written specification and exact frame references below are the implementation contract while the canvas connection is unavailable.
 

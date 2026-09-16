@@ -2,7 +2,7 @@
 
 ## Status
 
-Implemented. Tracking issue [#373](https://github.com/yicheng47/runner/issues/373). Corrects the resize-frequency assumption in [0024](archive/0024-resume-scrollback-preservation.md) decision 5. The purge semantics themselves (impl 0020 / #306) and the launch fork-width machinery ([0038](0038-launch-resume-fork-width.md), verified correct by the #373 production log) are unchanged.
+Implemented. Tracking issue [#373](https://github.com/yicheng47/runner/issues/373). Corrects the resize-frequency assumption in [0024](0024-resume-scrollback-preservation.md) decision 5. The purge semantics themselves (impl 0020 / #306) and the launch fork-width machinery ([0038](0038-launch-resume-fork-width.md), verified correct by the #373 production log) are unchanged.
 
 ## Problem
 

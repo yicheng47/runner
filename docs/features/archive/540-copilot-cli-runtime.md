@@ -9,7 +9,7 @@
 
 Several Runner users have asked for GitHub Copilot support. What a Copilot subscriber can run in a terminal is GitHub Copilot CLI: the `@github/copilot` npm package, command `copilot`, 1.0.83 as of 2026-09-16. It is an interactive coding agent with file edits, shell, MCP, custom agents, skills, plugins and a plan mode, gated on a Copilot Pro/Business/Enterprise seat. It is a TUI on a PTY, so it fits Runner's runtime adapter the way claude-code, codex, and TRAE do, and it opens Runner to teams whose only model access is a Copilot seat.
 
-This is the fourth agent runtime and the first added after [#347](./347-hook-based-session-status.md), [#587](./587-terminal-provided-titles.md), [#590](./590-runtime-model-discovery.md), [#593](../593-provider-chat-icons.md) and [#596](../596-chat-permission-posture.md) landed, so it is also the first time the full per-runtime surface is written down in one place. The inventory below is that list; keep it current so the next runtime is a checklist rather than an archaeology dig.
+This is the fourth agent runtime and the first added after [#347](./347-hook-based-session-status.md), [#587](./587-terminal-provided-titles.md), [#590](./590-runtime-model-discovery.md), [#593](593-provider-chat-icons.md) and [#596](596-chat-permission-posture.md) landed, so it is also the first time the full per-runtime surface is written down in one place. The inventory below is that list; keep it current so the next runtime is a checklist rather than an archaeology dig.
 
 ## What a new runtime touches
 
@@ -67,7 +67,7 @@ Everything keyed on `Runtime` in code, grouped by the surface a user sees. Sites
 
 | Site | What changes for Copilot |
 | --- | --- |
-| `assets.rs`, `chat_icon.rs` | A bundled Copilot mark with its tint, per [#593](../593-provider-chat-icons.md); `pane_identity_icon`, `sidebar_tab_icon`, `command_palette.rs` and `settings/archived.rs` tests gain the row. *Exhaustive in `chat_icon.rs`.* Designed 2026-09-16: `cmp/MarkCopilot` (`QGeFI`) on `design/runner.pen` beside the three existing marks, the goggles from lobe-icons `githubcopilot.svg`, tinted GitHub's Copilot Purple `#8534F3` fixed in both themes (decision 9). |
+| `assets.rs`, `chat_icon.rs` | A bundled Copilot mark with its tint, per [#593](593-provider-chat-icons.md); `pane_identity_icon`, `sidebar_tab_icon`, `command_palette.rs` and `settings/archived.rs` tests gain the row. *Exhaustive in `chat_icon.rs`.* Designed 2026-09-16: `cmp/MarkCopilot` (`QGeFI`) on `design/runner.pen` beside the three existing marks, the goggles from lobe-icons `githubcopilot.svg`, tinted GitHub's Copilot Purple `#8534F3` fixed in both themes (decision 9). |
 | `surfaces/runners/logic.rs` `permission_modes`, `permission_mode_description` | `[Default, AcceptEdits, Bypass]` with Copilot's wording; the `(runtime, mode)` description match is exhaustive. |
 | `surfaces/runners/forms.rs`, `start_chat.rs`, `ui/select.rs` | Catalog-driven; existing tests only. |
 | `surfaces/panes.rs` `header_fork_state` | The disabled-fork message names the forkable runtimes; Copilot is not one in v1. |
@@ -105,7 +105,7 @@ Rough size: about thirty Rust files, of which ten are compiler-forced match arms
 - **Model and effort.** `--model` and `--effort` with Copilot's seven levels; defaults from `~/.copilot/settings.json`.
 - **First turn** on `-i <body>`; persona folds into the first turn.
 - **Session key and resume** via caller-assigned `--session-id`; conversation probe on `session-state/<id>/events.jsonl`, honouring `COPILOT_HOME`.
-- **Permission modes** Default / AcceptEdits / Bypass; Auto hidden. Mission permission mode ([#527](./527-mission-permission-mode.md)) Bypass → `--yolo`; chats assert nothing ([#596](../596-chat-permission-posture.md)).
+- **Permission modes** Default / AcceptEdits / Bypass; Auto hidden. Mission permission mode ([#527](./527-mission-permission-mode.md)) Bypass → `--yolo`; chats assert nothing ([#596](596-chat-permission-posture.md)).
 - **Folder trust preseed** so unattended mission slots never sit on the trust dialog.
 - **Always-on args** `--no-auto-update`; `--add-dir <mission dir>` for slots.
 - **Settings → Agents row** with detection, override, enable toggle, and MCP registration into `mcp-config.json` under the existing one-time guard.
@@ -134,7 +134,7 @@ Rough size: about thirty Rust files, of which ten are compiler-forced match arms
 6. **Persona folds into the first turn in v1.** Two clean native channels exist for a follow-up, both writing only under Runner-owned directories: `COPILOT_CUSTOM_INSTRUCTIONS_DIRS` pointing at a per-session directory holding the persona as `AGENTS.md`, or `--agent runner` with a generated `<mission dir>/.github/agents/runner.agent.md`, which `--add-dir <mission dir>` already loads as trusted configuration. Pick one after the fold is proven, then drop the persona section from Copilot bodies the way [539](../539-pi-runtime.md) does for pi.
 7. **Enabled by default on both platforms.** Copilot CLI ships native binaries for Windows through WinGet and the npm package needs Node 22; the existing Windows batch first-turn fallback covers an npm `.cmd` shim. Windows hook status stays the agreed [#347](./347-hook-based-session-status.md) follow-up.
 8. **No `--session-id` capture thread, no launch gate.** Keys are caller-assigned; nothing in the probes suggested an OAuth refresh race like claude-code's.
-9. **The mark is purple, `#8534F3`, fixed in both themes.** Jason, 2026-09-16, on the canvas. GitHub draws the goggles monochrome and retired the standalone Copilot logo in 2025, but its brand toolkit assigns Copilot this exact purple ("purple is thoughtfully injected to highlight Copilot products and features"); blue is GitHub's Security theme, not Copilot's. Theme foreground like Codex was not taken: two grey marks in a dim rail are two blobs, and the goggles at 12 px are a visor with two dots, the same weak-shape case that gave Trae its green under [#593](../593-provider-chat-icons.md). Purple was also the one hue the app did not use yet.
+9. **The mark is purple, `#8534F3`, fixed in both themes.** Jason, 2026-09-16, on the canvas. GitHub draws the goggles monochrome and retired the standalone Copilot logo in 2025, but its brand toolkit assigns Copilot this exact purple ("purple is thoughtfully injected to highlight Copilot products and features"); blue is GitHub's Security theme, not Copilot's. Theme foreground like Codex was not taken: two grey marks in a dim rail are two blobs, and the goggles at 12 px are a visor with two dots, the same weak-shape case that gave Trae its green under [#593](593-provider-chat-icons.md). Purple was also the one hue the app did not use yet.
 
 ## Implementation Phases
 

@@ -2,7 +2,7 @@
 
 ## Status
 
-Implemented. Follows [0032](archive/0032-in-place-resume-seam-and-width-hardening.md) (which introduced the persisted-dims fallback this bug lives in) and the auto-resume feature shipped in 0.4.2 ([#320](https://github.com/yicheng47/runner/issues/320), spec `docs/features/45-auto-resume-on-launch.md`). Two changes: fix the fork width, and flip the setting to opt-in.
+Implemented. Follows [0032](0032-in-place-resume-seam-and-width-hardening.md) (which introduced the persisted-dims fallback this bug lives in) and the auto-resume feature shipped in 0.4.2 ([#320](https://github.com/yicheng47/runner/issues/320), spec `docs/features/45-auto-resume-on-launch.md`). Two changes: fix the fork width, and flip the setting to opt-in.
 
 ## Release note
 

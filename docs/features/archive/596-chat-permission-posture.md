@@ -1,6 +1,7 @@
 # 596 — Chats inherit the agent's own permission default
 
 > Tracking issue: [#596](https://github.com/yicheng47/runner/issues/596)
+> Status: shipped 2026-09-15 in [#598](https://github.com/yicheng47/runner/pull/598).
 > Priority: P1 — Trae chats are unusable and always have been.
 > Platforms: macOS and Windows.
 > Decision, 2026-09-15: `MissionPermissionMode` is the only place a permission posture is decided. Chats assert nothing.

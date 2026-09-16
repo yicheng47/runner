@@ -7,7 +7,7 @@
 
 ## Motivation
 
-The sidebar rail runs two rules at once. Folder, shell and mission-flag glyphs say "a session is running in here" with the accent green, while provider marks ([#593](../593-provider-chat-icons.md)) say identity with a fixed hue and say "live" with opacity. In a mixed rail the green folders and flag read as a state or a brand, and they are neither. The Trae mark, one hue from the accent, collides with them. With Copilot purple arriving ([540](./540-copilot-cli-runtime.md)) the rail would carry four identity hues plus a fifth colour that means something else.
+The sidebar rail runs two rules at once. Folder, shell and mission-flag glyphs say "a session is running in here" with the accent green, while provider marks ([#593](593-provider-chat-icons.md)) say identity with a fixed hue and say "live" with opacity. In a mixed rail the green folders and flag read as a state or a brand, and they are neither. The Trae mark, one hue from the accent, collides with them. With Copilot purple arriving ([540](./540-copilot-cli-runtime.md)) the rail would carry four identity hues plus a fifth colour that means something else.
 
 The folder glyph is a single `folder-code` outline for collapsed and expanded projects alike, so the chevron is the only thing that changes when a project opens, and the `<>` badge says "code" about every project, which is every project.
 
@@ -15,7 +15,7 @@ The folder glyph is a single `folder-code` outline for collapsed and expanded pr
 
 ### One rule for every rail glyph
 
-- **Hue is identity, and only provider marks have one.** Claude orange, Trae green, Codex `$text-1`, Copilot purple, as [#593](../593-provider-chat-icons.md) decided. Nothing else in a row head carries a colour.
+- **Hue is identity, and only provider marks have one.** Claude orange, Trae green, Codex `$text-1`, Copilot purple, as [#593](593-provider-chat-icons.md) decided. Nothing else in a row head carries a colour.
 - **Every other glyph is neutral and liveness is opacity**, the rule provider marks already follow. Folder, shell, layout and flag glyphs draw in `$text-1` at full strength when a member session is running and at 0.45 when none is, beside the label that already drops to faint. An inactive row dims as one unit; an active row is full strength.
 - **The accent is reserved for state at the tail of a row**: the Working spinner, the ready dot, the unread pill, the attention badge, and the drag-and-drop indicators. The mission flag no longer duplicates the spinner beside it.
 - Selection, hover and the semibold label are untouched.

@@ -56,8 +56,8 @@ The user-facing surfaces, described by the value they deliver, not by their impl
 
 ### 4.3 Live session terminals (with human takeover)
 
-- One PTY per slot, rendered with xterm.js for full TUI fidelity with first-class agent runtimes such as claude-code and codex.
-- The xterm pane is a real terminal, not a log viewer. The human can type into any session's stdin at any time — answer a prompt, correct a bad plan, kill a tool call, or just chat mid-flight. Human and router share the same writer path, so they are symmetric.
+- One PTY per slot, rendered from an `alacritty_terminal` grid by GPUI for full TUI fidelity with first-class agent runtimes such as claude-code and codex.
+- The terminal pane is a real terminal, not a log viewer. The human can type into any session's stdin at any time — answer a prompt, correct a bad plan, kill a tool call, or just chat mid-flight. Human and router share the same writer path, so they are symmetric.
 - Per-session busy/idle is inferred from PTY-byte silence — agents do not have to call a status verb. Works for any TUI.
 
 ### 4.4 Coordination — signals and messages
@@ -76,7 +76,7 @@ The user-facing surfaces, described by the value they deliver, not by their impl
 ### 4.6 Mission workspace UI
 
 - **Sessions rail** — every slot in the crew with a busy/idle dot. Click to focus its terminal.
-- **Focused terminal** — xterm.js view of the selected slot.
+- **Focused terminal** — the selected slot's terminal pane.
 - **Event feed** — chronological view of messages plus user-visible signals for the mission. Router-internal signals (`inbox_read`, agent-source `runner_status`) are filtered.
 - **HITL cards** — pending `ask_human` prompts, always visible.
 - **Mission header** — crew, goal, cwd, start time, controls.
@@ -89,8 +89,8 @@ The user-facing surfaces, described by the value they deliver, not by their impl
 ### 4.8 App life
 
 - **Auto-update** — the native app menu owns manual "Check for Updates..."; the toast surfaces available/downloading/ready states, with an explicit Restart button once installed.
-- **Logging + crash reporting** — `tauri-plugin-log` writes to the OS log dir for the bundle; a panic hook captures backtraces; Help → Reveal Logs in Finder.
-- **Theming** — Settings exposes Auto / Light / Dark appearance, light variants (Codex, Catppuccin Latte), dark variants (Carbon, Catppuccin Mocha), and separate terminal themes.
+- **Logging + crash reporting** — `tracing` writes a rotating log to the OS log dir for the bundle; a panic hook captures backtraces; Help → Reveal Logs in Finder.
+- **Theming** — Settings exposes Auto / Light / Dark appearance, light variants (Runner Light, Catppuccin Latte), dark variants (Runner, Catppuccin Mocha), and separate terminal themes.
 
 ### 4.9 External control
 
@@ -143,5 +143,5 @@ Decisions we have not taken; revisit when the product surfaces them.
 ## 8. Risks
 
 - **PTY and process-lifecycle edge cases.** Orphan reaping, resume, and geometry are the recurring trouble spots. The Windows nightly ([#437](https://github.com/yicheng47/runner/issues/437)) adds ConPTY and Job Objects as a second lifecycle implementation; each phase must preserve macOS behavior and pass its existing checks.
-- **TUI rendering edge cases in xterm.js.** Claude / codex use rich TUIs (alt-screen, OSC 8 hyperlinks, OSC 52 clipboard); every new TUI quirk is a tuning loop.
+- **TUI rendering edge cases in the terminal renderer.** Claude / codex use rich TUIs (alt-screen, OSC 8 hyperlinks, OSC 52 clipboard); every new TUI quirk is a tuning loop.
 - **Agents that don't know the `runner signal` / `runner msg` conventions.** We ship sensible default briefs per runtime so even an untuned agent participates correctly.

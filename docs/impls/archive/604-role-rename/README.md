@@ -2,7 +2,7 @@
 
 Archived after [#618](https://github.com/yicheng47/runner/pull/618) merged on 2026-09-16 (`8fefe12`). The entity is `role` in the database, the backend, the MCP tools, the UI and the docs; the product stays Runner.
 
-Implementation record for [feature 604](../../../features/archive/604-rename-runner-to-role.md) ([#604](https://github.com/yicheng47/runner/issues/604)). The spec says *what*; this directory says *how, in what order, and what has landed*. Same shape as the [hook-status](../../347-hook-status/README.md) record: this file is the condensed state and the decisions that bind, [plan.md](plan.md) is the mission plan, [impl_log.md](impl_log.md) is the dated log. Briefs live in [`docs/impls/archive/gpui-rewrite/briefs/`](../gpui-rewrite/briefs/).
+Implementation record for [feature 604](../../../features/archive/604-rename-runner-to-role.md) ([#604](https://github.com/yicheng47/runner/issues/604)). The spec says *what*; this directory says *how, in what order, and what has landed*. Same shape as the [hook-status](../347-hook-status/README.md) record: this file is the condensed state and the decisions that bind, [plan.md](plan.md) is the mission plan, [impl_log.md](impl_log.md) is the dated log. Briefs live in [`docs/impls/archive/gpui-rewrite/briefs/`](../gpui-rewrite/briefs/).
 
 ## Status (2026-09-16)
 
@@ -15,7 +15,7 @@ Both missions shipped in [PR #618](https://github.com/yicheng47/runner/pull/618)
 3. **Every SQL statement naming the entity lives behind `repo/`.** Callers in `ops/`, `session/` and `mcp/` speak only in role terms. Gate: a grep for `roles` / `role_id` inside SQL strings hits only `repo/` and the migration.
 4. **Persisted values write the new spelling and read the old.** `role-default` with a `runner-default` alias, start-chat mode `role` accepting `runner`, saved routes `/roles` accepting `/runners`. Nothing is frozen under the old noun for compatibility's sake.
 5. **`roster.json` carries only handle and lead**, so the brief's `runner_handle` exception was moot; the two serialize-only in-process payloads use `role_handle`.
-6. **`runner_status` stays for now.** It is emitted by the CLI's `runner status busy|idle`, stored in every crew's `signal_types` list and read by the app and by mission-watch. Renaming it to `session_status` with read compatibility is the follow-up after both stages, not part of either.
+6. **`runner_status` stays for now.** It is emitted by the CLI's `runner status busy|idle`, listed in runner-core's `KnownSignalType` and read by the app and by mission-watch. Renaming it to `session_status` with read compatibility is the follow-up after both stages, not part of either.
 7. **The MCP rename is a cutover.** `role_create/get/get_by_handle/list/update/delete`, `role_id` on slot inputs, role forms in every response field, no aliases. The installed app keeps the old tool names until a release carries this.
 
 ## Open

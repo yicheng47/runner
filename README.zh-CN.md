@@ -58,7 +58,7 @@ Runner 是一个原生桌面应用，用来同时运行多个命令行编码 age
 - **角色（role）** — 一份可复用的 agent 配置：运行时、系统提示词、工作目录。
 - **Crew** — 把若干角色组合成有名字的槽位，指定一个 lead，再加上每个 mission 都会继承的团队约定。
 - **Mission** — 一个 crew 围绕一个目标干活：每个槽位一个实时终端，通过一条可持久化、可回放的事件 feed 协作，需要你拍板时用 `ask_human` 提问。
-- **Chat** — 单个 agent 跑在一个真实终端里，不需要 mission；一个标签页最多并排三个。
+- **Chat** — 单个 agent 跑在一个真实终端里，不需要 mission；标签页可以一直分栏到窗口放不下为止。
 - **MCP** — 上面的一切也都是 MCP 工具，你的 agent 可以自己操作 Runner。
 
 用 Rust 写成，基于 [gpui-ce](https://github.com/gpui-ce/gpui-ce)（[Zed](https://zed.dev) GPUI 的社区分支），终端网格用 `alacritty_terminal`，状态存在 SQLite。没有 webview。一切都在你自己的机器上运行和保存。

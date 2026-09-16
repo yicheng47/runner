@@ -12,7 +12,7 @@ Everything lands on `main` (the only line since the 2026-08-23 cutover): a crew 
 
 ## Status (2026-08-28)
 
-`v0.6.0` shipped 2026-08-23 and every landed M6 item since is recorded with its commit in the program record ([README.md](README.md) §Timeline); the items landed through GA are in full in the archived M6 document ([../archive/gpui-rewrite/m6-consolidation.md](../archive/gpui-rewrite/m6-consolidation.md)). [#445](https://github.com/yicheng47/runner/issues/445) tracked the queued items and closed 2026-08-27 once they landed. This file keeps only what is still open, in the order queued; an item gets its own issue when it is scheduled. Everything lands on `main` and ships as tagged releases (the post-GA nightly was dropped 2026-08-27; the unified public nightly channels are available via `/nightly run` after [#502](../archive/502-unified-nightly.md) lands). Numbers are identifiers, not sequence.
+`v0.6.0` shipped 2026-08-23 and every landed M6 item since is recorded with its commit in the program record ([README.md](README.md) §Timeline); the items landed through GA are in full in the archived M6 document ([../archive/gpui-rewrite/m6-consolidation.md](m6-consolidation.md)). [#445](https://github.com/yicheng47/runner/issues/445) tracked the queued items and closed 2026-08-27 once they landed. This file keeps only what is still open, in the order queued; an item gets its own issue when it is scheduled. Everything lands on `main` and ships as tagged releases (the post-GA nightly was dropped 2026-08-27; the unified public nightly channels are available via `/nightly run` after [#502](../502-unified-nightly.md) lands). Numbers are identifiers, not sequence.
 
 ## Pending — post-GA, in order
 
@@ -42,7 +42,7 @@ Scope: items 1–4 are the app-side mission; 5–7 the backend side (no behavior
 
 ### M6.3 — Backend hygiene bundle, remainder — S/M each, one mission, post-GA
 
-All confirmed at file:line on 2026-08-20. The session-lock item landed 2026-08-22 and two S items rode M6.12 — both under [Landed](../archive/gpui-rewrite/m6-consolidation.md#landed).
+All confirmed at file:line on 2026-08-20. The session-lock item landed 2026-08-22 and two S items rode M6.12 — both under [Landed](m6-consolidation.md#landed).
 
 - `ops::mission::start` (`ops/mission.rs:220-286`) holds a DEFERRED tx across `create_dir_all`, the roster sidecar, `EventLog::open` (flock + tail repair), and two appends; rollback swallows errors with `let _ =` at seven sites. `transaction_with_behavior(Immediate)` (already used at `:1609`) or move filesystem work outside the tx with compensating cleanup. **M.**
 - `repo/node.rs:87-92 list_with_repair` takes an IMMEDIATE tx and runs 5+ full scans on every sidebar read. Repair at startup and after structural mutations only. **M.**

@@ -1,6 +1,7 @@
 # 593 — Provider icons for chats
 
 > Tracking issue: [#593](https://github.com/yicheng47/runner/issues/593)
+> Status: shipped 2026-09-15 in [#595](https://github.com/yicheng47/runner/pull/595).
 > Priority: P2 — makes mixed Claude/Codex/Trae work easier to scan, without blocking a workflow.
 > Platforms: macOS and Windows.
 > Design: `design/runner.pen`, frame `Spec — Provider icons for chats (593) · v1` (`Up7D0`), in the spec row beside #587.
@@ -25,7 +26,7 @@ Select the provider from `DirectSessionEntry.agent_runtime`; runner-backed chats
 
 ### Identity, state, and liveness
 
-The mark is identity and never becomes state. It holds one hue in every row it appears in — selected or not, focused or not, Working, Needs you or Ready. Selection stays with the row's fill, border and semibold label; pane focus stays with the header text and body opacity; status stays with [#347](./archive/347-hook-based-session-status.md)'s glyph, the unread marker and the attention badge. No row may have two things changing colour at once.
+The mark is identity and never becomes state. It holds one hue in every row it appears in — selected or not, focused or not, Working, Needs you or Ready. Selection stays with the row's fill, border and semibold label; pane focus stays with the header text and body opacity; status stays with [#347](./347-hook-based-session-status.md)'s glyph, the unread marker and the attention badge. No row may have two things changing colour at once.
 
 Liveness is the exception, and it is carried by opacity rather than hue. `sidebar_icon(path, live)` paints the icon in `theme::accent()` when a member session is `Running` and `theme::muted()` when none is; the parameter is named `active`, but every call site passes `live` — chat tabs, the mission flag, and the project folder. That is the rail's "something is running in here" signal, and a fixed brand tint would spend it. So a provider mark keeps its hue and renders dimmed at `0.45` when no member session is running, beside the label that already drops to `theme::faint()`. This matches the app's existing dimming idiom (`UNFOCUSED_PANE_OPACITY` is `0.7`; disabled controls sit at `0.5`–`0.6`). Shell, layout, mission-flag and project-folder glyphs keep the accent/muted pair exactly as it is.
 

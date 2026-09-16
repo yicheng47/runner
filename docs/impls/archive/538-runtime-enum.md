@@ -1,6 +1,6 @@
 # 538 — Replace bare runtime name strings with a `Runtime` enum
 
-Tracking issue: [#538](https://github.com/yicheng47/runner/issues/538). Shipped 2026-09-10 in [#543](https://github.com/yicheng47/runner/pull/543); archived 2026-09-10. Chore, P2. Baseline `main` at `23626c5` (2026-09-09). Consolidation-shaped like [478 pass 1](./478-consolidation-pass-1.md): one mission, one PR, one commit per numbered section, no behavior change beyond the one named below. Scheduled by the M6 audit ([m6-remainder](../gpui-rewrite/m6-remainder.md), "one mechanical commit at or after cutover"); the cutover landed 2026-08-23.
+Tracking issue: [#538](https://github.com/yicheng47/runner/issues/538). Shipped 2026-09-10 in [#543](https://github.com/yicheng47/runner/pull/543); archived 2026-09-10. Chore, P2. Baseline `main` at `23626c5` (2026-09-09). Consolidation-shaped like [478 pass 1](./478-consolidation-pass-1.md): one mission, one PR, one commit per numbered section, no behavior change beyond the one named below. Scheduled by the M6 audit ([m6-remainder](gpui-rewrite/m6-remainder.md), "one mechanical commit at or after cutover"); the cutover landed 2026-08-23.
 
 ## Why
 

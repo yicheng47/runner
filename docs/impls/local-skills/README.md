@@ -1,6 +1,6 @@
 # Local skills — program record
 
-Implementation program for [feature 73 — local skills management](../../features/73-runner-skills.md) ([#73](https://github.com/yicheng47/runner/issues/73)). The spec says *what*; this directory says *how, in what order, and what has landed*. Same shape as the [gpui-rewrite](../gpui-rewrite/README.md) record: this file is the condensed state and the decisions that bind, [plan.md](plan.md) is the milestone plan, [impl_log.md](impl_log.md) is the dated log. Mission briefs go where every brief lives, [`docs/impls/archive/gpui-rewrite/briefs/`](../archive/gpui-rewrite/briefs/), named `local-skills-s1-backend.md` and so on.
+Implementation program for [feature 73 — local skills management](../../features/archive/73-runner-skills.md) ([#73](https://github.com/yicheng47/runner/issues/73)). The spec says *what*; this directory says *how, in what order, and what has landed*. Same shape as the [gpui-rewrite](../archive/gpui-rewrite/README.md) record: this file is the condensed state and the decisions that bind, [plan.md](plan.md) is the milestone plan, [impl_log.md](impl_log.md) is the dated log. Mission briefs go where every brief lives, [`docs/impls/archive/gpui-rewrite/briefs/`](../archive/gpui-rewrite/briefs/), named `local-skills-s1-backend.md` and so on.
 
 ## Status (2026-09-09)
 
@@ -29,7 +29,7 @@ Settings → Skills shows each runtime's global skills and switches claude-code 
 
 ## Landing rule
 
-Each milestone is one `codex peer` mission on a task branch off `main`, working-tree review first, Jason smoke-tests, then PR → the one required check `Rust / macOS` → merge → a `docs(local-skills)` landing commit that moves the milestone from [plan.md](plan.md) into [impl_log.md](impl_log.md) and updates the status above. Migration `0021` is allocated to M2. Standing GPUI rules from the [gpui-rewrite record](../gpui-rewrite/README.md#standing-gpui-rules-every-brief-cites-them) apply to M1 and M3; crews do not launch the app.
+Each milestone is one `codex peer` mission on a task branch off `main`, working-tree review first, Jason smoke-tests, then PR → the one required check `Rust / macOS` → merge → a `docs(local-skills)` landing commit that moves the milestone from [plan.md](plan.md) into [impl_log.md](impl_log.md) and updates the status above. Migration `0021` is allocated to M2. Standing GPUI rules from the [gpui-rewrite record](../archive/gpui-rewrite/README.md#standing-gpui-rules-every-brief-cites-them) apply to M1 and M3; crews do not launch the app.
 
 ## History
 
