@@ -35,13 +35,13 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use chrono::{DateTime, Datelike, Local, Utc};
-use rusqlite::params;
-
 use crate::{
     db::DbPool,
     session::manager::{SessionEvents, SessionUpdatedEvent},
 };
+use chrono::{DateTime, Datelike, Local, Utc};
+#[cfg(test)]
+use rusqlite::params;
 
 const CAPTURE_TIMEOUT_SECS: u64 = 30;
 const POLL_INTERVAL_MS: u64 = 400;
@@ -319,39 +319,16 @@ fn fallback_row_is_unambiguous(
     spawn_cwd: &str,
 ) -> bool {
     let Ok(conn) = pool.get() else { return false };
-    let current_cwd = conn.query_row(
-        "SELECT s.cwd
-           FROM sessions s
-           LEFT JOIN runners r ON r.id = s.runner_id
-          WHERE s.id = ?1
-            AND s.started_at = ?2
-            AND s.status = 'running'
-            AND s.agent_session_key IS NULL
-            AND COALESCE(s.agent_runtime, r.runtime) = 'codex'",
-        params![session_id, expected_row_started_at],
-        |r| r.get::<_, Option<String>>(0),
-    );
+    let current_cwd =
+        crate::repo::session::codex_capture_cwd(&conn, session_id, expected_row_started_at);
     match current_cwd {
         Ok(Some(cwd)) if cwd != spawn_cwd => return false,
         Ok(_) => {}
         Err(_) => return false,
     }
 
-    let sibling_count = conn.query_row(
-        "SELECT COUNT(*)
-           FROM sessions s
-           LEFT JOIN runners r ON r.id = s.runner_id
-          WHERE s.status = 'running'
-            AND s.agent_session_key IS NULL
-            AND COALESCE(s.agent_runtime, r.runtime) = 'codex'
-            AND s.id <> ?1
-            AND (
-                s.cwd = ?2
-                OR s.cwd IS NULL
-            )",
-        params![session_id, spawn_cwd],
-        |r| r.get::<_, i64>(0),
-    );
+    let sibling_count =
+        crate::repo::session::count_codex_capture_siblings(&conn, session_id, spawn_cwd);
     sibling_count.map(|count| count == 0).unwrap_or(false)
 }
 
@@ -613,6 +590,25 @@ mod tests {
     use super::*;
     use crate::db;
     use std::io::Write;
+
+    fn seed_codex_role(conn: &rusqlite::Connection, role_id: &str) {
+        crate::test_support::insert_test_role(conn, role_id, "codex-capture", "codex", "codex");
+    }
+
+    fn insert_capture_session(
+        conn: &rusqlite::Connection,
+        session_id: &str,
+        role_id: &str,
+        started_at: &str,
+        cwd: Option<&str>,
+    ) {
+        let mut row =
+            crate::test_support::test_session_row(session_id, crate::model::SessionStatus::Running);
+        row.role_id = Some(role_id.into());
+        row.cwd = cwd.map(str::to_string);
+        row.started_at = Some(started_at.parse().unwrap());
+        crate::repo::session::insert(conn, &row).unwrap();
+    }
 
     fn write_meta(
         dir: &tempfile::TempDir,
@@ -947,25 +943,13 @@ mod tests {
     fn marker_scan_waits_on_single_candidate_when_fallback_owner_is_ambiguous() {
         let pool = db::open_in_memory().unwrap();
         let conn = pool.get().unwrap();
-        let runner_id = ulid::Ulid::new().to_string();
+        let role_id = ulid::Ulid::new().to_string();
         let current_id = ulid::Ulid::new().to_string();
         let sibling_id = ulid::Ulid::new().to_string();
         let row_started_at = "2026-06-20T12:00:00+00:00";
-        conn.execute(
-            "INSERT INTO runners
-                (id, handle, display_name, runtime, command, created_at, updated_at)
-             VALUES (?1, 'codex-capture', 'Codex Capture', 'codex', 'codex', ?2, ?2)",
-            params![runner_id, row_started_at],
-        )
-        .unwrap();
+        seed_codex_role(&conn, &role_id);
         for session_id in [&current_id, &sibling_id] {
-            conn.execute(
-                "INSERT INTO sessions
-                    (id, mission_id, runner_id, cwd, status, started_at, agent_session_key)
-                 VALUES (?1, NULL, ?2, '/repo', 'running', ?3, NULL)",
-                params![session_id, runner_id, row_started_at],
-            )
-            .unwrap();
+            insert_capture_session(&conn, session_id, &role_id, row_started_at, Some("/repo"));
         }
         drop(conn);
 
@@ -1027,26 +1011,14 @@ mod tests {
     fn persist_capture_requires_matching_row_started_at() {
         let pool = db::open_in_memory().unwrap();
         let conn = pool.get().unwrap();
-        let runner_id = ulid::Ulid::new().to_string();
+        let role_id = ulid::Ulid::new().to_string();
         let session_id = ulid::Ulid::new().to_string();
         let started_a = "2026-06-20T12:00:00+00:00";
         let started_b = "2026-06-20T12:01:00+00:00";
         let key_a = "019ee58f-fb81-7d53-ab71-06b471bb4247";
         let key_b = "019ee58f-fb81-7d53-ab71-06b471bb4248";
-        conn.execute(
-            "INSERT INTO runners
-                (id, handle, display_name, runtime, command, created_at, updated_at)
-             VALUES (?1, 'codex-capture', 'Codex Capture', 'codex', 'codex', ?2, ?2)",
-            params![runner_id, started_a],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO sessions
-                (id, mission_id, runner_id, status, started_at, agent_session_key)
-             VALUES (?1, NULL, ?2, 'running', ?3, NULL)",
-            params![session_id, runner_id, started_a],
-        )
-        .unwrap();
+        seed_codex_role(&conn, &role_id);
+        insert_capture_session(&conn, &session_id, &role_id, started_a, None);
         drop(conn);
 
         assert!(persist_capture(&pool, &session_id, started_a, key_a));
@@ -1093,25 +1065,13 @@ mod tests {
     fn fallback_row_is_unambiguous_requires_current_row_as_only_possible_owner_for_cwd() {
         let pool = db::open_in_memory().unwrap();
         let conn = pool.get().unwrap();
-        let runner_id = ulid::Ulid::new().to_string();
+        let role_id = ulid::Ulid::new().to_string();
         let current_id = ulid::Ulid::new().to_string();
         let sibling_id = ulid::Ulid::new().to_string();
         let started = "2026-06-20T12:00:00+00:00";
-        conn.execute(
-            "INSERT INTO runners
-                (id, handle, display_name, runtime, command, created_at, updated_at)
-             VALUES (?1, 'codex-fallback', 'Codex Fallback', 'codex', 'codex', ?2, ?2)",
-            params![runner_id, started],
-        )
-        .unwrap();
+        seed_codex_role(&conn, &role_id);
         for id in [&current_id, &sibling_id] {
-            conn.execute(
-                "INSERT INTO sessions
-                    (id, mission_id, runner_id, cwd, status, started_at, agent_session_key)
-                 VALUES (?1, NULL, ?2, '/repo', 'running', ?3, NULL)",
-                params![id, runner_id, started],
-            )
-            .unwrap();
+            insert_capture_session(&conn, id, &role_id, started, Some("/repo"));
         }
         drop(conn);
 
@@ -1164,31 +1124,13 @@ mod tests {
     fn fallback_row_is_unambiguous_treats_null_inherited_cwd_as_possible_same_cwd() {
         let pool = db::open_in_memory().unwrap();
         let conn = pool.get().unwrap();
-        let runner_id = ulid::Ulid::new().to_string();
+        let role_id = ulid::Ulid::new().to_string();
         let current_id = ulid::Ulid::new().to_string();
         let sibling_id = ulid::Ulid::new().to_string();
         let started = "2026-06-20T12:00:00+00:00";
-        conn.execute(
-            "INSERT INTO runners
-                (id, handle, display_name, runtime, command, created_at, updated_at)
-             VALUES (?1, 'codex-inherited', 'Codex Inherited', 'codex', 'codex', ?2, ?2)",
-            params![runner_id, started],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO sessions
-                (id, mission_id, runner_id, cwd, status, started_at, agent_session_key)
-             VALUES (?1, NULL, ?2, NULL, 'running', ?3, NULL)",
-            params![current_id, runner_id, started],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO sessions
-                (id, mission_id, runner_id, cwd, status, started_at, agent_session_key)
-             VALUES (?1, NULL, ?2, '/repo', 'running', ?3, NULL)",
-            params![sibling_id, runner_id, started],
-        )
-        .unwrap();
+        seed_codex_role(&conn, &role_id);
+        insert_capture_session(&conn, &current_id, &role_id, started, None);
+        insert_capture_session(&conn, &sibling_id, &role_id, started, Some("/repo"));
         drop(conn);
 
         assert!(

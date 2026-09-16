@@ -70,7 +70,7 @@ impl SessionManager {
     // The thread genuinely needs every one of these — session_id /
     // mission_id for event payloads, runtime_session for status
     // queries, output for the input stream, pool for the DB row
-    // update, events for emitter dispatch, runner for the
+    // update, events for emitter dispatch, role for the
     // post-reap activity recompute, emit_ctx for the synthetic
     // runner_status events the forwarder appends to the mission's
     // event log (issue #124). Bundling into a Context struct just
@@ -84,7 +84,7 @@ impl SessionManager {
         output: OutputStream,
         pool: Arc<DbPool>,
         events: Arc<dyn SessionEvents>,
-        runner: Runner,
+        role: Role,
         resuming: bool,
         emit_activity: bool,
         emit_ctx: Option<ForwarderEmitCtx>,
@@ -276,12 +276,12 @@ impl SessionManager {
                     kind: "resume_failed".into(),
                     message: format!(
                         "Could not resume the previous {} conversation; the next launch will start fresh.",
-                        runner.runtime
+                        role.runtime
                     ),
                 });
             }
             if emit_activity {
-                emit_runner_activity(&pool, &runner, events.as_ref());
+                emit_role_activity(&pool, &role, events.as_ref());
             }
             manager_t.record_exit_status(
                 &session_id,

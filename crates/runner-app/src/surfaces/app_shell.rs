@@ -20,8 +20,8 @@ const SETTINGS_FOOTER_LINE_HEIGHT: f32 = 18.;
 pub(crate) enum AppRoute {
     #[default]
     Chat,
-    Runners,
-    RunnerDetail(String),
+    Roles,
+    RoleDetail(String),
     Crews,
     CrewEditor(String),
     Mission(String),
@@ -116,6 +116,9 @@ impl NativeRoot {
             .children(sidebar)
             .child(
                 div()
+                    .when(cfg!(test), |column| {
+                        column.debug_selector(|| "APP_CONTENT_COLUMN".into())
+                    })
                     .relative()
                     .flex_1()
                     .min_w(px(0.))
@@ -123,7 +126,8 @@ impl NativeRoot {
                     .flex()
                     .flex_col()
                     .children(self.render_main_titlebar_drag_area(cx))
-                    .child(workspace),
+                    .child(workspace)
+                    .children(self.render_entity_sidebar_toggle(window, cx)),
             )
             .children(preview_trigger)
             .children(chat_rename_modal)
@@ -725,6 +729,53 @@ impl NativeRoot {
         }
     }
 
+    /// Chat panes and the mission workspace carry the open-sidebar cluster in
+    /// their own 44 px header rows; the entity pages have no header row, so the
+    /// shell pins the same cluster into a row of that height for them, level
+    /// with the traffic lights, painted after the page so nothing covers it.
+    fn render_entity_sidebar_toggle(
+        &self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        if !matches!(
+            self.route,
+            AppRoute::Roles | AppRoute::RoleDetail(_) | AppRoute::Crews | AppRoute::CrewEditor(_)
+        ) {
+            return None;
+        }
+        let button = self.render_open_sidebar_button(cx)?;
+        Some(
+            div()
+                .when(cfg!(test), |toggle| {
+                    toggle.debug_selector(|| "ENTITY_SIDEBAR_TOGGLE".into())
+                })
+                .absolute()
+                .top_0()
+                .left(px(self.workspace_titlebar_padding(window, cx)))
+                .h(gpui::rems(runner_app::ui::WORKSPACE_HEADER_HEIGHT / 16.))
+                .flex()
+                .items_center()
+                .child(button)
+                .into_any_element(),
+        )
+    }
+
+    /// Whether the window's previous / next page arrows are enabled. The
+    /// arrows live in the macOS title-bar clusters; Windows chrome computes
+    /// its own.
+    #[cfg(target_os = "macos")]
+    pub(crate) fn page_navigation_state(&self) -> (bool, bool) {
+        let in_settings = self.route == AppRoute::Settings;
+        let can_go_back =
+            !in_settings && self.runtime_navigation_index.is_some_and(|index| index > 0);
+        let can_go_forward = !in_settings
+            && self
+                .runtime_navigation_index
+                .is_some_and(|index| index + 1 < self.runtime_navigation_history.len());
+        (can_go_back, can_go_forward)
+    }
+
     pub(crate) fn workspace_titlebar_padding(&self, window: &Window, cx: &App) -> f32 {
         #[cfg(target_os = "macos")]
         {
@@ -863,8 +914,8 @@ impl NativeRoot {
                 }
                 cx.notify();
             }
-            AppRoute::Runners => self.open_runners(window, cx),
-            AppRoute::RunnerDetail(handle) => self.open_runner_detail(handle, window, cx),
+            AppRoute::Roles => self.open_roles(window, cx),
+            AppRoute::RoleDetail(handle) => self.open_role_detail(handle, window, cx),
             AppRoute::Crews => self.open_crews(window, cx),
             AppRoute::CrewEditor(crew_id) => self.open_crew_editor(crew_id, window, cx),
             AppRoute::Mission(mission_id) => self.open_mission(mission_id, window, cx),
@@ -1059,7 +1110,7 @@ mod tests {
         );
         for route in [
             AppRoute::Mission("mission-2".into()),
-            AppRoute::Runners,
+            AppRoute::Roles,
             AppRoute::Settings,
             AppRoute::Chat,
         ] {

@@ -368,13 +368,13 @@ impl Sidebar {
                         }
                     })
                 }
-                WorkspaceEntry::Runner => {
-                    workspace_row("workspace-runner", "terminal.svg", "runner", active, {
+                WorkspaceEntry::Role => {
+                    workspace_row("workspace-role", "user.svg", "role", active, {
                         let shell = self.shell.clone();
                         move |window, cx| {
                             if let Some(shell) = shell.upgrade() {
                                 shell.update(cx, |shell, shell_cx| {
-                                    shell.open_runners(window, shell_cx)
+                                    shell.open_roles(window, shell_cx)
                                 });
                             }
                         }

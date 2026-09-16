@@ -239,8 +239,8 @@ fn expand_home(path: &str, home: Option<&Path>) -> String {
     path.to_string()
 }
 
-/// Env var names users must not set on a runner row. These are
-/// owned by the launcher itself; letting a runner env entry shadow
+/// Env var names users must not set on a role row. These are
+/// owned by the launcher itself; letting a role env entry shadow
 /// them defeats the deterministic-spawn guarantees the launcher is
 /// designed to provide. Currently a one-element list — `PATH` —
 /// because that's the only one wiring the GUI-launch fix from
@@ -248,7 +248,7 @@ fn expand_home(path: &str, home: Option<&Path>) -> String {
 /// `DYLD_*`) only when a concrete need arises.
 pub const RESERVED_ENV_NAMES: &[&str] = &["PATH"];
 
-/// True if `s` is a name we ban runners from setting via their
+/// True if `s` is a name we ban roles from setting via their
 /// env map. See `RESERVED_ENV_NAMES`.
 pub fn is_reserved_env_name(s: &str) -> bool {
     RESERVED_ENV_NAMES.contains(&s)
@@ -260,7 +260,7 @@ pub fn is_reserved_env_name(s: &str) -> bool {
 /// shape. Platform process APIs can reject malformed names, while
 /// names outside this shape cannot be referenced as ordinary variables
 /// by shells the agent launches. Validate at every layer that touches
-/// user-supplied env: the runner-edit form on persist and the runtime
+/// user-supplied env: the role-edit form on persist and the runtime
 /// spawn path both reject a bad name, so legacy or directly constructed
 /// rows fail clearly before the child process is spawned.
 pub fn is_valid_env_name(s: &str) -> bool {

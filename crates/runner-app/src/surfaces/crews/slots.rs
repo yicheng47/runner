@@ -11,7 +11,7 @@ use runner_app::ui::{
     ConfirmDialog, ContextMenu, IconButton, IconButtonSize, MenuItem as UiMenuItem, RuntimeBadge,
     Tooltip,
 };
-use runner_backend::model::SlotWithRunner;
+use runner_backend::model::SlotWithRole;
 
 use super::*;
 use crate::surfaces::*;
@@ -20,7 +20,7 @@ use crate::*;
 impl NativeRoot {
     pub(super) fn render_slot_list(
         &mut self,
-        slots: Vec<SlotWithRunner>,
+        slots: Vec<SlotWithRole>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         if slots.is_empty() {
@@ -66,7 +66,7 @@ impl NativeRoot {
 
     fn render_slot_row(
         &self,
-        slot: SlotWithRunner,
+        slot: SlotWithRole,
         index: usize,
         total: usize,
         cx: &mut Context<Self>,
@@ -75,10 +75,10 @@ impl NativeRoot {
             .slot
             .runtime_override
             .as_deref()
-            .unwrap_or(&slot.runner.runtime)
+            .unwrap_or(&slot.role.runtime)
             .to_owned();
         let runtime_overridden =
-            slot.slot.runtime_override.is_some() && effective_runtime != slot.runner.runtime;
+            slot.slot.runtime_override.is_some() && effective_runtime != slot.role.runtime;
         let summary = slot_command_summary(&slot);
         let draggable = total > 1 && !self.crew_surfaces.editor.reordering;
         let active_drop = self.crew_surfaces.editor.drop_target == Some(index)
@@ -166,11 +166,11 @@ impl NativeRoot {
                                 )),
                                 if runtime_overridden {
                                     format!(
-                                        "Runtime override — runner default is {}",
-                                        slot.runner.runtime
+                                        "Runtime override — role default is {}",
+                                        slot.role.runtime
                                     )
                                 } else {
-                                    "Runtime (runner default)".to_owned()
+                                    "Runtime (role default)".to_owned()
                                 },
                                 RuntimeBadge::new(effective_runtime).overridden(runtime_overridden),
                             ))
@@ -179,10 +179,10 @@ impl NativeRoot {
                                     .font_family(theme::UI_MONOSPACE_FONT)
                                     .text_size(theme::text_meta())
                                     .text_color(theme::faint())
-                                    .child(format!("from @{}", slot.runner.handle)),
+                                    .child(format!("from @{}", slot.role.handle)),
                             ),
                     )
-                    .children(slot.runner.system_prompt.clone().map(|prompt| {
+                    .children(slot.role.system_prompt.clone().map(|prompt| {
                         let prompt = prompt.split_whitespace().collect::<Vec<_>>().join(" ");
                         div()
                             .w_full()
@@ -253,7 +253,7 @@ impl NativeRoot {
 
     fn open_slot_menu(
         &mut self,
-        slot: SlotWithRunner,
+        slot: SlotWithRole,
         position: gpui::Point<gpui::Pixels>,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -271,7 +271,7 @@ impl NativeRoot {
             })
             .icon("star.svg")
             .disabled(slot.slot.lead),
-            UiMenuItem::new("Edit runner").icon("square-pen.svg"),
+            UiMenuItem::new("Edit role").icon("square-pen.svg"),
             UiMenuItem::new("Remove from crew")
                 .icon("trash.svg")
                 .separator_before(true)
@@ -317,7 +317,7 @@ impl NativeRoot {
         match action {
             SlotMenuAction::SetLead(slot_id) => self.set_crew_lead(slot_id, cx),
             SlotMenuAction::Edit(slot) => {
-                self.open_runner_edit(slot.runner.clone(), Some(slot), window, cx)
+                self.open_role_edit(slot.role.clone(), Some(slot), window, cx)
             }
             SlotMenuAction::Remove(slot) => {
                 self.crew_surfaces.slot_remove_confirm = Some(SlotRemoveConfirm { slot });

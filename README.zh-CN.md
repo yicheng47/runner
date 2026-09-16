@@ -18,7 +18,7 @@
 </p>
 
 <p align="center">
-  <strong>创建 runner，组建 crew，交付功能。</strong>
+  <strong>编写角色，组建 crew，交付功能。</strong>
   <br />
   一个专为编排编码 agent 而生的原生终端。Claude Code 和 Codex 保留各自的 TUI，Runner 在它们之上加上会话、技能和 crew。
 </p>
@@ -55,8 +55,8 @@
 
 Runner 是一个原生桌面应用，用来同时运行多个命令行编码 agent。Claude Code 和 Codex 在真实终端里保留自己的 TUI，Runner 是包在它们外面的那一层。
 
-- **Runner** — 一份可复用的 agent 配置：运行时、角色、系统提示词、工作目录。
-- **Crew** — 把若干 runner 组合成有名字的槽位，指定一个 lead，再加上每个 mission 都会继承的团队约定。
+- **角色（role）** — 一份可复用的 agent 配置：运行时、系统提示词、工作目录。
+- **Crew** — 把若干角色组合成有名字的槽位，指定一个 lead，再加上每个 mission 都会继承的团队约定。
 - **Mission** — 一个 crew 围绕一个目标干活：每个槽位一个实时终端，通过一条可持久化、可回放的事件 feed 协作，需要你拍板时用 `ask_human` 提问。
 - **Chat** — 单个 agent 跑在一个真实终端里，不需要 mission；一个标签页最多并排三个。
 - **MCP** — 上面的一切也都是 MCP 工具，你的 agent 可以自己操作 Runner。
@@ -95,7 +95,7 @@ https://github.com/user-attachments/assets/fb3669a4-010d-42d0-9555-2a3ba3223c75
 
 ### Crew — 角色、提示词、一个 lead
 
-**runner** 是一份可复用的 agent 配置：运行时、角色、系统提示词、工作目录。**crew** 把 runner 组合成有名字的槽位，指定唯一一个 lead，再加上团队约定和完成定义，每个 mission 都会继承。
+**角色（role）** 是一份可复用的 agent 配置：运行时、系统提示词、工作目录。**crew** 把角色组合成有名字的槽位，指定唯一一个 lead，再加上团队约定和完成定义，每个 mission 都会继承。
 
 </td>
 </tr>
@@ -108,7 +108,7 @@ https://github.com/user-attachments/assets/fb3669a4-010d-42d0-9555-2a3ba3223c75
 
 ### Mission — 一个 crew 围绕一个目标
 
-启动 mission 会为每个槽位拉起一个实时 PTY，放进一个带标签页的工作区。**feed** 是 crew 协作的地方：一条只追加的事件日志，每条信号都持久化、可回放，所以 mission 能扛住退出或崩溃，`ask_human` 的问题也会在这里等你回答。每个**槽位**都是隔壁标签页里的一个真实终端，跑着 agent 自己的 TUI，你可以看、可以输入，也可以单独停止、恢复或重启这个 runner。
+启动 mission 会为每个槽位拉起一个实时 PTY，放进一个带标签页的工作区。**feed** 是 crew 协作的地方：一条只追加的事件日志，每条信号都持久化、可回放，所以 mission 能扛住退出或崩溃，`ask_human` 的问题也会在这里等你回答。每个**槽位**都是隔壁标签页里的一个真实终端，跑着 agent 自己的 TUI，你可以看、可以输入，也可以单独停止、恢复或重启这个会话。
 
 [架构 →](./docs/arch/arch.md)
 
@@ -123,7 +123,7 @@ https://github.com/user-attachments/assets/fb3669a4-010d-42d0-9555-2a3ba3223c75
 
 ### Chat — 标签页、分栏、文件夹
 
-每个 chat 都是和一个 runner 一对一的真实 PTY，不需要 mission。标签页可以一直分栏到窗口放不下为止——从任意一栏向右或向下分（`⌘D`、`⇧⌘D`），拖动把手就能重新排列各栏；终端标签页同样可以分栏，直接开出另一个 shell。侧边栏把标签页归进可折叠的文件夹；某一栏还在工作时标签页显示转圈，你不在时有一栏完成了则显示一个圆点，一整墙并行的 agent 也能一眼扫清。
+每个 chat 都是和一个角色一对一的真实 PTY，不需要 mission。标签页可以一直分栏到窗口放不下为止——从任意一栏向右或向下分（`⌘D`、`⇧⌘D`），拖动把手就能重新排列各栏；终端标签页同样可以分栏，直接开出另一个 shell。侧边栏把标签页归进可折叠的文件夹；某一栏还在工作时标签页显示转圈，你不在时有一栏完成了则显示一个圆点，一整墙并行的 agent 也能一眼扫清。
 
 </td>
 </tr>
@@ -190,7 +190,7 @@ Carbon 和 Runner Light 是 Runner 自己的主题，Catppuccin Mocha 和 Latte 
 ### 还有这些
 
 - **项目** — 绑定一次工作目录；在项目里发起的 chat 和 mission 都会继承它的 cwd，并归在侧边栏里自己的分组下。agent 也可以通过 MCP 创建、重命名、归档和删除项目。
-- **Mission 控制** — 停止、恢复或重启单个槽位，不用重启整个 mission；重启的 runner 会带着最初的任务简报重新开始。mission 默认以 Bypass 权限模式运行，Accept-edits 和 Default 在设置里一步可达，也不会卡在 agent 的首次授权对话框上。
+- **Mission 控制** — 停止、恢复或重启单个槽位，不用重启整个 mission；重启的会话会带着最初的任务简报重新开始。mission 默认以 Bypass 权限模式运行，Accept-edits 和 Default 在设置里一步可达，也不会卡在 agent 的首次授权对话框上。
 - **会话不随应用退出而结束** — 退出或崩溃不会杀掉你的 agent；下次启动会重新接上仍在运行的会话，工作进行中时退出会先询问。
 - **真实终端** — 每一栏都是跑在 GPU 绘制的 `alacritty_terminal` 网格上的真实 PTY：agent 自己的配色、鼠标上报、输入法（包括拼音）、复制、文件路径粘贴、10,000 行回滚。点击文件路径可在编辑器里打开；选中一段输出可以在侧线程里追问；⌘+ 和 ⌘− 把整个应用从 60% 缩放到 200%。
 - **内置 `runner` CLI** — 被拉起的 agent 可以在自己的 PTY 里互发消息、查看 crew 名册、发送信号。
@@ -220,9 +220,9 @@ agent 的命令行工具需要单独安装。Runner 会在 `PATH` 上检测它�
 
 ## 示例 Crew
 
-**Runner 的默认形态**是一个双 runner 的结对编程循环：一个实现，一个审查，循环基于工作树 diff 一直跑到审查通过为止。没有架构师，没有派发开销，只有一个仍然保留第二双眼睛的最紧凑的循环。Runner 首次启动时会预置这个 crew，源文件在 [`examples/peer-coding/`](./examples/peer-coding/)。
+**Runner 的默认形态**是一个双角色的结对编程循环：一个实现，一个审查，循环基于工作树 diff 一直跑到审查通过为止。没有架构师，没有派发开销，只有一个仍然保留第二双眼睛的最紧凑的循环。Runner 首次启动时会预置这个 crew，源文件在 [`examples/peer-coding/`](./examples/peer-coding/)。
 
-| Runner | 运行时 | 角色 | 系统提示词 |
+| 角色（role） | 运行时 | 职责 | 系统提示词 |
 | --- | --- | --- | --- |
 | **@coder**（lead） | `codex` | 开分支、实现、跑检查，把 diff 交给 reviewer，修复发现的问题。 | [`coder.md`](./examples/peer-coding/coder.md) |
 | **@reviewer** | `codex` | 阅读工作树 diff，用 file:line 指出必须修复的问题，从不改代码。 | [`reviewer.md`](./examples/peer-coding/reviewer.md) |

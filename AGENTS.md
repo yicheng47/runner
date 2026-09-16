@@ -6,16 +6,14 @@ file such as `CLAUDE.md`.
 
 ## Product Context
 
-Runner is a local desktop app for coordinating multiple CLI coding agents from
-one UI. Users create reusable runners, compose them into crews, start missions,
-and interact with each runner through a real PTY.
+Runner is a local desktop app for coordinating multiple CLI coding agents from one UI. Users create reusable roles, compose them into crews, start missions, and interact with each session through a real PTY.
 
 Core vocabulary:
 
-- **Runner**: a configured CLI agent runtime, role, and system prompt.
-- **Crew**: a named set of runner slots with exactly one lead.
+- **Role**: a configured CLI agent runtime and system prompt, reusable across crews.
+- **Crew**: a named set of slots, each filled by a role, with exactly one lead.
 - **Mission**: a live run of a crew, with one session per slot.
-- **Session**: one spawned runner process attached to a PTY.
+- **Session**: one spawned agent process attached to a PTY.
 - **Event**: an NDJSON log entry used for mission coordination.
 
 Surface hierarchy (strict — do not blur these in code, docs, or UI copy):

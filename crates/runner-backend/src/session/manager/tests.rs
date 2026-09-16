@@ -2,13 +2,13 @@ use super::*;
 use crate::model::Runtime;
 
 // These tests don't touch the GPUI frontend — they hit the PTY layer directly. We
-// build a minimal `Runner` row, skip the DB (the SessionManager writes
+// build a minimal `Role` row, skip the DB (the SessionManager writes
 // to DB on spawn), and cover: spawn-echo-readback, inject-stdin-roundtrip,
 // and exit-emits-correct-status. For DB coverage we use the app's
 // file-backed pool helper.
 
 use crate::db;
-use crate::model::{MissionStatus, Runner};
+use crate::model::{MissionStatus, Role};
 use crate::router::runtime::MissionPermissionMode;
 use crate::session::runtime::{
     OutputStream, RuntimeError, RuntimeResult, RuntimeSession, SessionRuntime, SessionStatus,
@@ -410,7 +410,7 @@ fn forward_queued_output(items: Vec<RuntimeOutput>) -> Vec<ForwardedEvent> {
         output,
         pool_with_schema(),
         capture.clone(),
-        runner("fake", &[]),
+        role("fake", &[]),
         false,
         false,
         None,
@@ -465,7 +465,7 @@ fn forwarder_delivers_a_cursor_burst_without_waiting_for_eof() {
         output,
         pool_with_schema(),
         capture.clone(),
-        runner("fake", &[]),
+        role("fake", &[]),
         false,
         false,
         None,
@@ -546,7 +546,7 @@ struct Capture {
     updated: Mutex<Vec<SessionUpdatedEvent>>,
     fork_started: Mutex<Vec<SessionForkStartedEvent>>,
     status: Mutex<Vec<SessionActivityEvent>>,
-    activity: Mutex<Vec<RunnerActivityEvent>>,
+    activity: Mutex<Vec<RoleActivityEvent>>,
 }
 impl SessionEvents for Capture {
     fn output(&self, ev: &OutputEvent) {
@@ -564,13 +564,13 @@ impl SessionEvents for Capture {
     fn status(&self, ev: &SessionActivityEvent) {
         self.status.lock().unwrap().push(ev.clone());
     }
-    fn runner_activity(&self, ev: &RunnerActivityEvent) {
+    fn role_activity(&self, ev: &RoleActivityEvent) {
         self.activity.lock().unwrap().push(ev.clone());
     }
 }
 
-fn runner(command: &str, args: &[&str]) -> Runner {
-    Runner {
+fn role(command: &str, args: &[&str]) -> Role {
+    Role {
         id: ulid::Ulid::new().to_string(),
         handle: "tester".into(),
         display_name: "Tester".into(),
@@ -587,6 +587,14 @@ fn runner(command: &str, args: &[&str]) -> Runner {
     }
 }
 
+fn insert_role_row(conn: &rusqlite::Connection, role: &Role) {
+    crate::repo::role::insert(conn, &crate::repo::role::RoleRow::from(role)).unwrap();
+}
+
+fn update_role_row(conn: &rusqlite::Connection, role: &Role) {
+    crate::repo::role::update(conn, &crate::repo::role::RoleRow::from(role)).unwrap();
+}
+
 fn assert_effective_command(command: &str, catalog_name: &str) {
     let path = std::path::Path::new(command);
     #[cfg(windows)]
@@ -600,12 +608,12 @@ fn assert_effective_command(command: &str, catalog_name: &str) {
     );
 }
 
-fn slot_for(runner: &Runner) -> crate::model::Slot {
+fn slot_for(role: &Role) -> crate::model::Slot {
     crate::model::Slot {
         id: ulid::Ulid::new().to_string(),
         crew_id: "c".into(),
-        runner_id: runner.id.clone(),
-        slot_handle: runner.handle.clone(),
+        role_id: role.id.clone(),
+        slot_handle: role.handle.clone(),
         position: 0,
         lead: true,
         runtime_override: None,
@@ -798,11 +806,11 @@ fn pool_with_schema() -> Arc<DbPool> {
     Arc::new(db::open_pool(&path).unwrap())
 }
 
-fn insert_crew_runner(pool: &DbPool, mission_id: &str, runner_id: &str) -> String {
-    // Satisfy the FKs the `sessions` INSERT needs (crew, global runner,
+fn insert_crew_role(pool: &DbPool, mission_id: &str, role_id: &str) -> String {
+    // Satisfy the FKs the `sessions` INSERT needs (crew, global role,
     // slot, mission) and return the slot id so the caller can build a
     // matching `Slot` to hand to `spawn`. Post-crew-slots, membership
-    // lives on `slots` and runners no longer carry `role`.
+    // lives on `slots` and roles no longer carry `role`.
     let conn = pool.get().unwrap();
     let now = Utc::now().to_rfc3339();
     let slot_id = ulid::Ulid::new().to_string();
@@ -812,23 +820,8 @@ fn insert_crew_runner(pool: &DbPool, mission_id: &str, runner_id: &str) -> Strin
         params![now],
     )
     .unwrap();
-    conn.execute(
-        "INSERT INTO runners
-                (id, handle, display_name, runtime, command,
-                 args_json, working_dir, system_prompt, env_json,
-                 created_at, updated_at)
-             VALUES (?1, 't', 'T', 'shell', '/bin/sh',
-                     NULL, NULL, NULL, NULL, ?2, ?2)",
-        params![runner_id, now],
-    )
-    .unwrap();
-    conn.execute(
-        "INSERT INTO slots
-                (id, crew_id, runner_id, slot_handle, position, lead, added_at)
-             VALUES (?1, 'c', ?2, 't', 0, 1, ?3)",
-        params![slot_id, runner_id, now],
-    )
-    .unwrap();
+    crate::test_support::insert_test_role(&conn, role_id, "t", "shell", "/bin/sh");
+    crate::test_support::insert_test_slot(&conn, &slot_id, "c", role_id, "t", 0, true);
     conn.execute(
         "INSERT INTO missions (id, crew_id, title, status, started_at)
              VALUES (?1, 'c', 't', 'running', ?2)",
@@ -847,15 +840,15 @@ fn concurrent_missions_on_same_crew_keep_session_state_isolated() {
     // Per #55 the per-crew "at most one live mission" guard was
     // lifted. The contract that makes that safe is mission-id
     // namespacing: `sessions.mission_id` is a foreign key,
-    // `kill_all_for_mission` filters on `mission_id`, the runner
+    // `kill_all_for_mission` filters on `mission_id`, the role
     // CLI shim path is keyed by mission_id, etc. This test pins
     // the session-isolation half of that contract: spawn one
-    // session per mission against the same crew + same runner
+    // session per mission against the same crew + same role
     // template, assert both alive concurrently, then assert
     // `kill_all_for_mission(A)` reaps A's session and leaves B's
     // alone.
     let pool = pool_with_schema();
-    let runner_id = ulid::Ulid::new().to_string();
+    let role_id = ulid::Ulid::new().to_string();
     let crew_id = "c-concurrent".to_string();
     let slot_id = ulid::Ulid::new().to_string();
     let mission_a = ulid::Ulid::new().to_string();
@@ -869,23 +862,16 @@ fn concurrent_missions_on_same_crew_keep_session_state_isolated() {
             params![crew_id, now],
         )
         .unwrap();
-        conn.execute(
-            "INSERT INTO runners
-                    (id, handle, display_name, runtime, command,
-                     args_json, working_dir, system_prompt, env_json,
-                     created_at, updated_at)
-                 VALUES (?1, 'concurrent', 'C', 'shell', '/bin/cat',
-                         NULL, NULL, NULL, NULL, ?2, ?2)",
-            params![runner_id, now],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO slots
-                    (id, crew_id, runner_id, slot_handle, position, lead, added_at)
-                 VALUES (?1, ?2, ?3, 'concurrent', 0, 1, ?4)",
-            params![slot_id, crew_id, runner_id, now],
-        )
-        .unwrap();
+        crate::test_support::insert_test_role(&conn, &role_id, "concurrent", "shell", "/bin/cat");
+        crate::test_support::insert_test_slot(
+            &conn,
+            &slot_id,
+            &crew_id,
+            &role_id,
+            "concurrent",
+            0,
+            true,
+        );
         for mid in [&mission_a, &mission_b] {
             conn.execute(
                 "INSERT INTO missions (id, crew_id, title, status, started_at)
@@ -896,10 +882,10 @@ fn concurrent_missions_on_same_crew_keep_session_state_isolated() {
         }
     }
 
-    let mut runner = runner("/bin/cat", &[]);
-    runner.id = runner_id.clone();
-    runner.handle = "concurrent".into();
-    let mut slot = slot_for(&runner);
+    let mut role = role("/bin/cat", &[]);
+    role.id = role_id.clone();
+    role.handle = "concurrent".into();
+    let mut slot = slot_for(&role);
     slot.id = slot_id.clone();
     slot.crew_id = crew_id.clone();
 
@@ -919,7 +905,7 @@ fn concurrent_missions_on_same_crew_keep_session_state_isolated() {
     let spawned_a = mgr
         .spawn(
             &mission_row_a,
-            &runner,
+            &role,
             &slot,
             fixture_tmp_dir(),
             PathBuf::from("/dev/null"),
@@ -931,7 +917,7 @@ fn concurrent_missions_on_same_crew_keep_session_state_isolated() {
     let spawned_b = mgr
         .spawn(
             &mission_row_b,
-            &runner,
+            &role,
             &slot,
             fixture_tmp_dir(),
             PathBuf::from("/dev/null"),
@@ -1024,16 +1010,16 @@ fn concurrent_missions_on_same_crew_keep_session_state_isolated() {
 fn mission_slot_exit_reaps_live_siblings_and_keeps_mission_running() {
     let pool = pool_with_schema();
     let mission_id = ulid::Ulid::new().to_string();
-    let runner_id = ulid::Ulid::new().to_string();
-    let slot_id = insert_crew_runner(&pool, &mission_id, &runner_id);
+    let role_id = ulid::Ulid::new().to_string();
+    let slot_id = insert_crew_role(&pool, &mission_id, &role_id);
     let mission = Mission {
         id: mission_id.clone(),
         crew_id: "c".into(),
         ..mission()
     };
-    let mut runner = runner("/bin/cat", &[]);
-    runner.id = runner_id;
-    let mut slot = slot_for(&runner);
+    let mut role = role("/bin/cat", &[]);
+    role.id = role_id;
+    let mut slot = slot_for(&role);
     slot.id = slot_id;
     slot.crew_id = "c".into();
 
@@ -1042,7 +1028,7 @@ fn mission_slot_exit_reaps_live_siblings_and_keeps_mission_running() {
     let first = mgr
         .spawn(
             &mission,
-            &runner,
+            &role,
             &slot,
             fixture_tmp_dir(),
             PathBuf::from("/dev/null"),
@@ -1054,7 +1040,7 @@ fn mission_slot_exit_reaps_live_siblings_and_keeps_mission_running() {
     let sibling = mgr
         .spawn(
             &mission,
-            &runner,
+            &role,
             &slot,
             fixture_tmp_dir(),
             PathBuf::from("/dev/null"),
@@ -1116,16 +1102,16 @@ fn mission_slot_exit_reaps_live_siblings_and_keeps_mission_running() {
 fn mission_slot_exit_cancels_pending_sibling_spawns() {
     let pool = pool_with_schema();
     let mission_id = ulid::Ulid::new().to_string();
-    let runner_id = ulid::Ulid::new().to_string();
-    let slot_id = insert_crew_runner(&pool, &mission_id, &runner_id);
+    let role_id = ulid::Ulid::new().to_string();
+    let slot_id = insert_crew_role(&pool, &mission_id, &role_id);
     let mission = Mission {
         id: mission_id.clone(),
         crew_id: "c".into(),
         ..mission()
     };
-    let mut runner = runner("/bin/cat", &[]);
-    runner.id = runner_id;
-    let mut slot = slot_for(&runner);
+    let mut role = role("/bin/cat", &[]);
+    role.id = role_id;
+    let mut slot = slot_for(&role);
     slot.id = slot_id;
     slot.crew_id = "c".into();
 
@@ -1133,7 +1119,7 @@ fn mission_slot_exit_cancels_pending_sibling_spawns() {
     let mgr = mgr_with_fake(None, Arc::clone(&fake));
     mgr.spawn(
         &mission,
-        &runner,
+        &role,
         &slot,
         fixture_tmp_dir(),
         PathBuf::from("/dev/null"),
@@ -1160,16 +1146,16 @@ fn mission_slot_exit_cancels_pending_sibling_spawns() {
 fn intentional_mission_kill_does_not_reap_siblings_from_exit_epilogue() {
     let pool = pool_with_schema();
     let mission_id = ulid::Ulid::new().to_string();
-    let runner_id = ulid::Ulid::new().to_string();
-    let slot_id = insert_crew_runner(&pool, &mission_id, &runner_id);
+    let role_id = ulid::Ulid::new().to_string();
+    let slot_id = insert_crew_role(&pool, &mission_id, &role_id);
     let mission = Mission {
         id: mission_id.clone(),
         crew_id: "c".into(),
         ..mission()
     };
-    let mut runner = runner("/bin/cat", &[]);
-    runner.id = runner_id;
-    let mut slot = slot_for(&runner);
+    let mut role = role("/bin/cat", &[]);
+    role.id = role_id;
+    let mut slot = slot_for(&role);
     slot.id = slot_id;
     slot.crew_id = "c".into();
 
@@ -1178,7 +1164,7 @@ fn intentional_mission_kill_does_not_reap_siblings_from_exit_epilogue() {
     let first = mgr
         .spawn(
             &mission,
-            &runner,
+            &role,
             &slot,
             fixture_tmp_dir(),
             PathBuf::from("/dev/null"),
@@ -1190,7 +1176,7 @@ fn intentional_mission_kill_does_not_reap_siblings_from_exit_epilogue() {
     let sibling = mgr
         .spawn(
             &mission,
-            &runner,
+            &role,
             &slot,
             fixture_tmp_dir(),
             PathBuf::from("/dev/null"),
@@ -1246,28 +1232,13 @@ fn spawn_marks_session_stopped_after_runtime_channel_closes() {
     // 'stopped', and emit ExitEvent with success=true.
     let pool = pool_with_schema();
     let mission = mission();
-    let mut runner = runner("/bin/sh", &["-c", "echo hi"]);
-    insert_crew_runner(&pool, &mission.id, &runner.id);
-    runner.id = {
-        let conn = pool.get().unwrap();
-        let id: String = conn
-            .query_row("SELECT id FROM runners LIMIT 1", [], |r| r.get(0))
-            .unwrap();
-        id
-    };
-    let fresh_mission_id = {
-        let conn = pool.get().unwrap();
-        let id: String = conn
-            .query_row("SELECT id FROM missions LIMIT 1", [], |r| r.get(0))
-            .unwrap();
-        id
-    };
+    let role = role("/bin/sh", &["-c", "echo hi"]);
+    insert_crew_role(&pool, &mission.id, &role.id);
     let project = {
         let conn = pool.get().unwrap();
         crate::repo::project::create(&conn, "Runner", "/tmp/runner").unwrap()
     };
     let mission = Mission {
-        id: fresh_mission_id,
         project_id: Some(project.id.clone()),
         ..mission
     };
@@ -1275,11 +1246,11 @@ fn spawn_marks_session_stopped_after_runtime_channel_closes() {
     let fake = fake_runtime();
     let mgr = mgr_with_fake(None, Arc::clone(&fake));
     let cap = capture();
-    let slot = slot_for(&runner);
+    let slot = slot_for(&role);
     let spawned = mgr
         .spawn(
             &mission,
-            &runner,
+            &role,
             &slot,
             fixture_tmp_dir(),
             PathBuf::from("/dev/null"),
@@ -1356,30 +1327,16 @@ fn inject_stdin_roundtrip_routes_through_runtime() {
     // routed as a key press, then kill flips the row.
     let pool = pool_with_schema();
     let mission = mission();
-    let mut runner = runner("/bin/cat", &[]);
-    insert_crew_runner(&pool, &mission.id, &runner.id);
-    runner.id = {
-        let conn = pool.get().unwrap();
-        conn.query_row("SELECT id FROM runners LIMIT 1", [], |r| r.get(0))
-            .unwrap()
-    };
-    let fresh_mission_id = {
-        let conn = pool.get().unwrap();
-        conn.query_row("SELECT id FROM missions LIMIT 1", [], |r| r.get(0))
-            .unwrap()
-    };
-    let mission = Mission {
-        id: fresh_mission_id,
-        ..mission
-    };
+    let role = role("/bin/cat", &[]);
+    insert_crew_role(&pool, &mission.id, &role.id);
 
     let fake = fake_runtime();
     let mgr = mgr_with_fake(None, Arc::clone(&fake));
-    let slot = slot_for(&runner);
+    let slot = slot_for(&role);
     let spawned = mgr
         .spawn(
             &mission,
-            &runner,
+            &role,
             &slot,
             fixture_tmp_dir(),
             PathBuf::from("/dev/null"),
@@ -1520,7 +1477,7 @@ fn install_test_session_handle(manager: &SessionManager, session_id: &str) {
         pending_first_turn: None,
         id: session_id.into(),
         mission_id: Some("mission-observed-input".into()),
-        runner_id: None,
+        role_id: None,
         runtime_session: RuntimeSession {
             runtime: "fake".into(),
             session_id: session_id.into(),
@@ -1692,33 +1649,20 @@ fn direct_chat_persona_lands_as_trailing_positional_argv_without_worker_preamble
     // post-spawn paste fallback so the agent doesn't receive
     // the persona twice, and (c) preserve the off-bus
     // invariant from #51 — direct chats must NOT carry the
-    // worker coordination preamble (the bundled `runner` CLI
+    // worker coordination preamble (the bundled `role` CLI
     // isn't on PATH for direct chats; the preamble's verbs
     // would mislead the agent).
     let pool = pool_with_schema();
-    let now = Utc::now().to_rfc3339();
-    let runner_id = ulid::Ulid::new().to_string();
-    {
-        let conn = pool.get().unwrap();
-        conn.execute(
-            "INSERT INTO runners
-                    (id, handle, display_name, runtime, command,
-                     args_json, working_dir, system_prompt, env_json,
-                     created_at, updated_at)
-                 VALUES (?1, 'cc-argv', 'CC', 'claude-code', '/bin/sh',
-                         ?3, NULL, ?4, NULL, ?2, ?2)",
-            params![runner_id, now, r#"["-c","cat"]"#, "DIRECT_PERSONA"],
-        )
-        .unwrap();
-    }
-    let mut runner = runner("/bin/sh", &["-c", "cat"]);
-    runner.id = runner_id;
-    runner.handle = "cc-argv".into();
-    runner.runtime = "claude-code".into();
-    runner.system_prompt = Some("DIRECT_PERSONA".into());
+    let role_id = ulid::Ulid::new().to_string();
+    let mut role = role("/bin/sh", &["-c", "cat"]);
+    role.id = role_id;
+    role.handle = "cc-argv".into();
+    role.runtime = "claude-code".into();
+    role.system_prompt = Some("DIRECT_PERSONA".into());
+    insert_role_row(&pool.get().unwrap(), &role);
 
     // Compose via the same helper `session_start_direct` uses.
-    let body = crate::router::prompt::compose_direct_first_turn(runner.system_prompt.as_deref())
+    let body = crate::router::prompt::compose_direct_first_turn(role.system_prompt.as_deref())
         .expect("non-empty persona");
     assert!(
         !body.contains("in a crew coordinated by the bundled"),
@@ -1729,7 +1673,7 @@ fn direct_chat_persona_lands_as_trailing_positional_argv_without_worker_preamble
     let mgr = mgr_with_fake(None, Arc::clone(&fake));
     let spawned = mgr
         .spawn_direct(
-            &runner,
+            &role,
             None,
             None,
             None,
@@ -1784,28 +1728,17 @@ fn mission_spawn_worker_preamble_lands_as_trailing_positional_argv_with_brief() 
 
     let pool = pool_with_schema();
     let mission = mission();
-    let mut runner = runner("/bin/sh", &["-c", "cat"]);
-    runner.runtime = "claude-code".into();
-    runner.handle = "worker-argv".into();
-    runner.system_prompt = Some("WORKER_BRIEF".into());
+    let mut role = role("/bin/sh", &["-c", "cat"]);
+    role.runtime = "claude-code".into();
+    role.handle = "worker-argv".into();
+    role.system_prompt = Some("WORKER_BRIEF".into());
 
-    let slot_id = insert_crew_runner(&pool, &mission.id, &runner.id);
+    let slot_id = insert_crew_role(&pool, &mission.id, &role.id);
     {
         let conn = pool.get().unwrap();
         conn.execute("UPDATE slots SET lead = 0 WHERE id = ?1", params![slot_id])
             .unwrap();
-        conn.execute(
-            "UPDATE runners
-                    SET runtime = ?2, handle = ?3, system_prompt = ?4
-                  WHERE id = ?1",
-            params![
-                runner.id,
-                runner.runtime,
-                runner.handle,
-                runner.system_prompt
-            ],
-        )
-        .unwrap();
+        update_role_row(&conn, &role);
     }
     let fresh_mission_id: String = {
         let conn = pool.get().unwrap();
@@ -1816,11 +1749,11 @@ fn mission_spawn_worker_preamble_lands_as_trailing_positional_argv_with_brief() 
         id: fresh_mission_id,
         ..mission
     };
-    let mut slot = slot_for(&runner);
+    let mut slot = slot_for(&role);
     slot.id = slot_id;
     slot.lead = false;
 
-    let body = compose_worker_first_turn(runner.system_prompt.as_deref(), None);
+    let body = compose_worker_first_turn(role.system_prompt.as_deref(), None);
     // Composer ships the on-bus preamble + the brief.
     assert!(body.contains("in a crew coordinated by the bundled"));
     assert!(body.contains("WORKER_BRIEF"));
@@ -1830,7 +1763,7 @@ fn mission_spawn_worker_preamble_lands_as_trailing_positional_argv_with_brief() 
     let spawned = mgr
         .spawn(
             &mission,
-            &runner,
+            &role,
             &slot,
             fixture_tmp_dir(),
             PathBuf::from("/dev/null"),
@@ -1865,14 +1798,14 @@ fn mission_spawn_worker_preamble_lands_as_trailing_positional_argv_with_brief() 
 
 #[test]
 fn codex_mission_spawn_grants_event_log_dir_to_sandbox() {
-    // Codex's workspace-write sandbox cannot append to Runner's
+    // Codex's workspace-write sandbox cannot append to Role's
     // app-data mission log unless we grant the mission directory.
     let pool = pool_with_schema();
     let mission_base = Mission {
         crew_id: "c".into(),
         ..mission()
     };
-    let mut runner = runner(
+    let mut role = role(
         "codex",
         &[
             "--ask-for-approval",
@@ -1881,9 +1814,9 @@ fn codex_mission_spawn_grants_event_log_dir_to_sandbox() {
             "workspace-write",
         ],
     );
-    runner.runtime = "codex".into();
-    runner.handle = "codex-worker".into();
-    let slot_id = insert_crew_runner(&pool, &mission_base.id, &runner.id);
+    role.runtime = "codex".into();
+    role.handle = "codex-worker".into();
+    let slot_id = insert_crew_role(&pool, &mission_base.id, &role.id);
     let fresh_mission_id: String = {
         let conn = pool.get().unwrap();
         conn.query_row("SELECT id FROM missions LIMIT 1", [], |r| r.get(0))
@@ -1893,7 +1826,7 @@ fn codex_mission_spawn_grants_event_log_dir_to_sandbox() {
         id: fresh_mission_id,
         ..mission_base
     };
-    let mut slot = slot_for(&runner);
+    let mut slot = slot_for(&role);
     slot.id = slot_id;
 
     let app_data = tempfile::tempdir().unwrap();
@@ -1908,7 +1841,7 @@ fn codex_mission_spawn_grants_event_log_dir_to_sandbox() {
     let spawned = mgr
         .spawn(
             &mission,
-            &runner,
+            &role,
             &slot,
             app_data.path(),
             events_log_path,
@@ -1947,36 +1880,27 @@ fn codex_mission_spawn_grants_event_log_dir_to_sandbox() {
     mgr.kill(&spawned.id).unwrap();
 }
 
-/// Seed the crew/runner/slot/mission rows for a mission spawn and keep
-/// the runner row in step with `runner`, so a later resume (which
+/// Seed the crew/role/slot/mission rows for a mission spawn and keep
+/// the role row in step with `role`, so a later resume (which
 /// re-reads the row) rebuilds the same runtime and args.
-fn seed_mission_rows(pool: &DbPool, runner: &Runner) -> (Mission, crate::model::Slot) {
+fn seed_mission_rows(pool: &DbPool, role: &Role) -> (Mission, crate::model::Slot) {
     let mission_base = Mission {
         crew_id: "c".into(),
         ..mission()
     };
-    let slot_id = insert_crew_runner(pool, &mission_base.id, &runner.id);
+    let slot_id = insert_crew_role(pool, &mission_base.id, &role.id);
     {
         let conn = pool.get().unwrap();
-        conn.execute(
-            "UPDATE runners SET runtime = ?2, handle = ?3, args_json = ?4 WHERE id = ?1",
-            params![
-                runner.id,
-                runner.runtime,
-                runner.handle,
-                serde_json::to_string(&runner.args).unwrap(),
-            ],
-        )
-        .unwrap();
+        update_role_row(&conn, role);
     }
-    let mut slot = slot_for(runner);
+    let mut slot = slot_for(role);
     slot.id = slot_id;
     (mission_base, slot)
 }
 
-fn mission_spawn_args(runner: &Runner, mode: MissionPermissionMode) -> Vec<String> {
+fn mission_spawn_args(role: &Role, mode: MissionPermissionMode) -> Vec<String> {
     let pool = pool_with_schema();
-    let (mission, slot) = seed_mission_rows(&pool, runner);
+    let (mission, slot) = seed_mission_rows(&pool, role);
     let app_data = tempfile::tempdir().unwrap();
     let events_log_path =
         runner_core::event_log::path::events_path(app_data.path(), &mission.crew_id, &mission.id);
@@ -1986,7 +1910,7 @@ fn mission_spawn_args(runner: &Runner, mode: MissionPermissionMode) -> Vec<Strin
     let spawned = mgr
         .spawn(
             &mission,
-            runner,
+            role,
             &slot,
             app_data.path(),
             events_log_path,
@@ -2002,11 +1926,11 @@ fn mission_spawn_args(runner: &Runner, mode: MissionPermissionMode) -> Vec<Strin
 
 #[test]
 fn mission_spawn_converges_claude_row_to_the_app_wide_permission_mode() {
-    let mut runner = runner("/bin/sh", &["--permission-mode", "plan", "--model", "opus"]);
-    runner.runtime = "claude-code".into();
-    runner.handle = "perm-claude".into();
+    let mut role = role("/bin/sh", &["--permission-mode", "plan", "--model", "opus"]);
+    role.runtime = "claude-code".into();
+    role.handle = "perm-claude".into();
 
-    let bypass = mission_spawn_args(&runner, MissionPermissionMode::Bypass);
+    let bypass = mission_spawn_args(&role, MissionPermissionMode::Bypass);
     assert_eq!(
         &bypass[..4],
         ["--model", "opus", "--permission-mode", "bypassPermissions"]
@@ -2021,7 +1945,7 @@ fn mission_spawn_converges_claude_row_to_the_app_wide_permission_mode() {
     );
     assert!(has_arg_pair(&bypass, "--model", "opus"), "{bypass:?}");
 
-    let auto = mission_spawn_args(&runner, MissionPermissionMode::Auto);
+    let auto = mission_spawn_args(&role, MissionPermissionMode::Auto);
     assert_eq!(&auto[..4], ["--model", "opus", "--permission-mode", "auto"]);
     assert!(has_arg_pair(&auto, "--permission-mode", "auto"), "{auto:?}");
     assert!(
@@ -2030,25 +1954,25 @@ fn mission_spawn_converges_claude_row_to_the_app_wide_permission_mode() {
     );
     assert!(has_arg_pair(&auto, "--model", "opus"), "{auto:?}");
 
-    let runner_default = mission_spawn_args(&runner, MissionPermissionMode::RunnerDefault);
-    assert_eq!(&runner_default[..runner.args.len()], runner.args);
+    let role_default = mission_spawn_args(&role, MissionPermissionMode::RoleDefault);
+    assert_eq!(&role_default[..role.args.len()], role.args);
     assert!(
-        has_arg_pair(&runner_default, "--permission-mode", "plan"),
-        "{runner_default:?}"
+        has_arg_pair(&role_default, "--permission-mode", "plan"),
+        "{role_default:?}"
     );
     assert!(
-        !runner_default.iter().any(|arg| arg == "bypassPermissions"),
-        "{runner_default:?}"
+        !role_default.iter().any(|arg| arg == "bypassPermissions"),
+        "{role_default:?}"
     );
     assert!(
-        has_arg_pair(&runner_default, "--model", "opus"),
-        "{runner_default:?}"
+        has_arg_pair(&role_default, "--model", "opus"),
+        "{role_default:?}"
     );
 }
 
 #[test]
 fn mission_spawn_converges_codex_row_to_the_app_wide_permission_mode() {
-    let mut runner = runner(
+    let mut role = role(
         "/bin/sh",
         &[
             "--ask-for-approval",
@@ -2057,10 +1981,10 @@ fn mission_spawn_converges_codex_row_to_the_app_wide_permission_mode() {
             "workspace-write",
         ],
     );
-    runner.runtime = "codex".into();
-    runner.handle = "perm-codex".into();
+    role.runtime = "codex".into();
+    role.handle = "perm-codex".into();
 
-    let bypass = mission_spawn_args(&runner, MissionPermissionMode::Bypass);
+    let bypass = mission_spawn_args(&role, MissionPermissionMode::Bypass);
     assert_eq!(
         &bypass[..4],
         [
@@ -2088,7 +2012,7 @@ fn mission_spawn_converges_codex_row_to_the_app_wide_permission_mode() {
         "{bypass:?}"
     );
 
-    let auto = mission_spawn_args(&runner, MissionPermissionMode::Auto);
+    let auto = mission_spawn_args(&role, MissionPermissionMode::Auto);
     assert_eq!(
         &auto[..4],
         [
@@ -2107,51 +2031,51 @@ fn mission_spawn_converges_codex_row_to_the_app_wide_permission_mode() {
         "{auto:?}"
     );
 
-    let runner_default = mission_spawn_args(&runner, MissionPermissionMode::RunnerDefault);
-    assert_eq!(&runner_default[..runner.args.len()], runner.args);
+    let role_default = mission_spawn_args(&role, MissionPermissionMode::RoleDefault);
+    assert_eq!(&role_default[..role.args.len()], role.args);
     assert!(
-        has_arg_pair(&runner_default, "--ask-for-approval", "on-request"),
-        "{runner_default:?}"
+        has_arg_pair(&role_default, "--ask-for-approval", "on-request"),
+        "{role_default:?}"
     );
     assert!(
-        has_arg_pair(&runner_default, "--sandbox", "workspace-write"),
-        "{runner_default:?}"
+        has_arg_pair(&role_default, "--sandbox", "workspace-write"),
+        "{role_default:?}"
     );
 }
 
 #[test]
 fn mission_spawn_converges_trae_row_to_the_app_wide_permission_mode() {
-    let mut runner = runner("trae-custom", &["--permission-mode", "auto", "--debug"]);
-    runner.runtime = "trae".into();
+    let mut role = role("trae-custom", &["--permission-mode", "auto", "--debug"]);
+    role.runtime = "trae".into();
 
-    let bypass = mission_spawn_args(&runner, MissionPermissionMode::Bypass);
+    let bypass = mission_spawn_args(&role, MissionPermissionMode::Bypass);
     assert_eq!(
         &bypass[..3],
         ["--debug", "--permission-mode", "bypass_permissions"]
     );
-    let auto = mission_spawn_args(&runner, MissionPermissionMode::Auto);
+    let auto = mission_spawn_args(&role, MissionPermissionMode::Auto);
     assert_chat_has_no_permission_flags(&auto);
     assert_eq!(auto[0], "--debug");
-    let runner_default = mission_spawn_args(&runner, MissionPermissionMode::RunnerDefault);
-    assert_eq!(&runner_default[..runner.args.len()], runner.args);
+    let role_default = mission_spawn_args(&role, MissionPermissionMode::RoleDefault);
+    assert_eq!(&role_default[..role.args.len()], role.args);
 }
 
 #[test]
 fn mission_spawn_with_shell_runtime_ignores_the_permission_mode() {
-    let runner = runner("/bin/sh", &["-c", "cat"]);
-    let baseline = mission_spawn_args(&runner, MissionPermissionMode::RunnerDefault);
+    let role = role("/bin/sh", &["-c", "cat"]);
+    let baseline = mission_spawn_args(&role, MissionPermissionMode::RoleDefault);
     for mode in [MissionPermissionMode::Bypass, MissionPermissionMode::Auto] {
-        assert_eq!(mission_spawn_args(&runner, mode), baseline, "{mode:?}");
+        assert_eq!(mission_spawn_args(&role, mode), baseline, "{mode:?}");
     }
 }
 
 #[test]
 fn mission_resume_reads_the_current_permission_mode() {
     let pool = pool_with_schema();
-    let mut runner = runner("/bin/sh", &["--permission-mode", "plan"]);
-    runner.runtime = "claude-code".into();
-    runner.handle = "perm-resume".into();
-    let (mission, slot) = seed_mission_rows(&pool, &runner);
+    let mut role = role("/bin/sh", &["--permission-mode", "plan"]);
+    role.runtime = "claude-code".into();
+    role.handle = "perm-resume".into();
+    let (mission, slot) = seed_mission_rows(&pool, &role);
     let app_data = tempfile::tempdir().unwrap();
     let events_log_path =
         runner_core::event_log::path::events_path(app_data.path(), &mission.crew_id, &mission.id);
@@ -2163,7 +2087,7 @@ fn mission_resume_reads_the_current_permission_mode() {
     let spawned = mgr
         .spawn(
             &mission,
-            &runner,
+            &role,
             &slot,
             app_data.path(),
             events_log_path,
@@ -2208,7 +2132,7 @@ fn mission_resume_reads_the_current_permission_mode() {
     fake.close_spawn(1);
     wait_for_session_exit(&mgr, &pool, &spawned.id);
 
-    mgr.set_mission_permission_mode(MissionPermissionMode::RunnerDefault);
+    mgr.set_mission_permission_mode(MissionPermissionMode::RoleDefault);
     mgr.resume(
         &spawned.id,
         None,
@@ -2255,28 +2179,10 @@ fn direct_spawn_ignores_the_mission_permission_mode() {
     }
 
     let pool = pool_with_schema();
-    let now = Utc::now().to_rfc3339();
-    let mut runner = runner("/bin/sh", &["--permission-mode", "plan", "--model", "opus"]);
-    runner.runtime = "claude-code".into();
-    runner.handle = "perm-direct".into();
-    {
-        let conn = pool.get().unwrap();
-        conn.execute(
-            "INSERT INTO runners
-                    (id, handle, display_name, runtime, command,
-                     args_json, working_dir, system_prompt, env_json,
-                     created_at, updated_at)
-                 VALUES (?1, ?2, 'R', 'claude-code', '/bin/sh',
-                         ?3, NULL, NULL, NULL, ?4, ?4)",
-            params![
-                runner.id,
-                runner.handle,
-                serde_json::to_string(&runner.args).unwrap(),
-                now
-            ],
-        )
-        .unwrap();
-    }
+    let mut role = role("/bin/sh", &["--permission-mode", "plan", "--model", "opus"]);
+    role.runtime = "claude-code".into();
+    role.handle = "perm-direct".into();
+    insert_role_row(&pool.get().unwrap(), &role);
 
     let mut seen: Vec<Vec<String>> = Vec::new();
     for mode in MissionPermissionMode::ALL {
@@ -2285,7 +2191,7 @@ fn direct_spawn_ignores_the_mission_permission_mode() {
         mgr.set_mission_permission_mode(mode);
         let spawned = mgr
             .spawn_direct(
-                &runner,
+                &role,
                 None,
                 None,
                 None,
@@ -2394,30 +2300,15 @@ fn direct_chat_spawn_and_resume_strip_permission_flags_and_preserve_row_args() {
         kept.extend(["--user-flag", "custom-value"]);
         let mut args = kept.clone();
         args.splice(1..1, permission_args);
-        let mut runner = runner("agent-custom", &args);
-        runner.runtime = runtime.into();
-        let stored_args = serde_json::to_string(&runner.args).unwrap();
-        {
-            let conn = pool.get().unwrap();
-            conn.execute(
-                "INSERT INTO runners
-                    (id, handle, display_name, runtime, command, args_json, created_at, updated_at)
-                 VALUES (?1, 'tester', 'Tester', ?2, ?3, ?4, ?5, ?5)",
-                params![
-                    runner.id,
-                    runtime,
-                    runner.command,
-                    stored_args,
-                    Utc::now().to_rfc3339()
-                ],
-            )
-            .unwrap();
-        }
+        let mut role = role("agent-custom", &args);
+        role.runtime = runtime.into();
+        let stored_args = role.args.clone();
+        insert_role_row(&pool.get().unwrap(), &role);
         let fake = fake_runtime();
         let mgr = mgr_with_fake(None, Arc::clone(&fake));
         let spawned = mgr
             .spawn_direct(
-                &runner,
+                &role,
                 None,
                 None,
                 None,
@@ -2449,15 +2340,10 @@ fn direct_chat_spawn_and_resume_strip_permission_flags_and_preserve_row_args() {
         let args = fake.last_spawn_spec().unwrap().args;
         assert_chat_has_no_permission_flags(&args);
         assert_eq!(&args[..kept.len()], kept);
-        let persisted_args: String = pool
-            .get()
+        let persisted_args = crate::repo::role::get(&pool.get().unwrap(), &role.id)
             .unwrap()
-            .query_row(
-                "SELECT args_json FROM runners WHERE id = ?1",
-                params![runner.id],
-                |row| row.get(0),
-            )
-            .unwrap();
+            .unwrap()
+            .args;
         assert_eq!(persisted_args, stored_args);
         mgr.kill(&spawned.id).unwrap();
     }
@@ -2468,7 +2354,7 @@ fn runtime_only_chat_spawn_and_resume_assert_no_permission_posture() {
     for runtime in ["claude-code", "codex", "trae", "copilot"] {
         let pool = pool_with_schema();
         let app_data = tempfile::tempdir().unwrap();
-        let runner = runtime_direct_runner(
+        let role = runtime_direct_role(
             runtime,
             Some("agent-custom"),
             Some("test-model"),
@@ -2479,7 +2365,7 @@ fn runtime_only_chat_spawn_and_resume_assert_no_permission_posture() {
         let mgr = mgr_with_fake(None, Arc::clone(&fake));
         let spawned = mgr
             .spawn_runtime_direct(
-                &runner,
+                &role,
                 None,
                 Some(app_data.path().to_str().unwrap()),
                 None,
@@ -2541,8 +2427,8 @@ fn mission_registration_preserves_initial_terminal_size() {
         crew_id: "c".into(),
         ..mission()
     };
-    let runner = runner("/bin/cat", &[]);
-    let slot_id = insert_crew_runner(&pool, &mission_base.id, &runner.id);
+    let role = role("/bin/cat", &[]);
+    let slot_id = insert_crew_role(&pool, &mission_base.id, &role.id);
     let fresh_mission_id: String = {
         let conn = pool.get().unwrap();
         conn.query_row("SELECT id FROM missions LIMIT 1", [], |r| r.get(0))
@@ -2552,14 +2438,14 @@ fn mission_registration_preserves_initial_terminal_size() {
         id: fresh_mission_id,
         ..mission_base
     };
-    let mut slot = slot_for(&runner);
+    let mut slot = slot_for(&role);
     slot.id = slot_id;
 
     let mgr = mgr_with_fake(None, fake_runtime());
     let pending = mgr
         .register_mission_session(
             &mission,
-            &runner,
+            &role,
             &slot,
             fixture_tmp_dir(),
             PathBuf::from("/dev/null"),
@@ -2585,8 +2471,8 @@ fn hinted_mission_start_forks_slots_at_the_hint() {
         crew_id: "c".into(),
         ..mission()
     };
-    let runner = runner("/bin/cat", &[]);
-    let slot_id = insert_crew_runner(&pool, &mission_base.id, &runner.id);
+    let role = role("/bin/cat", &[]);
+    let slot_id = insert_crew_role(&pool, &mission_base.id, &role.id);
     let fresh_mission_id: String = {
         let conn = pool.get().unwrap();
         conn.query_row("SELECT id FROM missions LIMIT 1", [], |r| r.get(0))
@@ -2596,7 +2482,7 @@ fn hinted_mission_start_forks_slots_at_the_hint() {
         id: fresh_mission_id,
         ..mission_base
     };
-    let mut slot = slot_for(&runner);
+    let mut slot = slot_for(&role);
     slot.id = slot_id;
 
     let fake = fake_runtime();
@@ -2605,7 +2491,7 @@ fn hinted_mission_start_forks_slots_at_the_hint() {
     let pending = mgr
         .register_mission_session(
             &mission,
-            &runner,
+            &role,
             &slot,
             fixture_tmp_dir(),
             PathBuf::from("/dev/null"),
@@ -2632,15 +2518,15 @@ fn hinted_mission_start_forks_slots_at_the_hint() {
     mgr.kill(&session_id).unwrap();
 }
 
-/// Mission + runner + slot rows for a single-slot crew, ready for
+/// Mission + role + slot rows for a single-slot crew, ready for
 /// `register_mission_session`.
-fn single_slot_mission(pool: &DbPool) -> (Mission, Runner, crate::model::Slot) {
+fn single_slot_mission(pool: &DbPool) -> (Mission, Role, crate::model::Slot) {
     let mission_base = Mission {
         crew_id: "c".into(),
         ..mission()
     };
-    let runner = runner("/bin/cat", &[]);
-    let slot_id = insert_crew_runner(pool, &mission_base.id, &runner.id);
+    let role = role("/bin/cat", &[]);
+    let slot_id = insert_crew_role(pool, &mission_base.id, &role.id);
     let fresh_mission_id: String = {
         let conn = pool.get().unwrap();
         conn.query_row("SELECT id FROM missions LIMIT 1", [], |r| r.get(0))
@@ -2650,9 +2536,9 @@ fn single_slot_mission(pool: &DbPool) -> (Mission, Runner, crate::model::Slot) {
         id: fresh_mission_id,
         ..mission_base
     };
-    let mut slot = slot_for(&runner);
+    let mut slot = slot_for(&role);
     slot.id = slot_id;
-    (mission, runner, slot)
+    (mission, role, slot)
 }
 
 #[test]
@@ -2664,14 +2550,14 @@ fn mission_fork_uses_a_size_pushed_before_the_pty_existed() {
     // the PTY comes up wider than the grid the terminal already moved to
     // and every full-width row wraps by a cell.
     let pool = pool_with_schema();
-    let (mission, runner, slot) = single_slot_mission(&pool);
+    let (mission, role, slot) = single_slot_mission(&pool);
     let fake = fake_runtime();
     let mgr = mgr_with_fake(None, Arc::clone(&fake));
     let cap = capture();
     let pending = mgr
         .register_mission_session(
             &mission,
-            &runner,
+            &role,
             &slot,
             fixture_tmp_dir(),
             PathBuf::from("/dev/null"),
@@ -2711,14 +2597,14 @@ fn mission_fork_applies_a_size_pushed_mid_fork() {
     // Narrower window, same drop: a push between the fork and the handle
     // install. The post-install re-read applies it to the new PTY.
     let pool = pool_with_schema();
-    let (mission, runner, slot) = single_slot_mission(&pool);
+    let (mission, role, slot) = single_slot_mission(&pool);
     let fake = fake_runtime();
     let mgr = mgr_with_fake(None, Arc::clone(&fake));
     let cap = capture();
     let pending = mgr
         .register_mission_session(
             &mission,
-            &runner,
+            &role,
             &slot,
             fixture_tmp_dir(),
             PathBuf::from("/dev/null"),
@@ -2770,8 +2656,8 @@ fn unhinted_mission_start_still_forks_at_default() {
         crew_id: "c".into(),
         ..mission()
     };
-    let runner = runner("/bin/cat", &[]);
-    let slot_id = insert_crew_runner(&pool, &mission_base.id, &runner.id);
+    let role = role("/bin/cat", &[]);
+    let slot_id = insert_crew_role(&pool, &mission_base.id, &role.id);
     let fresh_mission_id: String = {
         let conn = pool.get().unwrap();
         conn.query_row("SELECT id FROM missions LIMIT 1", [], |r| r.get(0))
@@ -2781,7 +2667,7 @@ fn unhinted_mission_start_still_forks_at_default() {
         id: fresh_mission_id,
         ..mission_base
     };
-    let mut slot = slot_for(&runner);
+    let mut slot = slot_for(&role);
     slot.id = slot_id;
 
     let fake = fake_runtime();
@@ -2790,7 +2676,7 @@ fn unhinted_mission_start_still_forks_at_default() {
     let pending = mgr
         .register_mission_session(
             &mission,
-            &runner,
+            &role,
             &slot,
             fixture_tmp_dir(),
             PathBuf::from("/dev/null"),
@@ -2826,8 +2712,8 @@ fn mission_registration_defaults_to_80x24_when_unsized() {
         crew_id: "c".into(),
         ..mission()
     };
-    let runner = runner("/bin/cat", &[]);
-    let slot_id = insert_crew_runner(&pool, &mission_base.id, &runner.id);
+    let role = role("/bin/cat", &[]);
+    let slot_id = insert_crew_role(&pool, &mission_base.id, &role.id);
     let fresh_mission_id: String = {
         let conn = pool.get().unwrap();
         conn.query_row("SELECT id FROM missions LIMIT 1", [], |r| r.get(0))
@@ -2837,14 +2723,14 @@ fn mission_registration_defaults_to_80x24_when_unsized() {
         id: fresh_mission_id,
         ..mission_base
     };
-    let mut slot = slot_for(&runner);
+    let mut slot = slot_for(&role);
     slot.id = slot_id;
 
     let mgr = mgr_with_fake(None, fake_runtime());
     let pending = mgr
         .register_mission_session(
             &mission,
-            &runner,
+            &role,
             &slot,
             fixture_tmp_dir(),
             PathBuf::from("/dev/null"),
@@ -2859,28 +2745,28 @@ fn mission_registration_defaults_to_80x24_when_unsized() {
 }
 
 #[test]
-fn mission_spawn_cwd_prefers_mission_over_runner_working_dir() {
+fn mission_spawn_cwd_prefers_mission_over_role_working_dir() {
     // Regression guard for #101: the per-mission cwd typed into the
-    // Start-mission modal must beat the runner template's
-    // `working_dir` default. Before the fix the runner override
+    // Start-mission modal must beat the role template's
+    // `working_dir` default. Before the fix the role override
     // silently won, so StartMissionModal's helper text ("Each
-    // runner's PTY starts in this directory") was a lie.
+    // role's PTY starts in this directory") was a lie.
     //
     // Exercises the resolver at the spawn site by inspecting the
     // SpawnSpec FakeRuntime captures. The contended both-set case
     // is the load-bearing one; the others lock in the fallback
     // chain so a future refactor can't quietly drop a branch.
-    fn resolved_spawn_cwd(mission_cwd: Option<&str>, runner_cwd: Option<&str>) -> Option<PathBuf> {
+    fn resolved_spawn_cwd(mission_cwd: Option<&str>, role_cwd: Option<&str>) -> Option<PathBuf> {
         let pool = pool_with_schema();
         let mission_base = mission();
-        let mut runner = runner("/bin/sh", &["-c", "cat"]);
-        runner.working_dir = runner_cwd.map(|s| s.to_string());
-        let slot_id = insert_crew_runner(&pool, &mission_base.id, &runner.id);
+        let mut role = role("/bin/sh", &["-c", "cat"]);
+        role.working_dir = role_cwd.map(|s| s.to_string());
+        let slot_id = insert_crew_role(&pool, &mission_base.id, &role.id);
         let mission = Mission {
             cwd: mission_cwd.map(|s| s.to_string()),
             ..mission_base
         };
-        let mut slot = slot_for(&runner);
+        let mut slot = slot_for(&role);
         slot.id = slot_id;
 
         let fake = fake_runtime();
@@ -2888,7 +2774,7 @@ fn mission_spawn_cwd_prefers_mission_over_runner_working_dir() {
         let spawned = mgr
             .spawn(
                 &mission,
-                &runner,
+                &role,
                 &slot,
                 fixture_tmp_dir(),
                 PathBuf::from("/dev/null"),
@@ -2904,27 +2790,27 @@ fn mission_spawn_cwd_prefers_mission_over_runner_working_dir() {
 
     // The contended case: both set, mission wins. This is the bug.
     assert_eq!(
-        resolved_spawn_cwd(Some("/mission-dir"), Some("/runner-dir")),
+        resolved_spawn_cwd(Some("/mission-dir"), Some("/role-dir")),
         Some(PathBuf::from("/mission-dir")),
-        "mission.cwd must beat runner.working_dir when both are set",
+        "mission.cwd must beat role.working_dir when both are set",
     );
     // Mission only: mission flows through.
     assert_eq!(
         resolved_spawn_cwd(Some("/mission-only"), None),
         Some(PathBuf::from("/mission-only")),
     );
-    // Runner only: runner is the fallback.
+    // Role only: role is the fallback.
     assert_eq!(
-        resolved_spawn_cwd(None, Some("/runner-only")),
-        Some(PathBuf::from("/runner-only")),
+        resolved_spawn_cwd(None, Some("/role-only")),
+        Some(PathBuf::from("/role-only")),
     );
     assert_eq!(
         resolved_spawn_cwd(None, None),
         runner_core::app_paths::home_dir()
     );
     assert_eq!(
-        resolved_spawn_cwd(Some(""), Some("/runner-only")),
-        Some(PathBuf::from("/runner-only")),
+        resolved_spawn_cwd(Some(""), Some("/role-only")),
+        Some(PathBuf::from("/role-only")),
     );
 }
 
@@ -2950,50 +2836,31 @@ fn codex_resume_skips_first_prompt_injection() {
     // `codex_fresh_spawn_injects_brief_via_stdin` — same setup,
     // opposite expectation, locking in the resume guard.
     let pool = pool_with_schema();
-    let now = Utc::now().to_rfc3339();
-    let runner_id = ulid::Ulid::new().to_string();
+    let role_id = ulid::Ulid::new().to_string();
     let session_id = ulid::Ulid::new().to_string();
     let sibling_session_id = ulid::Ulid::new().to_string();
     let prior_key = uuid::Uuid::new_v4().to_string();
     let sibling_key = uuid::Uuid::new_v4().to_string();
     {
         let conn = pool.get().unwrap();
-        conn.execute(
-            "INSERT INTO runners
-                    (id, handle, display_name, runtime, command,
-                     args_json, working_dir, system_prompt, env_json,
-                     created_at, updated_at)
-                 VALUES (?1, 'codex-resumer', 'CR', 'codex', '/bin/cat',
-                         NULL, NULL, NULL, NULL, ?2, ?2)",
-            params![runner_id, now],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO sessions
-                    (id, mission_id, runner_id, cwd, status, started_at,
-                     agent_session_key)
-                 VALUES (?1, NULL, ?2, '/tmp', 'stopped', ?3, ?4)",
-            params![session_id, runner_id, now, prior_key],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO sessions
-                    (id, mission_id, runner_id, cwd, status, started_at,
-                     agent_session_key)
-                 VALUES (?1, NULL, ?2, '/tmp', 'stopped', ?3, ?4)",
-            params![sibling_session_id, runner_id, now, sibling_key],
-        )
-        .unwrap();
-    }
-    // Update the in-memory runner row to mirror the DB so resume()
-    // reads what we just inserted.
-    {
-        let conn = pool.get().unwrap();
-        conn.execute(
-            "UPDATE runners SET system_prompt = ?2 WHERE id = ?1",
-            params![runner_id, "CODEX_BRIEF_TOKEN_RESUME"],
-        )
-        .unwrap();
+        let mut persisted_role = role("/bin/cat", &[]);
+        persisted_role.id = role_id.clone();
+        persisted_role.handle = "codex-resumer".into();
+        persisted_role.runtime = "codex".into();
+        persisted_role.system_prompt = Some("CODEX_BRIEF_TOKEN_RESUME".into());
+        crate::repo::role::insert(&conn, &crate::repo::role::RoleRow::from(&persisted_role))
+            .unwrap();
+        for (id, key) in [
+            (&session_id, &prior_key),
+            (&sibling_session_id, &sibling_key),
+        ] {
+            let mut row =
+                crate::test_support::test_session_row(id, crate::model::SessionStatus::Stopped);
+            row.role_id = Some(role_id.clone());
+            row.cwd = Some("/tmp".into());
+            row.agent_session_key = Some(key.clone());
+            crate::repo::session::insert(&conn, &row).unwrap();
+        }
     }
 
     let fake = fake_runtime();
@@ -3058,22 +2925,8 @@ fn spawn_failure_after_spawn_command_reaps_the_child() {
     // running after `spawn` returns Err because nothing knows about it.
     let pool = pool_with_schema();
     let mission = mission();
-    let mut runner = runner("/bin/cat", &[]);
-    insert_crew_runner(&pool, &mission.id, &runner.id);
-    runner.id = {
-        let conn = pool.get().unwrap();
-        conn.query_row("SELECT id FROM runners LIMIT 1", [], |r| r.get(0))
-            .unwrap()
-    };
-    let fresh_mission_id: String = {
-        let conn = pool.get().unwrap();
-        conn.query_row("SELECT id FROM missions LIMIT 1", [], |r| r.get(0))
-            .unwrap()
-    };
-    let mission = Mission {
-        id: fresh_mission_id,
-        ..mission
-    };
+    let role = role("/bin/cat", &[]);
+    insert_crew_role(&pool, &mission.id, &role.id);
 
     // Break the schema so the next INSERT fails.
     pool.get()
@@ -3082,11 +2935,11 @@ fn spawn_failure_after_spawn_command_reaps_the_child() {
         .unwrap();
 
     let mgr = manager_with_runtime(crate::shell_path::LoginShellEnv::default(), inert_runtime());
-    let slot = slot_for(&runner);
+    let slot = slot_for(&role);
     let err = mgr
         .spawn(
             &mission,
-            &runner,
+            &role,
             &slot,
             fixture_tmp_dir(),
             PathBuf::from("/dev/null"),
@@ -3117,30 +2970,16 @@ fn kill_blocks_until_session_row_is_terminal() {
     // `kill` joins on it before returning.
     let pool = pool_with_schema();
     let mission = mission();
-    let mut runner = runner("/bin/cat", &[]);
-    insert_crew_runner(&pool, &mission.id, &runner.id);
-    runner.id = {
-        let conn = pool.get().unwrap();
-        conn.query_row("SELECT id FROM runners LIMIT 1", [], |r| r.get(0))
-            .unwrap()
-    };
-    let fresh_mission_id: String = {
-        let conn = pool.get().unwrap();
-        conn.query_row("SELECT id FROM missions LIMIT 1", [], |r| r.get(0))
-            .unwrap()
-    };
-    let mission = Mission {
-        id: fresh_mission_id,
-        ..mission
-    };
+    let role = role("/bin/cat", &[]);
+    insert_crew_role(&pool, &mission.id, &role.id);
 
     let fake = fake_runtime();
     let mgr = mgr_with_fake(None, Arc::clone(&fake));
-    let slot = slot_for(&runner);
+    let slot = slot_for(&role);
     let spawned = mgr
         .spawn(
             &mission,
-            &runner,
+            &role,
             &slot,
             fixture_tmp_dir(),
             PathBuf::from("/dev/null"),
@@ -3178,16 +3017,16 @@ fn kill_blocks_until_session_row_is_terminal() {
 fn kill_many_stops_sessions_concurrently() {
     let pool = pool_with_schema();
     let mission_id = ulid::Ulid::new().to_string();
-    let runner_id = ulid::Ulid::new().to_string();
-    let slot_id = insert_crew_runner(&pool, &mission_id, &runner_id);
+    let role_id = ulid::Ulid::new().to_string();
+    let slot_id = insert_crew_role(&pool, &mission_id, &role_id);
     let mission = Mission {
         id: mission_id,
         crew_id: "c".into(),
         ..mission()
     };
-    let mut runner = runner("/bin/cat", &[]);
-    runner.id = runner_id;
-    let mut slot = slot_for(&runner);
+    let mut role = role("/bin/cat", &[]);
+    role.id = role_id;
+    let mut slot = slot_for(&role);
     slot.id = slot_id;
     slot.crew_id = "c".into();
 
@@ -3197,7 +3036,7 @@ fn kill_many_stops_sessions_concurrently() {
         .map(|_| {
             mgr.spawn(
                 &mission,
-                &runner,
+                &role,
                 &slot,
                 fixture_tmp_dir(),
                 PathBuf::from("/dev/null"),
@@ -3230,16 +3069,16 @@ fn kill_many_stops_sessions_concurrently() {
 fn kill_all_for_mission_attempts_every_session_and_aggregates_failures() {
     let pool = pool_with_schema();
     let mission_id = ulid::Ulid::new().to_string();
-    let runner_id = ulid::Ulid::new().to_string();
-    let slot_id = insert_crew_runner(&pool, &mission_id, &runner_id);
+    let role_id = ulid::Ulid::new().to_string();
+    let slot_id = insert_crew_role(&pool, &mission_id, &role_id);
     let mission = Mission {
         id: mission_id.clone(),
         crew_id: "c".into(),
         ..mission()
     };
-    let mut runner = runner("/bin/cat", &[]);
-    runner.id = runner_id;
-    let mut slot = slot_for(&runner);
+    let mut role = role("/bin/cat", &[]);
+    role.id = role_id;
+    let mut slot = slot_for(&role);
     slot.id = slot_id;
     slot.crew_id = "c".into();
 
@@ -3248,7 +3087,7 @@ fn kill_all_for_mission_attempts_every_session_and_aggregates_failures() {
     let first = mgr
         .spawn(
             &mission,
-            &runner,
+            &role,
             &slot,
             fixture_tmp_dir(),
             PathBuf::from("/dev/null"),
@@ -3260,7 +3099,7 @@ fn kill_all_for_mission_attempts_every_session_and_aggregates_failures() {
     let second = mgr
         .spawn(
             &mission,
-            &runner,
+            &role,
             &slot,
             fixture_tmp_dir(),
             PathBuf::from("/dev/null"),
@@ -3297,29 +3136,15 @@ fn kill_all_for_mission_attempts_every_session_and_aggregates_failures() {
 fn spawn_direct_writes_session_with_null_mission_id_and_emits_activity() {
     // C8.5: a "Chat now" session lives outside any mission. Verify the
     // sessions row has mission_id IS NULL, the session lands in the
-    // live state, and the runner_activity emission fires on spawn.
+    // live state, and the role_activity emission fires on spawn.
     let pool = pool_with_schema();
-    // We don't go through `insert_crew_runner` here because direct
-    // chat doesn't need a crew or mission — only a runner row.
-    let now = Utc::now().to_rfc3339();
-    let runner_id = ulid::Ulid::new().to_string();
-    {
-        let conn = pool.get().unwrap();
-        conn.execute(
-            "INSERT INTO runners
-                    (id, handle, display_name, runtime, command,
-                     args_json, working_dir, system_prompt, env_json,
-                     created_at, updated_at)
-                 VALUES (?1, 'directrunner', 'D', 'shell', '/bin/sh',
-                         NULL, NULL, NULL, NULL, ?2, ?2)",
-            params![runner_id, now],
-        )
-        .unwrap();
-    }
-
-    let mut runner = runner("/bin/sh", &["-c", "echo direct"]);
-    runner.id = runner_id.clone();
-    runner.handle = "directrunner".into();
+    // We don't go through `insert_crew_role` here because direct
+    // chat doesn't need a crew or mission — only a role row.
+    let role_id = ulid::Ulid::new().to_string();
+    let mut role = role("/bin/sh", &["-c", "echo direct"]);
+    role.id = role_id.clone();
+    role.handle = "directrunner".into();
+    insert_role_row(&pool.get().unwrap(), &role);
     let project = {
         let conn = pool.get().unwrap();
         crate::repo::project::create(&conn, "Runner", fixture_tmp_dir().to_str().unwrap()).unwrap()
@@ -3330,7 +3155,7 @@ fn spawn_direct_writes_session_with_null_mission_id_and_emits_activity() {
     let mgr = mgr_with_fake(None, Arc::clone(&fake));
     let spawned = mgr
         .spawn_direct(
-            &runner,
+            &role,
             None,
             None,
             None,
@@ -3345,7 +3170,7 @@ fn spawn_direct_writes_session_with_null_mission_id_and_emits_activity() {
         )
         .unwrap();
     assert_eq!(spawned.mission_id, None);
-    assert_eq!(spawned.runner_id, Some(runner_id.clone()));
+    assert_eq!(spawned.role_id, Some(role_id.clone()));
     let (stored_project_id, stored_cwd): (Option<String>, Option<String>) = pool
         .get()
         .unwrap()
@@ -3397,61 +3222,50 @@ fn spawn_direct_writes_session_with_null_mission_id_and_emits_activity() {
     }
 
     // Last activity emission after reap should show zero
-    // active sessions for this runner.
+    // active sessions for this role.
     let activity = cap.activity.lock().unwrap();
-    assert!(!activity.is_empty(), "runner_activity must fire");
+    assert!(!activity.is_empty(), "role_activity must fire");
     let last = activity.last().unwrap();
-    assert_eq!(last.runner_id, runner_id);
+    assert_eq!(last.role_id, role_id);
     assert_eq!(
         last.active_sessions, 0,
-        "after reap, active_sessions for this runner must be 0"
+        "after reap, active_sessions for this role must be 0"
     );
 }
 
 #[test]
-fn runner_activity_event_direct_session_id_ignores_slot_bound_orphans() {
+fn role_activity_event_direct_session_id_ignores_slot_bound_orphans() {
     let pool = pool_with_schema();
     let now = Utc::now();
-    let runner_id = ulid::Ulid::new().to_string();
+    let role_id = ulid::Ulid::new().to_string();
     {
         let conn = pool.get().unwrap();
-        conn.execute(
-            "INSERT INTO runners
-                    (id, handle, display_name, runtime, command,
-                     args_json, working_dir, system_prompt, env_json,
-                     created_at, updated_at)
-                 VALUES (?1, 'directevent', 'Direct Event', 'shell', '/bin/cat',
-                         NULL, NULL, NULL, NULL, ?2, ?2)",
-            params![runner_id, now.to_rfc3339()],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO sessions
-                    (id, mission_id, runner_id, slot_id, status, started_at)
-                 VALUES ('slot-orphan-newer', NULL, ?1, 'slot-old', 'running', ?2)",
-            params![
-                runner_id,
-                (now + chrono::Duration::seconds(10)).to_rfc3339()
-            ],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO sessions
-                    (id, mission_id, runner_id, slot_id, status, started_at)
-                 VALUES ('direct-valid-older', NULL, ?1, NULL, 'running', ?2)",
-            params![runner_id, now.to_rfc3339()],
-        )
-        .unwrap();
+        crate::test_support::insert_test_role(&conn, &role_id, "directevent", "shell", "/bin/cat");
+        let mut orphan = crate::test_support::test_session_row(
+            "slot-orphan-newer",
+            crate::model::SessionStatus::Running,
+        );
+        orphan.role_id = Some(role_id.clone());
+        orphan.slot_id = Some("slot-old".into());
+        orphan.started_at = Some(now + chrono::Duration::seconds(10));
+        crate::repo::session::insert(&conn, &orphan).unwrap();
+        let mut direct = crate::test_support::test_session_row(
+            "direct-valid-older",
+            crate::model::SessionStatus::Running,
+        );
+        direct.role_id = Some(role_id.clone());
+        direct.started_at = Some(now);
+        crate::repo::session::insert(&conn, &direct).unwrap();
     }
 
-    let mut r = runner("/bin/cat", &[]);
-    r.id = runner_id;
+    let mut r = role("/bin/cat", &[]);
+    r.id = role_id;
     r.handle = "directevent".into();
     let cap = capture();
-    emit_runner_activity(&pool, &r, cap.as_ref());
+    emit_role_activity(&pool, &r, cap.as_ref());
 
     let activity = cap.activity.lock().unwrap();
-    let ev = activity.last().expect("runner/activity event emitted");
+    let ev = activity.last().expect("role/activity event emitted");
     assert_eq!(
         ev.direct_session_id.as_deref(),
         Some("direct-valid-older"),
@@ -3724,7 +3538,7 @@ fn provisional_escape_uses_existing_direct_and_mission_consumers() {
 fn assert_status_uses_existing_direct_and_mission_consumers(source: &'static str) {
     for is_mission in [false, true] {
         let pool = pool_with_schema();
-        let (mission, runner, slot) = single_slot_mission(&pool);
+        let (mission, role, slot) = single_slot_mission(&pool);
         let app_data = tempfile::tempdir().unwrap();
         let events_path = runner_core::event_log::path::events_path(
             app_data.path(),
@@ -3742,7 +3556,7 @@ fn assert_status_uses_existing_direct_and_mission_consumers(source: &'static str
         let spawned = if is_mission {
             mgr.spawn(
                 &mission,
-                &runner,
+                &role,
                 &slot,
                 app_data.path(),
                 events_path,
@@ -3753,7 +3567,7 @@ fn assert_status_uses_existing_direct_and_mission_consumers(source: &'static str
             .unwrap()
         } else {
             mgr.spawn_direct(
-                &runner,
+                &role,
                 None,
                 None,
                 None,
@@ -3884,25 +3698,11 @@ fn assert_status_uses_existing_direct_and_mission_consumers(source: &'static str
 #[test]
 fn direct_chat_status_transition_emits_session_status_busy() {
     let pool = pool_with_schema();
-    let now = Utc::now().to_rfc3339();
-    let runner_id = ulid::Ulid::new().to_string();
-    {
-        let conn = pool.get().unwrap();
-        conn.execute(
-            "INSERT INTO runners
-                    (id, handle, display_name, runtime, command,
-                     args_json, working_dir, system_prompt, env_json,
-                     created_at, updated_at)
-                 VALUES (?1, 'directbusy', 'Direct Busy', 'shell', '/bin/cat',
-                         NULL, NULL, NULL, NULL, ?2, ?2)",
-            params![runner_id, now],
-        )
-        .unwrap();
-    }
-
-    let mut runner = runner("/bin/cat", &[]);
-    runner.id = runner_id;
-    runner.handle = "directbusy".into();
+    let role_id = ulid::Ulid::new().to_string();
+    let mut role = role("/bin/cat", &[]);
+    role.id = role_id;
+    role.handle = "directbusy".into();
+    insert_role_row(&pool.get().unwrap(), &role);
 
     let fake = fake_runtime();
     let mgr = mgr_with_fake(None, Arc::clone(&fake));
@@ -3910,7 +3710,7 @@ fn direct_chat_status_transition_emits_session_status_busy() {
     assert!(mgr.activity_snapshot().is_empty());
     let spawned = mgr
         .spawn_direct(
-            &runner,
+            &role,
             None,
             None,
             None,
@@ -3950,32 +3750,18 @@ fn direct_chat_status_transition_emits_session_status_busy() {
 #[test]
 fn direct_chat_status_transition_emits_session_status_idle() {
     let pool = pool_with_schema();
-    let now = Utc::now().to_rfc3339();
-    let runner_id = ulid::Ulid::new().to_string();
-    {
-        let conn = pool.get().unwrap();
-        conn.execute(
-            "INSERT INTO runners
-                    (id, handle, display_name, runtime, command,
-                     args_json, working_dir, system_prompt, env_json,
-                     created_at, updated_at)
-                 VALUES (?1, 'directidle', 'Direct Idle', 'shell', '/bin/cat',
-                         NULL, NULL, NULL, NULL, ?2, ?2)",
-            params![runner_id, now],
-        )
-        .unwrap();
-    }
-
-    let mut runner = runner("/bin/cat", &[]);
-    runner.id = runner_id;
-    runner.handle = "directidle".into();
+    let role_id = ulid::Ulid::new().to_string();
+    let mut role = role("/bin/cat", &[]);
+    role.id = role_id;
+    role.handle = "directidle".into();
+    insert_role_row(&pool.get().unwrap(), &role);
 
     let fake = fake_runtime();
     let mgr = mgr_with_fake(None, Arc::clone(&fake));
     let cap = capture();
     let spawned = mgr
         .spawn_direct(
-            &runner,
+            &role,
             None,
             None,
             None,
@@ -4012,32 +3798,18 @@ fn direct_chat_status_transition_emits_session_status_idle() {
 #[test]
 fn direct_chat_typing_stays_idle_until_submit() {
     let pool = pool_with_schema();
-    let now = Utc::now().to_rfc3339();
-    let runner_id = ulid::Ulid::new().to_string();
-    {
-        let conn = pool.get().unwrap();
-        conn.execute(
-            "INSERT INTO runners
-                    (id, handle, display_name, runtime, command,
-                     args_json, working_dir, system_prompt, env_json,
-                     created_at, updated_at)
-                 VALUES (?1, 'directtyping', 'Direct Typing', 'shell', '/bin/cat',
-                         NULL, NULL, NULL, NULL, ?2, ?2)",
-            params![runner_id, now],
-        )
-        .unwrap();
-    }
-
-    let mut runner = runner("/bin/cat", &[]);
-    runner.id = runner_id;
-    runner.handle = "directtyping".into();
+    let role_id = ulid::Ulid::new().to_string();
+    let mut role = role("/bin/cat", &[]);
+    role.id = role_id;
+    role.handle = "directtyping".into();
+    insert_role_row(&pool.get().unwrap(), &role);
 
     let fake = fake_runtime();
     let mgr = mgr_with_fake(None, Arc::clone(&fake));
     let cap = capture();
     let spawned = mgr
         .spawn_direct(
-            &runner,
+            &role,
             None,
             None,
             None,
@@ -4174,7 +3946,7 @@ fn direct_input_gate_timeout_is_bounded_and_does_not_pin_the_queue() {
         pending_first_turn: None,
         id: session_id.into(),
         mission_id: None,
-        runner_id: None,
+        role_id: None,
         runtime_session: RuntimeSession {
             runtime: "fake".into(),
             session_id: session_id.into(),
@@ -4218,8 +3990,8 @@ fn mission_status_transition_appends_once_and_matches_incremental_status() {
         crew_id: "c".into(),
         ..mission()
     };
-    let runner = runner("/bin/cat", &[]);
-    let slot_id = insert_crew_runner(&pool, &mission_base.id, &runner.id);
+    let role = role("/bin/cat", &[]);
+    let slot_id = insert_crew_role(&pool, &mission_base.id, &role.id);
     let fresh_mission_id: String = {
         let conn = pool.get().unwrap();
         conn.query_row("SELECT id FROM missions LIMIT 1", [], |r| r.get(0))
@@ -4229,7 +4001,7 @@ fn mission_status_transition_appends_once_and_matches_incremental_status() {
         id: fresh_mission_id,
         ..mission_base
     };
-    let mut slot = slot_for(&runner);
+    let mut slot = slot_for(&role);
     slot.id = slot_id;
     slot.crew_id = mission.crew_id.clone();
 
@@ -4245,7 +4017,7 @@ fn mission_status_transition_appends_once_and_matches_incremental_status() {
     let spawned = mgr
         .spawn(
             &mission,
-            &runner,
+            &role,
             &slot,
             app_data.path(),
             events_log_path,
@@ -4280,7 +4052,7 @@ fn mission_status_transition_appends_once_and_matches_incremental_status() {
     );
     let event = &events[0];
 
-    assert_eq!(event.from, runner.handle);
+    assert_eq!(event.from, role.handle);
     assert_eq!(event.payload["state"], "busy");
     assert_eq!(event.payload["source"], "forwarder");
     let incremental = cap.status.lock().unwrap();
@@ -4298,8 +4070,8 @@ fn mission_typing_stays_idle_until_submit() {
         crew_id: "c".into(),
         ..mission()
     };
-    let runner = runner("/bin/cat", &[]);
-    let slot_id = insert_crew_runner(&pool, &mission_base.id, &runner.id);
+    let role = role("/bin/cat", &[]);
+    let slot_id = insert_crew_role(&pool, &mission_base.id, &role.id);
     let fresh_mission_id: String = {
         let conn = pool.get().unwrap();
         conn.query_row("SELECT id FROM missions LIMIT 1", [], |r| r.get(0))
@@ -4309,7 +4081,7 @@ fn mission_typing_stays_idle_until_submit() {
         id: fresh_mission_id,
         ..mission_base
     };
-    let mut slot = slot_for(&runner);
+    let mut slot = slot_for(&role);
     slot.id = slot_id;
     slot.crew_id = mission.crew_id.clone();
 
@@ -4325,7 +4097,7 @@ fn mission_typing_stays_idle_until_submit() {
     let spawned = mgr
         .spawn(
             &mission,
-            &runner,
+            &role,
             &slot,
             app_data.path(),
             events_log_path,
@@ -4457,8 +4229,8 @@ fn mission_typing_stays_idle_until_submit() {
 }
 
 #[test]
-fn login_shell_proxy_env_reaches_spawn_with_runner_env_taking_precedence() {
-    // Issue #152: GUI-launched Runner.app inherits launchd's
+fn login_shell_proxy_env_reaches_spawn_with_role_env_taking_precedence() {
+    // Issue #152: GUI-launched Role.app inherits launchd's
     // stripped env, so HTTPS_PROXY / NO_PROXY from the user's
     // shell rc files never reaches PTY children and claude /
     // codex login fails behind a corporate VPN / ClashX.
@@ -4466,35 +4238,20 @@ fn login_shell_proxy_env_reaches_spawn_with_runner_env_taking_precedence() {
     // The captured login-shell env on `SessionManager` should:
     //   - land in every spawn's env so children see the same
     //     proxy vars Terminal.app's children see;
-    //   - lose to an explicit runner.env override on the same
-    //     key, because the runner row is the more specific
+    //   - lose to an explicit role.env override on the same
+    //     key, because the role row is the more specific
     //     configuration surface.
     let pool = pool_with_schema();
-    let now = Utc::now().to_rfc3339();
-    let runner_id = ulid::Ulid::new().to_string();
-    {
-        let conn = pool.get().unwrap();
-        conn.execute(
-            "INSERT INTO runners
-                    (id, handle, display_name, runtime, command,
-                     args_json, working_dir, system_prompt, env_json,
-                     created_at, updated_at)
-                 VALUES (?1, 'proxied', 'P', 'shell', '/bin/sh',
-                         NULL, NULL, NULL, NULL, ?2, ?2)",
-            params![runner_id, now],
-        )
-        .unwrap();
-    }
-
-    let mut runner = runner("/bin/sh", &["-c", "true"]);
-    runner.id = runner_id;
-    runner.handle = "proxied".into();
-    // The runner row overrides HTTPS_PROXY but leaves
+    let role_id = ulid::Ulid::new().to_string();
+    let mut role = role("/bin/sh", &["-c", "true"]);
+    role.id = role_id;
+    role.handle = "proxied".into();
+    // The role row overrides HTTPS_PROXY but leaves
     // NO_PROXY / lowercase variants untouched, so we expect
     // those to come straight from the login-shell snapshot.
-    runner
-        .env
-        .insert("HTTPS_PROXY".into(), "http://runner-override:9999".into());
+    role.env
+        .insert("HTTPS_PROXY".into(), "http://role-override:9999".into());
+    insert_role_row(&pool.get().unwrap(), &role);
 
     let fake = fake_runtime();
     let mut vars = std::collections::BTreeMap::new();
@@ -4506,7 +4263,7 @@ fn login_shell_proxy_env_reaches_spawn_with_runner_env_taking_precedence() {
         Arc::clone(&fake) as Arc<dyn SessionRuntime>,
     );
     mgr.spawn_direct(
-        &runner,
+        &role,
         None,
         None,
         None,
@@ -4524,8 +4281,8 @@ fn login_shell_proxy_env_reaches_spawn_with_runner_env_taking_precedence() {
     let spec = fake.last_spawn_spec().expect("spawn was called");
     assert_eq!(
         spec.env.get("HTTPS_PROXY").map(String::as_str),
-        Some("http://runner-override:9999"),
-        "runner.env must override the login-shell capture",
+        Some("http://role-override:9999"),
+        "role.env must override the login-shell capture",
     );
     assert_eq!(
         spec.env.get("https_proxy").map(String::as_str),
@@ -4567,22 +4324,12 @@ fn utf8_locale_fallback_applies_only_when_no_locale_present() {
 #[test]
 fn spawn_env_respects_configured_locale_and_falls_back_to_utf8() {
     let pool = pool_with_schema();
-    let now = Utc::now().to_rfc3339();
     let localized_id = ulid::Ulid::new().to_string();
     let bare_id = ulid::Ulid::new().to_string();
     {
         let conn = pool.get().unwrap();
         for (id, handle) in [(&localized_id, "localized"), (&bare_id, "bare")] {
-            conn.execute(
-                "INSERT INTO runners
-                        (id, handle, display_name, runtime, command,
-                         args_json, working_dir, system_prompt, env_json,
-                         created_at, updated_at)
-                     VALUES (?1, ?2, 'L', 'shell', '/bin/sh',
-                             NULL, NULL, NULL, NULL, ?3, ?3)",
-                params![id, handle, now],
-            )
-            .unwrap();
+            crate::test_support::insert_test_role(&conn, id, handle, "shell", "/bin/sh");
         }
     }
 
@@ -4592,7 +4339,7 @@ fn spawn_env_respects_configured_locale_and_falls_back_to_utf8() {
         Arc::clone(&fake) as Arc<dyn SessionRuntime>,
     );
 
-    let mut localized = runner("/bin/sh", &["-c", "true"]);
+    let mut localized = role("/bin/sh", &["-c", "true"]);
     localized.id = localized_id;
     localized.handle = "localized".into();
     localized.env.insert("LC_ALL".into(), "zh_CN.UTF-8".into());
@@ -4615,14 +4362,14 @@ fn spawn_env_respects_configured_locale_and_falls_back_to_utf8() {
     assert_eq!(
         spec.env.get("LC_ALL").map(String::as_str),
         Some("zh_CN.UTF-8"),
-        "runner.env locale must flow through",
+        "role.env locale must flow through",
     );
     assert!(
         !spec.env.contains_key("LC_CTYPE"),
-        "a runner-configured locale must suppress the fallback",
+        "a role-configured locale must suppress the fallback",
     );
 
-    let mut bare = runner("/bin/sh", &["-c", "true"]);
+    let mut bare = role("/bin/sh", &["-c", "true"]);
     bare.id = bare_id;
     bare.handle = "bare".into();
     mgr.spawn_direct(
@@ -4660,7 +4407,7 @@ fn spawn_env_respects_configured_locale_and_falls_back_to_utf8() {
 
 #[test]
 fn resume_reuses_row_and_preserves_agent_session_key() {
-    // Multi-chat-per-runner contract: a direct chat IS a
+    // Multi-chat-per-role contract: a direct chat IS a
     // sessions row. spawn_direct creates the row and the
     // claude-code adapter persists a UUID under
     // `agent_session_key`. After exit, resume respawns the
@@ -4668,32 +4415,19 @@ fn resume_reuses_row_and_preserves_agent_session_key() {
     // populated) and flips status back to running. See
     // docs/impls/archive/0003-direct-chats.md.
     let pool = pool_with_schema();
-    let now = Utc::now().to_rfc3339();
-    let runner_id = ulid::Ulid::new().to_string();
-    {
-        let conn = pool.get().unwrap();
-        conn.execute(
-            "INSERT INTO runners
-                    (id, handle, display_name, runtime, command,
-                     args_json, working_dir, system_prompt, env_json,
-                     created_at, updated_at)
-                 VALUES (?1, 'resumer', 'R', 'claude-code', '/bin/sh',
-                         NULL, NULL, NULL, NULL, ?2, ?2)",
-            params![runner_id, now],
-        )
-        .unwrap();
-    }
-    let mut runner = runner("/bin/sh", &["-c", "echo first"]);
-    runner.id = runner_id.clone();
-    runner.handle = "resumer".into();
-    runner.runtime = "claude-code".into();
+    let role_id = ulid::Ulid::new().to_string();
+    let mut role = role("/bin/sh", &["-c", "echo first"]);
+    role.id = role_id.clone();
+    role.handle = "resumer".into();
+    role.runtime = "claude-code".into();
+    insert_role_row(&pool.get().unwrap(), &role);
 
     let fake = fake_runtime();
     let mgr = mgr_with_fake(None, Arc::clone(&fake));
     let cap = capture();
     let spawned = mgr
         .spawn_direct(
-            &runner,
+            &role,
             None,
             None,
             None,
@@ -4779,15 +4513,7 @@ fn resume_reuses_row_and_preserves_agent_session_key() {
 
     // Only one row survives: resume must not have INSERTed a
     // duplicate.
-    let count: i64 = pool
-        .get()
-        .unwrap()
-        .query_row(
-            "SELECT COUNT(*) FROM sessions WHERE runner_id = ?1",
-            params![runner_id],
-            |r| r.get(0),
-        )
-        .unwrap();
+    let count = crate::repo::role::session_count(&pool.get().unwrap(), &role_id).unwrap();
     assert_eq!(count, 1, "resume must update in place, not insert");
 
     mgr.kill(&session_id).unwrap();
@@ -4829,30 +4555,19 @@ fn resume_applies_a_size_pushed_mid_fork() {
     // PTY is installed. A push in that window is persisted only; the
     // post-install re-read must apply it.
     let pool = pool_with_schema();
-    let now = Utc::now().to_rfc3339();
-    let runner_id = ulid::Ulid::new().to_string();
-    {
-        let conn = pool.get().unwrap();
-        conn.execute(
-            "INSERT INTO runners
-                    (id, handle, display_name, runtime, command,
-                     created_at, updated_at)
-                 VALUES (?1, 'midfork', 'MidFork', 'codex', '/bin/sh', ?2, ?2)",
-            params![runner_id, now],
-        )
-        .unwrap();
-    }
-    let mut runner = runner("/bin/sh", &[]);
-    runner.id = runner_id;
-    runner.handle = "midfork".into();
-    runner.runtime = "codex".into();
+    let role_id = ulid::Ulid::new().to_string();
+    let mut role = role("/bin/sh", &[]);
+    role.id = role_id;
+    role.handle = "midfork".into();
+    role.runtime = "codex".into();
+    insert_role_row(&pool.get().unwrap(), &role);
 
     let fake = fake_runtime();
     let mgr = mgr_with_fake(None, Arc::clone(&fake));
     let events = capture();
     let spawned = mgr
         .spawn_direct(
-            &runner,
+            &role,
             None,
             None,
             None,
@@ -4904,28 +4619,17 @@ fn resume_applies_a_size_pushed_mid_fork() {
 #[test]
 fn first_spawn_without_dims_uses_and_persists_default_size() {
     let pool = pool_with_schema();
-    let now = Utc::now().to_rfc3339();
-    let runner_id = ulid::Ulid::new().to_string();
-    {
-        let conn = pool.get().unwrap();
-        conn.execute(
-            "INSERT INTO runners
-                    (id, handle, display_name, runtime, command,
-                     created_at, updated_at)
-                 VALUES (?1, 'defaultsize', 'DefaultSize', 'shell', '/bin/sh', ?2, ?2)",
-            params![runner_id, now],
-        )
-        .unwrap();
-    }
-    let mut runner = runner("/bin/sh", &[]);
-    runner.id = runner_id;
-    runner.handle = "defaultsize".into();
+    let role_id = ulid::Ulid::new().to_string();
+    let mut role = role("/bin/sh", &[]);
+    role.id = role_id;
+    role.handle = "defaultsize".into();
+    insert_role_row(&pool.get().unwrap(), &role);
 
     let fake = fake_runtime();
     let mgr = mgr_with_fake(None, Arc::clone(&fake));
     let spawned = mgr
         .spawn_direct(
-            &runner,
+            &role,
             None,
             None,
             None,
@@ -4961,28 +4665,17 @@ fn first_spawn_without_dims_uses_and_persists_default_size() {
 #[test]
 fn resume_size_resolution_prefers_explicit_then_persisted_after_manager_restart() {
     let pool = pool_with_schema();
-    let now = Utc::now().to_rfc3339();
-    let runner_id = ulid::Ulid::new().to_string();
-    {
-        let conn = pool.get().unwrap();
-        conn.execute(
-            "INSERT INTO runners
-                    (id, handle, display_name, runtime, command,
-                     created_at, updated_at)
-                 VALUES (?1, 'persistedsize', 'PersistedSize', 'shell', '/bin/sh', ?2, ?2)",
-            params![runner_id, now],
-        )
-        .unwrap();
-    }
-    let mut runner = runner("/bin/sh", &[]);
-    runner.id = runner_id;
-    runner.handle = "persistedsize".into();
+    let role_id = ulid::Ulid::new().to_string();
+    let mut role = role("/bin/sh", &[]);
+    role.id = role_id;
+    role.handle = "persistedsize".into();
+    insert_role_row(&pool.get().unwrap(), &role);
 
     let first_fake = fake_runtime();
     let first_mgr = mgr_with_fake(None, Arc::clone(&first_fake));
     let spawned = first_mgr
         .spawn_direct(
-            &runner,
+            &role,
             None,
             None,
             None,
@@ -5081,34 +4774,25 @@ fn resume_refuses_running_and_archived_rows() {
     // resume_mission_session_stamps_slot_handle_env. This test
     // covers the gates that remain.
     let pool = pool_with_schema();
-    let now = Utc::now().to_rfc3339();
-    let runner_id = ulid::Ulid::new().to_string();
+    let role_id = ulid::Ulid::new().to_string();
     {
         let conn = pool.get().unwrap();
-        conn.execute(
-            "INSERT INTO runners
-                    (id, handle, display_name, runtime, command,
-                     created_at, updated_at)
-                 VALUES (?1, 'r', 'R', 'shell', '/bin/sh', ?2, ?2)",
-            params![runner_id, now],
-        )
-        .unwrap();
+        crate::test_support::insert_test_role(&conn, &role_id, "r", "shell", "/bin/sh");
         // Already-running direct session.
-        conn.execute(
-            "INSERT INTO sessions
-                    (id, mission_id, runner_id, status, started_at)
-                 VALUES ('running-sid', NULL, ?1, 'running', ?2)",
-            params![runner_id, now],
-        )
-        .unwrap();
+        let mut running = crate::test_support::test_session_row(
+            "running-sid",
+            crate::model::SessionStatus::Running,
+        );
+        running.role_id = Some(role_id.clone());
+        crate::repo::session::insert(&conn, &running).unwrap();
         // Archived direct session.
-        conn.execute(
-            "INSERT INTO sessions
-                    (id, mission_id, runner_id, status, started_at, archived_at)
-                 VALUES ('archived-sid', NULL, ?1, 'stopped', ?2, ?2)",
-            params![runner_id, now],
-        )
-        .unwrap();
+        let mut archived = crate::test_support::test_session_row(
+            "archived-sid",
+            crate::model::SessionStatus::Stopped,
+        );
+        archived.role_id = Some(role_id.clone());
+        archived.archived_at = archived.started_at;
+        crate::repo::session::insert(&conn, &archived).unwrap();
     }
     let mgr = manager_with_runtime(crate::shell_path::LoginShellEnv::default(), inert_runtime());
     for (sid, needle) in [
@@ -5136,25 +4820,16 @@ fn resume_refuses_running_and_archived_rows() {
 #[test]
 fn launch_resume_never_falls_back_to_a_fresh_chat_spawn() {
     let pool = pool_with_schema();
-    let now = Utc::now().to_rfc3339();
-    let runner_id = ulid::Ulid::new().to_string();
+    let role_id = ulid::Ulid::new().to_string();
     {
         let conn = pool.get().unwrap();
-        conn.execute(
-            "INSERT INTO runners
-                    (id, handle, display_name, runtime, command,
-                     created_at, updated_at)
-                 VALUES (?1, 'codex-runner', 'Codex', 'codex', '/bin/sh', ?2, ?2)",
-            params![runner_id, now],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO sessions
-                    (id, runner_id, status, started_at)
-                 VALUES ('launch-sid', ?1, 'stopped', ?2)",
-            params![runner_id, now],
-        )
-        .unwrap();
+        crate::test_support::insert_test_role(&conn, &role_id, "codex-role", "codex", "/bin/sh");
+        let mut row = crate::test_support::test_session_row(
+            "launch-sid",
+            crate::model::SessionStatus::Stopped,
+        );
+        row.role_id = Some(role_id.clone());
+        crate::repo::session::insert(&conn, &row).unwrap();
     }
     let mgr = manager_with_runtime(crate::shell_path::LoginShellEnv::default(), inert_runtime());
 
@@ -5187,26 +4862,18 @@ fn launch_resume_keeps_missing_cwd_as_a_chat_error() {
     let pool = pool_with_schema();
     let root = tempfile::tempdir().unwrap();
     let missing_cwd = root.path().join("deleted-chat-cwd");
-    let now = Utc::now().to_rfc3339();
-    let runner_id = ulid::Ulid::new().to_string();
+    let role_id = ulid::Ulid::new().to_string();
     {
         let conn = pool.get().unwrap();
-        conn.execute(
-            "INSERT INTO runners
-                    (id, handle, display_name, runtime, command,
-                     created_at, updated_at)
-                 VALUES (?1, 'codex-runner', 'Codex', 'codex', '/bin/sh', ?2, ?2)",
-            params![runner_id, now],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO sessions
-                    (id, runner_id, status, started_at, cwd, agent_session_key)
-                 VALUES ('chat-missing-cwd', ?1, 'stopped', ?2, ?3,
-                         '00000000-0000-0000-0000-000000000001')",
-            params![runner_id, now, missing_cwd.to_string_lossy()],
-        )
-        .unwrap();
+        crate::test_support::insert_test_role(&conn, &role_id, "codex-role", "codex", "/bin/sh");
+        let mut row = crate::test_support::test_session_row(
+            "chat-missing-cwd",
+            crate::model::SessionStatus::Stopped,
+        );
+        row.role_id = Some(role_id.clone());
+        row.cwd = Some(missing_cwd.to_string_lossy().into_owned());
+        row.agent_session_key = Some("00000000-0000-0000-0000-000000000001".into());
+        crate::repo::session::insert(&conn, &row).unwrap();
     }
     let fake = fake_runtime();
     let mgr = mgr_with_fake(None, Arc::clone(&fake));
@@ -5235,13 +4902,13 @@ fn launch_resume_keeps_missing_cwd_as_a_chat_error() {
 #[test]
 fn resume_mission_session_stamps_slot_handle_env() {
     // Mission resume must look up the slot for the session and
-    // use slot.slot_handle as RUNNER_HANDLE, not runner.handle.
+    // use slot.slot_handle as RUNNER_HANDLE, not role.handle.
     // After the Step 9 cutover the manager hands env to the
     // runtime via SpawnSpec.env; FakeRuntime captures the spec
     // and we assert RUNNER_HANDLE == slot_handle directly.
     let pool = pool_with_schema();
     let now = Utc::now().to_rfc3339();
-    let runner_id = ulid::Ulid::new().to_string();
+    let role_id = ulid::Ulid::new().to_string();
     let mission_id = ulid::Ulid::new().to_string();
     let slot_id = ulid::Ulid::new().to_string();
     {
@@ -5252,23 +4919,20 @@ fn resume_mission_session_stamps_slot_handle_env() {
             params![now],
         )
         .unwrap();
-        conn.execute(
-            "INSERT INTO runners
-                    (id, handle, display_name, runtime, command,
-                     args_json, created_at, updated_at)
-                 VALUES (?1, 'template-handle', 'R', 'shell', '/bin/sh',
-                         '[\"-c\", \"echo HANDLE=$RUNNER_HANDLE && exit\"]',
-                         ?2, ?2)",
-            params![runner_id, now],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO slots
-                    (id, crew_id, runner_id, slot_handle, position, lead, added_at)
-                 VALUES (?1, 'c-mr', ?2, 'architect-slot', 0, 1, ?3)",
-            params![slot_id, runner_id, now],
-        )
-        .unwrap();
+        let mut persisted_role = role("/bin/sh", &["-c", "echo HANDLE=$RUNNER_HANDLE && exit"]);
+        persisted_role.id = role_id.clone();
+        persisted_role.handle = "template-handle".into();
+        crate::repo::role::insert(&conn, &crate::repo::role::RoleRow::from(&persisted_role))
+            .unwrap();
+        crate::test_support::insert_test_slot(
+            &conn,
+            &slot_id,
+            "c-mr",
+            &role_id,
+            "architect-slot",
+            0,
+            true,
+        );
         conn.execute(
             "INSERT INTO missions
                     (id, crew_id, title, status, started_at)
@@ -5276,13 +4940,12 @@ fn resume_mission_session_stamps_slot_handle_env() {
             params![mission_id, now],
         )
         .unwrap();
-        conn.execute(
-            "INSERT INTO sessions
-                    (id, mission_id, runner_id, slot_id, status, started_at)
-                 VALUES ('mr-sid', ?1, ?2, ?3, 'stopped', ?4)",
-            params![mission_id, runner_id, slot_id, now],
-        )
-        .unwrap();
+        let mut row =
+            crate::test_support::test_session_row("mr-sid", crate::model::SessionStatus::Stopped);
+        row.mission_id = Some(mission_id.clone());
+        row.role_id = Some(role_id.clone());
+        row.slot_id = Some(slot_id.clone());
+        crate::repo::session::insert(&conn, &row).unwrap();
     }
 
     let fake = fake_runtime();
@@ -5339,7 +5002,7 @@ fn codex_mission_resume_grants_event_log_dir_to_sandbox() {
     let missing_cwd_root = tempfile::tempdir().unwrap();
     let missing_cwd = missing_cwd_root.path().join("deleted-mission-cwd");
     let now = Utc::now().to_rfc3339();
-    let runner_id = ulid::Ulid::new().to_string();
+    let role_id = ulid::Ulid::new().to_string();
     let mission_id = ulid::Ulid::new().to_string();
     let slot_id = ulid::Ulid::new().to_string();
     {
@@ -5350,23 +5013,29 @@ fn codex_mission_resume_grants_event_log_dir_to_sandbox() {
             params![now],
         )
         .unwrap();
-        conn.execute(
-                "INSERT INTO runners
-                    (id, handle, display_name, runtime, command,
-                     args_json, created_at, updated_at)
-                 VALUES (?1, 'codex-template', 'Codex', 'codex', 'codex',
-                         '[\"--ask-for-approval\",\"on-request\",\"--sandbox\",\"workspace-write\"]',
-                         ?2, ?2)",
-                params![runner_id, now],
-            )
+        let mut persisted_role = role(
+            "codex",
+            &[
+                "--ask-for-approval",
+                "on-request",
+                "--sandbox",
+                "workspace-write",
+            ],
+        );
+        persisted_role.id = role_id.clone();
+        persisted_role.handle = "codex-template".into();
+        persisted_role.runtime = "codex".into();
+        crate::repo::role::insert(&conn, &crate::repo::role::RoleRow::from(&persisted_role))
             .unwrap();
-        conn.execute(
-            "INSERT INTO slots
-                    (id, crew_id, runner_id, slot_handle, position, lead, added_at)
-                 VALUES (?1, 'c-codex-resume', ?2, 'impl', 0, 1, ?3)",
-            params![slot_id, runner_id, now],
-        )
-        .unwrap();
+        crate::test_support::insert_test_slot(
+            &conn,
+            &slot_id,
+            "c-codex-resume",
+            &role_id,
+            "impl",
+            0,
+            true,
+        );
         conn.execute(
             "INSERT INTO missions
                     (id, crew_id, title, status, started_at)
@@ -5374,19 +5043,15 @@ fn codex_mission_resume_grants_event_log_dir_to_sandbox() {
             params![mission_id, now],
         )
         .unwrap();
-        conn.execute(
-            "INSERT INTO sessions
-                    (id, mission_id, runner_id, slot_id, status, started_at, cwd)
-                 VALUES ('codex-resume-sid', ?1, ?2, ?3, 'stopped', ?4, ?5)",
-            params![
-                mission_id,
-                runner_id,
-                slot_id,
-                now,
-                missing_cwd.to_string_lossy()
-            ],
-        )
-        .unwrap();
+        let mut row = crate::test_support::test_session_row(
+            "codex-resume-sid",
+            crate::model::SessionStatus::Stopped,
+        );
+        row.mission_id = Some(mission_id.clone());
+        row.role_id = Some(role_id.clone());
+        row.slot_id = Some(slot_id.clone());
+        row.cwd = Some(missing_cwd.to_string_lossy().into_owned());
+        crate::repo::session::insert(&conn, &row).unwrap();
     }
 
     let app_data = tempfile::tempdir().unwrap();
@@ -5436,9 +5101,9 @@ fn synthetic_wake_busy_updates_activity_and_allows_final_idle() {
         crew_id: "c".into(),
         ..mission()
     };
-    let runner = runner("/bin/cat", &[]);
-    let slot_id = insert_crew_runner(&pool, &mission.id, &runner.id);
-    let mut slot = slot_for(&runner);
+    let role = role("/bin/cat", &[]);
+    let slot_id = insert_crew_role(&pool, &mission.id, &role.id);
+    let mut slot = slot_for(&role);
     slot.id = slot_id;
     slot.crew_id = mission.crew_id.clone();
 
@@ -5453,7 +5118,7 @@ fn synthetic_wake_busy_updates_activity_and_allows_final_idle() {
     let spawned = mgr
         .spawn(
             &mission,
-            &runner,
+            &role,
             &slot,
             app_data.path(),
             events_log_path,
@@ -5474,7 +5139,7 @@ fn synthetic_wake_busy_updates_activity_and_allows_final_idle() {
         EventDraft::signal(
             mission.crew_id.clone(),
             mission.id.clone(),
-            runner.handle.clone(),
+            role.handle.clone(),
             SignalType::new("runner_status"),
             serde_json::json!({ "state": "busy" }),
         ),
@@ -5535,9 +5200,9 @@ fn suppressed_busy_then_agent_output_and_quiet_appends_final_idle() {
         crew_id: "c".into(),
         ..mission()
     };
-    let runner = runner("/bin/cat", &[]);
-    let slot_id = insert_crew_runner(&pool, &mission.id, &runner.id);
-    let mut slot = slot_for(&runner);
+    let role = role("/bin/cat", &[]);
+    let slot_id = insert_crew_role(&pool, &mission.id, &role.id);
+    let mut slot = slot_for(&role);
     slot.id = slot_id;
     slot.crew_id = mission.crew_id.clone();
 
@@ -5552,7 +5217,7 @@ fn suppressed_busy_then_agent_output_and_quiet_appends_final_idle() {
     let spawned = mgr
         .spawn(
             &mission,
-            &runner,
+            &role,
             &slot,
             app_data.path(),
             events_log_path,
@@ -5584,7 +5249,7 @@ fn suppressed_busy_then_agent_output_and_quiet_appends_final_idle() {
         EventDraft::signal(
             mission.crew_id.clone(),
             mission.id.clone(),
-            runner.handle.clone(),
+            role.handle.clone(),
             SignalType::new("runner_status"),
             serde_json::json!({ "state": "busy" }),
         ),
@@ -6067,9 +5732,9 @@ fn custom_claude_settings_do_not_prepare_a_status_watcher() {
         vec!["--settings".to_owned(), "custom.json".to_owned()],
         vec!["--settings=custom.json".to_owned()],
     ] {
-        let mut runner = runner("/bin/cat", &[]);
-        runner.runtime = "claude-code".into();
-        runner.args = args.clone();
+        let mut role = role("/bin/cat", &[]);
+        role.runtime = "claude-code".into();
+        role.args = args.clone();
         let root = tempfile::tempdir().unwrap();
         let stale_rekey = crate::session::claude_rekey::drop_path(root.path(), "custom-settings");
         std::fs::create_dir_all(stale_rekey.parent().unwrap()).unwrap();
@@ -6077,7 +5742,7 @@ fn custom_claude_settings_do_not_prepare_a_status_watcher() {
         let mut spec = SpawnSpec {
             session_id: "custom-settings".into(),
             cwd: None,
-            command: runner.command.clone(),
+            command: role.command.clone(),
             args,
             env: BTreeMap::new(),
             mission: false,
@@ -6088,7 +5753,7 @@ fn custom_claude_settings_do_not_prepare_a_status_watcher() {
         };
         SessionManager::apply_runtime_args(
             &mut spec,
-            &runner,
+            &role,
             &router::runtime::resume_plan(Some(Runtime::ClaudeCode), None),
             root.path(),
             None,
@@ -6107,13 +5772,13 @@ fn custom_claude_settings_do_not_prepare_a_status_watcher() {
 #[test]
 fn spawn_argv_injects_runtime_settings_for_fresh_and_resume() {
     let compose = |runtime: &str, plan: router::runtime::ResumePlan| {
-        let mut runner = runner("/bin/cat", &["--debug"]);
-        runner.runtime = runtime.into();
+        let mut role = role("/bin/cat", &["--debug"]);
+        role.runtime = runtime.into();
         let mut spec = SpawnSpec {
             session_id: "settings-argv".into(),
             cwd: None,
-            command: runner.command.clone(),
-            args: runner.args.clone(),
+            command: role.command.clone(),
+            args: role.args.clone(),
             env: BTreeMap::new(),
             mission: false,
             shim_dir: None,
@@ -6123,7 +5788,7 @@ fn spawn_argv_injects_runtime_settings_for_fresh_and_resume() {
         };
         SessionManager::apply_runtime_args(
             &mut spec,
-            &runner,
+            &role,
             &plan,
             &fixture_tmp_dir().join("runner-app-data"),
             Some("first turn"),
@@ -6211,31 +5876,18 @@ fn spawn_claude_for_resize(
     String,
 ) {
     let pool = pool_with_schema();
-    let now = Utc::now().to_rfc3339();
-    let runner_id = ulid::Ulid::new().to_string();
-    {
-        let conn = pool.get().unwrap();
-        conn.execute(
-            "INSERT INTO runners
-                    (id, handle, display_name, runtime, command,
-                     args_json, working_dir, system_prompt, env_json,
-                     created_at, updated_at)
-                 VALUES (?1, ?2, 'Debounce', 'claude-code', '/bin/cat',
-                         NULL, NULL, NULL, NULL, ?3, ?3)",
-            params![runner_id, handle, now],
-        )
-        .unwrap();
-    }
-    let mut runner = runner("/bin/cat", &[]);
-    runner.id = runner_id;
-    runner.handle = handle.into();
-    runner.runtime = "claude-code".into();
+    let role_id = ulid::Ulid::new().to_string();
+    let mut role = role("/bin/cat", &[]);
+    role.id = role_id;
+    role.handle = handle.into();
+    role.runtime = "claude-code".into();
+    insert_role_row(&pool.get().unwrap(), &role);
 
     let fake = fake_runtime();
     let mgr = mgr_with_fake(None, Arc::clone(&fake));
     let spawned = mgr
         .spawn_direct(
-            &runner,
+            &role,
             None,
             None,
             None,
@@ -6479,13 +6131,13 @@ fn resize_settle_thread_persists_without_extra_ioctls() {
 }
 
 #[test]
-fn runtime_direct_runner_applies_model_and_effort() {
+fn runtime_direct_role_applies_model_and_effort() {
     let configured =
-        runtime_direct_runner("codex", None, Some(" gpt-5.6-sol "), Some(" max ")).unwrap();
+        runtime_direct_role("codex", None, Some(" gpt-5.6-sol "), Some(" max ")).unwrap();
     assert_eq!(configured.model.as_deref(), Some("gpt-5.6-sol"));
     assert_eq!(configured.effort.as_deref(), Some("max"));
 
-    let defaults = runtime_direct_runner("codex", None, Some(" "), Some("")).unwrap();
+    let defaults = runtime_direct_role("codex", None, Some(" "), Some("")).unwrap();
     assert_eq!(defaults.model, None);
     assert_eq!(defaults.effort, None);
 }
@@ -6500,7 +6152,7 @@ fn shell_runtime_spawns_and_resumes_as_plain_login_shell() {
         Some("/usr/local/bin:/usr/bin:/bin".into()),
         Arc::clone(&fake),
     );
-    let shell = runtime_direct_runner("shell", Some("/bin/zsh"), None, None).unwrap();
+    let shell = runtime_direct_role("shell", Some("/bin/zsh"), None, None).unwrap();
 
     assert_eq!(shell.args, ["-l"]);
     assert!(shell.system_prompt.is_none());
@@ -6650,7 +6302,7 @@ fn shell_resume_uses_nearest_existing_cwd_and_feeds_notice_first() {
 fn runtime_direct_spawn_defaults_to_home_and_preserves_explicit_directories() {
     let home = runner_core::app_paths::home_dir().expect("home directory");
     let selected = tempfile::tempdir().unwrap();
-    for (cwd, runner_cwd, expected) in [
+    for (cwd, role_cwd, expected) in [
         (None, None, home.as_path()),
         (Some(""), None, home.as_path()),
         (Some(" \t"), Some(""), home.as_path()),
@@ -6660,8 +6312,8 @@ fn runtime_direct_spawn_defaults_to_home_and_preserves_explicit_directories() {
         let pool = pool_with_schema();
         let fake = fake_runtime();
         let mgr = mgr_with_fake(None, Arc::clone(&fake));
-        let mut configured = runner("/bin/sh", &[]);
-        configured.working_dir = runner_cwd.map(str::to_owned);
+        let mut configured = role("/bin/sh", &[]);
+        configured.working_dir = role_cwd.map(str::to_owned);
         let spawned = mgr
             .spawn_runtime_direct(
                 &configured,
@@ -6696,7 +6348,7 @@ fn runtime_direct_spawn_defaults_to_home_and_preserves_explicit_directories() {
 fn runtime_direct_spawn_persists_model_and_effort() {
     let pool = pool_with_schema();
     let configured =
-        runtime_direct_runner("codex", Some("/bin/sh"), Some("gpt-5.6-sol"), Some("max")).unwrap();
+        runtime_direct_role("codex", Some("/bin/sh"), Some("gpt-5.6-sol"), Some("max")).unwrap();
     let mgr = mgr_with_fake(None, fake_runtime());
     let spawned = mgr
         .spawn_runtime_direct(
@@ -6737,26 +6389,19 @@ fn runtime_direct_spawn_persists_model_and_effort() {
 #[test]
 fn pinned_direct_spawn_records_override_model_and_effort() {
     let pool = pool_with_schema();
-    let now = Utc::now().to_rfc3339();
-    let runner_id = ulid::Ulid::new().to_string();
-    {
-        let conn = pool.get().unwrap();
-        conn.execute(
-            "INSERT INTO runners
-                    (id, handle, display_name, runtime, command,
-                     args_json, working_dir, system_prompt, env_json,
-                     created_at, updated_at)
-                 VALUES (?1, 'pin-me', 'Pin', 'codex', '/bin/sh',
-                         '[]', NULL, NULL, NULL, ?2, ?2)",
-            params![runner_id, now],
-        )
-        .unwrap();
-    }
-    let mut r = runner("/bin/sh", &[]);
-    r.id = runner_id;
+    let role_id = ulid::Ulid::new().to_string();
+    crate::test_support::insert_test_role(
+        &pool.get().unwrap(),
+        &role_id,
+        "pin-me",
+        "codex",
+        "/bin/sh",
+    );
+    let mut r = role("/bin/sh", &[]);
+    r.id = role_id;
     r.runtime = "codex".into();
-    r.model = Some("runner-model".into());
-    r.effort = Some("runner-effort".into());
+    r.model = Some("role-model".into());
+    r.effort = Some("role-effort".into());
     let mgr = mgr_with_fake(None, fake_runtime());
     let spawned = mgr
         .spawn_direct(
@@ -6795,22 +6440,16 @@ fn pinned_direct_spawn_records_override_model_and_effort() {
 #[test]
 fn unpinned_direct_spawn_persists_options_without_pinning_runtime() {
     let pool = pool_with_schema();
-    let now = Utc::now().to_rfc3339();
-    let runner_id = ulid::Ulid::new().to_string();
-    {
-        let conn = pool.get().unwrap();
-        conn.execute(
-            "INSERT INTO runners
-                    (id, handle, display_name, runtime, command,
-                     args_json, created_at, updated_at)
-                 VALUES (?1, 'options-only', 'Options', 'codex', '/bin/sh',
-                         '[]', ?2, ?2)",
-            params![runner_id, now],
-        )
-        .unwrap();
-    }
-    let mut r = runner("/bin/sh", &[]);
-    r.id = runner_id;
+    let role_id = ulid::Ulid::new().to_string();
+    crate::test_support::insert_test_role(
+        &pool.get().unwrap(),
+        &role_id,
+        "options-only",
+        "codex",
+        "/bin/sh",
+    );
+    let mut r = role("/bin/sh", &[]);
+    r.id = role_id;
     r.runtime = "codex".into();
     let fake = fake_runtime();
     let mgr = mgr_with_fake(None, Arc::clone(&fake));
@@ -6869,7 +6508,7 @@ fn unpinned_direct_spawn_persists_options_without_pinning_runtime() {
 
 #[test]
 fn runtime_override_helper_distinguishes_absent_matching_and_differing() {
-    let mut r = runner("codex-custom", &["--custom"]);
+    let mut r = role("codex-custom", &["--custom"]);
     r.runtime = "codex".into();
 
     // Absent / blank: no rebuild, no pin.
@@ -6880,7 +6519,7 @@ fn runtime_override_helper_distinguishes_absent_matching_and_differing() {
     }
 
     // Matching: no rebuild (spawn stays byte-identical), but pinned —
-    // the session row must record the engine so a later runner-
+    // the session row must record the engine so a later role-
     // template edit can't re-engine its resume.
     let matching = resolve_runtime_override(&r, Some("codex"), None, None).unwrap();
     assert!(matching.effective.is_none());
@@ -6899,7 +6538,7 @@ fn runtime_override_helper_distinguishes_absent_matching_and_differing() {
 
 #[test]
 fn runtime_override_helper_resets_engine_fields_and_keeps_persona() {
-    let mut r = runner("codex-custom", &["--custom-flag"]);
+    let mut r = role("codex-custom", &["--custom-flag"]);
     r.runtime = "codex".into();
     r.model = Some("gpt-5-codex".into());
     r.effort = Some("high".into());
@@ -6910,7 +6549,7 @@ fn runtime_override_helper_resets_engine_fields_and_keeps_persona() {
     let effective = resolve_runtime_override(&r, Some("claude-code"), None, None)
         .unwrap()
         .effective
-        .expect("differing runtime must produce an effective runner");
+        .expect("differing runtime must produce an effective role");
     // Engine fields reset to registry defaults.
     assert_eq!(effective.runtime, "claude-code");
     assert_eq!(effective.command, "claude");
@@ -6919,7 +6558,7 @@ fn runtime_override_helper_resets_engine_fields_and_keeps_persona() {
         router::runtime::apply_permission_mode(
             Some(Runtime::ClaudeCode),
             &[],
-            crate::ops::runner::default_permission_mode(),
+            crate::ops::role::default_permission_mode(),
         ),
         "override args must be the registry default permission-mode pair",
     );
@@ -6936,14 +6575,14 @@ fn runtime_override_helper_resets_engine_fields_and_keeps_persona() {
 
 #[test]
 fn runtime_override_helper_applies_slot_model_to_selected_runtime() {
-    let mut r = runner("codex-custom", &["--custom"]);
+    let mut r = role("codex-custom", &["--custom"]);
     r.runtime = "codex".into();
-    r.model = Some("runner-model".into());
+    r.model = Some("role-model".into());
 
     let differing = resolve_runtime_override(&r, Some("trae"), Some("trae-slot-model"), None)
         .unwrap()
         .effective
-        .expect("differing runtime must produce an effective runner");
+        .expect("differing runtime must produce an effective role");
     assert_eq!(differing.runtime, "trae");
     assert_eq!(differing.model.as_deref(), Some("trae-slot-model"));
 
@@ -6958,7 +6597,7 @@ fn runtime_override_helper_applies_slot_model_to_selected_runtime() {
     let unpinned = resolve_runtime_override(&r, None, Some("codex-slot-model"), None).unwrap();
     let effective = unpinned
         .effective
-        .expect("a model-only override must rebuild the runner config");
+        .expect("a model-only override must rebuild the role config");
     assert_eq!(effective.runtime, "codex");
     assert_eq!(effective.model.as_deref(), Some("codex-slot-model"));
     assert_eq!(effective.effort, r.effort);
@@ -6967,15 +6606,15 @@ fn runtime_override_helper_applies_slot_model_to_selected_runtime() {
 
 #[test]
 fn runtime_override_helper_applies_effort_to_selected_runtime() {
-    let mut r = runner("codex-custom", &["--custom"]);
+    let mut r = role("codex-custom", &["--custom"]);
     r.runtime = "codex".into();
-    r.model = Some("runner-model".into());
-    r.effort = Some("runner-effort".into());
+    r.model = Some("role-model".into());
+    r.effort = Some("role-effort".into());
 
     let differing = resolve_runtime_override(&r, Some("claude-code"), Some("fable"), Some("max"))
         .unwrap()
         .effective
-        .expect("differing runtime must produce an effective runner");
+        .expect("differing runtime must produce an effective role");
     assert_eq!(differing.runtime, "claude-code");
     assert_eq!(differing.model.as_deref(), Some("fable"));
     assert_eq!(differing.effort.as_deref(), Some("max"));
@@ -6983,7 +6622,7 @@ fn runtime_override_helper_applies_effort_to_selected_runtime() {
     let cleared = resolve_runtime_override(&r, Some("claude-code"), None, None)
         .unwrap()
         .effective
-        .expect("differing runtime must produce an effective runner");
+        .expect("differing runtime must produce an effective role");
     assert_eq!(cleared.model, None);
     assert_eq!(cleared.effort, None);
 
@@ -6991,15 +6630,15 @@ fn runtime_override_helper_applies_effort_to_selected_runtime() {
         .unwrap()
         .effective
         .expect("an effort override must rebuild even for a matching runtime");
-    assert_eq!(matching.model.as_deref(), Some("runner-model"));
+    assert_eq!(matching.model.as_deref(), Some("role-model"));
     assert_eq!(matching.effort.as_deref(), Some("xhigh"));
 
     let unpinned = resolve_runtime_override(&r, None, None, Some("high")).unwrap();
     let effective = unpinned
         .effective
-        .expect("an effort-only override must rebuild the runner config");
+        .expect("an effort-only override must rebuild the role config");
     assert_eq!(effective.runtime, "codex");
-    assert_eq!(effective.model.as_deref(), Some("runner-model"));
+    assert_eq!(effective.model.as_deref(), Some("role-model"));
     assert_eq!(effective.effort.as_deref(), Some("high"));
     assert!(!unpinned.pinned, "effort-only overrides must not pin");
 
@@ -7010,7 +6649,7 @@ fn runtime_override_helper_applies_effort_to_selected_runtime() {
 
 #[test]
 fn runtime_override_helper_rejects_unknown_runtime() {
-    let r = runner("/bin/sh", &[]);
+    let r = role("/bin/sh", &[]);
     let err = resolve_runtime_override(&r, Some("aider-future"), None, None).unwrap_err();
     assert!(err.to_string().contains("unknown runtime"), "got: {err}",);
 }
@@ -7019,19 +6658,19 @@ fn runtime_override_helper_rejects_unknown_runtime() {
 fn mission_spawn_with_slot_override_uses_registry_engine_and_records_runtime() {
     let pool = pool_with_schema();
     let mission_row = mission();
-    let runner_id = ulid::Ulid::new().to_string();
-    let slot_id = insert_crew_runner(&pool, &mission_row.id, &runner_id);
+    let role_id = ulid::Ulid::new().to_string();
+    let slot_id = insert_crew_role(&pool, &mission_row.id, &role_id);
 
-    // Runner row is a codex engine with custom flags + pinned
+    // Role row is a codex engine with custom flags + pinned
     // model/effort; the slot overrides to claude-code and selects
     // its own model and effort.
-    let mut runner = runner("codex-custom", &["--custom-flag"]);
-    runner.id = runner_id.clone();
-    runner.runtime = "codex".into();
-    runner.model = Some("gpt-5-codex".into());
-    runner.effort = Some("high".into());
-    runner.env.insert("FOO".into(), "bar".into());
-    let mut slot = slot_for(&runner);
+    let mut role = role("codex-custom", &["--custom-flag"]);
+    role.id = role_id.clone();
+    role.runtime = "codex".into();
+    role.model = Some("gpt-5-codex".into());
+    role.effort = Some("high".into());
+    role.env.insert("FOO".into(), "bar".into());
+    let mut slot = slot_for(&role);
     slot.id = slot_id;
     slot.runtime_override = Some("claude-code".into());
     slot.model_override = Some("opus".into());
@@ -7042,11 +6681,11 @@ fn mission_spawn_with_slot_override_uses_registry_engine_and_records_runtime() {
     // Pin the app-wide mode off so the override's registry-default
     // pair reaches the spawn unchanged; convergence under Bypass /
     // Auto is covered by the `mission_spawn_converges_*` tests.
-    mgr.set_mission_permission_mode(MissionPermissionMode::RunnerDefault);
+    mgr.set_mission_permission_mode(MissionPermissionMode::RoleDefault);
     let spawned = mgr
         .spawn(
             &mission_row,
-            &runner,
+            &role,
             &slot,
             fixture_tmp_dir(),
             PathBuf::from("/dev/null"),
@@ -7060,7 +6699,7 @@ fn mission_spawn_with_slot_override_uses_registry_engine_and_records_runtime() {
     assert_effective_command(&spec.command, "claude");
     assert!(
         !spec.args.contains(&"--custom-flag".to_string()),
-        "runner args are engine flags and must not carry across runtimes: {:?}",
+        "role args are engine flags and must not carry across runtimes: {:?}",
         spec.args,
     );
     assert!(spec
@@ -7114,29 +6753,19 @@ fn mission_spawn_with_slot_override_uses_registry_engine_and_records_runtime() {
 }
 
 #[test]
-fn mission_spawn_with_model_only_slot_override_uses_runner_runtime_without_pinning() {
+fn mission_spawn_with_model_only_slot_override_uses_role_runtime_without_pinning() {
     let pool = pool_with_schema();
     let mission_row = mission();
-    let runner_id = ulid::Ulid::new().to_string();
-    let slot_id = insert_crew_runner(&pool, &mission_row.id, &runner_id);
+    let role_id = ulid::Ulid::new().to_string();
+    let slot_id = insert_crew_role(&pool, &mission_row.id, &role_id);
 
-    let mut runner = runner("codex-custom", &["--custom-flag"]);
-    runner.id = runner_id;
-    runner.runtime = "codex".into();
-    runner.model = Some("runner-model".into());
-    runner.effort = Some("high".into());
-    pool.get()
-        .unwrap()
-        .execute(
-            "UPDATE runners
-                SET runtime = 'codex', command = 'codex-custom',
-                    args_json = '[\"--custom-flag\"]',
-                    model = 'runner-model', effort = 'high'
-              WHERE id = ?1",
-            params![runner.id],
-        )
-        .unwrap();
-    let mut slot = slot_for(&runner);
+    let mut role = role("codex-custom", &["--custom-flag"]);
+    role.id = role_id;
+    role.runtime = "codex".into();
+    role.model = Some("role-model".into());
+    role.effort = Some("high".into());
+    update_role_row(&pool.get().unwrap(), &role);
+    let mut slot = slot_for(&role);
     slot.id = slot_id;
     slot.model_override = Some("slot-model".into());
 
@@ -7145,7 +6774,7 @@ fn mission_spawn_with_model_only_slot_override_uses_runner_runtime_without_pinni
     let spawned = mgr
         .spawn(
             &mission_row,
-            &runner,
+            &role,
             &slot,
             fixture_tmp_dir(),
             PathBuf::from("/dev/null"),
@@ -7210,22 +6839,22 @@ fn mission_spawn_with_model_only_slot_override_uses_runner_runtime_without_pinni
 
 #[test]
 fn mission_spawn_with_matching_override_keeps_args_and_pins_runtime() {
-    // An override naming the runner's own runtime must spawn
+    // An override naming the role's own runtime must spawn
     // byte-identically to no override (same command, same args) but
     // still record the effective runtime on the row: the slot is
-    // explicitly pinned, so a later edit to the runner template's
+    // explicitly pinned, so a later edit to the role template's
     // runtime must not re-engine this session's resume.
     let pool = pool_with_schema();
     let mission_row = mission();
-    let runner_id = ulid::Ulid::new().to_string();
-    let slot_id = insert_crew_runner(&pool, &mission_row.id, &runner_id);
+    let role_id = ulid::Ulid::new().to_string();
+    let slot_id = insert_crew_role(&pool, &mission_row.id, &role_id);
 
     // "codex" is a registry runtime — the only kind the slot write
     // validator can actually store as an override.
-    let mut runner = runner("codex-custom", &["--custom-flag"]);
-    runner.id = runner_id.clone();
-    runner.runtime = "codex".into();
-    let mut slot = slot_for(&runner);
+    let mut role = role("codex-custom", &["--custom-flag"]);
+    role.id = role_id.clone();
+    role.runtime = "codex".into();
+    let mut slot = slot_for(&role);
     slot.id = slot_id;
 
     let fake = fake_runtime();
@@ -7236,7 +6865,7 @@ fn mission_spawn_with_matching_override_keeps_args_and_pins_runtime() {
     let baseline = mgr
         .spawn(
             &mission_row,
-            &runner,
+            &role,
             &slot,
             fixture_tmp_dir(),
             PathBuf::from("/dev/null"),
@@ -7252,7 +6881,7 @@ fn mission_spawn_with_matching_override_keeps_args_and_pins_runtime() {
     let pinned = mgr
         .spawn(
             &mission_row,
-            &runner,
+            &role,
             &slot,
             fixture_tmp_dir(),
             PathBuf::from("/dev/null"),
@@ -7305,43 +6934,34 @@ fn mission_spawn_with_matching_override_keeps_args_and_pins_runtime() {
 }
 
 #[test]
-fn resume_keeps_pinned_runtime_after_runner_template_edit() {
+fn resume_keeps_pinned_runtime_after_role_template_edit() {
     // The scenario the pin exists for: a session spawned with an
-    // explicit override matching the runner's then-runtime ("codex"),
-    // recorded on the row. The user later edits the runner template
+    // explicit override matching the role's then-runtime ("codex"),
+    // recorded on the row. The user later edits the role template
     // to claude-code. Resume must respawn this session on codex —
     // registry defaults — not on the template's new runtime, which
     // would hand the codex-native session key to the wrong CLI.
     let pool = pool_with_schema();
-    let now = Utc::now().to_rfc3339();
-    let runner_id = ulid::Ulid::new().to_string();
+    let role_id = ulid::Ulid::new().to_string();
     {
         let conn = pool.get().unwrap();
-        conn.execute(
-            "INSERT INTO runners
-                    (id, handle, display_name, runtime, command,
-                     args_json, created_at, updated_at)
-                 VALUES (?1, 'tester', 'T', 'codex', 'codex-custom',
-                         '[\"--custom-flag\"]', ?2, ?2)",
-            params![runner_id, now],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO sessions
-                    (id, mission_id, runner_id, cwd, status, started_at,
-                     agent_runtime, agent_command)
-                 VALUES ('pin-sid', NULL, ?1, ?3, 'stopped', ?2,
-                         'codex', 'codex-custom')",
-            params![runner_id, now, fixture_tmp_dir().to_str().unwrap()],
-        )
-        .unwrap();
-        // The runner template moves on to a different engine.
-        conn.execute(
-            "UPDATE runners SET runtime = 'claude-code', command = 'claude-custom'
-              WHERE id = ?1",
-            params![runner_id],
-        )
-        .unwrap();
+        let mut persisted_role = role("codex-custom", &["--custom-flag"]);
+        persisted_role.id = role_id.clone();
+        persisted_role.runtime = "codex".into();
+        crate::repo::role::insert(&conn, &crate::repo::role::RoleRow::from(&persisted_role))
+            .unwrap();
+        let mut row =
+            crate::test_support::test_session_row("pin-sid", crate::model::SessionStatus::Stopped);
+        row.role_id = Some(role_id.clone());
+        row.cwd = Some(fixture_tmp_dir().to_string_lossy().into_owned());
+        row.agent_runtime = Some("codex".into());
+        row.agent_command = Some("codex-custom".into());
+        crate::repo::session::insert(&conn, &row).unwrap();
+        // The role template moves on to a different engine.
+        persisted_role.runtime = "claude-code".into();
+        persisted_role.command = "claude-custom".into();
+        crate::repo::role::update(&conn, &crate::repo::role::RoleRow::from(&persisted_role))
+            .unwrap();
     }
 
     let fake = fake_runtime();
@@ -7370,25 +6990,15 @@ fn resume_keeps_pinned_runtime_after_runner_template_edit() {
 #[test]
 fn direct_spawn_with_override_uses_registry_engine_and_records_runtime() {
     let pool = pool_with_schema();
-    let now = Utc::now().to_rfc3339();
-    let mut runner = runner("codex-custom", &["--custom-flag"]);
-    runner.runtime = "codex".into();
-    {
-        let conn = pool.get().unwrap();
-        conn.execute(
-            "INSERT INTO runners
-                    (id, handle, display_name, runtime, command, created_at, updated_at)
-                 VALUES (?1, 'tester', 'T', 'codex', 'codex-custom', ?2, ?2)",
-            params![runner.id, now],
-        )
-        .unwrap();
-    }
+    let mut role = role("codex-custom", &["--custom-flag"]);
+    role.runtime = "codex".into();
+    insert_role_row(&pool.get().unwrap(), &role);
 
     let fake = fake_runtime();
     let mgr = mgr_with_fake(None, Arc::clone(&fake));
     let spawned = mgr
         .spawn_direct(
-            &runner,
+            &role,
             Some("claude-code"),
             None,
             None,
@@ -7407,26 +7017,16 @@ fn direct_spawn_with_override_uses_registry_engine_and_records_runtime() {
     assert_effective_command(&spec.command, "claude");
     assert!(!spec.args.contains(&"--custom-flag".to_string()));
 
-    let (row_runner_id, agent_runtime, agent_command): (
-        Option<String>,
-        Option<String>,
-        Option<String>,
-    ) = pool
-        .get()
+    let stored = crate::repo::session::get_row(&pool.get().unwrap(), &spawned.id)
         .unwrap()
-        .query_row(
-            "SELECT runner_id, agent_runtime, agent_command FROM sessions WHERE id = ?1",
-            params![spawned.id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-        )
         .unwrap();
     assert_eq!(
-        row_runner_id.as_deref(),
-        Some(runner.id.as_str()),
-        "overridden chats stay runner-backed",
+        stored.role_id.as_deref(),
+        Some(role.id.as_str()),
+        "overridden chats stay role-backed",
     );
-    assert_eq!(agent_runtime.as_deref(), Some("claude-code"));
-    assert_effective_command(agent_command.as_deref().unwrap(), "claude");
+    assert_eq!(stored.agent_runtime.as_deref(), Some("claude-code"));
+    assert_effective_command(stored.agent_command.as_deref().unwrap(), "claude");
 
     mgr.kill(&spawned.id).unwrap();
 }
@@ -7435,7 +7035,7 @@ fn direct_spawn_with_override_uses_registry_engine_and_records_runtime() {
 #[test]
 fn claude_direct_chat_fork_spawns_tui_directly_with_copied_row() {
     let pool = pool_with_schema();
-    let runner_id = ulid::Ulid::new().to_string();
+    let role_id = ulid::Ulid::new().to_string();
     let source_id = ulid::Ulid::new().to_string();
     let source_key = uuid::Uuid::new_v4().to_string();
     let now = Utc::now();
@@ -7443,24 +7043,27 @@ fn claude_direct_chat_fork_spawns_tui_directly_with_copied_row() {
     let project_id = {
         let conn = pool.get().unwrap();
         let project = crate::repo::project::create(&conn, "Runner", "/tmp").unwrap();
-        conn.execute(
-            "INSERT INTO runners
-                (id, handle, display_name, runtime, command, args_json,
-                 env_json, working_dir, system_prompt, created_at, updated_at)
-             VALUES (?1, 'forker', 'Forker', 'claude-code', ?2,
-                     '[\"--permission-mode\",\"auto\",\"--runner-flag\",\"--dangerously-skip-permissions\"]', ?3,
-                     '/tmp', 'Forker persona', ?4, ?4)",
-            params![
-                runner_id,
-                command,
-                serde_json::json!({"FORK_TEST_ENV": "same-env"}).to_string(),
-                now.to_rfc3339(),
+        let mut persisted_role = role(
+            &command,
+            &[
+                "--permission-mode",
+                "auto",
+                "--role-flag",
+                "--dangerously-skip-permissions",
             ],
-        )
-        .unwrap();
+        );
+        persisted_role.id = role_id.clone();
+        persisted_role.handle = "forker".into();
+        persisted_role.runtime = "claude-code".into();
+        persisted_role
+            .env
+            .insert("FORK_TEST_ENV".into(), "same-env".into());
+        persisted_role.working_dir = Some("/tmp".into());
+        persisted_role.system_prompt = Some("Forker persona".into());
+        insert_role_row(&conn, &persisted_role);
         let mut row = crate::repo::session::SessionRowDb::new_running(source_id.clone());
         row.project_id = Some(project.id.clone());
-        row.runner_id = Some(runner_id.clone());
+        row.role_id = Some(role_id.clone());
         row.cwd = Some("/tmp".into());
         row.started_at = Some(now);
         row.agent_session_key = Some(source_key.clone());
@@ -7503,7 +7106,7 @@ fn claude_direct_chat_fork_spawns_tui_directly_with_copied_row() {
         .unwrap();
     assert_ne!(fork.id, source_id);
     assert_eq!(fork.project_id.as_deref(), Some(project_id.as_str()));
-    assert_eq!(fork.runner_id.as_deref(), Some(runner_id.as_str()));
+    assert_eq!(fork.role_id.as_deref(), Some(role_id.as_str()));
     assert_eq!(fork.cwd.as_deref(), Some("/tmp"));
     assert_eq!(fork.agent_runtime, source_before.agent_runtime);
     assert_eq!(fork.agent_command, source_before.agent_command);
@@ -7522,7 +7125,7 @@ fn claude_direct_chat_fork_spawns_tui_directly_with_copied_row() {
     assert_eq!(
         &spec.args[..11],
         [
-            "--runner-flag",
+            "--role-flag",
             "--resume",
             source_key.as_str(),
             "--fork-session",
@@ -7563,7 +7166,7 @@ fn claude_direct_chat_fork_spawns_tui_directly_with_copied_row() {
 #[cfg(unix)]
 fn codex_direct_chat_fork_captures_headless_key_then_resumes_without_watcher() {
     let pool = pool_with_schema();
-    let runner_id = ulid::Ulid::new().to_string();
+    let role_id = ulid::Ulid::new().to_string();
     let source_id = ulid::Ulid::new().to_string();
     let source_key = uuid::Uuid::new_v4().to_string();
     let fork_key = uuid::Uuid::new_v4().to_string();
@@ -7572,24 +7175,31 @@ fn codex_direct_chat_fork_captures_headless_key_then_resumes_without_watcher() {
         codex_fork_materializer(&source_key, &fork_key, true);
     {
         let conn = pool.get().unwrap();
-        let env_json = serde_json::json!({
-            "CODEX_HOME": codex_home,
-            "FORK_TEST_ENV": "same-env",
-        })
-        .to_string();
-        conn.execute(
-            "INSERT INTO runners
-                    (id, handle, display_name, runtime, command, args_json,
-                     env_json, working_dir, system_prompt, created_at, updated_at)
-                 VALUES (?1, 'codex-forker', 'Codex Forker', 'codex', ?2,
-                         '[\"--ask-for-approval\",\"never\",\"--sandbox\",\"workspace-write\"]',
-                         ?3, '/tmp', 'Codex persona', ?4, ?4)",
-            params![runner_id, command, env_json, now.to_rfc3339()],
-        )
-        .unwrap();
+        let mut persisted_role = role(
+            &command,
+            &[
+                "--ask-for-approval",
+                "never",
+                "--sandbox",
+                "workspace-write",
+            ],
+        );
+        persisted_role.id = role_id.clone();
+        persisted_role.handle = "codex-forker".into();
+        persisted_role.runtime = "codex".into();
+        persisted_role.env.insert(
+            "CODEX_HOME".into(),
+            codex_home.to_string_lossy().into_owned(),
+        );
+        persisted_role
+            .env
+            .insert("FORK_TEST_ENV".into(), "same-env".into());
+        persisted_role.working_dir = Some("/tmp".into());
+        persisted_role.system_prompt = Some("Codex persona".into());
+        insert_role_row(&conn, &persisted_role);
         let mut row = crate::repo::session::SessionRowDb::new_running(source_id.clone());
         row.status = crate::model::SessionStatus::Stopped;
-        row.runner_id = Some(runner_id);
+        row.role_id = Some(role_id);
         row.cwd = Some("/tmp".into());
         row.started_at = Some(now);
         row.agent_session_key = Some(source_key.clone());
@@ -7858,33 +7468,27 @@ fn fork_refuses_ineligible_source_rows() {
 
 #[test]
 fn resume_respawns_recorded_override_runtime() {
-    // A stopped runner-backed session that recorded an effective
-    // runtime must resume on that engine — not the runner row's —
-    // with registry defaults instead of the runner's engine flags.
+    // A stopped role-backed session that recorded an effective
+    // runtime must resume on that engine — not the role row's —
+    // with registry defaults instead of the role's engine flags.
     let pool = pool_with_schema();
-    let now = Utc::now().to_rfc3339();
-    let runner_id = ulid::Ulid::new().to_string();
+    let role_id = ulid::Ulid::new().to_string();
     let key = uuid::Uuid::new_v4().to_string();
     {
         let conn = pool.get().unwrap();
-        conn.execute(
-            "INSERT INTO runners
-                    (id, handle, display_name, runtime, command,
-                     args_json, created_at, updated_at)
-                 VALUES (?1, 'tester', 'T', 'codex', 'codex-custom',
-                         '[\"--custom-flag\"]', ?2, ?2)",
-            params![runner_id, now],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO sessions
-                    (id, mission_id, runner_id, cwd, status, started_at,
-                     agent_session_key, agent_runtime, agent_command)
-                 VALUES ('ovr-sid', NULL, ?1, ?4, 'stopped', ?2,
-                         ?3, 'claude-code', 'claude')",
-            params![runner_id, now, key, fixture_tmp_dir().to_str().unwrap()],
-        )
-        .unwrap();
+        let mut persisted_role = role("codex-custom", &["--custom-flag"]);
+        persisted_role.id = role_id.clone();
+        persisted_role.runtime = "codex".into();
+        crate::repo::role::insert(&conn, &crate::repo::role::RoleRow::from(&persisted_role))
+            .unwrap();
+        let mut row =
+            crate::test_support::test_session_row("ovr-sid", crate::model::SessionStatus::Stopped);
+        row.role_id = Some(role_id.clone());
+        row.cwd = Some(fixture_tmp_dir().to_string_lossy().into_owned());
+        row.agent_session_key = Some(key.clone());
+        row.agent_runtime = Some("claude-code".into());
+        row.agent_command = Some("claude".into());
+        crate::repo::session::insert(&conn, &row).unwrap();
     }
 
     let fake = fake_runtime();
@@ -7903,7 +7507,7 @@ fn resume_respawns_recorded_override_runtime() {
     assert_effective_command(&spec.command, "claude");
     assert!(
         !spec.args.contains(&"--custom-flag".to_string()),
-        "runner engine flags must not leak into an overridden resume: {:?}",
+        "role engine flags must not leak into an overridden resume: {:?}",
         spec.args,
     );
     assert!(
@@ -7919,7 +7523,7 @@ fn resume_respawns_recorded_override_runtime() {
 
 #[test]
 #[cfg(unix)]
-fn catalog_default_runner_uses_detected_command_while_custom_command_stays_untouched() {
+fn catalog_default_role_uses_detected_command_while_custom_command_stays_untouched() {
     use std::os::unix::fs::PermissionsExt;
 
     let pool = pool_with_schema();
@@ -7930,7 +7534,6 @@ fn catalog_default_runner_uses_detected_command_while_custom_command_stays_untou
     permissions.set_mode(0o755);
     std::fs::set_permissions(&detected, permissions).unwrap();
 
-    let now = Utc::now().to_rfc3339();
     let default_id = ulid::Ulid::new().to_string();
     let custom_id = ulid::Ulid::new().to_string();
     {
@@ -7939,25 +7542,19 @@ fn catalog_default_runner_uses_detected_command_while_custom_command_stays_untou
             (&default_id, "default-runtime", "codex"),
             (&custom_id, "custom-runtime", "codex-wrapper"),
         ] {
-            conn.execute(
-                "INSERT INTO runners
-                    (id, handle, display_name, runtime, command, created_at, updated_at)
-                 VALUES (?1, ?2, ?2, 'codex', ?3, ?4, ?4)",
-                params![id, handle, command, now],
-            )
-            .unwrap();
+            crate::test_support::insert_test_role(&conn, id, handle, "codex", command);
         }
     }
 
     let fake = fake_runtime();
     let mgr = mgr_with_fake(Some(bin.path().display().to_string()), Arc::clone(&fake));
-    let mut default_runner = runner("codex", &[]);
-    default_runner.id = default_id;
-    default_runner.handle = "default-runtime".into();
-    default_runner.runtime = "codex".into();
+    let mut default_role = role("codex", &[]);
+    default_role.id = default_id;
+    default_role.handle = "default-runtime".into();
+    default_role.runtime = "codex".into();
     let default_session = mgr
         .spawn_direct(
-            &default_runner,
+            &default_role,
             None,
             None,
             None,
@@ -7976,13 +7573,13 @@ fn catalog_default_runner_uses_detected_command_while_custom_command_stays_untou
         detected.display().to_string()
     );
 
-    let mut custom_runner = runner("codex-wrapper", &[]);
-    custom_runner.id = custom_id;
-    custom_runner.handle = "custom-runtime".into();
-    custom_runner.runtime = "codex".into();
+    let mut custom_role = role("codex-wrapper", &[]);
+    custom_role.id = custom_id;
+    custom_role.handle = "custom-runtime".into();
+    custom_role.runtime = "codex".into();
     let custom_session = mgr
         .spawn_direct(
-            &custom_runner,
+            &custom_role,
             None,
             None,
             None,
@@ -8001,7 +7598,7 @@ fn catalog_default_runner_uses_detected_command_while_custom_command_stays_untou
     mgr.shell_env.write().unwrap().path = Some("/swapped/bin".into());
     let swapped_session = mgr
         .spawn_direct(
-            &custom_runner,
+            &custom_role,
             None,
             None,
             None,
@@ -8204,20 +7801,19 @@ fn assert_windows_batch_first_turn(mode: &str) {
     let batch = dir.path().join("prompt reader.cmd");
     std::fs::write(&batch,
         "@echo off\r\n\"%RUNNER_BATCH_PROMPT_EXE%\" --exact session::manager::tests::windows_batch_prompt_probe --nocapture\r\n").unwrap();
-    let mut runner = runner(batch.to_str().unwrap(), &[]);
-    runner.runtime = "claude-code".into();
-    runner.env.insert(
+    let mut role = role(batch.to_str().unwrap(), &[]);
+    role.runtime = "claude-code".into();
+    role.env.insert(
         "RUNNER_BATCH_PROMPT_EXE".into(),
         std::env::current_exe()
             .unwrap()
             .to_string_lossy()
             .into_owned(),
     );
-    runner
-        .env
+    role.env
         .insert("RUNNER_BATCH_PROMPT_MODE".into(), mode.into());
     let pool = pool_with_schema();
-    insert_crew_runner(&pool, "batch-prompt", &runner.id);
+    insert_crew_role(&pool, "batch-prompt", &role.id);
     let events = capture();
     let mgr = manager_with_runtime(
         Default::default(),
@@ -8225,7 +7821,7 @@ fn assert_windows_batch_first_turn(mode: &str) {
     );
     let spawned = mgr
         .spawn_direct(
-            &runner,
+            &role,
             None,
             None,
             None,
@@ -8310,15 +7906,13 @@ fn windows_batch_prompt_probe() {
 fn slot_respawn_fixture(runtime: &str, lead: bool) -> (Arc<DbPool>, tempfile::TempDir, String) {
     let pool = pool_with_schema();
     let app_data = tempfile::tempdir().unwrap();
-    let mut runner = runner("test-agent", &[]);
-    runner.runtime = runtime.into();
-    let (mission, slot) = seed_mission_rows(&pool, &runner);
+    let mut role = role("test-agent", &[]);
+    role.runtime = runtime.into();
+    let (mission, slot) = seed_mission_rows(&pool, &role);
     let conn = pool.get().unwrap();
-    conn.execute(
-        "UPDATE runners SET command = 'test-agent', system_prompt = 'SLOT_BRIEF' WHERE id = ?1",
-        params![runner.id],
-    )
-    .unwrap();
+    role.command = "test-agent".into();
+    role.system_prompt = Some("SLOT_BRIEF".into());
+    update_role_row(&conn, &role);
     conn.execute(
         "UPDATE crews SET system_prompt_addendum = 'TEAM_RULES' WHERE id = ?1",
         params![mission.crew_id],
@@ -8332,7 +7926,7 @@ fn slot_respawn_fixture(runtime: &str, lead: bool) -> (Arc<DbPool>, tempfile::Te
     let mut row = crate::repo::session::SessionRowDb::new_running("slot-session".into());
     row.mission_id = Some(mission.id.clone());
     row.slot_id = Some(slot.id);
-    row.runner_id = Some(runner.id);
+    row.role_id = Some(role.id);
     row.status = crate::model::SessionStatus::Stopped;
     row.cwd = Some(app_data.path().to_string_lossy().into_owned());
     row.agent_session_key = Some(uuid::Uuid::new_v4().to_string());
@@ -8575,10 +8169,10 @@ fn restart_while_resuming_does_not_kill_or_spawn_again() {
 #[test]
 fn windows_batch_slot_restart_queues_first_turn_without_argv() {
     let (pool, app_data, id) = slot_respawn_fixture("claude-code", false);
-    pool.get()
-        .unwrap()
-        .execute("UPDATE runners SET command = 'agent.cmd'", [])
-        .unwrap();
+    let conn = pool.get().unwrap();
+    let mut role = crate::repo::role::list(&conn).unwrap().pop().unwrap();
+    role.command = "agent.cmd".into();
+    update_role_row(&conn, &role);
     let fake = fake_runtime();
     let mgr = mgr_with_fake(None, fake.clone());
     mgr.restart(&id, None, None, app_data.path(), pool.clone(), capture())
@@ -8929,15 +8523,15 @@ fn codex_spawn_composes_hooks_without_changing_user_home_and_respects_overrides(
         vec!["--config", "hooks.Stop=[]"],
         vec!["--disable", "hooks"],
     ] {
-        let mut runner = runner("codex", &args);
-        runner.runtime = "codex".into();
+        let mut role = role("codex", &args);
+        role.runtime = "codex".into();
         let mut generations = Vec::new();
         for key in [None, Some("11111111-1111-4111-8111-111111111111")] {
             let mut spec = SpawnSpec {
                 session_id: "codex-spawn".into(),
                 cwd: None,
-                command: runner.command.clone(),
-                args: runner.args.clone(),
+                command: role.command.clone(),
+                args: role.args.clone(),
                 env: BTreeMap::from([("CODEX_HOME".into(), "user home".into())]),
                 mission: false,
                 shim_dir: None,
@@ -8947,7 +8541,7 @@ fn codex_spawn_composes_hooks_without_changing_user_home_and_respects_overrides(
             };
             SessionManager::apply_runtime_args(
                 &mut spec,
-                &runner,
+                &role,
                 &router::runtime::resume_plan(Some(Runtime::Codex), key),
                 root.path(),
                 Some("first turn"),
@@ -8980,7 +8574,7 @@ fn codex_spawn_composes_hooks_without_changing_user_home_and_respects_overrides(
                 spec.args.iter().any(|arg| arg == "first turn"),
                 key.is_none()
             );
-            for arg in &runner.args {
+            for arg in &role.args {
                 assert!(spec.args.contains(arg));
             }
         }
@@ -9077,7 +8671,7 @@ fn copilot_direct_spawn_persists_key_before_spawn_and_resume_never_replays_first
     if crate::session::hook_feed::hooks_supported(cfg!(windows)) {
         crate::session::copilot_status::install_plugin(app_data.path()).unwrap();
     }
-    let mut runner = runner(
+    let mut role = role(
         "copilot",
         &[
             "--user-flag",
@@ -9087,8 +8681,8 @@ fn copilot_direct_spawn_persists_key_before_spawn_and_resume_never_replays_first
             "--yolo",
         ],
     );
-    runner.runtime = "copilot".into();
-    crate::repo::runner::insert(&pool.get().unwrap(), &(&runner).into()).unwrap();
+    role.runtime = "copilot".into();
+    crate::repo::role::insert(&pool.get().unwrap(), &(&role).into()).unwrap();
     let fake = fake_runtime();
     let spawn_pool = pool.clone();
     *fake.spawn_hook.lock().unwrap() = Some(Box::new(move || {
@@ -9104,7 +8698,7 @@ fn copilot_direct_spawn_persists_key_before_spawn_and_resume_never_replays_first
     let mgr = mgr_with_fake(None, fake.clone());
     let spawned = mgr
         .spawn_direct(
-            &runner,
+            &role,
             None,
             None,
             None,

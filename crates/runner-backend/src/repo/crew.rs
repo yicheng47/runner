@@ -1,4 +1,4 @@
-// `crews` table — the top-level container for a team of runners.
+// `crews` table — the top-level container for a team of roles.
 
 use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -108,10 +108,10 @@ pub fn get(conn: &Connection, id: &str) -> rusqlite::Result<Option<Crew>> {
 
 /// Every crew with its slot count, ordered by creation time. Feeds
 /// `CrewListItem`.
-pub fn list_with_runner_count(conn: &Connection) -> rusqlite::Result<Vec<(Crew, i64)>> {
+pub fn list_with_role_count(conn: &Connection) -> rusqlite::Result<Vec<(Crew, i64)>> {
     let sql = format!(
         "SELECT {},
-                (SELECT COUNT(*) FROM slots s WHERE s.crew_id = c.id) AS runner_count
+                (SELECT COUNT(*) FROM slots s WHERE s.crew_id = c.id) AS role_count
            FROM crews c
          ORDER BY c.created_at ASC, c.id ASC",
         super::qualified_select_list("c", COLUMNS)
@@ -119,8 +119,8 @@ pub fn list_with_runner_count(conn: &Connection) -> rusqlite::Result<Vec<(Crew, 
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map([], |row| {
         let crew = from_row::<CrewRow>(row).map_err(de_err)?;
-        let runner_count: i64 = row.get("runner_count")?;
-        Ok((Crew::from(crew), runner_count))
+        let role_count: i64 = row.get("role_count")?;
+        Ok((Crew::from(crew), role_count))
     })?;
     rows.collect()
 }
@@ -133,7 +133,7 @@ const SEARCH_PREDICATE: &str = "(
     OR EXISTS (
         SELECT 1
           FROM slots s
-          JOIN runners r ON r.id = s.runner_id
+          JOIN roles r ON r.id = s.role_id
          WHERE s.crew_id = c.id
            AND (
                   LOWER(s.slot_handle) LIKE LOWER(?1) ESCAPE '\\'
@@ -155,7 +155,7 @@ pub fn count_matching(conn: &Connection, pattern: &str) -> rusqlite::Result<i64>
     )
 }
 
-pub fn list_with_runner_count_page(
+pub fn list_with_role_count_page(
     conn: &Connection,
     pattern: &str,
     limit: i64,
@@ -163,7 +163,7 @@ pub fn list_with_runner_count_page(
 ) -> rusqlite::Result<Vec<(Crew, i64)>> {
     let sql = format!(
         "SELECT {},
-                (SELECT COUNT(*) FROM slots s WHERE s.crew_id = c.id) AS runner_count
+                (SELECT COUNT(*) FROM slots s WHERE s.crew_id = c.id) AS role_count
            FROM crews c
           WHERE {SEARCH_PREDICATE}
           ORDER BY c.created_at ASC, c.id ASC
@@ -173,8 +173,8 @@ pub fn list_with_runner_count_page(
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(rusqlite::params![pattern, limit, offset], |row| {
         let crew = from_row::<CrewRow>(row).map_err(de_err)?;
-        let runner_count: i64 = row.get("runner_count")?;
-        Ok((Crew::from(crew), runner_count))
+        let role_count: i64 = row.get("role_count")?;
+        Ok((Crew::from(crew), role_count))
     })?;
     rows.collect()
 }
@@ -185,20 +185,20 @@ pub fn list_with_runner_count_page(
 pub struct MemberPreviewRow {
     pub crew_id: String,
     pub slot_handle: String,
-    pub runner_handle: String,
+    pub role_handle: String,
     pub runtime: String,
     pub lead: bool,
 }
 
 pub fn list_member_previews(conn: &Connection) -> rusqlite::Result<Vec<MemberPreviewRow>> {
     // `runtime` is the slot's *effective* engine — the per-slot
-    // override when set (feature 41), else the runner's default — so
+    // override when set (feature 41), else the role's default — so
     // the Crews cards label mixed-engine crews honestly.
     let mut stmt = conn.prepare(
-        "SELECT s.crew_id, s.slot_handle, s.lead, r.handle AS runner_handle,
+        "SELECT s.crew_id, s.slot_handle, s.lead, r.handle AS role_handle,
                 COALESCE(s.runtime_override, r.runtime) AS runtime
            FROM slots s
-           JOIN runners r ON r.id = s.runner_id
+           JOIN roles r ON r.id = s.role_id
           ORDER BY s.crew_id ASC, s.position ASC",
     )?;
     let rows = stmt.query_map([], |row| from_row::<MemberPreviewRow>(row).map_err(de_err))?;
@@ -214,10 +214,10 @@ pub fn list_member_previews_for_crews(
     }
     let placeholders = vec!["?"; crew_ids.len()].join(", ");
     let sql = format!(
-        "SELECT s.crew_id, s.slot_handle, s.lead, r.handle AS runner_handle,
+        "SELECT s.crew_id, s.slot_handle, s.lead, r.handle AS role_handle,
                 COALESCE(s.runtime_override, r.runtime) AS runtime
            FROM slots s
-           JOIN runners r ON r.id = s.runner_id
+           JOIN roles r ON r.id = s.role_id
           WHERE s.crew_id IN ({placeholders})
           ORDER BY s.crew_id ASC, s.position ASC"
     );
@@ -317,28 +317,28 @@ mod tests {
     }
 
     #[test]
-    fn list_with_runner_count_and_member_previews_match_todays_shapes() {
+    fn list_with_role_count_and_member_previews_match_todays_shapes() {
         let pool = db::open_in_memory().unwrap();
         let conn = pool.get().unwrap();
         insert(&conn, &full_row()).unwrap();
         insert(&conn, &minimal_row()).unwrap();
         conn.execute(
-            "INSERT INTO runners (id, handle, display_name, runtime, command, created_at, updated_at)
+            "INSERT INTO roles (id, handle, display_name, runtime, command, created_at, updated_at)
              VALUES ('r1', 'lead', 'Lead', 'shell', 'sh', '2026-04-22T00:00:00Z', '2026-04-22T00:00:00Z')",
             [],
         )
         .unwrap();
         conn.execute(
-            "INSERT INTO slots (id, crew_id, runner_id, slot_handle, position, lead, added_at)
+            "INSERT INTO slots (id, crew_id, role_id, slot_handle, position, lead, added_at)
              VALUES ('s1', 'c-full', 'r1', 'lead-slot', 0, 1, '2026-04-22T00:00:00Z')",
             [],
         )
         .unwrap();
         // Overridden slot: the preview must report the effective
-        // engine, not the runner default (feature 41).
+        // engine, not the role default (feature 41).
         conn.execute(
             "INSERT INTO slots
-                (id, crew_id, runner_id, slot_handle, position, lead,
+                (id, crew_id, role_id, slot_handle, position, lead,
                  runtime_override, added_at)
              VALUES ('s2', 'c-full', 'r1', 'override-slot', 1, 0,
                      'claude-code', '2026-04-22T00:00:00Z')",
@@ -346,7 +346,7 @@ mod tests {
         )
         .unwrap();
 
-        let listed = list_with_runner_count(&conn).unwrap();
+        let listed = list_with_role_count(&conn).unwrap();
         assert_eq!(listed.len(), 2);
         let full = listed.iter().find(|(c, _)| c.id == "c-full").unwrap();
         assert_eq!(full.1, 2);
@@ -360,14 +360,14 @@ mod tests {
                 MemberPreviewRow {
                     crew_id: "c-full".into(),
                     slot_handle: "lead-slot".into(),
-                    runner_handle: "lead".into(),
+                    role_handle: "lead".into(),
                     runtime: "shell".into(),
                     lead: true,
                 },
                 MemberPreviewRow {
                     crew_id: "c-full".into(),
                     slot_handle: "override-slot".into(),
-                    runner_handle: "lead".into(),
+                    role_handle: "lead".into(),
                     runtime: "claude-code".into(),
                     lead: false,
                 },

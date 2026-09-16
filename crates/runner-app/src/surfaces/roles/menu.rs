@@ -3,31 +3,31 @@ use std::rc::Rc;
 use gpui::prelude::*;
 use gpui::{px, Context, Window};
 use runner_app::ui::{ContextMenu, MenuItem as UiMenuItem};
-use runner_backend::model::Runner;
-use runner_backend::ops::runner::RunnerWithActivity;
+use runner_backend::model::Role;
+use runner_backend::ops::role::RoleWithActivity;
 
 use super::*;
 use crate::surfaces::*;
 use crate::*;
 
 impl NativeRoot {
-    pub(super) fn open_runner_menu(
+    pub(super) fn open_role_menu(
         &mut self,
-        item: RunnerWithActivity,
+        item: RoleWithActivity,
         position: gpui::Point<gpui::Pixels>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let actions = [
-            RunnerMenuAction::Open(item.runner.handle.clone()),
-            RunnerMenuAction::Delete {
-                id: item.runner.id,
-                handle: item.runner.handle,
+            RoleMenuAction::Open(item.role.handle.clone()),
+            RoleMenuAction::Delete {
+                id: item.role.id,
+                handle: item.role.handle,
             },
         ];
         let items = vec![
             UiMenuItem::new("Edit details").icon("pencil.svg"),
-            UiMenuItem::new("Delete runner")
+            UiMenuItem::new("Delete role")
                 .icon("trash.svg")
                 .destructive(true),
         ];
@@ -36,20 +36,20 @@ impl NativeRoot {
         let menu = cx.new(move |menu_cx| {
             let action_root = root;
             ContextMenu::new(
-                "runner-context-menu",
+                "role-context-menu",
                 menu_cx.focus_handle(),
                 position,
                 items,
                 Rc::new(move |index, window, cx| {
                     if let Some(action) = actions.get(index).cloned() {
                         action_root.update(cx, |this, cx| {
-                            this.handle_runner_menu_action(action, window, cx)
+                            this.handle_role_menu_action(action, window, cx)
                         });
                     }
                 }),
                 Rc::new(move |_, cx| {
                     dismiss_root.update(cx, |this, cx| {
-                        this.runner_surfaces.context_menu = None;
+                        this.role_surfaces.context_menu = None;
                         cx.notify();
                     });
                 }),
@@ -57,49 +57,49 @@ impl NativeRoot {
             .width(px(176.))
         });
         let focus = menu.read(cx).focus_handle();
-        self.runner_surfaces.context_menu = Some(menu);
+        self.role_surfaces.context_menu = Some(menu);
         focus.focus(window);
         cx.notify();
     }
 
-    fn handle_runner_menu_action(
+    fn handle_role_menu_action(
         &mut self,
-        action: RunnerMenuAction,
+        action: RoleMenuAction,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         match action {
-            RunnerMenuAction::Open(handle) => self.open_runner_detail(handle, window, cx),
-            RunnerMenuAction::Delete { id, handle } => {
-                self.runner_surfaces.delete_confirm = Some(RunnerDeleteConfirm { id, handle });
+            RoleMenuAction::Open(handle) => self.open_role_detail(handle, window, cx),
+            RoleMenuAction::Delete { id, handle } => {
+                self.role_surfaces.delete_confirm = Some(RoleDeleteConfirm { id, handle });
                 cx.notify();
             }
         }
     }
 
-    pub(super) fn start_runner_chat(
+    pub(super) fn start_role_chat(
         &mut self,
-        runner: Runner,
+        role: Role,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.runner_surfaces.chat_pending.is_some() {
+        if self.role_surfaces.chat_pending.is_some() {
             return;
         }
-        let detail_origin = matches!(self.route, AppRoute::RunnerDetail(_));
-        self.runner_surfaces.chat_pending = Some(runner.id.clone());
-        let cwd = if runner.working_dir.is_none() {
+        let detail_origin = matches!(self.route, AppRoute::RoleDetail(_));
+        self.role_surfaces.chat_pending = Some(role.id.clone());
+        let cwd = if role.working_dir.is_none() {
             let default = self.settings(cx).default_working_dir.trim();
             (!default.is_empty()).then(|| default.to_owned())
         } else {
             None
         };
         let core = self.core(cx).clone();
-        let runner_id = runner.id.clone();
+        let role_id = role.id.clone();
         let task = cx.background_spawn(async move {
             runner_backend::ops::session::session_start_direct(
                 &core,
-                runner_id,
+                role_id,
                 None,
                 None,
                 None,
@@ -113,7 +113,7 @@ impl NativeRoot {
         cx.spawn_in(window, async move |weak, cx| {
             let result = task.await;
             let _ = weak.update_in(cx, |this, window, cx| {
-                this.runner_surfaces.chat_pending = None;
+                this.role_surfaces.chat_pending = None;
                 match result {
                     Ok(spawned) => {
                         let attach = (|| -> Result<()> {
@@ -127,7 +127,7 @@ impl NativeRoot {
                         })();
                         match attach {
                             Ok(()) => {
-                                this.remember_active_runner(cx);
+                                this.remember_active_role(cx);
                                 this.mark_active_tab_viewed(window, cx);
                                 this.sync_active_chat_detail(cx);
                                 this.begin_chat_transition(
@@ -142,9 +142,9 @@ impl NativeRoot {
                         }
                     }
                     Err(error)
-                        if detail_origin && matches!(this.route, AppRoute::RunnerDetail(_)) =>
+                        if detail_origin && matches!(this.route, AppRoute::RoleDetail(_)) =>
                     {
-                        this.runner_surfaces.detail.error = Some(error);
+                        this.role_surfaces.detail.error = Some(error);
                     }
                     Err(error) => this.show_toast(error, crate::toast::ToastTone::Error, cx),
                 }

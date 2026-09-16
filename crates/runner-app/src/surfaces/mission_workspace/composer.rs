@@ -16,12 +16,12 @@ impl MissionWorkspace {
             .iter()
             .map(|member| ComposerRosterEntry {
                 handle: member.slot.slot_handle.clone(),
-                role: member.runner.handle.clone(),
+                role: member.role.handle.clone(),
                 runtime: member
                     .slot
                     .runtime_override
                     .clone()
-                    .unwrap_or_else(|| member.runner.runtime.clone()),
+                    .unwrap_or_else(|| member.role.runtime.clone()),
             })
             .collect()
     }

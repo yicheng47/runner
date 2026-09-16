@@ -363,7 +363,7 @@ impl AgentsPane {
             if let Some(shell) = shell.upgrade() {
                 shell.update(cx, |shell, shell_cx| {
                     shell.refresh_start_chat_runtimes(shell_cx);
-                    shell.refresh_runner_form_runtimes(shell_cx);
+                    shell.refresh_role_form_runtimes(shell_cx);
                 });
             }
         });
@@ -815,7 +815,7 @@ impl Render for AgentsPane {
                     .text_size(theme::text_ui())
                     .line_height(rems(18. / 16.))
                     .text_color(theme::faint())
-                    .child("Disabled agents stay configured but are hidden from agent pickers. Overrides apply to new sessions that use the agent's default command; runners with a custom command keep it."),
+                    .child("Disabled agents stay configured but are hidden from agent pickers. Overrides apply to new sessions that use the agent's default command; roles with a custom command keep it."),
             )
             .children(self.error.clone().map(|error| {
                 div()

@@ -3,7 +3,7 @@ use gpui::{
     div, px, rems, svg, AnyElement, ClipboardItem, CursorStyle, FontWeight, KeyDownEvent,
     MouseButton, SharedString, Window,
 };
-use runner_app::ui::{RunnerAvatar, Tooltip};
+use runner_app::ui::{RoleAvatar, Tooltip};
 use runner_backend::model::{Event, EventKind};
 
 use super::*;
@@ -445,7 +445,7 @@ impl MissionWorkspace {
             .flex()
             .items_start()
             .gap_3()
-            .child(RunnerAvatar::new(author.clone(), 35.))
+            .child(RoleAvatar::new(author.clone(), 35.))
             .child(
                 div()
                     .min_w(px(0.))
@@ -556,7 +556,7 @@ impl MissionWorkspace {
             .flex()
             .items_start()
             .gap_3()
-            .child(RunnerAvatar::new(avatar_seed, 35.))
+            .child(RoleAvatar::new(avatar_seed, 35.))
             .child(
                 div()
                     .min_w(px(0.))
@@ -752,7 +752,7 @@ impl MissionWorkspace {
             .flex()
             .items_start()
             .gap_3()
-            .child(RunnerAvatar::new(asker.clone(), 35.))
+            .child(RoleAvatar::new(asker.clone(), 35.))
             .child(
                 div()
                     .min_w(px(0.))

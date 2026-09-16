@@ -1,6 +1,9 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use chrono::Utc;
+use rusqlite::Connection;
+
 use crate::db;
 use crate::event_bus::BusRegistry;
 use crate::events::EventChannel;
@@ -71,4 +74,70 @@ pub(crate) fn test_core_in(app_data_dir: PathBuf) -> AppCore {
 
 pub(crate) fn test_core() -> AppCore {
     test_core_in(PathBuf::new())
+}
+
+pub(crate) fn insert_test_role(
+    conn: &Connection,
+    id: &str,
+    handle: &str,
+    runtime: &str,
+    command: &str,
+) {
+    let now = Utc::now();
+    crate::repo::role::insert(
+        conn,
+        &crate::repo::role::RoleRow {
+            id: id.into(),
+            handle: handle.into(),
+            display_name: handle.into(),
+            runtime: runtime.into(),
+            command: command.into(),
+            args_json: Some(Vec::new()),
+            working_dir: None,
+            system_prompt: None,
+            env_json: Some(Default::default()),
+            model: None,
+            effort: None,
+            created_at: now,
+            updated_at: now,
+        },
+    )
+    .unwrap();
+}
+
+pub(crate) fn insert_test_slot(
+    conn: &Connection,
+    id: &str,
+    crew_id: &str,
+    role_id: &str,
+    slot_handle: &str,
+    position: i64,
+    lead: bool,
+) {
+    crate::repo::slot::insert(
+        conn,
+        &crate::repo::slot::SlotRow {
+            id: id.into(),
+            crew_id: crew_id.into(),
+            role_id: role_id.into(),
+            slot_handle: slot_handle.into(),
+            position,
+            lead,
+            runtime_override: None,
+            model_override: None,
+            effort_override: None,
+            added_at: Utc::now(),
+        },
+    )
+    .unwrap();
+}
+
+pub(crate) fn test_session_row(
+    id: &str,
+    status: crate::model::SessionStatus,
+) -> crate::repo::session::SessionRowDb {
+    let mut row = crate::repo::session::SessionRowDb::new_running(id.into());
+    row.status = status;
+    row.started_at = Some(Utc::now());
+    row
 }

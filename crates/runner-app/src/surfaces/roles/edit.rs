@@ -3,15 +3,15 @@ use super::logic::permission_mode_description;
 use super::logic::permission_mode_value;
 use super::logic::permission_modes;
 use super::logic::permission_options;
-use super::logic::runner_edit_focus_order;
-use super::logic::runner_edit_form_is_composing;
+use super::logic::role_edit_focus_order;
+use super::logic::role_edit_form_is_composing;
 use super::logic::runtime_efforts;
 use super::logic::runtime_entry;
 use super::logic::runtime_model_placeholder;
 use super::logic::runtime_models;
 use super::logic::split_args;
 use super::logic::trimmed_option;
-use super::logic::RunnerFormKind;
+use super::logic::RoleFormKind;
 use runner_backend::model::Runtime;
 use std::rc::Rc;
 
@@ -22,7 +22,7 @@ use gpui::{
 use runner_app::ui::{
     Button, ButtonVariant, Drawer, Field, IconButton, OverlayWidth, TextField, WorkingDirField,
 };
-use runner_backend::ops::runner::UpdateRunnerInput;
+use runner_backend::ops::role::UpdateRoleInput;
 use runner_backend::router::runtime::PermissionMode;
 
 use super::*;
@@ -30,18 +30,18 @@ use crate::surfaces::*;
 use crate::*;
 
 impl NativeRoot {
-    pub(super) fn select_runner_edit_runtime(&mut self, value: String, cx: &mut Context<Self>) {
+    pub(super) fn select_role_edit_runtime(&mut self, value: String, cx: &mut Context<Self>) {
         if !value.is_empty() && Runtime::parse(&value).is_none() {
             return;
         }
-        let Some(form) = self.runner_surfaces.edit.as_mut() else {
+        let Some(form) = self.role_surfaces.edit.as_mut() else {
             return;
         };
         if form.submitting {
             return;
         }
         let next_runtime = if form.slot.is_some() && value.is_empty() {
-            form.runner.runtime.clone()
+            form.role.runtime.clone()
         } else {
             value.clone()
         };
@@ -49,12 +49,12 @@ impl NativeRoot {
         if next_runtime != form.runtime {
             form.model
                 .update(cx, |input, input_cx| input.reset("", input_cx));
-            let command = if next_runtime == form.runner.runtime {
-                form.runner.command.clone()
+            let command = if next_runtime == form.role.runtime {
+                form.role.command.clone()
             } else {
                 runtime_entry(&form.runtimes, &next_runtime)
                     .map(|runtime| runtime.command.clone())
-                    .unwrap_or_else(|| form.runner.command.clone())
+                    .unwrap_or_else(|| form.role.command.clone())
             };
             form.command
                 .update(cx, |input, input_cx| input.reset(command, input_cx));
@@ -63,7 +63,7 @@ impl NativeRoot {
         let model_placeholder = runtime_model_placeholder(
             &form.runtimes,
             &next_runtime,
-            form.slot.as_ref().map(|_| &form.runner),
+            form.slot.as_ref().map(|_| &form.role),
         );
         form.model.update(cx, |input, input_cx| {
             input.set_placeholder(model_placeholder, input_cx)
@@ -78,49 +78,49 @@ impl NativeRoot {
             select.set_options(permission_options(&next_runtime), select_cx);
             select.set_value(permission_mode_value(form.permission_mode), select_cx);
         });
-        self.sync_runner_edit_efforts(cx);
+        self.sync_role_edit_efforts(cx);
         self.request_model_catalog(&next_runtime, cx);
         cx.notify();
     }
 
-    fn close_runner_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn close_role_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self
-            .runner_surfaces
+            .role_surfaces
             .edit
             .as_ref()
             .is_some_and(|form| form.submitting)
         {
             return;
         }
-        self.runner_surfaces.edit = None;
+        self.role_surfaces.edit = None;
         window.focus(&self.root_focus);
         cx.notify();
     }
 
-    fn on_runner_edit_key_down(
+    fn on_role_edit_key_down(
         &mut self,
         event: &KeyDownEvent,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if event.keystroke.key == "enter"
-            && self.runner_surfaces.edit.as_ref().is_some_and(|form| {
+            && self.role_surfaces.edit.as_ref().is_some_and(|form| {
                 !form
                     .system_prompt
                     .read(cx)
                     .focus_handle()
                     .is_focused(window)
-                    && !runner_edit_form_is_composing(form, cx)
+                    && !role_edit_form_is_composing(form, cx)
             })
         {
             cx.stop_propagation();
-            self.submit_runner_edit(window, cx);
+            self.submit_role_edit(window, cx);
         }
     }
 
-    fn browse_runner_edit_cwd(&mut self, cx: &mut Context<Self>) {
+    fn browse_role_edit_cwd(&mut self, cx: &mut Context<Self>) {
         let Some(input) = self
-            .runner_surfaces
+            .role_surfaces
             .edit
             .as_ref()
             .filter(|form| !form.submitting)
@@ -128,13 +128,13 @@ impl NativeRoot {
         else {
             return;
         };
-        self.browse_runner_form_cwd(input, RunnerFormKind::Edit, cx);
+        self.browse_role_form_cwd(input, RoleFormKind::Edit, cx);
     }
 
-    pub(super) fn browse_runner_form_cwd(
+    pub(super) fn browse_role_form_cwd(
         &mut self,
         input: Entity<TextField>,
-        kind: RunnerFormKind,
+        kind: RoleFormKind,
         cx: &mut Context<Self>,
     ) {
         let selected = cx.prompt_for_paths(PathPromptOptions {
@@ -150,13 +150,13 @@ impl NativeRoot {
                 .and_then(|result| result.map_err(|error| error.to_string()));
             let _ = weak.update(cx, |this, cx| {
                 let current = match kind {
-                    RunnerFormKind::Create => this
-                        .runner_surfaces
+                    RoleFormKind::Create => this
+                        .role_surfaces
                         .create
                         .as_ref()
                         .map(|form| form.working_dir.clone()),
-                    RunnerFormKind::Edit => this
-                        .runner_surfaces
+                    RoleFormKind::Edit => this
+                        .role_surfaces
                         .edit
                         .as_ref()
                         .map(|form| form.working_dir.clone()),
@@ -174,13 +174,13 @@ impl NativeRoot {
                     }
                     Ok(None) => {}
                     Err(error) => match kind {
-                        RunnerFormKind::Create => {
-                            if let Some(form) = this.runner_surfaces.create.as_mut() {
+                        RoleFormKind::Create => {
+                            if let Some(form) = this.role_surfaces.create.as_mut() {
                                 form.error = Some(error);
                             }
                         }
-                        RunnerFormKind::Edit => {
-                            if let Some(form) = this.runner_surfaces.edit.as_mut() {
+                        RoleFormKind::Edit => {
+                            if let Some(form) = this.role_surfaces.edit.as_mut() {
                                 form.error = Some(error);
                             }
                         }
@@ -192,8 +192,8 @@ impl NativeRoot {
         .detach();
     }
 
-    fn submit_runner_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(form) = self.runner_surfaces.edit.as_mut() else {
+    fn submit_role_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(form) = self.role_surfaces.edit.as_mut() else {
             return;
         };
         if form.submitting || form.display_name.read(cx).text().trim().is_empty() {
@@ -202,7 +202,7 @@ impl NativeRoot {
         form.submitting = true;
         form.error = None;
         let edits_slot = form.slot.is_some();
-        let update = UpdateRunnerInput {
+        let update = UpdateRoleInput {
             display_name: Some(form.display_name.read(cx).text().trim().to_owned()),
             runtime: (!edits_slot)
                 .then(|| Runtime::parse(&form.runtime))
@@ -230,10 +230,10 @@ impl NativeRoot {
                 slot.slot.crew_id.clone(),
             )
         });
-        let runner_id = form.runner.id.clone();
+        let role_id = form.role.id.clone();
         let core = self.core(cx).clone();
         let task = cx.background_spawn(async move {
-            runner_backend::ops::runner::runner_update(&core, &runner_id, update)
+            runner_backend::ops::role::role_update(&core, &role_id, update)
                 .map_err(|error| error.to_string())?;
             let crew_id =
                 if let Some((slot_id, mut update, runtime_override, crew_id)) = slot_update {
@@ -256,17 +256,15 @@ impl NativeRoot {
             let _ = weak.update_in(cx, |this, _window, cx| {
                 match result {
                     Ok(crew_id) => {
-                        this.runner_surfaces.edit = None;
-                        if let Ok(runners) = runner_backend::ops::runner::runner_list(this.core(cx))
-                        {
-                            this.app_store.update(cx, |store, store_cx| {
-                                store.replace_runners(runners, store_cx)
-                            });
+                        this.role_surfaces.edit = None;
+                        if let Ok(roles) = runner_backend::ops::role::role_list(this.core(cx)) {
+                            this.app_store
+                                .update(cx, |store, store_cx| store.replace_roles(roles, store_cx));
                         }
-                        this.load_runner_page(cx);
+                        this.load_role_page(cx);
                         match this.route.clone() {
-                            AppRoute::RunnerDetail(handle) => {
-                                this.load_runner_detail(handle, cx);
+                            AppRoute::RoleDetail(handle) => {
+                                this.load_role_detail(handle, cx);
                             }
                             AppRoute::CrewEditor(active)
                                 if crew_id.as_ref().is_none_or(|crew_id| crew_id == &active) =>
@@ -277,7 +275,7 @@ impl NativeRoot {
                         }
                     }
                     Err(error) => {
-                        if let Some(form) = this.runner_surfaces.edit.as_mut() {
+                        if let Some(form) = this.role_surfaces.edit.as_mut() {
                             form.submitting = false;
                             form.error = Some(error);
                         }
@@ -290,12 +288,8 @@ impl NativeRoot {
         cx.notify();
     }
 
-    pub(super) fn render_runner_edit_drawer(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let form = self
-            .runner_surfaces
-            .edit
-            .as_ref()
-            .expect("runner edit form");
+    pub(super) fn render_role_edit_drawer(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let form = self.role_surfaces.edit.as_ref().expect("role edit form");
         let submitting = form.submitting;
         let edits_slot = form.slot.is_some();
         let can_submit = !submitting && form.display_name_valid;
@@ -314,7 +308,7 @@ impl NativeRoot {
                     .flex()
                     .items_center()
                     .gap_2()
-                    .child("Edit runner")
+                    .child("Edit role")
                     .child(
                         div()
                             .rounded_sm()
@@ -325,23 +319,23 @@ impl NativeRoot {
                             .text_size(theme::text_ui())
                             .font_weight(FontWeight::NORMAL)
                             .text_color(theme::muted())
-                            .child(format!("@{}", form.runner.handle)),
+                            .child(format!("@{}", form.role.handle)),
                     ),
             )
             .child(
-                IconButton::new("close-runner-edit", "close.svg")
+                IconButton::new("close-role-edit", "close.svg")
                     .focus_handle(form.close_focus.clone())
-                    .tooltip("Close runner editor")
+                    .tooltip("Close role editor")
                     .disabled(submitting)
                     .on_press(move |window, cx| {
-                        close_root.update(cx, |this, cx| this.close_runner_edit(window, cx));
+                        close_root.update(cx, |this, cx| this.close_role_edit(window, cx));
                     }),
             );
         let model_hint = if edits_slot {
-            if form.runtime == form.runner.runtime {
+            if form.runtime == form.role.runtime {
                 format!(
-                    "slot override · blank inherits runner default ({})",
-                    form.runner.model.as_deref().unwrap_or("default")
+                    "slot override · blank inherits role default ({})",
+                    form.role.model.as_deref().unwrap_or("default")
                 )
             } else {
                 "slot override · blank uses the agent's own model".into()
@@ -350,10 +344,10 @@ impl NativeRoot {
             "optional · blank uses the agent's own model · type a name or pick an alias".into()
         };
         let effort_hint = if edits_slot {
-            if form.runtime == form.runner.runtime {
+            if form.runtime == form.role.runtime {
                 format!(
-                    "slot override · blank inherits runner default ({})",
-                    form.runner.effort.as_deref().unwrap_or("default")
+                    "slot override · blank inherits role default ({})",
+                    form.role.effort.as_deref().unwrap_or("default")
                 )
             } else {
                 "slot override · blank uses the agent's own effort".into()
@@ -365,7 +359,7 @@ impl NativeRoot {
             .flex()
             .flex_col()
             .gap_3()
-            .on_key_down(cx.listener(Self::on_runner_edit_key_down))
+            .on_key_down(cx.listener(Self::on_role_edit_key_down))
             .children(form.error.clone().map(error_banner))
             .child(
                 Field::new("edit-display-name", "Display name", form.display_name.clone())
@@ -381,7 +375,7 @@ impl NativeRoot {
                             .focus_target(form.runtime_select.read(cx).focus_handle())
                             .when(edits_slot, |field| {
                                 field.hint(
-                                    "slot override · Runner default follows the template; an explicit agent pins this slot's engine",
+                                    "slot override · blank follows the role's agent; an explicit agent pins this slot's engine",
                                     form.runtime_hint_focus.clone(),
                                 )
                             }),
@@ -440,7 +434,7 @@ impl NativeRoot {
                         submitting,
                         Rc::new(move |_, cx| {
                             browse_root.update(cx, |this, cx| {
-                                this.browse_runner_edit_cwd(cx)
+                                this.browse_role_edit_cwd(cx)
                             });
                         }),
                     )
@@ -457,23 +451,23 @@ impl NativeRoot {
             .items_center()
             .gap_2()
             .child(
-                Button::new("cancel-runner-edit", "Cancel")
+                Button::new("cancel-role-edit", "Cancel")
                     .focus_handle(form.cancel_focus.clone())
                     .disabled(submitting)
                     .on_press(move |window, cx| {
-                        cancel_root.update(cx, |this, cx| this.close_runner_edit(window, cx));
+                        cancel_root.update(cx, |this, cx| this.close_role_edit(window, cx));
                     }),
             )
             .child(
                 Button::new(
-                    "submit-runner-edit",
+                    "submit-role-edit",
                     if submitting { "Saving…" } else { "Save" },
                 )
                 .focus_handle(form.submit_focus.clone())
                 .variant(ButtonVariant::Primary)
                 .disabled(!can_submit)
                 .on_press(move |window, cx| {
-                    submit_root.update(cx, |this, cx| this.submit_runner_edit(window, cx));
+                    submit_root.update(cx, |this, cx| this.submit_role_edit(window, cx));
                 }),
             );
         let drawer_root = root;
@@ -481,12 +475,12 @@ impl NativeRoot {
             title,
             body,
             Rc::new(move |window, cx| {
-                drawer_root.update(cx, |this, cx| this.close_runner_edit(window, cx));
+                drawer_root.update(cx, |this, cx| this.close_role_edit(window, cx));
             }),
         )
         .width(OverlayWidth::Custom(FORM_WIDTH))
         .busy(submitting)
-        .focus_order(runner_edit_focus_order(form, cx))
+        .focus_order(role_edit_focus_order(form, cx))
         .scrollbar(form.scroll.clone(), form.scrollbar.clone())
         .footer(footer)
         .into_any_element()

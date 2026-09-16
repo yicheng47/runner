@@ -1,6 +1,6 @@
-use super::logic::create_runner_can_submit;
-use super::logic::create_runner_focus_order;
-use super::logic::create_runner_form_is_composing;
+use super::logic::create_role_can_submit;
+use super::logic::create_role_focus_order;
+use super::logic::create_role_form_is_composing;
 use super::logic::error_banner;
 use super::logic::permission_mode_description;
 use super::logic::permission_mode_value;
@@ -11,7 +11,7 @@ use super::logic::runtime_model_placeholder;
 use super::logic::runtime_models;
 use super::logic::split_args;
 use super::logic::trimmed_option;
-use super::logic::RunnerFormKind;
+use super::logic::RoleFormKind;
 use runner_backend::model::Runtime;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -21,18 +21,18 @@ use gpui::{div, px, rems, AnyElement, Context, FontWeight, KeyDownEvent, Window}
 use runner_app::ui::{
     Button, ButtonVariant, Field, IconButton, Modal, OverlayWidth, WorkingDirField,
 };
-use runner_backend::ops::runner::CreateRunnerInput;
+use runner_backend::ops::role::CreateRoleInput;
 use runner_backend::router::runtime::PermissionMode;
 
 use super::*;
 use crate::*;
 
 impl NativeRoot {
-    pub(super) fn select_create_runner_runtime(&mut self, runtime: String, cx: &mut Context<Self>) {
+    pub(super) fn select_create_role_runtime(&mut self, runtime: String, cx: &mut Context<Self>) {
         if Runtime::parse(&runtime).is_none() {
             return;
         }
-        let Some(form) = self.runner_surfaces.create.as_mut() else {
+        let Some(form) = self.role_surfaces.create.as_mut() else {
             return;
         };
         if form.runtime == runtime || form.submitting {
@@ -64,44 +64,44 @@ impl NativeRoot {
         cx.notify();
     }
 
-    fn close_create_runner(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn close_create_role(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self
-            .runner_surfaces
+            .role_surfaces
             .create
             .as_ref()
             .is_some_and(|form| form.submitting)
         {
             return;
         }
-        self.runner_surfaces.create = None;
+        self.role_surfaces.create = None;
         window.focus(&self.root_focus);
         cx.notify();
     }
 
-    fn on_create_runner_key_down(
+    fn on_create_role_key_down(
         &mut self,
         event: &KeyDownEvent,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if event.keystroke.key == "enter"
-            && self.runner_surfaces.create.as_ref().is_some_and(|form| {
+            && self.role_surfaces.create.as_ref().is_some_and(|form| {
                 !form
                     .system_prompt
                     .read(cx)
                     .focus_handle()
                     .is_focused(window)
-                    && !create_runner_form_is_composing(form, cx)
+                    && !create_role_form_is_composing(form, cx)
             })
         {
             cx.stop_propagation();
-            self.submit_create_runner(window, cx);
+            self.submit_create_role(window, cx);
         }
     }
 
-    fn browse_create_runner_cwd(&mut self, cx: &mut Context<Self>) {
+    fn browse_create_role_cwd(&mut self, cx: &mut Context<Self>) {
         let Some(input) = self
-            .runner_surfaces
+            .role_surfaces
             .create
             .as_ref()
             .filter(|form| !form.submitting)
@@ -109,14 +109,14 @@ impl NativeRoot {
         else {
             return;
         };
-        self.browse_runner_form_cwd(input, RunnerFormKind::Create, cx);
+        self.browse_role_form_cwd(input, RoleFormKind::Create, cx);
     }
 
-    fn submit_create_runner(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(form) = self.runner_surfaces.create.as_mut() else {
+    fn submit_create_role(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(form) = self.role_surfaces.create.as_mut() else {
             return;
         };
-        if !create_runner_can_submit(form) {
+        if !create_role_can_submit(form) {
             return;
         }
         let Some(runtime) = Runtime::parse(&form.runtime) else {
@@ -124,7 +124,7 @@ impl NativeRoot {
         };
         form.submitting = true;
         form.error = None;
-        let input = CreateRunnerInput {
+        let input = CreateRoleInput {
             handle: form.handle.read(cx).text().to_owned(),
             display_name: form.display_name.read(cx).text().trim().to_owned(),
             runtime,
@@ -139,27 +139,24 @@ impl NativeRoot {
         };
         let core = self.core(cx).clone();
         let task = cx.background_spawn(async move {
-            runner_backend::ops::runner::runner_create(&core, input)
-                .map_err(|error| error.to_string())
+            runner_backend::ops::role::role_create(&core, input).map_err(|error| error.to_string())
         });
         cx.spawn_in(window, async move |weak, cx| {
             let result = task.await;
             let _ = weak.update_in(cx, |this, window, cx| {
                 match result {
-                    Ok(runner) => {
-                        let handle = runner.handle.clone();
-                        this.runner_surfaces.create = None;
-                        if let Ok(runners) = runner_backend::ops::runner::runner_list(this.core(cx))
-                        {
-                            this.app_store.update(cx, |store, store_cx| {
-                                store.replace_runners(runners, store_cx)
-                            });
+                    Ok(role) => {
+                        let handle = role.handle.clone();
+                        this.role_surfaces.create = None;
+                        if let Ok(roles) = runner_backend::ops::role::role_list(this.core(cx)) {
+                            this.app_store
+                                .update(cx, |store, store_cx| store.replace_roles(roles, store_cx));
                         }
-                        this.load_runner_page(cx);
-                        this.open_runner_detail(handle, window, cx);
+                        this.load_role_page(cx);
+                        this.open_role_detail(handle, window, cx);
                     }
                     Err(error) => {
-                        if let Some(form) = this.runner_surfaces.create.as_mut() {
+                        if let Some(form) = this.role_surfaces.create.as_mut() {
                             form.submitting = false;
                             form.error = Some(error);
                         }
@@ -172,14 +169,14 @@ impl NativeRoot {
         cx.notify();
     }
 
-    pub(super) fn render_create_runner_modal(&mut self, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn render_create_role_modal(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let form = self
-            .runner_surfaces
+            .role_surfaces
             .create
             .as_ref()
-            .expect("create runner form");
+            .expect("create role form");
         let submitting = form.submitting;
-        let can_submit = create_runner_can_submit(form);
+        let can_submit = create_role_can_submit(form);
         let handle_error = form.handle_error;
         let permission_description =
             permission_mode_description(&form.runtime, form.permission_mode);
@@ -202,7 +199,7 @@ impl NativeRoot {
                         div()
                             .text_size(theme::text_heading())
                             .font_weight(FontWeight::SEMIBOLD)
-                            .child("New runner"),
+                            .child("New role"),
                     )
                     .child(
                         div()
@@ -213,12 +210,12 @@ impl NativeRoot {
                     ),
             )
             .child(
-                IconButton::new("close-create-runner", "close.svg")
+                IconButton::new("close-create-role", "close.svg")
                     .focus_handle(form.close_focus.clone())
-                    .tooltip("Close new runner")
+                    .tooltip("Close new role")
                     .disabled(submitting)
                     .on_press(move |window, cx| {
-                        close_root.update(cx, |this, cx| this.close_create_runner(window, cx));
+                        close_root.update(cx, |this, cx| this.close_create_role(window, cx));
                     }),
             );
         let handle_input = div()
@@ -249,16 +246,16 @@ impl NativeRoot {
             .flex()
             .flex_col()
             .gap_5()
-            .on_key_down(cx.listener(Self::on_create_runner_key_down))
+            .on_key_down(cx.listener(Self::on_create_role_key_down))
             .children(form.error.clone().map(error_banner))
             .child(
-                Field::new("new-runner-handle", "Handle", handle_input)
+                Field::new("new-role-handle", "Handle", handle_input)
                     .focus_target(form.handle.read(cx).focus_handle())
                     .when_some(handle_error, |field, error| field.error(error)),
             )
             .child(
                 Field::new(
-                    "new-runner-display-name",
+                    "new-role-display-name",
                     "Display name",
                     form.display_name.clone(),
                 )
@@ -270,7 +267,7 @@ impl NativeRoot {
                     .flex_col()
                     .gap_1()
                     .child(
-                        Field::new("new-runner-runtime", "Agent", form.runtime_select.clone())
+                        Field::new("new-role-runtime", "Agent", form.runtime_select.clone())
                             .focus_target(form.runtime_select.read(cx).focus_handle()),
                     )
                     .children(form.agents_error.clone().map(|error| {
@@ -281,11 +278,11 @@ impl NativeRoot {
                     })),
             )
             .child(
-                Field::new("new-runner-command", "Command", form.command.clone())
+                Field::new("new-role-command", "Command", form.command.clone())
                     .focus_target(form.command.read(cx).focus_handle()),
             )
             .child(
-                Field::new("new-runner-args", "Args", form.args.clone())
+                Field::new("new-role-args", "Args", form.args.clone())
                     .focus_target(form.args.read(cx).focus_handle())
                     .hint(
                         "extra flags · whitespace-separated",
@@ -293,7 +290,7 @@ impl NativeRoot {
                     ),
             )
             .child(
-                Field::new("new-runner-model", "Model", form.model_field.clone())
+                Field::new("new-role-model", "Model", form.model_field.clone())
                     .focus_target(form.model.read(cx).focus_handle())
                     .hint(
                         "optional · blank uses the agent's own model · type a name or pick an alias",
@@ -302,7 +299,7 @@ impl NativeRoot {
             )
             .children((!permission_modes(&form.runtime).is_empty()).then(|| {
                 Field::new(
-                    "new-runner-permission-mode",
+                    "new-role-permission-mode",
                     "Permission mode",
                     form.permission_select.clone(),
                 )
@@ -311,14 +308,14 @@ impl NativeRoot {
             }))
             .child(
                 Field::new(
-                    "new-runner-working-dir",
+                    "new-role-working-dir",
                     "Working directory",
                     WorkingDirField::new(
                         form.working_dir.clone(),
                         submitting,
                         Rc::new(move |_, cx| {
                             browse_root.update(cx, |this, cx| {
-                                this.browse_create_runner_cwd(cx)
+                                this.browse_create_role_cwd(cx)
                             });
                         }),
                     )
@@ -328,7 +325,7 @@ impl NativeRoot {
             )
             .child(
                 Field::new(
-                    "new-runner-system-prompt",
+                    "new-role-system-prompt",
                     "Default system prompt",
                     form.system_prompt.clone(),
                 )
@@ -339,27 +336,27 @@ impl NativeRoot {
             .items_center()
             .gap_2()
             .child(
-                Button::new("cancel-create-runner", "Cancel")
+                Button::new("cancel-create-role", "Cancel")
                     .focus_handle(form.cancel_focus.clone())
                     .disabled(submitting)
                     .on_press(move |window, cx| {
-                        cancel_root.update(cx, |this, cx| this.close_create_runner(window, cx));
+                        cancel_root.update(cx, |this, cx| this.close_create_role(window, cx));
                     }),
             )
             .child(
                 Button::new(
-                    "submit-create-runner",
+                    "submit-create-role",
                     if submitting {
                         "Creating…"
                     } else {
-                        "Create runner"
+                        "Create role"
                     },
                 )
                 .focus_handle(form.submit_focus.clone())
                 .variant(ButtonVariant::Primary)
                 .disabled(!can_submit)
                 .on_press(move |window, cx| {
-                    submit_root.update(cx, |this, cx| this.submit_create_runner(window, cx));
+                    submit_root.update(cx, |this, cx| this.submit_create_role(window, cx));
                 }),
             );
         let modal_root = root;
@@ -367,12 +364,12 @@ impl NativeRoot {
             title,
             body,
             Rc::new(move |window, cx| {
-                modal_root.update(cx, |this, cx| this.close_create_runner(window, cx));
+                modal_root.update(cx, |this, cx| this.close_create_role(window, cx));
             }),
         )
         .width(OverlayWidth::Custom(FORM_WIDTH))
         .busy(submitting)
-        .focus_order(create_runner_focus_order(form, cx))
+        .focus_order(create_role_focus_order(form, cx))
         .scrollbar(form.scroll.clone(), form.scrollbar.clone())
         .footer(footer)
         .into_any_element()

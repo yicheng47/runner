@@ -792,7 +792,7 @@ mod tests {
         DirectSessionEntry {
             session_id: id.into(),
             project_id: None,
-            runner_id: None,
+            role_id: None,
             handle: Some("coder".into()),
             agent_runtime: "codex".into(),
             agent_command: "codex".into(),
@@ -846,7 +846,7 @@ mod tests {
             "/work/chat",
             "2026-08-21T01:00:00Z",
         );
-        chat.runner_id = Some("runner".into());
+        chat.role_id = Some("role".into());
         for (runtime, path, tint) in [
             ("claude-code", "claude.svg", gpui::rgb(0xd97757).into()),
             ("codex", "openai.svg", theme::text()),

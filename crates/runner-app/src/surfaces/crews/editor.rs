@@ -2,7 +2,7 @@ use super::logic::crew_name_refresh;
 use super::logic::crew_name_state;
 use super::logic::error_panel;
 use super::logic::section_label;
-use super::logic::selected_add_slot_runner;
+use super::logic::selected_add_slot_role;
 use super::logic::slot_handle_error;
 use super::logic::slot_section_description;
 use super::logic::suggest_slot_handle;
@@ -130,10 +130,10 @@ impl NativeRoot {
                             form.crew_name = crew_name;
                             form.existing_handles = existing_handles;
                             if !form.slot_handle.read(cx).edited() {
-                                let suggestion = selected_add_slot_runner(form)
-                                    .map(|runner| {
+                                let suggestion = selected_add_slot_role(form)
+                                    .map(|role| {
                                         suggest_slot_handle(
-                                            &runner.runner.handle,
+                                            &role.role.handle,
                                             &form.existing_handles,
                                         )
                                     })
@@ -356,6 +356,9 @@ impl NativeRoot {
                 None => unreachable!("crew presence checked above"),
             };
             let sections = div()
+                .when(cfg!(test), |sections| {
+                    sections.debug_selector(|| "CREW_EDITOR_SECTIONS".into())
+                })
                 .w_full()
                 .min_w(px(0.))
                 .flex()
@@ -443,6 +446,9 @@ impl NativeRoot {
                         .child(self.render_slot_list(slots, cx)),
                 );
             div()
+                .when(cfg!(test), |container| {
+                    container.debug_selector(|| "CREW_EDITOR_CONTAINER".into())
+                })
                 .mx_auto()
                 .w_full()
                 .min_w(px(0.))
@@ -461,6 +467,9 @@ impl NativeRoot {
             .child(
                 div()
                     .id("crew-editor-scroll")
+                    .when(cfg!(test), |scroll| {
+                        scroll.debug_selector(|| "CREW_EDITOR_SCROLL".into())
+                    })
                     .min_h(px(0.))
                     .flex_1()
                     .overflow_y_scroll()

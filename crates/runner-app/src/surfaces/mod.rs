@@ -10,7 +10,7 @@ pub(crate) mod mission_feed;
 pub(crate) mod mission_markdown;
 pub(crate) mod mission_workspace;
 pub(crate) mod panes;
-pub(crate) mod runners;
+pub(crate) mod roles;
 pub(crate) mod settings;
 pub(crate) mod settings_page;
 pub(crate) mod sidebar;
@@ -29,7 +29,7 @@ pub(crate) use panes::{
     adjacent_pane_index, drop_allowed, pane_close_behavior, pane_fractions, split_decision,
     PaneCloseBehavior, PaneKey, SplitDecision, SplitMenuKey,
 };
-pub(crate) use runners::RunnerSurfaces;
+pub(crate) use roles::RoleSurfaces;
 pub(crate) use settings_page::{SettingsPane, SettingsState};
 pub(crate) use sidebar::{
     default_session_label, session_label, session_label_live, ProjectModal, Sidebar,

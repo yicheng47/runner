@@ -728,8 +728,8 @@ mod tests {
                         SelectOption::new("auto", "Auto").description(
                             "The runtime's classifier decides; may stall on a prompt.",
                         ),
-                        SelectOption::new("runner", "Runner default")
-                            .description("Whatever each runner row carries."),
+                        SelectOption::new("role", "Role default")
+                            .description("Whatever each role carries."),
                     ],
                     Rc::new(|_, _, _| {}),
                     cx,

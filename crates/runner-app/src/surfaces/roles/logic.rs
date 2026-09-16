@@ -3,7 +3,7 @@ use runner_backend::model::Runtime;
 use gpui::prelude::*;
 use gpui::{div, px, rems, AnyElement, Context, FocusHandle, FontWeight};
 use runner_app::ui::SelectOption;
-use runner_backend::model::Runner;
+use runner_backend::model::Role;
 use runner_backend::ops::runtime::{RuntimeCatalogEntry, RuntimeCatalogOption};
 use runner_backend::router::runtime::PermissionMode;
 
@@ -11,18 +11,18 @@ use super::*;
 use crate::*;
 
 #[derive(Clone, Copy)]
-pub(super) enum RunnerFormKind {
+pub(super) enum RoleFormKind {
     Create,
     Edit,
 }
 
 pub(super) fn resolve_slot_runtime_layers(
-    runner_runtime: &str,
+    role_runtime: &str,
     runtime_override: Option<&str>,
     model_override: Option<&str>,
     effort_override: Option<&str>,
 ) -> RuntimeLayerResolution {
-    let runtime = runtime_override.unwrap_or(runner_runtime);
+    let runtime = runtime_override.unwrap_or(role_runtime);
     RuntimeLayerResolution {
         runtime: runtime.to_owned(),
         runtime_pinned: runtime_override.is_some(),
@@ -31,35 +31,35 @@ pub(super) fn resolve_slot_runtime_layers(
     }
 }
 
-pub(super) fn resolve_runner_edit(
-    runner: &Runner,
-    slot: Option<&runner_backend::model::SlotWithRunner>,
-) -> RunnerEditResolution {
+pub(super) fn resolve_role_edit(
+    role: &Role,
+    slot: Option<&runner_backend::model::SlotWithRole>,
+) -> RoleEditResolution {
     let layers = if let Some(slot) = slot {
         resolve_slot_runtime_layers(
-            &runner.runtime,
+            &role.runtime,
             slot.slot.runtime_override.as_deref(),
             slot.slot.model_override.as_deref(),
             slot.slot.effort_override.as_deref(),
         )
     } else {
         RuntimeLayerResolution {
-            runtime: runner.runtime.clone(),
+            runtime: role.runtime.clone(),
             runtime_pinned: true,
-            model: runner.model.clone(),
-            effort: runner.effort.clone(),
+            model: role.model.clone(),
+            effort: role.effort.clone(),
         }
     };
-    let command = if layers.runtime == runner.runtime {
-        runner.command.clone()
+    let command = if layers.runtime == role.runtime {
+        role.command.clone()
     } else {
         runner_backend::ops::runtime::runtime_list()
             .into_iter()
             .find(|runtime| runtime.name.key() == layers.runtime)
             .map(|runtime| runtime.command)
-            .unwrap_or_else(|| runner.command.clone())
+            .unwrap_or_else(|| role.command.clone())
     };
-    RunnerEditResolution {
+    RoleEditResolution {
         runtime: layers.runtime,
         runtime_pinned: slot.is_none() || layers.runtime_pinned,
         command,
@@ -105,11 +105,11 @@ pub(super) fn runtime_models<'a>(
 pub(super) fn runtime_model_placeholder(
     runtimes: &[RuntimeCatalogEntry],
     runtime: &str,
-    inherited_runner: Option<&Runner>,
+    inherited_role: Option<&Role>,
 ) -> String {
-    inherited_runner
-        .filter(|runner| runner.runtime == runtime)
-        .and_then(|runner| runner.model.as_deref())
+    inherited_role
+        .filter(|role| role.runtime == runtime)
+        .and_then(|role| role.model.as_deref())
         .or_else(|| runtime_entry(runtimes, runtime)?.default_model.as_deref())
         .map(|model| format!("default ({model})"))
         .unwrap_or_else(|| "default".into())
@@ -134,25 +134,25 @@ pub(super) fn runtime_efforts<'a>(
         .unwrap_or_default()
 }
 
-pub(super) fn runner_edit_runtime_options(
+pub(super) fn role_edit_runtime_options(
     runtimes: &[RuntimeCatalogEntry],
-    runner: &Runner,
+    role: &Role,
     current_runtime: &str,
     edits_slot: bool,
 ) -> Vec<SelectOption> {
     let mut options = Vec::new();
     if edits_slot {
-        let label = runtime_entry(runtimes, &runner.runtime)
+        let label = runtime_entry(runtimes, &role.runtime)
             .map(|runtime| runtime.display_name.as_str())
-            .unwrap_or(&runner.runtime);
-        options.push(SelectOption::new("", format!("Runner default ({label})")));
+            .unwrap_or(&role.runtime);
+        options.push(SelectOption::new("", format!("Role default ({label})")));
     }
     options.extend(
         runtimes
             .iter()
             .filter(|runtime| {
                 runtime.available
-                    || runtime.name.key() == runner.runtime
+                    || runtime.name.key() == role.runtime
                     || runtime.name.key() == current_runtime
             })
             .map(|runtime| {
@@ -166,7 +166,7 @@ pub(super) fn runner_edit_runtime_options(
 pub(super) fn effort_options(
     runtimes: &[RuntimeCatalogEntry],
     runtime: &str,
-    runner: &Runner,
+    role: &Role,
     edits_slot: bool,
     model: &str,
 ) -> Vec<SelectOption> {
@@ -176,13 +176,12 @@ pub(super) fn effort_options(
         .iter()
         .map(|option| {
             let label = if option.value.is_empty() {
-                if edits_slot && runtime == runner.runtime {
-                    runner
-                        .effort
+                if edits_slot && runtime == role.runtime {
+                    role.effort
                         .as_deref()
                         .or_else(|| runtime_entry(runtimes, runtime)?.default_effort.as_deref())
-                        .map(|effort| format!("Runner default ({effort})"))
-                        .unwrap_or_else(|| "Runner default".into())
+                        .map(|effort| format!("Role default ({effort})"))
+                        .unwrap_or_else(|| "Role default".into())
                 } else {
                     runtime_default_effort_label(runtimes, runtime)
                 }
@@ -270,7 +269,7 @@ pub(super) fn permission_mode_description(runtime: &str, mode: PermissionMode) -
         }
         (Some(Runtime::ClaudeCode), PermissionMode::AcceptEdits) => "Auto-accept file edits and common filesystem commands; still ask for shell, network, and writes outside the workspace. Available on every plan.",
         (Some(Runtime::ClaudeCode), PermissionMode::Auto) => "Real auto with a server-side classifier. Requires Max / Team / Enterprise / API plan + a supported model (Opus 4.7 on Max). Not available on Pro.",
-        (Some(Runtime::ClaudeCode), PermissionMode::Bypass) => "Skip every check. Runner accepts Claude Code's bypass disclaimer for the sessions it spawns; a runner that passes its own --settings still sees the dialog.",
+        (Some(Runtime::ClaudeCode), PermissionMode::Bypass) => "Skip every check. Runner accepts Claude Code's bypass disclaimer for the sessions it spawns; a role that passes its own --settings still sees the dialog.",
         (Some(Runtime::Codex), PermissionMode::Default) => {
             "Codex's built-in approval cadence (untrusted commands)."
         }
@@ -290,7 +289,7 @@ pub(super) fn permission_mode_description(runtime: &str, mode: PermissionMode) -
     }
 }
 
-pub(super) fn validate_runner_handle(handle: &str) -> Option<&'static str> {
+pub(super) fn validate_role_handle(handle: &str) -> Option<&'static str> {
     if handle.is_empty() {
         return None;
     }
@@ -307,7 +306,7 @@ pub(super) fn validate_runner_handle(handle: &str) -> Option<&'static str> {
     )
 }
 
-pub(super) fn create_runner_can_submit(form: &CreateRunnerForm) -> bool {
+pub(super) fn create_role_can_submit(form: &CreateRoleForm) -> bool {
     !form.submitting
         && !form.handle_empty
         && form.handle_error.is_none()
@@ -315,8 +314,8 @@ pub(super) fn create_runner_can_submit(form: &CreateRunnerForm) -> bool {
         && runtime_entry(&form.runtimes, &form.runtime).is_some()
 }
 
-pub(super) fn create_runner_focus_order(
-    form: &CreateRunnerForm,
+pub(super) fn create_role_focus_order(
+    form: &CreateRoleForm,
     cx: &Context<NativeRoot>,
 ) -> Vec<FocusHandle> {
     if form.submitting {
@@ -348,8 +347,8 @@ pub(super) fn create_runner_focus_order(
     order
 }
 
-pub(super) fn runner_edit_focus_order(
-    form: &RunnerEditForm,
+pub(super) fn role_edit_focus_order(
+    form: &RoleEditForm,
     cx: &Context<NativeRoot>,
 ) -> Vec<FocusHandle> {
     if form.submitting {
@@ -404,8 +403,8 @@ pub(super) fn split_args(value: &str) -> Vec<String> {
     value.split_whitespace().map(ToOwned::to_owned).collect()
 }
 
-pub(super) fn create_runner_form_is_composing(
-    form: &CreateRunnerForm,
+pub(super) fn create_role_form_is_composing(
+    form: &CreateRoleForm,
     cx: &Context<NativeRoot>,
 ) -> bool {
     form.handle.read(cx).is_composing()
@@ -416,10 +415,7 @@ pub(super) fn create_runner_form_is_composing(
         || form.system_prompt.read(cx).is_composing()
 }
 
-pub(super) fn runner_edit_form_is_composing(
-    form: &RunnerEditForm,
-    cx: &Context<NativeRoot>,
-) -> bool {
+pub(super) fn role_edit_form_is_composing(form: &RoleEditForm, cx: &Context<NativeRoot>) -> bool {
     form.display_name.read(cx).is_composing()
         || form.args.read(cx).is_composing()
         || form.model.read(cx).is_composing()

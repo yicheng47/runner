@@ -1,9 +1,9 @@
-// Runtime adapter: maps `runner.runtime` to the extra CLI args the child
+// Runtime adapter: maps `role.runtime` to the extra CLI args the child
 // process needs at spawn time.
 //
 // Two responsibilities live here:
 //
-//   1. `system_prompt_args` — hand `runner.system_prompt` to the agent
+//   1. `system_prompt_args` — hand `role.system_prompt` to the agent
 //      CLI via its native argv hook, when one exists. claude-code's
 //      `--append-system-prompt` / `--system-prompt` are SDK-only
 //      (require `-p` / print mode); the interactive TUI silently
@@ -93,7 +93,7 @@ pub fn supports_native_fork(runtime: Option<Runtime>) -> bool {
 }
 
 /// Compute the extra args (in declaration order) to append after the
-/// runner's configured `args` so the child receives the pinned model
+/// role's configured `args` so the child receives the pinned model
 /// and thinking effort via the runtime's native flags. Returns an
 /// empty Vec when both fields are unset (NULL on the row) or when
 /// the runtime has no equivalent. Mirrors `system_prompt_args` in
@@ -130,7 +130,7 @@ pub fn supports_native_fork(runtime: Option<Runtime>) -> bool {
 /// copilot maps model and effort to `--model <id> --effort <level>`, forwarding both values verbatim.
 ///
 /// shell / unknown runtimes: no equivalent flags — degrade silently
-/// so the runner row's preference is recorded but the spawn
+/// so the role row's preference is recorded but the spawn
 /// doesn't reject on unknown args.
 pub fn model_effort_args(
     runtime: Option<Runtime>,
@@ -177,9 +177,9 @@ pub fn model_effort_args(
     }
 }
 
-pub(crate) fn inject_claude_settings(runtime: Option<Runtime>, runner_args: &[String]) -> bool {
+pub(crate) fn inject_claude_settings(runtime: Option<Runtime>, role_args: &[String]) -> bool {
     runtime == Some(Runtime::ClaudeCode)
-        && !runner_args
+        && !role_args
             .iter()
             .any(|arg| arg == "--settings" || arg.starts_with("--settings="))
 }
@@ -230,11 +230,11 @@ pub(crate) fn inject_codex_hooks(runtime: Option<Runtime>, args: &[String], wind
 
 pub fn codex_status_args(
     runtime: Option<Runtime>,
-    runner_args: &[String],
+    role_args: &[String],
     app_data_dir: &Path,
     session_id: &str,
 ) -> Vec<String> {
-    if !inject_codex_hooks(runtime, runner_args, cfg!(windows)) {
+    if !inject_codex_hooks(runtime, role_args, cfg!(windows)) {
         return Vec::new();
     }
     let path = crate::session::hook_feed::status_path(app_data_dir, session_id);
@@ -271,11 +271,11 @@ pub fn copilot_status_args(runtime: Option<Runtime>, app_data_dir: &Path) -> Vec
 
 pub fn claude_settings_args(
     runtime: Option<Runtime>,
-    runner_args: &[String],
+    role_args: &[String],
     app_data_dir: &Path,
     runner_session_id: &str,
 ) -> Vec<String> {
-    if !inject_claude_settings(runtime, runner_args) {
+    if !inject_claude_settings(runtime, role_args) {
         return Vec::new();
     }
     let drop_path = crate::session::claude_rekey::drop_path(app_data_dir, runner_session_id);
@@ -339,7 +339,7 @@ pub fn claude_settings_args(
     // first-use consent dialog. Nobody is watching a Bypass spawn to
     // answer it (that is what Bypass means here), so acknowledge it in
     // the per-process flag settings rather than in the user's config.
-    if infer_permission_mode(runtime, runner_args) == PermissionMode::Bypass {
+    if infer_permission_mode(runtime, role_args) == PermissionMode::Bypass {
         settings["skipDangerousModePermissionPrompt"] = serde_json::Value::Bool(true);
     }
     vec![
@@ -348,8 +348,8 @@ pub fn claude_settings_args(
     ]
 }
 
-/// Permission mode the runner-edit form's dropdown writes onto the
-/// runner row's `args` column. The mode space is per-runtime: each
+/// Permission mode the role-edit form's dropdown writes onto the
+/// role row's `args` column. The mode space is per-runtime: each
 /// runtime exposes only the modes it natively supports.
 ///
 /// claude-code (4 modes — `--permission-mode <value>`):
@@ -406,7 +406,7 @@ pub enum PermissionMode {
 /// `Default` (which is the natural "no flag" state), and for modes
 /// the runtime doesn't natively support (e.g. AcceptEdits on codex —
 /// codex's wire protocol has no edits-only middle ground). Used by
-/// `ops::runner::create` / `update` to write the chosen mode
+/// `ops::role::create` / `update` to write the chosen mode
 /// onto the row's `args` column at *create* time, not at spawn time
 /// — so an existing row stays stable even if the form's recommended
 /// default shifts.
@@ -467,7 +467,7 @@ pub fn permission_mode_args(runtime: Option<Runtime>, mode: PermissionMode) -> V
 
 /// Strip every prior occurrence of the runtime's permission-mode
 /// flags (and their values, where applicable) from `args`, preserving
-/// order of the surviving args. Used by `ops::runner::create`
+/// order of the surviving args. Used by `ops::role::create`
 /// and `update` so cycling the dropdown round-trips without leaving
 /// duplicate or orphan flags.
 ///
@@ -540,8 +540,8 @@ pub fn strip_permission_flags(runtime: Option<Runtime>, args: &[String]) -> Vec<
     out
 }
 
-/// Compose the runner row's stored `args` from the user-provided
-/// `args` and the runner-edit-form's "Permission mode" segmented
+/// Compose the role row's stored `args` from the user-provided
+/// `args` and the role-edit-form's "Permission mode" segmented
 /// control. Strips any prior occurrence of the runtime's permission
 /// flags, then appends the canonical args for the chosen mode. No-op
 /// for runtimes without a permission concept (shell / unknown).
@@ -557,7 +557,7 @@ pub fn apply_permission_mode(
 
 /// App-wide permission mode for mission slots (feature 527). Read at
 /// spawn time for every mission slot; attended chats assert no
-/// permission posture. `RunnerDefault` leaves the row's args untouched.
+/// permission posture. `RoleDefault` leaves the row's args untouched.
 #[derive(
     Debug,
     Clone,
@@ -574,37 +574,42 @@ pub enum MissionPermissionMode {
     #[default]
     Bypass,
     Auto,
-    RunnerDefault,
+    #[serde(alias = "runner-default")]
+    RoleDefault,
 }
 
 impl MissionPermissionMode {
-    pub const ALL: [Self; 3] = [Self::Bypass, Self::Auto, Self::RunnerDefault];
+    pub const ALL: [Self; 3] = [Self::Bypass, Self::Auto, Self::RoleDefault];
 
     pub fn key(self) -> &'static str {
         match self {
             Self::Bypass => "bypass",
             Self::Auto => "auto",
-            Self::RunnerDefault => "runner-default",
+            Self::RoleDefault => "role-default",
         }
     }
 
     pub fn parse(value: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|mode| mode.key() == value)
+        if value == "runner-default" {
+            Some(Self::RoleDefault)
+        } else {
+            Self::ALL.into_iter().find(|mode| mode.key() == value)
+        }
     }
 
     pub fn label(self) -> &'static str {
         match self {
             Self::Bypass => "Bypass",
             Self::Auto => "Auto",
-            Self::RunnerDefault => "Runner default",
+            Self::RoleDefault => "Role default",
         }
     }
 }
 
 /// Canonical argv a mission slot gets for the app-wide mode. `None`
-/// means "leave the runner row alone" (`RunnerDefault`); `Some` is
+/// means "leave the role row alone" (`RoleDefault`); `Some` is
 /// the pair to strip-and-append, empty for runtimes with no
-/// permission concept. codex Bypass differs from the runner-level
+/// permission concept. codex Bypass differs from the role-level
 /// mapping: `danger-full-access` instead of `workspace-write`, because
 /// with `--ask-for-approval never` codex cannot ask to leave the
 /// sandbox, so `git push` / `gh` / `cargo` fetches would fail silently
@@ -614,7 +619,7 @@ pub fn mission_permission_mode_args(
     mode: MissionPermissionMode,
 ) -> Option<Vec<String>> {
     match mode {
-        MissionPermissionMode::RunnerDefault => None,
+        MissionPermissionMode::RoleDefault => None,
         MissionPermissionMode::Auto => Some(permission_mode_args(runtime, PermissionMode::Auto)),
         MissionPermissionMode::Bypass if runtime == Some(Runtime::Codex) => Some(vec![
             "--ask-for-approval".into(),
@@ -630,7 +635,7 @@ pub fn mission_permission_mode_args(
 
 /// Converge a mission slot's argv to the app-wide mode: strip the
 /// runtime's permission flags, then append the mode's canonical pair.
-/// `RunnerDefault` returns `args` unchanged.
+/// `RoleDefault` returns `args` unchanged.
 pub fn apply_mission_permission_mode(
     runtime: Option<Runtime>,
     args: &[String],
@@ -646,8 +651,8 @@ pub fn apply_mission_permission_mode(
     }
 }
 
-/// Frontend-mirror helper: inspect a runner's stored `args` and
-/// decide which option of the runner-edit form's "Permission mode"
+/// Frontend-mirror helper: inspect a role's stored `args` and
+/// decide which option of the role-edit form's "Permission mode"
 /// dropdown should render as selected. Probe order is most-aggressive
 /// first: `Bypass` → `Auto` → `AcceptEdits` → `Default`. A row
 /// carrying flags for multiple modes resolves to the most-aggressive
@@ -659,7 +664,7 @@ pub fn apply_mission_permission_mode(
 /// `Default` — the user clearly didn't pick the stricter mode and
 /// we don't want a row's UI to misrepresent its stored args.
 ///
-/// Read-side only: the runner form calls this to show a stored row's
+/// Read-side only: the role form calls this to show a stored row's
 /// mode. Spawn paths use `apply_permission_mode` for write-side flag
 /// management instead.
 pub fn infer_permission_mode(runtime: Option<Runtime>, args: &[String]) -> PermissionMode {
@@ -731,7 +736,7 @@ fn mode_match_pairs(
         // canonical pair here so this table remains synced with generated args.
         (Some(Runtime::Copilot), PermissionMode::Bypass) => &[("--yolo", None)],
         (Some(Runtime::Copilot), PermissionMode::Auto) => &[],
-        // Recognize the legacy invalid Auto flag until the runner is saved again.
+        // Recognize the legacy invalid Auto flag until the role is saved again.
         (Some(Runtime::Trae), PermissionMode::Auto) => &[("--permission-mode", Some("auto"))],
         (Some(Runtime::Trae), PermissionMode::Bypass) => {
             &[("--permission-mode", Some("bypass_permissions"))]
@@ -800,7 +805,7 @@ fn flag_value_matches(args: &[String], flag: &str, expected: Option<&str>) -> bo
 }
 
 /// Compute the extra args (in declaration order) to append after the
-/// runner's configured `args` so the child receives `system_prompt` via the
+/// role's configured `args` so the child receives `system_prompt` via the
 /// runtime's native flag. Returns an empty Vec when no prompt is set or
 /// when the runtime has no native system-prompt flag.
 pub fn system_prompt_args(runtime: Option<Runtime>, system_prompt: Option<&str>) -> Vec<String> {
@@ -827,7 +832,7 @@ pub fn system_prompt_args(runtime: Option<Runtime>, system_prompt: Option<&str>)
 }
 
 /// Defense-in-depth ceiling on the positional `[PROMPT]` argv payload.
-/// Persistence-layer validation in `ops::runner` /
+/// Persistence-layer validation in `ops::role` /
 /// `ops::mission` / `ops::crew` caps the individual fields
 /// (`system_prompt`, `mission_goal`, `crew.goal`) so the composed
 /// body never approaches this number. Set well below macOS `ARG_MAX`
@@ -895,7 +900,7 @@ pub fn first_turn_argv(runtime: Option<Runtime>, body: Option<&str>) -> Vec<Stri
 #[allow(clippy::too_many_arguments)]
 pub fn trailing_runtime_args(
     runtime: Option<Runtime>,
-    runner_args: &[String],
+    role_args: &[String],
     app_data_dir: &Path,
     runner_session_id: &str,
     plan_resuming: bool,
@@ -914,13 +919,13 @@ pub fn trailing_runtime_args(
     }
     out.extend(claude_settings_args(
         runtime,
-        runner_args,
+        role_args,
         app_data_dir,
         runner_session_id,
     ));
     out.extend(codex_status_args(
         runtime,
-        runner_args,
+        role_args,
         app_data_dir,
         runner_session_id,
     ));
@@ -952,7 +957,7 @@ pub fn mission_bus_sandbox_args(
 /// Output of `resume_plan` — the args to layer onto the spawn command plus
 /// the agent session key the spawn will operate under. The caller writes
 /// `assigned_key` into `sessions.agent_session_key` so the next spawn for
-/// the same scope (direct: same runner; mission: same (mission, runner))
+/// the same scope (direct: same role; mission: same (mission, role))
 /// can pass it back via `prior_key`.
 #[derive(Debug, Clone)]
 pub struct ResumePlan {
@@ -961,7 +966,7 @@ pub struct ResumePlan {
     /// prefix the caller must place ahead of any user-supplied args. See `prepend`.
     pub args: Vec<String>,
     /// `true` when `args` are a subcommand prefix that must precede the
-    /// runner's configured args (codex/trae resume). `false` when they are
+    /// role's configured args (codex/trae resume). `false` when they are
     /// trailing flags safe to append (claude-code --session-id / --resume).
     pub prepend: bool,
     /// The native agent session key this spawn is bound to, when known up
@@ -1003,8 +1008,8 @@ impl ResumePlan {
 /// `prior_key` should be the value of `sessions.agent_session_key` from the
 /// most recent prior session in the same scope. The caller decides how to
 /// scope: direct chats look up the most recent session for the same
-/// `runner_id` with `mission_id IS NULL`; mission spawns look up the most
-/// recent session for the same `(mission_id, runner_id)`.
+/// `role_id` with `mission_id IS NULL`; mission spawns look up the most
+/// recent session for the same `(mission_id, role_id)`.
 pub fn resume_plan(runtime: Option<Runtime>, prior_key: Option<&str>) -> ResumePlan {
     match runtime {
         Some(Runtime::ClaudeCode) => match prior_key {
@@ -1476,10 +1481,10 @@ mod tests {
     #[test]
     fn claude_settings_acknowledge_bypass_only_for_bypass_spawns() {
         let app_data_dir = Path::new("/tmp/runner-app-data");
-        let settings_for = |runner_args: &[String]| {
+        let settings_for = |role_args: &[String]| {
             let args = claude_settings_args(
                 Some(Runtime::ClaudeCode),
-                runner_args,
+                role_args,
                 app_data_dir,
                 "runner-session",
             );
@@ -1566,13 +1571,13 @@ mod tests {
 
     #[test]
     fn claude_settings_respects_runner_settings_flags() {
-        for runner_args in [
+        for role_args in [
             vec!["--settings".into(), "custom.json".into()],
             vec!["--settings=custom.json".into()],
         ] {
             assert!(claude_settings_args(
                 Some(Runtime::ClaudeCode),
-                &runner_args,
+                &role_args,
                 Path::new("/tmp/runner-app-data"),
                 "runner-session"
             )
@@ -1856,7 +1861,7 @@ mod tests {
     #[test]
     fn codex_trailing_args_omit_positional_prompt() {
         // `system_prompt` is not a positional first turn. Model/effort
-        // flags still ride along so the runner row's pinned settings
+        // flags still ride along so the role row's pinned settings
         // reach the spawned CLI.
         for plan_resuming in [false, true] {
             let args = trailing_runtime_args(
@@ -2390,7 +2395,7 @@ mod tests {
             "unknown",
         ] {
             assert_eq!(
-                mission_permission_mode_args(Runtime::parse(runtime), M::RunnerDefault),
+                mission_permission_mode_args(Runtime::parse(runtime), M::RoleDefault),
                 None,
                 "{runtime}"
             );
@@ -2403,7 +2408,7 @@ mod tests {
             mission_permission_mode_args(Runtime::parse("unknown"), M::Auto),
             Some(vec![])
         );
-        // The runner-level codex Bypass mapping is untouched.
+        // The role-level codex Bypass mapping is untouched.
         assert_eq!(
             permission_mode_args(Some(Runtime::Codex), PermissionMode::Bypass),
             vec![
@@ -2440,7 +2445,7 @@ mod tests {
             apply_mission_permission_mode(
                 Some(Runtime::Codex),
                 &row,
-                MissionPermissionMode::RunnerDefault
+                MissionPermissionMode::RoleDefault
             ),
             row,
         );
@@ -2484,7 +2489,7 @@ mod tests {
             apply_mission_permission_mode(
                 Some(Runtime::ClaudeCode),
                 &row,
-                MissionPermissionMode::RunnerDefault
+                MissionPermissionMode::RoleDefault
             ),
             row,
         );
@@ -2515,6 +2520,14 @@ mod tests {
             );
             assert_eq!(MissionPermissionMode::parse(mode.key()), Some(mode));
         }
+        assert_eq!(
+            serde_json::from_str::<MissionPermissionMode>(r#""runner-default""#).unwrap(),
+            MissionPermissionMode::RoleDefault
+        );
+        assert_eq!(
+            MissionPermissionMode::parse("runner-default"),
+            Some(MissionPermissionMode::RoleDefault)
+        );
         assert_eq!(MissionPermissionMode::parse("plan"), None);
         assert_eq!(
             MissionPermissionMode::default(),
@@ -2789,11 +2802,11 @@ mod tests {
     // The pre-#88 `first_turn_argv_skipped_when_body_exceeds_arg_max_threshold`
     // test exercised the post-spawn paste fallback for oversized bodies.
     // Plan 0007 retired that fallback in favour of persistence-layer
-    // validation (`ops::runner::MAX_SYSTEM_PROMPT_BYTES` /
+    // validation (`ops::role::MAX_SYSTEM_PROMPT_BYTES` /
     // `ops::mission::MAX_MISSION_GOAL_BYTES`). The debug_assert
     // inside `first_turn_argv` is now defense-in-depth — exercising it
     // here would just trip the assertion. Validation tests live in
-    // `ops::runner` / `ops::mission` / `ops::crew`.
+    // `ops::role` / `ops::mission` / `ops::crew`.
 
     #[test]
     fn first_turn_argv_empty_for_blank_or_unsupported_runtime() {

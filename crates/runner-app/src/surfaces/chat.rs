@@ -195,7 +195,7 @@ impl NativeRoot {
                                     cx,
                                 );
                             }
-                            this.remember_active_runner(cx);
+                            this.remember_active_role(cx);
                             this.mark_active_tab_viewed(window, cx);
                             this.sync_active_chat_detail(cx);
                             Ok(())
@@ -331,7 +331,7 @@ impl NativeRoot {
                             self.tabs.activate_session(session_id);
                             self.sync_active_project_from_active_tab(cx);
                             self.set_route(AppRoute::Chat, cx);
-                            self.remember_active_runner(cx);
+                            self.remember_active_role(cx);
                             self.mark_active_tab_viewed(window, cx);
                             self.sync_active_chat_detail(cx);
                             Ok(())
@@ -1212,7 +1212,7 @@ impl NativeRoot {
         match self.ensure_active_tab_attached(window, cx) {
             Ok(()) => {
                 self.chat_error = None;
-                self.remember_active_runner(cx);
+                self.remember_active_role(cx);
                 self.sync_active_chat_detail(cx);
                 self.mark_active_tab_viewed(window, cx);
                 self.focus_active_terminal(window, cx);
@@ -1223,7 +1223,7 @@ impl NativeRoot {
     }
 
     pub(crate) fn focus_pane(&mut self, pane_id: &str, cx: &mut Context<Self>) {
-        let runner_id = self.tabs.active().and_then(|layout| {
+        let role_id = self.tabs.active().and_then(|layout| {
             layout
                 .root
                 .leaves()
@@ -1232,7 +1232,7 @@ impl NativeRoot {
                 .and_then(|leaf| leaf.session_id.as_deref())
                 .map(|session_id| {
                     self.session_entry(session_id, cx)
-                        .and_then(|entry| entry.runner_id.clone())
+                        .and_then(|entry| entry.role_id.clone())
                 })
         });
         if self
@@ -1240,8 +1240,8 @@ impl NativeRoot {
             .active_mut()
             .is_some_and(|layout| layout.focus_pane(pane_id))
         {
-            if let Some(runner_id) = runner_id {
-                self.last_focused_runner_id = runner_id;
+            if let Some(role_id) = role_id {
+                self.last_focused_role_id = role_id;
             }
             self.sync_active_chat_detail(cx);
             self.report_current_subjects(cx);
@@ -1307,9 +1307,9 @@ impl NativeRoot {
         cx: &mut Context<Self>,
     ) {
         self.focus_pane(pane_id, cx);
-        self.last_focused_runner_id = self
+        self.last_focused_role_id = self
             .session_entry(session_id, cx)
-            .and_then(|entry| entry.runner_id.clone());
+            .and_then(|entry| entry.role_id.clone());
         if self.session_is_interactive(session_id, cx) {
             if let Some(chat) = self.attached.get(session_id) {
                 chat.terminal_focus.focus(window);
@@ -1727,7 +1727,7 @@ impl NativeRoot {
         match result {
             Ok(()) => {
                 self.chat_error = None;
-                self.remember_active_runner(cx);
+                self.remember_active_role(cx);
                 self.mark_active_tab_viewed(window, cx);
                 self.focus_active_terminal(window, cx);
             }
@@ -1796,7 +1796,7 @@ impl NativeRoot {
         match result {
             Ok(()) => {
                 self.chat_error = None;
-                self.remember_active_runner(cx);
+                self.remember_active_role(cx);
                 self.mark_active_tab_viewed(window, cx);
                 self.focus_active_terminal(window, cx);
             }
@@ -1884,7 +1884,7 @@ impl NativeRoot {
                     self._pane_rename_focus_subscription = None;
                 }
                 self.chat_error = None;
-                self.remember_active_runner(cx);
+                self.remember_active_role(cx);
                 self.mark_active_tab_viewed(window, cx);
                 self.focus_active_terminal(window, cx);
                 self.record_current_runtime_location();
@@ -2331,7 +2331,7 @@ mod tests {
         DirectSessionEntry {
             session_id: "chat-1".into(),
             project_id: None,
-            runner_id: None,
+            role_id: None,
             handle: Some("coder".into()),
             agent_runtime: runtime.into(),
             agent_command: runtime.into(),

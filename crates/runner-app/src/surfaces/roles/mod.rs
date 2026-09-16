@@ -16,8 +16,8 @@ use gpui::{Context, Entity, FocusHandle, ScrollHandle, Subscription};
 use runner_app::ui::{
     ContextMenu, ModelField, RuntimeSelect, Scrollbar, SearchInput, StyledSelect, TextField,
 };
-use runner_backend::model::Runner;
-use runner_backend::ops::runner::{RunnerActivity, RunnerWithActivity};
+use runner_backend::model::Role;
+use runner_backend::ops::role::{RoleActivity, RoleWithActivity};
 use runner_backend::ops::runtime::RuntimeCatalogEntry;
 use runner_backend::ops::slot::CrewMembership;
 use runner_backend::router::runtime::PermissionMode;
@@ -29,10 +29,10 @@ const FORM_WIDTH: f32 = 576.;
 const FIELD_WIDTH: f32 = 528.;
 
 #[derive(Default)]
-struct RunnerDetailState {
+struct RoleDetailState {
     handle: String,
-    runner: Option<Runner>,
-    activity: Option<RunnerActivity>,
+    role: Option<Role>,
+    activity: Option<RoleActivity>,
     crews: Vec<CrewMembership>,
     loaded: bool,
     loading: bool,
@@ -40,17 +40,17 @@ struct RunnerDetailState {
 }
 
 #[derive(Clone)]
-enum RunnerMenuAction {
+enum RoleMenuAction {
     Open(String),
     Delete { id: String, handle: String },
 }
 
-struct RunnerDeleteConfirm {
+struct RoleDeleteConfirm {
     id: String,
     handle: String,
 }
 
-struct CreateRunnerForm {
+struct CreateRoleForm {
     runtimes: Vec<RuntimeCatalogEntry>,
     runtime: String,
     permission_mode: PermissionMode,
@@ -83,9 +83,9 @@ struct CreateRunnerForm {
     _subscriptions: Vec<Subscription>,
 }
 
-struct RunnerEditForm {
-    runner: Runner,
-    slot: Option<runner_backend::model::SlotWithRunner>,
+struct RoleEditForm {
+    role: Role,
+    slot: Option<runner_backend::model::SlotWithRole>,
     runtimes: Vec<RuntimeCatalogEntry>,
     runtime: String,
     runtime_pinned: bool,
@@ -120,30 +120,30 @@ struct RunnerEditForm {
     _subscriptions: Vec<Subscription>,
 }
 
-pub(crate) struct RunnerSurfaces {
-    list: ListControls<RunnerWithActivity>,
+pub(crate) struct RoleSurfaces {
+    list: ListControls<RoleWithActivity>,
     search: Entity<SearchInput>,
     scroll: ScrollHandle,
     scrollbar: Entity<Scrollbar>,
-    detail: RunnerDetailState,
-    create: Option<CreateRunnerForm>,
-    edit: Option<RunnerEditForm>,
+    detail: RoleDetailState,
+    create: Option<CreateRoleForm>,
+    edit: Option<RoleEditForm>,
     context_menu: Option<Entity<ContextMenu>>,
-    delete_confirm: Option<RunnerDeleteConfirm>,
+    delete_confirm: Option<RoleDeleteConfirm>,
     delete_busy: bool,
     chat_pending: Option<String>,
 }
 
-impl RunnerSurfaces {
+impl RoleSurfaces {
     pub(crate) fn new(root: Entity<NativeRoot>, cx: &mut Context<NativeRoot>) -> Self {
         let search_root = root;
         let search = cx.new(move |search_cx| {
             SearchInput::new(
                 "",
-                "Search runners",
-                "Search runners…",
+                "Search roles",
+                "Search roles…",
                 Rc::new(move |query, cx| {
-                    search_root.update(cx, |this, cx| this.set_runner_query(query, cx));
+                    search_root.update(cx, |this, cx| this.set_role_query(query, cx));
                 }),
                 search_cx,
             )
@@ -156,7 +156,7 @@ impl RunnerSurfaces {
             search,
             scroll,
             scrollbar,
-            detail: RunnerDetailState::default(),
+            detail: RoleDetailState::default(),
             create: None,
             edit: None,
             context_menu: None,
@@ -167,7 +167,7 @@ impl RunnerSurfaces {
     }
 }
 
-struct RunnerEditResolution {
+struct RoleEditResolution {
     runtime: String,
     runtime_pinned: bool,
     command: String,

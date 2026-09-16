@@ -10,7 +10,7 @@ use gpui::{
     SharedString,
 };
 use runner_app::ui::{
-    Button, ButtonVariant, Field, IconButton, Modal, OverlayWidth, RunnerAvatar, RunnerPresence,
+    Button, ButtonVariant, Field, IconButton, Modal, OverlayWidth, RoleAvatar, RolePresence,
     SessionControl, SessionControlVariant, Tooltip,
 };
 use runner_backend::model::SessionStatus;
@@ -39,7 +39,7 @@ impl MissionWorkspace {
                 .into_any_element();
         }
         let root = cx.entity();
-        let runners_root = root.clone();
+        let roles_root = root.clone();
         let meta_root = root.clone();
         let collapse_root = root;
         let rail_view = self.rail_view;
@@ -58,13 +58,13 @@ impl MissionWorkspace {
                     .gap_1()
                     .child(
                         rail_view_button(
-                            "mission-rail-runners",
+                            "mission-rail-roles",
                             "users.svg",
-                            rail_view == MissionRailView::Runners,
+                            rail_view == MissionRailView::Roles,
                         )
                         .on_click(move |_, _, cx| {
-                            runners_root.update(cx, |this, cx| {
-                                this.set_mission_rail_view(MissionRailView::Runners, cx)
+                            roles_root.update(cx, |this, cx| {
+                                this.set_mission_rail_view(MissionRailView::Roles, cx)
                             });
                         }),
                     )
@@ -84,7 +84,7 @@ impl MissionWorkspace {
             .child(
                 div().ml_auto().child(
                     IconButton::new("collapse-mission-rail", "panel-right-open.svg")
-                        .tooltip("Collapse runners panel")
+                        .tooltip("Collapse sessions panel")
                         .on_press(move |_, cx| {
                             collapse_root.update(cx, |this, cx| {
                                 this.update_app_settings(cx, true, |settings| {
@@ -97,7 +97,7 @@ impl MissionWorkspace {
                 ),
             );
         let body = match rail_view {
-            MissionRailView::Runners => self.render_runners_rail(cx),
+            MissionRailView::Roles => self.render_roles_rail(cx),
             MissionRailView::Meta => self.render_mission_meta_panel(cx),
         };
         let drag = MissionRailResizeDrag;
@@ -156,7 +156,7 @@ impl MissionWorkspace {
         cx.notify();
     }
 
-    fn render_runners_rail(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_roles_rail(&self, cx: &mut Context<Self>) -> AnyElement {
         let selected = match &self.active_tab {
             MissionTab::Session(session_id) => Some(session_id.as_str()),
             MissionTab::Feed => None,
@@ -170,7 +170,7 @@ impl MissionWorkspace {
             .unwrap_or_default()
             .to_owned();
         let mut list = div()
-            .id("mission-runners-scroll")
+            .id("mission-roles-scroll")
             .flex_1()
             .min_h(px(0.))
             .overflow_y_scroll()
@@ -179,14 +179,14 @@ impl MissionWorkspace {
             .flex()
             .flex_col()
             .gap_3()
-            .child(rail_section_label("Runner sessions"));
+            .child(rail_section_label("Sessions"));
         if self.sessions.is_empty() {
             return list
                 .child(
                     div()
                         .text_size(theme::text_ui())
                         .text_color(theme::faint())
-                        .child("No runner sessions yet."),
+                        .child("No sessions yet."),
                 )
                 .into_any_element();
         }
@@ -198,9 +198,9 @@ impl MissionWorkspace {
             let card_key_id = session_id.clone();
             let card_key_root = root.clone();
             let presence = match session.session.status {
-                SessionStatus::Running => RunnerPresence::Busy,
-                SessionStatus::Stopped => RunnerPresence::Stopped,
-                SessionStatus::Crashed => RunnerPresence::Crashed,
+                SessionStatus::Running => RolePresence::Busy,
+                SessionStatus::Stopped => RolePresence::Stopped,
+                SessionStatus::Crashed => RolePresence::Crashed,
             };
             let status = runner_app::ui::agent_status::StatusPresentation::new(
                 &self.slot_agent_status(&session_id, cx),
@@ -251,7 +251,7 @@ impl MissionWorkspace {
             list = list.child(
                 div()
                     .id(SharedString::from(format!(
-                        "mission-runner-card-{session_id}"
+                        "mission-role-card-{session_id}"
                     )))
                     .w_full()
                     .tab_index(0)
@@ -305,12 +305,12 @@ impl MissionWorkspace {
                                     .items_center()
                                     .gap_2()
                                     .child(
-                                        RunnerAvatar::new(session.handle.clone(), 25.)
+                                        RoleAvatar::new(session.handle.clone(), 25.)
                                             .presence(presence),
                                     )
                                     .child(Tooltip::new(
                                         SharedString::from(format!(
-                                            "mission-runner-title-{session_id}"
+                                            "mission-role-title-{session_id}"
                                         )),
                                         self.session_title_tooltip(session, cx),
                                         div()

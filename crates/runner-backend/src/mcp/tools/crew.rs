@@ -31,7 +31,7 @@ fn command_error(e: Error) -> ErrorData {
 
 #[tool_router(router = crew_router, vis = "pub(crate)")]
 impl RunnerMcpHandler {
-    #[tool(description = "List all crews, including runner counts and member previews.")]
+    #[tool(description = "List all crews, including role counts and member previews.")]
     pub async fn crew_list(&self) -> Result<CallToolResult, ErrorData> {
         let conn = self
             .state
@@ -90,7 +90,7 @@ impl RunnerMcpHandler {
         Ok(CallToolResult::success(vec![Content::json(&crew)?]))
     }
 
-    #[tool(description = "Delete a crew by ID. Slot rows are removed; runner templates are kept.")]
+    #[tool(description = "Delete a crew by ID. Slot rows are removed; role templates are kept.")]
     pub async fn crew_delete(
         &self,
         Parameters(CrewIdArgs { id }): Parameters<CrewIdArgs>,

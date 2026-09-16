@@ -1140,30 +1140,12 @@ pub fn cleanup_orphan_processes_on_startup(
     pool: &r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>,
 ) -> crate::error::Result<usize> {
     let conn = pool.get()?;
-    let candidates = {
-        let mut stmt = conn.prepare(
-            "SELECT s.id,
-                    s.pid,
-                    COALESCE(s.agent_runtime, r.runtime),
-                    COALESCE(s.agent_command, r.command)
-               FROM sessions s
-               LEFT JOIN runners r ON r.id = s.runner_id
-              WHERE s.status != 'running'
-                AND s.pid IS NOT NULL",
-        )?;
-        let rows = stmt.query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, i64>(1)?,
-                row.get::<_, Option<String>>(2)?,
-                row.get::<_, Option<String>>(3)?,
-            ))
-        })?;
-        rows.collect::<rusqlite::Result<Vec<_>>>()?
-    };
+    let candidates = crate::repo::session::list_orphan_process_candidates(&conn)?;
 
     let mut signaled = Vec::new();
-    for (session_id, raw_pid, runtime, command) in candidates {
+    for candidate in candidates {
+        let session_id = candidate.session_id;
+        let raw_pid = candidate.pid;
         let Ok(pid) = i32::try_from(raw_pid) else {
             log::warn!(
                 "startup orphan sweep: session={session_id} has invalid pid={raw_pid}; skipping"
@@ -1190,8 +1172,8 @@ pub fn cleanup_orphan_processes_on_startup(
         };
         if !command_line_matches_recorded_agent(
             &command_line,
-            runtime.as_deref(),
-            command.as_deref(),
+            candidate.runtime.as_deref(),
+            candidate.command.as_deref(),
         ) {
             log::warn!(
                 "startup orphan sweep: session={session_id} pid={pid} command mismatch; not signaling"

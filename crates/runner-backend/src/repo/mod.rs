@@ -21,7 +21,7 @@ pub mod crew;
 pub mod mission;
 pub mod node;
 pub mod project;
-pub mod runner;
+pub mod role;
 pub mod serde;
 pub mod session;
 pub mod session_attention;

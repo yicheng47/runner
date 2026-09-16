@@ -7,7 +7,7 @@ use gpui::{
     Render, ScrollHandle, SharedString, Subscription, WeakEntity, Window,
 };
 use runner_app::ui::TextField;
-use runner_backend::model::Runner;
+use runner_backend::model::Role;
 use runner_backend::ops::crew::CrewListItem;
 use runner_backend::ops::mission::MissionSummary;
 use runner_backend::ops::session::DirectSessionEntry;
@@ -20,7 +20,7 @@ enum PaletteKind {
     Mission,
     Chat,
     Terminal,
-    Runner,
+    Role,
     Crew,
     Settings,
 }
@@ -32,7 +32,7 @@ impl PaletteKind {
             Self::Mission => "mission",
             Self::Chat => "chat",
             Self::Terminal => "terminal",
-            Self::Runner => "runner",
+            Self::Role => "role",
             Self::Crew => "crew",
             Self::Settings => "settings",
         }
@@ -44,7 +44,7 @@ impl PaletteKind {
             Self::Mission => "flag.svg",
             Self::Chat => "message-square.svg",
             Self::Terminal => "square-terminal.svg",
-            Self::Runner => "terminal.svg",
+            Self::Role => "user.svg",
             Self::Crew => "users.svg",
             Self::Settings => "settings.svg",
         }
@@ -56,7 +56,7 @@ enum PaletteDestination {
     NewTerminal,
     Mission(String),
     Chat(String),
-    Runner(String),
+    Role(String),
     Crew(String),
     Settings,
 }
@@ -116,11 +116,11 @@ fn session_palette_kind(runtime: &str) -> PaletteKind {
 fn palette_items(
     missions: &[MissionSummary],
     chats: &[DirectSessionEntry],
-    runners: &[Runner],
+    roles: &[Role],
     crews: &[CrewListItem],
 ) -> Vec<PaletteItem> {
     let mut items =
-        Vec::with_capacity(missions.len() + chats.len() + runners.len() + crews.len() + 2);
+        Vec::with_capacity(missions.len() + chats.len() + roles.len() + crews.len() + 2);
     items.push(PaletteItem {
         kind: PaletteKind::Command,
         runtime: None,
@@ -166,21 +166,16 @@ fn palette_items(
         ),
         order,
     }));
-    items.extend(
-        runners
-            .iter()
-            .enumerate()
-            .map(|(order, runner)| PaletteItem {
-                kind: PaletteKind::Runner,
-                runtime: None,
-                live: false,
-                id: runner.id.clone(),
-                label: format!("@{}", runner.handle),
-                destination: PaletteDestination::Runner(runner.handle.clone()),
-                search_text: format!("{} {}", runner.handle, runner.display_name).to_lowercase(),
-                order,
-            }),
-    );
+    items.extend(roles.iter().enumerate().map(|(order, role)| PaletteItem {
+        kind: PaletteKind::Role,
+        runtime: None,
+        live: false,
+        id: role.id.clone(),
+        label: format!("@{}", role.handle),
+        destination: PaletteDestination::Role(role.handle.clone()),
+        search_text: format!("{} {}", role.handle, role.display_name).to_lowercase(),
+        order,
+    }));
     items.extend(crews.iter().enumerate().map(|(order, crew)| {
         PaletteItem {
             kind: PaletteKind::Crew,
@@ -286,12 +281,7 @@ impl CommandPaletteState {
         }
         self.previous_focus = window.focused(cx);
         let store = self.app_store.read(cx);
-        self.items = palette_items(
-            &store.missions,
-            &store.sessions,
-            &store.runners,
-            &store.crews,
-        );
+        self.items = palette_items(&store.missions, &store.sessions, &store.roles, &store.crews);
         self.query.clear();
         self.active_index = 0;
         self.list_scroll.set_offset(point(px(0.), px(0.)));
@@ -379,8 +369,8 @@ impl CommandPaletteState {
                 PaletteDestination::Chat(session_id) => {
                     shell.open_chat_session(&session_id, window, shell_cx)
                 }
-                PaletteDestination::Runner(handle) => {
-                    shell.open_runner_detail(handle, window, shell_cx);
+                PaletteDestination::Role(handle) => {
+                    shell.open_role_detail(handle, window, shell_cx);
                     true
                 }
                 PaletteDestination::Crew(crew_id) => {
@@ -513,7 +503,7 @@ impl Render for CommandPaletteState {
                 .text_size(theme::text_ui())
                 .text_color(theme::faint())
                 .child(if self.query.trim().is_empty() {
-                    "No commands, missions, chats, runners, or crews yet."
+                    "No commands, missions, chats, roles, or crews yet."
                 } else {
                     "No matches."
                 })
@@ -648,7 +638,7 @@ mod tests {
             item(PaletteKind::Settings, "settings", "settings preferences", 0),
             item(PaletteKind::Chat, "chat-1", "chat", 0),
             item(PaletteKind::Mission, "mission-1", "mission", 0),
-            item(PaletteKind::Runner, "runner-1", "runner", 0),
+            item(PaletteKind::Role, "role-1", "role", 0),
         ];
         let ids = filtered_palette_items(&items, "")
             .into_iter()
@@ -661,7 +651,7 @@ mod tests {
                 "mission-1",
                 "mission-2",
                 "chat-1",
-                "runner-1",
+                "role-1",
                 "crew-1",
                 "settings"
             ]
@@ -727,7 +717,7 @@ mod tests {
         let mut chat = DirectSessionEntry {
             session_id: "session".into(),
             project_id: None,
-            runner_id: Some("runner".into()),
+            role_id: Some("role".into()),
             handle: Some("coder".into()),
             agent_runtime: "codex".into(),
             agent_command: "codex".into(),

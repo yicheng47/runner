@@ -145,9 +145,9 @@ impl NativeRoot {
         };
         let label = session_label(detail);
         let back_label = if detail.handle.is_some() {
-            "Back to runner"
+            "Back to role"
         } else {
-            "Back to runners"
+            "Back to roles"
         };
         let handle = detail.handle.clone();
         let root = cx.entity();
@@ -198,9 +198,9 @@ impl NativeRoot {
                         root.update(cx, |this, root_cx| {
                             this.archived_chat_detail = None;
                             if let Some(handle) = handle {
-                                this.open_runner_detail(handle, window, root_cx);
+                                this.open_role_detail(handle, window, root_cx);
                             } else {
-                                this.open_runners(window, root_cx);
+                                this.open_roles(window, root_cx);
                             }
                         });
                     }),
@@ -905,14 +905,14 @@ impl NativeRoot {
                 .overflow_hidden()
                 .into_any_element();
         }
-        let runner = detail
-            .and_then(|detail| detail.runner_id.as_deref())
-            .and_then(|runner_id| {
+        let role = detail
+            .and_then(|detail| detail.role_id.as_deref())
+            .and_then(|role_id| {
                 self.app_store
                     .read(cx)
-                    .runners
+                    .roles
                     .iter()
-                    .find(|runner| runner.id == runner_id)
+                    .find(|role| role.id == role_id)
                     .cloned()
             });
         let collapse_root = cx.entity();
@@ -953,16 +953,16 @@ impl NativeRoot {
                 command,
                 cwd,
                 system_prompt,
-            ) = if let Some(runner) = runner.as_ref() {
+            ) = if let Some(role) = role.as_ref() {
                 (
-                    "Runner",
-                    format!("@{}", runner.handle),
+                    "Role",
+                    format!("@{}", role.handle),
                     true,
-                    runner.runtime.clone(),
-                    (!runner.display_name.is_empty()).then(|| runner.display_name.clone()),
-                    runner.command.clone(),
-                    runner.working_dir.clone(),
-                    runner.system_prompt.clone(),
+                    role.runtime.clone(),
+                    (!role.display_name.is_empty()).then(|| role.display_name.clone()),
+                    role.command.clone(),
+                    role.working_dir.clone(),
+                    role.system_prompt.clone(),
                 )
             } else {
                 (
@@ -2975,7 +2975,7 @@ mod tests {
         DirectSessionEntry {
             session_id: format!("{runtime}-session"),
             project_id: None,
-            runner_id: None,
+            role_id: None,
             handle: None,
             agent_runtime: runtime.into(),
             agent_command: runtime.into(),

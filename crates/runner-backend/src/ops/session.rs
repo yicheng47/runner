@@ -17,11 +17,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     error::{Error, Result},
-    model::{Runner, Session, SessionStatus, Timestamp},
-    ops::{project, runner},
+    model::{Role, Session, SessionStatus, Timestamp},
+    ops::{project, role},
     repo,
     session::manager::{
-        runtime_direct_runner, SessionActivityState, SessionEvents, SessionUpdatedEvent,
+        runtime_direct_role, SessionActivityState, SessionEvents, SessionUpdatedEvent,
         SpawnedSession,
     },
     AppCore,
@@ -32,18 +32,18 @@ pub struct SessionRow {
     #[serde(flatten)]
     pub session: Session,
     pub live_title: Option<String>,
-    /// Handle of the runner this session instantiates — denormalized so the
+    /// Handle of the role this session instantiates — denormalized so the
     /// frontend can render `@coder`-style labels without a second lookup.
     pub handle: String,
     /// Effective runtime kind for this session (`"claude-code"`,
     /// `"codex"`, `"shell"`, …): `sessions.agent_runtime` when the row
-    /// recorded one (runtime-override spawns), else the runner row's
+    /// recorded one (runtime-override spawns), else the role row's
     /// `runtime`. Denormalized onto SessionRow so the frontend's
     /// terminal pane can gate per-runtime UX decisions
     /// (clear-on-resize for full-screen TUIs, etc.) without a second
-    /// runner lookup. See docs/impls/archive/0011 §"Per-runtime clear-on-resize".
+    /// role lookup. See docs/impls/archive/0011 §"Per-runtime clear-on-resize".
     pub runtime: String,
-    /// Whether this runner is the lead for the mission's crew.
+    /// Whether this role is the lead for the mission's crew.
     pub lead: bool,
     /// Native agent conversation key captured from the spawned agent.
     /// NULL means capture is pending, unavailable, or intentionally
@@ -262,9 +262,9 @@ pub fn session_clipboard_file_paths() -> Vec<String> {
 }
 
 /// One row per direct-chat *session* in the sidebar SESSION tray. Each
-/// runner can host multiple parallel chats — see
+/// role can host multiple parallel chats — see
 /// docs/impls/archive/0003-direct-chats.md — so the tray is flat (not collapsed per
-/// runner). Stopped/crashed rows stay listed because they can be
+/// role). Stopped/crashed rows stay listed because they can be
 /// resumed via `session_resume`, which preserves the row's id and
 /// `agent_session_key`.
 ///
@@ -277,7 +277,7 @@ pub fn session_clipboard_file_paths() -> Vec<String> {
 pub struct DirectSessionEntry {
     pub session_id: String,
     pub project_id: Option<String>,
-    pub runner_id: Option<String>,
+    pub role_id: Option<String>,
     pub handle: Option<String>,
     pub agent_runtime: String,
     pub agent_command: String,
@@ -288,7 +288,7 @@ pub struct DirectSessionEntry {
     pub title: Option<String>,
     pub live_title: Option<String>,
     /// Per-chat cwd override stored on the row at spawn. NULL means
-    /// the chat falls back to the runner's `working_dir` on
+    /// the chat falls back to the role's `working_dir` on
     /// resume/spawn. Surfaced for the chat header's meta line.
     pub cwd: Option<String>,
     pub started_at: Option<Timestamp>,
@@ -301,7 +301,7 @@ pub struct DirectSessionEntry {
     pub forkable: bool,
     /// Native agent conversation key for the active direct chat.
     /// `session_list_recent_direct` intentionally returns NULL here;
-    /// `session_get` is the full-detail path RunnerChat uses for the
+    /// `session_get` is the full-detail path RoleChat uses for the
     /// visible row.
     pub agent_session_key: Option<String>,
     /// `true` iff `pinned_at IS NOT NULL`. Pinned rows render with a
@@ -324,10 +324,10 @@ impl DirectSessionEntry {
                     .filter(|title| !title.trim().is_empty())
                     .map(str::to_owned);
             }
-            // A runner-backed chat is an identity, not a topic. Runner
-            // injects the runner's system prompt as the first turn
+            // A role-backed chat is an identity, not a topic. Role
+            // injects the role's system prompt as the first turn
             // (there is no system-prompt flag for codex, trae or copilot), so the
-            // agent titles every chat from the same runner identically.
+            // agent titles every chat from the same role identically.
             // #587 already keeps the handle on mission surfaces for this
             // reason: identity is the thing you address, so it may not
             // move under you. A name the user typed still wins above.
@@ -359,29 +359,29 @@ fn direct_entry_from_repo(
     d: repo::session::DirectSessionRow,
     ship_key: bool,
 ) -> Result<DirectSessionEntry> {
-    let handle = d.runner_handle;
+    let handle = d.role_handle;
     let has_key = d.row.agent_session_key.is_some();
     let is_direct = d.row.mission_id.is_none();
     let is_archived = d.row.archived_at.is_some();
     let agent_runtime = d
         .row
         .agent_runtime
-        .or(d.runner_runtime)
+        .or(d.role_runtime)
         .ok_or_else(|| Error::msg(format!("session {} has no agent_runtime", d.row.id)))?;
     let agent_command = d
         .row
         .agent_command
-        .or(d.runner_command)
+        .or(d.role_command)
         .ok_or_else(|| Error::msg(format!("session {} has no agent_command", d.row.id)))?;
     let display_name = d
-        .runner_display_name
+        .role_display_name
         .filter(|_| handle.is_some())
         .unwrap_or_else(|| crate::router::runtime::runtime_display_name(&agent_runtime));
     let native_fork = crate::router::runtime::supports_native_fork(Runtime::parse(&agent_runtime));
     Ok(DirectSessionEntry {
         session_id: d.row.id,
         project_id: d.row.project_id,
-        runner_id: d.row.runner_id,
+        role_id: d.row.role_id,
         handle,
         agent_runtime,
         agent_command,
@@ -416,9 +416,9 @@ pub fn session_list_recent_direct(state: &AppCore) -> Result<Vec<DirectSessionEn
 /// Unfiltered single-row lookup for a direct-chat session.
 ///
 /// `session_list_recent_direct` hides archived rows (`archived_at IS
-/// NOT NULL`) from the SESSION tray, but the `/runners/:handle/chat/
+/// NOT NULL`) from the SESSION tray, but the `/roles/:handle/chat/
 /// :sessionId` route still mounts when the user navigates by direct
-/// URL. RunnerChat falls back to this helper when the list lookup
+/// URL. RoleChat falls back to this helper when the list lookup
 /// misses so it can detect an archived row and render the workspace
 /// read-only (no PTY attach, no Resume, no live composer) instead of
 /// silently failing to find the session.
@@ -469,7 +469,7 @@ fn ensure_archivable_session(conn: &rusqlite::Connection, session_id: &str) -> R
 ///
 /// Emits a `session/archived` app event after the row flips so the
 /// sidebar's CHAT list can refresh — without it, archiving from the
-/// chat page (RunnerChat's SessionEnded overlay) would archive the
+/// chat page (RoleChat's SessionEnded overlay) would archive the
 /// row but leave the sidebar stale until something else triggered a
 /// refresh.
 pub fn session_archive(state: &AppCore, session_id: &str) -> Result<()> {
@@ -531,7 +531,7 @@ pub fn session_unarchive(state: &AppCore, session_id: &str) -> Result<()> {
 /// Permanently delete an archived direct chat (Settings → Archived
 /// delete, feature 01 Phase 4). Refused for non-archived and
 /// mission-scoped rows — archive is the reversible step, delete is
-/// not. Runner keeps nothing else on disk for a direct chat (the
+/// not. Role keeps nothing else on disk for a direct chat (the
 /// agent's own JSONL belongs to the agent runtime), so the row delete
 /// is the whole cleanup; the scrollback buffer was already purged at
 /// archive time.
@@ -898,29 +898,29 @@ pub fn session_take_resume_on_launch(state: &AppCore, session_id: &str) -> Resul
     Ok(repo::session::take_resume_on_launch_for_session(&mut conn, session_id)?.is_some())
 }
 
-/// Spawn a "direct chat" session for a runner — a PTY with no parent
-/// mission, no orchestrator, no event log (C8.5). Used by the Runner
+/// Spawn a "direct chat" session for a role — a PTY with no parent
+/// mission, no orchestrator, no event log (C8.5). Used by the Role
 /// Detail page's "Chat now" button: the user picks a working directory
 /// and gets a one-on-one terminal with the agent's CLI.
 ///
 /// Working-directory precedence is explicit `cwd`, project cwd, then the
-/// runner's own `working_dir`.
+/// role's own `working_dir`.
 pub(crate) fn resolve_direct_start(
     conn: &rusqlite::Connection,
-    runner_id: &str,
+    role_id: &str,
     project_id: Option<&str>,
     cwd: Option<String>,
-) -> Result<(Runner, Option<String>)> {
+) -> Result<(Role, Option<String>)> {
     let cwd = project::resolve_cwd(conn, project_id, cwd)?;
-    let runner = runner::get(conn, runner_id)?;
-    let effective_cwd = cwd.or_else(|| runner.working_dir.clone());
-    Ok((runner, effective_cwd))
+    let role = role::get(conn, role_id)?;
+    let effective_cwd = cwd.or_else(|| role.working_dir.clone());
+    Ok((role, effective_cwd))
 }
 
 #[allow(clippy::too_many_arguments)]
 pub fn session_start_direct_impl(
     state: &AppCore,
-    runner_id: String,
+    role_id: String,
     runtime: Option<String>,
     model: Option<String>,
     effort: Option<String>,
@@ -929,17 +929,17 @@ pub fn session_start_direct_impl(
     cols: Option<u16>,
     rows: Option<u16>,
 ) -> Result<StartDirectSessionOutput> {
-    let (runner, effective_cwd) = {
+    let (role, effective_cwd) = {
         let conn = state.db.get()?;
-        resolve_direct_start(&conn, &runner_id, project_id.as_deref(), cwd)?
+        resolve_direct_start(&conn, &role_id, project_id.as_deref(), cwd)?
     };
     let first_turn =
-        crate::router::prompt::compose_direct_first_turn(runner.system_prompt.as_deref());
+        crate::router::prompt::compose_direct_first_turn(role.system_prompt.as_deref());
     let emitter: Arc<dyn SessionEvents> = Arc::new(state.session_events());
     let session = state
         .sessions
         .spawn_direct(
-            &runner,
+            &role,
             runtime.as_deref(),
             model.as_deref(),
             effort.as_deref(),
@@ -963,7 +963,7 @@ pub fn session_start_direct_impl(
 #[allow(clippy::too_many_arguments)]
 pub fn session_start_direct(
     state: &AppCore,
-    runner_id: String,
+    role_id: String,
     runtime: Option<String>,
     model: Option<String>,
     effort: Option<String>,
@@ -973,7 +973,7 @@ pub fn session_start_direct(
     rows: Option<u16>,
 ) -> Result<SpawnedSession> {
     Ok(session_start_direct_impl(
-        state, runner_id, runtime, model, effort, project_id, cwd, cols, rows,
+        state, role_id, runtime, model, effort, project_id, cwd, cols, rows,
     )?
     .session)
 }
@@ -989,12 +989,12 @@ pub fn session_start_runtime(
     model: Option<String>,
     effort: Option<String>,
 ) -> Result<SpawnedSession> {
-    let runner = runtime_direct_runner(runtime, None, model.as_deref(), effort.as_deref())?;
+    let role = runtime_direct_role(runtime, None, model.as_deref(), effort.as_deref())?;
     let emitter: Arc<dyn SessionEvents> = Arc::new(state.session_events());
     let spawned = state
         .sessions
         .spawn_runtime_direct(
-            &runner,
+            &role,
             project_id.as_deref(),
             cwd.as_deref(),
             cols,
@@ -1038,7 +1038,7 @@ fn windows_shell_command(path: &str, comspec: String) -> String {
 
 /// Spawn the user's configured login shell as a runtime-only direct session
 /// for a terminal pane. An explicit cwd wins over the project's directory;
-/// no agent prompt, hooks, Runner bus environment, or bundled CLI is added.
+/// no agent prompt, hooks, Role bus environment, or bundled CLI is added.
 pub fn session_start_shell(
     state: &AppCore,
     project_id: Option<String>,
@@ -1051,12 +1051,12 @@ pub fn session_start_shell(
         project::resolve_cwd(&conn, project_id.as_deref(), cwd)?
     };
     let command = resolve_shell_command(std::env::var("SHELL").ok());
-    let runner = runtime_direct_runner(Runtime::Shell.key(), Some(&command), None, None)?;
+    let role = runtime_direct_role(Runtime::Shell.key(), Some(&command), None, None)?;
     let emitter: Arc<dyn SessionEvents> = Arc::new(state.session_events());
     let spawned = state
         .sessions
         .spawn_runtime_direct(
-            &runner,
+            &role,
             project_id.as_deref(),
             cwd.as_deref(),
             cols,
@@ -1247,30 +1247,15 @@ mod tests {
     /// Mirrors the SELECT in `session_list_recent_direct` so we can
     /// exercise the ORDER BY without constructing `AppCore`. Returns
     /// (session_id, status, pinned) in the order the tray will render.
-    fn list_recent_direct(conn: &rusqlite::Connection) -> Vec<(String, String, bool)> {
-        let mut stmt = conn
-            .prepare(
-                "SELECT s.id, s.status,
-                        CASE WHEN s.pinned_at IS NOT NULL THEN 1 ELSE 0 END AS pinned
-                   FROM sessions s
-                   LEFT JOIN runners r ON r.id = s.runner_id
-                  WHERE s.mission_id IS NULL
-                    AND s.slot_id IS NULL
-                    AND s.archived_at IS NULL
-                  ORDER BY CASE WHEN s.pinned_at IS NOT NULL THEN 0 ELSE 1 END,
-                           CASE WHEN s.status = 'running'    THEN 0 ELSE 1 END,
-                           COALESCE(s.stopped_at, s.started_at) DESC",
-            )
-            .unwrap();
-        stmt.query_map([], |r| {
-            let id: String = r.get(0)?;
-            let status: String = r.get(1)?;
-            let pinned: i64 = r.get(2)?;
-            Ok((id, status, pinned != 0))
-        })
-        .unwrap()
-        .map(|r| r.unwrap())
-        .collect()
+    fn list_recent_direct(conn: &rusqlite::Connection) -> Vec<(String, SessionStatus, bool)> {
+        repo::session::list_recent_direct(conn)
+            .unwrap()
+            .into_iter()
+            .map(|row| {
+                let pinned = row.row.pinned_at.is_some();
+                (row.row.id, row.row.status, pinned)
+            })
+            .collect()
     }
 
     #[test]
@@ -1278,33 +1263,22 @@ mod tests {
         let pool = db::open_in_memory().unwrap();
         let conn = pool.get().unwrap();
         let now = Utc::now();
-        let runner_id = ulid::Ulid::new().to_string();
-        conn.execute(
-            "INSERT INTO runners
-                (id, handle, display_name, runtime, command,
-                 created_at, updated_at)
-             VALUES (?1, 'r', 'R', 'shell', '/bin/sh', ?2, ?2)",
-            params![runner_id, now.to_rfc3339()],
-        )
-        .unwrap();
+        let role_id = ulid::Ulid::new().to_string();
+        crate::test_support::insert_test_role(&conn, &role_id, "r", "shell", "/bin/sh");
 
         let insert =
             |id: &str, status: &str, started_offset_secs: i64, pinned: bool, archived: bool| {
-                let started = (now - chrono::Duration::seconds(started_offset_secs)).to_rfc3339();
-                let pinned_at: Option<String> = if pinned { Some(now.to_rfc3339()) } else { None };
-                let archived_at: Option<String> = if archived {
-                    Some(now.to_rfc3339())
-                } else {
-                    None
+                let status = match status {
+                    "running" => SessionStatus::Running,
+                    "stopped" => SessionStatus::Stopped,
+                    _ => unreachable!(),
                 };
-                conn.execute(
-                    "INSERT INTO sessions
-                    (id, mission_id, runner_id, status, started_at,
-                     pinned_at, archived_at)
-                 VALUES (?1, NULL, ?2, ?3, ?4, ?5, ?6)",
-                    params![id, runner_id, status, started, pinned_at, archived_at],
-                )
-                .unwrap();
+                let mut row = crate::test_support::test_session_row(id, status);
+                row.role_id = Some(role_id.clone());
+                row.started_at = Some(now - chrono::Duration::seconds(started_offset_secs));
+                row.pinned_at = pinned.then_some(now);
+                row.archived_at = archived.then_some(now);
+                repo::session::insert(&conn, &row).unwrap();
             };
 
         // newest running, but not pinned
@@ -1339,31 +1313,22 @@ mod tests {
         );
     }
 
-    fn seed_runner(conn: &rusqlite::Connection) -> String {
-        let runner_id = ulid::Ulid::new().to_string();
-        let now = Utc::now().to_rfc3339();
-        conn.execute(
-            "INSERT INTO runners
-                (id, handle, display_name, runtime, command,
-                 created_at, updated_at)
-             VALUES (?1, 'r', 'R', 'shell', '/bin/sh', ?2, ?2)",
-            params![runner_id, now],
-        )
-        .unwrap();
-        runner_id
+    fn seed_role(conn: &rusqlite::Connection) -> String {
+        let role_id = ulid::Ulid::new().to_string();
+        crate::test_support::insert_test_role(conn, &role_id, "r", "shell", "/bin/sh");
+        role_id
     }
 
     #[test]
     fn resolve_direct_start_defaults_cwd_from_project() {
         let pool = db::open_in_memory().unwrap();
         let conn = pool.get().unwrap();
-        let runner_id = seed_runner(&conn);
+        let role_id = seed_role(&conn);
         let project = repo::project::create(&conn, "Runner", "/project").unwrap();
 
-        let (runner, cwd) =
-            resolve_direct_start(&conn, &runner_id, Some(&project.id), None).unwrap();
+        let (role, cwd) = resolve_direct_start(&conn, &role_id, Some(&project.id), None).unwrap();
 
-        assert_eq!(runner.id, runner_id);
+        assert_eq!(role.id, role_id);
         assert_eq!(cwd.as_deref(), Some("/project"));
     }
 
@@ -1371,16 +1336,12 @@ mod tests {
     fn resolve_direct_start_explicit_cwd_overrides_project() {
         let pool = db::open_in_memory().unwrap();
         let conn = pool.get().unwrap();
-        let runner_id = seed_runner(&conn);
+        let role_id = seed_role(&conn);
         let project = repo::project::create(&conn, "Runner", "/project").unwrap();
 
-        let (_, cwd) = resolve_direct_start(
-            &conn,
-            &runner_id,
-            Some(&project.id),
-            Some("/override".into()),
-        )
-        .unwrap();
+        let (_, cwd) =
+            resolve_direct_start(&conn, &role_id, Some(&project.id), Some("/override".into()))
+                .unwrap();
 
         assert_eq!(cwd.as_deref(), Some("/override"));
     }
@@ -1389,9 +1350,9 @@ mod tests {
     fn resolve_direct_start_unknown_project_creates_no_session() {
         let pool = db::open_in_memory().unwrap();
         let conn = pool.get().unwrap();
-        let runner_id = seed_runner(&conn);
+        let role_id = seed_role(&conn);
 
-        let error = resolve_direct_start(&conn, &runner_id, Some("missing"), None).unwrap_err();
+        let error = resolve_direct_start(&conn, &role_id, Some("missing"), None).unwrap_err();
 
         assert_eq!(error.to_string(), "project not found: missing");
         let session_count: i64 = conn
@@ -1400,25 +1361,14 @@ mod tests {
         assert_eq!(session_count, 0);
     }
 
-    fn insert_direct_session(
-        conn: &rusqlite::Connection,
-        runner_id: &str,
-        archived: bool,
-    ) -> String {
+    fn insert_direct_session(conn: &rusqlite::Connection, role_id: &str, archived: bool) -> String {
         let id = ulid::Ulid::new().to_string();
         let now = Utc::now();
-        let archived_at: Option<String> = if archived {
-            Some(now.to_rfc3339())
-        } else {
-            None
-        };
-        conn.execute(
-            "INSERT INTO sessions
-                (id, mission_id, runner_id, status, started_at, archived_at)
-             VALUES (?1, NULL, ?2, 'stopped', ?3, ?4)",
-            params![id, runner_id, now.to_rfc3339(), archived_at],
-        )
-        .unwrap();
+        let mut row = crate::test_support::test_session_row(&id, SessionStatus::Stopped);
+        row.role_id = Some(role_id.into());
+        row.started_at = Some(now);
+        row.archived_at = archived.then_some(now);
+        repo::session::insert(conn, &row).unwrap();
         id
     }
 
@@ -1426,19 +1376,17 @@ mod tests {
     fn delete_archived_direct_only_deletes_archived_direct_rows() {
         let pool = db::open_in_memory().unwrap();
         let conn = pool.get().unwrap();
-        let runner_id = seed_runner(&conn);
-        let active = insert_direct_session(&conn, &runner_id, false);
-        let archived = insert_direct_session(&conn, &runner_id, true);
+        let role_id = seed_role(&conn);
+        let active = insert_direct_session(&conn, &role_id, false);
+        let archived = insert_direct_session(&conn, &role_id, true);
         // Archived slot-bound row: must survive this path — it dies
         // with its mission, not through chat delete.
         let slot_bound = ulid::Ulid::new().to_string();
-        conn.execute(
-            "INSERT INTO sessions
-                (id, mission_id, slot_id, runner_id, status, started_at, archived_at)
-             VALUES (?1, NULL, 'slot-1', ?2, 'stopped', ?3, ?3)",
-            params![slot_bound, runner_id, Utc::now().to_rfc3339()],
-        )
-        .unwrap();
+        let mut row = crate::test_support::test_session_row(&slot_bound, SessionStatus::Stopped);
+        row.role_id = Some(role_id.clone());
+        row.slot_id = Some("slot-1".into());
+        row.archived_at = row.started_at;
+        repo::session::insert(&conn, &row).unwrap();
 
         assert_eq!(
             repo::session::delete_archived_direct(&conn, &active).unwrap(),
@@ -1464,15 +1412,15 @@ mod tests {
     #[test]
     fn session_get_returns_archived_row() {
         // Whole reason this command exists: listRecentDirect filters
-        // archived rows, so RunnerChat needs an unfiltered fallback to
+        // archived rows, so RoleChat needs an unfiltered fallback to
         // detect an archived direct-URL navigation and render
         // read-only. A future refactor that adds `archived_at IS NULL`
         // to get_direct's WHERE breaks the chat-page lockdown — this
         // test fails if it ever does.
         let pool = db::open_in_memory().unwrap();
         let conn = pool.get().unwrap();
-        let runner_id = seed_runner(&conn);
-        let session_id = insert_direct_session(&conn, &runner_id, /*archived*/ true);
+        let role_id = seed_role(&conn);
+        let session_id = insert_direct_session(&conn, &role_id, /*archived*/ true);
 
         let row = get_direct(&conn, &session_id).unwrap();
         let row = row.expect("archived row must be returned");
@@ -1490,17 +1438,13 @@ mod tests {
         // timestamp the row was archived with, not a recoded `now()`.
         let pool = db::open_in_memory().unwrap();
         let conn = pool.get().unwrap();
-        let runner_id = seed_runner(&conn);
+        let role_id = seed_role(&conn);
         let id = ulid::Ulid::new().to_string();
-        let now = Utc::now().to_rfc3339();
         let archived_at = "2025-01-01T00:00:00+00:00";
-        conn.execute(
-            "INSERT INTO sessions
-                (id, mission_id, runner_id, status, started_at, archived_at)
-             VALUES (?1, NULL, ?2, 'stopped', ?3, ?4)",
-            params![id, runner_id, now, archived_at],
-        )
-        .unwrap();
+        let mut session = crate::test_support::test_session_row(&id, SessionStatus::Stopped);
+        session.role_id = Some(role_id);
+        session.archived_at = Some(archived_at.parse().unwrap());
+        repo::session::insert(&conn, &session).unwrap();
 
         let row = get_direct(&conn, &id).unwrap().unwrap();
         let got = row.archived_at.expect("archived_at populated").to_rfc3339();
@@ -1511,17 +1455,13 @@ mod tests {
     fn session_get_returns_agent_session_key_for_direct_chat() {
         let pool = db::open_in_memory().unwrap();
         let conn = pool.get().unwrap();
-        let runner_id = seed_runner(&conn);
+        let role_id = seed_role(&conn);
         let id = ulid::Ulid::new().to_string();
-        let now = Utc::now().to_rfc3339();
         let key = uuid::Uuid::new_v4().to_string();
-        conn.execute(
-            "INSERT INTO sessions
-                (id, mission_id, runner_id, status, started_at, agent_session_key)
-             VALUES (?1, NULL, ?2, 'stopped', ?3, ?4)",
-            params![id, runner_id, now, key],
-        )
-        .unwrap();
+        let mut session = crate::test_support::test_session_row(&id, SessionStatus::Stopped);
+        session.role_id = Some(role_id);
+        session.agent_session_key = Some(key.clone());
+        repo::session::insert(&conn, &session).unwrap();
 
         let row = get_direct(&conn, &id).unwrap().unwrap();
         assert_eq!(row.agent_session_key.as_deref(), Some(key.as_str()));
@@ -1529,7 +1469,7 @@ mod tests {
     }
 
     #[test]
-    fn runner_backed_chats_keep_their_handle_over_a_provider_title() {
+    fn role_backed_chats_keep_their_handle_over_a_provider_title() {
         let entry = |handle: Option<&str>, runtime: &str| {
             let mut row = repo::session::SessionRowDb::new_running(ulid::Ulid::new().to_string());
             row.agent_runtime = Some(runtime.into());
@@ -1538,18 +1478,18 @@ mod tests {
             direct_entry_from_repo(
                 repo::session::DirectSessionRow {
                     row,
-                    runner_handle: handle.map(str::to_owned),
-                    runner_display_name: handle.map(|_| "Housekeeper".to_owned()),
-                    runner_runtime: None,
-                    runner_command: None,
+                    role_handle: handle.map(str::to_owned),
+                    role_display_name: handle.map(|_| "Housekeeper".to_owned()),
+                    role_runtime: None,
+                    role_command: None,
                 },
                 false,
             )
             .unwrap()
         };
 
-        // Runner injects the runner's system prompt as the first turn, so
-        // every chat from one runner is titled identically. Identity wins.
+        // Role injects the role's system prompt as the first turn, so
+        // every chat from one role is titled identically. Identity wins.
         let backed = entry(Some("housekeeper"), "claude-code");
         assert_eq!(backed.preferred_title(None), None);
         assert_eq!(backed.preferred_title(Some("Fix the parser")), None);
@@ -1591,10 +1531,10 @@ mod tests {
             direct_entry_from_repo(
                 repo::session::DirectSessionRow {
                     row,
-                    runner_handle: None,
-                    runner_display_name: None,
-                    runner_runtime: None,
-                    runner_command: None,
+                    role_handle: None,
+                    role_display_name: None,
+                    role_runtime: None,
+                    role_command: None,
                 },
                 false,
             )
@@ -1620,7 +1560,7 @@ mod tests {
     fn session_list_returns_agent_session_key_for_mission_rows() {
         let pool = db::open_in_memory().unwrap();
         let conn = pool.get().unwrap();
-        let runner_id = seed_runner(&conn);
+        let role_id = seed_role(&conn);
         let crew_id = ulid::Ulid::new().to_string();
         let slot_id = ulid::Ulid::new().to_string();
         let mission_id = ulid::Ulid::new().to_string();
@@ -1633,13 +1573,9 @@ mod tests {
             params![crew_id, now],
         )
         .unwrap();
-        conn.execute(
-            "INSERT INTO slots
-                (id, crew_id, runner_id, slot_handle, position, lead, added_at)
-             VALUES (?1, ?2, ?3, 'coder', 0, 1, ?4)",
-            params![slot_id, crew_id, runner_id, now],
-        )
-        .unwrap();
+        crate::test_support::insert_test_slot(
+            &conn, &slot_id, &crew_id, &role_id, "coder", 0, true,
+        );
         conn.execute(
             "INSERT INTO missions
                 (id, crew_id, title, status, started_at)
@@ -1647,13 +1583,13 @@ mod tests {
             params![mission_id, crew_id, now],
         )
         .unwrap();
-        conn.execute(
-            "INSERT INTO sessions
-                (id, mission_id, runner_id, slot_id, status, started_at, agent_session_key)
-             VALUES (?1, ?2, ?3, ?4, 'running', ?5, ?6)",
-            params![session_id, mission_id, runner_id, slot_id, now, key],
-        )
-        .unwrap();
+        let mut session =
+            crate::test_support::test_session_row(&session_id, SessionStatus::Running);
+        session.mission_id = Some(mission_id.clone());
+        session.role_id = Some(role_id.clone());
+        session.slot_id = Some(slot_id.clone());
+        session.agent_session_key = Some(key.clone());
+        repo::session::insert(&conn, &session).unwrap();
 
         let rows = list_for_mission(&conn, &mission_id).unwrap();
         assert_eq!(rows.len(), 1);
@@ -1667,11 +1603,11 @@ mod tests {
         // Feature 41: mission rows spawned under a slot runtime
         // override record the effective runtime in
         // `sessions.agent_runtime`; session_list must surface that
-        // (not the runner row's default) so terminal UX gating and
+        // (not the role row's default) so terminal UX gating and
         // badges track the engine actually running.
         let pool = db::open_in_memory().unwrap();
         let conn = pool.get().unwrap();
-        let runner_id = seed_runner(&conn); // runtime 'shell'
+        let role_id = seed_role(&conn); // runtime 'shell'
         let crew_id = ulid::Ulid::new().to_string();
         let slot_id = ulid::Ulid::new().to_string();
         let mission_id = ulid::Ulid::new().to_string();
@@ -1682,13 +1618,9 @@ mod tests {
             params![crew_id, now],
         )
         .unwrap();
-        conn.execute(
-            "INSERT INTO slots
-                (id, crew_id, runner_id, slot_handle, position, lead, added_at)
-             VALUES (?1, ?2, ?3, 'coder', 0, 1, ?4)",
-            params![slot_id, crew_id, runner_id, now],
-        )
-        .unwrap();
+        crate::test_support::insert_test_slot(
+            &conn, &slot_id, &crew_id, &role_id, "coder", 0, true,
+        );
         conn.execute(
             "INSERT INTO missions
                 (id, crew_id, title, status, started_at)
@@ -1698,14 +1630,19 @@ mod tests {
         .unwrap();
         let overridden = ulid::Ulid::new().to_string();
         let plain = ulid::Ulid::new().to_string();
-        conn.execute(
-            "INSERT INTO sessions
-                (id, mission_id, runner_id, slot_id, status, started_at, agent_runtime)
-             VALUES (?1, ?2, ?3, ?4, 'running', ?5, 'claude-code'),
-                    (?6, ?2, ?3, ?4, 'running', ?5, NULL)",
-            params![overridden, mission_id, runner_id, slot_id, now, plain],
-        )
-        .unwrap();
+        let mut overridden_session =
+            crate::test_support::test_session_row(&overridden, SessionStatus::Running);
+        overridden_session.mission_id = Some(mission_id.clone());
+        overridden_session.role_id = Some(role_id.clone());
+        overridden_session.slot_id = Some(slot_id.clone());
+        overridden_session.agent_runtime = Some("claude-code".into());
+        repo::session::insert(&conn, &overridden_session).unwrap();
+        let mut plain_session =
+            crate::test_support::test_session_row(&plain, SessionStatus::Running);
+        plain_session.mission_id = Some(mission_id.clone());
+        plain_session.role_id = Some(role_id.clone());
+        plain_session.slot_id = Some(slot_id.clone());
+        repo::session::insert(&conn, &plain_session).unwrap();
 
         let rows = list_for_mission(&conn, &mission_id).unwrap();
         let runtime_for = |id: &str| {
@@ -1731,12 +1668,12 @@ mod tests {
         // `mission_id IS NULL` filter scopes this command to direct
         // chats only — mission sessions go through `session_list`
         // instead. Dropping that filter would let an archived
-        // mission's PTY row leak into RunnerChat's lookup and confuse
+        // mission's PTY row leak into RoleChat's lookup and confuse
         // the read-only branch (mission sessions don't have a
-        // /runners/:handle/chat URL).
+        // /roles/:handle/chat URL).
         let pool = db::open_in_memory().unwrap();
         let conn = pool.get().unwrap();
-        let runner_id = seed_runner(&conn);
+        let role_id = seed_role(&conn);
 
         // Seed a crew + mission so the FK is satisfied. The mission
         // table's other NOT NULL columns are populated minimally.
@@ -1757,13 +1694,11 @@ mod tests {
         )
         .unwrap();
         let session_id = ulid::Ulid::new().to_string();
-        conn.execute(
-            "INSERT INTO sessions
-                (id, mission_id, runner_id, status, started_at)
-             VALUES (?1, ?2, ?3, 'stopped', ?4)",
-            params![session_id, mission_id, runner_id, now],
-        )
-        .unwrap();
+        let mut session =
+            crate::test_support::test_session_row(&session_id, SessionStatus::Stopped);
+        session.mission_id = Some(mission_id);
+        session.role_id = Some(role_id);
+        repo::session::insert(&conn, &session).unwrap();
 
         let row = get_direct(&conn, &session_id).unwrap();
         assert!(

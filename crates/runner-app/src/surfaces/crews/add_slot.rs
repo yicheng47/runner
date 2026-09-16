@@ -4,10 +4,10 @@ use super::logic::add_slot_form_is_composing;
 use super::logic::add_slot_runtime_options;
 use super::logic::crew_usage_label;
 use super::logic::error_banner;
-use super::logic::runner_activity_label;
-use super::logic::runner_matches;
+use super::logic::role_activity_label;
+use super::logic::role_matches;
 use super::logic::runtime_models;
-use super::logic::selected_add_slot_runner;
+use super::logic::selected_add_slot_role;
 use super::logic::slot_handle_error;
 use super::logic::suggest_slot_handle;
 use super::logic::trimmed_option;
@@ -44,7 +44,7 @@ impl NativeRoot {
         let runtimes =
             runner_backend::ops::runtime::runtime_catalog(self.core(cx)).unwrap_or_default();
         let query = cx.new(|input_cx| {
-            TextField::new(input_cx.focus_handle(), "", "Search runners...", false)
+            TextField::new(input_cx.focus_handle(), "", "Search roles...", false)
                 .text_size(theme::text_body())
         });
         let slot_handle = cx.new(|input_cx| {
@@ -101,11 +101,11 @@ impl NativeRoot {
             crew_id: crew.id,
             crew_name: crew.name,
             existing_handles,
-            runners: Vec::new(),
+            roles: Vec::new(),
             runtimes,
             query,
             last_synced_query: String::new(),
-            selected_runner_id: None,
+            selected_role_id: None,
             slot_handle,
             runtime_override: String::new(),
             model_override,
@@ -127,18 +127,18 @@ impl NativeRoot {
             _subscriptions: subscriptions,
         });
         focus.focus(window);
-        self.load_add_slot_runners(cx);
+        self.load_add_slot_roles(cx);
         cx.notify();
     }
 
-    fn load_add_slot_runners(&mut self, cx: &mut Context<Self>) {
+    fn load_add_slot_roles(&mut self, cx: &mut Context<Self>) {
         let Some(form) = self.crew_surfaces.add_slot.as_ref() else {
             return;
         };
         let crew_id = form.crew_id.clone();
         let core = self.core(cx).clone();
         let task = cx.background_spawn(async move {
-            runner_backend::ops::runner::runner_list_with_activity(&core, 1, 1_000_000, "")
+            runner_backend::ops::role::role_list_with_activity(&core, 1, 1_000_000, "")
                 .map(|page| page.items)
                 .map_err(|error| error.to_string())
         });
@@ -153,21 +153,19 @@ impl NativeRoot {
                 }
                 form.loading = false;
                 match result {
-                    Ok(runners) => {
-                        form.runners = runners;
+                    Ok(roles) => {
+                        form.roles = roles;
                         let query = form.query.read(cx).text().trim().to_lowercase();
                         form.last_synced_query = query.clone();
-                        form.selected_runner_id = form
-                            .runners
+                        form.selected_role_id = form
+                            .roles
                             .iter()
-                            .find(|runner| runner_matches(runner, &query))
-                            .map(|runner| runner.runner.id.clone());
+                            .find(|role| role_matches(role, &query))
+                            .map(|role| role.role.id.clone());
                         if !form.slot_handle.read(cx).edited() {
-                            if let Some(runner) = selected_add_slot_runner(form) {
-                                let suggestion = suggest_slot_handle(
-                                    &runner.runner.handle,
-                                    &form.existing_handles,
-                                );
+                            if let Some(role) = selected_add_slot_role(form) {
+                                let suggestion =
+                                    suggest_slot_handle(&role.role.handle, &form.existing_handles);
                                 if form.slot_handle.read(cx).text() != suggestion {
                                     form.slot_handle.update(cx, |input, input_cx| {
                                         input.reset(suggestion, input_cx)
@@ -175,10 +173,8 @@ impl NativeRoot {
                                 }
                             }
                         }
-                        let options = add_slot_runtime_options(
-                            &form.runtimes,
-                            selected_add_slot_runner(form),
-                        );
+                        let options =
+                            add_slot_runtime_options(&form.runtimes, selected_add_slot_role(form));
                         form.runtime_select.update(cx, |select, select_cx| {
                             select.set_options(options, select_cx)
                         });
@@ -201,10 +197,10 @@ impl NativeRoot {
         if query_changed {
             form.last_synced_query = query.clone();
         }
-        let selected_visible = form.selected_runner_id.as_ref().is_some_and(|selected| {
-            form.runners
+        let selected_visible = form.selected_role_id.as_ref().is_some_and(|selected| {
+            form.roles
                 .iter()
-                .any(|runner| runner.runner.id == *selected && runner_matches(runner, &query))
+                .any(|role| role.role.id == *selected && role_matches(role, &query))
         });
         if !query_changed && selected_visible {
             return;
@@ -212,17 +208,15 @@ impl NativeRoot {
         let mut selection_changed = false;
         if !selected_visible {
             let next = form
-                .runners
+                .roles
                 .iter()
-                .find(|runner| runner_matches(runner, &query))
-                .map(|runner| runner.runner.id.clone());
-            selection_changed = next != form.selected_runner_id;
-            form.selected_runner_id = next;
+                .find(|role| role_matches(role, &query))
+                .map(|role| role.role.id.clone());
+            selection_changed = next != form.selected_role_id;
+            form.selected_role_id = next;
             if selection_changed && !form.slot_handle.read(cx).edited() {
-                let suggestion = selected_add_slot_runner(form)
-                    .map(|runner| {
-                        suggest_slot_handle(&runner.runner.handle, &form.existing_handles)
-                    })
+                let suggestion = selected_add_slot_role(form)
+                    .map(|role| suggest_slot_handle(&role.role.handle, &form.existing_handles))
                     .unwrap_or_default();
                 if form.slot_handle.read(cx).text() != suggestion {
                     form.slot_handle
@@ -231,7 +225,7 @@ impl NativeRoot {
             }
             if selection_changed {
                 let options =
-                    add_slot_runtime_options(&form.runtimes, selected_add_slot_runner(form));
+                    add_slot_runtime_options(&form.runtimes, selected_add_slot_role(form));
                 form.runtime_select.update(cx, |select, select_cx| {
                     select.set_options(options, select_cx)
                 });
@@ -245,17 +239,17 @@ impl NativeRoot {
         }
     }
 
-    fn select_add_slot_runner(&mut self, runner_id: String, cx: &mut Context<Self>) {
+    fn select_add_slot_role(&mut self, role_id: String, cx: &mut Context<Self>) {
         let Some(form) = self.crew_surfaces.add_slot.as_mut() else {
             return;
         };
-        form.selected_runner_id = Some(runner_id);
-        let suggestion = selected_add_slot_runner(form)
-            .map(|runner| suggest_slot_handle(&runner.runner.handle, &form.existing_handles))
+        form.selected_role_id = Some(role_id);
+        let suggestion = selected_add_slot_role(form)
+            .map(|role| suggest_slot_handle(&role.role.handle, &form.existing_handles))
             .unwrap_or_default();
         form.slot_handle
             .update(cx, |input, input_cx| input.reset(suggestion, input_cx));
-        let options = add_slot_runtime_options(&form.runtimes, selected_add_slot_runner(form));
+        let options = add_slot_runtime_options(&form.runtimes, selected_add_slot_role(form));
         form.runtime_select.update(cx, |select, select_cx| {
             select.set_options(options, select_cx)
         });
@@ -277,8 +271,8 @@ impl NativeRoot {
             return;
         };
         let runtime = if form.runtime_override.is_empty() {
-            selected_add_slot_runner(form)
-                .map(|runner| runner.runner.runtime.clone())
+            selected_add_slot_role(form)
+                .map(|role| role.role.runtime.clone())
                 .unwrap_or_default()
         } else {
             form.runtime_override.clone()
@@ -298,7 +292,7 @@ impl NativeRoot {
             return;
         };
         form.runtimes = catalog;
-        let options = add_slot_runtime_options(&form.runtimes, selected_add_slot_runner(form));
+        let options = add_slot_runtime_options(&form.runtimes, selected_add_slot_role(form));
         form.runtime_select.update(cx, |select, select_cx| {
             select.set_options(options, select_cx)
         });
@@ -337,7 +331,7 @@ impl NativeRoot {
         }
     }
 
-    fn create_runner_from_add_slot(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn create_role_from_add_slot(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self
             .crew_surfaces
             .add_slot
@@ -347,8 +341,8 @@ impl NativeRoot {
             return;
         }
         self.crew_surfaces.add_slot = None;
-        self.open_runners(window, cx);
-        self.open_create_runner(window, cx);
+        self.open_roles(window, cx);
+        self.open_create_role(window, cx);
     }
 
     fn submit_add_slot(&mut self, cx: &mut Context<Self>) {
@@ -359,13 +353,13 @@ impl NativeRoot {
         if !add_slot_can_submit(form) {
             return;
         }
-        let runner_id = form.selected_runner_id.clone().expect("validated runner");
+        let role_id = form.selected_role_id.clone().expect("validated role");
         form.submitting = true;
         form.error = None;
         let crew_id = form.crew_id.clone();
         let input = runner_backend::ops::slot::CreateSlotInput {
             crew_id: crew_id.clone(),
-            runner_id,
+            role_id,
             slot_handle: handle,
             runtime_override: runner_backend::model::Runtime::parse(&form.runtime_override),
             model_override: (!form.runtime_override.is_empty())
@@ -384,7 +378,7 @@ impl NativeRoot {
                         this.crew_surfaces.add_slot = None;
                         this.load_crew_editor(crew_id, cx);
                         this.load_crew_page(cx);
-                        this.load_runner_page(cx);
+                        this.load_role_page(cx);
                     }
                     Err(error) => {
                         if let Some(form) = this.crew_surfaces.add_slot.as_mut() {
@@ -404,9 +398,9 @@ impl NativeRoot {
         let form = self.crew_surfaces.add_slot.as_ref().expect("add slot form");
         let query = form.query.read(cx).text().trim().to_lowercase();
         let filtered = form
-            .runners
+            .roles
             .iter()
-            .filter(|runner| runner_matches(runner, &query))
+            .filter(|role| role_matches(role, &query))
             .cloned()
             .collect::<Vec<_>>();
         let submitting = form.submitting;
@@ -451,13 +445,13 @@ impl NativeRoot {
                         close_root.update(cx, |this, cx| this.close_add_slot(window, cx));
                     }),
             );
-        let runner_rows = if form.loading {
+        let role_rows = if form.loading {
             vec![div()
                 .px_3()
                 .py_3()
                 .text_size(theme::text_ui())
                 .text_color(theme::faint())
-                .child("Loading runners...")
+                .child("Loading roles...")
                 .into_any_element()]
         } else if filtered.is_empty() {
             vec![div()
@@ -465,25 +459,24 @@ impl NativeRoot {
                 .py_3()
                 .text_size(theme::text_ui())
                 .text_color(theme::faint())
-                .child(if form.runners.is_empty() {
-                    "No runners yet. Create one first, then add it here."
+                .child(if form.roles.is_empty() {
+                    "No roles yet. Create one first, then add it here."
                 } else {
-                    "No runners match this search."
+                    "No roles match this search."
                 })
                 .into_any_element()]
         } else {
             filtered
                 .into_iter()
                 .enumerate()
-                .map(|(index, runner)| {
-                    let selected =
-                        form.selected_runner_id.as_deref() == Some(runner.runner.id.as_str());
-                    let runner_id = runner.runner.id.clone();
-                    let key_runner_id = runner_id.clone();
+                .map(|(index, role)| {
+                    let selected = form.selected_role_id.as_deref() == Some(role.role.id.as_str());
+                    let role_id = role.role.id.clone();
+                    let key_role_id = role_id.clone();
                     let select_root = cx.entity();
                     let key_root = select_root.clone();
                     div()
-                        .id(("add-slot-runner", index))
+                        .id(("add-slot-role", index))
                         .tab_index(0)
                         .w_full()
                         .flex()
@@ -504,7 +497,7 @@ impl NativeRoot {
                                 .text_size(theme::text_body())
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .text_color(theme::accent())
-                                .child(format!("@{}", runner.runner.handle)),
+                                .child(format!("@{}", role.role.handle)),
                         )
                         .child(
                             div()
@@ -512,7 +505,7 @@ impl NativeRoot {
                                 .truncate()
                                 .text_size(theme::text_meta())
                                 .text_color(theme::muted())
-                                .child(runner.runner.runtime.clone()),
+                                .child(role.role.runtime.clone()),
                         )
                         .child(
                             div()
@@ -523,20 +516,20 @@ impl NativeRoot {
                                 .text_color(theme::muted())
                                 .child(format!(
                                     "{} · {}",
-                                    crew_usage_label(&runner),
-                                    runner_activity_label(&runner)
+                                    crew_usage_label(&role),
+                                    role_activity_label(&role)
                                 )),
                         )
                         .on_click(move |_, _, cx| {
                             select_root.update(cx, |this, cx| {
-                                this.select_add_slot_runner(runner_id.clone(), cx)
+                                this.select_add_slot_role(role_id.clone(), cx)
                             });
                         })
                         .on_key_down(move |event: &KeyDownEvent, _, cx| {
                             if matches!(event.keystroke.key.as_str(), "enter" | "space") {
                                 cx.stop_propagation();
                                 key_root.update(cx, |this, cx| {
-                                    this.select_add_slot_runner(key_runner_id.clone(), cx)
+                                    this.select_add_slot_role(key_role_id.clone(), cx)
                                 });
                             }
                         })
@@ -583,7 +576,7 @@ impl NativeRoot {
                         div()
                             .text_size(theme::text_ui())
                             .font_weight(FontWeight::SEMIBOLD)
-                            .child("Runner"),
+                            .child("Role"),
                     )
                     .child(
                         div()
@@ -615,7 +608,7 @@ impl NativeRoot {
                             .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
                             .child(
                                 div()
-                                    .id("add-slot-create-runner")
+                                    .id("add-slot-create-role")
                                     .tab_index(0)
                                     .cursor_pointer()
                                     .border_b_1()
@@ -629,7 +622,7 @@ impl NativeRoot {
                                     .focus_visible(|row| row.bg(theme::raised()))
                                     .on_click(move |_, window, cx| {
                                         create_root.update(cx, |this, cx| {
-                                            this.create_runner_from_add_slot(window, cx)
+                                            this.create_role_from_add_slot(window, cx)
                                         });
                                     })
                                     .on_key_down(move |event: &KeyDownEvent, window, cx| {
@@ -639,18 +632,18 @@ impl NativeRoot {
                                         ) {
                                             cx.stop_propagation();
                                             create_key_root.update(cx, |this, cx| {
-                                                this.create_runner_from_add_slot(window, cx)
+                                                this.create_role_from_add_slot(window, cx)
                                             });
                                         }
                                     })
-                                    .child("+ Create new runner..."),
+                                    .child("+ Create new role..."),
                             )
                             .child(
                                 div()
-                                    .id("add-slot-runner-scroll")
+                                    .id("add-slot-role-scroll")
                                     .max_h(rems(224. / 16.))
                                     .overflow_y_scroll()
-                                    .children(runner_rows),
+                                    .children(role_rows),
                             ),
                     ),
             )
@@ -667,12 +660,12 @@ impl NativeRoot {
                 Field::new("add-slot-runtime", "Runtime", form.runtime_select.clone())
                     .focus_target(form.runtime_select.read(cx).focus_handle())
                     .hint(
-                        "engine this slot runs — overriding keeps the runner's persona but uses the runtime's default command and flags",
+                        "engine this slot runs — overriding keeps the role's prompt but uses the runtime's default command and flags",
                         form.runtime_hint_focus.clone(),
                     ),
             )
             .children((!form.runtime_override.is_empty()
-                && form.selected_runner_id.is_some())
+                && form.selected_role_id.is_some())
             .then(|| {
                 Field::new("add-slot-model", "Model", form.model_field.clone())
                     .focus_target(form.model_override.read(cx).focus_handle())
@@ -739,7 +732,7 @@ impl NativeRoot {
                         div()
                             .text_size(theme::text_meta())
                             .text_color(theme::muted())
-                            .child("Uses the selected runner's default prompt. Per-slot overrides are not editable in the MVP."),
+                            .child("Uses the selected role's default prompt. Per-slot overrides are not editable in the MVP."),
                     ),
             );
         let footer = div()

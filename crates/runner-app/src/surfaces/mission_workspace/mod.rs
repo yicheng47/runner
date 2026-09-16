@@ -20,7 +20,7 @@ use gpui::prelude::*;
 use gpui::{div, px, rems, App, Bounds, Entity, Pixels, SharedString, WeakEntity, Window};
 use runner_app::ui::{CopyValueButton, PopoverMenu, SessionControlKind, TextField};
 use runner_backend::model::{
-    Crew, Event, EventKind, Mission, MissionStatus, SessionStatus, SlotWithRunner,
+    Crew, Event, EventKind, Mission, MissionStatus, SessionStatus, SlotWithRole,
 };
 use runner_backend::ops::session::SessionRow;
 
@@ -42,7 +42,7 @@ pub(crate) enum MissionTab {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 enum MissionRailView {
     #[default]
-    Runners,
+    Roles,
     Meta,
 }
 
@@ -236,7 +236,7 @@ pub(crate) struct MissionWorkspace {
     feed_scroll: ScrollHandle,
     feed_was_near_bottom: bool,
     feed_has_new_messages: bool,
-    roster: Vec<SlotWithRunner>,
+    roster: Vec<SlotWithRole>,
     composer: ComposerState,
     composer_input: Entity<TextField>,
     composer_posting: bool,
@@ -275,7 +275,7 @@ pub(crate) struct MissionWorkspace {
 struct MissionLoadResult {
     mission: Mission,
     crew: Option<Crew>,
-    roster: Vec<SlotWithRunner>,
+    roster: Vec<SlotWithRole>,
     sessions: Vec<SessionRow>,
     events: Vec<Event>,
 }
@@ -384,7 +384,7 @@ fn mission_tab(
 /// The permission mode a mission started with, read from the first
 /// `mission_start` signal's payload (feature 527). Missions recorded
 /// before the key existed have no section. Rendered as the spec's
-/// human label: `bypass`, `auto`, or `runner default`.
+/// human label: `bypass`, `auto`, or `role default`.
 fn mission_permission_mode_label(events: &[Event]) -> Option<String> {
     events
         .iter()
@@ -394,7 +394,10 @@ fn mission_permission_mode_label(events: &[Event]) -> Option<String> {
         })
         .and_then(|event| event.payload.get("permission_mode"))
         .and_then(serde_json::Value::as_str)
-        .map(|mode| mode.replace('-', " "))
+        .map(|mode| match mode {
+            "role-default" | "runner-default" => "role default".to_owned(),
+            _ => mode.replace('-', " "),
+        })
 }
 
 fn format_event_time(event: &Event) -> String {

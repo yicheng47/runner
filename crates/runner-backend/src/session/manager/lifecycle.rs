@@ -255,11 +255,11 @@ impl SessionManager {
         }
     }
 
-    /// Kill every live session for `runner_id` — both mission-scoped and
-    /// direct-chat. Used by `runner_delete` so the cascade dropping the
+    /// Kill every live session for `role_id` — both mission-scoped and
+    /// direct-chat. Used by `role_delete` so the cascade dropping the
     /// `sessions` rows doesn't strand the PTY children running underneath.
     /// Returns only after every reader thread has joined.
-    pub fn kill_all_for_runner(&self, runner_id: &str) -> Result<()> {
+    pub fn kill_all_for_role(&self, role_id: &str) -> Result<()> {
         let ids: Vec<String> = {
             let sessions: Vec<_> = self.sessions.lock().unwrap().values().cloned().collect();
             sessions
@@ -267,7 +267,7 @@ impl SessionManager {
                 .filter_map(|state| {
                     let state = state.lock().unwrap();
                     let handle = state.handle.as_ref()?;
-                    (handle.runner_id.as_deref() == Some(runner_id)).then(|| handle.id.clone())
+                    (handle.role_id.as_deref() == Some(role_id)).then(|| handle.id.clone())
                 })
                 .collect()
         };

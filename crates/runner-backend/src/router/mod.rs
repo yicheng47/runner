@@ -35,7 +35,7 @@ use serde::Serialize;
 use crate::error::Result;
 use crate::event_bus::{AppendedEvent, BusEmitter, InboxUpdate, WatermarkUpdate};
 use crate::events::EventChannel;
-use crate::model::SlotWithRunner;
+use crate::model::SlotWithRole;
 use crate::session::manager::SessionManager;
 
 /// What the router uses to push bytes into a child's PTY. The full
@@ -162,7 +162,7 @@ pub use crate::session::runtime::RunnerStatus;
 /// Inputs to the launch-prompt composer, captured at mount so the
 /// `mission_goal` handler doesn't have to round-trip the DB. The lead row
 /// also doubles as the lead-resolved handle the dispatcher routes to.
-/// Fields are pre-merged from (slot, runner template) so the composer
+/// Fields are pre-merged from (slot, role template) so the composer
 /// doesn't need to know about the join shape.
 pub(crate) struct LaunchInputs {
     crew_name: String,
@@ -183,8 +183,8 @@ pub(crate) struct LeadRow {
     /// not used in mission contexts.
     handle: String,
     display_name: String,
-    /// `runner.system_prompt` — the brief shown in the lead's launch
-    /// prompt. Comes from the runner template since system_prompt
+    /// `role.system_prompt` — the brief shown in the lead's launch
+    /// prompt. Comes from the role template since system_prompt
     /// isn't yet a per-slot override (deferred).
     system_prompt: Option<String>,
 }
@@ -321,7 +321,7 @@ impl Router {
         mission_id: String,
         crew_id: String,
         crew_name: String,
-        roster: &[SlotWithRunner],
+        roster: &[SlotWithRole],
         allowed_signals: Vec<SignalType>,
         crew_addendum: Option<String>,
         log: Arc<EventLog>,
@@ -956,7 +956,7 @@ impl Router {
     }
 
     fn update_inbox(&self, update: &InboxUpdate) {
-        self.set_unread(&update.runner_handle, update.unread_count);
+        self.set_unread(&update.role_handle, update.unread_count);
     }
 
     fn start_reserved_delivery(
@@ -1388,7 +1388,7 @@ impl SessionDeliveryListener for Router {
 impl LaunchInputs {
     pub(crate) fn new(
         crew_name: String,
-        roster: &[SlotWithRunner],
+        roster: &[SlotWithRole],
         allowed_signals: Vec<SignalType>,
         crew_addendum: Option<String>,
     ) -> Result<Self> {
@@ -1397,15 +1397,15 @@ impl LaunchInputs {
             .find(|m| m.slot.lead)
             .map(|m| LeadRow {
                 handle: m.slot.slot_handle.clone(),
-                display_name: m.runner.display_name.clone(),
-                system_prompt: m.runner.system_prompt.clone(),
+                display_name: m.role.display_name.clone(),
+                system_prompt: m.role.system_prompt.clone(),
             })
             .ok_or_else(|| crate::error::Error::msg("mission crew has no lead slot"))?;
         let roster_rows = roster
             .iter()
             .map(|m| RosterRow {
                 handle: m.slot.slot_handle.clone(),
-                display_name: m.runner.display_name.clone(),
+                display_name: m.role.display_name.clone(),
                 lead: m.slot.lead,
             })
             .collect();
@@ -1523,7 +1523,7 @@ impl BusEmitter for RouterSubscriber {
         self.0.update_inbox(ev);
     }
     fn watermark_advanced(&self, ev: &WatermarkUpdate) {
-        self.0.set_unread(&ev.runner_handle, ev.unread_count);
+        self.0.set_unread(&ev.role_handle, ev.unread_count);
     }
 }
 

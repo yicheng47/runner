@@ -10,20 +10,20 @@ use crate::*;
 impl NativeRoot {
     pub(crate) fn render_entity_overlays(&mut self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let mut overlays = Vec::new();
-        if let Some(menu) = self.runner_surfaces.context_menu.clone() {
+        if let Some(menu) = self.role_surfaces.context_menu.clone() {
             overlays.push(menu.into_any_element());
         }
         if let Some(menu) = self.crew_surfaces.context_menu.clone() {
             overlays.push(menu.into_any_element());
         }
-        if self.runner_surfaces.create.is_some() {
-            overlays.push(self.render_create_runner_modal(cx));
+        if self.role_surfaces.create.is_some() {
+            overlays.push(self.render_create_role_modal(cx));
         }
-        if self.runner_surfaces.edit.is_some() {
-            overlays.push(self.render_runner_edit_drawer(cx));
+        if self.role_surfaces.edit.is_some() {
+            overlays.push(self.render_role_edit_drawer(cx));
         }
-        if self.runner_surfaces.delete_confirm.is_some() {
-            overlays.push(self.render_runner_delete_confirm(cx));
+        if self.role_surfaces.delete_confirm.is_some() {
+            overlays.push(self.render_role_delete_confirm(cx));
         }
         if self.start_mission_modal.is_some() {
             overlays.push(self.render_start_mission_modal(cx));
@@ -38,31 +38,31 @@ impl NativeRoot {
         overlays
     }
 
-    fn render_runner_delete_confirm(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_role_delete_confirm(&self, cx: &mut Context<Self>) -> AnyElement {
         let confirm = self
-            .runner_surfaces
+            .role_surfaces
             .delete_confirm
             .as_ref()
-            .expect("runner delete confirm");
+            .expect("role delete confirm");
         let root = cx.entity();
         let confirm_root = root.clone();
         let cancel_root = root;
         ConfirmDialog::new(
-            format!("Delete runner @{}?", confirm.handle),
+            format!("Delete role @{}?", confirm.handle),
             format!(
-                "This removes @{} from every crew it's in and deletes archived session history for that runner. Unarchived chats must be archived first. Crews and missions are kept.",
+                "This removes @{} from every crew it's in and deletes archived session history for that role. Unarchived chats must be archived first. Crews and missions are kept.",
                 confirm.handle
             ),
-            "Delete runner",
+            "Delete role",
             "Deleting…",
-            self.runner_surfaces.delete_busy,
+            self.role_surfaces.delete_busy,
             Rc::new(move |_, cx| {
-                confirm_root.update(cx, |this, cx| this.confirm_runner_delete(cx));
+                confirm_root.update(cx, |this, cx| this.confirm_role_delete(cx));
             }),
             Rc::new(move |_, cx| {
                 cancel_root.update(cx, |this, cx| {
-                    if !this.runner_surfaces.delete_busy {
-                        this.runner_surfaces.delete_confirm = None;
+                    if !this.role_surfaces.delete_busy {
+                        this.role_surfaces.delete_confirm = None;
                         cx.notify();
                     }
                 });
@@ -71,43 +71,40 @@ impl NativeRoot {
         .into_any_element()
     }
 
-    fn confirm_runner_delete(&mut self, cx: &mut Context<Self>) {
-        let Some(confirm) = self.runner_surfaces.delete_confirm.as_ref() else {
+    fn confirm_role_delete(&mut self, cx: &mut Context<Self>) {
+        let Some(confirm) = self.role_surfaces.delete_confirm.as_ref() else {
             return;
         };
-        if self.runner_surfaces.delete_busy {
+        if self.role_surfaces.delete_busy {
             return;
         }
-        self.runner_surfaces.delete_busy = true;
+        self.role_surfaces.delete_busy = true;
         let id = confirm.id.clone();
         let handle = confirm.handle.clone();
         let core = self.core(cx).clone();
         let task = cx.background_spawn(async move {
-            runner_backend::ops::runner::runner_delete(&core, &id)
-                .map_err(|error| error.to_string())
+            runner_backend::ops::role::role_delete(&core, &id).map_err(|error| error.to_string())
         });
         cx.spawn(async move |weak, cx| {
             let result = task.await;
             let _ = weak.update(cx, |this, cx| {
-                this.runner_surfaces.delete_busy = false;
+                this.role_surfaces.delete_busy = false;
                 match result {
                     Ok(()) => {
-                        this.runner_surfaces.delete_confirm = None;
-                        if let Ok(runners) = runner_backend::ops::runner::runner_list(this.core(cx))
-                        {
-                            this.app_store.update(cx, |store, store_cx| {
-                                store.replace_runners(runners, store_cx)
-                            });
+                        this.role_surfaces.delete_confirm = None;
+                        if let Ok(roles) = runner_backend::ops::role::role_list(this.core(cx)) {
+                            this.app_store
+                                .update(cx, |store, store_cx| store.replace_roles(roles, store_cx));
                         }
-                        this.load_runner_page(cx);
+                        this.load_role_page(cx);
                         this.show_toast(
-                            format!("Deleted runner @{handle}."),
+                            format!("Deleted role @{handle}."),
                             crate::toast::ToastTone::Success,
                             cx,
                         );
                     }
                     Err(error) => {
-                        this.runner_surfaces.delete_confirm = None;
+                        this.role_surfaces.delete_confirm = None;
                         this.show_toast(error, crate::toast::ToastTone::Error, cx);
                     }
                 }

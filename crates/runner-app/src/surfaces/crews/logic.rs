@@ -7,8 +7,8 @@ use gpui::{
     Window,
 };
 use runner_app::ui::SelectOption;
-use runner_backend::model::SlotWithRunner;
-use runner_backend::ops::runner::RunnerWithActivity;
+use runner_backend::model::SlotWithRole;
+use runner_backend::ops::role::RoleWithActivity;
 use runner_backend::ops::runtime::{RuntimeCatalogEntry, RuntimeCatalogOption};
 
 use super::*;
@@ -24,7 +24,7 @@ pub(super) fn section_label(label: &'static str) -> AnyElement {
 }
 
 pub(super) fn slot_section_description() -> StyledText {
-    let description = "Positions in the crew. Each slot binds a handle to a runner. The LEAD is the crew's face — receives human messages by default and dispatches back to other slots.";
+    let description = "Positions in the crew. Each slot binds a handle to a role. The LEAD is the crew's face — receives human messages by default and dispatches back to other slots.";
     let lead_start = description
         .find("LEAD")
         .expect("slot description contains LEAD");
@@ -118,18 +118,16 @@ pub(super) fn error_banner(error: String) -> AnyElement {
         .into_any_element()
 }
 
-pub(super) fn selected_add_slot_runner(form: &AddSlotForm) -> Option<&RunnerWithActivity> {
-    let selected = form.selected_runner_id.as_deref()?;
-    form.runners
-        .iter()
-        .find(|runner| runner.runner.id == selected)
+pub(super) fn selected_add_slot_role(form: &AddSlotForm) -> Option<&RoleWithActivity> {
+    let selected = form.selected_role_id.as_deref()?;
+    form.roles.iter().find(|role| role.role.id == selected)
 }
 
-pub(super) fn runner_matches(runner: &RunnerWithActivity, query: &str) -> bool {
+pub(super) fn role_matches(role: &RoleWithActivity, query: &str) -> bool {
     query.is_empty()
-        || runner.runner.handle.to_lowercase().contains(query)
-        || runner.runner.display_name.to_lowercase().contains(query)
-        || runner.runner.runtime.to_lowercase().contains(query)
+        || role.role.handle.to_lowercase().contains(query)
+        || role.role.display_name.to_lowercase().contains(query)
+        || role.role.runtime.to_lowercase().contains(query)
 }
 
 pub(super) fn suggest_slot_handle(base: &str, taken: &HashSet<String>) -> String {
@@ -144,14 +142,13 @@ pub(super) fn suggest_slot_handle(base: &str, taken: &HashSet<String>) -> String
 
 pub(super) fn add_slot_runtime_options(
     runtimes: &[RuntimeCatalogEntry],
-    selected: Option<&RunnerWithActivity>,
+    selected: Option<&RoleWithActivity>,
 ) -> Vec<SelectOption> {
     let default = selected
-        .map(|runner| format!("Runner default ({})", runner.runner.runtime))
-        .unwrap_or_else(|| "Runner default".into());
-    let mut options = vec![
-        SelectOption::new("", default).description("Use the runtime configured on the runner.")
-    ];
+        .map(|role| format!("Role default ({})", role.role.runtime))
+        .unwrap_or_else(|| "Role default".into());
+    let mut options =
+        vec![SelectOption::new("", default).description("Use the runtime configured on the role.")];
     options.extend(runtimes.iter().map(|runtime| {
         SelectOption::new(runtime.name.to_string(), runtime.display_name.clone())
             .description(runtime.description.clone())
@@ -203,7 +200,7 @@ pub(super) fn slot_handle_error(
 pub(super) fn add_slot_can_submit(form: &AddSlotForm) -> bool {
     !form.loading
         && !form.submitting
-        && selected_add_slot_runner(form).is_some()
+        && selected_add_slot_role(form).is_some()
         && !form.slot_handle_empty
         && form.slot_handle_error.is_none()
 }
@@ -233,38 +230,38 @@ pub(super) fn add_slot_focus_order(
     order
 }
 
-pub(super) fn crew_usage_label(runner: &RunnerWithActivity) -> String {
-    if runner.activity.crew_count == 1 {
+pub(super) fn crew_usage_label(role: &RoleWithActivity) -> String {
+    if role.activity.crew_count == 1 {
         "in 1 crew".into()
     } else {
-        format!("in {} crews", runner.activity.crew_count)
+        format!("in {} crews", role.activity.crew_count)
     }
 }
 
-pub(super) fn runner_activity_label(runner: &RunnerWithActivity) -> String {
-    if runner.activity.active_sessions > 0 {
-        if runner.activity.active_sessions == 1 {
+pub(super) fn role_activity_label(role: &RoleWithActivity) -> String {
+    if role.activity.active_sessions > 0 {
+        if role.activity.active_sessions == 1 {
             "1 session".into()
         } else {
-            format!("{} sessions", runner.activity.active_sessions)
+            format!("{} sessions", role.activity.active_sessions)
         }
-    } else if runner.activity.active_missions > 0 {
-        if runner.activity.active_missions == 1 {
+    } else if role.activity.active_missions > 0 {
+        if role.activity.active_missions == 1 {
             "1 mission".into()
         } else {
-            format!("{} missions", runner.activity.active_missions)
+            format!("{} missions", role.activity.active_missions)
         }
     } else {
         "idle".into()
     }
 }
 
-pub(super) fn slot_command_summary(slot: &SlotWithRunner) -> String {
+pub(super) fn slot_command_summary(slot: &SlotWithRole) -> String {
     if let Some(runtime) = slot
         .slot
         .runtime_override
         .as_deref()
-        .filter(|runtime| *runtime != slot.runner.runtime)
+        .filter(|runtime| *runtime != slot.role.runtime)
     {
         let command = runner_backend::ops::runtime::runtime_list()
             .into_iter()
@@ -284,8 +281,8 @@ pub(super) fn slot_command_summary(slot: &SlotWithRunner) -> String {
             format!("{command} (runtime defaults · {})", overrides.join(" · "))
         };
     }
-    let mut command = vec![slot.runner.command.clone()];
-    command.extend(slot.runner.args.clone());
+    let mut command = vec![slot.role.command.clone()];
+    command.extend(slot.role.args.clone());
     let command = command
         .into_iter()
         .filter(|part| !part.is_empty())

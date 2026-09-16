@@ -205,13 +205,13 @@ enum SidebarMenuAction {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum WorkspaceEntry {
     NewTab,
-    Runner,
+    Role,
     Crew,
 }
 
 const WORKSPACE_ENTRIES: [WorkspaceEntry; 3] = [
     WorkspaceEntry::NewTab,
-    WorkspaceEntry::Runner,
+    WorkspaceEntry::Role,
     WorkspaceEntry::Crew,
 ];
 
@@ -226,7 +226,7 @@ impl WorkspaceEntry {
         }
         match self {
             Self::NewTab => unreachable!(),
-            Self::Runner => matches!(route, AppRoute::Runners | AppRoute::RunnerDetail(_)),
+            Self::Role => matches!(route, AppRoute::Roles | AppRoute::RoleDetail(_)),
             Self::Crew => matches!(route, AppRoute::Crews | AppRoute::CrewEditor(_)),
         }
     }

@@ -370,25 +370,38 @@ mod tests {
         let pool = Arc::new(db::open_pool(&temp.path().join("runner.db")).unwrap());
         {
             let conn = pool.get().unwrap();
-            conn.execute(
-                "INSERT INTO runners
-                    (id, handle, display_name, runtime, command,
-                     args_json, created_at, updated_at)
-                 VALUES
-                    ('r1', 'alpha', 'Alpha', 'shell', '/bin/cat',
-                     '[]', '2026-08-18T00:00:00Z', '2026-08-18T00:00:00Z')",
-                [],
+            let timestamp = "2026-08-18T00:00:00Z".parse().unwrap();
+            runner_backend::repo::role::insert(
+                &conn,
+                &runner_backend::repo::role::RoleRow {
+                    id: "r1".into(),
+                    handle: "alpha".into(),
+                    display_name: "Alpha".into(),
+                    runtime: "shell".into(),
+                    command: "/bin/cat".into(),
+                    args_json: Some(Vec::new()),
+                    working_dir: None,
+                    system_prompt: None,
+                    env_json: Some(Default::default()),
+                    model: None,
+                    effort: None,
+                    created_at: timestamp,
+                    updated_at: timestamp,
+                },
             )
             .unwrap();
-            conn.execute(
-                "INSERT INTO sessions
-                    (id, runner_id, status, started_at, resume_on_launch)
-                 VALUES
-                    ('s1', 'r1', 'running', '2026-08-18T00:00:00Z', 0),
-                    ('claimed', 'r1', 'stopped', '2026-08-18T00:00:01Z', 2)",
-                [],
-            )
-            .unwrap();
+            let mut running = runner_backend::repo::session::SessionRowDb::new_running("s1".into());
+            running.role_id = Some("r1".into());
+            running.started_at = Some(timestamp);
+            runner_backend::repo::session::insert(&conn, &running).unwrap();
+            let mut claimed =
+                runner_backend::repo::session::SessionRowDb::new_running("claimed".into());
+            claimed.role_id = Some("r1".into());
+            claimed.status = runner_backend::model::SessionStatus::Stopped;
+            claimed.started_at = Some("2026-08-18T00:00:01Z".parse().unwrap());
+            claimed.resume_on_launch = true;
+            runner_backend::repo::session::insert(&conn, &claimed).unwrap();
+            runner_backend::repo::session::mark_resume_on_launch_claimed(&conn, "claimed").unwrap();
         }
         let runtime: Arc<dyn session::runtime::SessionRuntime> =
             Arc::new(session::pty_runtime::PtyRuntime::new());

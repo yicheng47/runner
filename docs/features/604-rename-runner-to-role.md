@@ -36,7 +36,7 @@ The resulting vocabulary is all plain English with no learning curve: **role, cr
 
 ### Data
 
-- `runners` → `roles`; `slots.runner_id` → `role_id`. One migration.
+- `runners` → `roles`; `slots.runner_id` → `role_id`; `sessions.runner_id` → `role_id`. One migration. The sessions column has carried the nullable role reference since migration 0007 and is corrected in the same rename.
 - No field collision: `runners` has no `role` column, and `role` appears three times total in `runner-backend`.
 - The row keeps its current shape. Role identity (`handle`, `display_name`, `system_prompt`) and launch config (`runtime`, `command`, `args_json`, `env_json`, `model`, `effort`, `working_dir`) continue to share it — a role that names its own engine is coherent, and splitting them is a separate question.
 
@@ -87,11 +87,11 @@ Two copy fixes to take while in this modal:
 
 ## Implementation phases
 
-1. Table rename plus migration, `slots.role_id`.
-2. Backend rename, `ops/runner.rs` → `ops/role.rs`.
-3. MCP tools and their descriptions.
-4. UI copy, and `surfaces/runners/` → `surfaces/roles/`.
-5. Docs, both READMEs together.
+1. [x] Table rename plus migration, `slots.role_id` and `sessions.role_id`.
+2. [x] Backend rename, `ops/runner.rs` → `ops/role.rs`.
+3. [x] MCP tools and their descriptions.
+4. [x] UI copy, and `surfaces/runners/` → `surfaces/roles/`.
+5. [x] Docs, both READMEs together.
 
 ## Verification
 

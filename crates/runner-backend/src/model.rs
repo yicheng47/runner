@@ -24,7 +24,7 @@ pub struct Crew {
     pub purpose: Option<String>,
     pub goal: Option<String>,
     /// Layer-2 team conventions text. Spliced between the platform
-    /// preamble and the runner persona on mission spawns only;
+    /// preamble and the role persona on mission spawns only;
     /// direct chats ignore it. NULL / empty = no splice. See #54.
     #[serde(default)]
     pub system_prompt_addendum: Option<String>,
@@ -32,15 +32,15 @@ pub struct Crew {
     pub updated_at: Timestamp,
 }
 
-// Global runner definition. A runner can be referenced by zero or more
-// Runner is a config template — the agent CLI's runtime, command,
+// Global role definition. A role can be referenced by zero or more
+// slots. A role is a config template — the agent CLI's runtime, command,
 // args, env, optional system_prompt, optional working_dir, plus a
 // globally-unique `handle` that names the template. Per-slot identity
 // lives on `Slot` (see docs/impls/archive/0002-crew-slots.md): the same template
 // can sit in multiple slots with distinct slot_handles even within
 // one crew.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Runner {
+pub struct Role {
     pub id: String,
     pub handle: String,
     pub display_name: String,
@@ -66,25 +66,25 @@ pub struct Runner {
     pub updated_at: Timestamp,
 }
 
-// One position in a crew. Each slot references a Runner template and
+// One position in a crew. Each slot references a Role template and
 // carries its own in-crew identity (`slot_handle`). Two slots in the
-// same crew can both reference the same Runner, with different
+// same crew can both reference the same Role, with different
 // slot_handles.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Slot {
     pub id: String,
     pub crew_id: String,
-    pub runner_id: String,
+    pub role_id: String,
     pub slot_handle: String,
     pub position: i64,
     pub lead: bool,
-    /// Per-slot engine choice. NULL = use the runner's own `runtime`.
+    /// Per-slot engine choice. NULL = use the role's own `runtime`.
     /// A differing runtime resets engine config to registry defaults
     /// before the slot's model and effort overrides are applied.
     #[serde(default)]
     pub runtime_override: Option<String>,
     /// Optional model override applied after runtime resolution. NULL
-    /// inherits the runner template unless a differing runtime reset
+    /// inherits the role template unless a differing runtime reset
     /// the model to that engine's default.
     #[serde(default)]
     pub model_override: Option<String>,
@@ -95,13 +95,13 @@ pub struct Slot {
     pub added_at: Timestamp,
 }
 
-// Slot joined with its Runner template. Returned by `slot_list` so
+// Slot joined with its Role template. Returned by `slot_list` so
 // the UI can render a crew's roster in one shot.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SlotWithRunner {
+pub struct SlotWithRole {
     #[serde(flatten)]
     pub slot: Slot,
-    pub runner: Runner,
+    pub role: Role,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -207,18 +207,18 @@ mod tests {
 }
 
 // A PTY run. `mission_id` is None for "direct chat" sessions that
-// the user opened from the Runners page without starting a mission.
+// the user opened from the Roles page without starting a mission.
 // `slot_id` is set for mission sessions (it's the slot they
-// instantiate) and None for direct chats. `runner_id` always points
-// at the runner template — for mission sessions it's a denorm of
-// `slots.runner_id`. `cwd` is carried on the session row so direct
+// instantiate) and None for direct chats. `role_id` always points
+// at the role template — for mission sessions it's a denorm of
+// `slots.role_id`. `cwd` is carried on the session row so direct
 // sessions have a working directory even without a parent mission to
 // inherit from.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Session {
     pub id: String,
     pub mission_id: Option<String>,
-    pub runner_id: String,
+    pub role_id: String,
     pub slot_id: Option<String>,
     pub cwd: Option<String>,
     pub status: SessionStatus,

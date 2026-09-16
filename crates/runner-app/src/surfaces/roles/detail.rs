@@ -8,24 +8,24 @@ use super::logic::format_timestamp;
 use gpui::prelude::*;
 use gpui::{div, px, relative, rems, AnyElement, Context, FontWeight, KeyDownEvent, SharedString};
 use runner_app::ui::{Button, ButtonVariant, RuntimeBadge};
-use runner_backend::model::Runner;
-use runner_backend::ops::runner::RunnerActivity;
+use runner_backend::model::Role;
+use runner_backend::ops::role::RoleActivity;
 use runner_backend::ops::slot::CrewMembership;
 
 use crate::*;
 
 impl NativeRoot {
-    pub(super) fn render_runner_detail(&mut self, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn render_role_detail(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let root = cx.entity();
         let back_root = root.clone();
         let back_key_root = root.clone();
         let edit_root = root.clone();
         let chat_root = root.clone();
-        let detail = &self.runner_surfaces.detail;
+        let detail = &self.role_surfaces.detail;
         let handle = detail.handle.clone();
-        let runner = detail.runner.clone();
-        let pending = runner.as_ref().is_some_and(|runner| {
-            self.runner_surfaces.chat_pending.as_deref() == Some(runner.id.as_str())
+        let role = detail.role.clone();
+        let pending = role.as_ref().is_some_and(|role| {
+            self.role_surfaces.chat_pending.as_deref() == Some(role.id.as_str())
         });
         let body = if detail.loading {
             div()
@@ -33,13 +33,8 @@ impl NativeRoot {
                 .text_color(theme::muted())
                 .child("Loading…")
                 .into_any_element()
-        } else if let Some(runner) = runner.clone() {
-            self.render_runner_detail_body(
-                runner,
-                detail.activity.clone(),
-                detail.crews.clone(),
-                cx,
-            )
+        } else if let Some(role) = role.clone() {
+            self.render_role_detail_body(role, detail.activity.clone(), detail.crews.clone(), cx)
         } else {
             div()
                 .rounded_sm()
@@ -50,18 +45,24 @@ impl NativeRoot {
                 .py_2()
                 .text_size(theme::text_title())
                 .text_color(theme::danger())
-                .child(format!("Runner @{handle} not found."))
+                .child(format!("Role @{handle} not found."))
                 .into_any_element()
         };
-        let header_runner = runner.clone();
-        let chat_runner = runner.clone();
+        let header_role = role.clone();
+        let chat_role = role.clone();
         div()
-            .id("runner-detail-scroll")
+            .id("role-detail-scroll")
+            .when(cfg!(test), |scroll| {
+                scroll.debug_selector(|| "ROLE_DETAIL_SCROLL".into())
+            })
             .flex_1()
             .min_h(px(0.))
             .overflow_y_scroll()
             .child(
                 div()
+                    .when(cfg!(test), |container| {
+                        container.debug_selector(|| "ROLE_DETAIL_CONTAINER".into())
+                    })
                     .mx_auto()
                     .w_full()
                     .max_w(rems(1024. / 16.))
@@ -72,6 +73,9 @@ impl NativeRoot {
                     .py_8()
                     .child(
                         div()
+                            .when(cfg!(test), |header| {
+                                header.debug_selector(|| "ROLE_DETAIL_HEADER".into())
+                            })
                             .flex()
                             .items_center()
                             .justify_between()
@@ -85,7 +89,7 @@ impl NativeRoot {
                                     .text_color(theme::muted())
                                     .child(
                                         div()
-                                            .id("runner-detail-back")
+                                            .id("role-detail-back")
                                             .tab_index(0)
                                             .cursor_pointer()
                                             .hover(|text| text.text_color(theme::text()))
@@ -94,7 +98,7 @@ impl NativeRoot {
                                             })
                                             .on_click(move |_, window, cx| {
                                                 back_root.update(cx, |this, cx| {
-                                                    this.open_runners(window, cx)
+                                                    this.open_roles(window, cx)
                                                 });
                                             })
                                             .on_key_down(move |event: &KeyDownEvent, window, cx| {
@@ -104,11 +108,11 @@ impl NativeRoot {
                                                 ) {
                                                     cx.stop_propagation();
                                                     back_key_root.update(cx, |this, cx| {
-                                                        this.open_runners(window, cx)
+                                                        this.open_roles(window, cx)
                                                     });
                                                 }
                                             })
-                                            .child("Runners"),
+                                            .child("Roles"),
                                     )
                                     .child(div().text_color(theme::border_strong()).child("›"))
                                     .child(
@@ -119,8 +123,8 @@ impl NativeRoot {
                                             .text_color(theme::text())
                                             .child(format!("@{handle}")),
                                     )
-                                    .children(runner.as_ref().map(|runner| {
-                                        RuntimeBadge::new(runner.runtime.clone()).uppercase(true)
+                                    .children(role.as_ref().map(|role| {
+                                        RuntimeBadge::new(role.runtime.clone()).uppercase(true)
                                     })),
                             )
                             .child(
@@ -129,32 +133,30 @@ impl NativeRoot {
                                     .items_center()
                                     .gap_2()
                                     .child(
-                                        Button::new("edit-runner", "Edit")
-                                            .tooltip("Edit runner")
-                                            .disabled(header_runner.is_none())
+                                        Button::new("edit-role", "Edit")
+                                            .tooltip("Edit role")
+                                            .disabled(header_role.is_none())
                                             .on_press(move |window, cx| {
-                                                if let Some(runner) = header_runner.clone() {
+                                                if let Some(role) = header_role.clone() {
                                                     edit_root.update(cx, |this, cx| {
-                                                        this.open_runner_edit(
-                                                            runner, None, window, cx,
-                                                        )
+                                                        this.open_role_edit(role, None, window, cx)
                                                     });
                                                 }
                                             }),
                                     )
                                     .child(
                                         Button::new(
-                                            "runner-detail-chat",
+                                            "role-detail-chat",
                                             if pending { "Starting…" } else { "Chat now" },
                                         )
                                         .variant(ButtonVariant::Primary)
-                                        .tooltip("Start a one-on-one PTY with this runner")
-                                        .disabled(chat_runner.is_none() || pending)
+                                        .tooltip("Start a one-on-one PTY with this role")
+                                        .disabled(chat_role.is_none() || pending)
                                         .on_press(
                                             move |window, cx| {
-                                                if let Some(runner) = chat_runner.clone() {
+                                                if let Some(role) = chat_role.clone() {
                                                     chat_root.update(cx, |this, cx| {
-                                                        this.start_runner_chat(runner, window, cx)
+                                                        this.start_role_chat(role, window, cx)
                                                     });
                                                 }
                                             },
@@ -162,11 +164,11 @@ impl NativeRoot {
                                     ),
                             ),
                     )
-                    .children(runner.as_ref().map(|runner| {
+                    .children(role.as_ref().map(|role| {
                         div()
                             .text_size(theme::text_title())
                             .text_color(theme::muted())
-                            .child(runner.display_name.clone())
+                            .child(role.display_name.clone())
                     }))
                     .children(detail.error.clone().map(error_banner))
                     .child(body),
@@ -174,10 +176,10 @@ impl NativeRoot {
             .into_any_element()
     }
 
-    fn render_runner_detail_body(
+    fn render_role_detail_body(
         &self,
-        runner: Runner,
-        activity: Option<RunnerActivity>,
+        role: Role,
+        activity: Option<RoleActivity>,
         crews: Vec<CrewMembership>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -231,7 +233,7 @@ impl NativeRoot {
                         )
                         .child(
                             div()
-                                .id(SharedString::from(format!("open-runner-crew-{}", crew_id)))
+                                .id(SharedString::from(format!("open-role-crew-{}", crew_id)))
                                 .tab_index(0)
                                 .cursor_pointer()
                                 .text_size(theme::text_ui())
@@ -263,22 +265,24 @@ impl NativeRoot {
             .and_then(|value| value.last_started_at)
             .map(format_timestamp)
             .unwrap_or_else(|| "—".into());
-        let args = runner.args.join(" ");
+        let args = role.args.join(" ");
         div()
-            .w_full()
+            .when(cfg!(test), |body| body.debug_selector(|| "ROLE_DETAIL_BODY".into()))
             .flex()
             .items_start()
             .gap_4()
             .child(
                 div()
-                    .w(relative(2. / 3.))
+                    .when(cfg!(test), |main| main.debug_selector(|| "ROLE_DETAIL_MAIN".into()))
+                    .flex_1()
+                    .min_w(px(0.))
                     .flex()
                     .flex_col()
                     .gap_4()
                     .child(detail_card(
                         "Default system prompt",
-                        Some("Used whenever this runner spawns. Override per crew/mission slot later (v0.x)."),
-                        if let Some(prompt) = runner.system_prompt.clone() {
+                        Some("Used whenever this role spawns. Override per crew/mission slot later (v0.x)."),
+                        if let Some(prompt) = role.system_prompt.clone() {
                             div()
                                 .font_family(theme::UI_MONOSPACE_FONT)
                                 .text_size(theme::text_ui())
@@ -295,7 +299,7 @@ impl NativeRoot {
                                 .into_any_element()
                         },
                     ))
-                    .child(detail_card("Crews using this runner", None, crew_rows))
+                    .child(detail_card("Crews using this role", None, crew_rows))
                     .child(detail_card(
                         "Chat now",
                         Some("Spawn a one-on-one PTY. Chats don't join any mission's coordination bus."),
@@ -316,18 +320,22 @@ impl NativeRoot {
                                     .font_family(theme::UI_MONOSPACE_FONT)
                                     .text_size(theme::text_ui())
                                     .text_color(theme::faint())
-                                    .child(runner.working_dir.clone().unwrap_or_else(|| "—".into())),
+                                    .child(role.working_dir.clone().unwrap_or_else(|| "—".into())),
                             )
                             .child(
                                 div()
                                     .text_size(theme::text_meta())
                                     .text_color(theme::faint())
-                                    .child("Inherits the runner's working directory. Click Edit to change it, or override per-chat from the chat itself."),
+                                    .child("Inherits the role's working directory. Click Edit to change it, or override per-chat from the chat itself."),
                             ),
                     )),
             )
             .child(
                 div()
+                    .when(cfg!(test), |aside| {
+                        aside.debug_selector(|| "ROLE_DETAIL_ASIDE".into())
+                    })
+                    .flex_none()
                     .w(relative(1. / 3.))
                     .flex()
                     .flex_col()
@@ -368,19 +376,19 @@ impl NativeRoot {
                             .gap(rems(6. / 16.))
                             .child(detail_metadata_row(
                                 "Handle",
-                                format!("@{}", runner.handle),
+                                format!("@{}", role.handle),
                                 true,
                                 false,
                             ))
                             .child(detail_metadata_row(
                                 "Runtime",
-                                runner.runtime,
+                                role.runtime,
                                 false,
                                 false,
                             ))
                             .child(detail_metadata_row(
                                 "Command",
-                                runner.command,
+                                role.command,
                                 true,
                                 false,
                             ))
@@ -389,11 +397,11 @@ impl NativeRoot {
                             }))
                             .child(detail_metadata_row(
                                 "Created",
-                                format_timestamp(runner.created_at),
+                                format_timestamp(role.created_at),
                                 false,
                                 false,
                             ))
-                            .child(detail_metadata_row("ID", runner.id, true, true)),
+                            .child(detail_metadata_row("ID", role.id, true, true)),
                     )),
             )
             .into_any_element()

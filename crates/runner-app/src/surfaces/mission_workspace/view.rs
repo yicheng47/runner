@@ -3,6 +3,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui::prelude::*;
+#[cfg(target_os = "macos")]
+use gpui::WeakEntity;
 use gpui::{
     div, px, rems, svg, AnyElement, App, CursorStyle, DragMoveEvent, FontWeight, MouseButton,
     SharedString, Window, WindowControlArea,
@@ -37,7 +39,50 @@ impl MissionWorkspace {
     }
 
     fn render_open_sidebar_button(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        self.sidebar_collapsed.then(|| {
+        if !self.sidebar_collapsed {
+            return None;
+        }
+        let toggle = self.render_open_sidebar_toggle(cx);
+        #[cfg(target_os = "macos")]
+        {
+            let shell = self.shell.clone();
+            let (can_go_back, can_go_forward) = shell
+                .upgrade()
+                .map(|shell| shell.read(cx).page_navigation_state())
+                .unwrap_or((false, false));
+            let navigate = |shell: WeakEntity<NativeRoot>, direction: isize| {
+                move |window: &mut Window, cx: &mut App| {
+                    if let Some(shell) = shell.upgrade() {
+                        shell.update(cx, |shell, shell_cx| {
+                            shell.navigate_runtime_page(direction, window, shell_cx)
+                        });
+                    }
+                }
+            };
+            Some(
+                NativeRoot::titlebar_control_cluster("mission-titlebar-controls")
+                    .child(toggle)
+                    .child(
+                        IconButton::new("window-previous-page", "chevron-left.svg")
+                            .disabled(!can_go_back)
+                            .on_press(navigate(shell.clone(), -1)),
+                    )
+                    .child(
+                        IconButton::new("window-next-page", "chevron-right.svg")
+                            .disabled(!can_go_forward)
+                            .on_press(navigate(shell, 1)),
+                    )
+                    .into_any_element(),
+            )
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            Some(toggle)
+        }
+    }
+
+    fn render_open_sidebar_toggle(&self, cx: &mut Context<Self>) -> AnyElement {
+        {
             div()
                 .id("open-sidebar")
                 .group("open-sidebar")
@@ -77,7 +122,7 @@ impl MissionWorkspace {
                     cx.notify();
                 }))
                 .into_any_element()
-        })
+        }
     }
 
     fn render_titlebar_drag_area(
@@ -319,7 +364,7 @@ impl MissionWorkspace {
         });
         let rail_action = (!self.settings(cx).mission_rail_open).then(|| {
             IconButton::new("open-mission-rail", "panel-right-hidden.svg")
-                .tooltip("Open runners panel")
+                .tooltip("Open sessions panel")
                 .on_press(move |_, cx| {
                     open_rail_root.update(cx, |this, cx| {
                         this.update_app_settings(cx, true, |settings| {

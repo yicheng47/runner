@@ -55,7 +55,7 @@ impl MissionWorkspace {
             TextField::textarea(
                 input_cx.focus_handle(),
                 "",
-                "Message the crew — @handle to address one runner",
+                "Message the crew — @handle to address one session",
                 1,
                 false,
             )

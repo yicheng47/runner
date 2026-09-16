@@ -142,7 +142,7 @@ pub(crate) fn entries() -> &'static [KeymapEntry] {
             KeymapEntry {
                 id: "command-palette",
                 title: "Command palette",
-                description: "Search commands, missions, chats, runners, and crews.",
+                description: "Search commands, missions, chats, roles, and crews.",
                 scope: KeymapScope::Global,
                 default: default_combo("cmd-k", None, false),
                 fixed: false,
@@ -342,7 +342,7 @@ pub(crate) fn entries() -> &'static [KeymapEntry] {
             KeymapEntry {
                 id: "mission-tab-previous",
                 title: "Previous mission tab",
-                description: "Cycle back through the feed and open runner tabs.",
+                description: "Cycle back through the feed and open session tabs.",
                 scope: KeymapScope::Mission,
                 default: default_combo("cmd-[", None, false),
                 fixed: false,
@@ -350,7 +350,7 @@ pub(crate) fn entries() -> &'static [KeymapEntry] {
             KeymapEntry {
                 id: "mission-tab-next",
                 title: "Next mission tab",
-                description: "Cycle forward through the feed and open runner tabs.",
+                description: "Cycle forward through the feed and open session tabs.",
                 scope: KeymapScope::Mission,
                 default: default_combo("cmd-]", None, false),
                 fixed: false,

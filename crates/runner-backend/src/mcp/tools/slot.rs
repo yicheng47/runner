@@ -65,7 +65,7 @@ impl RunnerMcpHandler {
         let slot = slot::create(
             &mut conn,
             &input.crew_id,
-            &input.runner_id,
+            &input.role_id,
             &input.slot_handle,
             input.runtime_override.map(crate::model::Runtime::key),
             input.model_override.as_deref(),

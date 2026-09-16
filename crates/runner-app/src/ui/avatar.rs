@@ -11,7 +11,7 @@ const HUMAN_SOURCE_CELLS: [bool; 15] = [
 ];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum RunnerPresence {
+pub enum RolePresence {
     Busy,
     Idle,
     Stopped,
@@ -78,13 +78,13 @@ fn fnv1a(seed: &str) -> u32 {
 }
 
 #[derive(IntoElement)]
-pub struct RunnerAvatar {
+pub struct RoleAvatar {
     seed: SharedString,
     size: f32,
-    presence: Option<RunnerPresence>,
+    presence: Option<RolePresence>,
 }
 
-impl RunnerAvatar {
+impl RoleAvatar {
     pub fn new(seed: impl Into<SharedString>, size: f32) -> Self {
         Self {
             seed: seed.into(),
@@ -93,13 +93,13 @@ impl RunnerAvatar {
         }
     }
 
-    pub fn presence(mut self, presence: RunnerPresence) -> Self {
+    pub fn presence(mut self, presence: RolePresence) -> Self {
         self.presence = Some(presence);
         self
     }
 }
 
-impl RenderOnce for RunnerAvatar {
+impl RenderOnce for RoleAvatar {
     fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
         let cells = cells_for_seed(&self.seed);
         let hue = hue_for_seed(&self.seed).color();
@@ -141,10 +141,10 @@ impl RenderOnce for RunnerAvatar {
                     .border_2()
                     .border_color(theme::bg())
                     .bg(match presence {
-                        RunnerPresence::Busy => theme::accent(),
-                        RunnerPresence::Idle => theme::with_alpha(theme::accent(), 0.4),
-                        RunnerPresence::Stopped => theme::faint(),
-                        RunnerPresence::Crashed => theme::danger(),
+                        RolePresence::Busy => theme::accent(),
+                        RolePresence::Idle => theme::with_alpha(theme::accent(), 0.4),
+                        RolePresence::Stopped => theme::faint(),
+                        RolePresence::Crashed => theme::danger(),
                     })
             }))
     }
