@@ -6,6 +6,7 @@ use super::elements::command_held_alone;
 use super::elements::default_session_label_parts;
 use super::elements::other_modifiers_held;
 use super::elements::sidebar_fork_menu_target;
+use super::elements::sidebar_icon_color;
 use super::elements::tab_label_live;
 use super::menus::mission_menu_entries;
 use super::menus::project_create_menu_entries;
@@ -13,6 +14,7 @@ use super::menus::project_menu_entries;
 use super::menus::sidebar_create_menu_entries;
 use super::menus::sidebar_tab_icon;
 use super::menus::tab_menu_entries;
+use super::rows_render::project_header_icon;
 use super::view::sidebar_scroll_container;
 use super::view::sidebar_scroll_frame;
 use super::*;
@@ -963,6 +965,37 @@ fn shell_sessions_default_to_the_shell_command_name() {
         default_session_label_parts("codex", "codex", Some("coder"), "Codex"),
         "@coder"
     );
+}
+
+#[test]
+fn sidebar_icons_use_text_opacity_for_liveness_without_changing_provider_tints() {
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    for variant in [
+        theme::ThemeVariant::Carbon,
+        theme::ThemeVariant::RunnerLight,
+    ] {
+        theme::set_active_variant(variant);
+        let generic = ChatIcon::generic("flag.svg");
+        assert_eq!(sidebar_icon_color(generic, true), theme::text());
+        assert_eq!(
+            sidebar_icon_color(generic, false),
+            theme::with_alpha(theme::text(), 0.45)
+        );
+
+        let provider = ChatIcon::for_runtime("claude-code");
+        let tint = gpui::rgb(0xd97757).into();
+        assert_eq!(sidebar_icon_color(provider, true), tint);
+        assert_eq!(
+            sidebar_icon_color(provider, false),
+            theme::with_alpha(tint, 0.45)
+        );
+    }
+}
+
+#[test]
+fn project_header_icon_follows_expansion_state() {
+    assert_eq!(project_header_icon(true).path, "folder.svg");
+    assert_eq!(project_header_icon(false).path, "folder-open.svg");
 }
 
 #[test]
