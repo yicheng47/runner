@@ -3,6 +3,7 @@
 > Tracking issue: [#610](https://github.com/yicheng47/runner/issues/610)
 > Priority: P1. Platforms: Windows for phase 1; macOS and Windows for the rest.
 > Continues [347](./archive/347-hook-based-session-status.md), which shipped the hook-based status model on macOS for Claude Code, Codex and GitHub Copilot CLI (PRs #588, #589, #609) and closed on 2026-09-16. The program record, slice plan and log stay in [`docs/impls/347-hook-status/`](../impls/archive/347-hook-status/README.md).
+> Implementation plan: [`docs/impls/610-windows-hook-status.md`](../impls/610-windows-hook-status.md) — the Windows hook contract measured on JASONPC on 2026-09-16 and the mission split.
 
 ## Motivation
 

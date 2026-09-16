@@ -6,6 +6,7 @@ A plan stays here while its work is in flight and moves to [`archive/`](./archiv
 
 ## Active
 
+- [Hook status on Windows](./610-windows-hook-status.md) — feature [610](../features/610-windows-hook-status.md) ([#610](https://github.com/yicheng47/runner/issues/610)): the Windows hook contract measured on JASONPC on 2026-09-16 (Claude Code hooks run under Git Bash, Codex and Copilot hooks under PowerShell 7), a per-runtime gate, and three missions — all three runtimes' Windows bridges first, then the deferred status details, then the title-heuristic removal.
 - [`local-skills/`](./local-skills/README.md) — feature [73](../features/archive/73-runner-skills.md) (closed 2026-09-13; M2/M3 continue as [#577](https://github.com/yicheng47/runner/issues/577)) implementation program: condensed state and binding decisions, milestone plan, dated impl log.
 
 ## Archive
