@@ -53,18 +53,18 @@ const RUNTIME_DEFINITIONS: &[RuntimeDefinition] = &[
         skills_dirs: &[".claude/skills"],
     },
     RuntimeDefinition {
-        name: Runtime::Trae,
-        display_name: "TRAE CLI",
-        command: "traecli",
-        native_fork: false,
-        skills_dirs: &[],
-    },
-    RuntimeDefinition {
         name: Runtime::Copilot,
         display_name: "GitHub Copilot CLI",
         command: "copilot",
         native_fork: false,
         skills_dirs: &[".copilot/skills", ".agents/skills"],
+    },
+    RuntimeDefinition {
+        name: Runtime::Trae,
+        display_name: "TRAE CLI",
+        command: "traecli",
+        native_fork: false,
+        skills_dirs: &[],
     },
 ];
 

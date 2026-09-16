@@ -201,8 +201,8 @@ Carbon 和 Runner Light 是 Runner 自己的主题，Catppuccin Mocha 和 Latte 
 | --- | --- | --- |
 | Claude Code | 支持 | 支持 |
 | Codex | 支持 | 支持 |
-| TRAE CLI | 实验性 | 未验证 |
 | GitHub Copilot CLI | 支持 | 支持 |
+| TRAE CLI | 实验性 | 未验证 |
 
 Claude Code 和 Codex 是主要支持的 agent，终端渲染有夹具测试覆盖，启动和催促时序也做过调优。TRAE CLI 用得较少，可能有粗糙之处；macOS 上检测到后默认启用，Windows 上默认禁用，因为 Runner 与它的集成尚未在 Windows 上验证。欢迎提 [issue](https://github.com/yicheng47/runner/issues)。
 

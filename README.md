@@ -201,8 +201,8 @@ Carbon and Runner Light are Runner's own themes; Catppuccin Mocha and Latte ride
 | --- | --- | --- |
 | Claude Code | Supported | Supported |
 | Codex | Supported | Supported |
-| TRAE CLI | Experimental | Not validated |
 | GitHub Copilot CLI | Supported | Supported |
+| TRAE CLI | Experimental | Not validated |
 
 Claude Code and Codex are the primary supported agents, with fixture-tested terminal rendering and tuned launch/nudge timing. TRAE CLI sees less use and may have rough edges; it is enabled by default on macOS when detected, and disabled by default on Windows, where Runner integration has not been validated. [Issues](https://github.com/yicheng47/runner/issues) are welcome.
 

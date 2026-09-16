@@ -383,19 +383,6 @@ fn runtime_catalog_options() -> Vec<RuntimeCatalogEntry> {
             efforts: claude_efforts,
         },
         RuntimeCatalogEntry {
-            name: Runtime::Trae,
-            display_name: "TRAE CLI".into(),
-            command: "traecli".into(),
-            native_fork: crate::router::runtime::supports_native_fork(Some(Runtime::Trae)),
-            description: "TRAE CLI".into(),
-            default_enabled: cfg!(target_os = "macos"),
-            available: false,
-            default_model: None,
-            default_effort: None,
-            models: vec![default_model_option()],
-            efforts: common_efforts(),
-        },
-        RuntimeCatalogEntry {
             name: Runtime::Copilot,
             display_name: "GitHub Copilot CLI".into(),
             command: "copilot".into(),
@@ -448,6 +435,19 @@ fn runtime_catalog_options() -> Vec<RuntimeCatalogEntry> {
                 )
                 .collect(),
         },
+        RuntimeCatalogEntry {
+            name: Runtime::Trae,
+            display_name: "TRAE CLI".into(),
+            command: "traecli".into(),
+            native_fork: crate::router::runtime::supports_native_fork(Some(Runtime::Trae)),
+            description: "TRAE CLI".into(),
+            default_enabled: cfg!(target_os = "macos"),
+            available: false,
+            default_model: None,
+            default_effort: None,
+            models: vec![default_model_option()],
+            efforts: common_efforts(),
+        },
     ]
 }
 
@@ -498,18 +498,18 @@ mod tests {
             [
                 Runtime::Codex,
                 Runtime::ClaudeCode,
-                Runtime::Trae,
-                Runtime::Copilot
+                Runtime::Copilot,
+                Runtime::Trae
             ]
         );
         assert!(catalog[0].default_enabled);
         assert!(catalog[1].default_enabled);
-        assert_eq!(catalog[2].default_enabled, cfg!(target_os = "macos"));
-        assert!(catalog[3].default_enabled);
-        assert_eq!(catalog[3].models[1].value, "auto");
-        assert_eq!(catalog[3].models.len(), 28);
+        assert!(catalog[2].default_enabled);
+        assert_eq!(catalog[2].models[1].value, "auto");
+        assert_eq!(catalog[2].models.len(), 28);
+        assert_eq!(catalog[3].default_enabled, cfg!(target_os = "macos"));
         assert_eq!(
-            catalog[3]
+            catalog[2]
                 .efforts
                 .iter()
                 .map(|effort| effort.value.as_str())
@@ -543,7 +543,7 @@ mod tests {
             ["", "low", "medium", "high", "xhigh", "max", "ultra"]
         );
         assert_eq!(
-            catalog[2]
+            catalog[3]
                 .efforts
                 .iter()
                 .map(|effort| effort.value.as_str())
@@ -566,8 +566,8 @@ mod tests {
             vec![
                 Runtime::Codex,
                 Runtime::ClaudeCode,
-                Runtime::Trae,
                 Runtime::Copilot,
+                Runtime::Trae,
             ]
         } else {
             vec![Runtime::Codex, Runtime::ClaudeCode, Runtime::Copilot]

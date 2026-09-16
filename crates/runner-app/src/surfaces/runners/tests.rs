@@ -15,7 +15,7 @@ fn legacy_slot_pins_reach_validation_as_raw_names() {
         let error = runner_backend::ops::slot::validate_runtime_override(raw_override).unwrap_err();
         assert_eq!(
             error.to_string(),
-            format!("unknown runtime '{name}' — valid runtimes: codex, claude-code, trae, copilot")
+            format!("unknown runtime '{name}' — valid runtimes: codex, claude-code, copilot, trae")
         );
     }
 }

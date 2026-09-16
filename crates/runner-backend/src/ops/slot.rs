@@ -1237,7 +1237,7 @@ mod tests {
                     .unwrap_err()
                     .to_string(),
                 format!(
-                    "unknown runtime '{name}' — valid runtimes: codex, claude-code, trae, copilot"
+                    "unknown runtime '{name}' — valid runtimes: codex, claude-code, copilot, trae"
                 )
             );
         }
