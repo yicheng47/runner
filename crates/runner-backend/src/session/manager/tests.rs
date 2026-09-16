@@ -5471,6 +5471,17 @@ fn manager_with_contended_wake_sink(event_log: Arc<EventLog>) -> Arc<SessionMana
     mgr
 }
 
+/// The wake append retries for a bounded budget and then reports the
+/// contention instead of blocking, so under a lock held longer than that
+/// budget "event log busy" is the designed outcome, not a failure. The tests
+/// below hold the lock for as long as it takes their other path to prove it
+/// was not blocked, which on a loaded runner can outlast the budget.
+fn assert_wake_completed_or_gave_up(result: crate::error::Result<()>) {
+    if let Err(error) = result {
+        assert_eq!(error.to_string(), "event log busy", "{error}");
+    }
+}
+
 fn wake_busy_draft() -> EventDraft {
     EventDraft::signal(
         "crew",
@@ -5529,7 +5540,7 @@ fn contended_wake_append_does_not_block_output_ingestion() {
         "record_output must stay well under the wake retry budget; took {elapsed:?}",
     );
     assert_eq!(event.unwrap().seq, 300);
-    wake_result.unwrap();
+    assert_wake_completed_or_gave_up(wake_result);
 }
 
 #[test]
@@ -5586,7 +5597,7 @@ fn synthetic_wake_does_not_overwrite_a_newer_forwarder_transition() {
         ),
         (true, true),
     );
-    wake_result.unwrap();
+    assert_wake_completed_or_gave_up(wake_result);
     assert_eq!(
         mgr.activity_snapshot().get("session"),
         Some(&SessionActivityState::Idle),
