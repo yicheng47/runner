@@ -52,11 +52,17 @@ impl NativeRoot {
         let chat_role = role.clone();
         div()
             .id("role-detail-scroll")
+            .when(cfg!(test), |scroll| {
+                scroll.debug_selector(|| "ROLE_DETAIL_SCROLL".into())
+            })
             .flex_1()
             .min_h(px(0.))
             .overflow_y_scroll()
             .child(
                 div()
+                    .when(cfg!(test), |container| {
+                        container.debug_selector(|| "ROLE_DETAIL_CONTAINER".into())
+                    })
                     .mx_auto()
                     .w_full()
                     .max_w(rems(1024. / 16.))
@@ -67,6 +73,9 @@ impl NativeRoot {
                     .py_8()
                     .child(
                         div()
+                            .when(cfg!(test), |header| {
+                                header.debug_selector(|| "ROLE_DETAIL_HEADER".into())
+                            })
                             .flex()
                             .items_center()
                             .justify_between()
@@ -258,13 +267,15 @@ impl NativeRoot {
             .unwrap_or_else(|| "—".into());
         let args = role.args.join(" ");
         div()
-            .w_full()
+            .when(cfg!(test), |body| body.debug_selector(|| "ROLE_DETAIL_BODY".into()))
             .flex()
             .items_start()
             .gap_4()
             .child(
                 div()
-                    .w(relative(2. / 3.))
+                    .when(cfg!(test), |main| main.debug_selector(|| "ROLE_DETAIL_MAIN".into()))
+                    .flex_1()
+                    .min_w(px(0.))
                     .flex()
                     .flex_col()
                     .gap_4()
@@ -321,6 +332,10 @@ impl NativeRoot {
             )
             .child(
                 div()
+                    .when(cfg!(test), |aside| {
+                        aside.debug_selector(|| "ROLE_DETAIL_ASIDE".into())
+                    })
+                    .flex_none()
                     .w(relative(1. / 3.))
                     .flex()
                     .flex_col()

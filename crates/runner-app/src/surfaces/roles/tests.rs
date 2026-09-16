@@ -166,3 +166,182 @@ fn copilot_offers_only_the_three_supported_permission_modes_with_the_approved_co
     assert_eq!(permission_mode_description("copilot", PermissionMode::AcceptEdits), "File creates and edits run without asking; shell commands, URLs and paths outside the cwd still prompt.");
     assert_eq!(permission_mode_description("copilot", PermissionMode::Bypass), "Every tool, path and URL is allowed. Same flag for the app-wide mission permission mode; chats never carry it (#596).");
 }
+
+#[test]
+fn role_detail_columns_stay_inside_the_centered_container() {
+    use crate::surfaces::AppRoute;
+    use crate::theme_snapshot::ThemeGuard;
+    use crate::*;
+    use chrono::Utc;
+    use gpui::{px, size, TestAppContext, VisualTestContext};
+    use runner_backend::model::Role;
+    use runner_backend::{db, event_bus, events, mcp, router, session, shell_path, windows};
+    use std::sync::{Arc, Mutex, RwLock};
+
+    let _theme = ThemeGuard::new();
+    theme::set_active_variant(theme::ThemeVariant::Carbon);
+    let temp = tempfile::tempdir().unwrap();
+    let pool = Arc::new(db::open_pool(&temp.path().join("runner.db")).unwrap());
+    let runtime_shell_env = Arc::new(RwLock::new(shell_path::LoginShellEnv::default()));
+    let runtime_discovery = Arc::new(RwLock::new(shell_path::DiscoveryState::startup(None, None)));
+    let core = AppCore {
+        db: pool.clone(),
+        app_data_dir: temp.path().to_owned(),
+        sessions: session::SessionManager::new(
+            runtime_shell_env.clone(),
+            runtime_discovery.clone(),
+            Arc::new(session::pty_runtime::PtyRuntime::new()),
+        ),
+        runtime_shell_env,
+        runtime_discovery,
+        buses: event_bus::BusRegistry::new(),
+        routers: router::RouterRegistry::new(),
+        mission_grid_hint: Arc::new(Mutex::new(None)),
+        mcp: Arc::new(mcp::McpHandle::new()),
+        windows: Arc::new(windows::WindowRegistry::new()),
+        events: events::EventChannel::new(),
+        session_event_observer: Default::default(),
+        app_version: "0.0.0-test".into(),
+    };
+    let mut cx = TestAppContext::single();
+    let store = cx.new(|cx| {
+        AppStore::new(
+            core.clone(),
+            temp.path().join("settings.json"),
+            AppSettings::default(),
+            None,
+            cx,
+        )
+    });
+    cx.update(|cx| {
+        cx.set_global(crate::GlobalAppStore(store.clone()));
+        cx.set_global(crate::WindowLayoutCheckpoint::default());
+        #[cfg(not(windows))]
+        let updater = cx.new(|cx| crate::Updater::new(false, cx));
+        #[cfg(windows)]
+        let updater = cx.new(|cx| crate::Updater::new(false, temp.path().join("updates"), cx));
+        cx.set_global(crate::GlobalUpdater(updater));
+    });
+    let now = Utc::now();
+    let role = Role {
+        id: "01K000DEFAULT000RUNNERREVW01".into(),
+        handle: "reviewer".into(),
+        display_name: "Reviewer".into(),
+        runtime: "codex".into(),
+        command: "codex".into(),
+        args: ["--ask-for-approval", "on-request", "--sandbox", "workspace-write"]
+            .map(str::to_owned)
+            .to_vec(),
+        working_dir: None,
+        system_prompt: Some(
+            "You are a reviewer in a two-person peer coding loop. Your job is to read the task, inspect the coder's local working-tree diff, and push back when something is wrong, missing, risky, or out of scope.\n\n"
+                .repeat(4),
+        ),
+        env: Default::default(),
+        model: None,
+        effort: None,
+        created_at: now,
+        updated_at: now,
+    };
+    let host = cx.add_window(|window, cx| {
+        let mut root = NativeRoot::new(
+            "role-detail-layout".into(),
+            temp.path().join("logs"),
+            None,
+            None,
+            store.clone(),
+            window,
+            cx,
+        );
+        root.route = AppRoute::RoleDetail("reviewer".into());
+        root.role_surfaces.detail = RoleDetailState {
+            handle: "reviewer".into(),
+            role: Some(role),
+            activity: None,
+            crews: Vec::new(),
+            loaded: true,
+            loading: false,
+            error: None,
+        };
+        root
+    });
+    let mut visual = VisualTestContext::from_window(host.into(), &cx);
+    for width in [900., 1100., 1440.] {
+        visual.simulate_resize(size(px(width), px(900.)));
+        visual.run_until_parked();
+        let scroll = visual.debug_bounds("ROLE_DETAIL_SCROLL").unwrap();
+        let container = visual.debug_bounds("ROLE_DETAIL_CONTAINER").unwrap();
+        let header = visual.debug_bounds("ROLE_DETAIL_HEADER").unwrap();
+        let body = visual.debug_bounds("ROLE_DETAIL_BODY").unwrap();
+        let main = visual.debug_bounds("ROLE_DETAIL_MAIN").unwrap();
+        let aside = visual.debug_bounds("ROLE_DETAIL_ASIDE").unwrap();
+        let left_slack = container.left() - scroll.left();
+        let right_slack = scroll.right() - container.right();
+        assert!(
+            (left_slack - right_slack).abs() <= px(1.),
+            "{width}: container is off-centre, slack {left_slack:?} vs {right_slack:?}"
+        );
+        assert!(
+            (body.right() - header.right()).abs() <= px(1.),
+            "{width}: body row {:?} does not end with the header {:?}",
+            body.right(),
+            header.right()
+        );
+        assert!(
+            aside.right() <= header.right() + px(1.),
+            "{width}: aside ends at {:?}, past the header's {:?}",
+            aside.right(),
+            header.right()
+        );
+        assert!(
+            main.right() + px(1.) < aside.left(),
+            "{width}: columns overlap: main ends {:?}, aside starts {:?}",
+            main.right(),
+            aside.left()
+        );
+    }
+    assert!(
+        visual.debug_bounds("ENTITY_SIDEBAR_TOGGLE").is_none(),
+        "the shell must not add an open-sidebar cluster while the sidebar is open"
+    );
+    for route in [
+        AppRoute::RoleDetail("reviewer".into()),
+        AppRoute::Roles,
+        AppRoute::Crews,
+        AppRoute::CrewEditor("crew".into()),
+    ] {
+        host.update(&mut visual, |root, _, cx| {
+            root.set_sidebar_collapsed(true, false, cx);
+            root.route = route.clone();
+            cx.notify();
+        })
+        .unwrap();
+        visual.run_until_parked();
+        let toggle = visual
+            .debug_bounds("ENTITY_SIDEBAR_TOGGLE")
+            .unwrap_or_else(|| {
+                panic!("{route:?}: a collapsed sidebar leaves no open-sidebar cluster")
+            });
+        let padding = host
+            .update(&mut visual, |root, window, cx| {
+                root.workspace_titlebar_padding(window, cx)
+            })
+            .unwrap();
+        let column = visual.debug_bounds("APP_CONTENT_COLUMN").unwrap();
+        assert_eq!(toggle.top(), column.top(), "{route:?}");
+        assert!(
+            (toggle.left() - column.left() - px(padding)).abs() <= px(1.),
+            "{route:?}: {toggle:?} vs column {column:?} and padding {padding}"
+        );
+        assert_eq!(
+            toggle.size.height,
+            px(runner_app::ui::WORKSPACE_HEADER_HEIGHT),
+            "{route:?}: the cluster row must match the pane header height"
+        );
+        assert!(
+            toggle.size.width > px(3. * 28.),
+            "{route:?}: the cluster must carry the page arrows beside the toggle, got {:?}",
+            toggle.size.width
+        );
+    }
+}

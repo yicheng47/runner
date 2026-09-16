@@ -356,6 +356,9 @@ impl NativeRoot {
                 None => unreachable!("crew presence checked above"),
             };
             let sections = div()
+                .when(cfg!(test), |sections| {
+                    sections.debug_selector(|| "CREW_EDITOR_SECTIONS".into())
+                })
                 .w_full()
                 .min_w(px(0.))
                 .flex()
@@ -443,6 +446,9 @@ impl NativeRoot {
                         .child(self.render_slot_list(slots, cx)),
                 );
             div()
+                .when(cfg!(test), |container| {
+                    container.debug_selector(|| "CREW_EDITOR_CONTAINER".into())
+                })
                 .mx_auto()
                 .w_full()
                 .min_w(px(0.))
@@ -461,6 +467,9 @@ impl NativeRoot {
             .child(
                 div()
                     .id("crew-editor-scroll")
+                    .when(cfg!(test), |scroll| {
+                        scroll.debug_selector(|| "CREW_EDITOR_SCROLL".into())
+                    })
                     .min_h(px(0.))
                     .flex_1()
                     .overflow_y_scroll()

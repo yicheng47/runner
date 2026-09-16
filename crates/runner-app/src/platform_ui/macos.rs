@@ -150,13 +150,7 @@ impl NativeRoot {
     /// the same per-window page history. Both disable in Settings and at the
     /// history boundaries. No tooltips on macOS, by decision.
     fn render_page_navigation_buttons(&self, cx: &mut Context<Self>) -> (IconButton, IconButton) {
-        let in_settings = self.route == AppRoute::Settings;
-        let can_go_back =
-            !in_settings && self.runtime_navigation_index.is_some_and(|index| index > 0);
-        let can_go_forward = !in_settings
-            && self
-                .runtime_navigation_index
-                .is_some_and(|index| index + 1 < self.runtime_navigation_history.len());
+        let (can_go_back, can_go_forward) = self.page_navigation_state();
         let back_root = cx.entity();
         let forward_root = cx.entity();
         (
@@ -176,7 +170,7 @@ impl NativeRoot {
     /// The leading titlebar cluster. A press anywhere in it, including on a
     /// disabled arrow, must neither arm a window drag nor count as a
     /// titlebar double-click.
-    fn titlebar_control_cluster(id: &'static str) -> gpui::Stateful<Div> {
+    pub(crate) fn titlebar_control_cluster(id: &'static str) -> gpui::Stateful<Div> {
         div()
             .id(id)
             .flex_none()
