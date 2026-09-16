@@ -176,8 +176,8 @@ mod tests {
         std::fs::create_dir_all(&cwd).unwrap();
         let cwd = std::fs::canonicalize(cwd).unwrap();
         let raw = format!(
-            "// keep\n{{ \"trustedFolders\" : [\"{}\"], \"other\" : 1e2 }}\n",
-            cwd.display()
+            "// keep\n{{ \"trustedFolders\" : [{}], \"other\" : 1e2 }}\n",
+            serde_json::to_string(&cwd.to_string_lossy()).unwrap()
         );
         std::fs::write(&config, &raw).unwrap();
         seed_project_trust_at(&cwd, &config).unwrap();
