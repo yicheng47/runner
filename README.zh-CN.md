@@ -28,7 +28,7 @@
 </p>
 
 <p align="center">
-  <img src="assets/hero.png" alt="Runner — 一个标签页里并排着一个 Claude Code 和两个 Codex 会话，侧边栏是项目和对话" width="100%" />
+  <img src="assets/hero.png" alt="Runner — 一个标签页里并排着 Claude Code、Codex 和 GitHub Copilot CLI，侧边栏是角色、crew、项目和对话" width="100%" />
 </p>
 
 <p align="center">
