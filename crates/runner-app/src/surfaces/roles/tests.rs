@@ -318,39 +318,38 @@ fn role_detail_columns_stay_inside_the_centered_container() {
         .unwrap();
         visual.run_until_parked();
         #[cfg(not(target_os = "macos"))]
-        {
-            assert!(
-                visual.debug_bounds("ENTITY_SIDEBAR_TOGGLE").is_none(),
-                "{route:?}: the platform chrome owns the sidebar toggle off macOS"
-            );
-            continue;
-        }
+        assert!(
+            visual.debug_bounds("ENTITY_SIDEBAR_TOGGLE").is_none(),
+            "{route:?}: the platform chrome owns the sidebar toggle off macOS"
+        );
         #[cfg(target_os = "macos")]
-        let toggle = visual
-            .debug_bounds("ENTITY_SIDEBAR_TOGGLE")
-            .unwrap_or_else(|| {
-                panic!("{route:?}: a collapsed sidebar leaves no open-sidebar cluster")
-            });
-        let padding = host
-            .update(&mut visual, |root, window, cx| {
-                root.workspace_titlebar_padding(window, cx)
-            })
-            .unwrap();
-        let column = visual.debug_bounds("APP_CONTENT_COLUMN").unwrap();
-        assert_eq!(toggle.top(), column.top(), "{route:?}");
-        assert!(
-            (toggle.left() - column.left() - px(padding)).abs() <= px(1.),
-            "{route:?}: {toggle:?} vs column {column:?} and padding {padding}"
-        );
-        assert_eq!(
-            toggle.size.height,
-            px(runner_app::ui::WORKSPACE_HEADER_HEIGHT),
-            "{route:?}: the cluster row must match the pane header height"
-        );
-        assert!(
-            toggle.size.width > px(3. * 28.),
-            "{route:?}: the cluster must carry the page arrows beside the toggle, got {:?}",
-            toggle.size.width
-        );
+        {
+            let toggle = visual
+                .debug_bounds("ENTITY_SIDEBAR_TOGGLE")
+                .unwrap_or_else(|| {
+                    panic!("{route:?}: a collapsed sidebar leaves no open-sidebar cluster")
+                });
+            let padding = host
+                .update(&mut visual, |root, window, cx| {
+                    root.workspace_titlebar_padding(window, cx)
+                })
+                .unwrap();
+            let column = visual.debug_bounds("APP_CONTENT_COLUMN").unwrap();
+            assert_eq!(toggle.top(), column.top(), "{route:?}");
+            assert!(
+                (toggle.left() - column.left() - px(padding)).abs() <= px(1.),
+                "{route:?}: {toggle:?} vs column {column:?} and padding {padding}"
+            );
+            assert_eq!(
+                toggle.size.height,
+                px(runner_app::ui::WORKSPACE_HEADER_HEIGHT),
+                "{route:?}: the cluster row must match the pane header height"
+            );
+            assert!(
+                toggle.size.width > px(3. * 28.),
+                "{route:?}: the cluster must carry the page arrows beside the toggle, got {:?}",
+                toggle.size.width
+            );
+        }
     }
 }
