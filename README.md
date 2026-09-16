@@ -197,18 +197,24 @@ Carbon and Runner Light are Runner's own themes; Catppuccin Mocha and Latte ride
 
 ## Supported agents
 
-| Agent | macOS (Apple Silicon) | Windows (x64) |
-| --- | --- | --- |
-| Claude Code | Supported | Supported |
-| Codex | Supported | Supported |
-| GitHub Copilot CLI | Supported | Supported |
-| TRAE CLI | Experimental | Not validated |
+| | Claude Code | Codex | GitHub Copilot CLI | TRAE CLI |
+| --- | :---: | :---: | :---: | :---: |
+| Chats, missions, resume after relaunch | ✓ | ✓ | ✓ | ✓ |
+| Runs on Windows | ✓ | ✓ | ✓ ¹ | — ² |
+| Fork a chat | ✓ | ✓ | — | — |
+| Working / Idle from the agent's hooks ³ | ✓ | ✓ | — | — |
+| Needs you: approval and question dialogs shown ³ | ✓ | — | — | — |
+| Model list read from the CLI | ✓ | ✓ | — | — |
+| Permission modes | Default · Accept edits · Auto · Bypass | Default · Auto · Bypass | Default · Accept edits · Bypass | Default · Bypass |
+| Skills pane | catalog + on/off | catalog + on/off | catalog | — |
+| Runner registered as an MCP server | ✓ | ✓ | ✓ | ✓ |
+| Terminal rendering covered by fixtures | ✓ | ✓ | — | — |
 
-Claude Code and Codex are the primary supported agents, with fixture-tested terminal rendering and tuned launch/nudge timing. TRAE CLI sees less use and may have rough edges; it is enabled by default on macOS when detected, and disabled by default on Windows, where Runner integration has not been validated. [Issues](https://github.com/yicheng47/runner/issues) are welcome.
+¹ GitHub Copilot CLI runs natively on Windows but has not been smoke-tested there yet.
+² TRAE CLI is disabled by default on Windows; its integration has not been validated.
+³ macOS only. On Windows every agent's status is estimated from terminal output and dialogs are not detected, until Windows hook support lands.
 
-Hook-based session status is available for Claude Code and Codex on macOS. TRAE CLI and GitHub Copilot CLI use estimated status from terminal activity and titles; Copilot stays on estimated status until its hook adapter lands. Windows sessions also use estimated status.
-
-GitHub Copilot CLI requires a Copilot subscription and is enabled by default on both platforms. Its model catalog is static; native fork and global skill toggles are not supported.
+Claude Code and Codex are the primary agents, with tuned launch and nudge timing. GitHub Copilot CLI needs a Copilot subscription. TRAE CLI sees less use and may have rough edges. [Issues](https://github.com/yicheng47/runner/issues) are welcome.
 
 Install the agent CLIs separately. Runner detects them on `PATH`, with per-agent executable overrides in **Settings → Agents**. On Windows, Claude Code also requires Git for Windows for Git Bash; npm-based CLI installations require Node.js. PowerShell 7 is optional. Agents run natively on Windows, without WSL.
 
