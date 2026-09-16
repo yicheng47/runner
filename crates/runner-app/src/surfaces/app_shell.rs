@@ -20,8 +20,8 @@ const SETTINGS_FOOTER_LINE_HEIGHT: f32 = 18.;
 pub(crate) enum AppRoute {
     #[default]
     Chat,
-    Runners,
-    RunnerDetail(String),
+    Roles,
+    RoleDetail(String),
     Crews,
     CrewEditor(String),
     Mission(String),
@@ -863,8 +863,8 @@ impl NativeRoot {
                 }
                 cx.notify();
             }
-            AppRoute::Runners => self.open_runners(window, cx),
-            AppRoute::RunnerDetail(handle) => self.open_runner_detail(handle, window, cx),
+            AppRoute::Roles => self.open_roles(window, cx),
+            AppRoute::RoleDetail(handle) => self.open_role_detail(handle, window, cx),
             AppRoute::Crews => self.open_crews(window, cx),
             AppRoute::CrewEditor(crew_id) => self.open_crew_editor(crew_id, window, cx),
             AppRoute::Mission(mission_id) => self.open_mission(mission_id, window, cx),
@@ -1059,7 +1059,7 @@ mod tests {
         );
         for route in [
             AppRoute::Mission("mission-2".into()),
-            AppRoute::Runners,
+            AppRoute::Roles,
             AppRoute::Settings,
             AppRoute::Chat,
         ] {

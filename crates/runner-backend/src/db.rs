@@ -1,4 +1,4 @@
-// SQLite persistence for crews, runners, missions, and sessions.
+// SQLite persistence for crews, roles, missions, and sessions.
 //
 // Schema lives in migrations/0001_init.sql and mirrors arch §7.1 verbatim.
 // The pool is opened once at app start with WAL mode + foreign keys; the
@@ -53,7 +53,7 @@ fn init_connection(conn: &mut Connection) -> rusqlite::Result<()> {
 //
 // 0002: persona-only rewrite of the seeded Build squad system_prompts
 // (#51). UPDATE-only on the seed's fixed IDs, so renamed / deleted
-// runners on existing installs are unaffected. (Was 0003 pre-rename
+// roles on existing installs are unaffected. (Was 0003 pre-rename
 // — the freed 0002 slot used to hold the default-crew SQL seed,
 // which now lives in `seed_default_crew` below.)
 // 0003: nullable runtime_* columns on `sessions` from the old
@@ -67,14 +67,14 @@ fn init_connection(conn: &mut Connection) -> rusqlite::Result<()> {
 // rows so their archived_at = stopped_at.
 // 0005: adds `system_prompt_addendum` (TEXT, nullable) to crews —
 // Layer 2 of the system-prompt stack (#54). Spliced between
-// platform preamble and runner persona on mission spawns only.
+// platform preamble and role persona on mission spawns only.
 // No backfill; seeded Build squad rows stay NULL.
 // 0006: drops `crews.signal_types`. CLI validation is now enum-based
 // in runner-core (`KnownSignalType`); the per-crew column + sidecar
 // they used to feed no longer have a consumer. See feature 20.
 // 0007: makes direct-chat `sessions.runner_id` nullable and adds
 // `agent_runtime` / `agent_command` so runtime-only chats can resume
-// without a persisted runner template (#195).
+// without a persisted role template (#195).
 // 0008: drops `crews.orchestrator_policy`. Deprecated in #247
 // (superseded by `system_prompt_addendum`) and read-only since; it
 // fed no prompt and was never written, so the drop is behavior-neutral.
@@ -88,7 +88,7 @@ fn init_connection(conn: &mut Connection) -> rusqlite::Result<()> {
 // 0012: removes folder/project collapse state from SQLite. Expansion is
 // per-window view state owned by the sidebar.
 // 0013: adds nullable `slots.runtime_override` — per-slot engine choice
-// resolved as `slot.runtime_override ?? runner.runtime` at spawn.
+// resolved as `slot.runtime_override ?? role.runtime` at spawn.
 // Validated against the runtime registry on write (feature 41).
 // 0014: feature 44 — one `nodes` table replaces folders/tabs/pointer
 // grouping/pin flags as the sidebar tree (`parent_id` + `position`).
@@ -106,11 +106,13 @@ fn init_connection(conn: &mut Connection) -> rusqlite::Result<()> {
 // launch can resume them without treating crash-demoted rows the same way.
 // 0018: adds nullable `slots.model_override` so a slot that selects a
 // different runtime can pin that runtime's model without mutating the
-// reusable runner template.
+// reusable role template.
 // 0019: persists model/effort on runtime-only direct chats so resume
 // keeps the session's selected agent configuration.
 // 0020: adds nullable `slots.effort_override` so a crew slot can
 // override thinking effort independently of its runtime and model.
+// 0023: renames the stored runner entity and its foreign-key columns to
+// `roles` / `role_id`; direct sessions have referenced it since 0007.
 const MIGRATIONS: &[(i64, &str)] = &[
     (1, include_str!("../migrations/0001_init.sql")),
     (2, include_str!("../migrations/0002_persona_only_seeds.sql")),
@@ -170,6 +172,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
         22,
         include_str!("../migrations/0022_session_live_title.sql"),
     ),
+    (23, include_str!("../migrations/0023_roles.sql")),
 ];
 
 // Default-data seed: ships the Peer coding starter crew on first launch.
@@ -181,10 +184,10 @@ const MIGRATIONS: &[(i64, &str)] = &[
 // not "any future launch where you happen to have zero crews").
 //
 // Even on first launch we only apply the seed when the DB has zero
-// crews AND zero runners. If the user has *any* prior data — e.g.
+// crews AND zero roles. If the user has *any* prior data — e.g.
 // they loaded another fixture into this DB before
 // opening the app — we skip cleanly and still set the marker. This
-// avoids the partial-crew failure mode where a colliding runner
+// avoids the partial-crew failure mode where a colliding role
 // handle would leave Peer coding missing its lead, while the start-
 // mission UI still treated it as launchable.
 //
@@ -283,15 +286,15 @@ pub fn set_runtime_override(pool: &DbPool, runtime: &str, path: Option<&str>) ->
 // still owns the legacy Build squad IDs for historical upgrades; fresh
 // databases run migrations before this peer-coding seed is inserted.
 const SEED_CREW_ID: &str = "01K000DEFAULT000PEERCODING01";
-const SEED_CODER_RUNNER_ID: &str = "01K000DEFAULT000RUNNERCODER01";
-const SEED_REVIEWER_RUNNER_ID: &str = "01K000DEFAULT000RUNNERREVW01";
+const SEED_CODER_ROLE_ID: &str = "01K000DEFAULT000RUNNERCODER01";
+const SEED_REVIEWER_ROLE_ID: &str = "01K000DEFAULT000RUNNERREVW01";
 const SEED_TIMESTAMP: &str = "2026-08-01T00:00:00Z";
 
 // Auto permission mode args for the default Codex seed:
 // `codex --ask-for-approval on-request --sandbox workspace-write`.
-// This matches the new-runner form's default runtime + permission
+// This matches the new-role form's default runtime + permission
 // mode without relying on claude-code's plan-gated Auto mode.
-const SEED_RUNNER_ARGS_JSON: &str =
+const SEED_ROLE_ARGS_JSON: &str =
     r#"["--ask-for-approval","on-request","--sandbox","workspace-write"]"#;
 
 // The shipped crew and the copyable example share one source of truth.
@@ -320,10 +323,10 @@ fn seed_defaults(conn: &mut Connection) -> Result<()> {
     }
 
     let crew_count: i64 = conn.query_row("SELECT COUNT(*) FROM crews", [], |r| r.get(0))?;
-    let runner_count: i64 = conn.query_row("SELECT COUNT(*) FROM runners", [], |r| r.get(0))?;
+    let role_count = crate::repo::role::count(conn)?;
 
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-    if crew_count == 0 && runner_count == 0 {
+    if crew_count == 0 && role_count == 0 {
         seed_default_crew(&tx)?;
     }
     tx.execute(
@@ -334,7 +337,7 @@ fn seed_defaults(conn: &mut Connection) -> Result<()> {
     Ok(())
 }
 
-/// Insert the two-runner Peer coding example inside the caller's
+/// Insert the two-role Peer coding example inside the caller's
 /// transaction. The Rust seed owns the same fields as user-driven
 /// creates and reads the copyable example prompts directly.
 fn seed_default_crew(tx: &rusqlite::Transaction) -> Result<()> {
@@ -356,16 +359,10 @@ fn seed_default_crew(tx: &rusqlite::Transaction) -> Result<()> {
         ],
     )?;
 
-    insert_seed_runner(
+    insert_seed_role(tx, SEED_CODER_ROLE_ID, "coder", "Coder", SEED_CODER_PROMPT)?;
+    insert_seed_role(
         tx,
-        SEED_CODER_RUNNER_ID,
-        "coder",
-        "Coder",
-        SEED_CODER_PROMPT,
-    )?;
-    insert_seed_runner(
-        tx,
-        SEED_REVIEWER_RUNNER_ID,
+        SEED_REVIEWER_ROLE_ID,
         "reviewer",
         "Reviewer",
         SEED_REVIEWER_PROMPT,
@@ -374,7 +371,7 @@ fn seed_default_crew(tx: &rusqlite::Transaction) -> Result<()> {
     insert_seed_slot(
         tx,
         "01K000DEFAULT000SLOTCODER001",
-        SEED_CODER_RUNNER_ID,
+        SEED_CODER_ROLE_ID,
         "coder",
         0,
         true,
@@ -382,7 +379,7 @@ fn seed_default_crew(tx: &rusqlite::Transaction) -> Result<()> {
     insert_seed_slot(
         tx,
         "01K000DEFAULT000SLOTREVW0001",
-        SEED_REVIEWER_RUNNER_ID,
+        SEED_REVIEWER_ROLE_ID,
         "reviewer",
         1,
         false,
@@ -391,7 +388,7 @@ fn seed_default_crew(tx: &rusqlite::Transaction) -> Result<()> {
     Ok(())
 }
 
-fn insert_seed_runner(
+fn insert_seed_role(
     tx: &rusqlite::Transaction,
     id: &str,
     handle: &str,
@@ -402,20 +399,24 @@ fn insert_seed_runner(
     // stored prompt reads like a single paragraph stack — the same
     // shape the legacy SQL seed produced.
     let prompt = prompt.trim_end_matches('\n');
-    tx.execute(
-        "INSERT INTO runners (
-            id, handle, display_name, runtime, command, args_json,
-            system_prompt, model, effort, created_at, updated_at
-         ) VALUES (?1, ?2, ?3, 'codex', 'codex', ?4, ?5,
-                   NULL, NULL, ?6, ?6)",
-        params![
-            id,
-            handle,
-            display_name,
-            SEED_RUNNER_ARGS_JSON,
-            prompt,
-            SEED_TIMESTAMP,
-        ],
+    let timestamp = SEED_TIMESTAMP.parse().expect("valid seed timestamp");
+    crate::repo::role::insert(
+        tx,
+        &crate::repo::role::RoleRow {
+            id: id.into(),
+            handle: handle.into(),
+            display_name: display_name.into(),
+            runtime: "codex".into(),
+            command: "codex".into(),
+            args_json: Some(serde_json::from_str(SEED_ROLE_ARGS_JSON)?),
+            working_dir: None,
+            system_prompt: Some(prompt.into()),
+            env_json: Some(Default::default()),
+            model: None,
+            effort: None,
+            created_at: timestamp,
+            updated_at: timestamp,
+        },
     )?;
     Ok(())
 }
@@ -423,23 +424,25 @@ fn insert_seed_runner(
 fn insert_seed_slot(
     tx: &rusqlite::Transaction,
     id: &str,
-    runner_id: &str,
+    role_id: &str,
     slot_handle: &str,
     position: i64,
     lead: bool,
 ) -> Result<()> {
-    tx.execute(
-        "INSERT INTO slots (id, crew_id, runner_id, slot_handle, position, lead, added_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-        params![
-            id,
-            SEED_CREW_ID,
-            runner_id,
-            slot_handle,
+    crate::repo::slot::insert(
+        tx,
+        &crate::repo::slot::SlotRow {
+            id: id.into(),
+            crew_id: SEED_CREW_ID.into(),
+            role_id: role_id.into(),
+            slot_handle: slot_handle.into(),
             position,
-            lead as i64,
-            SEED_TIMESTAMP,
-        ],
+            lead,
+            runtime_override: None,
+            model_override: None,
+            effort_override: None,
+            added_at: SEED_TIMESTAMP.parse().expect("valid seed timestamp"),
+        },
     )?;
     Ok(())
 }
@@ -746,44 +749,182 @@ mod tests {
         .unwrap();
     }
 
-    fn insert_runner(conn: &Connection, id: &str, handle: &str) -> rusqlite::Result<usize> {
-        conn.execute(
-            "INSERT INTO runners (
-                id, handle, display_name, runtime, command,
-                created_at, updated_at
-             ) VALUES (?1, ?2, ?3, 'shell', 'sh', ?4, ?4)",
-            params![
-                id,
-                handle,
-                format!("{handle} display"),
-                "2026-04-22T00:00:00Z"
-            ],
+    fn insert_role(conn: &Connection, id: &str, handle: &str) -> rusqlite::Result<usize> {
+        let timestamp = "2026-04-22T00:00:00Z".parse().unwrap();
+        crate::repo::role::insert(
+            conn,
+            &crate::repo::role::RoleRow {
+                id: id.into(),
+                handle: handle.into(),
+                display_name: format!("{handle} display"),
+                runtime: "shell".into(),
+                command: "sh".into(),
+                args_json: Some(Vec::new()),
+                working_dir: None,
+                system_prompt: None,
+                env_json: Some(Default::default()),
+                model: None,
+                effort: None,
+                created_at: timestamp,
+                updated_at: timestamp,
+            },
         )
+        .map(|()| 1)
     }
 
     fn insert_slot(
         conn: &Connection,
         id: &str,
         crew_id: &str,
-        runner_id: &str,
+        role_id: &str,
         slot_handle: &str,
         position: i64,
         lead: i64,
     ) -> rusqlite::Result<usize> {
+        crate::repo::slot::insert(
+            conn,
+            &crate::repo::slot::SlotRow {
+                id: id.into(),
+                crew_id: crew_id.into(),
+                role_id: role_id.into(),
+                slot_handle: slot_handle.into(),
+                position,
+                lead: lead != 0,
+                runtime_override: None,
+                model_override: None,
+                effort_override: None,
+                added_at: "2026-04-22T00:00:00Z".parse().unwrap(),
+            },
+        )
+        .map(|()| 1)
+    }
+
+    fn schema_has_table(conn: &Connection, name: &str) -> bool {
+        conn.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1
+             )",
+            [name],
+            |row| row.get(0),
+        )
+        .unwrap()
+    }
+
+    fn seed_pre_0023_fixture(conn: &Connection) {
+        conn.execute(
+            "INSERT INTO runners (
+                id, handle, display_name, runtime, command, created_at, updated_at
+             ) VALUES ('r1', 'reviewer', 'Reviewer', 'shell', 'sh',
+                       '2026-09-16T00:00:00Z', '2026-09-16T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO crews (id, name, created_at, updated_at)
+             VALUES ('c1', 'Crew', '2026-09-16T00:00:00Z', '2026-09-16T00:00:00Z')",
+            [],
+        )
+        .unwrap();
         conn.execute(
             "INSERT INTO slots
                 (id, crew_id, runner_id, slot_handle, position, lead, added_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![
-                id,
-                crew_id,
-                runner_id,
-                slot_handle,
-                position,
-                lead,
-                "2026-04-22T00:00:00Z"
-            ],
+             VALUES
+                ('sl1', 'c1', 'r1', 'lead', 0, 1, '2026-09-16T00:00:00Z'),
+                ('sl2', 'c1', 'r1', 'reviewer', 1, 0, '2026-09-16T00:00:00Z')",
+            [],
         )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO sessions
+                (id, runner_id, status, started_at, title)
+             VALUES ('direct1', 'r1', 'stopped', '2026-09-16T00:00:00Z', 'Codex')",
+            [],
+        )
+        .unwrap();
+    }
+
+    struct Pre0023Role<'a> {
+        id: &'a str,
+        handle: &'a str,
+        display_name: &'a str,
+        runtime: &'a str,
+        command: &'a str,
+        system_prompt: Option<&'a str>,
+    }
+
+    fn insert_pre_0023_role(conn: &Connection, role: Pre0023Role<'_>) -> rusqlite::Result<()> {
+        conn.execute(
+            "INSERT INTO runners (
+                id, handle, display_name, runtime, command, system_prompt,
+                created_at, updated_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)",
+            params![
+                role.id,
+                role.handle,
+                role.display_name,
+                role.runtime,
+                role.command,
+                role.system_prompt,
+                "2026-04-22T00:00:00Z",
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn pre_0023_system_prompt(conn: &Connection, id: &str) -> rusqlite::Result<Option<String>> {
+        conn.query_row(
+            "SELECT system_prompt FROM runners WHERE id = ?1",
+            params![id],
+            |row| row.get(0),
+        )
+    }
+
+    fn apply_pre_0023_persona_rewrite(conn: &Connection) -> rusqlite::Result<()> {
+        conn.execute_batch(include_str!("../migrations/0002_persona_only_seeds.sql"))
+    }
+
+    fn seed_pre_0023_runtime_rows(conn: &Connection, runtimes: &[&str]) -> rusqlite::Result<()> {
+        for (index, runtime) in runtimes.iter().enumerate() {
+            let id = index.to_string();
+            conn.execute(
+                "INSERT INTO runners (
+                    id, handle, display_name, runtime, command, created_at, updated_at
+                 ) VALUES (?1, ?1, ?1, ?2, 'sh', ?3, ?3)",
+                params![id, runtime, "2026-04-22T00:00:00Z"],
+            )?;
+            conn.execute(
+                "INSERT INTO slots
+                    (id, crew_id, runner_id, slot_handle, position, lead,
+                     runtime_override, added_at)
+                 VALUES (?1, 'c1', ?1, ?1, ?2, 0, ?3, ?4)",
+                params![id, index as i64, runtime, "2026-04-22T00:00:00Z"],
+            )?;
+            conn.execute(
+                "INSERT INTO sessions
+                    (id, runner_id, status, agent_runtime, runtime)
+                 VALUES (?1, ?1, 'stopped', ?2, 'native-pty')",
+                params![id, runtime],
+            )?;
+        }
+        Ok(())
+    }
+
+    fn insert_pre_0023_slot(
+        conn: &Connection,
+        id: &str,
+        crew_id: &str,
+        role_id: &str,
+        slot_handle: &str,
+        position: i64,
+        lead: bool,
+    ) -> rusqlite::Result<()> {
+        conn.execute(
+            "INSERT INTO slots
+                (id, crew_id, runner_id, slot_handle, position, lead, added_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, '2026-04-22T00:00:00Z')",
+            params![id, crew_id, role_id, slot_handle, position, lead],
+        )?;
+        Ok(())
     }
 
     #[test]
@@ -794,12 +935,14 @@ mod tests {
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master
                  WHERE type = 'table' AND name IN
-                     ('crews','runners','slots','missions','sessions')",
+                     ('crews','slots','missions','sessions')",
                 [],
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(count, 5);
+        assert_eq!(count, 4);
+        assert!(crate::repo::role::table_exists(&conn).unwrap());
+        assert!(!schema_has_table(&conn, "runners"));
     }
 
     #[test]
@@ -861,11 +1004,11 @@ mod tests {
     // enforce it.
 
     #[test]
-    fn runner_handle_is_globally_unique() {
+    fn role_handle_is_globally_unique() {
         let pool = open_in_memory().unwrap();
         let conn = pool.get().unwrap();
-        insert_runner(&conn, "r1", "shared").unwrap();
-        let err = insert_runner(&conn, "r2", "shared").unwrap_err();
+        insert_role(&conn, "r1", "shared").unwrap();
+        let err = insert_role(&conn, "r2", "shared").unwrap_err();
         assert_eq!(
             err.sqlite_error_code(),
             Some(ErrorCode::ConstraintViolation)
@@ -873,26 +1016,26 @@ mod tests {
     }
 
     #[test]
-    fn same_runner_can_join_multiple_crews() {
+    fn same_role_can_join_multiple_crews() {
         let pool = open_in_memory().unwrap();
         let conn = pool.get().unwrap();
         insert_crew(&conn, "c1");
         insert_crew(&conn, "c2");
-        insert_runner(&conn, "r1", "shared").unwrap();
+        insert_role(&conn, "r1", "shared").unwrap();
 
         insert_slot(&conn, "s1", "c1", "r1", "alpha-c1", 0, 1).unwrap();
         insert_slot(&conn, "s2", "c2", "r1", "alpha-c2", 0, 1).unwrap();
     }
 
     #[test]
-    fn same_runner_can_fill_multiple_slots_in_one_crew() {
-        // The whole point of the slot redesign: the same runner
+    fn same_role_can_fill_multiple_slots_in_one_crew() {
+        // The whole point of the slot redesign: the same role
         // template can sit in two slots of the same crew with
         // different in-crew handles.
         let pool = open_in_memory().unwrap();
         let conn = pool.get().unwrap();
         insert_crew(&conn, "c1");
-        insert_runner(&conn, "r1", "claude").unwrap();
+        insert_role(&conn, "r1", "claude").unwrap();
         insert_slot(&conn, "s1", "c1", "r1", "architect", 0, 1).unwrap();
         insert_slot(&conn, "s2", "c1", "r1", "reviewer", 1, 0).unwrap();
     }
@@ -902,8 +1045,8 @@ mod tests {
         let pool = open_in_memory().unwrap();
         let conn = pool.get().unwrap();
         insert_crew(&conn, "c1");
-        insert_runner(&conn, "r1", "alpha").unwrap();
-        insert_runner(&conn, "r2", "beta").unwrap();
+        insert_role(&conn, "r1", "alpha").unwrap();
+        insert_role(&conn, "r2", "beta").unwrap();
         insert_slot(&conn, "s1", "c1", "r1", "lead-slot", 0, 1).unwrap();
         let err = insert_slot(&conn, "s2", "c1", "r2", "lead-slot", 1, 0).unwrap_err();
         assert_eq!(
@@ -917,8 +1060,8 @@ mod tests {
         let pool = open_in_memory().unwrap();
         let conn = pool.get().unwrap();
         insert_crew(&conn, "c1");
-        insert_runner(&conn, "r1", "alpha").unwrap();
-        insert_runner(&conn, "r2", "beta").unwrap();
+        insert_role(&conn, "r1", "alpha").unwrap();
+        insert_role(&conn, "r2", "beta").unwrap();
 
         insert_slot(&conn, "s1", "c1", "r1", "alpha", 0, 1).unwrap();
         let err = insert_slot(&conn, "s2", "c1", "r2", "beta", 0, 0).unwrap_err();
@@ -935,58 +1078,50 @@ mod tests {
 
         let env = serde_json::json!({"FOO": "bar", "BAZ": "qux"});
         let args = serde_json::json!(["--flag", "--val=1"]);
-        conn.execute(
-            "INSERT INTO runners (
-                id, handle, display_name, runtime, command,
-                args_json, env_json, created_at, updated_at
-             ) VALUES ('r1','test-impl','Impl','shell','sh',?1,?2,?3,?3)",
-            params![args.to_string(), env.to_string(), "2026-04-22T00:00:00Z"],
+        let timestamp = "2026-04-22T00:00:00Z".parse().unwrap();
+        crate::repo::role::insert(
+            &conn,
+            &crate::repo::role::RoleRow {
+                id: "r1".into(),
+                handle: "test-impl".into(),
+                display_name: "Impl".into(),
+                runtime: "shell".into(),
+                command: "sh".into(),
+                args_json: Some(serde_json::from_value(args.clone()).unwrap()),
+                working_dir: None,
+                system_prompt: None,
+                env_json: Some(serde_json::from_value(env.clone()).unwrap()),
+                model: None,
+                effort: None,
+                created_at: timestamp,
+                updated_at: timestamp,
+            },
         )
         .unwrap();
 
-        let (args_raw, env_raw): (String, String) = conn
-            .query_row(
-                "SELECT args_json, env_json FROM runners WHERE id = 'r1'",
-                [],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .unwrap();
-        assert_eq!(
-            serde_json::from_str::<serde_json::Value>(&args_raw).unwrap(),
-            args
-        );
-        assert_eq!(
-            serde_json::from_str::<serde_json::Value>(&env_raw).unwrap(),
-            env
-        );
+        let role = crate::repo::role::get(&conn, "r1").unwrap().unwrap();
+        assert_eq!(serde_json::to_value(role.args).unwrap(), args);
+        assert_eq!(serde_json::to_value(role.env).unwrap(), env);
     }
 
     #[test]
     fn deleting_crew_cascades_slot_rows_only() {
         // Runners are global templates — deleting a crew should strip
-        // its slots but leave the runner template intact so other
+        // its slots but leave the role template intact so other
         // crews (or direct chats) can keep using it.
         let pool = open_in_memory().unwrap();
         let conn = pool.get().unwrap();
         insert_crew(&conn, "c1");
-        insert_runner(&conn, "r1", "alpha").unwrap();
+        insert_role(&conn, "r1", "alpha").unwrap();
         insert_slot(&conn, "s1", "c1", "r1", "alpha", 0, 1).unwrap();
 
         conn.execute("DELETE FROM crews WHERE id = 'c1'", [])
             .unwrap();
-        let runner_count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM runners WHERE id = 'r1'", [], |r| {
-                r.get(0)
-            })
-            .unwrap();
-        let slot_count: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM slots WHERE runner_id = 'r1'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(runner_count, 1, "runner template must survive crew delete");
+        let role_count = i64::from(crate::repo::role::get(&conn, "r1").unwrap().is_some());
+        let slot_count = crate::repo::slot::list_for_role_with_crew_name(&conn, "r1")
+            .unwrap()
+            .len();
+        assert_eq!(role_count, 1, "runner template must survive crew delete");
         assert_eq!(slot_count, 0, "slots cascade with the crew");
     }
 
@@ -999,14 +1134,12 @@ mod tests {
         let crew_count: i64 = conn
             .query_row("SELECT COUNT(*) FROM crews", [], |r| r.get(0))
             .unwrap();
-        let runner_count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM runners", [], |r| r.get(0))
-            .unwrap();
+        let role_count = crate::repo::role::count(&conn).unwrap();
         let slot_count: i64 = conn
             .query_row("SELECT COUNT(*) FROM slots", [], |r| r.get(0))
             .unwrap();
         assert_eq!(crew_count, 1);
-        assert_eq!(runner_count, 2);
+        assert_eq!(role_count, 2);
         assert_eq!(slot_count, 2);
 
         let lead_handle: String = conn
@@ -1029,33 +1162,31 @@ mod tests {
             Some(SEED_CREW_ADDENDUM.trim_end_matches('\n'))
         );
 
-        let codex_seed_count: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM runners
-                  WHERE runtime = 'codex'
-                    AND command = 'codex'
-                    AND args_json = ?1
-                    AND model IS NULL
-                    AND effort IS NULL",
-                params![SEED_RUNNER_ARGS_JSON],
-                |r| r.get(0),
-            )
-            .unwrap();
+        let expected_args: Vec<String> = serde_json::from_str(SEED_ROLE_ARGS_JSON).unwrap();
+        let codex_seed_count = crate::repo::role::list(&conn)
+            .unwrap()
+            .into_iter()
+            .filter(|role| {
+                role.runtime == "codex"
+                    && role.command == "codex"
+                    && role.args == expected_args
+                    && role.model.is_none()
+                    && role.effort.is_none()
+            })
+            .count();
         assert_eq!(
             codex_seed_count, 2,
-            "all seeded runners should use codex Auto with inherited model/effort",
+            "all seeded roles should use codex Auto with inherited model/effort",
         );
 
         for (handle, prompt) in [
             ("coder", SEED_CODER_PROMPT),
             ("reviewer", SEED_REVIEWER_PROMPT),
         ] {
-            let stored: String = conn
-                .query_row(
-                    "SELECT system_prompt FROM runners WHERE handle = ?1",
-                    params![handle],
-                    |row| row.get(0),
-                )
+            let stored = crate::repo::role::get_by_handle(&conn, handle)
+                .unwrap()
+                .unwrap()
+                .system_prompt
                 .unwrap();
             assert_eq!(stored, prompt.trim_end_matches('\n'));
         }
@@ -1137,16 +1268,6 @@ Talking to the human:
         md.trim_end_matches('\n').to_string()
     }
 
-    /// Run only migration 0002's UPDATE statements directly,
-    /// bypassing `run_migrations`' `_migrations`-version gate. Used
-    /// by the preserve / rewrite tests so they can pre-insert a
-    /// runner row in whatever shape they want and then exercise the
-    /// migration on it.
-    fn apply_0002_persona_rewrite(conn: &Connection) {
-        conn.execute_batch(include_str!("../migrations/0002_persona_only_seeds.sql"))
-            .unwrap();
-    }
-
     #[test]
     fn migration_0002_persona_preserves_customized_system_prompts() {
         // Reviewer-codex flagged this on #51: the persona migration
@@ -1154,27 +1275,24 @@ Talking to the human:
         // architect/impl/reviewer row in place (same id, customized
         // prompt). The WHERE pin on the pre-#51 seed text is what
         // makes the migration idempotent for customized rows.
-        let pool = open_in_memory().unwrap();
-        let conn = pool.get().unwrap();
+        let mut conn = Connection::open_in_memory().unwrap();
+        run_migrations_up_to(&mut conn, 1).unwrap();
         let custom = "My customized architect prompt — please do not overwrite.";
-        conn.execute(
-            "INSERT INTO runners
-                (id, handle, display_name, runtime, command, system_prompt,
-                 created_at, updated_at)
-             VALUES ('01K000DEFAULT000RUNNERARCH01', 'architect', 'Custom A',
-                     'claude-code', 'claude', ?1,
-                     '2026-04-01T00:00:00Z', '2026-04-01T00:00:00Z')",
-            params![custom],
+        insert_pre_0023_role(
+            &conn,
+            Pre0023Role {
+                id: "01K000DEFAULT000RUNNERARCH01",
+                handle: "architect",
+                display_name: "Custom A",
+                runtime: "claude-code",
+                command: "claude",
+                system_prompt: Some(custom),
+            },
         )
         .unwrap();
-        apply_0002_persona_rewrite(&conn);
-        let preserved: String = conn
-            .query_row(
-                "SELECT system_prompt FROM runners
-                  WHERE id = '01K000DEFAULT000RUNNERARCH01'",
-                [],
-                |r| r.get(0),
-            )
+        apply_pre_0023_persona_rewrite(&conn).unwrap();
+        let preserved = pre_0023_system_prompt(&conn, "01K000DEFAULT000RUNNERARCH01")
+            .unwrap()
             .unwrap();
         assert_eq!(
             preserved, custom,
@@ -1189,26 +1307,23 @@ Talking to the human:
         // (an unedited install) must get rewritten to the new
         // persona text. Mirrors what shipping users on v0.1.x will
         // actually see when the persona migration runs.
-        let pool = open_in_memory().unwrap();
-        let conn = pool.get().unwrap();
-        conn.execute(
-            "INSERT INTO runners
-                (id, handle, display_name, runtime, command, system_prompt,
-                 created_at, updated_at)
-             VALUES ('01K000DEFAULT000RUNNERARCH01', 'architect', 'Architect',
-                     'claude-code', 'claude', ?1,
-                     '2026-05-03T00:00:00Z', '2026-05-03T00:00:00Z')",
-            params![PRE_51_ARCHITECT_SEED],
+        let mut conn = Connection::open_in_memory().unwrap();
+        run_migrations_up_to(&mut conn, 1).unwrap();
+        insert_pre_0023_role(
+            &conn,
+            Pre0023Role {
+                id: "01K000DEFAULT000RUNNERARCH01",
+                handle: "architect",
+                display_name: "Architect",
+                runtime: "claude-code",
+                command: "claude",
+                system_prompt: Some(PRE_51_ARCHITECT_SEED),
+            },
         )
         .unwrap();
-        apply_0002_persona_rewrite(&conn);
-        let rewritten: String = conn
-            .query_row(
-                "SELECT system_prompt FROM runners
-                  WHERE id = '01K000DEFAULT000RUNNERARCH01'",
-                [],
-                |r| r.get(0),
-            )
+        apply_pre_0023_persona_rewrite(&conn).unwrap();
+        let rewritten = pre_0023_system_prompt(&conn, "01K000DEFAULT000RUNNERARCH01")
+            .unwrap()
             .unwrap();
         assert_eq!(
             rewritten,
@@ -1231,7 +1346,7 @@ Talking to the human:
         //
         // The seed reads the copyable peer-coding example via
         // `include_str!`, so checking these sources checks the stored
-        // runner prompts too. Mission verbs belong in the crew addendum.
+        // role prompts too. Mission verbs belong in the crew addendum.
         let banned_substrings = [
             "runner msg post",
             "runner msg read",
@@ -1277,23 +1392,21 @@ Talking to the human:
     }
 
     #[test]
-    fn seed_defaults_skips_when_user_has_a_runner_but_no_crew() {
-        // Any existing runner means this is not a first-launch-empty DB.
+    fn seed_defaults_skips_when_user_has_a_role_but_no_crew() {
+        // Any existing role means this is not a first-launch-empty DB.
         // The seed must bail as one unit instead of colliding on a handle
         // and leaving a partial crew without its lead.
         let pool = open_in_memory().unwrap();
         let mut conn = pool.get().unwrap();
-        insert_runner(&conn, "user-r1", "coder").unwrap();
+        insert_role(&conn, "user-r1", "coder").unwrap();
         seed_defaults(&mut conn).unwrap();
 
         let crew_count: i64 = conn
             .query_row("SELECT COUNT(*) FROM crews", [], |r| r.get(0))
             .unwrap();
-        let runner_count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM runners", [], |r| r.get(0))
-            .unwrap();
+        let role_count = crate::repo::role::count(&conn).unwrap();
         assert_eq!(crew_count, 0, "should not create Peer coding crew");
-        assert_eq!(runner_count, 1, "user's runner stays untouched");
+        assert_eq!(role_count, 1, "user's runner stays untouched");
     }
 
     #[test]
@@ -1304,9 +1417,9 @@ Talking to the human:
         seed_defaults(&mut conn).unwrap();
 
         // User wipes the seeded data — slots cascade with the crew,
-        // runners are global templates so we delete them explicitly.
+        // Roles are global templates so we delete them explicitly.
         conn.execute("DELETE FROM crews", []).unwrap();
-        conn.execute("DELETE FROM runners", []).unwrap();
+        crate::repo::role::delete_all(&conn).unwrap();
         let crew_count: i64 = conn
             .query_row("SELECT COUNT(*) FROM crews", [], |r| r.get(0))
             .unwrap();
@@ -1331,13 +1444,11 @@ Talking to the human:
         seed_defaults(&mut conn).unwrap();
         seed_defaults(&mut conn).unwrap();
 
-        let runner_count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM runners", [], |r| r.get(0))
-            .unwrap();
+        let role_count = crate::repo::role::count(&conn).unwrap();
         let slot_count: i64 = conn
             .query_row("SELECT COUNT(*) FROM slots", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(runner_count, 2);
+        assert_eq!(role_count, 2);
         assert_eq!(slot_count, 2);
     }
 
@@ -1638,23 +1749,87 @@ Talking to the human:
     }
 
     #[test]
-    fn migration_0022_preserves_names_and_leaves_live_titles_unset() {
-        let mut conn = Connection::open_in_memory().unwrap();
-        run_migrations_up_to(&mut conn, 21).unwrap();
-        conn.execute(
-            "INSERT INTO sessions (id, status, title) VALUES ('chat', 'stopped', 'Codex')",
-            [],
-        )
-        .unwrap();
-        run_migrations(&mut conn).unwrap();
-        let names: (Option<String>, Option<String>) = conn
-            .query_row(
-                "SELECT title, live_title FROM sessions WHERE id = 'chat'",
+    fn migrations_0022_and_0023_preserve_data_and_role_cascades() {
+        {
+            let mut conn = Connection::open_in_memory().unwrap();
+            run_migrations_up_to(&mut conn, 21).unwrap();
+            conn.execute(
+                "INSERT INTO sessions (id, status, title) VALUES ('chat', 'stopped', 'Codex')",
                 [],
-                |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .unwrap();
-        assert_eq!(names, (Some("Codex".into()), None));
+            run_migrations_up_to(&mut conn, 22).unwrap();
+            let names: (Option<String>, Option<String>) = conn
+                .query_row(
+                    "SELECT title, live_title FROM sessions WHERE id = 'chat'",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .unwrap();
+            assert_eq!(names, (Some("Codex".into()), None));
+        }
+
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        run_migrations_up_to(&mut conn, 22).unwrap();
+        seed_pre_0023_fixture(&conn);
+        run_migrations(&mut conn).unwrap();
+
+        assert!(crate::repo::role::table_exists(&conn).unwrap());
+        assert!(!schema_has_table(&conn, "runners"));
+        let role = crate::repo::role::get(&conn, "r1").unwrap().unwrap();
+        assert_eq!(role.id, "r1");
+        assert_eq!(role.handle, "reviewer");
+        assert_eq!(role.display_name, "Reviewer");
+        assert_eq!(role.runtime, "shell");
+        assert_eq!(role.command, "sh");
+
+        let crew = crate::repo::crew::get(&conn, "c1").unwrap().unwrap();
+        assert_eq!(crew.id, "c1");
+        assert_eq!(crew.name, "Crew");
+
+        let slots = crate::repo::slot::list_for_crew(&conn, "c1").unwrap();
+        assert_eq!(
+            slots
+                .iter()
+                .map(|slot| (
+                    slot.id.as_str(),
+                    slot.role_id.as_str(),
+                    slot.slot_handle.as_str(),
+                    slot.position,
+                    slot.lead,
+                ))
+                .collect::<Vec<_>>(),
+            [
+                ("sl1", "r1", "lead", 0, true),
+                ("sl2", "r1", "reviewer", 1, false),
+            ]
+        );
+
+        let session = crate::repo::session::get_row(&conn, "direct1")
+            .unwrap()
+            .unwrap();
+        assert_eq!(session.id, "direct1");
+        assert_eq!(session.role_id.as_deref(), Some("r1"));
+        assert_eq!(session.status, crate::model::SessionStatus::Stopped);
+        assert_eq!(session.title.as_deref(), Some("Codex"));
+        assert_eq!(session.live_title, None);
+
+        let violation_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(violation_count, 0);
+
+        assert_eq!(crate::repo::role::delete(&conn, "r1").unwrap(), 1);
+        assert!(crate::repo::slot::list_for_crew(&conn, "c1")
+            .unwrap()
+            .is_empty());
+        assert!(crate::repo::session::get_row(&conn, "direct1")
+            .unwrap()
+            .is_none());
+        assert!(crate::repo::crew::get(&conn, "c1").unwrap().is_some());
     }
 
     #[test]
@@ -1684,8 +1859,19 @@ Talking to the human:
         conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
         run_migrations_up_to(&mut conn, 19).unwrap();
         insert_crew(&conn, "c1");
-        insert_runner(&conn, "r1", "alpha").unwrap();
-        insert_slot(&conn, "s1", "c1", "r1", "alpha", 0, 1).unwrap();
+        insert_pre_0023_role(
+            &conn,
+            Pre0023Role {
+                id: "r1",
+                handle: "alpha",
+                display_name: "alpha display",
+                runtime: "shell",
+                command: "sh",
+                system_prompt: None,
+            },
+        )
+        .unwrap();
+        insert_pre_0023_slot(&conn, "s1", "c1", "r1", "alpha", 0, true).unwrap();
 
         let columns_before: Vec<String> = conn
             .prepare("PRAGMA table_info(slots)")
@@ -1753,34 +1939,18 @@ Talking to the human:
         conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
         run_migrations_up_to(&mut conn, 20).unwrap();
         insert_crew(&conn, "c1");
-        for (index, runtime) in ["qoder", "Runtime-Needle", "shell"].into_iter().enumerate() {
-            let id = index.to_string();
-            insert_runner(&conn, &id, &id).unwrap();
-            insert_slot(&conn, &id, "c1", &id, &id, index as i64, 0).unwrap();
-            conn.execute(
-                "UPDATE runners SET runtime = ?1 WHERE id = ?2",
-                params![runtime, id],
-            )
-            .unwrap();
-            conn.execute(
-                "UPDATE slots SET runtime_override = ?1 WHERE id = ?2",
-                params![runtime, id],
-            )
-            .unwrap();
-            conn.execute("INSERT INTO sessions (id, runner_id, status, agent_runtime, runtime) VALUES (?1, ?1, 'stopped', ?2, 'native-pty')", params![id, runtime]).unwrap();
-        }
+        seed_pre_0023_runtime_rows(&conn, &["qoder", "Runtime-Needle", "shell"]).unwrap();
 
         run_migrations(&mut conn).unwrap();
         for (index, runtime) in ["qoder", "Runtime-Needle", "shell"].into_iter().enumerate() {
             let id = index.to_string();
-            let runner = crate::repo::runner::get(&conn, &id).unwrap().unwrap();
-            assert_eq!(runner.runtime, runtime);
-            crate::repo::runner::update(&conn, &crate::repo::runner::RunnerRow::from(&runner))
-                .unwrap();
-            let updated = crate::ops::runner::update(
+            let role = crate::repo::role::get(&conn, &id).unwrap().unwrap();
+            assert_eq!(role.runtime, runtime);
+            crate::repo::role::update(&conn, &crate::repo::role::RoleRow::from(&role)).unwrap();
+            let updated = crate::ops::role::update(
                 &conn,
                 &id,
-                crate::ops::runner::UpdateRunnerInput {
+                crate::ops::role::UpdateRoleInput {
                     display_name: Some("Renamed".into()),
                     ..Default::default()
                 },
@@ -1799,17 +1969,14 @@ Talking to the human:
                 Some(runtime)
             );
             assert_eq!(
-                crate::repo::runner::get(&conn, &id)
-                    .unwrap()
-                    .unwrap()
-                    .runtime,
+                crate::repo::role::get(&conn, &id).unwrap().unwrap().runtime,
                 runtime
             );
         }
         let version: i64 = conn
             .query_row("SELECT MAX(version) FROM _migrations", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 22);
+        assert_eq!(version, 23);
     }
 
     #[test]

@@ -2031,9 +2031,9 @@ mod tests {
             let core = test_core_with_runtime(temp.path(), Arc::clone(&runtime) as _);
             let bridge = TerminalBridge::new(core.clone(), Arc::new(|| {})).unwrap();
             bridge.set_palette(palette);
-            let runner = runner_backend::ops::runner::create(
+            let role = runner_backend::ops::role::create(
                 &core.db.get().unwrap(),
-                runner_backend::ops::runner::CreateRunnerInput {
+                runner_backend::ops::role::CreateRoleInput {
                     handle: "probe".into(),
                     display_name: "Probe".into(),
                     runtime: runner_backend::model::Runtime::Shell,
@@ -2051,7 +2051,7 @@ mod tests {
             let spawned = core
                 .sessions
                 .spawn_direct(
-                    &runner,
+                    &role,
                     None,
                     None,
                     None,
@@ -2119,9 +2119,9 @@ mod tests {
         let core = test_core_with_runtime(temp.path(), Arc::clone(&runtime) as _);
         let bridge = TerminalBridge::new(core.clone(), Arc::new(|| {})).unwrap();
         bridge.set_palette(crate::palette::RUNNER);
-        let runner = runner_backend::ops::runner::create(
+        let role = runner_backend::ops::role::create(
             &core.db.get().unwrap(),
-            runner_backend::ops::runner::CreateRunnerInput {
+            runner_backend::ops::role::CreateRoleInput {
                 handle: "probe".into(),
                 display_name: "Probe".into(),
                 runtime: runner_backend::model::Runtime::Shell,
@@ -2139,7 +2139,7 @@ mod tests {
         let spawned = core
             .sessions
             .spawn_direct(
-                &runner,
+                &role,
                 None,
                 None,
                 None,

@@ -1,7 +1,7 @@
-// `runners` table — global agent templates.
+// `roles` table — global agent templates.
 //
 // The only table where the row shape and the IPC shape diverge by name:
-// the DB stores `args_json` / `env_json` TEXT columns while `model::Runner`
+// the DB stores `args_json` / `env_json` TEXT columns while `model::Role`
 // exposes `args: Vec<String>` / `env: HashMap`. That divergence lives
 // entirely in this module's `From` conversions.
 //
@@ -17,12 +17,12 @@ use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_rusqlite::{from_row, to_params_named, to_params_named_with_fields};
 
-use crate::model::{Runner, Timestamp};
+use crate::model::{Role, Timestamp};
 
 use super::{de_err, insert_sql, select_list, ser_err};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct RunnerRow {
+pub struct RoleRow {
     pub id: String,
     pub handle: String,
     pub display_name: String,
@@ -59,7 +59,7 @@ pub const COLUMNS: &[&str] = &[
 ];
 
 /// `handle` and `created_at` are immutable after create (handle is the
-/// runner's identity in events and policy references), so the update
+/// role's identity in events and policy references), so the update
 /// column list excludes them — same statement shape as the legacy UPDATE.
 const UPDATE_FIELDS: &[&str] = &[
     "display_name",
@@ -75,9 +75,9 @@ const UPDATE_FIELDS: &[&str] = &[
     "id",
 ];
 
-impl From<RunnerRow> for Runner {
-    fn from(r: RunnerRow) -> Self {
-        Runner {
+impl From<RoleRow> for Role {
+    fn from(r: RoleRow) -> Self {
+        Role {
             id: r.id,
             handle: r.handle,
             display_name: r.display_name,
@@ -95,9 +95,9 @@ impl From<RunnerRow> for Runner {
     }
 }
 
-impl From<&Runner> for RunnerRow {
-    fn from(r: &Runner) -> Self {
-        RunnerRow {
+impl From<&Role> for RoleRow {
+    fn from(r: &Role) -> Self {
+        RoleRow {
             id: r.id.clone(),
             handle: r.handle.clone(),
             display_name: r.display_name.clone(),
@@ -115,9 +115,9 @@ impl From<&Runner> for RunnerRow {
     }
 }
 
-pub fn insert(conn: &Connection, row: &RunnerRow) -> rusqlite::Result<()> {
+pub fn insert(conn: &Connection, row: &RoleRow) -> rusqlite::Result<()> {
     conn.execute(
-        &insert_sql("runners", COLUMNS),
+        &insert_sql("roles", COLUMNS),
         to_params_named(row).map_err(ser_err)?.to_slice().as_slice(),
     )?;
     Ok(())
@@ -126,9 +126,9 @@ pub fn insert(conn: &Connection, row: &RunnerRow) -> rusqlite::Result<()> {
 /// Full-row update of every mutable column. The command layer resolves the
 /// outer-`Option` (leave-untouched) patch semantics against the existing
 /// row before calling.
-pub fn update(conn: &Connection, row: &RunnerRow) -> rusqlite::Result<usize> {
+pub fn update(conn: &Connection, row: &RoleRow) -> rusqlite::Result<usize> {
     conn.execute(
-        "UPDATE runners
+        "UPDATE roles
             SET display_name = :display_name,
                 runtime = :runtime,
                 command = :command,
@@ -147,46 +147,46 @@ pub fn update(conn: &Connection, row: &RunnerRow) -> rusqlite::Result<usize> {
     )
 }
 
-pub fn get(conn: &Connection, id: &str) -> rusqlite::Result<Option<Runner>> {
-    let sql = format!("SELECT {} FROM runners WHERE id = ?1", select_list(COLUMNS));
+pub fn get(conn: &Connection, id: &str) -> rusqlite::Result<Option<Role>> {
+    let sql = format!("SELECT {} FROM roles WHERE id = ?1", select_list(COLUMNS));
     conn.query_row(&sql, rusqlite::params![id], |row| {
-        from_row::<RunnerRow>(row).map_err(de_err)
+        from_row::<RoleRow>(row).map_err(de_err)
     })
     .optional()
-    .map(|opt| opt.map(Runner::from))
+    .map(|opt| opt.map(Role::from))
 }
 
-pub fn get_by_handle(conn: &Connection, handle: &str) -> rusqlite::Result<Option<Runner>> {
+pub fn get_by_handle(conn: &Connection, handle: &str) -> rusqlite::Result<Option<Role>> {
     let sql = format!(
-        "SELECT {} FROM runners WHERE handle = ?1",
+        "SELECT {} FROM roles WHERE handle = ?1",
         select_list(COLUMNS)
     );
     conn.query_row(&sql, rusqlite::params![handle], |row| {
-        from_row::<RunnerRow>(row).map_err(de_err)
+        from_row::<RoleRow>(row).map_err(de_err)
     })
     .optional()
-    .map(|opt| opt.map(Runner::from))
+    .map(|opt| opt.map(Role::from))
 }
 
 /// Row mapper for the list queries: an unreadable row (a non-TEXT value in
 /// a TEXT column, written by something outside the app — issue #439)
 /// degrades to a warn naming the row id instead of failing the whole query
-/// and blanking every runner surface. `get`/`get_by_handle` still error —
+/// and blanking every role surface. `get`/`get_by_handle` still error —
 /// an explicitly requested row must not silently vanish.
-fn read_or_skip(row: &rusqlite::Row<'_>) -> rusqlite::Result<Option<Runner>> {
-    match from_row::<RunnerRow>(row) {
-        Ok(r) => Ok(Some(Runner::from(r))),
+fn read_or_skip(row: &rusqlite::Row<'_>) -> rusqlite::Result<Option<Role>> {
+    match from_row::<RoleRow>(row) {
+        Ok(r) => Ok(Some(Role::from(r))),
         Err(e) => {
             let id: String = row.get(0).unwrap_or_else(|_| "<unreadable>".into());
-            log::warn!("runners: skipping unreadable row {id}: {e}");
+            log::warn!("roles: skipping unreadable row {id}: {e}");
             Ok(None)
         }
     }
 }
 
-pub fn list(conn: &Connection) -> rusqlite::Result<Vec<Runner>> {
+pub fn list(conn: &Connection) -> rusqlite::Result<Vec<Role>> {
     let sql = format!(
-        "SELECT {} FROM runners ORDER BY handle ASC",
+        "SELECT {} FROM roles ORDER BY handle ASC",
         select_list(COLUMNS)
     );
     let mut stmt = conn.prepare(&sql)?;
@@ -194,15 +194,15 @@ pub fn list(conn: &Connection) -> rusqlite::Result<Vec<Runner>> {
     rows.filter_map(|r| r.transpose()).collect()
 }
 
-pub fn list_for_crew(conn: &Connection, crew_id: &str) -> rusqlite::Result<Vec<Runner>> {
+pub fn list_for_crew(conn: &Connection, crew_id: &str) -> rusqlite::Result<Vec<Role>> {
     let sql = format!(
         "SELECT {}
-           FROM runners r
+           FROM roles r
           WHERE EXISTS (
                 SELECT 1
                   FROM slots s
                  WHERE s.crew_id = ?1
-                   AND s.runner_id = r.id
+                   AND s.role_id = r.id
           )
           ORDER BY r.handle ASC",
         super::qualified_select_list("r", COLUMNS)
@@ -218,12 +218,23 @@ const SEARCH_PREDICATE: &str = "(
 )";
 
 pub fn count(conn: &Connection) -> rusqlite::Result<i64> {
-    conn.query_row("SELECT COUNT(*) FROM runners", [], |row| row.get(0))
+    conn.query_row("SELECT COUNT(*) FROM roles", [], |row| row.get(0))
+}
+
+#[cfg(test)]
+pub(crate) fn table_exists(conn: &Connection) -> rusqlite::Result<bool> {
+    conn.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'roles'
+         )",
+        [],
+        |row| row.get(0),
+    )
 }
 
 pub fn count_matching(conn: &Connection, pattern: &str) -> rusqlite::Result<i64> {
     conn.query_row(
-        &format!("SELECT COUNT(*) FROM runners r WHERE {SEARCH_PREDICATE}"),
+        &format!("SELECT COUNT(*) FROM roles r WHERE {SEARCH_PREDICATE}"),
         rusqlite::params![pattern],
         |row| row.get(0),
     )
@@ -234,10 +245,10 @@ pub fn list_page(
     pattern: &str,
     limit: i64,
     offset: i64,
-) -> rusqlite::Result<Vec<Runner>> {
+) -> rusqlite::Result<Vec<Role>> {
     let sql = format!(
         "SELECT {}
-           FROM runners r
+           FROM roles r
           WHERE {SEARCH_PREDICATE}
           ORDER BY r.handle ASC
           LIMIT ?2 OFFSET ?3",
@@ -249,7 +260,123 @@ pub fn list_page(
 }
 
 pub fn delete(conn: &Connection, id: &str) -> rusqlite::Result<usize> {
-    conn.execute("DELETE FROM runners WHERE id = ?1", rusqlite::params![id])
+    conn.execute("DELETE FROM roles WHERE id = ?1", rusqlite::params![id])
+}
+
+#[cfg(test)]
+pub(crate) fn delete_all(conn: &Connection) -> rusqlite::Result<usize> {
+    conn.execute("DELETE FROM roles", [])
+}
+
+pub fn clear_inheriting_slot_agent_overrides(
+    conn: &Connection,
+    role_id: &str,
+) -> rusqlite::Result<usize> {
+    conn.execute(
+        "UPDATE slots
+            SET model_override = NULL, effort_override = NULL
+          WHERE role_id = ?1 AND runtime_override IS NULL",
+        rusqlite::params![role_id],
+    )
+}
+
+pub fn unarchived_direct_session_ids(
+    conn: &Connection,
+    role_id: &str,
+) -> rusqlite::Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT id
+           FROM sessions
+          WHERE role_id = ?1
+            AND mission_id IS NULL
+            AND slot_id IS NULL
+            AND archived_at IS NULL
+          ORDER BY started_at ASC",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![role_id], |row| row.get(0))?;
+    rows.collect()
+}
+
+pub fn affected_crews(conn: &Connection, role_id: &str) -> rusqlite::Result<Vec<(String, bool)>> {
+    let mut stmt = conn.prepare(
+        "SELECT crew_id, MAX(lead)
+           FROM slots
+          WHERE role_id = ?1
+          GROUP BY crew_id",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![role_id], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? != 0))
+    })?;
+    rows.collect()
+}
+
+pub fn delete_sessions(conn: &Connection, role_id: &str) -> rusqlite::Result<usize> {
+    conn.execute(
+        "DELETE FROM sessions WHERE role_id = ?1",
+        rusqlite::params![role_id],
+    )
+}
+
+pub fn session_count(conn: &Connection, role_id: &str) -> rusqlite::Result<i64> {
+    conn.query_row(
+        "SELECT COUNT(*) FROM sessions WHERE role_id = ?1",
+        rusqlite::params![role_id],
+        |row| row.get(0),
+    )
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ActivityRow {
+    pub active_sessions: i64,
+    pub active_missions: i64,
+    pub crew_count: i64,
+    pub last_started_at: Option<String>,
+    pub direct_session_id: Option<String>,
+}
+
+pub fn activity(conn: &Connection, role_id: &str) -> rusqlite::Result<ActivityRow> {
+    let active_sessions = conn.query_row(
+        "SELECT COUNT(*) FROM sessions WHERE role_id = ?1 AND status = 'running'",
+        rusqlite::params![role_id],
+        |row| row.get(0),
+    )?;
+    let active_missions = conn.query_row(
+        "SELECT COUNT(DISTINCT mission_id) FROM sessions
+          WHERE role_id = ?1 AND status = 'running' AND mission_id IS NOT NULL",
+        rusqlite::params![role_id],
+        |row| row.get(0),
+    )?;
+    let crew_count = conn.query_row(
+        "SELECT COUNT(DISTINCT crew_id) FROM slots WHERE role_id = ?1",
+        rusqlite::params![role_id],
+        |row| row.get(0),
+    )?;
+    let last_started_at = conn.query_row(
+        "SELECT MAX(started_at) FROM sessions WHERE role_id = ?1",
+        rusqlite::params![role_id],
+        |row| row.get(0),
+    )?;
+    let direct_session_id = conn
+        .query_row(
+            "SELECT id FROM sessions
+              WHERE role_id = ?1
+                AND status = 'running'
+                AND mission_id IS NULL
+                AND slot_id IS NULL
+                AND archived_at IS NULL
+              ORDER BY started_at DESC
+              LIMIT 1",
+            rusqlite::params![role_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(ActivityRow {
+        active_sessions,
+        active_missions,
+        crew_count,
+        last_started_at,
+        direct_session_id,
+    })
 }
 
 #[cfg(test)]
@@ -258,9 +385,9 @@ mod tests {
     use crate::db;
     use chrono::Utc;
 
-    fn full_row() -> RunnerRow {
+    fn full_row() -> RoleRow {
         let now = Utc::now();
-        RunnerRow {
+        RoleRow {
             id: "r-full".into(),
             handle: "full".into(),
             display_name: "Full".into(),
@@ -282,9 +409,9 @@ mod tests {
         }
     }
 
-    fn minimal_row() -> RunnerRow {
+    fn minimal_row() -> RoleRow {
         let now = Utc::now();
-        RunnerRow {
+        RoleRow {
             id: "r-min".into(),
             handle: "min".into(),
             display_name: "Min".into(),
@@ -308,7 +435,7 @@ mod tests {
         for row in [full_row(), minimal_row()] {
             insert(&conn, &row).unwrap();
             let read = get(&conn, &row.id).unwrap().unwrap();
-            assert_eq!(RunnerRow::from(&read), row);
+            assert_eq!(RoleRow::from(&read), row);
         }
     }
 
@@ -319,17 +446,17 @@ mod tests {
         // Shape of db.rs fixtures and pre-args rows: no args_json/env_json,
         // `Z`-spelled timestamps.
         conn.execute(
-            "INSERT INTO runners (
+            "INSERT INTO roles (
                 id, handle, display_name, runtime, command, created_at, updated_at
              ) VALUES ('r-legacy', 'legacy', 'Legacy', 'shell', 'sh',
                        '2026-04-22T00:00:00Z', '2026-04-22T00:00:00+00:00')",
             [],
         )
         .unwrap();
-        let runner = get(&conn, "r-legacy").unwrap().unwrap();
-        assert!(runner.args.is_empty());
-        assert!(runner.env.is_empty());
-        assert_eq!(runner.created_at, runner.updated_at);
+        let role = get(&conn, "r-legacy").unwrap().unwrap();
+        assert!(role.args.is_empty());
+        assert!(role.env.is_empty());
+        assert_eq!(role.created_at, role.updated_at);
     }
 
     #[test]
@@ -338,7 +465,7 @@ mod tests {
         let conn = pool.get().unwrap();
         // The exact seed args literal and a stored env map.
         conn.execute(
-            r#"INSERT INTO runners (
+            r#"INSERT INTO roles (
                 id, handle, display_name, runtime, command, args_json, env_json,
                 created_at, updated_at
              ) VALUES ('r-seed', 'seed', 'Seed', 'codex', 'codex',
@@ -348,9 +475,9 @@ mod tests {
             [],
         )
         .unwrap();
-        let runner = get(&conn, "r-seed").unwrap().unwrap();
+        let role = get(&conn, "r-seed").unwrap().unwrap();
         assert_eq!(
-            runner.args,
+            role.args,
             vec![
                 "--ask-for-approval".to_string(),
                 "on-request".to_string(),
@@ -359,7 +486,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            runner.env,
+            role.env,
             HashMap::from([("FOO".to_string(), "bar".to_string())])
         );
     }
@@ -372,7 +499,7 @@ mod tests {
         // The issue #439 repro: a BLOB in a TEXT column, only writable from
         // outside the app.
         conn.execute(
-            "INSERT INTO runners (
+            "INSERT INTO roles (
                 id, handle, display_name, runtime, command, args_json,
                 system_prompt, created_at, updated_at
              ) VALUES ('bad', 'bad', 'Bad', 'codex', 'codex', '[]',
@@ -381,12 +508,8 @@ mod tests {
         )
         .unwrap();
 
-        let handles = |runners: Vec<Runner>| {
-            runners
-                .into_iter()
-                .map(|r| r.handle)
-                .collect::<Vec<String>>()
-        };
+        let handles =
+            |roles: Vec<Role>| roles.into_iter().map(|r| r.handle).collect::<Vec<String>>();
         assert_eq!(handles(list(&conn).unwrap()), ["full"]);
         assert_eq!(handles(list_page(&conn, "%", 10, 0).unwrap()), ["full"]);
         // An explicitly requested row still errors.
@@ -402,7 +525,7 @@ mod tests {
         insert(&conn, &row).unwrap();
         let (args_raw, env_raw, created_raw): (String, String, String) = conn
             .query_row(
-                "SELECT args_json, env_json, created_at FROM runners WHERE id = 'r-full'",
+                "SELECT args_json, env_json, created_at FROM roles WHERE id = 'r-full'",
                 [],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
@@ -422,7 +545,7 @@ mod tests {
         insert(&conn, &minimal_row()).unwrap();
         let (args_raw, env_raw): (String, String) = conn
             .query_row(
-                "SELECT args_json, env_json FROM runners WHERE id = 'r-min'",
+                "SELECT args_json, env_json FROM roles WHERE id = 'r-min'",
                 [],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )

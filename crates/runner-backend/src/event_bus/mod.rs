@@ -95,7 +95,7 @@ pub struct AppendedEvent {
 #[derive(Debug, Clone, Serialize)]
 pub struct InboxUpdate {
     pub mission_id: String,
-    pub runner_handle: String,
+    pub role_handle: String,
     /// Highest ULID currently in the runner's projected inbox, or `None` if
     /// nothing has been routed to them yet.
     pub last_id: Option<String>,
@@ -111,7 +111,7 @@ pub struct InboxUpdate {
 #[derive(Debug, Clone, Serialize)]
 pub struct WatermarkUpdate {
     pub mission_id: String,
-    pub runner_handle: String,
+    pub role_handle: String,
     pub watermark: String,
     pub unread_count: usize,
 }
@@ -257,11 +257,11 @@ struct BusState {
     /// Roster of runner handles whose inboxes we project. Stable for the
     /// mission's lifetime.
     handles: Vec<String>,
-    inbox: BTreeMap<String, RunnerInbox>,
+    inbox: BTreeMap<String, RoleInbox>,
 }
 
 #[derive(Default)]
-struct RunnerInbox {
+struct RoleInbox {
     matched: Vec<String>, // ULIDs in append order
     /// Index of the first unread entry in `matched`. `matched[read_idx..]`
     /// is the unread tail; `matched[..read_idx]` has been ack'd via
@@ -276,7 +276,7 @@ impl BusState {
     fn new(mission_id: String, handles: Vec<String>) -> Self {
         let mut inbox = BTreeMap::new();
         for h in &handles {
-            inbox.insert(h.clone(), RunnerInbox::default());
+            inbox.insert(h.clone(), RoleInbox::default());
         }
         Self {
             mission_id,
@@ -341,7 +341,7 @@ impl BusState {
                     let unread = inbox.matched.len() - inbox.read_idx;
                     emitter.inbox_updated(&InboxUpdate {
                         mission_id: self.mission_id.clone(),
-                        runner_handle: handle,
+                        role_handle: handle,
                         last_id: Some(event.id.clone()),
                         watermark: inbox.watermark.clone(),
                         unread_count: unread,
@@ -413,7 +413,7 @@ impl BusState {
         let unread = inbox.matched.len() - inbox.read_idx;
         emitter.watermark_advanced(&WatermarkUpdate {
             mission_id: self.mission_id.clone(),
-            runner_handle: handle.clone(),
+            role_handle: handle.clone(),
             watermark: up_to,
             unread_count: unread,
         });
@@ -421,7 +421,7 @@ impl BusState {
         // event still see the new unread count.
         emitter.inbox_updated(&InboxUpdate {
             mission_id: self.mission_id.clone(),
-            runner_handle: handle,
+            role_handle: handle,
             last_id: inbox.matched.last().cloned(),
             watermark: inbox.watermark.clone(),
             unread_count: unread,
@@ -651,8 +651,8 @@ mod tests {
         wait_until(1000, || cap.inbox.lock().unwrap().len() >= 2);
         let inbox = cap.inbox.lock().unwrap().clone();
 
-        let lead_updates: Vec<_> = inbox.iter().filter(|u| u.runner_handle == "lead").collect();
-        let impl_updates: Vec<_> = inbox.iter().filter(|u| u.runner_handle == "impl").collect();
+        let lead_updates: Vec<_> = inbox.iter().filter(|u| u.role_handle == "lead").collect();
+        let impl_updates: Vec<_> = inbox.iter().filter(|u| u.role_handle == "impl").collect();
 
         assert!(
             lead_updates.is_empty(),
@@ -696,15 +696,21 @@ mod tests {
         wait_until(3000, || !cap.watermark.lock().unwrap().is_empty());
         let wm = cap.watermark.lock().unwrap().clone();
         assert_eq!(wm.len(), 1, "exactly one watermark/advanced");
-        assert_eq!(wm[0].runner_handle, "lead");
+        assert_eq!(wm[0].role_handle, "lead");
         assert_eq!(wm[0].watermark, bcast.id);
         assert_eq!(wm[0].unread_count, 0);
+        let persisted = serde_json::to_value(&wm[0]).unwrap();
+        assert_eq!(persisted["role_handle"], "lead");
+        assert!(persisted.get("runner_handle").is_none());
 
         // The corresponding inbox/updated should also reflect zero unread.
         let inbox = cap.inbox.lock().unwrap();
         let last = inbox.last().unwrap();
-        assert_eq!(last.runner_handle, "lead");
+        assert_eq!(last.role_handle, "lead");
         assert_eq!(last.unread_count, 0);
+        let persisted = serde_json::to_value(last).unwrap();
+        assert_eq!(persisted["role_handle"], "lead");
+        assert!(persisted.get("runner_handle").is_none());
     }
 
     #[test]

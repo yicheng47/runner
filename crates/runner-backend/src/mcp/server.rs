@@ -19,7 +19,7 @@ impl RunnerMcpHandler {
     pub(crate) fn tool_router() -> ToolRouter<Self> {
         let mut r = ToolRouter::new();
         r.merge(Self::crew_router());
-        r.merge(Self::runner_router());
+        r.merge(Self::role_router());
         r.merge(Self::slot_router());
         r.merge(Self::project_router());
         r.merge(Self::mission_router());
@@ -37,7 +37,7 @@ impl ServerHandler for RunnerMcpHandler {
             .with_protocol_version(ProtocolVersion::LATEST)
             .with_server_info(implementation)
             .with_instructions(
-                "Runner MCP server. Access projects, crews, runners, slots, direct chats, \
+                "Runner MCP server. Access projects, crews, roles, slots, direct chats, \
                  and mission lifecycle/status tools for operating a Runner workspace.",
             )
     }
@@ -63,8 +63,8 @@ pub(crate) async fn serve_connection(stream: crate::ipc::IpcStream, state: AppCo
 mod tests {
     use super::*;
 
-    #[test]
-    fn tool_router_registers_workspace_and_mission_tools() {
+    #[tokio::test]
+    async fn tool_router_registers_tools_and_role_list_matches_backend_list() {
         let router = RunnerMcpHandler::tool_router();
         let names: std::collections::BTreeSet<_> = router
             .list_all()
@@ -77,12 +77,12 @@ mod tests {
             "crew_create",
             "crew_update",
             "crew_delete",
-            "runner_list",
-            "runner_get",
-            "runner_get_by_handle",
-            "runner_create",
-            "runner_update",
-            "runner_delete",
+            "role_list",
+            "role_get",
+            "role_get_by_handle",
+            "role_create",
+            "role_update",
+            "role_delete",
             "slot_list",
             "slot_create",
             "slot_update",
@@ -116,6 +116,18 @@ mod tests {
         .map(|s| s.to_string())
         .collect();
         assert_eq!(names, expected, "MCP tool registry diverged");
+
+        let handler = RunnerMcpHandler::new(crate::test_support::test_core());
+        let expected = {
+            let conn = handler.state.db.get().unwrap();
+            crate::test_support::insert_test_role(&conn, "r-beta", "beta", "shell", "sh");
+            crate::test_support::insert_test_role(&conn, "r-alpha", "alpha", "shell", "sh");
+            serde_json::to_value(crate::ops::role::list(&conn).unwrap()).unwrap()
+        };
+        let result = handler.role_list().await.unwrap();
+        let actual: serde_json::Value =
+            serde_json::from_str(&result.content[0].as_text().unwrap().text).unwrap();
+        assert_eq!(actual, expected);
     }
 
     // Regression for #240. A bare `serde_json::Value` field derives a

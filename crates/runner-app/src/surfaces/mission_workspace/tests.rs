@@ -168,7 +168,7 @@ fn sidebar_and_mission_fills_follow_carbon_and_runner_light() {
         session: runner_backend::model::Session {
             id: "archived-slot".into(),
             mission_id: Some("mission".into()),
-            runner_id: "runner".into(),
+            role_id: "role".into(),
             slot_id: None,
             cwd: None,
             status: SessionStatus::Stopped,
@@ -258,6 +258,7 @@ fn permissions_section_reads_the_recorded_mission_start_mode() {
     for (recorded, shown) in [
         ("bypass", "bypass"),
         ("auto", "auto"),
+        ("role-default", "runner default"),
         ("runner-default", "runner default"),
     ] {
         let start = signal(

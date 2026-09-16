@@ -80,9 +80,9 @@ mod tests {
         )
         .unwrap();
         conn.execute(
-            "INSERT INTO runners
+            "INSERT INTO roles
                 (id, handle, display_name, runtime, command, created_at, updated_at)
-             VALUES ('runner', 'runner', 'Runner', 'shell', 'sh', ?1, ?1)",
+             VALUES ('role', 'role', 'Role', 'shell', 'sh', ?1, ?1)",
             [now],
         )
         .unwrap();
@@ -95,8 +95,8 @@ mod tests {
         .unwrap();
         conn.execute(
             "INSERT INTO sessions
-                (id, runner_id, status, started_at, project_id)
-             VALUES ('session', 'runner', 'stopped', ?1, ?2)",
+                (id, role_id, status, started_at, project_id)
+             VALUES ('session', 'role', 'stopped', ?1, ?2)",
             rusqlite::params![now, project.id],
         )
         .unwrap();

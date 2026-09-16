@@ -2,7 +2,7 @@ use super::logic::crew_name_refresh;
 use super::logic::crew_name_state;
 use super::logic::error_panel;
 use super::logic::section_label;
-use super::logic::selected_add_slot_runner;
+use super::logic::selected_add_slot_role;
 use super::logic::slot_handle_error;
 use super::logic::slot_section_description;
 use super::logic::suggest_slot_handle;
@@ -130,10 +130,10 @@ impl NativeRoot {
                             form.crew_name = crew_name;
                             form.existing_handles = existing_handles;
                             if !form.slot_handle.read(cx).edited() {
-                                let suggestion = selected_add_slot_runner(form)
-                                    .map(|runner| {
+                                let suggestion = selected_add_slot_role(form)
+                                    .map(|role| {
                                         suggest_slot_handle(
-                                            &runner.runner.handle,
+                                            &role.role.handle,
                                             &form.existing_handles,
                                         )
                                     })

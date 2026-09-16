@@ -230,10 +230,10 @@ impl NativeRoot {
         let crew_id = item.crew.id.clone();
         let key_crew_id = crew_id.clone();
         let menu_item = item.clone();
-        let count = if item.runner_count == 1 {
+        let count = if item.role_count == 1 {
             "1 runner".to_owned()
         } else {
-            format!("{} runners", item.runner_count)
+            format!("{} runners", item.role_count)
         };
         let members = if item.members.is_empty() {
             vec![div()
@@ -267,7 +267,7 @@ impl NativeRoot {
                             div()
                                 .text_size(theme::text_meta())
                                 .text_color(theme::muted())
-                                .child(format!("{}-{}", member.runtime, member.runner_handle)),
+                                .child(format!("{}-{}", member.runtime, member.role_handle)),
                         )
                         .children(member.lead.then(|| {
                             div()

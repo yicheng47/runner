@@ -34,7 +34,7 @@ pub mod mcp;
 pub mod mission;
 pub mod node;
 pub mod project;
-pub mod runner;
+pub mod role;
 pub mod runtime;
 pub mod session;
 pub mod skills;

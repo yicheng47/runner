@@ -1,7 +1,7 @@
 use crate::session::status::{
     Activity, AgentObservation, AgentStatus, Lifecycle, ObservationSource, TurnOutcome,
 };
-// Per-runner session manager.
+// Per-role session manager.
 //
 // One `Session` = one child process attached to an in-process PTY via
 // `SessionRuntime`. The SessionManager holds the map of live sessions so
@@ -37,7 +37,7 @@ use runner_core::model::{EventDraft, SignalType};
 
 use crate::db::DbPool;
 use crate::error::{Error, Result};
-use crate::model::{Mission, Runner};
+use crate::model::{Mission, Role};
 use crate::router;
 use crate::session::runtime::{
     OutputStream, RunnerStatus, RuntimeOutput, RuntimeSession, SessionRuntime, SpawnSpec,
@@ -272,10 +272,10 @@ pub trait SessionEvents: Send + Sync + 'static {
     /// Live direct-chat activity projection. Mission sessions keep using
     /// `runner_status` rows in the mission log instead.
     fn status(&self, _ev: &SessionActivityEvent) {}
-    /// Live activity counter for a runner — emitted on every spawn/reap so
-    /// the Runners list can update its "N sessions / M missions" badges
+    /// Live activity counter for a role — emitted on every spawn/reap so
+    /// the Roles list can update its "N sessions / M missions" badges
     /// without polling. Default no-op so test fakes don't have to opt in.
-    fn runner_activity(&self, _ev: &RunnerActivityEvent) {}
+    fn role_activity(&self, _ev: &RoleActivityEvent) {}
     /// Non-fatal, user-facing advisory (resume fallback, etc.). Default
     /// no-op so test fakes don't have to opt in.
     fn warning(&self, _ev: &WarningEvent) {}
@@ -300,17 +300,17 @@ impl SessionEventObserverRegistry {
     }
 }
 
-/// Payload for `runner/activity`. Derived from the same query as the runner
+/// Payload for `role/activity`. Derived from the same query as the role
 /// activity operation, so a fresh page load and a live update agree.
 #[derive(Debug, Clone, Serialize)]
-pub struct RunnerActivityEvent {
-    pub runner_id: String,
+pub struct RoleActivityEvent {
+    pub role_id: String,
     pub handle: String,
     pub active_sessions: i64,
     pub active_missions: i64,
     pub crew_count: i64,
     /// Most recent running direct-chat session id, if any. Mirrors
-    /// `RunnerActivity::direct_session_id` so the sidebar can re-attach
+    /// `RoleActivity::direct_session_id` so the sidebar can re-attach
     /// to a live PTY without an extra round-trip.
     pub direct_session_id: Option<String>,
 }
@@ -436,8 +436,8 @@ impl SessionEvents for CoreSessionEvents {
         }
         self.events.emit("session/status", &event);
     }
-    fn runner_activity(&self, ev: &RunnerActivityEvent) {
-        self.events.emit("runner/activity", ev);
+    fn role_activity(&self, ev: &RoleActivityEvent) {
+        self.events.emit("role/activity", ev);
     }
     fn warning(&self, ev: &WarningEvent) {
         self.events.emit("session/warning", ev);
@@ -500,13 +500,13 @@ pub struct WarningEvent {
 }
 
 /// Row returned to the frontend after a spawn. Subset of the DB `sessions`
-/// row with the runner handle denormalized so the debug page can render
+/// row with the role handle denormalized so the debug page can render
 /// `@coder`-style labels without a separate lookup.
 #[derive(Debug, Clone, Serialize)]
 pub struct SpawnedSession {
     pub id: String,
     pub mission_id: Option<String>,
-    pub runner_id: Option<String>,
+    pub role_id: Option<String>,
     pub handle: String,
     pub pid: Option<u32>,
 }
@@ -519,10 +519,10 @@ struct SessionHandle {
     /// filters on this so direct chats don't get torn down when a mission
     /// stops, and vice versa.
     mission_id: Option<String>,
-    /// The runner this session is an instance of. `kill_all_for_runner`
-    /// filters on this so deleting a runner can reap its live PTY
+    /// The role this session is an instance of. `kill_all_for_role`
+    /// filters on this so deleting a role can reap its live PTY
     /// children before the cascade nukes the DB rows underneath.
-    runner_id: Option<String>,
+    role_id: Option<String>,
     /// Runtime-side identity returned from `SessionRuntime::spawn`.
     /// The manager passes this back to `runtime.send_bytes` /
     /// `runtime.resize` / `runtime.stop` for every operation on the
@@ -678,7 +678,7 @@ pub struct SessionManager {
     /// apps can find tools like claude / codex / mise that aren't on
     /// launchd's stripped default PATH — issue #65); `vars` (the
     /// proxy quartet in both cases) is layered into every spawn's env
-    /// under `runner.env` so the child can reach the network the same
+    /// under `role.env` so the child can reach the network the same
     /// way Terminal.app's children would (issues #109 / #152).
     shell_env: Arc<RwLock<crate::shell_path::LoginShellEnv>>,
     discovery_state: crate::runtime_status::SharedDiscoveryState,
@@ -763,7 +763,7 @@ pub struct PendingMissionSpawn {
     pub session_id: String,
     spec: SpawnSpec,
     mission: Mission,
-    runner: Runner,
+    role: Role,
     slot_handle: String,
     /// Where `spec.initial_size` came from (caller-supplied / mission-hint /
     /// DEFAULT_PTY_SIZE), for the post-spawn fork log line (#366).
@@ -1583,8 +1583,8 @@ impl SessionManager {
     }
 }
 
-fn resolve_spawn_cwd(explicit: Option<&str>, runner_default: Option<&str>) -> Option<String> {
-    [explicit, runner_default]
+fn resolve_spawn_cwd(explicit: Option<&str>, role_default: Option<&str>) -> Option<String> {
+    [explicit, role_default]
         .into_iter()
         .flatten()
         .find(|cwd| !cwd.trim().is_empty())
@@ -1595,28 +1595,28 @@ fn resolve_spawn_cwd(explicit: Option<&str>, runner_default: Option<&str>) -> Op
         })
 }
 
-/// Outcome of resolving a runtime override against a runner row
+/// Outcome of resolving a runtime override against a role row
 /// (feature 41).
 #[derive(Debug)]
 pub(crate) struct RuntimeOverrideResolution {
-    /// Rebuilt runner config after applying any runtime, model, or
-    /// effort override. `None` means the runner row is byte-identical.
-    pub effective: Option<Runner>,
+    /// Rebuilt role config after applying any runtime, model, or
+    /// effort override. `None` means the role row is byte-identical.
+    pub effective: Option<Role>,
     /// True when a non-blank runtime override was explicitly requested —
-    /// including one matching the runner's current runtime. Spawn
+    /// including one matching the role's current runtime. Spawn
     /// paths record the effective runtime on the session row for
-    /// pinned spawns so a later edit to the runner template's
+    /// pinned spawns so a later edit to the role template's
     /// runtime can't silently re-engine this session's resume (and
     /// hand its native session key to a different CLI).
     pub pinned: bool,
 }
 
-/// Resolve the runner config a spawn should actually use. Layering is
-/// runner template, then runtime override, then model/effort overrides.
+/// Resolve the role config a spawn should actually use. Layering is
+/// role template, then runtime override, then model/effort overrides.
 /// A matching runtime override keeps an otherwise unchanged spawn
 /// byte-identical but still pins. Model/effort-only overrides never pin.
 pub(crate) fn resolve_runtime_override(
-    runner: &Runner,
+    role: &Role,
     runtime_override: Option<&str>,
     model_override: Option<&str>,
     effort_override: Option<&str>,
@@ -1635,7 +1635,7 @@ pub(crate) fn resolve_runtime_override(
             pinned: false,
         });
     }
-    if runtime_override == Some(runner.runtime.as_str())
+    if runtime_override == Some(role.runtime.as_str())
         && model_override.is_none()
         && effort_override.is_none()
     {
@@ -1644,8 +1644,8 @@ pub(crate) fn resolve_runtime_override(
             pinned: true,
         });
     }
-    let mut effective = runner.clone();
-    if let Some(name) = runtime_override.filter(|name| *name != runner.runtime.as_str()) {
+    let mut effective = role.clone();
+    if let Some(name) = runtime_override.filter(|name| *name != role.runtime.as_str()) {
         let def = Runtime::parse(name)
             .and_then(router::runtime::runtime_definition)
             .ok_or_else(|| Error::msg(format!("unknown runtime: {name}")))?;
@@ -1654,10 +1654,10 @@ pub(crate) fn resolve_runtime_override(
         effective.args = router::runtime::apply_permission_mode(
             Some(def.name),
             &[],
-            crate::ops::runner::default_permission_mode(),
+            crate::ops::role::default_permission_mode(),
         );
         // A differing engine starts from its own defaults; the
-        // runner's model/effort belong to the original runtime.
+        // role's model/effort belong to the original runtime.
         effective.model = None;
         effective.effort = None;
     }
@@ -1673,12 +1673,12 @@ pub(crate) fn resolve_runtime_override(
     })
 }
 
-pub(crate) fn runtime_direct_runner(
+pub(crate) fn runtime_direct_role(
     runtime: &str,
     command: Option<&str>,
     model: Option<&str>,
     effort: Option<&str>,
-) -> Result<Runner> {
+) -> Result<Role> {
     let runtime = runtime.trim();
     if runtime.is_empty() {
         return Err(Error::msg("runtime is required"));
@@ -1696,10 +1696,10 @@ pub(crate) fn runtime_direct_runner(
         router::runtime::apply_permission_mode(
             Runtime::parse(runtime),
             &[],
-            crate::ops::runner::default_permission_mode(),
+            crate::ops::role::default_permission_mode(),
         )
     };
-    Ok(Runner {
+    Ok(Role {
         id: format!("runtime:{runtime}"),
         handle: runtime.to_string(),
         display_name: registry
@@ -1741,55 +1741,20 @@ pub(crate) fn runtime_direct_runner(
 // `compose_direct_first_turn`) live in `router::prompt`; the spawn
 // paths here only decide how to hand that composed text to the CLI.
 
-fn emit_runner_activity(pool: &DbPool, runner: &Runner, events: &dyn SessionEvents) {
+fn emit_role_activity(pool: &DbPool, role: &Role, events: &dyn SessionEvents) {
     let Ok(conn) = pool.get() else { return };
-    let active_sessions: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM sessions WHERE runner_id = ?1 AND status = 'running'",
-            params![runner.id],
-            |r| r.get(0),
-        )
-        .unwrap_or(0);
-    let active_missions: i64 = conn
-        .query_row(
-            "SELECT COUNT(DISTINCT mission_id) FROM sessions
-              WHERE runner_id = ?1 AND status = 'running' AND mission_id IS NOT NULL",
-            params![runner.id],
-            |r| r.get(0),
-        )
-        .unwrap_or(0);
-    // Count distinct crews this runner is wired into via the slots
+    let activity = crate::repo::role::activity(&conn, &role.id).unwrap_or_default();
+    // Count distinct crews this role is wired into via the slots
     // table. Mirrors the cold-path query in
-    // `ops::runner::runner_activity` so live `runner/activity`
-    // events stay consistent with what the Runners list shows on a
+    // `ops::role::role_activity` so live `role/activity`
+    // events stay consistent with what the Roles list shows on a
     // refresh.
-    let crew_count: i64 = conn
-        .query_row(
-            "SELECT COUNT(DISTINCT crew_id) FROM slots WHERE runner_id = ?1",
-            params![runner.id],
-            |r| r.get(0),
-        )
-        .unwrap_or(0);
-    let direct_session_id: Option<String> = conn
-        .query_row(
-            "SELECT id FROM sessions
-              WHERE runner_id = ?1
-                AND status = 'running'
-                AND mission_id IS NULL
-                AND slot_id IS NULL
-                AND archived_at IS NULL
-              ORDER BY started_at DESC
-              LIMIT 1",
-            params![runner.id],
-            |r| r.get(0),
-        )
-        .ok();
-    events.runner_activity(&RunnerActivityEvent {
-        runner_id: runner.id.clone(),
-        handle: runner.handle.clone(),
-        active_sessions,
-        active_missions,
-        crew_count,
-        direct_session_id,
+    events.role_activity(&RoleActivityEvent {
+        role_id: role.id.clone(),
+        handle: role.handle.clone(),
+        active_sessions: activity.active_sessions,
+        active_missions: activity.active_missions,
+        crew_count: activity.crew_count,
+        direct_session_id: activity.direct_session_id,
     });
 }

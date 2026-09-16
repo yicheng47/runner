@@ -48,7 +48,7 @@ pub struct SessionRowDb {
     pub id: String,
     pub mission_id: Option<String>,
     pub project_id: Option<String>,
-    pub runner_id: Option<String>,
+    pub role_id: Option<String>,
     pub slot_id: Option<String>,
     pub cwd: Option<String>,
     pub status: SessionStatus,
@@ -90,7 +90,7 @@ impl SessionRowDb {
             id,
             mission_id: None,
             project_id: None,
-            runner_id: None,
+            role_id: None,
             slot_id: None,
             cwd: None,
             status: SessionStatus::Running,
@@ -123,7 +123,7 @@ pub const COLUMNS: &[&str] = &[
     "id",
     "mission_id",
     "project_id",
-    "runner_id",
+    "role_id",
     "slot_id",
     "cwd",
     "status",
@@ -170,12 +170,12 @@ pub fn get_row(conn: &Connection, id: &str) -> rusqlite::Result<Option<SessionRo
 }
 
 /// Runtime identity stored directly on an overridden/runtime-only session,
-/// falling back to its runner template for ordinary chat rows.
+/// falling back to its role template for ordinary chat rows.
 pub fn effective_runtime(conn: &Connection, id: &str) -> rusqlite::Result<Option<String>> {
     conn.query_row(
         "SELECT COALESCE(s.agent_runtime, r.runtime)
            FROM sessions s
-           LEFT JOIN runners r ON r.id = s.runner_id
+           LEFT JOIN roles r ON r.id = s.role_id
           WHERE s.id = ?1",
         rusqlite::params![id],
         |row| row.get::<_, Option<String>>(0),
@@ -412,7 +412,7 @@ pub fn take_resume_on_launch_excluding(
                         archived_at IS NULL,
                         COALESCE(
                             agent_runtime,
-                            (SELECT runtime FROM runners WHERE runners.id = sessions.runner_id),
+                            (SELECT runtime FROM roles WHERE roles.id = sessions.role_id),
                             ''
                         ) = 'shell'
                    FROM sessions
@@ -492,7 +492,7 @@ pub fn take_resume_on_launch_for_session(
                     archived_at IS NULL,
                     COALESCE(
                         agent_runtime,
-                        (SELECT runtime FROM runners WHERE runners.id = sessions.runner_id),
+                        (SELECT runtime FROM roles WHERE roles.id = sessions.role_id),
                         ''
                     ) = 'shell'
                FROM sessions
@@ -550,6 +550,13 @@ pub fn finish_resume_on_launch(conn: &Connection, id: &str) -> rusqlite::Result<
     .map(|updated| updated > 0)
 }
 
+pub fn mark_resume_on_launch_claimed(conn: &Connection, id: &str) -> rusqlite::Result<usize> {
+    conn.execute(
+        "UPDATE sessions SET resume_on_launch = ?2 WHERE id = ?1",
+        rusqlite::params![id, RESUME_ON_LAUNCH_CLAIMED],
+    )
+}
+
 /// Clear launch-resume work gated by the user's chat setting while leaving
 /// shell rows queued so terminal panes always come back live.
 pub fn clear_chat_resume_on_launch(conn: &Connection) -> rusqlite::Result<usize> {
@@ -559,7 +566,7 @@ pub fn clear_chat_resume_on_launch(conn: &Connection) -> rusqlite::Result<usize>
           WHERE resume_on_launch != 0
             AND COALESCE(
                     agent_runtime,
-                    (SELECT runtime FROM runners WHERE runners.id = sessions.runner_id),
+                    (SELECT runtime FROM roles WHERE roles.id = sessions.role_id),
                     ''
                 ) != 'shell'",
         [],
@@ -627,7 +634,7 @@ pub fn set_live_title(
           WHERE id = ?1
             AND started_at IS ?3
             AND live_title IS NOT ?2
-            AND COALESCE(agent_runtime, (SELECT runtime FROM runners WHERE id = runner_id)) != 'shell'",
+            AND COALESCE(agent_runtime, (SELECT runtime FROM roles WHERE id = role_id)) != 'shell'",
         rusqlite::params![id, title, expected_started_at],
     )
 }
@@ -643,7 +650,7 @@ pub fn set_pinned_at(
     )
 }
 
-/// One mission session joined with its slot/runner labels — feeds the
+/// One mission session joined with its slot/role labels — feeds the
 /// `ops::session::SessionRow` IPC DTO.
 #[derive(Debug, Clone)]
 pub struct MissionSessionRow {
@@ -656,19 +663,19 @@ pub struct MissionSessionRow {
 }
 
 fn session_from_row_db(row: SessionRowDb) -> rusqlite::Result<Session> {
-    // Mission-session surfaces INNER JOIN runners, so runner_id is always
+    // Mission-session surfaces INNER JOIN roles, so role_id is always
     // present; NULL would mean the query and this assembly drifted apart.
-    let runner_id = row.runner_id.ok_or_else(|| {
+    let role_id = row.role_id.ok_or_else(|| {
         rusqlite::Error::FromSqlConversionFailure(
             0,
             rusqlite::types::Type::Null,
-            "mission session row missing runner_id".into(),
+            "mission session row missing role_id".into(),
         )
     })?;
     Ok(Session {
         id: row.id,
         mission_id: row.mission_id,
-        runner_id,
+        role_id,
         slot_id: row.slot_id,
         cwd: row.cwd,
         status: row.status,
@@ -680,7 +687,7 @@ fn session_from_row_db(row: SessionRowDb) -> rusqlite::Result<Session> {
 
 /// Non-archived sessions of a mission in slot-roster order, joined with
 /// the slot handle (template handle as fallback for pre-slot rows), the
-/// runner's runtime, and the lead flag. Assembled per decision 6: session
+/// role's runtime, and the lead flag. Assembled per decision 6: session
 /// side via `from_row`, denormalized extras via plain `row.get`.
 pub fn list_for_mission(
     conn: &Connection,
@@ -689,10 +696,10 @@ pub fn list_for_mission(
     let sql = format!(
         "SELECT {},
                 COALESCE(sl.slot_handle, r.handle) AS handle,
-                COALESCE(s.agent_runtime, r.runtime) AS runner_runtime,
+                COALESCE(s.agent_runtime, r.runtime) AS role_runtime,
                 COALESCE(sl.lead, 0) AS lead
            FROM sessions s
-           JOIN runners r ON r.id = s.runner_id
+           JOIN roles r ON r.id = s.role_id
            LEFT JOIN slots sl ON sl.id = s.slot_id
           WHERE s.mission_id = ?1
             AND s.archived_at IS NULL
@@ -703,7 +710,7 @@ pub fn list_for_mission(
     let rows = stmt.query_map(rusqlite::params![mission_id], |row| {
         let db_row = from_row::<SessionRowDb>(row).map_err(de_err)?;
         let handle: String = row.get("handle")?;
-        let runtime: String = row.get("runner_runtime")?;
+        let runtime: String = row.get("role_runtime")?;
         let lead: bool = row.get("lead")?;
         let agent_session_key = db_row.agent_session_key.clone();
         let live_title = db_row.live_title.clone();
@@ -719,32 +726,32 @@ pub fn list_for_mission(
     rows.collect()
 }
 
-/// A direct-chat session row plus the runner-template labels the sidebar
-/// needs. `runner_*` fields are None for runtime-only chats (#195).
+/// A direct-chat session row plus the role-template labels the sidebar
+/// needs. `role_*` fields are None for runtime-only chats (#195).
 /// Direct chats are exactly rows with no mission and no slot; legacy
 /// orphaned mission-slot rows can have `mission_id NULL` after the old
 /// FK behavior, but their `slot_id` must keep them off this surface.
 #[derive(Debug, Clone)]
 pub struct DirectSessionRow {
     pub row: SessionRowDb,
-    pub runner_handle: Option<String>,
-    pub runner_display_name: Option<String>,
-    pub runner_runtime: Option<String>,
-    pub runner_command: Option<String>,
+    pub role_handle: Option<String>,
+    pub role_display_name: Option<String>,
+    pub role_runtime: Option<String>,
+    pub role_command: Option<String>,
 }
 
-const DIRECT_EXTRAS: &str = "r.handle    AS runner_handle,
-                r.display_name AS runner_display_name,
-                r.runtime   AS runner_runtime,
-                r.command   AS runner_command";
+const DIRECT_EXTRAS: &str = "r.handle    AS role_handle,
+                r.display_name AS role_display_name,
+                r.runtime   AS role_runtime,
+                r.command   AS role_command";
 
 fn direct_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<DirectSessionRow> {
     Ok(DirectSessionRow {
         row: from_row::<SessionRowDb>(row).map_err(de_err)?,
-        runner_handle: row.get("runner_handle")?,
-        runner_display_name: row.get("runner_display_name")?,
-        runner_runtime: row.get("runner_runtime")?,
-        runner_command: row.get("runner_command")?,
+        role_handle: row.get("role_handle")?,
+        role_display_name: row.get("role_display_name")?,
+        role_runtime: row.get("role_runtime")?,
+        role_command: row.get("role_command")?,
     })
 }
 
@@ -756,7 +763,7 @@ pub fn list_recent_direct(conn: &Connection) -> rusqlite::Result<Vec<DirectSessi
     let sql = format!(
         "SELECT {}, {DIRECT_EXTRAS}
            FROM sessions s
-           LEFT JOIN runners r ON r.id = s.runner_id
+           LEFT JOIN roles r ON r.id = s.role_id
           WHERE s.mission_id IS NULL
             AND s.slot_id IS NULL
             AND s.archived_at IS NULL
@@ -778,7 +785,7 @@ pub fn list_archived_direct(conn: &Connection) -> rusqlite::Result<Vec<DirectSes
     let sql = format!(
         "SELECT {}, {DIRECT_EXTRAS}
            FROM sessions s
-           LEFT JOIN runners r ON r.id = s.runner_id
+           LEFT JOIN roles r ON r.id = s.role_id
           WHERE s.mission_id IS NULL
             AND s.slot_id IS NULL
             AND s.archived_at IS NOT NULL
@@ -798,7 +805,7 @@ pub fn get_direct(conn: &Connection, id: &str) -> rusqlite::Result<Option<Direct
     let sql = format!(
         "SELECT {}, {DIRECT_EXTRAS}
            FROM sessions s
-           LEFT JOIN runners r ON r.id = s.runner_id
+           LEFT JOIN roles r ON r.id = s.role_id
           WHERE s.id = ?1
             AND s.mission_id IS NULL
             AND s.slot_id IS NULL",
@@ -808,15 +815,101 @@ pub fn get_direct(conn: &Connection, id: &str) -> rusqlite::Result<Option<Direct
         .optional()
 }
 
+pub fn live_handles_for_mission(
+    conn: &Connection,
+    mission_id: &str,
+) -> rusqlite::Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT COALESCE(sl.slot_handle, r.handle) AS handle
+           FROM sessions s
+           JOIN roles r ON r.id = s.role_id
+           LEFT JOIN slots sl ON sl.id = s.slot_id
+          WHERE s.mission_id = ?1
+            AND s.status = 'running'",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![mission_id], |row| row.get(0))?;
+    rows.collect()
+}
+
+pub fn codex_capture_cwd(
+    conn: &Connection,
+    session_id: &str,
+    expected_started_at: &str,
+) -> rusqlite::Result<Option<String>> {
+    conn.query_row(
+        "SELECT s.cwd
+           FROM sessions s
+           LEFT JOIN roles r ON r.id = s.role_id
+          WHERE s.id = ?1
+            AND s.started_at = ?2
+            AND s.status = 'running'
+            AND s.agent_session_key IS NULL
+            AND COALESCE(s.agent_runtime, r.runtime) = 'codex'",
+        rusqlite::params![session_id, expected_started_at],
+        |row| row.get(0),
+    )
+}
+
+pub fn count_codex_capture_siblings(
+    conn: &Connection,
+    session_id: &str,
+    spawn_cwd: &str,
+) -> rusqlite::Result<i64> {
+    conn.query_row(
+        "SELECT COUNT(*)
+           FROM sessions s
+           LEFT JOIN roles r ON r.id = s.role_id
+          WHERE s.status = 'running'
+            AND s.agent_session_key IS NULL
+            AND COALESCE(s.agent_runtime, r.runtime) = 'codex'
+            AND s.id <> ?1
+            AND (s.cwd = ?2 OR s.cwd IS NULL)",
+        rusqlite::params![session_id, spawn_cwd],
+        |row| row.get(0),
+    )
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OrphanProcessRow {
+    pub session_id: String,
+    pub pid: i64,
+    pub runtime: Option<String>,
+    pub command: Option<String>,
+}
+
+pub fn list_orphan_process_candidates(
+    conn: &Connection,
+) -> rusqlite::Result<Vec<OrphanProcessRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT s.id,
+                s.pid,
+                COALESCE(s.agent_runtime, r.runtime),
+                COALESCE(s.agent_command, r.command)
+           FROM sessions s
+           LEFT JOIN roles r ON r.id = s.role_id
+          WHERE s.status != 'running'
+            AND s.pid IS NOT NULL",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok(OrphanProcessRow {
+            session_id: row.get(0)?,
+            pid: row.get(1)?,
+            runtime: row.get(2)?,
+            command: row.get(3)?,
+        })
+    })?;
+    rows.collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::db;
     use chrono::Utc;
 
-    fn seed_runner(conn: &Connection, id: &str, handle: &str) {
+    fn seed_role(conn: &Connection, id: &str, handle: &str) {
         conn.execute(
-            "INSERT INTO runners (
+            "INSERT INTO roles (
                 id, handle, display_name, runtime, command, created_at, updated_at
              ) VALUES (?1, ?2, ?3, 'alpha', 'alpha', ?4, ?4)",
             rusqlite::params![
@@ -841,7 +934,7 @@ mod tests {
             id: "sess-full".into(),
             mission_id: None,
             project_id: None,
-            runner_id: Some("r1".into()),
+            role_id: Some("r1".into()),
             slot_id: None,
             cwd: Some("/tmp/work".into()),
             status: SessionStatus::Stopped,
@@ -941,12 +1034,12 @@ mod tests {
     }
 
     #[test]
-    fn shell_titles_are_never_persisted_for_direct_or_runner_sessions() {
+    fn shell_titles_are_never_persisted_for_direct_or_role_sessions() {
         let pool = db::open_in_memory().unwrap();
         let conn = pool.get().unwrap();
-        seed_runner(&conn, "shell-runner", "shell");
+        seed_role(&conn, "shell-role", "shell");
         conn.execute(
-            "UPDATE runners SET runtime = 'shell' WHERE id = 'shell-runner'",
+            "UPDATE roles SET runtime = 'shell' WHERE id = 'shell-role'",
             [],
         )
         .unwrap();
@@ -955,7 +1048,7 @@ mod tests {
             if direct {
                 row.agent_runtime = Some("shell".into());
             } else {
-                row.runner_id = Some("shell-runner".into());
+                row.role_id = Some("shell-role".into());
             }
             insert(&conn, &row).unwrap();
             assert_eq!(
@@ -970,7 +1063,7 @@ mod tests {
     fn insert_then_get_round_trips_full_and_minimal_rows() {
         let pool = db::open_in_memory().unwrap();
         let conn = pool.get().unwrap();
-        seed_runner(&conn, "r1", "alpha");
+        seed_role(&conn, "r1", "alpha");
         for row in [full_row(), minimal_row()] {
             insert(&conn, &row).unwrap();
             assert_eq!(get_row(&conn, &row.id).unwrap().unwrap(), row);
@@ -981,12 +1074,12 @@ mod tests {
     fn legacy_rows_in_todays_stored_formats_read_cleanly() {
         let pool = db::open_in_memory().unwrap();
         let conn = pool.get().unwrap();
-        seed_runner(&conn, "r1", "alpha");
+        seed_role(&conn, "r1", "alpha");
         // Both timestamp spellings, a captured agent key, and legacy tmux
         // runtime metadata — the shapes real upgraded databases carry.
         conn.execute(
             "INSERT INTO sessions
-                (id, mission_id, runner_id, cwd, status, pid, started_at, stopped_at,
+                (id, mission_id, role_id, cwd, status, pid, started_at, stopped_at,
                  agent_session_key, runtime, runtime_socket, runtime_session,
                  runtime_window, runtime_pane, runtime_cursor)
              VALUES ('sess-legacy', NULL, 'r1', '/tmp', 'crashed', 123,
@@ -1015,7 +1108,7 @@ mod tests {
     fn writes_are_byte_identical_to_the_legacy_path() {
         let pool = db::open_in_memory().unwrap();
         let conn = pool.get().unwrap();
-        seed_runner(&conn, "r1", "alpha");
+        seed_role(&conn, "r1", "alpha");
         let row = full_row();
         insert(&conn, &row).unwrap();
         let (started_raw, status_raw): (String, String) = conn
@@ -1033,10 +1126,10 @@ mod tests {
     fn capture_agent_session_key_is_guarded_by_null_key_and_started_at() {
         let pool = db::open_in_memory().unwrap();
         let conn = pool.get().unwrap();
-        seed_runner(&conn, "r1", "alpha");
+        seed_role(&conn, "r1", "alpha");
         let mut row = minimal_row();
         let started = Utc::now();
-        row.runner_id = Some("r1".into());
+        row.role_id = Some("r1".into());
         row.started_at = Some(started);
         insert(&conn, &row).unwrap();
         let started_str = started.to_rfc3339();
@@ -1096,7 +1189,7 @@ mod tests {
     fn graceful_quit_preserves_pending_and_marks_only_live_direct_and_running_mission_slots() {
         let pool = db::open_in_memory().unwrap();
         let mut conn = pool.get().unwrap();
-        seed_runner(&conn, "r1", "alpha");
+        seed_role(&conn, "r1", "alpha");
         let now = "2026-07-25T00:00:00Z";
         conn.execute(
             "INSERT INTO crews (id, name, created_at, updated_at)
@@ -1113,7 +1206,7 @@ mod tests {
         .unwrap();
         conn.execute(
             "INSERT INTO sessions
-                (id, mission_id, runner_id, slot_id, status, started_at,
+                (id, mission_id, role_id, slot_id, status, started_at,
                  archived_at, resume_on_launch)
              VALUES
                 ('direct-running', NULL, 'r1', NULL, 'running', ?1, NULL, 0),
@@ -1162,11 +1255,11 @@ mod tests {
     fn launch_consumer_skips_unresumable_rows_and_clears_every_stamp() {
         let pool = db::open_in_memory().unwrap();
         let mut conn = pool.get().unwrap();
-        seed_runner(&conn, "r1", "alpha");
+        seed_role(&conn, "r1", "alpha");
         let now = "2026-07-25T00:00:00Z";
         conn.execute(
             "INSERT INTO sessions
-                (id, runner_id, status, started_at, agent_session_key,
+                (id, role_id, status, started_at, agent_session_key,
                  archived_at, resume_on_launch)
              VALUES
                 ('a-missing-key', 'r1', 'stopped', ?1, NULL, NULL, 1),
@@ -1278,11 +1371,11 @@ mod tests {
     fn disabled_chat_resume_keeps_keyless_shell_claim_available() {
         let pool = db::open_in_memory().unwrap();
         let mut conn = pool.get().unwrap();
-        seed_runner(&conn, "r1", "alpha");
+        seed_role(&conn, "r1", "alpha");
         let now = "2026-07-25T00:00:00Z";
         conn.execute(
             "INSERT INTO sessions
-                (id, runner_id, status, started_at, agent_session_key,
+                (id, role_id, status, started_at, agent_session_key,
                  agent_runtime, agent_command, resume_on_launch)
              VALUES
                 ('chat', 'r1', 'stopped', ?1, 'key', 'alpha', NULL, 1),
@@ -1307,10 +1400,10 @@ mod tests {
     fn quitting_while_launch_resume_is_starting_requeues_the_claim() {
         let pool = db::open_in_memory().unwrap();
         let mut conn = pool.get().unwrap();
-        seed_runner(&conn, "r1", "alpha");
+        seed_role(&conn, "r1", "alpha");
         conn.execute(
             "INSERT INTO sessions
-                (id, runner_id, status, started_at, agent_session_key, resume_on_launch)
+                (id, role_id, status, started_at, agent_session_key, resume_on_launch)
              VALUES
                 ('starting', 'r1', 'stopped', '2026-07-25T00:00:00Z', 'key', 1)",
             [],
@@ -1329,10 +1422,10 @@ mod tests {
     fn resumed_session_is_marked_again_on_the_next_quit_without_input() {
         let pool = db::open_in_memory().unwrap();
         let mut conn = pool.get().unwrap();
-        seed_runner(&conn, "r1", "alpha");
+        seed_role(&conn, "r1", "alpha");
         conn.execute(
             "INSERT INTO sessions
-                (id, runner_id, status, started_at, agent_session_key, resume_on_launch)
+                (id, role_id, status, started_at, agent_session_key, resume_on_launch)
              VALUES
                 ('resumed', 'r1', 'stopped', '2026-07-25T00:00:00Z', 'key', 1)",
             [],
@@ -1358,10 +1451,10 @@ mod tests {
     fn startup_requeues_a_launch_resume_claim_interrupted_by_a_crash() {
         let pool = db::open_in_memory().unwrap();
         let mut conn = pool.get().unwrap();
-        seed_runner(&conn, "r1", "alpha");
+        seed_role(&conn, "r1", "alpha");
         conn.execute(
             "INSERT INTO sessions
-                (id, runner_id, status, started_at, agent_session_key, resume_on_launch)
+                (id, role_id, status, started_at, agent_session_key, resume_on_launch)
              VALUES
                 ('claimed', 'r1', 'stopped', '2026-07-25T00:00:00Z', 'key', 2)",
             [],
@@ -1377,14 +1470,14 @@ mod tests {
         let pool = db::open_in_memory().unwrap();
         let conn = pool.get().unwrap();
         let now = Utc::now().to_rfc3339();
-        seed_runner(&conn, "r1", "template");
+        seed_role(&conn, "r1", "template");
         conn.execute(
             "INSERT INTO crews (id, name, created_at, updated_at) VALUES ('c1', 'C', ?1, ?1)",
             rusqlite::params![now],
         )
         .unwrap();
         conn.execute(
-            "INSERT INTO slots (id, crew_id, runner_id, slot_handle, position, lead, added_at)
+            "INSERT INTO slots (id, crew_id, role_id, slot_handle, position, lead, added_at)
              VALUES ('sl1', 'c1', 'r1', 'coder', 0, 1, ?1)",
             rusqlite::params![now],
         )
@@ -1397,7 +1490,7 @@ mod tests {
         .unwrap();
         conn.execute(
             "INSERT INTO sessions
-                (id, mission_id, runner_id, slot_id, status, started_at, agent_session_key)
+                (id, mission_id, role_id, slot_id, status, started_at, agent_session_key)
              VALUES ('se1', 'm1', 'r1', 'sl1', 'running', ?1, 'key-1')",
             rusqlite::params![now],
         )
@@ -1405,7 +1498,7 @@ mod tests {
         // Archived row must be filtered out.
         conn.execute(
             "INSERT INTO sessions
-                (id, mission_id, runner_id, slot_id, status, started_at, archived_at)
+                (id, mission_id, role_id, slot_id, status, started_at, archived_at)
              VALUES ('se-archived', 'm1', 'r1', 'sl1', 'stopped', ?1, ?1)",
             rusqlite::params![now],
         )
@@ -1415,7 +1508,7 @@ mod tests {
         assert_eq!(rows.len(), 1);
         let row = &rows[0];
         assert_eq!(row.session.id, "se1");
-        assert_eq!(row.session.runner_id, "r1");
+        assert_eq!(row.session.role_id, "r1");
         assert_eq!(row.session.status, SessionStatus::Running);
         assert_eq!(row.handle, "coder", "slot handle wins over template handle");
         assert_eq!(row.runtime, "alpha");
@@ -1428,17 +1521,17 @@ mod tests {
         let pool = db::open_in_memory().unwrap();
         let conn = pool.get().unwrap();
         let now = Utc::now();
-        seed_runner(&conn, "r1", "alpha");
+        seed_role(&conn, "r1", "alpha");
         // Active direct chat — stays off the archived list.
         conn.execute(
-            "INSERT INTO sessions (id, runner_id, status, started_at)
+            "INSERT INTO sessions (id, role_id, status, started_at)
              VALUES ('d-active', 'r1', 'stopped', ?1)",
             rusqlite::params![now.to_rfc3339()],
         )
         .unwrap();
         // Two archived chats, inserted out of archive order.
         conn.execute(
-            "INSERT INTO sessions (id, runner_id, status, started_at, archived_at)
+            "INSERT INTO sessions (id, role_id, status, started_at, archived_at)
              VALUES ('d-arch-old', 'r1', 'stopped', ?1, ?2),
                     ('d-arch-new', 'r1', 'stopped', ?1, ?1)",
             rusqlite::params![
@@ -1450,7 +1543,7 @@ mod tests {
         // Archived mission-slot row — slot-bound, so it must never
         // surface as an archived chat.
         conn.execute(
-            "INSERT INTO sessions (id, runner_id, slot_id, status, started_at, archived_at)
+            "INSERT INTO sessions (id, role_id, slot_id, status, started_at, archived_at)
              VALUES ('slot-arch', 'r1', 'sl-old', 'stopped', ?1, ?1)",
             rusqlite::params![now.to_rfc3339()],
         )
@@ -1469,10 +1562,10 @@ mod tests {
         let pool = db::open_in_memory().unwrap();
         let conn = pool.get().unwrap();
         let now = Utc::now();
-        seed_runner(&conn, "r1", "alpha");
+        seed_role(&conn, "r1", "alpha");
         conn.execute(
             "INSERT INTO sessions
-                (id, runner_id, status, started_at, agent_session_key, archived_at)
+                (id, role_id, status, started_at, agent_session_key, archived_at)
              VALUES ('d1', 'r1', 'stopped', ?1, 'resume-key', ?1)",
             rusqlite::params![now.to_rfc3339()],
         )
@@ -1502,7 +1595,7 @@ mod tests {
         let pool = db::open_in_memory().unwrap();
         let conn = pool.get().unwrap();
         let now = Utc::now().to_rfc3339();
-        seed_runner(&conn, "r1", "alpha");
+        seed_role(&conn, "r1", "alpha");
         conn.execute(
             "INSERT INTO crews (id, name, created_at, updated_at) VALUES ('c1', 'C', ?1, ?1)",
             rusqlite::params![now],
@@ -1517,7 +1610,7 @@ mod tests {
         // Archived mission session and a slot-bound legacy orphan
         // (mission_id NULL but still slot-scoped).
         conn.execute(
-            "INSERT INTO sessions (id, mission_id, runner_id, slot_id, status, started_at, archived_at)
+            "INSERT INTO sessions (id, mission_id, role_id, slot_id, status, started_at, archived_at)
              VALUES ('se-mission', 'm1', 'r1', NULL, 'stopped', ?1, ?1),
                     ('se-slot', NULL, 'r1', 'sl-old', 'stopped', ?1, ?1)",
             rusqlite::params![now],
@@ -1535,28 +1628,28 @@ mod tests {
     }
 
     #[test]
-    fn direct_session_surfaces_join_runner_labels_and_keep_archived_semantics() {
+    fn direct_session_surfaces_join_role_labels_and_keep_archived_semantics() {
         let pool = db::open_in_memory().unwrap();
         let conn = pool.get().unwrap();
         let now = Utc::now().to_rfc3339();
-        seed_runner(&conn, "r1", "alpha");
+        seed_role(&conn, "r1", "alpha");
         conn.execute(
-            "INSERT INTO sessions (id, mission_id, runner_id, status, started_at, agent_session_key)
+            "INSERT INTO sessions (id, mission_id, role_id, status, started_at, agent_session_key)
              VALUES ('d1', NULL, 'r1', 'stopped', ?1, 'resume-key')",
             rusqlite::params![now],
         )
         .unwrap();
-        // Runtime-only chat (#195): no runner row behind it.
+        // Runtime-only chat (#195): no role row behind it.
         conn.execute(
             "INSERT INTO sessions
-                (id, mission_id, runner_id, status, started_at, agent_runtime, agent_command)
+                (id, mission_id, role_id, status, started_at, agent_runtime, agent_command)
              VALUES ('d2', NULL, NULL, 'running', ?1, 'codex', 'codex')",
             rusqlite::params![now],
         )
         .unwrap();
         // Archived: hidden from the list, still returned by get_direct.
         conn.execute(
-            "INSERT INTO sessions (id, mission_id, runner_id, status, started_at, archived_at)
+            "INSERT INTO sessions (id, mission_id, role_id, status, started_at, archived_at)
              VALUES ('d3', NULL, 'r1', 'stopped', ?1, ?1)",
             rusqlite::params![now],
         )
@@ -1564,7 +1657,7 @@ mod tests {
         // Legacy orphan from the old mission FK: no mission, but still
         // slot-bound, so it must never masquerade as a direct chat.
         conn.execute(
-            "INSERT INTO sessions (id, mission_id, runner_id, slot_id, status, started_at)
+            "INSERT INTO sessions (id, mission_id, role_id, slot_id, status, started_at)
              VALUES ('orphan-slot', NULL, 'r1', 'slot-old', 'stopped', ?1)",
             rusqlite::params![now],
         )
@@ -1574,10 +1667,10 @@ mod tests {
         let ids: Vec<&str> = listed.iter().map(|d| d.row.id.as_str()).collect();
         assert_eq!(ids, vec!["d2", "d1"], "running first, archived hidden");
         let d1 = listed.iter().find(|d| d.row.id == "d1").unwrap();
-        assert_eq!(d1.runner_handle.as_deref(), Some("alpha"));
-        assert_eq!(d1.runner_runtime.as_deref(), Some("alpha"));
+        assert_eq!(d1.role_handle.as_deref(), Some("alpha"));
+        assert_eq!(d1.role_runtime.as_deref(), Some("alpha"));
         let d2 = listed.iter().find(|d| d.row.id == "d2").unwrap();
-        assert_eq!(d2.runner_handle, None);
+        assert_eq!(d2.role_handle, None);
         assert_eq!(d2.row.agent_runtime.as_deref(), Some("codex"));
 
         let archived = get_direct(&conn, "d3").unwrap().unwrap();

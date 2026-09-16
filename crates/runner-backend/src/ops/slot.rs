@@ -1,10 +1,10 @@
 // Slot CRUD — manages the `slots` join table.
 //
-// A Slot is a position in a crew that references a Runner template
-// and carries its own in-crew identity (`slot_handle`). Runner CRUD
-// is in commands/runner.rs — a runner exists globally and can be
+// A Slot is a position in a crew that references a Role template
+// and carries its own in-crew identity (`slot_handle`). Role CRUD
+// is in commands/role.rs — a role exists globally and can be
 // referenced by zero or more slots across any number of crews. The
-// same runner template can fill multiple slots in the same crew with
+// same role template can fill multiple slots in the same crew with
 // different slot_handles.
 //
 // Invariants enforced here:
@@ -29,15 +29,15 @@ use ulid::Ulid as UlidGen;
 
 use crate::{
     error::{Error, Result},
-    model::{Slot, SlotWithRunner, Timestamp},
-    ops::runner,
+    model::{Slot, SlotWithRole, Timestamp},
+    ops::role,
     repo, AppCore,
 };
 
-/// One crew that a given runner template is referenced by, plus the
+/// One crew that a given role template is referenced by, plus the
 /// slot's lead flag and added-at timestamp. Returned by
-/// `runner_crews_list` to render the "Crews using this runner" panel
-/// on Runner Detail.
+/// `role_crews_list` to render the "Crews using this role" panel
+/// on Role Detail.
 #[derive(Debug, Clone, Serialize)]
 pub struct CrewMembership {
     pub crew_id: String,
@@ -53,7 +53,7 @@ pub struct CrewMembership {
 pub struct UpdateSlotInput {
     pub slot_handle: Option<String>,
     /// Per-slot engine choice. Omit to preserve, pass `null` to clear
-    /// (back to the runner's own runtime), pass a registry runtime
+    /// (back to the role's own runtime), pass a registry runtime
     /// name to override. Only agent runtimes are accepted; shell is not
     /// a valid slot override.
     #[serde(default, deserialize_with = "double_option")]
@@ -83,7 +83,7 @@ where
 }
 
 /// Normalize + validate a runtime-override value against the runtime
-/// registry. Blank (after trim) collapses to None — the "Runner
+/// registry. Blank (after trim) collapses to None — the "Role
 /// default" sentinel.
 pub fn validate_runtime_override(value: Option<&str>) -> Result<Option<Runtime>> {
     let Some(name) = value.map(str::trim).filter(|s| !s.is_empty()) else {
@@ -128,15 +128,8 @@ fn crew_exists(conn: &Connection, crew_id: &str) -> Result<bool> {
     Ok(found.is_some())
 }
 
-fn runner_exists(conn: &Connection, runner_id: &str) -> Result<bool> {
-    let found: Option<i64> = conn
-        .query_row(
-            "SELECT 1 FROM runners WHERE id = ?1",
-            params![runner_id],
-            |r| r.get(0),
-        )
-        .optional()?;
-    Ok(found.is_some())
+fn role_exists(conn: &Connection, role_id: &str) -> Result<bool> {
+    Ok(repo::role::get(conn, role_id)?.is_some())
 }
 
 /// Renumber a crew's surviving slots so `position` is dense (0..N-1)
@@ -168,31 +161,31 @@ fn get_slot_internal(conn: &Connection, slot_id: &str) -> Result<Slot> {
 }
 
 /// Return the slots that belong to a crew, ordered by position, each
-/// joined with its referenced Runner template. The roster is loaded in two
-/// queries: one for slots and one for the crew's unique runner templates.
-pub fn list(conn: &Connection, crew_id: &str) -> Result<Vec<SlotWithRunner>> {
+/// joined with its referenced Role template. The roster is loaded in two
+/// queries: one for slots and one for the crew's unique role templates.
+pub fn list(conn: &Connection, crew_id: &str) -> Result<Vec<SlotWithRole>> {
     let slots = repo::slot::list_for_crew(conn, crew_id)?;
-    let runners = repo::runner::list_for_crew(conn, crew_id)?;
-    let runners_by_id: HashMap<_, _> = runners
+    let roles = repo::role::list_for_crew(conn, crew_id)?;
+    let roles_by_id: HashMap<_, _> = roles
         .into_iter()
-        .map(|runner| (runner.id.clone(), runner))
+        .map(|role| (role.id.clone(), role))
         .collect();
     let mut out = Vec::with_capacity(slots.len());
     for slot in slots {
-        let runner = runners_by_id
-            .get(&slot.runner_id)
+        let role = roles_by_id
+            .get(&slot.role_id)
             .cloned()
-            .ok_or_else(|| Error::msg(format!("runner not found: {}", slot.runner_id)))?;
-        out.push(SlotWithRunner { slot, runner });
+            .ok_or_else(|| Error::msg(format!("runner not found: {}", slot.role_id)))?;
+        out.push(SlotWithRole { slot, role });
     }
     Ok(out)
 }
 
-/// Inverse of `list`: every slot that references this runner template,
-/// across every crew. Drives the Runner Detail "Crews using this
-/// runner" panel.
-pub fn list_crews_for_runner(conn: &Connection, runner_id: &str) -> Result<Vec<CrewMembership>> {
-    let rows = repo::slot::list_for_runner_with_crew_name(conn, runner_id)?;
+/// Inverse of `list`: every slot that references this role template,
+/// across every crew. Drives the Role Detail "Crews using this
+/// role" panel.
+pub fn list_crews_for_role(conn: &Connection, role_id: &str) -> Result<Vec<CrewMembership>> {
+    let rows = repo::slot::list_for_role_with_crew_name(conn, role_id)?;
     Ok(rows
         .into_iter()
         .map(|(slot, crew_name)| CrewMembership {
@@ -208,21 +201,21 @@ pub fn list_crews_for_runner(conn: &Connection, runner_id: &str) -> Result<Vec<C
 }
 
 /// Append a new slot to `crew_id`'s roster at the next position. The
-/// same runner template can be referenced by multiple slots in the
+/// same role template can be referenced by multiple slots in the
 /// same crew as long as their `slot_handle` values differ.
 pub fn create(
     conn: &mut Connection,
     crew_id: &str,
-    runner_id: &str,
+    role_id: &str,
     slot_handle: &str,
     runtime_override: Option<&str>,
     model_override: Option<&str>,
-) -> Result<SlotWithRunner> {
+) -> Result<SlotWithRole> {
     if !crew_exists(conn, crew_id)? {
         return Err(Error::msg(format!("crew not found: {crew_id}")));
     }
-    if !runner_exists(conn, runner_id)? {
-        return Err(Error::msg(format!("runner not found: {runner_id}")));
+    if !role_exists(conn, role_id)? {
+        return Err(Error::msg(format!("runner not found: {role_id}")));
     }
     let slot_handle = slot_handle.trim();
     if slot_handle.is_empty() {
@@ -253,7 +246,7 @@ pub fn create(
         &repo::slot::SlotRow {
             id: id.clone(),
             crew_id: crew_id.to_string(),
-            runner_id: runner_id.to_string(),
+            role_id: role_id.to_string(),
             slot_handle: slot_handle.to_string(),
             position: next_position,
             lead: is_first,
@@ -280,13 +273,13 @@ pub fn create(
 
 /// Edit a slot's handle and/or agent overrides. Engine changes clear
 /// stale model and effort values unless the caller supplies replacements
-/// in the same patch. Slot id, crew membership, runner template ref,
+/// in the same patch. Slot id, crew membership, role template ref,
 /// position, and lead flag are unchanged.
 pub fn update(
     conn: &mut Connection,
     slot_id: &str,
     input: UpdateSlotInput,
-) -> Result<SlotWithRunner> {
+) -> Result<SlotWithRole> {
     let existing = get_slot_internal(conn, slot_id)?;
 
     let slot_handle = match input.slot_handle {
@@ -310,15 +303,15 @@ pub fn update(
     let effort_override = input
         .effort_override
         .map(|value| normalize_override_value(value.as_deref()));
-    let runner = runner::get(conn, &existing.runner_id)?;
+    let role = role::get(conn, &existing.role_id)?;
     let final_runtime_override = runtime_override
         .clone()
         .unwrap_or_else(|| existing.runtime_override.clone());
     let current_runtime = existing
         .runtime_override
         .as_deref()
-        .unwrap_or(&runner.runtime);
-    let next_runtime = final_runtime_override.as_deref().unwrap_or(&runner.runtime);
+        .unwrap_or(&role.runtime);
+    let next_runtime = final_runtime_override.as_deref().unwrap_or(&role.runtime);
     let engine_changed = current_runtime != next_runtime;
     let final_model_override = model_override.clone().unwrap_or_else(|| {
         if engine_changed {
@@ -400,7 +393,7 @@ pub fn delete(conn: &mut Connection, slot_id: &str) -> Result<()> {
 
 /// Atomically transfer leadership within a crew. No-op if the target
 /// slot is already lead. Errors if the slot doesn't exist.
-pub fn set_lead(conn: &mut Connection, slot_id: &str) -> Result<SlotWithRunner> {
+pub fn set_lead(conn: &mut Connection, slot_id: &str) -> Result<SlotWithRole> {
     let existing = get_slot_internal(conn, slot_id)?;
     let crew_id = existing.crew_id.clone();
 
@@ -437,7 +430,7 @@ pub fn reorder(
     conn: &mut Connection,
     crew_id: &str,
     ordered_slot_ids: Vec<String>,
-) -> Result<Vec<SlotWithRunner>> {
+) -> Result<Vec<SlotWithRole>> {
     let mut seen = std::collections::HashSet::new();
     for id in &ordered_slot_ids {
         if !seen.insert(id.clone()) {
@@ -488,49 +481,45 @@ pub fn reorder(
 // State-level command bodies
 // ---------------------------------------------------------------------
 
-pub fn slot_list(state: &AppCore, crew_id: &str) -> Result<Vec<SlotWithRunner>> {
+pub fn slot_list(state: &AppCore, crew_id: &str) -> Result<Vec<SlotWithRole>> {
     let conn = state.db.get()?;
     list(&conn, crew_id)
 }
 
-pub fn runner_crews_list(state: &AppCore, runner_id: &str) -> Result<Vec<CrewMembership>> {
+pub fn role_crews_list(state: &AppCore, role_id: &str) -> Result<Vec<CrewMembership>> {
     let conn = state.db.get()?;
-    list_crews_for_runner(&conn, runner_id)
+    list_crews_for_role(&conn, role_id)
 }
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct CreateSlotInput {
     pub crew_id: String,
-    pub runner_id: String,
+    pub role_id: String,
     pub slot_handle: String,
     /// Optional per-slot engine choice. Omit (or null) for the
-    /// "Runner default" behavior; otherwise an agent runtime registry name.
+    /// "Role default" behavior; otherwise an agent runtime registry name.
     /// Shell is not a valid slot override.
     #[serde(default)]
     pub runtime_override: Option<Runtime>,
     /// Optional model pinned to the selected runtime. Blank or omitted
-    /// inherits from the runner template.
+    /// inherits from the role template.
     #[serde(default)]
     pub model_override: Option<String>,
 }
 
-pub fn slot_create(state: &AppCore, input: CreateSlotInput) -> Result<SlotWithRunner> {
+pub fn slot_create(state: &AppCore, input: CreateSlotInput) -> Result<SlotWithRole> {
     let mut conn = state.db.get()?;
     create(
         &mut conn,
         &input.crew_id,
-        &input.runner_id,
+        &input.role_id,
         &input.slot_handle,
         input.runtime_override.map(Runtime::key),
         input.model_override.as_deref(),
     )
 }
 
-pub fn slot_update(
-    state: &AppCore,
-    slot_id: &str,
-    input: UpdateSlotInput,
-) -> Result<SlotWithRunner> {
+pub fn slot_update(state: &AppCore, slot_id: &str, input: UpdateSlotInput) -> Result<SlotWithRole> {
     let mut conn = state.db.get()?;
     update(&mut conn, slot_id, input)
 }
@@ -540,7 +529,7 @@ pub fn slot_delete(state: &AppCore, slot_id: &str) -> Result<()> {
     delete(&mut conn, slot_id)
 }
 
-pub fn slot_set_lead(state: &AppCore, slot_id: &str) -> Result<SlotWithRunner> {
+pub fn slot_set_lead(state: &AppCore, slot_id: &str) -> Result<SlotWithRole> {
     let mut conn = state.db.get()?;
     set_lead(&mut conn, slot_id)
 }
@@ -549,7 +538,7 @@ pub fn slot_reorder(
     state: &AppCore,
     crew_id: &str,
     ordered_slot_ids: Vec<String>,
-) -> Result<Vec<SlotWithRunner>> {
+) -> Result<Vec<SlotWithRole>> {
     let mut conn = state.db.get()?;
     reorder(&mut conn, crew_id, ordered_slot_ids)
 }
@@ -585,10 +574,10 @@ mod tests {
         .id
     }
 
-    fn seed_runner(conn: &Connection, handle: &str) -> String {
-        runner::create(
+    fn seed_role(conn: &Connection, handle: &str) -> String {
+        role::create(
             conn,
-            runner::CreateRunnerInput {
+            role::CreateRoleInput {
                 handle: handle.into(),
                 display_name: format!("{handle} display"),
                 runtime: crate::model::Runtime::Shell,
@@ -611,7 +600,7 @@ mod tests {
         let pool = pool();
         let mut conn = pool.get().unwrap();
         let c = seed_crew(&conn, "Alpha");
-        let r = seed_runner(&conn, "lead-template");
+        let r = seed_role(&conn, "lead-template");
         let added = create(&mut conn, &c, &r, "lead-slot", None, None).unwrap();
         assert!(added.slot.lead);
         assert_eq!(added.slot.position, 0);
@@ -623,8 +612,8 @@ mod tests {
         let pool = pool();
         let mut conn = pool.get().unwrap();
         let c = seed_crew(&conn, "Alpha");
-        let r1 = seed_runner(&conn, "alpha");
-        let r2 = seed_runner(&conn, "beta");
+        let r1 = seed_role(&conn, "alpha");
+        let r2 = seed_role(&conn, "beta");
         create(&mut conn, &c, &r1, "alpha", None, None).unwrap();
         let second = create(&mut conn, &c, &r2, "beta", None, None).unwrap();
         assert!(!second.slot.lead);
@@ -632,27 +621,27 @@ mod tests {
     }
 
     #[test]
-    fn same_runner_can_fill_two_slots_in_same_crew() {
+    fn same_role_can_fill_two_slots_in_same_crew() {
         // The defining feature of slots — same template, two roles.
         let pool = pool();
         let mut conn = pool.get().unwrap();
         let c = seed_crew(&conn, "Alpha");
-        let r = seed_runner(&conn, "claude");
+        let r = seed_role(&conn, "claude");
         create(&mut conn, &c, &r, "architect", None, None).unwrap();
         create(&mut conn, &c, &r, "reviewer", None, None).unwrap();
         let roster = list(&conn, &c).unwrap();
         assert_eq!(roster.len(), 2);
-        assert_eq!(roster[0].slot.runner_id, roster[1].slot.runner_id);
+        assert_eq!(roster[0].slot.role_id, roster[1].slot.role_id);
         assert_ne!(roster[0].slot.slot_handle, roster[1].slot.slot_handle);
     }
 
     #[test]
-    fn list_loads_slots_and_unique_runners_in_two_queries() {
+    fn list_loads_slots_and_unique_roles_in_two_queries() {
         let pool = pool();
         let mut conn = pool.get().unwrap();
         let crew = seed_crew(&conn, "Alpha");
-        let shared = seed_runner(&conn, "shared");
-        let other = seed_runner(&conn, "other");
+        let shared = seed_role(&conn, "shared");
+        let other = seed_role(&conn, "other");
         create(&mut conn, &crew, &shared, "lead", None, None).unwrap();
         create(&mut conn, &crew, &shared, "reviewer", None, None).unwrap();
         create(&mut conn, &crew, &other, "coder", None, None).unwrap();
@@ -664,41 +653,40 @@ mod tests {
 
         assert_eq!(roster.len(), 3);
         assert_eq!(ROSTER_SELECT_COUNT.load(Ordering::Relaxed), 2);
-        assert_eq!(roster[0].runner.id, shared);
-        assert_eq!(roster[1].runner.id, shared);
-        assert_eq!(roster[2].runner.id, other);
+        assert_eq!(roster[0].role.id, shared);
+        assert_eq!(roster[1].role.id, shared);
+        assert_eq!(roster[2].role.id, other);
     }
 
     #[test]
-    fn list_errors_instead_of_dropping_slot_with_missing_runner() {
+    fn list_errors_instead_of_dropping_slot_with_missing_role() {
         let pool = pool();
         let mut conn = pool.get().unwrap();
         let crew = seed_crew(&conn, "Alpha");
-        let runner = seed_runner(&conn, "missing");
-        create(&mut conn, &crew, &runner, "lead", None, None).unwrap();
+        let role = seed_role(&conn, "missing");
+        create(&mut conn, &crew, &role, "lead", None, None).unwrap();
 
         conn.pragma_update(None, "foreign_keys", "OFF").unwrap();
-        conn.execute("DELETE FROM runners WHERE id = ?1", params![runner])
-            .unwrap();
+        repo::role::delete(&conn, &role).unwrap();
 
         let error = list(&conn, &crew).unwrap_err();
-        assert_eq!(error.to_string(), format!("runner not found: {runner}"));
+        assert_eq!(error.to_string(), format!("runner not found: {role}"));
     }
 
     #[test]
-    fn shared_runner_can_belong_to_multiple_crews() {
+    fn shared_role_can_belong_to_multiple_crews() {
         let pool = pool();
         let mut conn = pool.get().unwrap();
         let c1 = seed_crew(&conn, "A");
         let c2 = seed_crew(&conn, "B");
-        let r = seed_runner(&conn, "shared");
+        let r = seed_role(&conn, "shared");
         create(&mut conn, &c1, &r, "shared-a", None, None).unwrap();
         create(&mut conn, &c2, &r, "shared-b", None, None).unwrap();
         let in_c1 = list(&conn, &c1).unwrap();
         let in_c2 = list(&conn, &c2).unwrap();
         assert_eq!(in_c1.len(), 1);
         assert_eq!(in_c2.len(), 1);
-        assert_eq!(in_c1[0].slot.runner_id, in_c2[0].slot.runner_id);
+        assert_eq!(in_c1[0].slot.role_id, in_c2[0].slot.role_id);
         assert!(in_c1[0].slot.lead);
         assert!(in_c2[0].slot.lead);
     }
@@ -708,8 +696,8 @@ mod tests {
         let pool = pool();
         let mut conn = pool.get().unwrap();
         let c = seed_crew(&conn, "A");
-        let r1 = seed_runner(&conn, "alpha");
-        let r2 = seed_runner(&conn, "beta");
+        let r1 = seed_role(&conn, "alpha");
+        let r2 = seed_role(&conn, "beta");
         create(&mut conn, &c, &r1, "shared-handle", None, None).unwrap();
         let err = create(&mut conn, &c, &r2, "shared-handle", None, None).unwrap_err();
         assert!(err.to_string().contains("already used"));
@@ -720,8 +708,8 @@ mod tests {
         let pool = pool();
         let mut conn = pool.get().unwrap();
         let c = seed_crew(&conn, "A");
-        let r1 = seed_runner(&conn, "one");
-        let r2 = seed_runner(&conn, "two");
+        let r1 = seed_role(&conn, "one");
+        let r2 = seed_role(&conn, "two");
         let s1 = create(&mut conn, &c, &r1, "one", None, None).unwrap();
         let s2 = create(&mut conn, &c, &r2, "two", None, None).unwrap();
 
@@ -754,9 +742,9 @@ mod tests {
         let pool = pool();
         let mut conn = pool.get().unwrap();
         let c = seed_crew(&conn, "A");
-        let r1 = seed_runner(&conn, "alpha");
-        let r2 = seed_runner(&conn, "beta");
-        let r3 = seed_runner(&conn, "gamma");
+        let r1 = seed_role(&conn, "alpha");
+        let r2 = seed_role(&conn, "beta");
+        let r3 = seed_role(&conn, "gamma");
         let s1 = create(&mut conn, &c, &r1, "alpha", None, None).unwrap();
         create(&mut conn, &c, &r2, "beta", None, None).unwrap();
         let s3 = create(&mut conn, &c, &r3, "gamma", None, None).unwrap();
@@ -779,7 +767,7 @@ mod tests {
         let pool = pool();
         let mut conn = pool.get().unwrap();
         let c = seed_crew(&conn, "A");
-        let r = seed_runner(&conn, "only");
+        let r = seed_role(&conn, "only");
         let s = create(&mut conn, &c, &r, "only", None, None).unwrap();
         delete(&mut conn, &s.slot.id).unwrap();
         assert!(list(&conn, &c).unwrap().is_empty());
@@ -790,9 +778,9 @@ mod tests {
         let pool = pool();
         let mut conn = pool.get().unwrap();
         let c = seed_crew(&conn, "A");
-        let r1 = seed_runner(&conn, "alpha");
-        let r2 = seed_runner(&conn, "beta");
-        let r3 = seed_runner(&conn, "gamma");
+        let r1 = seed_role(&conn, "alpha");
+        let r2 = seed_role(&conn, "beta");
+        let r3 = seed_role(&conn, "gamma");
         let s1 = create(&mut conn, &c, &r1, "alpha", None, None).unwrap();
         let s2 = create(&mut conn, &c, &r2, "beta", None, None).unwrap();
         let s3 = create(&mut conn, &c, &r3, "gamma", None, None).unwrap();
@@ -826,9 +814,9 @@ mod tests {
         let pool = pool();
         let mut conn = pool.get().unwrap();
         let c = seed_crew(&conn, "A");
-        let r1 = seed_runner(&conn, "alpha");
-        let r2 = seed_runner(&conn, "beta");
-        let r3 = seed_runner(&conn, "gamma");
+        let r1 = seed_role(&conn, "alpha");
+        let r2 = seed_role(&conn, "beta");
+        let r3 = seed_role(&conn, "gamma");
         create(&mut conn, &c, &r1, "alpha", None, None).unwrap();
         let s2 = create(&mut conn, &c, &r2, "beta", None, None).unwrap();
         create(&mut conn, &c, &r3, "gamma", None, None).unwrap();
@@ -843,7 +831,7 @@ mod tests {
             "positions must be dense after middle removal"
         );
 
-        let r4 = seed_runner(&conn, "delta");
+        let r4 = seed_role(&conn, "delta");
         let added = create(&mut conn, &c, &r4, "delta", None, None).unwrap();
         assert_eq!(
             added.slot.position, 2,
@@ -852,22 +840,22 @@ mod tests {
     }
 
     #[test]
-    fn deleting_runner_cascades_slots_and_repacks_other_crews() {
+    fn deleting_role_cascades_slots_and_repacks_other_crews() {
         let pool = pool();
         let mut conn = pool.get().unwrap();
         let c1 = seed_crew(&conn, "A");
         let c2 = seed_crew(&conn, "B");
-        let shared = seed_runner(&conn, "shared");
-        let a2 = seed_runner(&conn, "a2");
-        let b1 = seed_runner(&conn, "b1");
-        let b2 = seed_runner(&conn, "b2");
+        let shared = seed_role(&conn, "shared");
+        let a2 = seed_role(&conn, "a2");
+        let b1 = seed_role(&conn, "b1");
+        let b2 = seed_role(&conn, "b2");
         create(&mut conn, &c1, &a2, "a2", None, None).unwrap();
         create(&mut conn, &c1, &shared, "shared-a", None, None).unwrap();
         create(&mut conn, &c2, &b1, "b1", None, None).unwrap();
         create(&mut conn, &c2, &shared, "shared-b", None, None).unwrap();
         create(&mut conn, &c2, &b2, "b2", None, None).unwrap();
 
-        runner::delete(&mut conn, &shared).unwrap();
+        role::delete(&mut conn, &shared).unwrap();
 
         let in_a = list(&conn, &c1).unwrap();
         assert_eq!(in_a.len(), 1);
@@ -883,7 +871,7 @@ mod tests {
         let pool = pool();
         let mut conn = pool.get().unwrap();
         let c = seed_crew(&conn, "A");
-        let r = seed_runner(&conn, "alpha");
+        let r = seed_role(&conn, "alpha");
         let s = create(&mut conn, &c, &r, "old", None, None).unwrap();
         let updated = update(
             &mut conn,
@@ -902,8 +890,8 @@ mod tests {
         let pool = pool();
         let mut conn = pool.get().unwrap();
         let c = seed_crew(&conn, "A");
-        let r1 = seed_runner(&conn, "alpha");
-        let r2 = seed_runner(&conn, "beta");
+        let r1 = seed_role(&conn, "alpha");
+        let r2 = seed_role(&conn, "beta");
         create(&mut conn, &c, &r1, "alpha", None, None).unwrap();
         let s2 = create(&mut conn, &c, &r2, "beta", None, None).unwrap();
         let err = update(
@@ -923,8 +911,8 @@ mod tests {
         let pool = pool();
         let mut conn = pool.get().unwrap();
         let c = seed_crew(&conn, "A");
-        let r1 = seed_runner(&conn, "alpha");
-        let r2 = seed_runner(&conn, "beta");
+        let r1 = seed_role(&conn, "alpha");
+        let r2 = seed_role(&conn, "beta");
 
         let with_override = create(
             &mut conn,
@@ -950,7 +938,7 @@ mod tests {
         let pool = pool();
         let mut conn = pool.get().unwrap();
         let c = seed_crew(&conn, "A");
-        let r = seed_runner(&conn, "alpha");
+        let r = seed_role(&conn, "alpha");
         let err = create(&mut conn, &c, &r, "alpha", Some("aider-future"), None).unwrap_err();
         assert!(
             err.to_string().contains("unknown runtime 'aider-future'"),
@@ -968,7 +956,7 @@ mod tests {
         let pool = pool();
         let mut conn = pool.get().unwrap();
         let c = seed_crew(&conn, "A");
-        let r = seed_runner(&conn, "alpha");
+        let r = seed_role(&conn, "alpha");
         let created = create(&mut conn, &c, &r, "alpha", None, Some(" opus ")).unwrap();
         assert_eq!(created.slot.runtime_override, None);
         assert_eq!(created.slot.model_override.as_deref(), Some("opus"));
@@ -979,7 +967,7 @@ mod tests {
         let pool = pool();
         let mut conn = pool.get().unwrap();
         let c = seed_crew(&conn, "A");
-        let r = seed_runner(&conn, "alpha");
+        let r = seed_role(&conn, "alpha");
         let s = create(&mut conn, &c, &r, "alpha", None, None).unwrap();
 
         // Set.
@@ -1031,7 +1019,7 @@ mod tests {
         assert_eq!(preserved.slot.effort_override.as_deref(), Some("xhigh"));
         assert_eq!(preserved.slot.slot_handle, "renamed");
 
-        // Explicit null clears back to Runner default.
+        // Explicit null clears back to Role default.
         let cleared = update(
             &mut conn,
             &s.slot.id,
@@ -1051,7 +1039,7 @@ mod tests {
         let pool = pool();
         let mut conn = pool.get().unwrap();
         let c = seed_crew(&conn, "A");
-        let r = seed_runner(&conn, "alpha");
+        let r = seed_role(&conn, "alpha");
         let s = create(&mut conn, &c, &r, "alpha", None, None).unwrap();
 
         let updated = update(
@@ -1078,12 +1066,12 @@ mod tests {
         let pool = pool();
         let mut conn = pool.get().unwrap();
         let c = seed_crew(&conn, "A");
-        let r = seed_runner(&conn, "alpha");
-        conn.execute(
-            "UPDATE runners SET runtime = 'codex', command = 'codex' WHERE id = ?1",
-            params![r],
-        )
-        .unwrap();
+        let r = seed_role(&conn, "alpha");
+        let role = repo::role::get(&conn, &r).unwrap().unwrap();
+        let mut row = repo::role::RoleRow::from(&role);
+        row.runtime = "codex".into();
+        row.command = "codex".into();
+        repo::role::update(&conn, &row).unwrap();
         let s = create(
             &mut conn,
             &c,
@@ -1121,7 +1109,7 @@ mod tests {
     fn slot_json_inputs_reject_unknown_runtime_overrides() {
         for runtime in ["codex", "aider-future"] {
             let input = serde_json::json!({
-                "crew_id": "crew", "runner_id": "runner", "slot_handle": "agent",
+                "crew_id": "crew", "role_id": "role", "slot_handle": "agent",
                 "runtime_override": runtime
             });
             assert_eq!(
@@ -1180,7 +1168,7 @@ mod tests {
         let pool = pool();
         let mut conn = pool.get().unwrap();
         let c = seed_crew(&conn, "A");
-        let r = seed_runner(&conn, "alpha");
+        let r = seed_role(&conn, "alpha");
         let s = create(&mut conn, &c, &r, "alpha", Some("codex"), None).unwrap();
 
         let input: UpdateSlotInput = serde_json::from_str(r#"{"runtime_override": null}"#).unwrap();
@@ -1196,8 +1184,8 @@ mod tests {
         let pool = pool();
         let mut conn = pool.get().unwrap();
         let c = seed_crew(&conn, "A");
-        let r1 = seed_runner(&conn, "alpha");
-        let r2 = seed_runner(&conn, "beta");
+        let r1 = seed_role(&conn, "alpha");
+        let r2 = seed_role(&conn, "beta");
         create(&mut conn, &c, &r1, "alpha", None, None).unwrap();
         let b = create(&mut conn, &c, &r2, "beta", None, None).unwrap();
 
@@ -1248,7 +1236,7 @@ mod tests {
         let pool = pool();
         let mut conn = pool.get().unwrap();
         let c = seed_crew(&conn, "A");
-        let r = seed_runner(&conn, "alpha");
+        let r = seed_role(&conn, "alpha");
         let s = create(&mut conn, &c, &r, "alpha", Some("codex"), None).unwrap();
         let err = update(
             &mut conn,

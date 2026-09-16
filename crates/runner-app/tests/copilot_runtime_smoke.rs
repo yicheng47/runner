@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use runner_backend::model::{Mission, MissionStatus, Runtime};
-use runner_backend::ops::{crew, runner, slot};
+use runner_backend::ops::{crew, role, slot};
 use runner_backend::router::runtime::{MissionPermissionMode, PermissionMode};
 use runner_backend::session::pty_runtime::PtyRuntime;
 use runner_backend::session::SessionManager;
@@ -112,9 +112,9 @@ fn copilot_real_binary_direct_mission_and_relaunch_resume() {
     let db = Arc::new(runner_backend::db::open_pool(&root.join("smoke.db")).unwrap());
     let core = core_at(root.join("app"), db.clone());
     let mut cleanup = StopSessions::default();
-    let agent = runner::create(
+    let role = role::create(
         &db.get().unwrap(),
-        runner::CreateRunnerInput {
+        role::CreateRoleInput {
             handle: "copilot-smoke".into(),
             display_name: "Copilot smoke".into(),
             runtime: Runtime::Copilot,
@@ -130,7 +130,7 @@ fn copilot_real_binary_direct_mission_and_relaunch_resume() {
     )
     .unwrap();
     let bridge = TerminalBridge::new(core.clone(), Arc::new(|| {})).unwrap();
-    let direct = core.sessions.spawn_direct(&agent, None, None, None, None, None, Some(100), Some(30), &core.app_data_dir, db.clone(), Arc::new(core.session_events()), Some("You are the Runner smoke agent. Reply with exactly RUNNER_COPILOT_DIRECT_OK. Do not call tools or change files.".into())).unwrap();
+    let direct = core.sessions.spawn_direct(&role, None, None, None, None, None, Some(100), Some(30), &core.app_data_dir, db.clone(), Arc::new(core.session_events()), Some("You are the Runner smoke agent. Reply with exactly RUNNER_COPILOT_DIRECT_OK. Do not call tools or change files.".into())).unwrap();
     cleanup.0.push((core.sessions.clone(), direct.id.clone()));
     let key = runner_backend::repo::session::get_row(&db.get().unwrap(), &direct.id)
         .unwrap()
@@ -203,7 +203,7 @@ fn copilot_real_binary_direct_mission_and_relaunch_resume() {
     let slot = slot::create(
         &mut db.get().unwrap(),
         &crew.id,
-        &agent.id,
+        &role.id,
         "smoke",
         None,
         None,
@@ -235,7 +235,7 @@ fn copilot_real_binary_direct_mission_and_relaunch_resume() {
         .join("missions")
         .join(&mission.id)
         .join("events.ndjson");
-    let spawned = relaunched.sessions.spawn(&mission, &agent, &slot, &relaunched.app_data_dir, events_path, db.clone(), Arc::new(relaunched.session_events()), Some("You are smoke in a Runner mission. Reply with exactly RUNNER_COPILOT_MISSION_OK. Do not call tools or change files.".into())).unwrap();
+    let spawned = relaunched.sessions.spawn(&mission, &role, &slot, &relaunched.app_data_dir, events_path, db.clone(), Arc::new(relaunched.session_events()), Some("You are smoke in a Runner mission. Reply with exactly RUNNER_COPILOT_MISSION_OK. Do not call tools or change files.".into())).unwrap();
     cleanup
         .0
         .push((relaunched.sessions.clone(), spawned.id.clone()));

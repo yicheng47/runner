@@ -293,14 +293,14 @@ fn delete_failed_fork(pool: &DbPool, session_id: &str) -> Result<()> {
 }
 
 impl SessionManager {
-    fn resolve_runner_executable(&self, runner: &Runner, pool: &DbPool) -> Result<Runner> {
+    fn resolve_role_executable(&self, role: &Role, pool: &DbPool) -> Result<Role> {
         let Some(definition) =
-            Runtime::parse(&runner.runtime).and_then(router::runtime::runtime_definition)
+            Runtime::parse(&role.runtime).and_then(router::runtime::runtime_definition)
         else {
-            return Ok(runner.clone());
+            return Ok(role.clone());
         };
-        if runner.command != definition.command {
-            return Ok(runner.clone());
+        if role.command != definition.command {
+            return Ok(role.clone());
         }
         let effective = crate::runtime_status::effective_runtime_command(
             definition.name,
@@ -308,25 +308,25 @@ impl SessionManager {
             &self.shell_env,
             &self.discovery_state,
         )?;
-        let mut resolved = runner.clone();
+        let mut resolved = role.clone();
         resolved.command = effective.command;
         Ok(resolved)
     }
 
-    fn resolve_runtime_only_resume_runner(
+    fn resolve_runtime_only_resume_role(
         &self,
         runtime: &str,
         recorded_command: Option<&str>,
         model: Option<&str>,
         effort: Option<&str>,
         pool: &DbPool,
-    ) -> Result<Runner> {
+    ) -> Result<Role> {
         if Runtime::parse(runtime) == Some(Runtime::Shell) {
             let command = recorded_command
                 .map(str::trim)
                 .filter(|command| !command.is_empty())
                 .ok_or_else(|| Error::msg("shell session missing agent_command"))?;
-            return runtime_direct_runner(Runtime::Shell.key(), Some(command), None, None);
+            return runtime_direct_role(Runtime::Shell.key(), Some(command), None, None);
         }
         let definition = Runtime::parse(runtime)
             .and_then(router::runtime::runtime_definition)
@@ -337,14 +337,14 @@ impl SessionManager {
         if let Some(command) = recorded {
             let path = Path::new(command);
             if path.is_absolute() && crate::runtime_status::executable_path_is_valid(path) {
-                return runtime_direct_runner(runtime, Some(command), model, effort);
+                return runtime_direct_role(runtime, Some(command), model, effort);
             }
             if !path.is_absolute() && command != definition.command {
-                return runtime_direct_runner(runtime, Some(command), model, effort);
+                return runtime_direct_role(runtime, Some(command), model, effort);
             }
         }
-        let runner = runtime_direct_runner(runtime, None, model, effort)?;
-        self.resolve_runner_executable(&runner, pool)
+        let role = runtime_direct_role(runtime, None, model, effort)?;
+        self.resolve_role_executable(&role, pool)
     }
 
     /// Gate a fresh `claude-code` spawn before calling
@@ -419,7 +419,7 @@ impl SessionManager {
     }
 
     /// Build a `SpawnSpec` skeleton with the manager's stable inputs
-    /// (shell PATH, runner env after merging system vars). The
+    /// (shell PATH, role env after merging system vars). The
     /// runtime adapter argv (resume_plan + trailing_runtime_args)
     /// lives at the call site since it depends on a pre-resolved
     /// `agent_session_key`.
@@ -427,7 +427,7 @@ impl SessionManager {
     fn base_spawn_spec(
         &self,
         session_id: String,
-        runner: &Runner,
+        role: &Role,
         cwd: Option<String>,
         mission: bool,
         shim_dir: Option<PathBuf>,
@@ -441,16 +441,16 @@ impl SessionManager {
             .expect("runtime shell environment lock poisoned")
             .clone();
         // Bottom layer: login-shell vars (proxy quartet, both cases)
-        // captured at app start. A runner row can override any of these
-        // by setting the same name in its own env map — the runner row
+        // captured at app start. A role row can override any of these
+        // by setting the same name in its own env map — the role row
         // is the most specific configuration surface.
         let mut env: BTreeMap<String, String> = shell_env.vars;
-        for (k, v) in &runner.env {
+        for (k, v) in &role.env {
             env.insert(k.clone(), v.clone());
         }
         // System vars layer on top so the user can't accidentally
         // shadow them. PATH is set by the launch script from the
-        // composed path; a runner.env PATH would be filtered by
+        // composed path; a role.env PATH would be filtered by
         // `launch::is_reserved_env_name` but we layer system vars
         // anyway for parity with the prior portable-pty path.
         env.insert("TERM".into(), "xterm-256color".into());
@@ -458,7 +458,7 @@ impl SessionManager {
         for (k, v) in extra_env {
             env.insert(k, v);
         }
-        if Runtime::parse(&runner.runtime) == Some(Runtime::ClaudeCode) {
+        if Runtime::parse(&role.runtime) == Some(Runtime::ClaudeCode) {
             env.insert("CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY".into(), "1".into());
             env.insert("DISABLE_INSTALLATION_CHECKS".into(), "1".into());
         }
@@ -469,8 +469,8 @@ impl SessionManager {
         SpawnSpec {
             session_id,
             cwd: cwd.map(PathBuf::from),
-            command: runner.command.clone(),
-            args: runner.args.clone(),
+            command: role.command.clone(),
+            args: role.args.clone(),
             env,
             mission,
             shim_dir,
@@ -495,30 +495,27 @@ impl SessionManager {
     /// the deterministic path.
     pub(super) fn apply_runtime_args(
         spec: &mut SpawnSpec,
-        runner: &Runner,
+        role: &Role,
         plan: &router::runtime::ResumePlan,
         app_data_dir: &Path,
         first_turn: Option<&str>,
         mission_bus_dir: Option<&Path>,
     ) -> bool {
         #[cfg(windows)]
-        let first_turn = if crate::session::launch::is_windows_batch(&runner.command) {
+        let first_turn = if crate::session::launch::is_windows_batch(&role.command) {
             None
         } else {
             first_turn
         };
         // Rekey reports from an earlier spawn must be cleared even with custom settings.
-        if Runtime::parse(&runner.runtime) == Some(Runtime::ClaudeCode) {
+        if Runtime::parse(&role.runtime) == Some(Runtime::ClaudeCode) {
             let _ = std::fs::remove_file(crate::session::claude_rekey::drop_path(
                 app_data_dir,
                 &spec.session_id,
             ));
         }
         if crate::session::claude_status::hooks_supported(cfg!(windows))
-            && router::runtime::inject_claude_settings(
-                Runtime::parse(&runner.runtime),
-                &runner.args,
-            )
+            && router::runtime::inject_claude_settings(Runtime::parse(&role.runtime), &role.args)
         {
             let status_path =
                 crate::session::claude_status::status_path(app_data_dir, &spec.session_id);
@@ -533,8 +530,8 @@ impl SessionManager {
         }
         let mut composed: Vec<String> = Vec::new();
         if router::runtime::inject_codex_hooks(
-            Runtime::parse(&runner.runtime),
-            &runner.args,
+            Runtime::parse(&role.runtime),
+            &role.args,
             cfg!(windows),
         ) {
             spec.env.insert(
@@ -548,7 +545,7 @@ impl SessionManager {
                 uuid::Uuid::new_v4().to_string(),
             );
         }
-        if Runtime::parse(&runner.runtime) == Some(Runtime::Copilot)
+        if Runtime::parse(&role.runtime) == Some(Runtime::Copilot)
             && crate::session::hook_feed::hooks_supported(cfg!(windows))
         {
             spec.env.insert(
@@ -570,21 +567,21 @@ impl SessionManager {
             composed.extend(plan.args.iter().cloned());
         }
         let first_turn_for_argv =
-            router::runtime::first_turn_argv(Runtime::parse(&runner.runtime), first_turn);
+            router::runtime::first_turn_argv(Runtime::parse(&role.runtime), first_turn);
         let delivered_via_argv = !first_turn_for_argv.is_empty();
         composed.extend(router::runtime::mission_bus_sandbox_args(
-            Runtime::parse(&runner.runtime),
+            Runtime::parse(&role.runtime),
             mission_bus_dir,
         ));
         for extra in router::runtime::trailing_runtime_args(
-            Runtime::parse(&runner.runtime),
-            &runner.args,
+            Runtime::parse(&role.runtime),
+            &role.args,
             app_data_dir,
             &spec.session_id,
             plan.resuming,
-            runner.model.as_deref(),
-            runner.effort.as_deref(),
-            runner.system_prompt.as_deref(),
+            role.model.as_deref(),
+            role.effort.as_deref(),
+            role.system_prompt.as_deref(),
             first_turn,
         ) {
             composed.push(extra);
@@ -629,7 +626,7 @@ impl SessionManager {
     pub fn register_mission_session(
         self: &Arc<Self>,
         mission: &Mission,
-        runner: &Runner,
+        role: &Role,
         slot: &crate::model::Slot,
         app_data_dir: &Path,
         events_log_path: PathBuf,
@@ -641,13 +638,13 @@ impl SessionManager {
         let initial_size = Some(initial_size.unwrap_or(DEFAULT_PTY_SIZE));
 
         // Slot-level runtime override (feature 41): the effective
-        // runtime is `slot.runtime_override ?? runner.runtime`. On a
+        // runtime is `slot.runtime_override ?? role.runtime`. On a
         // differing override the spawn uses registry command, default
         // args, model, and effort; persona fields carry over. Slot
         // model/effort overrides apply last and do not themselves pin
         // the engine. A matching runtime override still pins.
         let resolution = resolve_runtime_override(
-            runner,
+            role,
             slot.runtime_override.as_deref(),
             slot.model_override.as_deref(),
             slot.effort_override.as_deref(),
@@ -657,32 +654,32 @@ impl SessionManager {
         // Mission slots follow the app-wide permission mode (feature
         // 527): converge the row's permission flags to the setting,
         // leaving every other arg alone. Direct chats never pass here.
-        let mut runner = resolution.effective.unwrap_or_else(|| runner.clone());
-        runner.args = router::runtime::apply_mission_permission_mode(
-            Runtime::parse(&runner.runtime),
-            &runner.args,
+        let mut role = resolution.effective.unwrap_or_else(|| role.clone());
+        role.args = router::runtime::apply_mission_permission_mode(
+            Runtime::parse(&role.runtime),
+            &role.args,
             self.mission_permission_mode(),
         );
-        let runner = self.resolve_runner_executable(&runner, &pool)?;
+        let role = self.resolve_role_executable(&role, &pool)?;
 
         // Agent-native session resume: this is a *fresh* session row, so
         // there's no prior key to inherit. The runtime adapter still
         // self-assigns a UUID for claude-code (`--session-id <uuid>`) so
         // a future `SessionManager::resume` can hand it back.
-        let plan = router::runtime::resume_plan(Runtime::parse(&runner.runtime), None);
+        let plan = router::runtime::resume_plan(Runtime::parse(&role.runtime), None);
 
-        // Working directory: mission cwd if set, else runner override, else
+        // Working directory: mission cwd if set, else role override, else
         // inherit parent's. The mission-level cwd is what the operator typed
         // into the Start-mission modal and the modal's helper text promises
-        // it wins ("Each runner's PTY starts in this directory"). Capture the
+        // it wins ("Each role's PTY starts in this directory"). Capture the
         // resolved cwd so we can persist it on the session row — `resume`
         // reads it back to spawn the same dir on respawn, which matters for
         // claude-code (its conversation files are keyed under
         // `~/.claude/projects/<encoded-cwd>/<uuid>.jsonl`; resuming with a
         // different cwd makes `--resume` fail).
-        let resolved_cwd = resolve_spawn_cwd(mission.cwd.as_deref(), runner.working_dir.as_deref());
+        let resolved_cwd = resolve_spawn_cwd(mission.cwd.as_deref(), role.working_dir.as_deref());
 
-        // Per-slot runner shim: hardcodes the RUNNER_* env vars + exec's
+        // Per-slot role shim: hardcodes the RUNNER_* env vars + exec's
         // the real bundled CLI. claude-code's Bash tool spawns
         // non-login shells that don't inherit the PTY's env, so a CLI
         // call like `runner msg post …` would otherwise see the vars
@@ -704,7 +701,7 @@ impl SessionManager {
         mission_env.insert("RUNNER_CREW_ID".into(), mission.crew_id.clone());
         mission_env.insert("RUNNER_MISSION_ID".into(), mission.id.clone());
         // RUNNER_HANDLE is the slot's in-mission identity, not the
-        // runner template's handle.
+        // role template's handle.
         mission_env.insert("RUNNER_HANDLE".into(), slot.slot_handle.clone());
         mission_env.insert(
             "RUNNER_EVENT_LOG".into(),
@@ -716,13 +713,13 @@ impl SessionManager {
 
         let session_id = ulid::Ulid::new().to_string();
         let (first_turn, codex_prompt_marker) = Self::codex_capture_prompt_marker(
-            Runtime::parse(&runner.runtime),
+            Runtime::parse(&role.runtime),
             &session_id,
             first_turn,
         );
         let mut spec = self.base_spawn_spec(
             session_id.clone(),
-            &runner,
+            &role,
             resolved_cwd.clone(),
             true,
             shim_dir,
@@ -734,7 +731,7 @@ impl SessionManager {
             runner_core::event_log::path::mission_dir(app_data_dir, &mission.crew_id, &mission.id);
         let first_turn_delivered_via_argv = Self::apply_runtime_args(
             &mut spec,
-            &runner,
+            &role,
             &plan,
             app_data_dir,
             first_turn.as_deref(),
@@ -752,7 +749,7 @@ impl SessionManager {
             let mut row = crate::repo::session::SessionRowDb::new_running(session_id.clone());
             row.mission_id = Some(mission.id.clone());
             row.project_id = mission.project_id.clone();
-            row.runner_id = Some(runner.id.clone());
+            row.role_id = Some(role.id.clone());
             row.slot_id = Some(slot.id.clone());
             row.cwd = resolved_cwd.clone();
             row.started_at = Some(started_at_dt);
@@ -762,14 +759,14 @@ impl SessionManager {
             if pinned {
                 // Record the effective runtime so respawn/resume
                 // keeps this session's engine even if the slot's
-                // override — or the runner template's runtime — is
+                // override — or the role template's runtime — is
                 // edited later. No-override rows stay NULL.
-                row.agent_runtime = Some(runner.runtime.clone());
-                row.agent_command = Some(runner.command.clone());
+                row.agent_runtime = Some(role.runtime.clone());
+                row.agent_command = Some(role.command.clone());
             }
             if agent_options_overridden {
-                row.agent_model = runner.model.clone();
-                row.agent_effort = runner.effort.clone();
+                row.agent_model = role.model.clone();
+                row.agent_effort = role.effort.clone();
             }
             crate::repo::session::insert(&conn, &row)?;
         }
@@ -778,7 +775,7 @@ impl SessionManager {
             session_id,
             spec,
             mission: mission.clone(),
-            runner: runner.clone(),
+            role: role.clone(),
             slot_handle: slot.slot_handle.clone(),
             size_source,
             plan,
@@ -824,7 +821,7 @@ impl SessionManager {
             session_id,
             mut spec,
             mission,
-            runner,
+            role,
             slot_handle,
             mut size_source,
             plan,
@@ -845,7 +842,7 @@ impl SessionManager {
         // a stopped mission.
         if cancel.load(Ordering::Acquire) {
             log::info!(
-                "mission session spawn cancelled pre-gate: mission={} session={} runner={}",
+                "mission session spawn cancelled pre-gate: mission={} session={} role={}",
                 mission.id,
                 session_id,
                 slot_handle,
@@ -857,18 +854,18 @@ impl SessionManager {
         // race the OAuth refresh-token rotation. No-op for other
         // runtimes; zero-wait for the first claude through. See
         // `enter_claude_launch_gate` + issue #171.
-        self.enter_claude_launch_gate(&session_id, Runtime::parse(&runner.runtime));
+        self.enter_claude_launch_gate(&session_id, Runtime::parse(&role.runtime));
 
         // Post-gate cancellation: covers a Stop that fires while we
         // were asleep in the gate. The wake-up still races with the
         // cancel — flagging it here means we observe it before the
         // expensive `runtime.spawn`. Also covers the case where
-        // `runner_delete` cascade-removed the row through the FK on
-        // `sessions.runner_id` — surfaces the same way (we have no
+        // `role_delete` cascade-removed the row through the FK on
+        // `sessions.role_id` — surfaces the same way (we have no
         // row to attach a PTY to).
         if cancel.load(Ordering::Acquire) || !Self::session_row_exists(&pool, &session_id) {
             log::info!(
-                "mission session spawn cancelled post-gate: mission={} session={} runner={}",
+                "mission session spawn cancelled post-gate: mission={} session={} role={}",
                 mission.id,
                 session_id,
                 slot_handle,
@@ -894,21 +891,21 @@ impl SessionManager {
         let initial_size = spec.initial_size;
         self.seed_runtime_project_trust(
             &session_id,
-            Runtime::parse(&runner.runtime),
+            Runtime::parse(&role.runtime),
             spec.cwd.as_deref(),
-            runner.env.get("COPILOT_HOME").map(String::as_str),
+            role.env.get("COPILOT_HOME").map(String::as_str),
         );
         let (rt_session, output) = self
             .runtime
             .spawn(spec)
-            .map_err(|e| Error::msg(format!("spawn {}: {e}", runner.command)))?;
+            .map_err(|e| Error::msg(format!("spawn {}: {e}", role.command)))?;
 
         // Post-spawn cancellation. Two triggers reach this branch:
         //   1. A `Stop`/`Archive` that fired while the
         //      runtime was mid-fork — `kill_all_for_mission` can't
         //      see the PTY yet (no `SessionHandle` in `sessions`
         //      until the insert below). Flagged by `cancel`.
-        //   2. A `runner_delete` whose FK cascade dropped the row
+        //   2. A `role_delete` whose FK cascade dropped the row
         //      while runtime was mid-fork. Flagged by the row check.
         // Either way the PTY exists with no DB anchor; tear it down
         // before any further bookkeeping. The dropped output stream
@@ -916,7 +913,7 @@ impl SessionManager {
         if cancel.load(Ordering::Acquire) || !Self::session_row_exists(&pool, &session_id) {
             log::info!(
                 "mission session spawn cancelled post-runtime-spawn: \
-                 mission={} session={} runner={}",
+                 mission={} session={} role={}",
                 mission.id,
                 session_id,
                 slot_handle,
@@ -935,7 +932,7 @@ impl SessionManager {
             log::info!(
                 "mission slot fork: session={session_id} runtime={} \
                  size={cols}x{rows} source={size_source}",
-                runner.runtime,
+                role.runtime,
             );
         }
 
@@ -954,11 +951,11 @@ impl SessionManager {
         }
 
         let codex_capture = if matches!(
-            Runtime::parse(runner.runtime.as_str()),
+            Runtime::parse(role.runtime.as_str()),
             Some(Runtime::Codex | Runtime::Trae)
         ) && plan.assigned_key.is_none()
         {
-            crate::session::codex_capture::sessions_root_for(Runtime::parse(&runner.runtime))
+            crate::session::codex_capture::sessions_root_for(Runtime::parse(&role.runtime))
                 .and_then(|sessions_root| {
                     resolved_cwd.clone().map(|cwd| CodexCaptureContext {
                         mission_id: Some(mission.id.clone()),
@@ -992,7 +989,7 @@ impl SessionManager {
                 pending_first_turn: None,
                 id: session_id.clone(),
                 mission_id: Some(mission.id.clone()),
-                runner_id: Some(runner.id.clone()),
+                role_id: Some(role.id.clone()),
                 runtime_session: rt_session.clone(),
                 codex_capture: codex_capture.clone(),
                 forwarder: None,
@@ -1010,7 +1007,7 @@ impl SessionManager {
         #[cfg(windows)]
         self.queue_windows_batch_first_turn(
             &session_id,
-            &runner,
+            &role,
             &plan,
             first_turn.as_deref(),
             first_turn_deadline,
@@ -1023,7 +1020,7 @@ impl SessionManager {
             output,
             Arc::clone(&pool),
             Arc::clone(&events),
-            runner.clone(),
+            role.clone(),
             plan.resuming,
             true,
             spawn_emit_ctx,
@@ -1034,9 +1031,9 @@ impl SessionManager {
             self.spawn_codex_capture_if_unkeyed(&session_id, ctx);
         }
 
-        emit_runner_activity(&pool, &runner, events.as_ref());
+        emit_role_activity(&pool, &role, events.as_ref());
         log::info!(
-            "session spawn: mission={} session={} runner={} runtime_session={}",
+            "session spawn: mission={} session={} role={} runtime_session={}",
             mission.id,
             session_id,
             slot_handle,
@@ -1046,13 +1043,13 @@ impl SessionManager {
         Ok(CompleteSpawnOutcome::Spawned)
     }
 
-    /// Spawn one PTY child for `runner` as part of `mission`. Persists a
+    /// Spawn one PTY child for `role` as part of `mission`. Persists a
     /// `sessions` row, starts the reader thread, and returns a summary for
     /// the frontend.
     ///
-    /// `app_data_dir` is the root of `$APPDATA/runner/` so we can prepend
+    /// `app_data_dir` is the root of `$APPDATA/role/` so we can prepend
     /// `<app_data_dir>/bin` onto the child's PATH — arch §5.3 Layer 2 and
-    /// 0001-v0-mvp.md C9 both require the bundled `runner` CLI to win over any
+    /// 0001-v0-mvp.md C9 both require the bundled `role` CLI to win over any
     /// system binary with the same name.
     /// `first_turn` is the composed first-user-turn body to deliver
     /// at spawn (lead launch prompt for a lead slot, worker preamble
@@ -1074,7 +1071,7 @@ impl SessionManager {
     pub fn spawn(
         self: &Arc<Self>,
         mission: &Mission,
-        runner: &Runner,
+        role: &Role,
         slot: &crate::model::Slot,
         app_data_dir: &Path,
         events_log_path: PathBuf,
@@ -1084,7 +1081,7 @@ impl SessionManager {
     ) -> Result<SpawnedSession> {
         let pending = self.register_mission_session(
             mission,
-            runner,
+            role,
             slot,
             app_data_dir,
             events_log_path,
@@ -1095,8 +1092,8 @@ impl SessionManager {
         )?;
         let session_id = pending.session_id.clone();
         let mission_id = pending.mission.id.clone();
-        let runner_id = pending.runner.id.clone();
-        let handle = pending.runner.handle.clone();
+        let role_id = pending.role.id.clone();
+        let handle = pending.role.handle.clone();
         // No batch context in the sync wrapper, so cancellation is
         // never set externally — pass a fresh flag so the cancel
         // checks are a no-op for this path.
@@ -1114,7 +1111,7 @@ impl SessionManager {
         Ok(SpawnedSession {
             id: session_id,
             mission_id: Some(mission_id),
-            runner_id: Some(runner_id),
+            role_id: Some(role_id),
             handle,
             // PTY child pid is populated lazily via runtime.status()
             // when the manager needs it; the SpawnedSession field is
@@ -1123,10 +1120,10 @@ impl SessionManager {
         })
     }
 
-    /// Spawn a "direct chat" PTY: a runner process with **no parent
+    /// Spawn a "direct chat" PTY: a role process with **no parent
     /// mission**. Schema-supported since C5.5a (`sessions.mission_id` is
     /// nullable); C8.5 surfaces it as the "Chat now" affordance on the
-    /// Runner Detail page.
+    /// Role Detail page.
     ///
     /// Differences vs. the mission-flavored `spawn`:
     ///   - No `RUNNER_MISSION_ID`, `RUNNER_EVENT_LOG`, or
@@ -1149,15 +1146,15 @@ impl SessionManager {
     /// persona to deliver, or for tests that don't care about boot
     /// context.
     /// `runtime_override` is the chat-level engine choice (feature 41):
-    /// `None` spawns the runner's own runtime unchanged; a differing
+    /// `None` spawns the role's own runtime unchanged; a differing
     /// registry runtime spawns that engine with registry command /
-    /// default args while the runner's persona fields carry over.
+    /// default args while the role's persona fields carry over.
     /// `model_override` / `effort_override` apply after runtime
-    /// resolution and can also customize the runner's own engine.
+    /// resolution and can also customize the role's own engine.
     #[allow(clippy::too_many_arguments)]
     pub fn spawn_direct(
         self: &Arc<Self>,
-        runner: &Runner,
+        role: &Role,
         runtime_override: Option<&str>,
         model_override: Option<&str>,
         effort_override: Option<&str>,
@@ -1171,11 +1168,11 @@ impl SessionManager {
         first_turn: Option<String>,
     ) -> Result<SpawnedSession> {
         self.spawn_direct_inner(
-            runner,
+            role,
             runtime_override,
             model_override,
             effort_override,
-            Some(runner.id.as_str()),
+            Some(role.id.as_str()),
             project_id,
             cwd,
             cols,
@@ -1191,7 +1188,7 @@ impl SessionManager {
     #[allow(clippy::too_many_arguments)]
     pub fn spawn_runtime_direct(
         self: &Arc<Self>,
-        runner: &Runner,
+        role: &Role,
         project_id: Option<&str>,
         cwd: Option<&str>,
         cols: Option<u16>,
@@ -1201,7 +1198,7 @@ impl SessionManager {
         events: Arc<dyn SessionEvents>,
     ) -> Result<SpawnedSession> {
         self.spawn_direct_inner(
-            runner,
+            role,
             None,
             None,
             None,
@@ -1221,11 +1218,11 @@ impl SessionManager {
     #[allow(clippy::too_many_arguments)]
     fn spawn_direct_inner(
         self: &Arc<Self>,
-        runner: &Runner,
+        role: &Role,
         runtime_override: Option<&str>,
         model_override: Option<&str>,
         effort_override: Option<&str>,
-        persisted_runner_id: Option<&str>,
+        persisted_role_id: Option<&str>,
         project_id: Option<&str>,
         cwd: Option<&str>,
         cols: Option<u16>,
@@ -1239,24 +1236,24 @@ impl SessionManager {
         // Chat-level runtime override (feature 41) — same resolution
         // rule as mission spawns.
         let resolution =
-            resolve_runtime_override(runner, runtime_override, model_override, effort_override)?;
+            resolve_runtime_override(role, runtime_override, model_override, effort_override)?;
         let pinned = resolution.pinned;
         let agent_options_overridden = resolution.effective.is_some();
-        let mut runner =
-            self.resolve_runner_executable(resolution.effective.as_ref().unwrap_or(runner), &pool)?;
+        let mut role =
+            self.resolve_role_executable(resolution.effective.as_ref().unwrap_or(role), &pool)?;
         // Permission posture belongs to MissionPermissionMode (feature
         // 596): attended chats strip the row's permission flags and
         // append nothing, leaving every other arg alone.
-        runner.args =
-            router::runtime::strip_permission_flags(Runtime::parse(&runner.runtime), &runner.args);
+        role.args =
+            router::runtime::strip_permission_flags(Runtime::parse(&role.runtime), &role.args);
 
         // Agent-native session resume: `spawn_direct` always opens a *new*
         // chat. The runtime adapter self-assigns a fresh
         // `agent_session_key` (claude-code) or leaves it NULL (codex).
-        let plan = router::runtime::resume_plan(Runtime::parse(&runner.runtime), None);
+        let plan = router::runtime::resume_plan(Runtime::parse(&role.runtime), None);
 
         // Reject explicitly missing folders before portable-pty can substitute another cwd.
-        let resolved_cwd = resolve_spawn_cwd(cwd, runner.working_dir.as_deref());
+        let resolved_cwd = resolve_spawn_cwd(cwd, role.working_dir.as_deref());
         let Some(chat_cwd) = resolved_cwd.as_deref() else {
             return Err(Error::msg(
                 "home directory is unavailable; select a working directory before starting a chat",
@@ -1268,18 +1265,18 @@ impl SessionManager {
             )));
         }
 
-        // Direct chats are off-bus: RUNNER_HANDLE is the runner template's
+        // Direct chats are off-bus: RUNNER_HANDLE is the role template's
         // own handle, no slot/mission env vars.
         let mut direct_env: BTreeMap<String, String> = BTreeMap::new();
-        if Runtime::parse(&runner.runtime) != Some(Runtime::Shell) {
-            direct_env.insert("RUNNER_HANDLE".into(), runner.handle.clone());
+        if Runtime::parse(&role.runtime) != Some(Runtime::Shell) {
+            direct_env.insert("RUNNER_HANDLE".into(), role.handle.clone());
         }
 
         let initial_size = Some(cols.zip(rows).unwrap_or(DEFAULT_PTY_SIZE));
 
         let session_id = ulid::Ulid::new().to_string();
         let (first_turn, codex_prompt_marker) = Self::codex_capture_prompt_marker(
-            Runtime::parse(&runner.runtime),
+            Runtime::parse(&role.runtime),
             &session_id,
             first_turn,
         );
@@ -1288,7 +1285,7 @@ impl SessionManager {
 
         let mut spec = self.base_spawn_spec(
             session_id.clone(),
-            &runner,
+            &role,
             resolved_cwd.clone(),
             false,
             None, // shim_dir — off-bus
@@ -1298,7 +1295,7 @@ impl SessionManager {
         );
         let first_turn_delivered_via_argv = Self::apply_runtime_args(
             &mut spec,
-            &runner,
+            &role,
             &plan,
             app_data_dir,
             first_turn.as_deref(),
@@ -1306,29 +1303,29 @@ impl SessionManager {
         );
 
         // Insert the row first so a fast-failing spawn doesn't leave
-        // a half-row. Runtime-only chats (no persisted runner template)
+        // a half-row. Runtime-only chats (no persisted role template)
         // carry their agent identity on the row via agent_runtime /
-        // agent_command; runner-backed chats leave those NULL unless a
+        // agent_command; role-backed chats leave those NULL unless a
         // runtime override was explicitly requested — then the row
         // records the effective runtime so resume respawns the same
-        // engine even if the runner template is edited later.
+        // engine even if the role template is edited later.
         {
             let conn = pool.get()?;
             let mut row = crate::repo::session::SessionRowDb::new_running(session_id.clone());
             row.project_id = project_id.map(str::to_string);
-            row.runner_id = persisted_runner_id.map(str::to_string);
+            row.role_id = persisted_role_id.map(str::to_string);
             row.cwd = resolved_cwd.clone();
             row.started_at = Some(started_at_dt);
             row.agent_session_key = plan.assigned_key.clone();
             row.last_cols = initial_size.map(|(cols, _)| cols);
             row.last_rows = initial_size.map(|(_, rows)| rows);
-            if persisted_runner_id.is_none() || pinned {
-                row.agent_runtime = Some(runner.runtime.clone());
-                row.agent_command = Some(runner.command.clone());
+            if persisted_role_id.is_none() || pinned {
+                row.agent_runtime = Some(role.runtime.clone());
+                row.agent_command = Some(role.command.clone());
             }
-            if persisted_runner_id.is_none() || agent_options_overridden {
-                row.agent_model = runner.model.clone();
-                row.agent_effort = runner.effort.clone();
+            if persisted_role_id.is_none() || agent_options_overridden {
+                row.agent_model = role.model.clone();
+                row.agent_effort = role.effort.clone();
             }
             crate::repo::session::insert(&conn, &row)?;
         }
@@ -1337,10 +1334,10 @@ impl SessionManager {
         // also fresh claude-code spawns and proactively refresh the
         // OAuth token, so a rapid burst of new chats can race. See
         // `enter_claude_launch_gate` + issue #171.
-        self.enter_claude_launch_gate(&session_id, Runtime::parse(&runner.runtime));
+        self.enter_claude_launch_gate(&session_id, Runtime::parse(&role.runtime));
 
-        // Post-gate row check: `runner_delete` can cascade through
-        // `sessions.runner_id` while we were asleep in the gate. The
+        // Post-gate row check: `role_delete` can cascade through
+        // `sessions.role_id` while we were asleep in the gate. The
         // session row is gone; spawning a PTY now would attach to
         // nothing.
         if !Self::session_row_exists(&pool, &session_id) {
@@ -1354,9 +1351,9 @@ impl SessionManager {
         let first_turn_deadline = Instant::now() + WINDOWS_FIRST_TURN_TIMEOUT;
         self.seed_runtime_project_trust(
             &session_id,
-            Runtime::parse(&runner.runtime),
+            Runtime::parse(&role.runtime),
             spec.cwd.as_deref(),
-            runner.env.get("COPILOT_HOME").map(String::as_str),
+            role.env.get("COPILOT_HOME").map(String::as_str),
         );
         let (rt_session, output) = match self.runtime.spawn(spec) {
             Ok(p) => p,
@@ -1364,11 +1361,11 @@ impl SessionManager {
                 if let Ok(conn) = pool.get() {
                     let _ = crate::repo::session::delete(&conn, &session_id);
                 }
-                return Err(Error::msg(format!("spawn {}: {e}", runner.command)));
+                return Err(Error::msg(format!("spawn {}: {e}", role.command)));
             }
         };
 
-        // Post-spawn row check: `runner_delete` can also fire while
+        // Post-spawn row check: `role_delete` can also fire while
         // `runtime.spawn` was mid-fork. The PTY is alive; tear it
         // down before we install a `SessionHandle` that points at a
         // row that no longer exists.
@@ -1397,11 +1394,11 @@ impl SessionManager {
         }
 
         let codex_capture = if matches!(
-            Runtime::parse(runner.runtime.as_str()),
+            Runtime::parse(role.runtime.as_str()),
             Some(Runtime::Codex | Runtime::Trae)
         ) && plan.assigned_key.is_none()
         {
-            crate::session::codex_capture::sessions_root_for(Runtime::parse(&runner.runtime))
+            crate::session::codex_capture::sessions_root_for(Runtime::parse(&role.runtime))
                 .and_then(|sessions_root| {
                     resolved_cwd.clone().map(|cwd| CodexCaptureContext {
                         mission_id: None,
@@ -1426,7 +1423,7 @@ impl SessionManager {
                 pending_first_turn: None,
                 id: session_id.clone(),
                 mission_id: None,
-                runner_id: persisted_runner_id.map(str::to_string),
+                role_id: persisted_role_id.map(str::to_string),
                 runtime_session: rt_session.clone(),
                 codex_capture: codex_capture.clone(),
                 forwarder: None,
@@ -1450,7 +1447,7 @@ impl SessionManager {
         #[cfg(windows)]
         self.queue_windows_batch_first_turn(
             &session_id,
-            &runner,
+            &role,
             &plan,
             first_turn.as_deref(),
             first_turn_deadline,
@@ -1463,7 +1460,7 @@ impl SessionManager {
             output,
             Arc::clone(&pool),
             Arc::clone(&events),
-            runner.clone(),
+            role.clone(),
             plan.resuming,
             emit_activity,
             None, // direct chats are off-bus — no log to append runner_status to
@@ -1475,28 +1472,28 @@ impl SessionManager {
         }
 
         if emit_activity {
-            emit_runner_activity(&pool, &runner, events.as_ref());
+            emit_role_activity(&pool, &role, events.as_ref());
         }
         let missing_first_turn = matches!(
-            Runtime::parse(runner.runtime.as_str()),
+            Runtime::parse(role.runtime.as_str()),
             Some(Runtime::ClaudeCode | Runtime::Codex | Runtime::Trae | Runtime::Copilot)
         ) && !plan.resuming
             && !first_turn_delivered_via_argv;
         #[cfg(windows)]
         let missing_first_turn =
-            missing_first_turn && !crate::session::launch::is_windows_batch(&runner.command);
+            missing_first_turn && !crate::session::launch::is_windows_batch(&role.command);
         if missing_first_turn {
             log::warn!(
                 "first-turn argv not delivered for direct chat {session_id} (runtime {}); skipping post-spawn injection",
-                runner.runtime,
+                role.runtime,
             );
         }
 
         Ok(SpawnedSession {
             id: session_id,
             mission_id: None,
-            runner_id: persisted_runner_id.map(str::to_string),
-            handle: runner.handle.clone(),
+            role_id: persisted_role_id.map(str::to_string),
+            handle: role.handle.clone(),
             pid: None,
         })
     }
@@ -1505,16 +1502,16 @@ impl SessionManager {
     fn queue_windows_batch_first_turn(
         &self,
         session_id: &str,
-        runner: &Runner,
+        role: &Role,
         plan: &router::runtime::ResumePlan,
         first_turn: Option<&str>,
         deadline: Instant,
     ) {
         if matches!(
-            Runtime::parse(runner.runtime.as_str()),
+            Runtime::parse(role.runtime.as_str()),
             Some(Runtime::ClaudeCode | Runtime::Codex | Runtime::Trae | Runtime::Copilot)
         ) && !plan.resuming
-            && crate::session::launch::is_windows_batch(&runner.command)
+            && crate::session::launch::is_windows_batch(&role.command)
         {
             if let Some(body) = first_turn.filter(|body| !body.trim().is_empty()) {
                 let state = self.session_state_or_insert(session_id);
@@ -1565,20 +1562,16 @@ impl SessionManager {
             ))
         })?;
 
-        let runner_template = if let Some(runner_id) = source.runner_id.as_deref() {
+        let role_template = if let Some(role_id) = source.role_id.as_deref() {
             let conn = pool.get()?;
-            Some(crate::ops::runner::get(&conn, runner_id)?)
+            Some(crate::ops::role::get(&conn, role_id)?)
         } else {
             None
         };
         let effective_runtime = source
             .agent_runtime
             .clone()
-            .or_else(|| {
-                runner_template
-                    .as_ref()
-                    .map(|runner| runner.runtime.clone())
-            })
+            .or_else(|| role_template.as_ref().map(|role| role.runtime.clone()))
             .ok_or_else(|| {
                 Error::msg(format!(
                     "runtime-only session {source_session_id} missing agent_runtime"
@@ -1590,9 +1583,9 @@ impl SessionManager {
             )));
         }
 
-        let mut runner = if let Some(runner) = runner_template {
-            let runner = match resolve_runtime_override(
-                &runner,
+        let mut role = if let Some(role) = role_template {
+            let role = match resolve_runtime_override(
+                &role,
                 source.agent_runtime.as_deref(),
                 source.agent_model.as_deref(),
                 source.agent_effort.as_deref(),
@@ -1600,11 +1593,11 @@ impl SessionManager {
             .effective
             {
                 Some(effective) => effective,
-                None => runner,
+                None => role,
             };
-            self.resolve_runner_executable(&runner, &pool)?
+            self.resolve_role_executable(&role, &pool)?
         } else {
-            self.resolve_runtime_only_resume_runner(
+            self.resolve_runtime_only_resume_role(
                 &effective_runtime,
                 source.agent_command.as_deref(),
                 source.agent_model.as_deref(),
@@ -1616,10 +1609,10 @@ impl SessionManager {
         // Permission posture belongs to MissionPermissionMode (feature
         // 596): a fork is still an attended chat, so strip permission
         // flags and leave every other arg alone.
-        runner.args =
-            router::runtime::strip_permission_flags(Runtime::parse(&runner.runtime), &runner.args);
+        role.args =
+            router::runtime::strip_permission_flags(Runtime::parse(&role.runtime), &role.args);
 
-        let resolved_cwd = resolve_spawn_cwd(source.cwd.as_deref(), runner.working_dir.as_deref());
+        let resolved_cwd = resolve_spawn_cwd(source.cwd.as_deref(), role.working_dir.as_deref());
         let Some(chat_cwd) = resolved_cwd.as_deref() else {
             return Err(Error::msg(
                 "home directory is unavailable; select a working directory before forking a chat",
@@ -1637,24 +1630,24 @@ impl SessionManager {
             .filter(|title| !title.is_empty())
             .map(str::to_string)
             .unwrap_or_else(|| {
-                if source.runner_id.is_some() {
-                    format!("@{}", runner.handle)
+                if source.role_id.is_some() {
+                    format!("@{}", role.handle)
                 } else {
-                    runner.display_name.clone()
+                    role.display_name.clone()
                 }
             });
         let plan =
-            router::runtime::fork_plan(Runtime::parse(&runner.runtime), source_key, &source_label)
+            router::runtime::fork_plan(Runtime::parse(&role.runtime), source_key, &source_label)
                 .ok_or_else(|| {
                     Error::msg(format!(
                         "could not build fork plan for runtime {}",
-                        runner.runtime
+                        role.runtime
                     ))
                 })?;
 
         let mut direct_env = BTreeMap::new();
-        if Runtime::parse(&runner.runtime) != Some(Runtime::Shell) {
-            direct_env.insert("RUNNER_HANDLE".into(), runner.handle.clone());
+        if Runtime::parse(&role.runtime) != Some(Runtime::Shell) {
+            direct_env.insert("RUNNER_HANDLE".into(), role.handle.clone());
         }
         let initial_size = Some(cols.zip(rows).unwrap_or(DEFAULT_PTY_SIZE));
         let session_id = ulid::Ulid::new().to_string();
@@ -1662,7 +1655,7 @@ impl SessionManager {
         let started_at = started_at_dt.to_rfc3339();
         let mut spec = self.base_spawn_spec(
             session_id.clone(),
-            &runner,
+            &role,
             resolved_cwd.clone(),
             false,
             None,
@@ -1675,7 +1668,7 @@ impl SessionManager {
             let conn = pool.get()?;
             let mut row = crate::repo::session::SessionRowDb::new_running(session_id.clone());
             row.project_id.clone_from(&source.project_id);
-            row.runner_id.clone_from(&source.runner_id);
+            row.role_id.clone_from(&source.role_id);
             row.cwd = resolved_cwd.clone();
             row.started_at = Some(started_at_dt);
             row.agent_session_key = match &plan {
@@ -1707,7 +1700,7 @@ impl SessionManager {
         // as a fresh chat. This is a no-op for Codex; its visible phase-2
         // process is an ordinary resume and remains deliberately ungated.
         let gate_started_at = Instant::now();
-        self.enter_claude_launch_gate(&session_id, Runtime::parse(&runner.runtime));
+        self.enter_claude_launch_gate(&session_id, Runtime::parse(&role.runtime));
         let gate_elapsed = gate_started_at.elapsed();
         if !Self::session_row_exists(&pool, &session_id) {
             return Err(Error::msg(format!(
@@ -1717,15 +1710,14 @@ impl SessionManager {
 
         match plan {
             router::runtime::ForkPlan::Direct(plan) => {
-                let _ =
-                    Self::apply_runtime_args(&mut spec, &runner, &plan, app_data_dir, None, None);
+                let _ = Self::apply_runtime_args(&mut spec, &role, &plan, app_data_dir, None, None);
                 let direct_spawn_started_at = Instant::now();
                 let (rt_session, output) = match self.runtime.spawn(spec) {
                     Ok(spawned) => spawned,
                     Err(error) => {
                         log::info!(
                             "fork timing: session={session_id} runtime={} gate_ms={} materialize_ms=not-applicable direct_spawn_ms={} total_ms={} outcome=spawn-error",
-                            runner.runtime,
+                            role.runtime,
                             gate_elapsed.as_millis(),
                             direct_spawn_started_at.elapsed().as_millis(),
                             fork_started_at.elapsed().as_millis(),
@@ -1733,14 +1725,14 @@ impl SessionManager {
                         if let Err(cleanup_error) = delete_failed_fork(&pool, &session_id) {
                             return Err(Error::msg(format!(
                                 "spawn {}: {error}; failed to roll back forked session {session_id}: {cleanup_error}",
-                                runner.command,
+                                role.command,
                             )));
                         }
                         events.updated(&SessionUpdatedEvent {
                             session_id: session_id.clone(),
                             mission_id: None,
                         });
-                        return Err(Error::msg(format!("spawn {}: {error}", runner.command)));
+                        return Err(Error::msg(format!("spawn {}: {error}", role.command)));
                     }
                 };
 
@@ -1778,7 +1770,7 @@ impl SessionManager {
                         pending_first_turn: None,
                         id: session_id.clone(),
                         mission_id: None,
-                        runner_id: source.runner_id.clone(),
+                        role_id: source.role_id.clone(),
                         runtime_session: rt_session.clone(),
                         codex_capture: None,
                         forwarder: None,
@@ -1802,18 +1794,18 @@ impl SessionManager {
                     output,
                     Arc::clone(&pool),
                     Arc::clone(&events),
-                    runner.clone(),
+                    role.clone(),
                     plan.resuming,
-                    source.runner_id.is_some(),
+                    source.role_id.is_some(),
                     None,
                 );
                 self.install_forwarder(&session_id, forwarder);
-                if source.runner_id.is_some() {
-                    emit_runner_activity(&pool, &runner, events.as_ref());
+                if source.role_id.is_some() {
+                    emit_role_activity(&pool, &role, events.as_ref());
                 }
                 log::info!(
                     "fork timing: session={session_id} runtime={} gate_ms={} materialize_ms=not-applicable direct_spawn_ms={} total_ms={} outcome=ok",
-                    runner.runtime,
+                    role.runtime,
                     gate_elapsed.as_millis(),
                     direct_spawn_started_at.elapsed().as_millis(),
                     fork_started_at.elapsed().as_millis(),
@@ -1821,17 +1813,17 @@ impl SessionManager {
                 Ok(SpawnedSession {
                     id: session_id,
                     mission_id: None,
-                    runner_id: source.runner_id,
-                    handle: runner.handle,
+                    role_id: source.role_id,
+                    handle: role.handle,
                     pid: None,
                 })
             }
             headless @ router::runtime::ForkPlan::Headless { .. } => {
                 self.seed_runtime_project_trust(
                     &session_id,
-                    Runtime::parse(&runner.runtime),
+                    Runtime::parse(&role.runtime),
                     spec.cwd.as_deref(),
-                    runner.env.get("COPILOT_HOME").map(String::as_str),
+                    role.env.get("COPILOT_HOME").map(String::as_str),
                 );
                 let materialize_started_at = Instant::now();
                 let fork_key = match run_headless_fork(&spec, &headless, FORK_MATERIALIZE_TIMEOUT) {
@@ -1839,7 +1831,7 @@ impl SessionManager {
                     Err(error) => {
                         log::info!(
                             "fork timing: session={session_id} runtime={} gate_ms={} materialize_ms={} total_ms={} outcome=materialize-error",
-                            runner.runtime,
+                            role.runtime,
                             gate_elapsed.as_millis(),
                             materialize_started_at.elapsed().as_millis(),
                             fork_started_at.elapsed().as_millis(),
@@ -1911,7 +1903,7 @@ impl SessionManager {
                 );
                 log::info!(
                     "fork timing: session={session_id} runtime={} gate_ms={} materialize_ms={} resume_spawn_ms={} total_ms={} outcome={}",
-                    runner.runtime,
+                    role.runtime,
                     gate_elapsed.as_millis(),
                     materialize_elapsed.as_millis(),
                     resume_started_at.elapsed().as_millis(),
@@ -2084,7 +2076,7 @@ impl SessionManager {
         // Mission resume: pull the slot + mission so we can stamp the
         // in-mission env (RUNNER_HANDLE = slot_handle, RUNNER_CREW_ID,
         // RUNNER_MISSION_ID). Direct-chat rows skip this lookup —
-        // their RUNNER_HANDLE is the runner template's globally-unique
+        // their RUNNER_HANDLE is the role template's globally-unique
         // handle, no slot involved.
         struct MissionCtx {
             crew_id: String,
@@ -2126,17 +2118,17 @@ impl SessionManager {
                 _ => None,
             };
 
-        // Pull the runner config fresh for runner-backed rows; rebuild
+        // Pull the role config fresh for role-backed rows; rebuild
         // the default runtime config for runtime-only direct chats.
-        // Runner-backed rows that recorded an effective runtime at
+        // Role-backed rows that recorded an effective runtime at
         // spawn (runtime override, feature 41) re-apply it here so the
         // respawn keeps this session's engine regardless of later
         // slot/override edits.
-        let mut runner = if let Some(runner_id) = snap.runner_id.as_deref() {
+        let mut role = if let Some(role_id) = snap.role_id.as_deref() {
             let conn = pool.get()?;
-            let runner = crate::ops::runner::get(&conn, runner_id)?;
-            let mut runner = match resolve_runtime_override(
-                &runner,
+            let role = crate::ops::role::get(&conn, role_id)?;
+            let mut role = match resolve_runtime_override(
+                &role,
                 snap.agent_runtime.as_deref(),
                 snap.agent_model.as_deref(),
                 snap.agent_effort.as_deref(),
@@ -2144,26 +2136,26 @@ impl SessionManager {
             .effective
             {
                 Some(effective) => effective,
-                None => runner,
+                None => role,
             };
             // Mission slots re-read the app-wide permission mode on
             // resume (feature 527), so a setting changed while the
             // slot was down applies to the respawn.
             if snap.mission_id.is_some() {
-                runner.args = router::runtime::apply_mission_permission_mode(
-                    Runtime::parse(&runner.runtime),
-                    &runner.args,
+                role.args = router::runtime::apply_mission_permission_mode(
+                    Runtime::parse(&role.runtime),
+                    &role.args,
                     self.mission_permission_mode(),
                 );
             }
-            self.resolve_runner_executable(&runner, &pool)?
+            self.resolve_role_executable(&role, &pool)?
         } else {
             let runtime = snap.agent_runtime.as_deref().ok_or_else(|| {
                 Error::msg(format!(
                     "runtime-only session {session_id} missing agent_runtime"
                 ))
             })?;
-            self.resolve_runtime_only_resume_runner(
+            self.resolve_runtime_only_resume_role(
                 runtime,
                 snap.agent_command.as_deref(),
                 snap.agent_model.as_deref(),
@@ -2176,10 +2168,8 @@ impl SessionManager {
         // 596): resumed chats are attended, including runtime-only
         // chats. Strip permission flags and leave every other arg alone.
         if snap.mission_id.is_none() {
-            runner.args = router::runtime::strip_permission_flags(
-                Runtime::parse(&runner.runtime),
-                &runner.args,
-            );
+            role.args =
+                router::runtime::strip_permission_flags(Runtime::parse(&role.runtime), &role.args);
         }
 
         // Resume plan: hand the prior agent_session_key back to the
@@ -2193,10 +2183,10 @@ impl SessionManager {
         // spawn with a newly self-assigned uuid via `--session-id`.
         let resolved_cwd_for_check = resolve_spawn_cwd(
             snap.cwd.as_deref(),
-            snap.runner_id.as_ref().and(runner.working_dir.as_deref()),
+            snap.role_id.as_ref().and(role.working_dir.as_deref()),
         );
         let conversation_missing = match (
-            Runtime::parse(&runner.runtime),
+            Runtime::parse(&role.runtime),
             snap.agent_session_key.as_deref(),
         ) {
             (Some(Runtime::ClaudeCode), Some(key)) => {
@@ -2208,7 +2198,7 @@ impl SessionManager {
             (Some(Runtime::Copilot), Some(key)) => {
                 !router::runtime::copilot_conversation_exists_with_home(
                     key,
-                    runner.env.get("COPILOT_HOME").map(String::as_str),
+                    role.env.get("COPILOT_HOME").map(String::as_str),
                 )
             }
             (Some(Runtime::ClaudeCode | Runtime::Copilot), None)
@@ -2220,20 +2210,20 @@ impl SessionManager {
             )));
         }
         let effective_prior_key = if fresh
-            || (conversation_missing && Runtime::parse(&runner.runtime) != Some(Runtime::Copilot))
+            || (conversation_missing && Runtime::parse(&role.runtime) != Some(Runtime::Copilot))
         {
             None
         } else {
             snap.agent_session_key.as_deref()
         };
         let mut plan =
-            router::runtime::resume_plan(Runtime::parse(&runner.runtime), effective_prior_key);
+            router::runtime::resume_plan(Runtime::parse(&role.runtime), effective_prior_key);
         if conversation_missing {
             plan.resuming = false;
         }
         if !allow_fresh_fallback
             && !plan.resuming
-            && Runtime::parse(&runner.runtime) != Some(Runtime::Shell)
+            && Runtime::parse(&role.runtime) != Some(Runtime::Shell)
         {
             return Err(Error::msg(format!(
                 "session {session_id} cannot resume its prior conversation; resume it manually to start fresh"
@@ -2246,7 +2236,7 @@ impl SessionManager {
         // remains at the prompt, so resolve that fallback before portable-pty
         // can silently substitute HOME.
         let (resolved_cwd, shell_cwd_notice) =
-            if Runtime::parse(&runner.runtime) == Some(Runtime::Shell) {
+            if Runtime::parse(&role.runtime) == Some(Runtime::Shell) {
                 let project_cwd = match snap.project_id.as_deref() {
                     Some(project_id) => {
                         let conn = pool.get()?;
@@ -2276,7 +2266,7 @@ impl SessionManager {
                 (cwd, None)
             };
 
-        // Refresh the per-slot runner shim before composing PATH —
+        // Refresh the per-slot role shim before composing PATH —
         // mission cwd may have been edited since the last spawn.
         let shim_dir = mission_ctx.as_ref().and_then(|ctx| {
             let event_log_path = runner_core::event_log::path::events_path(
@@ -2316,8 +2306,8 @@ impl SessionManager {
             if let Some(wd) = ctx.mission_cwd.as_deref() {
                 env_extra.insert("MISSION_CWD".into(), wd.to_string());
             }
-        } else if Runtime::parse(&runner.runtime) != Some(Runtime::Shell) {
-            env_extra.insert("RUNNER_HANDLE".into(), runner.handle.clone());
+        } else if Runtime::parse(&role.runtime) != Some(Runtime::Shell) {
+            env_extra.insert("RUNNER_HANDLE".into(), role.handle.clone());
         }
 
         // Caller-supplied size wins; else the row's persisted last size
@@ -2331,7 +2321,7 @@ impl SessionManager {
         };
         let mut spec = self.base_spawn_spec(
             session_id.to_string(),
-            &runner,
+            &role,
             resolved_cwd.clone(),
             mission_ctx.is_some(),
             shim_dir,
@@ -2359,7 +2349,7 @@ impl SessionManager {
                     launch.first_turn(&log)
                 } else {
                     router::prompt::compose_worker_first_turn(
-                        runner.system_prompt.as_deref(),
+                        role.system_prompt.as_deref(),
                         crew.system_prompt_addendum.as_deref(),
                     )
                 };
@@ -2374,13 +2364,13 @@ impl SessionManager {
         // A new marker prevents the reused row from capturing its previous rollout.
         let marker_id = ulid::Ulid::new().to_string();
         let (first_turn, codex_prompt_marker) = Self::codex_capture_prompt_marker(
-            Runtime::parse(&runner.runtime),
+            Runtime::parse(&role.runtime),
             &marker_id,
             first_turn,
         );
         let first_turn_delivered_via_argv = Self::apply_runtime_args(
             &mut spec,
-            &runner,
+            &role,
             &plan,
             app_data_dir,
             first_turn.as_deref(),
@@ -2409,16 +2399,16 @@ impl SessionManager {
         }
 
         if !plan.resuming {
-            self.enter_claude_launch_gate(session_id, Runtime::parse(&runner.runtime));
+            self.enter_claude_launch_gate(session_id, Runtime::parse(&role.runtime));
         }
         let spawn_started_at_dt = Utc::now();
         #[cfg(windows)]
         let first_turn_deadline = Instant::now() + WINDOWS_FIRST_TURN_TIMEOUT;
         self.seed_runtime_project_trust(
             session_id,
-            Runtime::parse(&runner.runtime),
+            Runtime::parse(&role.runtime),
             spec.cwd.as_deref(),
-            runner.env.get("COPILOT_HOME").map(String::as_str),
+            role.env.get("COPILOT_HOME").map(String::as_str),
         );
         let (rt_session, output) = match self.runtime.spawn(spec) {
             Ok(p) => p,
@@ -2432,7 +2422,7 @@ impl SessionManager {
                         Utc::now(),
                     );
                 }
-                return Err(Error::msg(format!("spawn {}: {e}", runner.command)));
+                return Err(Error::msg(format!("spawn {}: {e}", role.command)));
             }
         };
 
@@ -2447,7 +2437,7 @@ impl SessionManager {
             } else {
                 "resume-on-launch"
             },
-            runner.runtime,
+            role.runtime,
             initial_size.0,
             initial_size.1,
         );
@@ -2465,11 +2455,11 @@ impl SessionManager {
         }
 
         let codex_capture = if matches!(
-            Runtime::parse(runner.runtime.as_str()),
+            Runtime::parse(role.runtime.as_str()),
             Some(Runtime::Codex | Runtime::Trae)
         ) && plan.assigned_key.is_none()
         {
-            crate::session::codex_capture::sessions_root_for(Runtime::parse(&runner.runtime))
+            crate::session::codex_capture::sessions_root_for(Runtime::parse(&role.runtime))
                 .and_then(|sessions_root| {
                     resolved_cwd.clone().map(|cwd| CodexCaptureContext {
                         mission_id: snap.mission_id.clone(),
@@ -2504,7 +2494,7 @@ impl SessionManager {
                 pending_first_turn: None,
                 id: session_id.to_string(),
                 mission_id: snap.mission_id.clone(),
-                runner_id: snap.runner_id.clone(),
+                role_id: snap.role_id.clone(),
                 runtime_session: rt_session.clone(),
                 codex_capture: codex_capture.clone(),
                 forwarder: None,
@@ -2521,7 +2511,7 @@ impl SessionManager {
         #[cfg(windows)]
         self.queue_windows_batch_first_turn(
             session_id,
-            &runner,
+            &role,
             &plan,
             first_turn.as_deref(),
             first_turn_deadline,
@@ -2551,9 +2541,9 @@ impl SessionManager {
             output,
             Arc::clone(&pool),
             Arc::clone(&events),
-            runner.clone(),
+            role.clone(),
             plan.resuming,
-            snap.runner_id.is_some(),
+            snap.role_id.is_some(),
             resume_emit_ctx,
         );
         self.install_forwarder(session_id, forwarder);
@@ -2562,8 +2552,8 @@ impl SessionManager {
             self.spawn_codex_capture_if_unkeyed(session_id, ctx);
         }
 
-        if snap.runner_id.is_some() {
-            emit_runner_activity(&pool, &runner, events.as_ref());
+        if snap.role_id.is_some() {
+            emit_role_activity(&pool, &role, events.as_ref());
         }
 
         // Return the slot's in-mission identity for mission rows so the
@@ -2572,11 +2562,11 @@ impl SessionManager {
         let resumed_handle = mission_ctx
             .as_ref()
             .map(|c| c.slot_handle.clone())
-            .unwrap_or_else(|| runner.handle.clone());
+            .unwrap_or_else(|| role.handle.clone());
         Ok(SpawnedSession {
             id: session_id.to_string(),
             mission_id: snap.mission_id.clone(),
-            runner_id: snap.runner_id.clone(),
+            role_id: snap.role_id.clone(),
             handle: resumed_handle,
             pid: None,
         })
@@ -2584,8 +2574,8 @@ impl SessionManager {
 
     /// True iff the `sessions` row for `session_id` is still in the
     /// DB. False if the row was deleted out from under an in-flight
-    /// spawn — most commonly `runner_delete` triggering the foreign
-    /// key cascade on `sessions.runner_id`, but also covers manual
+    /// spawn — most commonly `role_delete` triggering the foreign
+    /// key cascade on `sessions.role_id`, but also covers manual
     /// DB cleanup or any other path that drops the row while a
     /// gated spawn was asleep. Returns false on pool errors so the
     /// caller treats "can't tell" the same as "deleted" and bails

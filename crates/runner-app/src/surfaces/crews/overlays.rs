@@ -35,7 +35,7 @@ impl NativeRoot {
                             this.load_crew_editor(crew_id, cx);
                         }
                         this.load_crew_page(cx);
-                        this.load_runner_page(cx);
+                        this.load_role_page(cx);
                     }
                     Err(error)
                         if matches!(

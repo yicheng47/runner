@@ -31,7 +31,7 @@ impl MissionWorkspace {
             self.core(cx).windows.mark_blurred(&self.window_label);
         }
         self.core(cx).broadcast_focus_map();
-        let generation = self.prepare_mission(mission_id.clone(), MissionRailView::Runners);
+        let generation = self.prepare_mission(mission_id.clone(), MissionRailView::Roles);
         self.composer_input.update(cx, |input, input_cx| {
             input.reset("", input_cx);
             input.set_disabled(false, input_cx);

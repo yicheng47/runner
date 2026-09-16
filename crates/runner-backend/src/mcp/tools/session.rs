@@ -10,12 +10,12 @@ use crate::ops::session;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct StartDirectSessionArgs {
-    /// Runner template ID.
-    pub runner_id: String,
+    /// Role ID.
+    pub role_id: String,
     /// Optional runtime override (registry name, e.g. "codex",
-    /// "claude-code", "trae", or "copilot"). Omit to use the runner's own runtime. When it
+    /// "claude-code", "trae", or "copilot"). Omit to use the role's own runtime. When it
     /// differs, the chat spawns that engine with registry defaults
-    /// while the runner's persona (system prompt, working dir, env)
+    /// while the role's persona (system prompt, working dir, env)
     /// carries over.
     #[serde(default)]
     pub runtime: Option<crate::model::Runtime>,
@@ -82,7 +82,7 @@ impl RunnerMcpHandler {
     }
 
     #[tool(
-        description = "Start a direct chat for a runner. A project's cwd is used unless cwd is explicitly provided."
+        description = "Start a direct chat for a role. A project's cwd is used unless cwd is explicitly provided."
     )]
     pub async fn session_start_direct(
         &self,
@@ -91,7 +91,7 @@ impl RunnerMcpHandler {
         let app_state = self.state.clone();
         let output = session::session_start_direct_impl(
             &app_state,
-            args.runner_id,
+            args.role_id,
             args.runtime.map(|runtime| runtime.to_string()),
             args.model,
             args.effort,

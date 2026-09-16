@@ -113,7 +113,7 @@ mod toast;
 
 use surfaces::{
     pane_close_behavior, AppRoute, CommandPaletteState, CrewSurfaces, MissionWorkspace,
-    PaneCloseBehavior, PaneKey, ProjectModal, RunnerSurfaces, SettingsPane, SettingsState, Sidebar,
+    PaneCloseBehavior, PaneKey, ProjectModal, RoleSurfaces, SettingsPane, SettingsState, Sidebar,
     SplitMenuKey, StartChatModal, StartMissionModalState,
 };
 
@@ -468,7 +468,7 @@ struct NativeRoot {
     fork_confirm: Option<ForkConfirm>,
     forking_sessions: HashMap<String, String>,
     chat_rename_modal: Option<ChatRenameModal>,
-    last_focused_runner_id: Option<String>,
+    last_focused_role_id: Option<String>,
     split_sizes_dirty: bool,
     drawer_resizing: bool,
     chat_secondaries: HashMap<String, String>,
@@ -492,7 +492,7 @@ struct NativeRoot {
     window_state: window_state::WindowState,
     window_state_save_generation: u64,
     toasts: ToastHost,
-    runner_surfaces: RunnerSurfaces,
+    role_surfaces: RoleSurfaces,
     crew_surfaces: CrewSurfaces,
     mission_workspace: Entity<MissionWorkspace>,
     _appearance_subscription: Option<Subscription>,
@@ -618,7 +618,7 @@ impl NativeRoot {
                 if weak
                     .update(cx, |this, cx| {
                         this.refresh_start_chat_runtimes(cx);
-                        this.refresh_runner_form_runtimes(cx);
+                        this.refresh_role_form_runtimes(cx);
                         this.refresh_add_slot_runtimes(cx);
                         this.refresh_agents_pane(cx);
                     })
@@ -648,13 +648,14 @@ impl NativeRoot {
             if tabs.activate_session(session_id) {
                 AppRoute::Chat
             } else {
-                AppRoute::Runners
+                AppRoute::Roles
             }
         } else if let Some(handle) = route_path
-            .strip_prefix("runners/")
+            .strip_prefix("roles/")
+            .or_else(|| route_path.strip_prefix("runners/"))
             .filter(|handle| !handle.is_empty())
         {
-            AppRoute::RunnerDetail(handle.to_owned())
+            AppRoute::RoleDetail(handle.to_owned())
         } else if let Some(crew_id) = route_path
             .strip_prefix("crews/")
             .filter(|crew_id| !crew_id.is_empty())
@@ -662,8 +663,8 @@ impl NativeRoot {
             AppRoute::CrewEditor(crew_id.to_owned())
         } else if route_path == "chats" {
             AppRoute::Chat
-        } else if route_path == "runners" {
-            AppRoute::Runners
+        } else if matches!(route_path, "roles" | "runners") {
+            AppRoute::Roles
         } else if route_path == "crews" {
             AppRoute::Crews
         } else if route_path == "settings" {
@@ -671,7 +672,7 @@ impl NativeRoot {
         } else if window_label == "main" {
             AppRoute::Chat
         } else {
-            AppRoute::Runners
+            AppRoute::Roles
         };
 
         let root_focus = cx.focus_handle();
@@ -716,11 +717,11 @@ impl NativeRoot {
             .trigger_icon("more-horizontal.svg")
             .trigger_tooltip("Chat actions")
         });
-        let last_focused_runner_id = tabs
+        let last_focused_role_id = tabs
             .active()
             .and_then(PaneLayout::focused_session_id)
             .and_then(|session_id| sessions.iter().find(|entry| entry.session_id == session_id))
-            .and_then(|entry| entry.runner_id.clone());
+            .and_then(|entry| entry.role_id.clone());
         let active_project_id = tabs.active_tab_id().and_then(|tab_id| {
             let tab = nodes.iter().find(|node| node.id == tab_id)?;
             let parent_id = tab.parent_id.as_deref()?;
@@ -735,7 +736,7 @@ impl NativeRoot {
         let sidebar_collapsed = settings.sidebar_collapsed;
         let sidebar_visibility = SidebarVisibilityTransition::new(!sidebar_collapsed);
         let chat_panel_visibility = SidebarVisibilityTransition::new(settings.chat_panel_open);
-        let runner_surfaces = RunnerSurfaces::new(cx.entity(), cx);
+        let role_surfaces = RoleSurfaces::new(cx.entity(), cx);
         let crew_surfaces = CrewSurfaces::new(cx.entity(), cx);
         let sidebar_shell = cx.entity().downgrade();
         let sidebar_store = app_store.clone();
@@ -812,7 +813,7 @@ impl NativeRoot {
             fork_confirm: None,
             forking_sessions: HashMap::new(),
             chat_rename_modal: None,
-            last_focused_runner_id,
+            last_focused_role_id,
             split_sizes_dirty: false,
             drawer_resizing: false,
             chat_secondaries: HashMap::new(),
@@ -837,7 +838,7 @@ impl NativeRoot {
                 .unwrap_or_else(|| window_state::snapshot(window, None)),
             window_state_save_generation: 0,
             toasts: ToastHost::default(),
-            runner_surfaces,
+            role_surfaces,
             crew_surfaces,
             mission_workspace,
             _appearance_subscription: None,
@@ -875,12 +876,12 @@ impl NativeRoot {
         root.sync_theme(window, cx);
         match root.route.clone() {
             AppRoute::Mission(mission_id) => root.open_mission(mission_id, window, cx),
-            AppRoute::Runners => {
-                root.load_runner_page(cx);
+            AppRoute::Roles => {
+                root.load_role_page(cx);
                 window.focus(&root.root_focus);
             }
-            AppRoute::RunnerDetail(handle) => {
-                root.load_runner_detail(handle, cx);
+            AppRoute::RoleDetail(handle) => {
+                root.load_role_detail(handle, cx);
                 window.focus(&root.root_focus);
             }
             AppRoute::Crews => {
@@ -966,10 +967,10 @@ impl NativeRoot {
         if reactions.prune_window_state {
             self.prune_store_dependent_window_state(cx);
         }
-        if reactions.reload_runner_surfaces {
+        if reactions.reload_role_surfaces {
             match self.route.clone() {
-                AppRoute::Runners => self.load_runner_page(cx),
-                AppRoute::RunnerDetail(handle) => self.load_runner_detail(handle, cx),
+                AppRoute::Roles => self.load_role_page(cx),
+                AppRoute::RoleDetail(handle) => self.load_role_detail(handle, cx),
                 _ => {}
             }
         }
@@ -1624,7 +1625,7 @@ mod native_root_tests {
             CloseTarget::Window
         );
         assert_eq!(
-            close_target(&AppRoute::Runners, 0, false, false),
+            close_target(&AppRoute::Roles, 0, false, false),
             CloseTarget::Window
         );
         assert_eq!(
@@ -1641,8 +1642,8 @@ mod native_root_tests {
     fn terminal_repaints_only_when_the_chat_surface_is_visible() {
         assert!(AppRoute::Chat.terminal_visible());
         for route in [
-            AppRoute::Runners,
-            AppRoute::RunnerDetail("runner".into()),
+            AppRoute::Roles,
+            AppRoute::RoleDetail("role".into()),
             AppRoute::Crews,
             AppRoute::CrewEditor("crew".into()),
             AppRoute::Mission("mission".into()),

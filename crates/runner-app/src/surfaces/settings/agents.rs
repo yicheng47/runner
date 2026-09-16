@@ -363,7 +363,7 @@ impl AgentsPane {
             if let Some(shell) = shell.upgrade() {
                 shell.update(cx, |shell, shell_cx| {
                     shell.refresh_start_chat_runtimes(shell_cx);
-                    shell.refresh_runner_form_runtimes(shell_cx);
+                    shell.refresh_role_form_runtimes(shell_cx);
                 });
             }
         });

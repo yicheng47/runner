@@ -5,7 +5,7 @@
 // bookkeeping layer — no PTYs yet.
 //
 // `mission_start` is the point where config crystallizes into runtime:
-// validate the crew has ≥1 runner and exactly one lead, create the mission
+// validate the crew has ≥1 role and exactly one lead, create the mission
 // row, create the mission directory, and emit the two opening events —
 // `mission_start` (system announces the run) and `mission_goal` (the
 // human's intent, which the orchestrator routes to the lead via the
@@ -358,14 +358,14 @@ pub fn stop(conn: &mut Connection, app_data_dir: &Path, id: &str) -> Result<Miss
 /// Atomic write via `tempfile::NamedTempFile::persist` so a crash
 /// mid-write can't leave a half-formed file the CLI would
 /// parse-fail on.
-fn write_roster_sidecar(mission_dir: &Path, roster: &[crate::model::SlotWithRunner]) -> Result<()> {
+fn write_roster_sidecar(mission_dir: &Path, roster: &[crate::model::SlotWithRole]) -> Result<()> {
     use std::io::Write;
 
     #[derive(serde::Serialize)]
     struct RosterEntry<'a> {
         // `handle` is the slot's in-crew identity (slot_handle). The
         // CLI's `runner msg post --to <handle>` looks up against this
-        // sidecar — the runner template's globally-unique `handle`
+        // sidecar — the role template's globally-unique `handle`
         // is irrelevant in mission contexts, where two slots could
         // share the same template.
         handle: &'a str,
@@ -605,9 +605,9 @@ pub async fn mission_start_impl_with_size(
     // while the crew still has half a live mission that blocks future
     // starts via the one-live-mission-per-crew invariant.
     //
-    // The roster lives in `slots`, joined with the runner template
+    // The roster lives in `slots`, joined with the role template
     // each slot references. Mission spawn iterates per slot — two
-    // slots referencing the same runner template both produce
+    // slots referencing the same role template both produce
     // distinct PTYs identifying as their respective slot_handles.
     let (crew_name, crew_default_goal, crew_addendum) = {
         let conn = state.db.get()?;
@@ -647,7 +647,7 @@ pub async fn mission_start_impl_with_size(
             .iter()
             .map(|m| crate::router::prompt::RosterEntry {
                 handle: m.slot.slot_handle.as_str(),
-                display_name: m.runner.display_name.as_str(),
+                display_name: m.role.display_name.as_str(),
                 lead: m.slot.lead,
             })
             .collect();
@@ -661,8 +661,8 @@ pub async fn mission_start_impl_with_size(
                             &crate::router::prompt::LaunchPromptInput {
                                 lead: crate::router::prompt::LeadView {
                                     handle: lm.slot.slot_handle.as_str(),
-                                    display_name: lm.runner.display_name.as_str(),
-                                    system_prompt: lm.runner.system_prompt.as_deref(),
+                                    display_name: lm.role.display_name.as_str(),
+                                    system_prompt: lm.role.system_prompt.as_deref(),
                                 },
                                 crew_name: crew_name.as_str(),
                                 mission_goal: goal_text.as_str(),
@@ -674,7 +674,7 @@ pub async fn mission_start_impl_with_size(
                     })
                 } else {
                     Some(crate::router::prompt::compose_worker_first_turn(
-                        m.runner.system_prompt.as_deref(),
+                        m.role.system_prompt.as_deref(),
                         crew_addendum.as_deref(),
                     ))
                 }
@@ -767,7 +767,7 @@ pub async fn mission_start_impl_with_size(
         let first_turn = first_turns.get(idx).cloned().flatten();
         let register_res = state.sessions.register_mission_session(
             &out.mission,
-            &member.runner,
+            &member.role,
             &member.slot,
             &state.app_data_dir,
             events_log_path.clone(),
@@ -1411,16 +1411,7 @@ fn mission_activity_from_log(
 }
 
 fn live_session_handles(conn: &Connection, mission_id: &str) -> rusqlite::Result<Vec<String>> {
-    let mut stmt = conn.prepare(
-        "SELECT COALESCE(sl.slot_handle, r.handle) AS handle
-           FROM sessions s
-           JOIN runners r ON r.id = s.runner_id
-           LEFT JOIN slots sl ON sl.id = s.slot_id
-          WHERE s.mission_id = ?1
-            AND s.status = 'running'",
-    )?;
-    let rows = stmt.query_map(params![mission_id], |row| row.get::<_, String>(0))?;
-    rows.collect()
+    repo::session::live_handles_for_mission(conn, mission_id)
 }
 
 fn all_mission_sessions_live(conn: &Connection, mission_id: &str) -> rusqlite::Result<bool> {
@@ -1514,7 +1505,7 @@ mod tests {
     use super::*;
     use crate::db;
     use crate::ops::crew::CreateCrewInput;
-    use crate::ops::runner::{self as runner_cmd, CreateRunnerInput};
+    use crate::ops::role::{self as runner_cmd, CreateRoleInput};
 
     fn pool() -> db::DbPool {
         db::open_in_memory().unwrap()
@@ -1557,13 +1548,13 @@ mod tests {
         crew.id
     }
 
-    fn add_runner(conn: &mut Connection, crew_id: &str, handle: &str) -> String {
+    fn add_role(conn: &mut Connection, crew_id: &str, handle: &str) -> String {
         // Runners are config templates; in-mission identity is on
-        // the slot. Test fixtures use the runner handle as both the
+        // the slot. Test fixtures use the role handle as both the
         // template name and the slot_handle for simplicity.
         let r = runner_cmd::create(
             conn,
-            CreateRunnerInput {
+            CreateRoleInput {
                 handle: handle.into(),
                 display_name: handle.into(),
                 runtime: crate::model::Runtime::Shell,
@@ -1586,8 +1577,8 @@ mod tests {
 
     fn start_message_test_mission(conn: &mut Connection, app_data_dir: &Path) -> (String, String) {
         let crew_id = seed_crew(conn, "Message crew", None);
-        add_runner(conn, &crew_id, "lead");
-        add_runner(conn, &crew_id, "reviewer");
+        add_role(conn, &crew_id, "lead");
+        add_role(conn, &crew_id, "reviewer");
         let mission = start(
             conn,
             app_data_dir,
@@ -1654,7 +1645,7 @@ mod tests {
         let pool = pool();
         let mut conn = pool.get().unwrap();
         let crew_id = seed_crew(&conn, "C", None);
-        add_runner(&mut conn, &crew_id, "lead");
+        add_role(&mut conn, &crew_id, "lead");
         let tmp = tempfile::tempdir().unwrap();
 
         let oversized = "Z".repeat(MAX_MISSION_GOAL_BYTES + 1);
@@ -1676,7 +1667,7 @@ mod tests {
     }
 
     #[test]
-    fn start_rejects_crew_with_no_runners() {
+    fn start_rejects_crew_with_no_roles() {
         let pool = pool();
         let mut conn = pool.get().unwrap();
         let crew_id = seed_crew(&conn, "Empty", None);
@@ -1707,7 +1698,7 @@ mod tests {
         let pool = pool();
         let mut conn = pool.get().unwrap();
         let crew_id = seed_crew(&conn, "A", None);
-        add_runner(&mut conn, &crew_id, "coder");
+        add_role(&mut conn, &crew_id, "coder");
         let tmp = tempfile::tempdir().unwrap();
 
         let err = start(
@@ -1887,7 +1878,7 @@ mod tests {
         let pool = pool();
         let mut conn = pool.get().unwrap();
         let crew_id = seed_crew(&conn, "Alpha", Some("Ship v0"));
-        add_runner(&mut conn, &crew_id, "lead");
+        add_role(&mut conn, &crew_id, "lead");
         let project = repo::project::create(&conn, "Runner", "/tmp/work").unwrap();
         let tmp = tempfile::tempdir().unwrap();
 
@@ -1952,7 +1943,7 @@ mod tests {
         let pool = pool();
         let mut conn = pool.get().unwrap();
         let crew_id = seed_crew(&conn, "Alpha", None);
-        add_runner(&mut conn, &crew_id, "lead");
+        add_role(&mut conn, &crew_id, "lead");
         let project = repo::project::create(&conn, "Runner", "/project").unwrap();
         let tmp = tempfile::tempdir().unwrap();
 
@@ -1978,7 +1969,7 @@ mod tests {
         let pool = pool();
         let mut conn = pool.get().unwrap();
         let crew_id = seed_crew(&conn, "Alpha", None);
-        add_runner(&mut conn, &crew_id, "lead");
+        add_role(&mut conn, &crew_id, "lead");
         let tmp = tempfile::tempdir().unwrap();
 
         for mode in MissionPermissionMode::ALL {
@@ -2018,7 +2009,7 @@ mod tests {
         let pool = pool();
         let mut conn = pool.get().unwrap();
         let crew_id = seed_crew(&conn, "Alpha", None);
-        add_runner(&mut conn, &crew_id, "lead");
+        add_role(&mut conn, &crew_id, "lead");
         let tmp = tempfile::tempdir().unwrap();
 
         let error = start(
@@ -2051,7 +2042,7 @@ mod tests {
         let pool = pool();
         let mut conn = pool.get().unwrap();
         let crew_id = seed_crew(&conn, "A", Some("default goal"));
-        add_runner(&mut conn, &crew_id, "lead");
+        add_role(&mut conn, &crew_id, "lead");
         let tmp = tempfile::tempdir().unwrap();
 
         let out = start(
@@ -2076,7 +2067,7 @@ mod tests {
         let pool = pool();
         let mut conn = pool.get().unwrap();
         let crew_id = seed_crew(&conn, "A", None);
-        add_runner(&mut conn, &crew_id, "lead");
+        add_role(&mut conn, &crew_id, "lead");
         let tmp = tempfile::tempdir().unwrap();
 
         let out = start(
@@ -2118,7 +2109,7 @@ mod tests {
         let pool = pool();
         let mut conn = pool.get().unwrap();
         let crew_id = seed_crew(&conn, "A", None);
-        add_runner(&mut conn, &crew_id, "lead");
+        add_role(&mut conn, &crew_id, "lead");
         let tmp = tempfile::tempdir().unwrap();
 
         let out = start(
@@ -2150,7 +2141,7 @@ mod tests {
         let pool = pool();
         let mut conn = pool.get().unwrap();
         let crew_id = seed_crew(&conn, "A", None);
-        add_runner(&mut conn, &crew_id, "lead");
+        add_role(&mut conn, &crew_id, "lead");
         let tmp = tempfile::tempdir().unwrap();
 
         let out = start(
@@ -2215,7 +2206,7 @@ mod tests {
         let pool = pool();
         let mut conn = pool.get().unwrap();
         let crew_id = seed_crew(&conn, "A", None);
-        add_runner(&mut conn, &crew_id, "lead");
+        add_role(&mut conn, &crew_id, "lead");
         let tmp = tempfile::tempdir().unwrap();
 
         let out = start(
@@ -2248,7 +2239,7 @@ mod tests {
         let pool = pool();
         let mut conn = pool.get().unwrap();
         let crew_id = seed_crew(&conn, "A", None);
-        add_runner(&mut conn, &crew_id, "lead");
+        add_role(&mut conn, &crew_id, "lead");
         let tmp = tempfile::tempdir().unwrap();
 
         let out = start(
@@ -2322,8 +2313,8 @@ mod tests {
         let a = seed_crew(&conn, "A", None);
         let b = seed_crew(&conn, "B", None);
         // C5.5: handles are globally unique — give each crew a distinct one.
-        add_runner(&mut conn, &a, "lead-a");
-        add_runner(&mut conn, &b, "lead-b");
+        add_role(&mut conn, &a, "lead-a");
+        add_role(&mut conn, &b, "lead-b");
         let tmp = tempfile::tempdir().unwrap();
 
         let m1 = start(
@@ -2395,7 +2386,7 @@ mod tests {
         let pool = pool();
         let mut conn = pool.get().unwrap();
         let crew_id = seed_crew(&conn, "A", None);
-        add_runner(&mut conn, &crew_id, "lead");
+        add_role(&mut conn, &crew_id, "lead");
         let tmp = tempfile::tempdir().unwrap();
 
         let first = start(
@@ -2476,7 +2467,7 @@ mod tests {
         let pool = db::open_pool(&db_path).unwrap();
         let mut conn = pool.get().unwrap();
         let crew_id = seed_crew(&conn, "A", None);
-        add_runner(&mut conn, &crew_id, "lead");
+        add_role(&mut conn, &crew_id, "lead");
         let tmp = Arc::new(tempfile::tempdir().unwrap());
 
         let out = start(
@@ -2550,7 +2541,7 @@ mod tests {
         let pool = pool();
         let mut conn = pool.get().unwrap();
         let crew_id = seed_crew(&conn, "A", Some("Ship v0"));
-        add_runner(&mut conn, &crew_id, "lead");
+        add_role(&mut conn, &crew_id, "lead");
         let tmp = tempfile::tempdir().unwrap();
 
         let out = start(
@@ -2586,7 +2577,7 @@ mod tests {
         let pool = pool();
         let mut conn = pool.get().unwrap();
         let crew_id = seed_crew(&conn, "A", None);
-        add_runner(&mut conn, &crew_id, "lead");
+        add_role(&mut conn, &crew_id, "lead");
         let tmp = tempfile::tempdir().unwrap();
 
         let out = start(
@@ -2651,8 +2642,8 @@ mod tests {
         let pool = pool();
         let mut conn = pool.get().unwrap();
         let crew_id = seed_crew(&conn, "A", None);
-        let lead_slot_id = add_runner(&mut conn, &crew_id, "lead");
-        let worker_slot_id = add_runner(&mut conn, &crew_id, "worker");
+        let lead_slot_id = add_role(&mut conn, &crew_id, "lead");
+        let worker_slot_id = add_role(&mut conn, &crew_id, "worker");
         let tmp = tempfile::tempdir().unwrap();
 
         let out = start(
@@ -2669,45 +2660,26 @@ mod tests {
         )
         .unwrap();
 
-        let lead_runner_id: String = conn
-            .query_row(
-                "SELECT runner_id FROM slots WHERE id = ?1",
-                params![lead_slot_id],
-                |r| r.get(0),
-            )
-            .unwrap();
-        let worker_runner_id: String = conn
-            .query_row(
-                "SELECT runner_id FROM slots WHERE id = ?1",
-                params![worker_slot_id],
-                |r| r.get(0),
-            )
-            .unwrap();
-        let ts = now().to_rfc3339();
-        conn.execute(
-            "INSERT INTO sessions (id, mission_id, runner_id, slot_id, status, started_at)
-             VALUES (?1, ?2, ?3, ?4, 'running', ?5)",
-            params![
-                new_id(),
-                out.mission.id.clone(),
-                lead_runner_id,
-                lead_slot_id,
-                ts
-            ],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO sessions (id, mission_id, runner_id, slot_id, status, started_at)
-             VALUES (?1, ?2, ?3, ?4, 'stopped', ?5)",
-            params![
-                new_id(),
-                out.mission.id.clone(),
-                worker_runner_id,
-                worker_slot_id,
-                now().to_rfc3339()
-            ],
-        )
-        .unwrap();
+        let lead_role_id = repo::slot::get(&conn, &lead_slot_id)
+            .unwrap()
+            .unwrap()
+            .role_id;
+        let worker_role_id = repo::slot::get(&conn, &worker_slot_id)
+            .unwrap()
+            .unwrap()
+            .role_id;
+        let mut lead_session =
+            crate::test_support::test_session_row(&new_id(), crate::model::SessionStatus::Running);
+        lead_session.mission_id = Some(out.mission.id.clone());
+        lead_session.role_id = Some(lead_role_id);
+        lead_session.slot_id = Some(lead_slot_id);
+        repo::session::insert(&conn, &lead_session).unwrap();
+        let mut worker_session =
+            crate::test_support::test_session_row(&new_id(), crate::model::SessionStatus::Stopped);
+        worker_session.mission_id = Some(out.mission.id.clone());
+        worker_session.role_id = Some(worker_role_id);
+        worker_session.slot_id = Some(worker_slot_id);
+        repo::session::insert(&conn, &worker_session).unwrap();
 
         let handles = live_session_handles(&conn, &out.mission.id).unwrap();
         assert_eq!(
@@ -2752,7 +2724,7 @@ mod tests {
         let pool = pool();
         let mut conn = pool.get().unwrap();
         let crew_id = seed_crew(&conn, "A", None);
-        add_runner(&mut conn, &crew_id, "lead");
+        add_role(&mut conn, &crew_id, "lead");
         let tmp = tempfile::tempdir().unwrap();
 
         let out = start(
@@ -2834,7 +2806,7 @@ mod tests {
         let pool = pool();
         let mut conn = pool.get().unwrap();
         let crew_id = seed_crew(&conn, "A", None);
-        add_runner(&mut conn, &crew_id, "lead");
+        add_role(&mut conn, &crew_id, "lead");
 
         let tmp = tempfile::tempdir().unwrap();
         // Block the `crews/` subtree by making it a file instead of a dir.
@@ -2874,7 +2846,7 @@ mod tests {
         let pool = pool();
         let mut conn = pool.get().unwrap();
         let crew_id = seed_crew(&conn, "A", None);
-        add_runner(&mut conn, &crew_id, "lead");
+        add_role(&mut conn, &crew_id, "lead");
         let tmp = tempfile::tempdir().unwrap();
 
         let out = start(
@@ -2923,7 +2895,7 @@ mod tests {
         let pool = pool();
         let mut conn = pool.get().unwrap();
         let crew_id = seed_crew(&conn, "A", None);
-        add_runner(&mut conn, &crew_id, "lead");
+        add_role(&mut conn, &crew_id, "lead");
         let tmp = tempfile::tempdir().unwrap();
 
         let out = start(
@@ -2956,7 +2928,7 @@ mod tests {
         let pool = pool();
         let mut conn = pool.get().unwrap();
         let crew_id = seed_crew(&conn, "A", None);
-        add_runner(&mut conn, &crew_id, "lead");
+        add_role(&mut conn, &crew_id, "lead");
         let tmp = tempfile::tempdir().unwrap();
 
         let out = start(
@@ -2999,7 +2971,7 @@ mod tests {
         let pool = pool();
         let mut conn = pool.get().unwrap();
         let crew_id = seed_crew(&conn, "A", None);
-        add_runner(&mut conn, &crew_id, "lead");
+        add_role(&mut conn, &crew_id, "lead");
         let tmp = tempfile::tempdir().unwrap();
 
         // Seed a "pre-migration" completed mission. Use the production
@@ -3062,7 +3034,7 @@ mod tests {
         let pool = pool();
         let mut conn = pool.get().unwrap();
         let crew_id = seed_crew(&conn, "C", None);
-        add_runner(&mut conn, &crew_id, "lead");
+        add_role(&mut conn, &crew_id, "lead");
         let tmp = tempfile::tempdir().unwrap();
 
         let m_running_first = start(

@@ -6,26 +6,26 @@ use serde::Deserialize;
 
 use crate::error::Error;
 use crate::mcp::server::RunnerMcpHandler;
-use crate::ops::runner;
+use crate::ops::role;
 
 #[derive(Debug, Deserialize, JsonSchema)]
-pub struct RunnerIdArgs {
-    /// Runner ID.
+pub struct RoleIdArgs {
+    /// Role ID.
     pub id: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
-pub struct RunnerHandleArgs {
-    /// Runner handle without the leading @.
+pub struct RoleHandleArgs {
+    /// Role handle without the leading @.
     pub handle: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
-pub struct UpdateRunnerArgs {
-    /// Runner ID.
+pub struct UpdateRoleArgs {
+    /// Role ID.
     pub id: String,
     /// Fields to update. Omitted fields are preserved.
-    pub input: runner::UpdateRunnerInput,
+    pub input: role::UpdateRoleInput,
 }
 
 fn command_error(e: Error) -> ErrorData {
@@ -35,88 +35,86 @@ fn command_error(e: Error) -> ErrorData {
     }
 }
 
-#[tool_router(router = runner_router, vis = "pub(crate)")]
+#[tool_router(router = role_router, vis = "pub(crate)")]
 impl RunnerMcpHandler {
-    #[tool(description = "List all runner templates.")]
-    pub async fn runner_list(&self) -> Result<CallToolResult, ErrorData> {
+    #[tool(description = "List all saved configurations used as a crew role.")]
+    pub async fn role_list(&self) -> Result<CallToolResult, ErrorData> {
         let conn = self
             .state
             .db
             .get()
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-        let runners =
-            runner::list(&conn).map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-        Ok(CallToolResult::success(vec![Content::json(&runners)?]))
+        let roles =
+            role::list(&conn).map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        Ok(CallToolResult::success(vec![Content::json(&roles)?]))
     }
 
-    #[tool(description = "Get a runner template by ID.")]
-    pub async fn runner_get(
+    #[tool(description = "Get a crew role by ID.")]
+    pub async fn role_get(
         &self,
-        Parameters(RunnerIdArgs { id }): Parameters<RunnerIdArgs>,
+        Parameters(RoleIdArgs { id }): Parameters<RoleIdArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         let conn = self
             .state
             .db
             .get()
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-        let runner =
-            runner::get(&conn, &id).map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-        Ok(CallToolResult::success(vec![Content::json(&runner)?]))
+        let role =
+            role::get(&conn, &id).map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        Ok(CallToolResult::success(vec![Content::json(&role)?]))
     }
 
-    #[tool(description = "Get a runner template by handle.")]
-    pub async fn runner_get_by_handle(
+    #[tool(description = "Get a crew role by handle.")]
+    pub async fn role_get_by_handle(
         &self,
-        Parameters(RunnerHandleArgs { handle }): Parameters<RunnerHandleArgs>,
+        Parameters(RoleHandleArgs { handle }): Parameters<RoleHandleArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         let conn = self
             .state
             .db
             .get()
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-        let runner = runner::get_by_handle(&conn, &handle)
+        let role = role::get_by_handle(&conn, &handle)
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-        Ok(CallToolResult::success(vec![Content::json(&runner)?]))
+        Ok(CallToolResult::success(vec![Content::json(&role)?]))
     }
 
-    #[tool(description = "Create a new runner template.")]
-    pub async fn runner_create(
+    #[tool(description = "Create a crew role.")]
+    pub async fn role_create(
         &self,
-        Parameters(input): Parameters<runner::CreateRunnerInput>,
+        Parameters(input): Parameters<role::CreateRoleInput>,
     ) -> Result<CallToolResult, ErrorData> {
         let conn = self
             .state
             .db
             .get()
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-        let runner = runner::create(&conn, input)
+        let role = role::create(&conn, input)
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-        self.state.events.emit("runner/changed", &());
-        Ok(CallToolResult::success(vec![Content::json(&runner)?]))
+        self.state.events.emit("role/changed", &());
+        Ok(CallToolResult::success(vec![Content::json(&role)?]))
     }
 
-    #[tool(description = "Update a runner template by ID. Omitted fields are preserved.")]
-    pub async fn runner_update(
+    #[tool(description = "Update a crew role by ID. Omitted fields are preserved.")]
+    pub async fn role_update(
         &self,
-        Parameters(UpdateRunnerArgs { id, input }): Parameters<UpdateRunnerArgs>,
+        Parameters(UpdateRoleArgs { id, input }): Parameters<UpdateRoleArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         let conn = self
             .state
             .db
             .get()
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-        let runner = runner::update(&conn, &id, input)
+        let role = role::update(&conn, &id, input)
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-        self.state.events.emit("runner/changed", &());
-        Ok(CallToolResult::success(vec![Content::json(&runner)?]))
+        self.state.events.emit("role/changed", &());
+        Ok(CallToolResult::success(vec![Content::json(&role)?]))
     }
 
-    #[tool(
-        description = "Delete a runner template by ID. Live sessions for that runner are killed first."
-    )]
-    pub async fn runner_delete(
+    #[tool(description = "Delete a crew role by ID. Live sessions for that role are killed first.")]
+    pub async fn role_delete(
         &self,
-        Parameters(RunnerIdArgs { id }): Parameters<RunnerIdArgs>,
+        Parameters(RoleIdArgs { id }): Parameters<RoleIdArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         {
             let conn = self
@@ -124,19 +122,19 @@ impl RunnerMcpHandler {
                 .db
                 .get()
                 .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-            runner::ensure_delete_allowed(&conn, &id).map_err(command_error)?;
+            role::ensure_delete_allowed(&conn, &id).map_err(command_error)?;
         }
         self.state
             .sessions
-            .kill_all_for_runner(&id)
+            .kill_all_for_role(&id)
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
         let mut conn = self
             .state
             .db
             .get()
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-        runner::delete(&mut conn, &id).map_err(command_error)?;
-        self.state.events.emit("runner/changed", &());
+        role::delete(&mut conn, &id).map_err(command_error)?;
+        self.state.events.emit("role/changed", &());
         self.state.events.emit("slot/changed", &());
         Ok(CallToolResult::success(vec![Content::json(
             serde_json::json!({ "deleted": true, "id": id }),

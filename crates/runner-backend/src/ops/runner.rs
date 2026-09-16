@@ -1,13 +1,13 @@
-// Runner CRUD — global scope (C5.5).
+// Role CRUD — global scope (C5.5).
 //
-// A runner is a reusable definition (handle, runtime, command, system
+// A role is a reusable definition (handle, runtime, command, system
 // prompt, ...) that can be referenced by zero or more crews via the
 // `slots` join table (see commands/slot.rs). The handle is
-// globally unique: @impl means the same runner everywhere it appears in
+// globally unique: @impl means the same role everywhere it appears in
 // the event log.
 //
-// Lead/position invariants are per-crew and live in crew_runner.rs. This
-// module only owns the runner rows themselves.
+// Lead/position invariants are per-crew and live in crew_role.rs. This
+// module only owns the role rows themselves.
 
 use crate::model::Runtime;
 use std::collections::HashMap;
@@ -20,12 +20,12 @@ use ulid::Ulid as UlidGen;
 
 use crate::{
     error::{Error, Result},
-    model::{Runner, Timestamp},
+    model::{Role, Timestamp},
     repo, AppCore,
 };
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
-pub struct CreateRunnerInput {
+pub struct CreateRoleInput {
     pub handle: String,
     pub display_name: String,
     pub runtime: Runtime,
@@ -42,10 +42,10 @@ pub struct CreateRunnerInput {
     pub model: Option<String>,
     #[serde(default)]
     pub effort: Option<String>,
-    /// Permission mode the runner-edit form's dropdown chose. Mapped
+    /// Permission mode the role-edit form's dropdown chose. Mapped
     /// to concrete flags on the row's `args` column at create time
     /// via `router::runtime::apply_permission_mode`. Defaults to
-    /// `Auto`. The new-runner form defaults to codex, where Auto
+    /// `Auto`. The new-role form defaults to codex, where Auto
     /// maps to `--ask-for-approval on-request --sandbox workspace-write`.
     /// For claude-code, Auto is still plan/model-gated; callers that
     /// default to claude-code should send AcceptEdits explicitly.
@@ -53,22 +53,22 @@ pub struct CreateRunnerInput {
     pub permission_mode: crate::router::runtime::PermissionMode,
 }
 
-/// Default permission mode for new runners — `Auto`. Matches the
-/// frontend's dropdown default and the seed's runner args.
+/// Default permission mode for new roles — `Auto`. Matches the
+/// frontend's dropdown default and the seed's role args.
 /// Pulled out so serde's `#[serde(default = "...")]` can name it.
 pub(crate) fn default_permission_mode() -> crate::router::runtime::PermissionMode {
     crate::router::runtime::PermissionMode::Auto
 }
 
 // `handle` is intentionally excluded from updates: per arch §2.2 and §5.2
-// the handle is the runner template's identity in events, CLI
+// the handle is the role template's identity in events, CLI
 // addressing, and policy rules. Renaming after creation would break
 // historical event attribution and any persisted policy references.
-// Users who want a different handle delete the runner and create a
+// Users who want a different handle delete the role and create a
 // new one. (Per-slot in-crew identity lives on `slots.slot_handle`
 // and is renameable.)
 #[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
-pub struct UpdateRunnerInput {
+pub struct UpdateRoleInput {
     pub display_name: Option<String>,
     pub runtime: Option<Runtime>,
     pub command: Option<String>,
@@ -89,30 +89,30 @@ pub struct UpdateRunnerInput {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct RunnerActivity {
-    pub runner_id: String,
+pub struct RoleActivity {
+    pub role_id: String,
     pub active_sessions: i64,
     pub active_missions: i64,
     pub crew_count: i64,
     pub last_started_at: Option<Timestamp>,
-    /// Most recent running direct-chat session for this runner, if any.
+    /// Most recent running direct-chat session for this role, if any.
     /// Lets the sidebar's SESSION list re-attach to a live PTY across page
     /// reloads — without this, the frontend `activeSessions` map starts
-    /// empty on reload and we'd fall back to the runner detail page.
+    /// empty on reload and we'd fall back to the role detail page.
     pub direct_session_id: Option<String>,
 }
 
-/// Runner row plus its `RunnerActivity`. Returned by `runner_list_with_activity`
-/// so the Runners list page can render every card's badges in one IPC round-
-/// trip — without this the page would do N+1 calls (one `runner_list` and
-/// one `runner_activity` per row), which also produces a flicker as
+/// Role row plus its `RoleActivity`. Returned by `role_list_with_activity`
+/// so the Roles list page can render every card's badges in one IPC round-
+/// trip — without this the page would do N+1 calls (one `role_list` and
+/// one `role_activity` per row), which also produces a flicker as
 /// counters fill in.
 #[derive(Debug, Clone, Serialize)]
-pub struct RunnerWithActivity {
+pub struct RoleWithActivity {
     #[serde(flatten)]
-    pub runner: Runner,
+    pub role: Role,
     #[serde(flatten)]
-    pub activity: RunnerActivity,
+    pub activity: RoleActivity,
 }
 
 fn new_id() -> String {
@@ -156,7 +156,7 @@ pub(super) fn validate_system_prompt(prompt: Option<&str>) -> Result<()> {
 }
 
 // Handle validation: lowercase ASCII slug, 1..=32 chars, [a-z0-9] start,
-// body [a-z0-9_-]. See `docs/arch/arch.md` §3.2 (Runner — handle).
+// body [a-z0-9_-]. See `docs/arch/arch.md` §3.2 (Role — handle).
 pub(super) fn validate_handle(handle: &str) -> Result<()> {
     if handle.is_empty() || handle.len() > 32 {
         return Err(Error::msg("runner handle must be 1-32 chars"));
@@ -203,8 +203,8 @@ pub(super) fn validate_env_keys<S: std::hash::BuildHasher>(
     Ok(())
 }
 
-pub fn list(conn: &Connection) -> Result<Vec<Runner>> {
-    repo::runner::list(conn).map_err(Into::into)
+pub fn list(conn: &Connection) -> Result<Vec<Role>> {
+    repo::role::list(conn).map_err(Into::into)
 }
 
 pub fn list_with_activity_page(
@@ -212,16 +212,16 @@ pub fn list_with_activity_page(
     page: i64,
     page_size: i64,
     query: &str,
-) -> Result<super::ListPage<RunnerWithActivity>> {
+) -> Result<super::ListPage<RoleWithActivity>> {
     let pattern = super::escaped_like_pattern(query);
-    let total_count = repo::runner::count(conn)?;
-    let filtered_count = repo::runner::count_matching(conn, &pattern)?;
+    let total_count = repo::role::count(conn)?;
+    let filtered_count = repo::role::count_matching(conn, &pattern)?;
     let (limit, offset) = super::page_limit_offset(page, page_size, filtered_count);
-    let runners = repo::runner::list_page(conn, &pattern, limit, offset)?;
-    let mut items = Vec::with_capacity(runners.len());
-    for runner in runners {
-        let activity = activity(conn, &runner.id)?;
-        items.push(RunnerWithActivity { runner, activity });
+    let roles = repo::role::list_page(conn, &pattern, limit, offset)?;
+    let mut items = Vec::with_capacity(roles.len());
+    for role in roles {
+        let activity = activity(conn, &role.id)?;
+        items.push(RoleWithActivity { role, activity });
     }
     Ok(super::ListPage {
         items,
@@ -230,20 +230,20 @@ pub fn list_with_activity_page(
     })
 }
 
-pub fn get(conn: &Connection, id: &str) -> Result<Runner> {
-    repo::runner::get(conn, id)?.ok_or_else(|| Error::msg(format!("runner not found: {id}")))
+pub fn get(conn: &Connection, id: &str) -> Result<Role> {
+    repo::role::get(conn, id)?.ok_or_else(|| Error::msg(format!("runner not found: {id}")))
 }
 
-/// Look up a runner by its `handle`. Used by `/runners/:handle` so the URL
-/// stays stable across runner-id rotations (the user thinks in handles,
+/// Look up a role by its `handle`. Used by `/roles/:handle` so the URL
+/// stays stable across role-id rotations (the user thinks in handles,
 /// not ULIDs). Handles are globally unique by schema, so this is exactly
 /// 0 or 1 rows.
-pub fn get_by_handle(conn: &Connection, handle: &str) -> Result<Runner> {
-    repo::runner::get_by_handle(conn, handle)?
+pub fn get_by_handle(conn: &Connection, handle: &str) -> Result<Role> {
+    repo::role::get_by_handle(conn, handle)?
         .ok_or_else(|| Error::msg(format!("runner not found: @{handle}")))
 }
 
-pub fn create(conn: &Connection, input: CreateRunnerInput) -> Result<Runner> {
+pub fn create(conn: &Connection, input: CreateRoleInput) -> Result<Role> {
     validate_handle(&input.handle)?;
     if input.display_name.trim().is_empty() {
         return Err(Error::msg("display_name must not be empty"));
@@ -265,9 +265,9 @@ pub fn create(conn: &Connection, input: CreateRunnerInput) -> Result<Runner> {
         input.permission_mode,
     );
 
-    repo::runner::insert(
+    repo::role::insert(
         conn,
-        &repo::runner::RunnerRow {
+        &repo::role::RoleRow {
             id: id.clone(),
             handle: input.handle,
             display_name: input.display_name,
@@ -292,7 +292,7 @@ pub fn create(conn: &Connection, input: CreateRunnerInput) -> Result<Runner> {
     get(conn, &id)
 }
 
-pub fn update(conn: &Connection, id: &str, input: UpdateRunnerInput) -> Result<Runner> {
+pub fn update(conn: &Connection, id: &str, input: UpdateRoleInput) -> Result<Role> {
     let existing = get(conn, id)?;
     if let Some(ref n) = input.display_name {
         if n.trim().is_empty() {
@@ -377,9 +377,9 @@ pub fn update(conn: &Connection, id: &str, input: UpdateRunnerInput) -> Result<R
         .unwrap_or(existing.effort);
 
     let tx = conn.unchecked_transaction()?;
-    repo::runner::update(
+    repo::role::update(
         &tx,
-        &repo::runner::RunnerRow {
+        &repo::role::RoleRow {
             id: id.to_string(),
             handle: existing.handle,
             display_name,
@@ -396,38 +396,14 @@ pub fn update(conn: &Connection, id: &str, input: UpdateRunnerInput) -> Result<R
         },
     )?;
     if runtime_changed {
-        tx.execute(
-            "UPDATE slots
-                SET model_override = NULL, effort_override = NULL
-              WHERE runner_id = ?1 AND runtime_override IS NULL",
-            params![id],
-        )?;
+        repo::role::clear_inheriting_slot_agent_overrides(&tx, id)?;
     }
     tx.commit()?;
     get(conn, id)
 }
 
-fn unarchived_direct_session_ids_for_runner(
-    conn: &Connection,
-    runner_id: &str,
-) -> rusqlite::Result<Vec<String>> {
-    let mut stmt = conn.prepare(
-        "SELECT id
-           FROM sessions
-          WHERE runner_id = ?1
-            AND mission_id IS NULL
-            AND slot_id IS NULL
-            AND archived_at IS NULL
-          ORDER BY started_at ASC",
-    )?;
-    let ids = stmt
-        .query_map(params![runner_id], |row| row.get::<_, String>(0))?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    Ok(ids)
-}
-
 pub(crate) fn ensure_delete_allowed(conn: &Connection, id: &str) -> Result<()> {
-    let session_ids = unarchived_direct_session_ids_for_runner(conn, id)?;
+    let session_ids = repo::role::unarchived_direct_session_ids(conn, id)?;
     if !session_ids.is_empty() {
         return Err(Error::msg(format!(
             "runner {id} has unarchived chats; archive them before deleting this runner: {}",
@@ -437,9 +413,9 @@ pub(crate) fn ensure_delete_allowed(conn: &Connection, id: &str) -> Result<()> {
     Ok(())
 }
 
-// Global delete: removes the runner template row and lets the
+// Global delete: removes the role template row and lets the
 // `ON DELETE CASCADE` on `slots` strip every slot that referenced
-// the runner. A single runner template might have been referenced by
+// the role. A single role template might have been referenced by
 // multiple slots in the same crew (post-slot-redesign), so the
 // cleanup runs per-crew, not per-slot.
 //
@@ -451,29 +427,18 @@ pub fn delete(conn: &mut Connection, id: &str) -> Result<()> {
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     ensure_delete_allowed(&tx, id)?;
 
-    // Distinct crews that referenced this runner, plus whether ANY of
+    // Distinct crews that referenced this role, plus whether ANY of
     // its slots in that crew was lead (so we know to auto-promote
     // after the cascade). Collected before the DELETE so we still
     // have the membership info.
-    let affected_crews: Vec<(String, bool)> = {
-        let mut stmt = tx.prepare(
-            "SELECT crew_id, MAX(lead)
-               FROM slots
-              WHERE runner_id = ?1
-              GROUP BY crew_id",
-        )?;
-        let rows = stmt.query_map(params![id], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? != 0))
-        })?;
-        rows.collect::<rusqlite::Result<Vec<_>>>()?
-    };
+    let affected_crews = repo::role::affected_crews(&tx, id)?;
 
-    tx.execute("DELETE FROM sessions WHERE runner_id = ?1", params![id])?;
-    let affected = repo::runner::delete(&tx, id)?;
+    repo::role::delete_sessions(&tx, id)?;
+    let affected = repo::role::delete(&tx, id)?;
     if affected != 1 {
         return Err(Error::msg(format!("runner not found: {id}")));
     }
-    // CASCADE fired: every slot row referencing this runner is gone.
+    // CASCADE fired: every slot row referencing this role is gone.
 
     for (crew_id, had_lead) in affected_crews {
         if had_lead {
@@ -500,70 +465,33 @@ pub fn delete(conn: &mut Connection, id: &str) -> Result<()> {
     Ok(())
 }
 
-/// Activity stats for a runner — how many sessions and missions it's
+/// Activity stats for a role — how many sessions and missions it's
 /// currently participating in, and when it last started a session. Used by
-/// the Runners page to render "2 sessions · 1 mission" badges. Missions
-/// are counted distinctly because a single runner might have multiple
+/// the Roles page to render "2 sessions · 1 mission" badges. Missions
+/// are counted distinctly because a single role might have multiple
 /// sessions in the same mission historically; in MVP that never happens
 /// but the COUNT(DISTINCT) keeps us honest if it ever does.
-pub fn activity(conn: &Connection, runner_id: &str) -> Result<RunnerActivity> {
-    // Runner must exist — fail loud so the caller's UI can render a proper
+pub fn activity(conn: &Connection, role_id: &str) -> Result<RoleActivity> {
+    // Role must exist — fail loud so the caller's UI can render a proper
     // error rather than silently showing zero.
-    get(conn, runner_id)?;
+    get(conn, role_id)?;
 
-    let active_sessions: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM sessions WHERE runner_id = ?1 AND status = 'running'",
-        params![runner_id],
-        |r| r.get(0),
-    )?;
-    let active_missions: i64 = conn.query_row(
-        "SELECT COUNT(DISTINCT mission_id) FROM sessions
-          WHERE runner_id = ?1 AND status = 'running' AND mission_id IS NOT NULL",
-        params![runner_id],
-        |r| r.get(0),
-    )?;
-    let crew_count: i64 = conn.query_row(
-        "SELECT COUNT(DISTINCT crew_id) FROM slots WHERE runner_id = ?1",
-        params![runner_id],
-        |r| r.get(0),
-    )?;
-    let last_started_at_raw: Option<String> = conn
-        .query_row(
-            "SELECT MAX(started_at) FROM sessions WHERE runner_id = ?1",
-            params![runner_id],
-            |r| r.get(0),
-        )
-        .optional()?
-        .flatten();
+    let activity = repo::role::activity(conn, role_id)?;
     let last_started_at =
-        match last_started_at_raw {
+        match activity.last_started_at {
             Some(s) => Some(s.parse::<Timestamp>().map_err(|e| {
                 Error::msg(format!("failed to parse last_started_at timestamp: {e}"))
             })?),
             None => None,
         };
-    let direct_session_id: Option<String> = conn
-        .query_row(
-            "SELECT id FROM sessions
-              WHERE runner_id = ?1
-                AND status = 'running'
-                AND mission_id IS NULL
-                AND slot_id IS NULL
-                AND archived_at IS NULL
-              ORDER BY started_at DESC
-              LIMIT 1",
-            params![runner_id],
-            |r| r.get(0),
-        )
-        .optional()?;
 
-    Ok(RunnerActivity {
-        runner_id: runner_id.to_string(),
-        active_sessions,
-        active_missions,
-        crew_count,
+    Ok(RoleActivity {
+        role_id: role_id.to_string(),
+        active_sessions: activity.active_sessions,
+        active_missions: activity.active_missions,
+        crew_count: activity.crew_count,
         last_started_at,
-        direct_session_id,
+        direct_session_id: activity.direct_session_id,
     })
 }
 
@@ -571,56 +499,56 @@ pub fn activity(conn: &Connection, runner_id: &str) -> Result<RunnerActivity> {
 // State-level command bodies
 // ---------------------------------------------------------------------
 
-pub fn runner_list(state: &AppCore) -> Result<Vec<Runner>> {
+pub fn role_list(state: &AppCore) -> Result<Vec<Role>> {
     let conn = state.db.get()?;
     list(&conn)
 }
 
-pub fn runner_list_with_activity(
+pub fn role_list_with_activity(
     state: &AppCore,
     page: i64,
     page_size: i64,
     query: &str,
-) -> Result<super::ListPage<RunnerWithActivity>> {
+) -> Result<super::ListPage<RoleWithActivity>> {
     let conn = state.db.get()?;
     list_with_activity_page(&conn, page, page_size, query)
 }
 
-pub fn runner_get(state: &AppCore, id: &str) -> Result<Runner> {
+pub fn role_get(state: &AppCore, id: &str) -> Result<Role> {
     let conn = state.db.get()?;
     get(&conn, id)
 }
 
-pub fn runner_get_by_handle(state: &AppCore, handle: &str) -> Result<Runner> {
+pub fn role_get_by_handle(state: &AppCore, handle: &str) -> Result<Role> {
     let conn = state.db.get()?;
     get_by_handle(&conn, handle)
 }
 
-pub fn runner_create(state: &AppCore, input: CreateRunnerInput) -> Result<Runner> {
+pub fn role_create(state: &AppCore, input: CreateRoleInput) -> Result<Role> {
     let conn = state.db.get()?;
     create(&conn, input)
 }
 
-pub fn runner_update(state: &AppCore, id: &str, input: UpdateRunnerInput) -> Result<Runner> {
+pub fn role_update(state: &AppCore, id: &str, input: UpdateRoleInput) -> Result<Role> {
     let conn = state.db.get()?;
     update(&conn, id, input)
 }
 
-pub fn runner_delete(state: &AppCore, id: &str) -> Result<()> {
+pub fn role_delete(state: &AppCore, id: &str) -> Result<()> {
     {
         let conn = state.db.get()?;
         ensure_delete_allowed(&conn, id)?;
     }
-    // Reap every live PTY for this runner before the DB delete. The
+    // Reap every live PTY for this role before the DB delete. The
     // command-layer delete removes session rows explicitly, but the
     // in-memory SessionManager still owns child processes and reader
     // threads until they are killed.
-    state.sessions.kill_all_for_runner(id)?;
+    state.sessions.kill_all_for_role(id)?;
     let mut conn = state.db.get()?;
     delete(&mut conn, id)
 }
 
-pub fn runner_activity(state: &AppCore, id: &str) -> Result<RunnerActivity> {
+pub fn role_activity(state: &AppCore, id: &str) -> Result<RoleActivity> {
     let conn = state.db.get()?;
     activity(&conn, id)
 }
@@ -635,10 +563,10 @@ mod tests {
         db::open_in_memory().unwrap()
     }
 
-    fn make(conn: &Connection, handle: &str) -> Runner {
+    fn make(conn: &Connection, handle: &str) -> Role {
         create(
             conn,
-            CreateRunnerInput {
+            CreateRoleInput {
                 handle: handle.into(),
                 display_name: format!("{handle} display"),
                 runtime: crate::model::Runtime::Shell,
@@ -659,7 +587,7 @@ mod tests {
     }
 
     #[test]
-    fn create_inserts_global_runner_without_crew() {
+    fn create_inserts_global_role_without_crew() {
         let pool = ctx();
         let conn = pool.get().unwrap();
         let r = make(&conn, "alpha");
@@ -672,9 +600,9 @@ mod tests {
             "handle": "agent", "display_name": "Agent", "command": "custom-cli",
             "runtime": "aider-future"
         });
-        assert!(serde_json::from_value::<CreateRunnerInput>(input).is_err());
+        assert!(serde_json::from_value::<CreateRoleInput>(input).is_err());
         assert!(
-            serde_json::from_value::<UpdateRunnerInput>(serde_json::json!({
+            serde_json::from_value::<UpdateRoleInput>(serde_json::json!({
                 "runtime": "aider-future"
             }))
             .is_err()
@@ -682,7 +610,7 @@ mod tests {
         assert!(
             serde_json::from_value::<crate::mcp::tools::session::StartDirectSessionArgs>(
                 serde_json::json!({
-                    "runner_id": "agent",
+                    "role_id": "agent",
                     "runtime": "aider-future"
                 })
             )
@@ -694,18 +622,18 @@ mod tests {
     fn get_and_list_keep_runtime_json_strings() {
         let pool = ctx();
         let conn = pool.get().unwrap();
-        let runner = make(&conn, "agent");
+        let role = make(&conn, "agent");
         update(
             &conn,
-            &runner.id,
-            UpdateRunnerInput {
+            &role.id,
+            UpdateRoleInput {
                 runtime: Some(Runtime::Codex),
                 ..Default::default()
             },
         )
         .unwrap();
         assert_eq!(
-            serde_json::to_value(get(&conn, &runner.id).unwrap()).unwrap()["runtime"],
+            serde_json::to_value(get(&conn, &role.id).unwrap()).unwrap()["runtime"],
             "codex"
         );
         assert_eq!(
@@ -715,24 +643,24 @@ mod tests {
     }
 
     #[test]
-    fn list_returns_all_runners_alphabetical() {
+    fn list_returns_all_roles_alphabetical() {
         let pool = ctx();
         let conn = pool.get().unwrap();
         make(&conn, "bravo");
         make(&conn, "alpha");
-        let runners = list(&conn).unwrap();
-        assert_eq!(runners.len(), 2);
-        assert_eq!(runners[0].handle, "alpha");
-        assert_eq!(runners[1].handle, "bravo");
+        let roles = list(&conn).unwrap();
+        assert_eq!(roles.len(), 2);
+        assert_eq!(roles[0].handle, "alpha");
+        assert_eq!(roles[1].handle, "bravo");
     }
 
     #[test]
     fn list_page_filters_handle_and_display_name_case_insensitively() {
         let pool = ctx();
         let conn = pool.get().unwrap();
-        let runner = create(
+        let role = create(
             &conn,
-            CreateRunnerInput {
+            CreateRoleInput {
                 handle: "handle-needle".into(),
                 display_name: "Display Needle".into(),
                 runtime: Runtime::Codex,
@@ -747,17 +675,15 @@ mod tests {
             },
         )
         .unwrap();
-        conn.execute(
-            "UPDATE runners SET runtime = 'Runtime-Needle' WHERE id = ?1",
-            [&runner.id],
-        )
-        .unwrap();
+        let mut row = repo::role::RoleRow::from(&role);
+        row.runtime = "Runtime-Needle".into();
+        repo::role::update(&conn, &row).unwrap();
         make(&conn, "decoy");
 
         for query in ["HANDLE-NEEDLE", "display needle"] {
             let page = list_with_activity_page(&conn, 1, 8, query).unwrap();
             assert_eq!(page.filtered_count, 1, "query {query:?}");
-            assert_eq!(page.items[0].runner.id, runner.id, "query {query:?}");
+            assert_eq!(page.items[0].role.id, role.id, "query {query:?}");
         }
 
         for query in [
@@ -783,7 +709,7 @@ mod tests {
         update(
             &conn,
             &percent.id,
-            UpdateRunnerInput {
+            UpdateRoleInput {
                 display_name: Some("100% literal".into()),
                 ..Default::default()
             },
@@ -793,7 +719,7 @@ mod tests {
         update(
             &conn,
             &underscore.id,
-            UpdateRunnerInput {
+            UpdateRoleInput {
                 display_name: Some("under_score literal".into()),
                 ..Default::default()
             },
@@ -803,7 +729,7 @@ mod tests {
         update(
             &conn,
             &backslash.id,
-            UpdateRunnerInput {
+            UpdateRoleInput {
                 display_name: Some("back\\slash literal".into()),
                 ..Default::default()
             },
@@ -813,13 +739,13 @@ mod tests {
 
         let percent_page = list_with_activity_page(&conn, 1, 8, "%").unwrap();
         assert_eq!(percent_page.filtered_count, 1);
-        assert_eq!(percent_page.items[0].runner.id, percent.id);
+        assert_eq!(percent_page.items[0].role.id, percent.id);
         let underscore_page = list_with_activity_page(&conn, 1, 8, "_").unwrap();
         assert_eq!(underscore_page.filtered_count, 1);
-        assert_eq!(underscore_page.items[0].runner.id, underscore.id);
+        assert_eq!(underscore_page.items[0].role.id, underscore.id);
         let backslash_page = list_with_activity_page(&conn, 1, 8, "\\").unwrap();
         assert_eq!(backslash_page.filtered_count, 1);
-        assert_eq!(backslash_page.items[0].runner.id, backslash.id);
+        assert_eq!(backslash_page.items[0].role.id, backslash.id);
     }
 
     #[test]
@@ -827,19 +753,19 @@ mod tests {
         let pool = ctx();
         let conn = pool.get().unwrap();
         for index in 0..10 {
-            make(&conn, &format!("runner-{index:02}"));
+            make(&conn, &format!("role-{index:02}"));
         }
 
         let second = list_with_activity_page(&conn, 2, 4, "").unwrap();
         assert_eq!(second.total_count, 10);
         assert_eq!(second.filtered_count, 10);
         assert_eq!(second.items.len(), 4);
-        assert_eq!(second.items[0].runner.handle, "runner-04");
-        assert_eq!(second.items[3].runner.handle, "runner-07");
+        assert_eq!(second.items[0].role.handle, "role-04");
+        assert_eq!(second.items[3].role.handle, "role-07");
 
         let clamped = list_with_activity_page(&conn, 99, 8, "").unwrap();
         assert_eq!(clamped.items.len(), 2);
-        assert_eq!(clamped.items[0].runner.handle, "runner-08");
+        assert_eq!(clamped.items[0].role.handle, "role-08");
     }
 
     #[test]
@@ -849,7 +775,7 @@ mod tests {
         make(&conn, "shared");
         let err = create(
             &conn,
-            CreateRunnerInput {
+            CreateRoleInput {
                 handle: "shared".into(),
                 display_name: "Dup".into(),
                 runtime: crate::model::Runtime::Shell,
@@ -875,7 +801,7 @@ mod tests {
         let updated = update(
             &conn,
             &r.id,
-            UpdateRunnerInput {
+            UpdateRoleInput {
                 display_name: Some("renamed".into()),
                 ..Default::default()
             },
@@ -897,23 +823,18 @@ mod tests {
             [],
         )
         .unwrap();
-        conn.execute(
-            "INSERT INTO slots
-                (id, crew_id, runner_id, slot_handle, position, lead,
-                 runtime_override, model_override, effort_override, added_at)
-             VALUES
-                ('s-inherit', 'c1', ?1, 'inherit', 0, 1,
-                 NULL, 'old-model', 'high', '2026-04-22T00:00:00Z'),
-                ('s-pinned', 'c1', ?1, 'pinned', 1, 0,
-                 'claude-code', 'opus', 'max', '2026-04-22T00:00:00Z')",
-            params![r.id],
-        )
-        .unwrap();
+        crate::test_support::insert_test_slot(&conn, "s-inherit", "c1", &r.id, "inherit", 0, true);
+        crate::test_support::insert_test_slot(&conn, "s-pinned", "c1", &r.id, "pinned", 1, false);
+        repo::slot::set_model_override(&conn, "s-inherit", Some("old-model")).unwrap();
+        repo::slot::set_effort_override(&conn, "s-inherit", Some("high")).unwrap();
+        repo::slot::set_runtime_override(&conn, "s-pinned", Some("claude-code")).unwrap();
+        repo::slot::set_model_override(&conn, "s-pinned", Some("opus")).unwrap();
+        repo::slot::set_effort_override(&conn, "s-pinned", Some("max")).unwrap();
 
         update(
             &conn,
             &r.id,
-            UpdateRunnerInput {
+            UpdateRoleInput {
                 runtime: Some(crate::model::Runtime::Codex),
                 command: Some("codex".into()),
                 ..Default::default()
@@ -922,12 +843,8 @@ mod tests {
         .unwrap();
 
         let overrides_for = |slot_id: &str| -> (Option<String>, Option<String>) {
-            conn.query_row(
-                "SELECT model_override, effort_override FROM slots WHERE id = ?1",
-                params![slot_id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .unwrap()
+            let slot = repo::slot::get(&conn, slot_id).unwrap().unwrap();
+            (slot.model_override, slot.effort_override)
         };
         assert_eq!(overrides_for("s-inherit"), (None, None));
         assert_eq!(
@@ -942,48 +859,36 @@ mod tests {
         let mut conn = pool.get().unwrap();
         let r = make(&conn, "alpha");
         delete(&mut conn, &r.id).unwrap();
-        let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM runners", [], |r| r.get(0))
-            .unwrap();
+        let count = repo::role::count(&conn).unwrap();
         assert_eq!(count, 0);
     }
 
     #[test]
-    fn delete_refuses_runner_with_unarchived_direct_chat() {
+    fn delete_refuses_role_with_unarchived_direct_chat() {
         let pool = ctx();
         let mut conn = pool.get().unwrap();
         let r = make(&conn, "alpha");
-        conn.execute(
-            "INSERT INTO sessions
-                (id, mission_id, runner_id, slot_id, status, started_at)
-             VALUES ('direct-live', NULL, ?1, NULL, 'stopped',
-                     '2026-04-22T00:00:00Z')",
-            params![r.id],
-        )
-        .unwrap();
+        let mut session = crate::test_support::test_session_row(
+            "direct-live",
+            crate::model::SessionStatus::Stopped,
+        );
+        session.role_id = Some(r.id.clone());
+        repo::session::insert(&conn, &session).unwrap();
 
         let err = delete(&mut conn, &r.id).unwrap_err().to_string();
         assert!(err.contains("unarchived chats"));
-        let runner_count: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM runners WHERE id = ?1",
-                params![r.id],
-                |r| r.get(0),
-            )
-            .unwrap();
-        let session_count: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM sessions WHERE id = 'direct-live'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(runner_count, 1, "runner must survive refused delete");
+        let role_count = i64::from(repo::role::get(&conn, &r.id).unwrap().is_some());
+        let session_count = i64::from(
+            repo::session::get_row(&conn, "direct-live")
+                .unwrap()
+                .is_some(),
+        );
+        assert_eq!(role_count, 1, "role must survive refused delete");
         assert_eq!(session_count, 1, "chat must survive refused delete");
     }
 
     #[test]
-    fn delete_removes_runner_sessions_before_runner_row() {
+    fn delete_removes_role_sessions_before_role_row() {
         let pool = ctx();
         let mut conn = pool.get().unwrap();
         let r = make(&conn, "alpha");
@@ -1001,32 +906,27 @@ mod tests {
             [],
         )
         .unwrap();
-        conn.execute(
-            "INSERT INTO sessions
-                (id, mission_id, runner_id, slot_id, status, started_at)
-             VALUES ('mission-session', 'mission-1', ?1, 'slot-1',
-                     'running', '2026-04-22T00:00:00Z')",
-            params![r.id],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO sessions
-                (id, mission_id, runner_id, slot_id, status, started_at, archived_at)
-             VALUES ('archived-direct', NULL, ?1, NULL, 'stopped',
-                     '2026-04-22T00:00:00Z', '2026-04-22T01:00:00Z')",
-            params![r.id],
-        )
-        .unwrap();
+        let mut mission_session = crate::test_support::test_session_row(
+            "mission-session",
+            crate::model::SessionStatus::Running,
+        );
+        mission_session.mission_id = Some("mission-1".into());
+        mission_session.role_id = Some(r.id.clone());
+        mission_session.slot_id = Some("slot-1".into());
+        repo::session::insert(&conn, &mission_session).unwrap();
+        let mut archived_direct = crate::test_support::test_session_row(
+            "archived-direct",
+            crate::model::SessionStatus::Stopped,
+        );
+        archived_direct.role_id = Some(r.id.clone());
+        archived_direct.archived_at = Some(chrono::Utc::now());
+        repo::session::insert(&conn, &archived_direct).unwrap();
 
         delete(&mut conn, &r.id).unwrap();
-        let session_count: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM sessions
-                  WHERE id IN ('mission-session', 'archived-direct')",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
+        let session_count = ["mission-session", "archived-direct"]
+            .into_iter()
+            .filter(|id| repo::session::get_row(&conn, id).unwrap().is_some())
+            .count();
         let mission_count: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM missions WHERE id = 'mission-1'",
@@ -1034,8 +934,8 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(session_count, 0, "runner sessions are hard-deleted");
-        assert_eq!(mission_count, 1, "runner delete does not delete missions");
+        assert_eq!(session_count, 0, "role sessions are hard-deleted");
+        assert_eq!(mission_count, 1, "role delete does not delete missions");
     }
 
     #[test]
@@ -1043,14 +943,13 @@ mod tests {
         let pool = ctx();
         let conn = pool.get().unwrap();
         let r = make(&conn, "alpha");
-        conn.execute(
-            "INSERT INTO sessions
-                (id, mission_id, runner_id, slot_id, status, started_at)
-             VALUES ('slot-orphan', NULL, ?1, 'slot-old', 'running',
-                     '2026-04-22T00:00:00Z')",
-            params![r.id],
-        )
-        .unwrap();
+        let mut session = crate::test_support::test_session_row(
+            "slot-orphan",
+            crate::model::SessionStatus::Running,
+        );
+        session.role_id = Some(r.id.clone());
+        session.slot_id = Some("slot-old".into());
+        repo::session::insert(&conn, &session).unwrap();
 
         let got = activity(&conn, &r.id).unwrap();
         assert_eq!(
@@ -1088,13 +987,13 @@ mod tests {
         // For codex, that means the canonical
         // `--ask-for-approval never --sandbox workspace-write` pair
         // lands on the `args` column at create time — keeping the
-        // runner template stable if the recommended default ever
+        // role template stable if the recommended default ever
         // shifts (per #45 task 2).
         let pool = ctx();
         let conn = pool.get().unwrap();
         let r = create(
             &conn,
-            CreateRunnerInput {
+            CreateRoleInput {
                 handle: "codex-tester".into(),
                 display_name: "C".into(),
                 runtime: crate::model::Runtime::Codex,
@@ -1127,7 +1026,7 @@ mod tests {
         let conn = pool.get().unwrap();
         let r = create(
             &conn,
-            CreateRunnerInput {
+            CreateRoleInput {
                 handle: "claude-tester".into(),
                 display_name: "Claude".into(),
                 runtime: crate::model::Runtime::ClaudeCode,
@@ -1157,7 +1056,7 @@ mod tests {
         let conn = pool.get().unwrap();
         let r = create(
             &conn,
-            CreateRunnerInput {
+            CreateRoleInput {
                 handle: "trae-tester".into(),
                 display_name: "TRAE".into(),
                 runtime: crate::model::Runtime::Trae,
@@ -1177,7 +1076,7 @@ mod tests {
         let r = update(
             &conn,
             &r.id,
-            UpdateRunnerInput {
+            UpdateRoleInput {
                 permission_mode: Some(PermissionMode::Bypass),
                 ..Default::default()
             },
@@ -1197,9 +1096,9 @@ mod tests {
     fn copilot_create_and_update_bake_only_the_selected_permission_mode() {
         let pool = ctx();
         let conn = pool.get().unwrap();
-        let runner = create(
+        let role = create(
             &conn,
-            CreateRunnerInput {
+            CreateRoleInput {
                 handle: "copilot-tester".into(),
                 display_name: "Copilot".into(),
                 runtime: crate::model::Runtime::Copilot,
@@ -1219,7 +1118,7 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(runner.args, ["--debug", "--allow-tool=write"]);
+        assert_eq!(role.args, ["--debug", "--allow-tool=write"]);
         for (mode, expected) in [
             (PermissionMode::Bypass, vec!["--debug", "--yolo"]),
             (PermissionMode::Default, vec!["--debug"]),
@@ -1227,8 +1126,8 @@ mod tests {
         ] {
             let updated = update(
                 &conn,
-                &runner.id,
-                UpdateRunnerInput {
+                &role.id,
+                UpdateRoleInput {
                     permission_mode: Some(mode),
                     ..Default::default()
                 },
@@ -1244,7 +1143,7 @@ mod tests {
         let conn = pool.get().unwrap();
         let r = create(
             &conn,
-            CreateRunnerInput {
+            CreateRoleInput {
                 handle: "paranoid".into(),
                 display_name: "P".into(),
                 runtime: crate::model::Runtime::Codex,
@@ -1275,7 +1174,7 @@ mod tests {
         let conn = pool.get().unwrap();
         let r = create(
             &conn,
-            CreateRunnerInput {
+            CreateRoleInput {
                 handle: "explicit".into(),
                 display_name: "E".into(),
                 runtime: crate::model::Runtime::ClaudeCode,
@@ -1308,7 +1207,7 @@ mod tests {
         let conn = pool.get().unwrap();
         let r = create(
             &conn,
-            CreateRunnerInput {
+            CreateRoleInput {
                 handle: "shell-tester".into(),
                 display_name: "Sh".into(),
                 runtime: crate::model::Runtime::Shell,
@@ -1335,7 +1234,7 @@ mod tests {
         let conn = pool.get().unwrap();
         let r = create(
             &conn,
-            CreateRunnerInput {
+            CreateRoleInput {
                 handle: "codex-rt".into(),
                 display_name: "C".into(),
                 runtime: crate::model::Runtime::Codex,
@@ -1357,7 +1256,7 @@ mod tests {
         let r = update(
             &conn,
             &r.id,
-            UpdateRunnerInput {
+            UpdateRoleInput {
                 permission_mode: Some(PermissionMode::Default),
                 ..Default::default()
             },
@@ -1373,7 +1272,7 @@ mod tests {
         let r = update(
             &conn,
             &r.id,
-            UpdateRunnerInput {
+            UpdateRoleInput {
                 permission_mode: Some(PermissionMode::Bypass),
                 ..Default::default()
             },
@@ -1394,7 +1293,7 @@ mod tests {
         let r = update(
             &conn,
             &r.id,
-            UpdateRunnerInput {
+            UpdateRoleInput {
                 permission_mode: Some(PermissionMode::Bypass),
                 ..Default::default()
             },
@@ -1417,7 +1316,7 @@ mod tests {
         let conn = pool.get().unwrap();
         let r = create(
             &conn,
-            CreateRunnerInput {
+            CreateRoleInput {
                 handle: "claude-rt".into(),
                 display_name: "C".into(),
                 runtime: crate::model::Runtime::ClaudeCode,
@@ -1444,7 +1343,7 @@ mod tests {
         let r = update(
             &conn,
             &r.id,
-            UpdateRunnerInput {
+            UpdateRoleInput {
                 permission_mode: Some(PermissionMode::Default),
                 ..Default::default()
             },
@@ -1455,7 +1354,7 @@ mod tests {
         let r = update(
             &conn,
             &r.id,
-            UpdateRunnerInput {
+            UpdateRoleInput {
                 permission_mode: Some(PermissionMode::Bypass),
                 ..Default::default()
             },
@@ -1480,7 +1379,7 @@ mod tests {
         let conn = pool.get().unwrap();
         let r = create(
             &conn,
-            CreateRunnerInput {
+            CreateRoleInput {
                 handle: "preserve".into(),
                 display_name: "P".into(),
                 runtime: crate::model::Runtime::Codex,
@@ -1500,7 +1399,7 @@ mod tests {
         let r = update(
             &conn,
             &r.id,
-            UpdateRunnerInput {
+            UpdateRoleInput {
                 display_name: Some("renamed".into()),
                 ..Default::default()
             },
@@ -1522,7 +1421,7 @@ mod tests {
         let conn = pool.get().unwrap();
         let r = create(
             &conn,
-            CreateRunnerInput {
+            CreateRoleInput {
                 handle: "switcher".into(),
                 display_name: "S".into(),
                 runtime: crate::model::Runtime::ClaudeCode,
@@ -1551,7 +1450,7 @@ mod tests {
         let r = update(
             &conn,
             &r.id,
-            UpdateRunnerInput {
+            UpdateRoleInput {
                 runtime: Some(crate::model::Runtime::Codex),
                 command: Some("codex".into()),
                 permission_mode: Some(PermissionMode::Bypass),
@@ -1572,7 +1471,7 @@ mod tests {
     }
 
     #[test]
-    fn activity_counts_zero_for_brand_new_runner() {
+    fn activity_counts_zero_for_brand_new_role() {
         let pool = ctx();
         let conn = pool.get().unwrap();
         let r = make(&conn, "alpha");
@@ -1596,7 +1495,7 @@ mod tests {
         let oversized = "X".repeat(MAX_SYSTEM_PROMPT_BYTES + 1);
         let err = create(
             &conn,
-            CreateRunnerInput {
+            CreateRoleInput {
                 handle: "too-long".into(),
                 display_name: "T".into(),
                 runtime: crate::model::Runtime::ClaudeCode,
@@ -1626,7 +1525,7 @@ mod tests {
         let err = update(
             &conn,
             &r.id,
-            UpdateRunnerInput {
+            UpdateRoleInput {
                 display_name: None,
                 runtime: None,
                 command: None,
@@ -1649,12 +1548,11 @@ mod tests {
         let conn = pool.get().unwrap();
         let r = make(&conn, "alpha");
         // Insert a running session by hand — C6 will own this path later.
-        conn.execute(
-            "INSERT INTO sessions (id, mission_id, runner_id, cwd, status, started_at)
-             VALUES ('s1', NULL, ?1, '/tmp', 'running', '2026-04-23T00:00:00Z')",
-            params![r.id],
-        )
-        .unwrap();
+        let mut session =
+            crate::test_support::test_session_row("s1", crate::model::SessionStatus::Running);
+        session.role_id = Some(r.id.clone());
+        session.cwd = Some("/tmp".into());
+        repo::session::insert(&conn, &session).unwrap();
         let a = activity(&conn, &r.id).unwrap();
         assert_eq!(a.active_sessions, 1);
         assert_eq!(a.active_missions, 0, "direct session has no mission");

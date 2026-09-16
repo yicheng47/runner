@@ -6,7 +6,7 @@ use runner_app::ui::{
     Button, ButtonVariant, Field, IconButton, Modal, OverlayWidth, SelectOption, StyledSelect,
     TextField,
 };
-use runner_backend::model::SlotWithRunner;
+use runner_backend::model::SlotWithRole;
 use runner_backend::ops::crew::CrewListItem;
 use runner_backend::repo::project::ProjectRow;
 
@@ -17,7 +17,7 @@ pub(crate) struct StartMissionModalState {
     project: Option<ProjectRow>,
     crews: Vec<CrewListItem>,
     crew_id: String,
-    roster: Vec<SlotWithRunner>,
+    roster: Vec<SlotWithRole>,
     crew_select: Entity<StyledSelect>,
     title: Entity<TextField>,
     goal: Entity<TextField>,
@@ -144,7 +144,7 @@ impl NativeRoot {
                             .initial_crew_id
                             .as_ref()
                             .and_then(|id| crews.iter().find(|crew| &crew.crew.id == id))
-                            .or_else(|| crews.iter().find(|crew| crew.runner_count > 0))
+                            .or_else(|| crews.iter().find(|crew| crew.role_count > 0))
                             .or_else(|| crews.first())
                             .map(|crew| crew.crew.id.clone())
                             .unwrap_or_default();
@@ -309,7 +309,7 @@ impl NativeRoot {
             .crews
             .iter()
             .find(|crew| crew.crew.id == modal.crew_id)
-            .is_some_and(|crew| crew.runner_count > 0);
+            .is_some_and(|crew| crew.role_count > 0);
         if !launchable {
             return;
         }
@@ -363,8 +363,8 @@ impl NativeRoot {
             .crews
             .iter()
             .find(|crew| crew.crew.id == modal.crew_id);
-        let launchable = selected.is_some_and(|crew| crew.runner_count > 0);
-        let runner_count = selected.map_or(0, |crew| crew.runner_count);
+        let launchable = selected.is_some_and(|crew| crew.role_count > 0);
+        let role_count = selected.map_or(0, |crew| crew.role_count);
         let title_empty = modal.title.read(cx).text().trim().is_empty();
         let can_submit = !modal.submitting
             && !modal.loading
@@ -561,8 +561,8 @@ impl NativeRoot {
                     .text_color(theme::faint())
                     .child(if selected.is_some() {
                         format!(
-                            "{runner_count} session{} will spawn",
-                            if runner_count == 1 { "" } else { "s" }
+                            "{role_count} session{} will spawn",
+                            if role_count == 1 { "" } else { "s" }
                         )
                     } else {
                         String::new()
@@ -647,20 +647,20 @@ fn set_start_mission_fields_disabled(
 fn start_mission_crew_options(
     crews: &[CrewListItem],
     selected_id: &str,
-    roster: &[SlotWithRunner],
+    roster: &[SlotWithRole],
 ) -> Vec<SelectOption> {
     crews
         .iter()
         .map(|crew| {
             let description = if crew.crew.id == selected_id && !roster.is_empty() {
                 summarize_crew(crew, roster)
-            } else if crew.runner_count == 0 {
+            } else if crew.role_count == 0 {
                 "No runners in this crew.".into()
             } else {
                 format!(
                     "{} runner{}",
-                    crew.runner_count,
-                    if crew.runner_count == 1 { "" } else { "s" }
+                    crew.role_count,
+                    if crew.role_count == 1 { "" } else { "s" }
                 )
             };
             SelectOption::new(crew.crew.id.clone(), crew.crew.name.clone()).description(description)
@@ -668,12 +668,12 @@ fn start_mission_crew_options(
         .collect()
 }
 
-fn summarize_crew(crew: &CrewListItem, roster: &[SlotWithRunner]) -> String {
+fn summarize_crew(crew: &CrewListItem, roster: &[SlotWithRole]) -> String {
     let Some(lead) = roster.iter().find(|member| member.slot.lead) else {
         return format!(
             "{} slot{}",
-            crew.runner_count,
-            if crew.runner_count == 1 { "" } else { "s" }
+            crew.role_count,
+            if crew.role_count == 1 { "" } else { "s" }
         );
     };
     let workers = roster

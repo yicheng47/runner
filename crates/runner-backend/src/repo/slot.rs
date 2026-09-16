@@ -1,4 +1,4 @@
-// `slots` table — one position in a crew, referencing a Runner template.
+// `slots` table — one position in a crew, referencing a Role template.
 //
 // Invariant enforcement (one lead per crew, dense positions, auto-promote
 // on delete) stays in `ops::slot`; this module owns the row struct,
@@ -16,7 +16,7 @@ use super::{de_err, insert_sql, qualified_select_list, select_list, ser_err};
 pub struct SlotRow {
     pub id: String,
     pub crew_id: String,
-    pub runner_id: String,
+    pub role_id: String,
     pub slot_handle: String,
     pub position: i64,
     pub lead: bool,
@@ -30,7 +30,7 @@ pub struct SlotRow {
 pub const COLUMNS: &[&str] = &[
     "id",
     "crew_id",
-    "runner_id",
+    "role_id",
     "slot_handle",
     "position",
     "lead",
@@ -45,7 +45,7 @@ impl From<SlotRow> for Slot {
         Slot {
             id: r.id,
             crew_id: r.crew_id,
-            runner_id: r.runner_id,
+            role_id: r.role_id,
             slot_handle: r.slot_handle,
             position: r.position,
             lead: r.lead,
@@ -62,7 +62,7 @@ impl From<&Slot> for SlotRow {
         SlotRow {
             id: s.id.clone(),
             crew_id: s.crew_id.clone(),
-            runner_id: s.runner_id.clone(),
+            role_id: s.role_id.clone(),
             slot_handle: s.slot_handle.clone(),
             position: s.position,
             lead: s.lead,
@@ -103,23 +103,23 @@ pub fn list_for_crew(conn: &Connection, crew_id: &str) -> rusqlite::Result<Vec<S
     rows.map(|r| r.map(Slot::from)).collect()
 }
 
-/// Every slot that references `runner_id`, across every crew, joined with
-/// the crew name. Ordered by `added_at` DESC — drives the Runner Detail
-/// "Crews using this runner" panel.
-pub fn list_for_runner_with_crew_name(
+/// Every slot that references `role_id`, across every crew, joined with
+/// the crew name. Ordered by `added_at` DESC — drives the Role Detail
+/// "Crews using this role" panel.
+pub fn list_for_role_with_crew_name(
     conn: &Connection,
-    runner_id: &str,
+    role_id: &str,
 ) -> rusqlite::Result<Vec<(Slot, String)>> {
     let sql = format!(
         "SELECT {}, c.name AS crew_name
            FROM slots sl
            JOIN crews c ON c.id = sl.crew_id
-          WHERE sl.runner_id = ?1
+          WHERE sl.role_id = ?1
           ORDER BY sl.added_at DESC",
         qualified_select_list("sl", COLUMNS)
     );
     let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt.query_map(rusqlite::params![runner_id], |row| {
+    let rows = stmt.query_map(rusqlite::params![role_id], |row| {
         let slot = from_row::<SlotRow>(row).map_err(de_err)?;
         let crew_name: String = row.get("crew_name")?;
         Ok((Slot::from(slot), crew_name))
@@ -209,9 +209,9 @@ mod tests {
         .unwrap();
     }
 
-    fn seed_runner(conn: &Connection, id: &str, handle: &str) {
+    fn seed_role(conn: &Connection, id: &str, handle: &str) {
         conn.execute(
-            "INSERT INTO runners (
+            "INSERT INTO roles (
                 id, handle, display_name, runtime, command, created_at, updated_at
              ) VALUES (?1, ?2, ?3, 'shell', 'sh', ?4, ?4)",
             rusqlite::params![
@@ -228,7 +228,7 @@ mod tests {
         SlotRow {
             id: "s-full".into(),
             crew_id: "c1".into(),
-            runner_id: "r1".into(),
+            role_id: "r1".into(),
             slot_handle: "architect".into(),
             position: 3,
             lead: true,
@@ -243,7 +243,7 @@ mod tests {
         SlotRow {
             id: "s-min".into(),
             crew_id: "c1".into(),
-            runner_id: "r1".into(),
+            role_id: "r1".into(),
             slot_handle: "worker".into(),
             position: 0,
             lead: false,
@@ -259,7 +259,7 @@ mod tests {
         let pool = db::open_in_memory().unwrap();
         let conn = pool.get().unwrap();
         seed_crew(&conn, "c1");
-        seed_runner(&conn, "r1", "alpha");
+        seed_role(&conn, "r1", "alpha");
 
         for row in [full_row(), minimal_row()] {
             insert(&conn, &row).unwrap();
@@ -273,11 +273,11 @@ mod tests {
         let pool = db::open_in_memory().unwrap();
         let conn = pool.get().unwrap();
         seed_crew(&conn, "c1");
-        seed_runner(&conn, "r1", "alpha");
+        seed_role(&conn, "r1", "alpha");
         // Raw SQL in today's exact stored formats: `Z` (seeds / fixtures)
         // and `+00:00` (every to_rfc3339 write).
         conn.execute(
-            "INSERT INTO slots (id, crew_id, runner_id, slot_handle, position, lead, added_at)
+            "INSERT INTO slots (id, crew_id, role_id, slot_handle, position, lead, added_at)
              VALUES ('s-z', 'c1', 'r1', 'zulu', 0, 1, '2026-04-22T00:00:00Z'),
                     ('s-o', 'c1', 'r1', 'offset', 1, 0, '2026-04-22T00:00:00+00:00')",
             [],
@@ -296,7 +296,7 @@ mod tests {
         let pool = db::open_in_memory().unwrap();
         let conn = pool.get().unwrap();
         seed_crew(&conn, "c1");
-        seed_runner(&conn, "r1", "alpha");
+        seed_role(&conn, "r1", "alpha");
         let row = full_row();
         insert(&conn, &row).unwrap();
 
@@ -313,21 +313,21 @@ mod tests {
     }
 
     #[test]
-    fn list_for_runner_with_crew_name_joins_and_orders() {
+    fn list_for_role_with_crew_name_joins_and_orders() {
         let pool = db::open_in_memory().unwrap();
         let conn = pool.get().unwrap();
         seed_crew(&conn, "c1");
         seed_crew(&conn, "c2");
-        seed_runner(&conn, "r1", "shared");
+        seed_role(&conn, "r1", "shared");
         conn.execute(
-            "INSERT INTO slots (id, crew_id, runner_id, slot_handle, position, lead, added_at)
+            "INSERT INTO slots (id, crew_id, role_id, slot_handle, position, lead, added_at)
              VALUES ('s1', 'c1', 'r1', 'older', 0, 1, '2026-04-22T00:00:00Z'),
                     ('s2', 'c2', 'r1', 'newer', 0, 1, '2026-04-23T00:00:00Z')",
             [],
         )
         .unwrap();
 
-        let rows = list_for_runner_with_crew_name(&conn, "r1").unwrap();
+        let rows = list_for_role_with_crew_name(&conn, "r1").unwrap();
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].0.slot_handle, "newer");
         assert_eq!(rows[0].1, "crew-c2");

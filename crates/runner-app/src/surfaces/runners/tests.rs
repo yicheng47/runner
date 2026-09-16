@@ -1,7 +1,7 @@
 use super::logic::resolve_slot_runtime_layers;
 use super::logic::runtime_default_effort_label;
 use super::logic::runtime_model_placeholder;
-use super::logic::validate_runner_handle;
+use super::logic::validate_role_handle;
 use super::*;
 use runner_backend::model::Runtime;
 
@@ -40,12 +40,12 @@ fn runtime_with_defaults(
 }
 
 #[test]
-fn runner_handle_validation_matches_the_shipped_contract() {
+fn role_handle_validation_matches_the_shipped_contract() {
     for valid in ["", "a", "0", "coder-2", "coder_2", &"a".repeat(32)] {
-        assert_eq!(validate_runner_handle(valid), None, "{valid}");
+        assert_eq!(validate_role_handle(valid), None, "{valid}");
     }
     for invalid in ["Coder", "-coder", "_coder", "coder!", &"a".repeat(33)] {
-        assert!(validate_runner_handle(invalid).is_some(), "{invalid}");
+        assert!(validate_role_handle(invalid).is_some(), "{invalid}");
     }
 }
 
@@ -73,7 +73,7 @@ fn runtime_default_labels_include_known_values() {
 }
 
 #[test]
-fn slot_runtime_layers_leave_blank_overrides_to_inherit_runner_defaults() {
+fn slot_runtime_layers_leave_blank_overrides_to_inherit_role_defaults() {
     assert_eq!(
         resolve_slot_runtime_layers("codex", None, None, None),
         RuntimeLayerResolution {

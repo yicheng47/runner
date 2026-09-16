@@ -7,7 +7,7 @@ use std::time::Duration;
 use futures::{FutureExt as _, StreamExt as _};
 use gpui::{App, AppContext as _, Context, Entity, Global};
 use runner_backend::events::AppEvent;
-use runner_backend::model::Runner;
+use runner_backend::model::Role;
 use runner_backend::ops::crew::CrewListItem;
 use runner_backend::ops::mission::MissionSummary;
 use runner_backend::ops::session::DirectSessionEntry;
@@ -68,8 +68,8 @@ impl StoreRefreshKind {
             | "session/fork-started"
             | "session/archived"
             | "session/updated"
-            | "runner/activity"
-            | "runner/changed"
+            | "role/activity"
+            | "role/changed"
             | "crew/changed"
             | "slot/changed"
             | "mission/changed"
@@ -90,8 +90,8 @@ impl StoreRefreshKind {
 pub(crate) struct StoreRevisions {
     pub(crate) terminal_wake: u64,
     pub(crate) sessions: u64,
-    pub(crate) runners: u64,
-    pub(crate) runner_surfaces: u64,
+    pub(crate) roles: u64,
+    pub(crate) role_surfaces: u64,
     pub(crate) crews: u64,
     pub(crate) nodes: u64,
     pub(crate) tab_rows: u64,
@@ -112,7 +112,7 @@ pub(crate) struct StoreReactions {
     pub(crate) reload_tabs: bool,
     pub(crate) prune_sidebar: bool,
     pub(crate) prune_window_state: bool,
-    pub(crate) reload_runner_surfaces: bool,
+    pub(crate) reload_role_surfaces: bool,
     pub(crate) reload_crew_surfaces: bool,
     pub(crate) apply_terminal_settings: bool,
     pub(crate) mission_settings: bool,
@@ -141,7 +141,7 @@ impl StoreRevisions {
             reload_tabs: self.tab_rows != previous.tab_rows,
             prune_sidebar: self.projects != previous.projects,
             prune_window_state: self.full_refresh != previous.full_refresh,
-            reload_runner_surfaces: self.runner_surfaces != previous.runner_surfaces,
+            reload_role_surfaces: self.role_surfaces != previous.role_surfaces,
             reload_crew_surfaces: self.crews != previous.crews,
             apply_terminal_settings: self.terminal_settings != previous.terminal_settings,
             mission_settings: self.mission_settings != previous.mission_settings,
@@ -237,7 +237,7 @@ pub(crate) struct AppStore {
     pub(crate) core: AppCore,
     pub(crate) bridge: Arc<TerminalBridge>,
     pub(crate) sessions: Vec<DirectSessionEntry>,
-    pub(crate) runners: Vec<Runner>,
+    pub(crate) roles: Vec<Role>,
     pub(crate) crews: Vec<CrewListItem>,
     pub(crate) nodes: Vec<NodeRow>,
     pub(crate) projects: Vec<ProjectRow>,
@@ -324,9 +324,9 @@ impl AppStore {
                 if weak
                     .update(cx, |this, cx| {
                         this.refresh(refresh, cx);
-                        if entity_refresh.runners() {
-                            this.revisions.runner_surfaces =
-                                this.revisions.runner_surfaces.wrapping_add(1);
+                        if entity_refresh.roles() {
+                            this.revisions.role_surfaces =
+                                this.revisions.role_surfaces.wrapping_add(1);
                         }
                         if entity_refresh.crews() {
                             this.refresh_crews_inner();
@@ -345,7 +345,7 @@ impl AppStore {
             core,
             bridge,
             sessions: Vec::new(),
-            runners: Vec::new(),
+            roles: Vec::new(),
             crews: Vec::new(),
             nodes: Vec::new(),
             projects: Vec::new(),
@@ -368,7 +368,7 @@ impl AppStore {
             .sessions
             .set_mission_permission_mode(store.settings.mission_permission_mode);
         store.refresh_sessions_inner();
-        store.refresh_runners_inner();
+        store.refresh_roles_inner();
         store.refresh_crews_inner();
         store.refresh_nodes_inner();
         store.refresh_projects_inner();
@@ -437,9 +437,9 @@ impl AppStore {
         }
     }
 
-    pub(crate) fn replace_runners(&mut self, runners: Vec<Runner>, cx: &mut Context<Self>) {
-        self.runners = runners;
-        self.revisions.runners = self.revisions.runners.wrapping_add(1);
+    pub(crate) fn replace_roles(&mut self, roles: Vec<Role>, cx: &mut Context<Self>) {
+        self.roles = roles;
+        self.revisions.roles = self.revisions.roles.wrapping_add(1);
         cx.notify();
     }
 
@@ -559,11 +559,11 @@ impl AppStore {
         }
     }
 
-    fn refresh_runners_inner(&mut self) {
-        match runner_backend::ops::runner::runner_list(&self.core) {
-            Ok(runners) => {
-                self.runners = runners;
-                self.revisions.runners = self.revisions.runners.wrapping_add(1);
+    fn refresh_roles_inner(&mut self) {
+        match runner_backend::ops::role::role_list(&self.core) {
+            Ok(roles) => {
+                self.roles = roles;
+                self.revisions.roles = self.revisions.roles.wrapping_add(1);
             }
             Err(error) => self.record_error(error.to_string()),
         }
@@ -655,15 +655,15 @@ impl AppStore {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum EntityRefreshKind {
     None,
-    Runners,
+    Roles,
     All,
 }
 
 impl EntityRefreshKind {
     fn for_event(event: &AppEvent) -> Self {
         match event.name {
-            "runner/activity" => Self::Runners,
-            "runner/changed" | "crew/changed" | "slot/changed" => Self::All,
+            "role/activity" => Self::Roles,
+            "role/changed" | "crew/changed" | "slot/changed" => Self::All,
             _ => Self::None,
         }
     }
@@ -678,8 +678,8 @@ impl EntityRefreshKind {
         Self::All
     }
 
-    fn runners(self) -> bool {
-        matches!(self, Self::Runners | Self::All)
+    fn roles(self) -> bool {
+        matches!(self, Self::Roles | Self::All)
     }
 
     fn crews(self) -> bool {
@@ -736,12 +736,12 @@ mod tests {
     }
 
     #[test]
-    fn entity_refresh_events_match_runner_and_crew_dependencies() {
+    fn entity_refresh_events_match_role_and_crew_dependencies() {
         assert_eq!(
-            EntityRefreshKind::for_event(&event("runner/activity")),
-            EntityRefreshKind::Runners
+            EntityRefreshKind::for_event(&event("role/activity")),
+            EntityRefreshKind::Roles
         );
-        for name in ["runner/changed", "crew/changed", "slot/changed"] {
+        for name in ["role/changed", "crew/changed", "slot/changed"] {
             assert_eq!(
                 EntityRefreshKind::for_event(&event(name)),
                 EntityRefreshKind::All
@@ -755,17 +755,17 @@ mod tests {
 
     #[test]
     fn entity_refresh_merge_covers_every_pair() {
-        use EntityRefreshKind::{All, None, Runners};
+        use EntityRefreshKind::{All, None, Roles};
 
         for (left, right, expected) in [
             (None, None, None),
-            (None, Runners, Runners),
+            (None, Roles, Roles),
             (None, All, All),
-            (Runners, None, Runners),
-            (Runners, Runners, Runners),
-            (Runners, All, All),
+            (Roles, None, Roles),
+            (Roles, Roles, Roles),
+            (Roles, All, All),
             (All, None, All),
-            (All, Runners, All),
+            (All, Roles, All),
             (All, All, All),
         ] {
             assert_eq!(left.merge(right), expected, "{left:?} + {right:?}");
@@ -844,15 +844,15 @@ mod tests {
     }
 
     #[test]
-    fn runner_data_and_surface_reload_revisions_are_independent() {
+    fn role_data_and_surface_reload_revisions_are_independent() {
         let before = StoreRevisions::default();
         let mut after_data = before;
-        after_data.runners = 1;
-        assert!(!after_data.reactions_since(before).reload_runner_surfaces);
+        after_data.roles = 1;
+        assert!(!after_data.reactions_since(before).reload_role_surfaces);
 
         let mut after_event = before;
-        after_event.runner_surfaces = 1;
-        assert!(after_event.reactions_since(before).reload_runner_surfaces);
+        after_event.role_surfaces = 1;
+        assert!(after_event.reactions_since(before).reload_role_surfaces);
     }
 
     #[test]

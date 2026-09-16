@@ -529,7 +529,7 @@ fn mission_permission_mode_description(mode: MissionPermissionMode) -> &'static 
     match mode {
         MissionPermissionMode::Bypass => "Default. No prompts; codex gets full access.",
         MissionPermissionMode::Auto => "The runtime's classifier decides; may stall on a prompt.",
-        MissionPermissionMode::RunnerDefault => "Whatever each runner row carries.",
+        MissionPermissionMode::RoleDefault => "Whatever each runner row carries.",
     }
 }
 

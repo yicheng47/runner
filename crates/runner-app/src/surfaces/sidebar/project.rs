@@ -170,8 +170,8 @@ impl NativeRoot {
             .as_deref()
             == Some(project_id.as_str());
         if deleting_active_chat {
-            self.set_route(AppRoute::Runners, cx);
-            self.load_runner_page(cx);
+            self.set_route(AppRoute::Roles, cx);
+            self.load_role_page(cx);
             window.focus(&self.root_focus);
         }
         self.project_delete_busy = true;

@@ -10,7 +10,7 @@ use gpui::{
     div, px, rems, AnyElement, Context, FontWeight, KeyDownEvent, PathPromptOptions, ScrollHandle,
     SharedString, Window,
 };
-use runner_backend::model::Runner;
+use runner_backend::model::Role;
 use runner_backend::ops::runtime::{
     filter_selectable_runtime_catalog, RuntimeCatalogEntry, RuntimeCatalogOption,
 };
@@ -30,14 +30,14 @@ const FIELD_WIDTH: f32 = 476.;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ChatMode {
-    Runner,
+    Role,
     Runtime,
 }
 
 impl ChatMode {
     fn from_persisted(value: Option<&str>) -> Self {
-        if value.is_some_and(|value| value.trim() == "runner") {
-            Self::Runner
+        if value.is_some_and(|value| matches!(value.trim(), "role" | "runner")) {
+            Self::Role
         } else {
             Self::Runtime
         }
@@ -45,7 +45,7 @@ impl ChatMode {
 
     fn persisted(self) -> &'static str {
         match self {
-            Self::Runner => "runner",
+            Self::Role => "role",
             Self::Runtime => "runtime",
         }
     }
@@ -89,8 +89,8 @@ fn new_terminal_empty_pane(layout: &PaneLayout) -> Option<String> {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum StartChatSelection {
-    Runner,
-    RunnerRuntime,
+    Role,
+    RoleRuntime,
     Runtime,
     Effort,
 }
@@ -99,23 +99,23 @@ pub(crate) struct StartChatModal {
     target: ChatTarget,
     project_id: Option<String>,
     mode: ChatMode,
-    runners: Vec<Runner>,
+    roles: Vec<Role>,
     runtimes: Vec<RuntimeCatalogEntry>,
-    runner_id: Option<String>,
+    role_id: Option<String>,
     runtime_name: Option<String>,
-    runner_runtime_override: Option<String>,
+    role_runtime_override: Option<String>,
     effort: String,
     title: Entity<TextField>,
     cwd: Entity<TextField>,
     model: Entity<TextField>,
     model_field: Entity<ModelField>,
-    runner_select: Entity<StyledSelect>,
-    runner_runtime_select: Entity<StyledSelect>,
+    role_select: Entity<StyledSelect>,
+    role_runtime_select: Entity<StyledSelect>,
     runtime_select: Entity<StyledSelect>,
     effort_select: Entity<StyledSelect>,
     scroll_handle: ScrollHandle,
     scrollbar: Entity<Scrollbar>,
-    runner_mode_focus: FocusHandle,
+    role_mode_focus: FocusHandle,
     direct_mode_focus: FocusHandle,
     browse_focus: FocusHandle,
     close_focus: FocusHandle,
@@ -129,10 +129,10 @@ pub(crate) struct StartChatModal {
 }
 
 impl StartChatModal {
-    fn selected_runner(&self) -> Option<&Runner> {
-        self.runner_id
+    fn selected_role(&self) -> Option<&Role> {
+        self.role_id
             .as_deref()
-            .and_then(|runner_id| self.runners.iter().find(|runner| runner.id == runner_id))
+            .and_then(|role_id| self.roles.iter().find(|role| role.id == role_id))
     }
 
     fn selected_runtime(&self) -> Option<&RuntimeCatalogEntry> {
@@ -144,7 +144,7 @@ impl StartChatModal {
     }
 
     fn override_runtime(&self) -> Option<&RuntimeCatalogEntry> {
-        self.runner_runtime_override.as_deref().and_then(|name| {
+        self.role_runtime_override.as_deref().and_then(|name| {
             self.runtimes
                 .iter()
                 .find(|runtime| runtime.name.key() == name)
@@ -153,7 +153,7 @@ impl StartChatModal {
 
     fn active_runtime(&self) -> Option<&RuntimeCatalogEntry> {
         match self.mode {
-            ChatMode::Runner => self.override_runtime(),
+            ChatMode::Role => self.override_runtime(),
             ChatMode::Runtime => self.selected_runtime(),
         }
     }
@@ -161,7 +161,7 @@ impl StartChatModal {
     fn can_submit(&self) -> bool {
         !self.submitting
             && match self.mode {
-                ChatMode::Runner => self.selected_runner().is_some(),
+                ChatMode::Role => self.selected_role().is_some(),
                 ChatMode::Runtime => self.selected_runtime().is_some(),
             }
     }
@@ -175,8 +175,8 @@ impl StartChatModal {
 
 #[derive(Debug, Eq, PartialEq)]
 enum StartRequest {
-    Runner {
-        runner_id: String,
+    Role {
+        role_id: String,
         runtime: Option<String>,
         model: Option<String>,
         effort: Option<String>,
@@ -626,7 +626,7 @@ impl NativeRoot {
                 tab_id,
                 pane_id: pane_id.to_owned(),
             },
-            self.last_focused_runner_id.clone(),
+            self.last_focused_role_id.clone(),
             project,
             window,
             cx,
@@ -636,41 +636,41 @@ impl NativeRoot {
     fn open_start_chat_modal(
         &mut self,
         target: ChatTarget,
-        default_runner_id: Option<String>,
+        default_role_id: Option<String>,
         project: Option<runner_backend::repo::project::ProjectRow>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let mut error = None;
-        match runner_backend::ops::runner::runner_list(self.core(cx)) {
-            Ok(runners) => self.app_store.update(cx, |store, store_cx| {
-                store.replace_runners(runners, store_cx)
-            }),
+        match runner_backend::ops::role::role_list(self.core(cx)) {
+            Ok(roles) => self
+                .app_store
+                .update(cx, |store, store_cx| store.replace_roles(roles, store_cx)),
             Err(load_error) => error = Some(load_error.to_string()),
         }
 
         let (runtimes, agents_checking, agents_error) =
             load_selectable_runtimes(self.core(cx), self.settings(cx));
         let persisted_mode = read_start_chat_mode(&self.core(cx).app_data_dir);
-        let mode = if default_runner_id.is_some() {
-            ChatMode::Runner
+        let mode = if default_role_id.is_some() {
+            ChatMode::Role
         } else {
             persisted_mode
         };
-        let runner_id = default_runner_id
-            .filter(|runner_id| {
+        let role_id = default_role_id
+            .filter(|role_id| {
                 self.app_store
                     .read(cx)
-                    .runners
+                    .roles
                     .iter()
-                    .any(|runner| runner.id == *runner_id)
+                    .any(|role| role.id == *role_id)
             })
             .or_else(|| {
                 self.app_store
                     .read(cx)
-                    .runners
+                    .roles
                     .first()
-                    .map(|runner| runner.id.clone())
+                    .map(|role| role.id.clone())
             });
         let runtime_name = runtimes
             .iter()
@@ -678,16 +678,16 @@ impl NativeRoot {
             .or_else(|| runtimes.first())
             .map(|runtime| runtime.name.to_string());
         let title = match mode {
-            ChatMode::Runner => runner_id
+            ChatMode::Role => role_id
                 .as_deref()
-                .and_then(|runner_id| {
+                .and_then(|role_id| {
                     self.app_store
                         .read(cx)
-                        .runners
+                        .roles
                         .iter()
-                        .find(|runner| runner.id == runner_id)
+                        .find(|role| role.id == role_id)
                 })
-                .map(|runner| default_title_for_runner(&runner.handle))
+                .map(|role| default_title_for_role(&role.handle))
                 .unwrap_or_default(),
             ChatMode::Runtime => runtime_name
                 .as_deref()
@@ -697,12 +697,12 @@ impl NativeRoot {
         };
         let cwd_placeholder = cwd_placeholder(
             mode,
-            runner_id.as_deref().and_then(|runner_id| {
+            role_id.as_deref().and_then(|role_id| {
                 self.app_store
                     .read(cx)
-                    .runners
+                    .roles
                     .iter()
-                    .find(|runner| runner.id == runner_id)
+                    .find(|role| role.id == role_id)
             }),
             &self.settings(cx).default_working_dir,
         );
@@ -719,15 +719,15 @@ impl NativeRoot {
             TextField::new(input_cx.focus_handle(), "", "default", false).placeholder_as_value(true)
         });
         let root = cx.entity();
-        let runner_handler = selection_handler(&root, StartChatSelection::Runner);
-        let runners = self.app_store.read(cx).runners.clone();
-        let runner_select = cx.new(|select_cx| {
+        let role_handler = selection_handler(&root, StartChatSelection::Role);
+        let roles = self.app_store.read(cx).roles.clone();
+        let role_select = cx.new(|select_cx| {
             StyledSelect::new(
-                "start-chat-runner",
+                "start-chat-role",
                 select_cx.focus_handle(),
-                runner_id.clone().unwrap_or_default(),
-                runner_options(&runners),
-                runner_handler,
+                role_id.clone().unwrap_or_default(),
+                role_options(&roles),
+                role_handler,
                 select_cx,
             )
             .width(px(FIELD_WIDTH))
@@ -735,26 +735,26 @@ impl NativeRoot {
             .detailed(true)
             .monospace(true)
             .placeholder("No runners yet")
-            .disabled(runners.is_empty())
+            .disabled(roles.is_empty())
         });
-        let runner_runtime_options = runner_runtime_options(
+        let role_runtime_options = role_runtime_options(
             &runtimes,
-            runner_id.as_deref().and_then(|id| {
+            role_id.as_deref().and_then(|id| {
                 self.app_store
                     .read(cx)
-                    .runners
+                    .roles
                     .iter()
-                    .find(|runner| runner.id == id)
+                    .find(|role| role.id == id)
             }),
         );
-        let runner_runtime_handler = selection_handler(&root, StartChatSelection::RunnerRuntime);
-        let runner_runtime_select = cx.new(|select_cx| {
+        let role_runtime_handler = selection_handler(&root, StartChatSelection::RoleRuntime);
+        let role_runtime_select = cx.new(|select_cx| {
             StyledSelect::new(
-                "start-chat-runner-runtime",
+                "start-chat-role-runtime",
                 select_cx.focus_handle(),
                 "",
-                runner_runtime_options,
-                runner_runtime_handler,
+                role_runtime_options,
+                role_runtime_handler,
                 select_cx,
             )
             .width(px(FIELD_WIDTH))
@@ -791,7 +791,7 @@ impl NativeRoot {
         let scroll_handle = ScrollHandle::new();
         let scroll_owner = cx.entity_id();
         let scrollbar = cx.new(|_| Scrollbar::app(scroll_handle.clone(), scroll_owner));
-        let runner_mode_focus = cx.focus_handle();
+        let role_mode_focus = cx.focus_handle();
         let direct_mode_focus = cx.focus_handle();
         let browse_focus = cx.focus_handle();
         let close_focus = cx.focus_handle();
@@ -809,23 +809,23 @@ impl NativeRoot {
             target,
             project_id,
             mode,
-            runners: self.app_store.read(cx).runners.clone(),
+            roles: self.app_store.read(cx).roles.clone(),
             runtimes,
-            runner_id,
+            role_id,
             runtime_name,
-            runner_runtime_override: None,
+            role_runtime_override: None,
             effort: String::new(),
             title: title_input,
             cwd: cwd_input,
             model: model_input,
             model_field,
-            runner_select,
-            runner_runtime_select,
+            role_select,
+            role_runtime_select,
             runtime_select,
             effort_select,
             scroll_handle,
             scrollbar,
-            runner_mode_focus,
+            role_mode_focus,
             direct_mode_focus,
             browse_focus,
             close_focus,
@@ -859,19 +859,19 @@ impl NativeRoot {
         };
         let catalog_loaded = agents_error.is_none();
         let previous_runtime = modal.runtime_name.clone();
-        let previous_override = modal.runner_runtime_override.clone();
+        let previous_override = modal.role_runtime_override.clone();
         modal.agents_checking = agents_checking;
         modal.agents_error = agents_error;
 
         if catalog_loaded {
             modal.runtimes = runtimes;
-            if modal.runner_runtime_override.as_ref().is_some_and(|name| {
+            if modal.role_runtime_override.as_ref().is_some_and(|name| {
                 !modal
                     .runtimes
                     .iter()
                     .any(|runtime| runtime.name.key() == name.as_str())
             }) {
-                modal.runner_runtime_override = None;
+                modal.role_runtime_override = None;
             }
             if modal.runtime_name.as_ref().is_none_or(|name| {
                 !modal
@@ -885,7 +885,7 @@ impl NativeRoot {
                     .map(|runtime| runtime.name.to_string());
             }
             if modal.runtime_name != previous_runtime
-                || modal.runner_runtime_override != previous_override
+                || modal.role_runtime_override != previous_override
             {
                 modal.effort.clear();
                 modal
@@ -903,13 +903,13 @@ impl NativeRoot {
                 select.set_options(runtime_options(&modal.runtimes), select_cx);
                 select.set_value(modal.runtime_name.clone().unwrap_or_default(), select_cx);
             });
-            modal.runner_runtime_select.update(cx, |select, select_cx| {
+            modal.role_runtime_select.update(cx, |select, select_cx| {
                 select.set_options(
-                    runner_runtime_options(&modal.runtimes, modal.selected_runner()),
+                    role_runtime_options(&modal.runtimes, modal.selected_role()),
                     select_cx,
                 );
                 select.set_value(
-                    modal.runner_runtime_override.clone().unwrap_or_default(),
+                    modal.role_runtime_override.clone().unwrap_or_default(),
                     select_cx,
                 );
             });
@@ -951,13 +951,13 @@ impl NativeRoot {
         cx.notify();
     }
 
-    pub(crate) fn remember_active_runner(&mut self, cx: &App) {
+    pub(crate) fn remember_active_role(&mut self, cx: &App) {
         let Some(session_id) = self.active_focused_session_id() else {
             return;
         };
-        self.last_focused_runner_id = self
+        self.last_focused_role_id = self
             .session_entry(&session_id, cx)
-            .and_then(|entry| entry.runner_id.clone());
+            .and_then(|entry| entry.role_id.clone());
     }
 
     fn close_start_chat_modal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -983,16 +983,16 @@ impl NativeRoot {
             return;
         }
         modal.mode = mode;
-        modal.runner_runtime_override = None;
+        modal.role_runtime_override = None;
         modal.effort.clear();
         modal
             .model
             .update(cx, |input, input_cx| input.reset("", input_cx));
         sync_runtime_controls(modal, cx);
         let derived = match mode {
-            ChatMode::Runner => modal
-                .selected_runner()
-                .map(|runner| default_title_for_runner(&runner.handle))
+            ChatMode::Role => modal
+                .selected_role()
+                .map(|role| default_title_for_role(&role.handle))
                 .unwrap_or_default(),
             ChatMode::Runtime => modal
                 .selected_runtime()
@@ -1000,7 +1000,7 @@ impl NativeRoot {
                 .unwrap_or_default(),
         };
         update_auto_title(&modal.title, derived, cx);
-        let placeholder = cwd_placeholder(mode, modal.selected_runner(), &default_working_dir);
+        let placeholder = cwd_placeholder(mode, modal.selected_role(), &default_working_dir);
         modal.cwd.update(cx, |input, input_cx| {
             input.set_placeholder(placeholder, input_cx)
         });
@@ -1026,25 +1026,25 @@ impl NativeRoot {
             return;
         };
         match selection {
-            StartChatSelection::Runner => {
-                modal.runner_id = Some(value.to_owned());
+            StartChatSelection::Role => {
+                modal.role_id = Some(value.to_owned());
                 let derived = modal
-                    .selected_runner()
-                    .map(|runner| default_title_for_runner(&runner.handle))
+                    .selected_role()
+                    .map(|role| default_title_for_role(&role.handle))
                     .unwrap_or_default();
                 update_auto_title(&modal.title, derived, cx);
                 let placeholder =
-                    cwd_placeholder(modal.mode, modal.selected_runner(), &default_working_dir);
+                    cwd_placeholder(modal.mode, modal.selected_role(), &default_working_dir);
                 modal.cwd.update(cx, |input, input_cx| {
                     input.set_placeholder(placeholder, input_cx)
                 });
-                let options = runner_runtime_options(&modal.runtimes, modal.selected_runner());
-                modal.runner_runtime_select.update(cx, |select, select_cx| {
+                let options = role_runtime_options(&modal.runtimes, modal.selected_role());
+                modal.role_runtime_select.update(cx, |select, select_cx| {
                     select.set_options(options, select_cx)
                 });
             }
-            StartChatSelection::RunnerRuntime => {
-                modal.runner_runtime_override = (!value.is_empty()).then(|| value.to_owned());
+            StartChatSelection::RoleRuntime => {
+                modal.role_runtime_override = (!value.is_empty()).then(|| value.to_owned());
                 modal.effort.clear();
                 modal
                     .model
@@ -1160,10 +1160,10 @@ impl NativeRoot {
         let target = modal.target.clone();
         let cwd = effective_working_dir(
             modal.cwd.read(cx).text(),
-            modal.mode == ChatMode::Runner
+            modal.mode == ChatMode::Role
                 && modal
-                    .selected_runner()
-                    .and_then(|runner| runner.working_dir.as_deref())
+                    .selected_role()
+                    .and_then(|role| role.working_dir.as_deref())
                     .is_some_and(|path| !path.trim().is_empty()),
             &self.settings(cx).default_working_dir,
         );
@@ -1173,9 +1173,9 @@ impl NativeRoot {
         let project_id = modal.project_id.clone();
         let request = build_start_request(
             modal.mode,
-            modal.selected_runner().map(|runner| runner.id.as_str()),
+            modal.selected_role().map(|role| role.id.as_str()),
             modal.selected_runtime().map(|runtime| runtime.name.key()),
-            modal.runner_runtime_override.as_deref(),
+            modal.role_runtime_override.as_deref(),
             model,
             effort,
             cwd,
@@ -1210,15 +1210,15 @@ impl NativeRoot {
         let mut rename_error = None;
         let result = (|| -> Result<String> {
             let spawned = match request {
-                StartRequest::Runner {
-                    runner_id,
+                StartRequest::Role {
+                    role_id,
                     runtime,
                     model,
                     effort,
                     cwd,
                 } => runner_backend::ops::session::session_start_direct(
                     self.core(cx),
-                    runner_id,
+                    role_id,
                     runtime,
                     model,
                     effort,
@@ -1279,7 +1279,7 @@ impl NativeRoot {
             Ok(session_id) => {
                 self.start_chat_modal = None;
                 self.error = rename_error;
-                self.remember_active_runner(cx);
+                self.remember_active_role(cx);
                 self.mark_active_tab_viewed(window, cx);
                 self.sync_active_chat_detail(cx);
                 self.begin_chat_transition(
@@ -1298,7 +1298,7 @@ impl NativeRoot {
                     self.sync_active_project_from_active_tab(cx);
                     self.set_route(AppRoute::Chat, cx);
                     let _ = self.ensure_active_tab_attached(window, cx);
-                    self.remember_active_runner(cx);
+                    self.remember_active_role(cx);
                     self.mark_active_tab_viewed(window, cx);
                     self.sync_active_chat_detail(cx);
                     self.begin_chat_transition(
@@ -1327,20 +1327,20 @@ impl NativeRoot {
         let can_submit = modal.can_submit();
         let settings_root = cx.entity();
 
-        let runner_fields = div()
+        let role_fields = div()
             .flex()
             .flex_col()
             .gap_5()
             .child(
                 Field::new(
-                    "start-chat-runner-field",
+                    "start-chat-role-field",
                     "Runner",
                     div()
                         .flex()
                         .flex_col()
                         .gap_1()
-                        .child(modal.runner_select.clone())
-                        .when(modal.runners.is_empty(), |field| {
+                        .child(modal.role_select.clone())
+                        .when(modal.roles.is_empty(), |field| {
                             field.child(
                                 div()
                                     .text_size(theme::text_meta())
@@ -1349,16 +1349,16 @@ impl NativeRoot {
                             )
                         }),
                 )
-                .focus_target(modal.runner_select.read(cx).focus_handle())
+                .focus_target(modal.role_select.read(cx).focus_handle())
                 .emphasized(true),
             )
             .child(
                 Field::new(
-                    "start-chat-runner-agent-field",
+                    "start-chat-role-agent-field",
                     "Agent",
-                    modal.runner_runtime_select.clone(),
+                    modal.role_runtime_select.clone(),
                 )
-                    .focus_target(modal.runner_runtime_select.read(cx).focus_handle())
+                    .focus_target(modal.role_runtime_select.read(cx).focus_handle())
                     .emphasized(true)
                     .subtitle("Overriding runs this persona on another agent; its model and effort become configurable below."),
             )
@@ -1477,15 +1477,15 @@ impl NativeRoot {
                     ))
                     .child(self.render_mode_button(
                         "Runner",
-                        ChatMode::Runner,
+                        ChatMode::Role,
                         mode,
                         submitting,
-                        modal.runner_mode_focus.clone(),
+                        modal.role_mode_focus.clone(),
                         cx,
                     )),
             )
             .child(match mode {
-                ChatMode::Runner => runner_fields.into_any_element(),
+                ChatMode::Role => role_fields.into_any_element(),
                 ChatMode::Runtime => direct_fields.into_any_element(),
             })
             .child(
@@ -1611,11 +1611,11 @@ impl NativeRoot {
         let click_focus = focus_handle.clone();
         let mut button = div()
             .debug_selector(move || match mode {
-                ChatMode::Runner => "START_CHAT_RUNNER_MODE".into(),
+                ChatMode::Role => "START_CHAT_ROLE_MODE".into(),
                 ChatMode::Runtime => "START_CHAT_DIRECT_MODE".into(),
             })
             .id(match mode {
-                ChatMode::Runner => "start-chat-mode-runner",
+                ChatMode::Role => "start-chat-mode-role",
                 ChatMode::Runtime => "start-chat-mode-runtime",
             })
             .track_focus(&focus_handle)
@@ -1681,12 +1681,12 @@ fn selection_handler(root: &Entity<NativeRoot>, selection: StartChatSelection) -
     })
 }
 
-fn runner_options(runners: &[Runner]) -> Vec<SelectOption> {
-    runners
+fn role_options(roles: &[Role]) -> Vec<SelectOption> {
+    roles
         .iter()
-        .map(|runner| {
-            SelectOption::new(runner.id.clone(), format!("@{}", runner.handle))
-                .description(summarize_runner(runner))
+        .map(|role| {
+            SelectOption::new(role.id.clone(), format!("@{}", role.handle))
+                .description(summarize_role(role))
         })
         .collect()
 }
@@ -1698,12 +1698,12 @@ fn runtime_options(runtimes: &[RuntimeCatalogEntry]) -> Vec<SelectOption> {
         .collect()
 }
 
-fn runner_runtime_options(
+fn role_runtime_options(
     runtimes: &[RuntimeCatalogEntry],
-    runner: Option<&Runner>,
+    role: Option<&Role>,
 ) -> Vec<SelectOption> {
-    let suffix = runner
-        .map(|runner| format!(" ({})", runtime_display_name(runtimes, &runner.runtime)))
+    let suffix = role
+        .map(|role| format!(" ({})", runtime_display_name(runtimes, &role.runtime)))
         .unwrap_or_default();
     std::iter::once(SelectOption::new("", format!("Runner default{suffix}")))
         .chain(runtime_options(runtimes))
@@ -1778,10 +1778,10 @@ fn set_start_chat_controls_disabled(
     modal
         .cwd
         .update(cx, |field, field_cx| field.set_disabled(disabled, field_cx));
-    modal.runner_select.update(cx, |select, select_cx| {
-        select.set_disabled(disabled || modal.runners.is_empty(), select_cx)
+    modal.role_select.update(cx, |select, select_cx| {
+        select.set_disabled(disabled || modal.roles.is_empty(), select_cx)
     });
-    modal.runner_runtime_select.update(cx, |select, select_cx| {
+    modal.role_runtime_select.update(cx, |select, select_cx| {
         select.set_disabled(disabled, select_cx)
     });
     modal.runtime_select.update(cx, |select, select_cx| {
@@ -1794,14 +1794,14 @@ fn start_chat_focus_order(modal: &StartChatModal, cx: &Context<NativeRoot>) -> V
     let mut order = vec![
         modal.close_focus.clone(),
         modal.direct_mode_focus.clone(),
-        modal.runner_mode_focus.clone(),
+        modal.role_mode_focus.clone(),
     ];
     match modal.mode {
-        ChatMode::Runner => {
-            if !modal.runners.is_empty() {
-                order.push(modal.runner_select.read(cx).focus_handle());
+        ChatMode::Role => {
+            if !modal.roles.is_empty() {
+                order.push(modal.role_select.read(cx).focus_handle());
             }
-            order.push(modal.runner_runtime_select.read(cx).focus_handle());
+            order.push(modal.role_runtime_select.read(cx).focus_handle());
         }
         ChatMode::Runtime => {
             if !modal.runtimes.is_empty() {
@@ -1890,11 +1890,11 @@ pub(crate) fn load_selectable_runtimes(
     }
 }
 
-fn summarize_runner(runner: &Runner) -> String {
+fn summarize_role(role: &Role) -> String {
     format!(
         "{} · {}",
-        runner.runtime,
-        runner.working_dir.as_deref().unwrap_or("no working dir")
+        role.runtime,
+        role.working_dir.as_deref().unwrap_or("no working dir")
     )
 }
 
@@ -1912,7 +1912,7 @@ fn runtime_display_name(runtimes: &[RuntimeCatalogEntry], name: &str) -> String 
         .unwrap_or_else(|| name.to_owned())
 }
 
-fn default_title_for_runner(handle: &str) -> String {
+fn default_title_for_role(handle: &str) -> String {
     format!("@{handle}")
 }
 
@@ -1949,10 +1949,10 @@ fn update_auto_title(title: &Entity<TextField>, derived: String, cx: &mut Contex
     title.update(cx, |input, input_cx| input.reset(next, input_cx));
 }
 
-fn cwd_placeholder(mode: ChatMode, runner: Option<&Runner>, default_path: &str) -> String {
+fn cwd_placeholder(mode: ChatMode, role: Option<&Role>, default_path: &str) -> String {
     match mode {
-        ChatMode::Runner => working_dir_placeholder(
-            runner.and_then(|runner| runner.working_dir.as_deref()),
+        ChatMode::Role => working_dir_placeholder(
+            role.and_then(|role| role.working_dir.as_deref()),
             default_path,
         ),
         ChatMode::Runtime => working_dir_placeholder(None, default_path),
@@ -1987,19 +1987,19 @@ fn normalized_value(value: &str) -> Option<String> {
 
 fn build_start_request(
     mode: ChatMode,
-    runner_id: Option<&str>,
+    role_id: Option<&str>,
     runtime_name: Option<&str>,
-    runner_runtime_override: Option<&str>,
+    role_runtime_override: Option<&str>,
     model: Option<String>,
     effort: Option<String>,
     cwd: Option<String>,
 ) -> Option<StartRequest> {
     match mode {
-        ChatMode::Runner => runner_id.map(|runner_id| StartRequest::Runner {
-            runner_id: runner_id.to_owned(),
-            runtime: runner_runtime_override.map(str::to_owned),
-            model: runner_runtime_override.and(model),
-            effort: runner_runtime_override.and(effort),
+        ChatMode::Role => role_id.map(|role_id| StartRequest::Role {
+            role_id: role_id.to_owned(),
+            runtime: role_runtime_override.map(str::to_owned),
+            model: role_runtime_override.and(model),
+            effort: role_runtime_override.and(effort),
             cwd,
         }),
         ChatMode::Runtime => runtime_name.map(|runtime| StartRequest::Runtime {
@@ -2110,7 +2110,7 @@ mod tests {
         });
         cx.run_until_parked();
         let mut window = VisualTestContext::from_window(host.into(), &cx);
-        for mode in [ChatMode::Runtime, ChatMode::Runner, ChatMode::Runtime] {
+        for mode in [ChatMode::Runtime, ChatMode::Role, ChatMode::Runtime] {
             host.update(&mut window, |host, _, cx| {
                 host.0
                     .update(cx, |root, cx| root.set_start_chat_mode(mode, cx));
@@ -2120,13 +2120,13 @@ mod tests {
             window.run_until_parked();
             let form = window.debug_bounds("START_CHAT_FORM").unwrap();
             let modes = window.debug_bounds("START_CHAT_MODES").unwrap();
-            let runner = window.debug_bounds("START_CHAT_RUNNER_MODE").unwrap();
+            let role = window.debug_bounds("START_CHAT_ROLE_MODE").unwrap();
             let direct = window.debug_bounds("START_CHAT_DIRECT_MODE").unwrap();
-            assert!(direct.origin.x < runner.origin.x);
+            assert!(direct.origin.x < role.origin.x);
             assert!(modes.size.width >= px(FIELD_WIDTH), "{mode:?}: {modes:?}");
             assert_eq!(modes.size.width, form.size.width, "{mode:?}: {form:?}");
-            assert!((runner.size.width - direct.size.width).abs() <= px(1.));
-            assert!(runner.size.width > px(200.));
+            assert!((role.size.width - direct.size.width).abs() <= px(1.));
+            assert!(role.size.width > px(200.));
         }
     }
 
@@ -2146,8 +2146,8 @@ mod tests {
             );
             for route in [
                 AppRoute::Chat,
-                AppRoute::Runners,
-                AppRoute::RunnerDetail("runner".into()),
+                AppRoute::Roles,
+                AppRoute::RoleDetail("role".into()),
                 AppRoute::Crews,
                 AppRoute::CrewEditor("crew".into()),
                 AppRoute::Settings,
@@ -2230,7 +2230,7 @@ mod tests {
     #[test]
     fn title_auto_derives_until_the_user_edits_it() {
         assert_eq!(
-            auto_title_after_selection(false, "@coder", default_title_for_runner("reviewer")),
+            auto_title_after_selection(false, "@coder", default_title_for_role("reviewer")),
             "@reviewer"
         );
         assert_eq!(
@@ -2257,7 +2257,7 @@ mod tests {
     fn start_request_applies_overrides_only_to_the_active_runtime() {
         assert_eq!(
             build_start_request(
-                ChatMode::Runner,
+                ChatMode::Role,
                 Some("coder"),
                 Some("codex"),
                 None,
@@ -2265,8 +2265,8 @@ mod tests {
                 Some("high".into()),
                 Some("/repo".into()),
             ),
-            Some(StartRequest::Runner {
-                runner_id: "coder".into(),
+            Some(StartRequest::Role {
+                role_id: "coder".into(),
                 runtime: None,
                 model: None,
                 effort: None,
@@ -2275,7 +2275,7 @@ mod tests {
         );
         assert_eq!(
             build_start_request(
-                ChatMode::Runner,
+                ChatMode::Role,
                 Some("coder"),
                 Some("codex"),
                 Some("claude-code"),
@@ -2283,8 +2283,8 @@ mod tests {
                 Some("max".into()),
                 None,
             ),
-            Some(StartRequest::Runner {
-                runner_id: "coder".into(),
+            Some(StartRequest::Role {
+                role_id: "coder".into(),
                 runtime: Some("claude-code".into()),
                 model: Some("opus".into()),
                 effort: Some("max".into()),
@@ -2309,7 +2309,7 @@ mod tests {
             })
         );
         assert_eq!(
-            build_start_request(ChatMode::Runner, None, None, None, None, None, None),
+            build_start_request(ChatMode::Role, None, None, None, None, None, None),
             None
         );
     }
@@ -2345,8 +2345,15 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         assert_eq!(read_start_chat_mode(temp.path()), ChatMode::Runtime);
 
-        write_start_chat_mode(temp.path(), ChatMode::Runner).unwrap();
-        assert_eq!(read_start_chat_mode(temp.path()), ChatMode::Runner);
+        write_start_chat_mode(temp.path(), ChatMode::Role).unwrap();
+        assert_eq!(read_start_chat_mode(temp.path()), ChatMode::Role);
+        assert_eq!(
+            fs::read_to_string(start_chat_mode_path(temp.path())).unwrap(),
+            "role"
+        );
+
+        fs::write(start_chat_mode_path(temp.path()), "runner").unwrap();
+        assert_eq!(read_start_chat_mode(temp.path()), ChatMode::Role);
 
         write_start_chat_mode(temp.path(), ChatMode::Runtime).unwrap();
         assert_eq!(read_start_chat_mode(temp.path()), ChatMode::Runtime);
@@ -2356,7 +2363,7 @@ mod tests {
     }
 
     #[test]
-    fn project_scope_seeds_cwd_before_runner_and_settings_defaults() {
+    fn project_scope_seeds_cwd_before_role_and_settings_defaults() {
         let project = runner_backend::repo::project::ProjectRow {
             id: "project-1".into(),
             name: "Runner".into(),

@@ -507,7 +507,7 @@ mod tests {
         for (mode, key) in [
             (MissionPermissionMode::Bypass, "bypass"),
             (MissionPermissionMode::Auto, "auto"),
-            (MissionPermissionMode::RunnerDefault, "runner-default"),
+            (MissionPermissionMode::RoleDefault, "role-default"),
         ] {
             let json = serde_json::to_string(&AppSettings {
                 mission_permission_mode: mode,
@@ -522,6 +522,15 @@ mod tests {
             assert_eq!(reloaded.mission_permission_mode, mode);
             assert_eq!(MissionPermissionMode::parse(key), Some(mode));
         }
+
+        let legacy: AppSettings =
+            serde_json::from_str(r#"{"missionPermissionMode":"runner-default"}"#).unwrap();
+        assert_eq!(
+            legacy.mission_permission_mode,
+            MissionPermissionMode::RoleDefault
+        );
+        let saved = serde_json::to_string(&legacy).unwrap();
+        assert!(saved.contains(r#""missionPermissionMode":"role-default""#));
         assert_eq!(MissionPermissionMode::parse("plan"), None);
     }
 

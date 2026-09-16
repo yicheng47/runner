@@ -15,9 +15,9 @@ use std::rc::Rc;
 use gpui::prelude::*;
 use gpui::{div, rems, Context, Entity, FocusHandle, ScrollHandle, Subscription, Window};
 use runner_app::ui::{ContextMenu, ModelField, Scrollbar, SearchInput, StyledSelect, TextField};
-use runner_backend::model::{Crew, SlotWithRunner};
+use runner_backend::model::{Crew, SlotWithRole};
 use runner_backend::ops::crew::CrewListItem;
-use runner_backend::ops::runner::RunnerWithActivity;
+use runner_backend::ops::role::RoleWithActivity;
 use runner_backend::ops::runtime::RuntimeCatalogEntry;
 
 use crate::list_controls::ListControls;
@@ -54,7 +54,7 @@ impl Render for SlotDrag {
 struct CrewEditorState {
     crew_id: String,
     crew: Option<Crew>,
-    slots: Vec<SlotWithRunner>,
+    slots: Vec<SlotWithRole>,
     loaded: bool,
     loading: bool,
     error: Option<String>,
@@ -91,11 +91,11 @@ struct AddSlotForm {
     crew_id: String,
     crew_name: String,
     existing_handles: HashSet<String>,
-    runners: Vec<RunnerWithActivity>,
+    roles: Vec<RoleWithActivity>,
     runtimes: Vec<RuntimeCatalogEntry>,
     query: Entity<TextField>,
     last_synced_query: String,
-    selected_runner_id: Option<String>,
+    selected_role_id: Option<String>,
     slot_handle: Entity<TextField>,
     runtime_override: String,
     model_override: Entity<TextField>,
@@ -126,8 +126,8 @@ enum CrewMenuAction {
 #[derive(Clone)]
 enum SlotMenuAction {
     SetLead(String),
-    Edit(SlotWithRunner),
-    Remove(SlotWithRunner),
+    Edit(SlotWithRole),
+    Remove(SlotWithRole),
 }
 
 struct CrewDeleteConfirm {
@@ -136,7 +136,7 @@ struct CrewDeleteConfirm {
 }
 
 struct SlotRemoveConfirm {
-    slot: SlotWithRunner,
+    slot: SlotWithRole,
 }
 
 pub(crate) struct CrewSurfaces {

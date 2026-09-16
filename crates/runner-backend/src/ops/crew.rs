@@ -1,4 +1,4 @@
-// Crew CRUD — the top-level container for a team of runners.
+// Crew CRUD — the top-level container for a team of roles.
 //
 // Signal-type validation is no longer crew-scoped: the CLI checks
 // incoming `runner signal <type>` against the closed
@@ -44,10 +44,10 @@ pub struct UpdateCrewInput {
 pub struct CrewListItem {
     #[serde(flatten)]
     pub crew: Crew,
-    pub runner_count: i64,
+    pub role_count: i64,
     /// Member preview for the Crews list cards: one entry per slot,
     /// in `position` order, carrying just the labels the card pills
-    /// need (`@slot_handle` + `runtime-runner_handle`). Sourced
+    /// need (`@slot_handle` + `runtime-role_handle`). Sourced
     /// inline so the frontend doesn't N+1 `slot_list` for each crew
     /// on every page load.
     pub members: Vec<CrewMemberPreview>,
@@ -56,7 +56,7 @@ pub struct CrewListItem {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CrewMemberPreview {
     pub slot_handle: String,
-    pub runner_handle: String,
+    pub role_handle: String,
     pub runtime: String,
     pub lead: bool,
 }
@@ -70,7 +70,7 @@ fn now() -> Timestamp {
 }
 
 pub fn list(conn: &Connection) -> Result<Vec<CrewListItem>> {
-    let rows = repo::crew::list_with_runner_count(conn)?;
+    let rows = repo::crew::list_with_role_count(conn)?;
 
     // Bulk-fetch slot pills for every crew in a single query so the
     // Crews page renders without an N+1 lookup. Ordered by
@@ -83,7 +83,7 @@ pub fn list(conn: &Connection) -> Result<Vec<CrewListItem>> {
             .or_default()
             .push(CrewMemberPreview {
                 slot_handle: preview.slot_handle,
-                runner_handle: preview.runner_handle,
+                role_handle: preview.role_handle,
                 runtime: preview.runtime,
                 lead: preview.lead,
             });
@@ -91,11 +91,11 @@ pub fn list(conn: &Connection) -> Result<Vec<CrewListItem>> {
 
     Ok(rows
         .into_iter()
-        .map(|(crew, runner_count)| {
+        .map(|(crew, role_count)| {
             let members = members_by_crew.remove(&crew.id).unwrap_or_default();
             CrewListItem {
                 crew,
-                runner_count,
+                role_count,
                 members,
             }
         })
@@ -112,7 +112,7 @@ pub fn list_page(
     let total_count = repo::crew::count(conn)?;
     let filtered_count = repo::crew::count_matching(conn, &pattern)?;
     let (limit, offset) = super::page_limit_offset(page, page_size, filtered_count);
-    let rows = repo::crew::list_with_runner_count_page(conn, &pattern, limit, offset)?;
+    let rows = repo::crew::list_with_role_count_page(conn, &pattern, limit, offset)?;
     let crew_ids = rows
         .iter()
         .map(|(crew, _)| crew.id.clone())
@@ -125,17 +125,17 @@ pub fn list_page(
             .or_default()
             .push(CrewMemberPreview {
                 slot_handle: preview.slot_handle,
-                runner_handle: preview.runner_handle,
+                role_handle: preview.role_handle,
                 runtime: preview.runtime,
                 lead: preview.lead,
             });
     }
     let items = rows
         .into_iter()
-        .map(|(crew, runner_count)| CrewListItem {
+        .map(|(crew, role_count)| CrewListItem {
             members: members_by_crew.remove(&crew.id).unwrap_or_default(),
             crew,
-            runner_count,
+            role_count,
         })
         .collect();
     Ok(super::ListPage {
@@ -368,7 +368,7 @@ mod tests {
     }
 
     #[test]
-    fn list_returns_crews_with_runner_counts() {
+    fn list_returns_crews_with_role_counts() {
         let pool = ctx();
         let conn = pool.get().unwrap();
         let a = create(
@@ -387,28 +387,15 @@ mod tests {
             },
         )
         .unwrap();
-        conn.execute(
-            "INSERT INTO runners (
-                id, handle, display_name, runtime, command,
-                created_at, updated_at
-             ) VALUES ('r1', 'lead', 'Lead', 'shell', 'sh',
-                       '2026-04-22T00:00:00Z', '2026-04-22T00:00:00Z')",
-            [],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO slots (id, crew_id, runner_id, slot_handle, position, lead, added_at)
-             VALUES ('s1', ?1, 'r1', 'lead', 0, 1, '2026-04-22T00:00:00Z')",
-            params![a.id],
-        )
-        .unwrap();
+        crate::test_support::insert_test_role(&conn, "r1", "lead", "shell", "sh");
+        crate::test_support::insert_test_slot(&conn, "s1", &a.id, "r1", "lead", 0, true);
 
         let items = list(&conn).unwrap();
         assert_eq!(items.len(), 2);
         let a_item = items.iter().find(|i| i.crew.id == a.id).unwrap();
-        assert_eq!(a_item.runner_count, 1);
+        assert_eq!(a_item.role_count, 1);
         let b_item = items.iter().find(|i| i.crew.name == "B").unwrap();
-        assert_eq!(b_item.runner_count, 0);
+        assert_eq!(b_item.role_count, 0);
     }
 
     #[test]
@@ -433,26 +420,17 @@ mod tests {
             },
         )
         .unwrap();
-        conn.execute(
-            "INSERT INTO runners (
-                id, handle, display_name, runtime, command,
-                created_at, updated_at
-             ) VALUES ('r-search', 'runner-needle', 'Runner', 'shell', 'sh',
-                       '2026-04-22T00:00:00Z', '2026-04-22T00:00:00Z')",
-            [],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO slots (
-                id, crew_id, runner_id, slot_handle, position, lead,
-                runtime_override, added_at
-             ) VALUES (
-                's-search', ?1, 'r-search', 'slot-needle', 0, 1,
-                'runtime-needle', '2026-04-22T00:00:00Z'
-             )",
-            params![target.id],
-        )
-        .unwrap();
+        crate::test_support::insert_test_role(&conn, "r-search", "role-needle", "shell", "sh");
+        crate::test_support::insert_test_slot(
+            &conn,
+            "s-search",
+            &target.id,
+            "r-search",
+            "slot-needle",
+            0,
+            true,
+        );
+        repo::slot::set_runtime_override(&conn, "s-search", Some("runtime-needle")).unwrap();
 
         for query in [
             "NAME NEEDLE",
@@ -460,7 +438,7 @@ mod tests {
             "goal needle",
             "system prompt needle",
             "slot-needle",
-            "runner-needle",
+            "role-needle",
             "runtime-needle",
         ] {
             let page = list_page(&conn, 1, 8, query).unwrap();
@@ -526,9 +504,9 @@ mod tests {
     }
 
     #[test]
-    fn delete_cascades_to_slot_rows_but_spares_runner_row() {
-        // Runners are global (C5.5). Deleting a crew should strip the
-        // slot rows but leave the runner intact for other crews (or a
+    fn delete_cascades_to_slot_rows_but_spares_role_row() {
+        // Roles are global (C5.5). Deleting a crew should strip the
+        // slot rows but leave the role intact for other crews (or a
         // future direct chat).
         let pool = ctx();
         let mut conn = pool.get().unwrap();
@@ -540,21 +518,8 @@ mod tests {
             },
         )
         .unwrap();
-        conn.execute(
-            "INSERT INTO runners (
-                id, handle, display_name, runtime, command,
-                created_at, updated_at
-             ) VALUES ('r1', 'lead', 'Lead', 'shell', 'sh',
-                       '2026-04-22T00:00:00Z', '2026-04-22T00:00:00Z')",
-            [],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO slots (id, crew_id, runner_id, slot_handle, position, lead, added_at)
-             VALUES ('s1', ?1, 'r1', 'lead', 0, 1, '2026-04-22T00:00:00Z')",
-            params![crew.id],
-        )
-        .unwrap();
+        crate::test_support::insert_test_role(&conn, "r1", "lead", "shell", "sh");
+        crate::test_support::insert_test_slot(&conn, "s1", &crew.id, "r1", "lead", 0, true);
 
         delete(&mut conn, &crew.id).unwrap();
         let slot_count: i64 = conn
@@ -564,13 +529,9 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        let runner_count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM runners WHERE id = 'r1'", [], |r| {
-                r.get(0)
-            })
-            .unwrap();
+        let role_count = i64::from(repo::role::get(&conn, "r1").unwrap().is_some());
         assert_eq!(slot_count, 0);
-        assert_eq!(runner_count, 1, "runner outlives the crew");
+        assert_eq!(role_count, 1, "role outlives the crew");
     }
 
     #[test]
@@ -626,15 +587,7 @@ mod tests {
             },
         )
         .unwrap();
-        conn.execute(
-            "INSERT INTO runners (
-                id, handle, display_name, runtime, command,
-                created_at, updated_at
-             ) VALUES ('r1', 'reviewer', 'Reviewer', 'shell', 'sh',
-                       '2026-04-22T00:00:00Z', '2026-04-22T00:00:00Z')",
-            [],
-        )
-        .unwrap();
+        crate::test_support::insert_test_role(&conn, "r1", "reviewer", "shell", "sh");
         conn.execute(
             "INSERT INTO missions
                 (id, crew_id, title, status, started_at, stopped_at, archived_at)
@@ -644,14 +597,14 @@ mod tests {
             params![crew.id],
         )
         .unwrap();
-        conn.execute(
-            "INSERT INTO sessions
-                (id, mission_id, runner_id, slot_id, status, started_at)
-             VALUES ('s-archived', 'm-archived', 'r1', 'slot-reviewer',
-                     'stopped', '2026-04-22T00:00:00Z')",
-            [],
-        )
-        .unwrap();
+        let mut session = crate::test_support::test_session_row(
+            "s-archived",
+            crate::model::SessionStatus::Stopped,
+        );
+        session.mission_id = Some("m-archived".into());
+        session.role_id = Some("r1".into());
+        session.slot_id = Some("slot-reviewer".into());
+        repo::session::insert(&conn, &session).unwrap();
 
         delete(&mut conn, &crew.id).unwrap();
         let session_count: i64 = conn

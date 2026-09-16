@@ -7,19 +7,19 @@ use super::logic::validate_slot_handle;
 use super::logic::CrewNameRefresh;
 use super::*;
 use chrono::Utc;
-use runner_backend::model::{Runner, Slot};
+use runner_backend::model::{Role, Slot};
 
-fn slot_with_runner(
+fn slot_with_role(
     runtime_override: Option<&str>,
     model_override: Option<&str>,
     effort_override: Option<&str>,
-) -> SlotWithRunner {
+) -> SlotWithRole {
     let now = Utc::now();
-    SlotWithRunner {
+    SlotWithRole {
         slot: Slot {
             id: "slot".into(),
             crew_id: "crew".into(),
-            runner_id: "runner".into(),
+            role_id: "role".into(),
             slot_handle: "coder".into(),
             position: 0,
             lead: true,
@@ -28,8 +28,8 @@ fn slot_with_runner(
             effort_override: effort_override.map(str::to_owned),
             added_at: now,
         },
-        runner: Runner {
-            id: "runner".into(),
+        role: Role {
+            id: "role".into(),
             handle: "coder".into(),
             display_name: "Coder".into(),
             runtime: "codex".into(),
@@ -95,23 +95,19 @@ fn crew_name_refresh_preserves_live_edits_without_orphaning_the_field() {
 #[test]
 fn slot_command_summary_applies_runtime_and_model_effort_layers() {
     assert_eq!(
-        slot_command_summary(&slot_with_runner(None, None, None)),
+        slot_command_summary(&slot_with_role(None, None, None)),
         "codex --quiet"
     );
     assert_eq!(
-        slot_command_summary(&slot_with_runner(
-            Some("codex"),
-            Some("gpt-5"),
-            Some("high")
-        )),
+        slot_command_summary(&slot_with_role(Some("codex"), Some("gpt-5"), Some("high"))),
         "codex --quiet (model gpt-5 · effort high)"
     );
     assert_eq!(
-        slot_command_summary(&slot_with_runner(Some("claude-code"), None, None)),
+        slot_command_summary(&slot_with_role(Some("claude-code"), None, None)),
         "claude (runtime defaults)"
     );
     assert_eq!(
-        slot_command_summary(&slot_with_runner(
+        slot_command_summary(&slot_with_role(
             Some("claude-code"),
             Some("opus"),
             Some("max")

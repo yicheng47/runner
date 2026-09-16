@@ -144,7 +144,7 @@ fn direct_session(id: &str, runtime: &str, status: SessionStatus) -> DirectSessi
     DirectSessionEntry {
         session_id: id.into(),
         project_id: None,
-        runner_id: None,
+        role_id: None,
         handle: None,
         agent_runtime: runtime.into(),
         agent_command: runtime.into(),
@@ -398,15 +398,15 @@ fn workspace_starts_with_a_non_selectable_new_chat_action() {
         WORKSPACE_ENTRIES,
         [
             WorkspaceEntry::NewTab,
-            WorkspaceEntry::Runner,
+            WorkspaceEntry::Role,
             WorkspaceEntry::Crew,
         ]
     );
     assert!(!WorkspaceEntry::NewTab.selectable());
-    assert!(!WorkspaceEntry::NewTab.selected(&AppRoute::Runners));
+    assert!(!WorkspaceEntry::NewTab.selected(&AppRoute::Roles));
     assert!(!WorkspaceEntry::NewTab.selected(&AppRoute::Crews));
     assert!(!WorkspaceEntry::NewTab.selected(&AppRoute::Settings));
-    assert!(WorkspaceEntry::Runner.selectable());
+    assert!(WorkspaceEntry::Role.selectable());
     assert!(WorkspaceEntry::Crew.selectable());
 }
 
