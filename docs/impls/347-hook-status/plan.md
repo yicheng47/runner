@@ -1,6 +1,6 @@
 # Hook-based agent status — slice plan
 
-Slices for [#347](https://github.com/yicheng47/runner/issues/347) ([spec](../../features/347-hook-based-session-status.md), [README](README.md), [log](impl_log.md)). Each lands green on its own. The spec's own "Implementation phases" section is the narrative version; this is the unit of work.
+Slices for [#347](https://github.com/yicheng47/runner/issues/347) ([spec](../../features/archive/347-hook-based-session-status.md), [README](README.md), [log](impl_log.md)). Each lands green on its own. The spec's own "Implementation phases" section is the narrative version; this is the unit of work.
 
 | Slice | Scope | State |
 | --- | --- | --- |

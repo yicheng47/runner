@@ -2,7 +2,7 @@
 
 > Tracking issue: [#347](https://github.com/yicheng47/runner/issues/347)
 >
-> **Historical proposal, superseded.** #347 was closed on 2026-08-27 and reopened on 2026-09-13 for the next step after v0.8.9. The active design is [347 — Hook-based agent session status](../347-hook-based-session-status.md). The Tauri paths, old CLI flags, unconditional permission/stop mappings, and silence-based freshness decay below describe the old proposal, not the current plan.
+> **Historical proposal, superseded.** #347 was closed on 2026-08-27 and reopened on 2026-09-13 for the next step after v0.8.9. The active design is [347 — Hook-based agent session status](./347-hook-based-session-status.md). The Tauri paths, old CLI flags, unconditional permission/stop mappings, and silence-based freshness decay below describe the old proposal, not the current plan.
 
 ## Motivation
 

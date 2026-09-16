@@ -1,6 +1,6 @@
 # Hook-based agent status — program record
 
-Implementation program for [feature 347 — hook-based agent session status](../../features/347-hook-based-session-status.md) ([#347](https://github.com/yicheng47/runner/issues/347)). The spec says *what*; this directory says *how, in what order, and what has landed*. Same shape as the [local-skills](../local-skills/README.md) record: this file is the condensed state and the decisions that bind, [plan.md](plan.md) is the slice plan, [impl_log.md](impl_log.md) is the dated log. Mission briefs go where every brief lives, [`docs/impls/archive/gpui-rewrite/briefs/`](../archive/gpui-rewrite/briefs/).
+Implementation program for [feature 347 — hook-based agent session status](../../features/archive/347-hook-based-session-status.md) ([#347](https://github.com/yicheng47/runner/issues/347)). The spec says *what*; this directory says *how, in what order, and what has landed*. Same shape as the [local-skills](../local-skills/README.md) record: this file is the condensed state and the decisions that bind, [plan.md](plan.md) is the slice plan, [impl_log.md](impl_log.md) is the dated log. Mission briefs go where every brief lives, [`docs/impls/archive/gpui-rewrite/briefs/`](../archive/gpui-rewrite/briefs/).
 
 ## Status (2026-09-16)
 

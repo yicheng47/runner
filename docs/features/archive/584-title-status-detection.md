@@ -2,7 +2,7 @@
 
 > Tracking issue: [#584](https://github.com/yicheng47/runner/issues/584)
 > Implemented in [#585](https://github.com/yicheng47/runner/pull/585), included in v0.8.9. Fixes the captured regression in [#583](https://github.com/yicheng47/runner/issues/583).
-> Decision, 2026-09-13: ship the merged heuristic unchanged in v0.8.9, then replace agent status detection with [lifecycle hooks (#347)](../347-hook-based-session-status.md).
+> Decision, 2026-09-13: ship the merged heuristic unchanged in v0.8.9, then replace agent status detection with [lifecycle hooks (#347)](./347-hook-based-session-status.md).
 
 ## Problem and implemented behavior
 
@@ -22,7 +22,7 @@ No shell detector was implemented in #585. A quiet `sleep 4` can still read Idle
 
 ## Follow-up direction
 
-- [#347 — Hook-based agent status](../347-hook-based-session-status.md): use Claude Code and Codex lifecycle events; remove spinner classification when that replacement lands. Do not let output silence override a healthy hook-driven turn.
+- [#347 — Hook-based agent status](./347-hook-based-session-status.md): use Claude Code and Codex lifecycle events; remove spinner classification when that replacement lands. Do not let output silence override a healthy hook-driven turn.
 - [#586 — Shell status](../586-shell-status-detection.md): try process detection first, with explicit Unix/Windows limits; consider Ghostty-style semantic shell integration later.
 - [#587 — Terminal-provided titles](./587-terminal-provided-titles.md): display child-supplied text and animation independently of activity, routing, and persistent names.
 
