@@ -2,7 +2,7 @@
 
 Jason requested a Codex crew mission on 2026-09-16. Work in `/Users/jason/repos/yicheng47/runner` on the existing branch `feat/606-rail-glyphs`, created from `main` at `1f647cc` with this brief as its only commit. Build on it; do not create another branch, rebase, or squash.
 
-Read first: this brief; `docs/features/606-rail-glyph-liveness.md` (binding; the design frame `Spec — Rail glyphs (606) · v1`, `Xk8NM`, on `design/runner.pen` shows the before and after rails and the folder pair, and Jason signed off the lucide `folder` / `folder-open` outline pair on 2026-09-16); `docs/features/593-provider-chat-icons.md` for the provider-mark rule this generalizes; then the code: `crates/runner-app/src/surfaces/sidebar/elements.rs` (`sidebar_icon`), `sidebar/rows_render.rs` (the project header at its two `folder-code.svg` sites, normal and inline-rename; the mission row at its two `flag.svg` sites; the tab leaf through `sidebar_tab_icon`; the generic site near line 758), `sidebar/mod.rs` near line 176, `sidebar/menus.rs` (`sidebar_tab_icon`), `chat_icon.rs` (`ChatIcon::color`, the rule provider marks already follow), `assets.rs` (`FOLDER_CODE`, `FOLDER_OPEN`, the registry), and `sidebar/tests.rs`.
+Read first: this brief; `docs/features/archive/606-rail-glyph-liveness.md` (binding; the design frame `Spec — Rail glyphs (606) · v1`, `Xk8NM`, on `design/runner.pen` shows the before and after rails and the folder pair, and Jason signed off the lucide `folder` / `folder-open` outline pair on 2026-09-16); `docs/features/593-provider-chat-icons.md` for the provider-mark rule this generalizes; then the code: `crates/runner-app/src/surfaces/sidebar/elements.rs` (`sidebar_icon`), `sidebar/rows_render.rs` (the project header at its two `folder-code.svg` sites, normal and inline-rename; the mission row at its two `flag.svg` sites; the tab leaf through `sidebar_tab_icon`; the generic site near line 758), `sidebar/mod.rs` near line 176, `sidebar/menus.rs` (`sidebar_tab_icon`), `chat_icon.rs` (`ChatIcon::color`, the rule provider marks already follow), `assets.rs` (`FOLDER_CODE`, `FOLDER_OPEN`, the registry), and `sidebar/tests.rs`.
 
 ## Ownership and authorization
 
@@ -16,7 +16,7 @@ The coder owns implementation and checks; the reviewer waits for an explicit Run
 
 **Tests.** The colour table in `chat_icon.rs` or beside `sidebar_icon`: a generic icon resolves to `theme::text()` at 1.0 live and 0.45 not live in both theme variants, and a provider mark still returns its tint. `sidebar_tab_icon` paths unchanged. A project-header test for the asset by expansion state, in the shape of the existing header tests in `sidebar/tests.rs`. Any assets registry test that enumerates icon names.
 
-**Docs.** None beyond the spec: tick the phase 2 items in `docs/features/606-rail-glyph-liveness.md` as they land and note anything the code forced you to decide differently.
+**Docs.** None beyond the spec: tick the phase 2 items in `docs/features/archive/606-rail-glyph-liveness.md` as they land and note anything the code forced you to decide differently.
 
 Out of this mission: any change to provider marks or their tints, the chevron, row metrics, the tail-state glyphs and their colours, the drag-and-drop indicators, platform window chrome, and the Pencil file.
 

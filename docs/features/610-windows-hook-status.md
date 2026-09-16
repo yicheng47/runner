@@ -35,4 +35,5 @@ Codex human waits (no safe surfaced-wait boundary in 0.154 hooks or rollout); Co
 
 - On JASONPC, per runtime: a prompt shows Working without the estimated tooltip and Idle on completion; an approval dialog shows Approval needed while visible; a question shows Answer needed; the feed file is created under app data and removed on session end; a session with hooks disabled falls back to estimated status.
 - The macOS behaviour and every existing adapter test are unchanged.
+- While on JASONPC, the [606](./archive/606-rail-glyph-liveness.md) rail check: in both themes a project with a running session and one without, a shell tab, a mission row and a provider chat; live generic glyphs full-strength text, stopped ones dimmed, provider marks keep their hue; collapse and expand a project for the closed and open folder; drag a row and confirm the accent drop indicator.
 - `docs/tests/` gains a Windows smoke record per runtime in the shape of the Codex and Copilot ones.
