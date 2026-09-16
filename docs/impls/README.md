@@ -6,6 +6,7 @@ A plan stays here while its work is in flight and moves to [`archive/`](./archiv
 
 ## Active
 
+- [GitHub Copilot CLI runtime](./540-copilot-cli-runtime.md) — [#540](../features/540-copilot-cli-runtime.md) mission sequence: mission 1 (adapter, surfaces, docs) on the codex peer crew from 2026-09-16, mission 2 the hook status adapter, mission 3 smoke and fixture.
 - [Runtime model discovery](./590-runtime-model-discovery.md) — [#590](../features/590-runtime-model-discovery.md) Claude crew continuation of #591: Codex/Claude discovery, persistent cache, silent failure, success logs, and platform verification; TRAE behavior preserved.
 - [`347-hook-status/`](./347-hook-status/README.md) — feature [347](../features/347-hook-based-session-status.md) ([#347](https://github.com/yicheng47/runner/issues/347)) implementation program: condensed state and binding decisions, slice plan, dated impl log. Slice 0 (design and the capability audit against installed CLI binaries) and slice 1 (Claude Code hook source behind the shipped Busy/Idle vocabulary) landed 2026-09-14; slice 2 is the vocabulary and its UI.
 - [`local-skills/`](./local-skills/README.md) — feature [73](../features/archive/73-runner-skills.md) (closed 2026-09-13; M2/M3 continue as [#577](https://github.com/yicheng47/runner/issues/577)) implementation program: condensed state and binding decisions, milestone plan, dated impl log.
