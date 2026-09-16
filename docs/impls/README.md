@@ -7,13 +7,13 @@ A plan stays here while its work is in flight and moves to [`archive/`](./archiv
 ## Active
 
 - [GitHub Copilot CLI runtime](./540-copilot-cli-runtime.md) — [#540](../features/540-copilot-cli-runtime.md) mission sequence: mission 1 (adapter, surfaces, docs) on the codex peer crew from 2026-09-16, mission 2 the hook status adapter, mission 3 smoke and fixture.
-- [Runtime model discovery](./590-runtime-model-discovery.md) — [#590](../features/590-runtime-model-discovery.md) Claude crew continuation of #591: Codex/Claude discovery, persistent cache, silent failure, success logs, and platform verification; TRAE behavior preserved.
 - [`347-hook-status/`](./347-hook-status/README.md) — feature [347](../features/347-hook-based-session-status.md) ([#347](https://github.com/yicheng47/runner/issues/347)) implementation program: condensed state and binding decisions, slice plan, dated impl log. Slice 0 (design and the capability audit against installed CLI binaries) and slice 1 (Claude Code hook source behind the shipped Busy/Idle vocabulary) landed 2026-09-14; slice 2 is the vocabulary and its UI.
 - [`local-skills/`](./local-skills/README.md) — feature [73](../features/archive/73-runner-skills.md) (closed 2026-09-13; M2/M3 continue as [#577](https://github.com/yicheng47/runner/issues/577)) implementation program: condensed state and binding decisions, milestone plan, dated impl log.
 - [`gpui-rewrite/`](./gpui-rewrite/) — the GPUI rewrite record; shipped as `v0.6.0` 2026-08-23. What is still open from the M6 consolidation queue is in [`m6-remainder.md`](./gpui-rewrite/m6-remainder.md); [#445](https://github.com/yicheng47/runner/issues/445) closed 2026-08-27 once the queued items landed.
 
 ## Archive
 
+- [Runtime model discovery](./archive/590-runtime-model-discovery.md) — [#590](../features/archive/590-runtime-model-discovery.md), shipped 2026-09-14 in [#591](https://github.com/yicheng47/runner/pull/591) and closed 2026-09-16; the native Windows smoke stays a follow-up, Copilot discovery moves to 540.
 - [Title-spinner status heuristic](./archive/584-title-status-phase-1.md) — [#584](../features/archive/584-title-status-detection.md), implemented by #585 and included in v0.8.9. Hook-based agent status is the next step under #347.
 
 Shipped plans live in [`archive/`](./archive/) in number order; mission briefs live under [`archive/gpui-rewrite/briefs/`](./archive/gpui-rewrite/briefs/).
