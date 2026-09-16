@@ -13,6 +13,7 @@ pub(crate) mod claude_status;
 pub mod codex_capture;
 pub(crate) mod codex_status;
 pub(crate) mod codex_trust;
+pub(crate) mod copilot_trust;
 pub(crate) mod hook_feed;
 pub mod launch;
 pub mod manager;

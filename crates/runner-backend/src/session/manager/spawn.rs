@@ -389,22 +389,30 @@ impl SessionManager {
         *last = Some(Instant::now());
     }
 
-    fn seed_codex_project_trust(
+    fn seed_runtime_project_trust(
         &self,
         session_id: &str,
         runtime: Option<Runtime>,
         cwd: Option<&Path>,
+        copilot_home: Option<&str>,
     ) {
-        if runtime != Some(Runtime::Codex) {
+        if !matches!(runtime, Some(Runtime::Codex | Runtime::Copilot)) {
             return;
         }
         let Some(cwd) = cwd else {
-            log::debug!("skipping codex project trust seed without cwd: session={session_id}");
+            log::debug!(
+                "skipping {runtime:?} project trust seed without cwd: session={session_id}"
+            );
             return;
         };
-        if let Err(e) = crate::session::codex_trust::seed_project_trust(cwd) {
+        let result = if runtime == Some(Runtime::Copilot) {
+            crate::session::copilot_trust::seed_project_trust(cwd, copilot_home)
+        } else {
+            crate::session::codex_trust::seed_project_trust(cwd)
+        };
+        if let Err(e) = result {
             log::warn!(
-                "failed to seed codex project trust: session={session_id} cwd={} error={e}",
+                "failed to seed {runtime:?} project trust: session={session_id} cwd={} error={e}",
                 cwd.display()
             );
         }
@@ -870,10 +878,11 @@ impl SessionManager {
             }
         }
         let initial_size = spec.initial_size;
-        self.seed_codex_project_trust(
+        self.seed_runtime_project_trust(
             &session_id,
             Runtime::parse(&runner.runtime),
             spec.cwd.as_deref(),
+            runner.env.get("COPILOT_HOME").map(String::as_str),
         );
         let (rt_session, output) = self
             .runtime
@@ -1329,10 +1338,11 @@ impl SessionManager {
         let spawn_started_at_dt = Utc::now();
         #[cfg(windows)]
         let first_turn_deadline = Instant::now() + WINDOWS_FIRST_TURN_TIMEOUT;
-        self.seed_codex_project_trust(
+        self.seed_runtime_project_trust(
             &session_id,
             Runtime::parse(&runner.runtime),
             spec.cwd.as_deref(),
+            runner.env.get("COPILOT_HOME").map(String::as_str),
         );
         let (rt_session, output) = match self.runtime.spawn(spec) {
             Ok(p) => p,
@@ -1455,7 +1465,7 @@ impl SessionManager {
         }
         let missing_first_turn = matches!(
             Runtime::parse(runner.runtime.as_str()),
-            Some(Runtime::ClaudeCode | Runtime::Codex | Runtime::Trae)
+            Some(Runtime::ClaudeCode | Runtime::Codex | Runtime::Trae | Runtime::Copilot)
         ) && !plan.resuming
             && !first_turn_delivered_via_argv;
         #[cfg(windows)]
@@ -1488,7 +1498,7 @@ impl SessionManager {
     ) {
         if matches!(
             Runtime::parse(runner.runtime.as_str()),
-            Some(Runtime::ClaudeCode | Runtime::Codex | Runtime::Trae)
+            Some(Runtime::ClaudeCode | Runtime::Codex | Runtime::Trae | Runtime::Copilot)
         ) && !plan.resuming
             && crate::session::launch::is_windows_batch(&runner.command)
         {
@@ -1803,10 +1813,11 @@ impl SessionManager {
                 })
             }
             headless @ router::runtime::ForkPlan::Headless { .. } => {
-                self.seed_codex_project_trust(
+                self.seed_runtime_project_trust(
                     &session_id,
                     Runtime::parse(&runner.runtime),
                     spec.cwd.as_deref(),
+                    runner.env.get("COPILOT_HOME").map(String::as_str),
                 );
                 let materialize_started_at = Instant::now();
                 let fork_key = match run_headless_fork(&spec, &headless, FORK_MATERIALIZE_TIMEOUT) {
@@ -2180,7 +2191,13 @@ impl SessionManager {
                     key,
                 )
             }
-            (Some(Runtime::ClaudeCode), None)
+            (Some(Runtime::Copilot), Some(key)) => {
+                !router::runtime::copilot_conversation_exists_with_home(
+                    key,
+                    runner.env.get("COPILOT_HOME").map(String::as_str),
+                )
+            }
+            (Some(Runtime::ClaudeCode | Runtime::Copilot), None)
             | (Some(Runtime::Codex | Runtime::Trae | Runtime::Shell) | None, _) => false,
         };
         if conversation_missing && !allow_fresh_fallback {
@@ -2188,13 +2205,18 @@ impl SessionManager {
                 "session {session_id} conversation is unavailable; resume it manually to start fresh"
             )));
         }
-        let effective_prior_key = if fresh || conversation_missing {
+        let effective_prior_key = if fresh
+            || (conversation_missing && Runtime::parse(&runner.runtime) != Some(Runtime::Copilot))
+        {
             None
         } else {
             snap.agent_session_key.as_deref()
         };
-        let plan =
+        let mut plan =
             router::runtime::resume_plan(Runtime::parse(&runner.runtime), effective_prior_key);
+        if conversation_missing {
+            plan.resuming = false;
+        }
         if !allow_fresh_fallback
             && !plan.resuming
             && Runtime::parse(&runner.runtime) != Some(Runtime::Shell)
@@ -2378,10 +2400,11 @@ impl SessionManager {
         let spawn_started_at_dt = Utc::now();
         #[cfg(windows)]
         let first_turn_deadline = Instant::now() + WINDOWS_FIRST_TURN_TIMEOUT;
-        self.seed_codex_project_trust(
+        self.seed_runtime_project_trust(
             session_id,
             Runtime::parse(&runner.runtime),
             spec.cwd.as_deref(),
+            runner.env.get("COPILOT_HOME").map(String::as_str),
         );
         let (rt_session, output) = match self.runtime.spawn(spec) {
             Ok(p) => p,

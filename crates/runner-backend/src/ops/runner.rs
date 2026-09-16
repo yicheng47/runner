@@ -1194,6 +1194,51 @@ mod tests {
     }
 
     #[test]
+    fn copilot_create_and_update_bake_only_the_selected_permission_mode() {
+        let pool = ctx();
+        let conn = pool.get().unwrap();
+        let runner = create(
+            &conn,
+            CreateRunnerInput {
+                handle: "copilot-tester".into(),
+                display_name: "Copilot".into(),
+                runtime: crate::model::Runtime::Copilot,
+                command: "copilot".into(),
+                args: vec![
+                    "--debug".into(),
+                    "--yolo".into(),
+                    "--allow-tool".into(),
+                    "shell".into(),
+                ],
+                working_dir: None,
+                system_prompt: None,
+                env: HashMap::new(),
+                model: None,
+                effort: None,
+                permission_mode: PermissionMode::AcceptEdits,
+            },
+        )
+        .unwrap();
+        assert_eq!(runner.args, ["--debug", "--allow-tool=write"]);
+        for (mode, expected) in [
+            (PermissionMode::Bypass, vec!["--debug", "--yolo"]),
+            (PermissionMode::Default, vec!["--debug"]),
+            (PermissionMode::Auto, vec!["--debug"]),
+        ] {
+            let updated = update(
+                &conn,
+                &runner.id,
+                UpdateRunnerInput {
+                    permission_mode: Some(mode),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            assert_eq!(updated.args, expected);
+        }
+    }
+
+    #[test]
     fn create_omits_bypass_flags_when_toggle_off() {
         let pool = ctx();
         let conn = pool.get().unwrap();

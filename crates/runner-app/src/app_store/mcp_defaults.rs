@@ -7,7 +7,7 @@ use crate::app_settings::AppSettings;
 
 impl AppStore {
     pub(crate) fn initialize_mcp_defaults(&mut self) {
-        if ["claude_code", "codex", "trae"]
+        if ["claude_code", "codex", "trae", "copilot"]
             .iter()
             .all(|client| self.settings.initialized_mcp_clients.contains(*client))
         {
@@ -42,6 +42,7 @@ impl AppStore {
                     Runtime::ClaudeCode => ("claude_code", &status.claude_code),
                     Runtime::Codex => ("codex", &status.codex),
                     Runtime::Trae => ("trae", &status.trae),
+                    Runtime::Copilot => ("copilot", &status.copilot),
                     Runtime::Shell => continue,
                 };
                 match initialize_client(&mut self.settings, client, client_status, || {
@@ -95,22 +96,24 @@ mod tests {
 
     #[test]
     fn initializes_once_and_preserves_a_later_opt_out_after_reload() {
-        let mut settings = AppSettings::default();
-        let status = missing_registration();
-        let mut writes = 0;
-        assert!(initialize_client(&mut settings, "codex", &status, || {
-            writes += 1;
-            Ok(())
-        })
-        .unwrap());
-        assert_eq!(writes, 1);
+        for client in ["codex", "copilot"] {
+            let mut settings = AppSettings::default();
+            let status = missing_registration();
+            let mut writes = 0;
+            assert!(initialize_client(&mut settings, client, &status, || {
+                writes += 1;
+                Ok(())
+            })
+            .unwrap());
+            assert_eq!(writes, 1);
 
-        let mut reloaded =
-            serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
-        assert!(!initialize_client(&mut reloaded, "codex", &status, || {
-            panic!("must not re-enable an integration the user removed")
-        })
-        .unwrap());
+            let mut reloaded =
+                serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
+            assert!(!initialize_client(&mut reloaded, client, &status, || {
+                panic!("must not re-enable an integration the user removed")
+            })
+            .unwrap());
+        }
     }
 
     #[test]

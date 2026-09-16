@@ -1113,7 +1113,7 @@ impl McpDetail {
                         .child(format!(
                             "{} · {}",
                             client.label(),
-                            if client == McpClientId::ClaudeCode {
+                            if matches!(client, McpClientId::ClaudeCode | McpClientId::Copilot) {
                                 "JSON"
                             } else {
                                 "TOML"
@@ -1617,7 +1617,7 @@ mod tests {
                     env: BTreeMap::from([("TOKEN".into(), "secret-value".into())]),
                 };
                 let registered = client != McpClientId::Trae;
-                let text = if client == McpClientId::ClaudeCode {
+                let text = if matches!(client, McpClientId::ClaudeCode | McpClientId::Copilot) {
                     serde_json::to_string_pretty(&definition.to_claude()).unwrap()
                 } else {
                     format!(
@@ -1651,6 +1651,7 @@ mod tests {
                 claude_code: mcp_status(true, true, None),
                 codex: mcp_status(true, true, None),
                 trae: mcp_status(false, false, None),
+                copilot: mcp_status(false, false, None),
             },
             runner_server: entry("runner", false),
             servers: vec![entry("aaa", false), entry("github", true)],
@@ -1706,7 +1707,11 @@ mod tests {
         let github = &catalog.servers[1];
         assert_eq!(
             registered_clients(github),
-            [McpClientId::ClaudeCode, McpClientId::Codex]
+            [
+                McpClientId::ClaudeCode,
+                McpClientId::Codex,
+                McpClientId::Copilot
+            ]
         );
         assert!(conflict_caption(github, McpClientId::ClaudeCode)
             .unwrap()
@@ -1784,12 +1789,16 @@ mod tests {
         let mut settings = AppSettings::default();
         assert_eq!(
             available_clients(&runtimes(), &settings),
-            [McpClientId::ClaudeCode, McpClientId::Codex]
+            [
+                McpClientId::ClaudeCode,
+                McpClientId::Codex,
+                McpClientId::Copilot
+            ]
         );
         settings.disabled_agents.insert("claude-code".into());
         assert_eq!(
             available_clients(&runtimes(), &settings),
-            [McpClientId::Codex]
+            [McpClientId::Codex, McpClientId::Copilot]
         );
     }
 

@@ -851,6 +851,7 @@ mod tests {
             ("claude-code", "claude.svg", gpui::rgb(0xd97757).into()),
             ("codex", "openai.svg", theme::text()),
             ("trae", "trae.svg", gpui::rgb(0x32f08c).into()),
+            ("copilot", "copilot.svg", gpui::rgb(0x8534f3).into()),
         ] {
             chat.agent_runtime = runtime.into();
             let items = merge_archived_items(&[], std::slice::from_ref(&chat));

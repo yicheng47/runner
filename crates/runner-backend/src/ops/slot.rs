@@ -1236,7 +1236,9 @@ mod tests {
                 validate_runtime_override(Some(name))
                     .unwrap_err()
                     .to_string(),
-                format!("unknown runtime '{name}' — valid runtimes: codex, claude-code, trae")
+                format!(
+                    "unknown runtime '{name}' — valid runtimes: codex, claude-code, copilot, trae"
+                )
             );
         }
     }

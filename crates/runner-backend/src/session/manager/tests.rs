@@ -2322,6 +2322,12 @@ fn assert_chat_has_no_permission_flags(args: &[String]) {
         "--dangerously-skip-permissions",
         "--ask-for-approval",
         "--sandbox",
+        "--allow-tool",
+        "--yolo",
+        "--allow-all",
+        "--allow-all-tools",
+        "--allow-all-paths",
+        "--allow-all-urls",
     ] {
         assert!(
             !args
@@ -2365,6 +2371,20 @@ fn direct_chat_spawn_and_resume_strip_permission_flags_and_preserve_row_args() {
                 "--permission-mode=bypass_permissions",
             ],
             vec!["-c", "model_reasoning_effort=high"],
+        ),
+        (
+            "copilot",
+            vec![
+                "--allow-tool=write",
+                "--allow-tool",
+                "shell",
+                "--yolo",
+                "--allow-all",
+                "--allow-all-tools",
+                "--allow-all-paths",
+                "--allow-all-urls",
+            ],
+            vec!["--effort", "high"],
         ),
     ] {
         let pool = pool_with_schema();
@@ -2445,7 +2465,7 @@ fn direct_chat_spawn_and_resume_strip_permission_flags_and_preserve_row_args() {
 
 #[test]
 fn runtime_only_chat_spawn_and_resume_assert_no_permission_posture() {
-    for runtime in ["claude-code", "codex", "trae"] {
+    for runtime in ["claude-code", "codex", "trae", "copilot"] {
         let pool = pool_with_schema();
         let app_data = tempfile::tempdir().unwrap();
         let runner = runtime_direct_runner(
@@ -2472,7 +2492,7 @@ fn runtime_only_chat_spawn_and_resume_assert_no_permission_posture() {
         let args = fake.last_spawn_spec().unwrap().args;
         assert_chat_has_no_permission_flags(&args);
         assert!(has_arg_pair(&args, "--model", "test-model"));
-        let effort = if runtime == "claude-code" {
+        let effort = if matches!(runtime, "claude-code" | "copilot") {
             ("--effort", "high")
         } else {
             ("-c", "model_reasoning_effort=high")
@@ -6171,7 +6191,7 @@ fn spawn_argv_injects_runtime_settings_for_fresh_and_resume() {
         .any(|args| args == ["-c", "check_for_update_on_startup=false"]));
     assert!(!resumed.iter().any(|arg| arg == "first turn"));
 
-    for runtime in ["claude-code", "trae"] {
+    for runtime in ["claude-code", "trae", "copilot"] {
         let args = compose(
             runtime,
             router::runtime::resume_plan(Runtime::parse(runtime), None),
@@ -6867,7 +6887,7 @@ fn runtime_override_helper_distinguishes_absent_matching_and_differing() {
     assert!(matching.pinned, "explicit matching override must pin");
 
     // Differing: rebuild + pin for every other catalog runtime.
-    for runtime in ["claude-code", "trae"] {
+    for runtime in ["claude-code", "trae", "copilot"] {
         let differing = resolve_runtime_override(&r, Some(runtime), None, None).unwrap();
         assert_eq!(
             differing.effective.as_ref().map(|r| r.runtime.as_str()),
@@ -8403,9 +8423,9 @@ fn lead_restart_and_missing_conversation_resume_deliver_launch_prompt() {
 
 #[test]
 fn missing_worker_conversation_resume_delivers_cold_start_first_turn() {
-    for runtime in ["claude-code", "codex", "trae"] {
+    for runtime in ["claude-code", "codex", "trae", "copilot"] {
         let (pool, app_data, id) = slot_respawn_fixture(runtime, false);
-        if runtime != "claude-code" {
+        if !matches!(runtime, "claude-code" | "copilot") {
             pool.get()
                 .unwrap()
                 .execute("UPDATE sessions SET agent_session_key = NULL", [])
@@ -9048,4 +9068,115 @@ fn codex_observations_preserve_delivery_and_drafts_and_interrupt_attention() {
         .agent_status("codex-status")
         .unread_since
         .is_none());
+}
+
+#[test]
+fn copilot_direct_spawn_persists_key_before_spawn_and_resume_never_replays_first_turn() {
+    let pool = pool_with_schema();
+    let app_data = tempfile::tempdir().unwrap();
+    let mut runner = runner("copilot", &["--user-flag", "kept", "--yolo"]);
+    runner.runtime = "copilot".into();
+    crate::repo::runner::insert(&pool.get().unwrap(), &(&runner).into()).unwrap();
+    let fake = fake_runtime();
+    let spawn_pool = pool.clone();
+    *fake.spawn_hook.lock().unwrap() = Some(Box::new(move || {
+        let key: String = spawn_pool
+            .get()
+            .unwrap()
+            .query_row("SELECT agent_session_key FROM sessions", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert!(uuid::Uuid::parse_str(&key).is_ok());
+    }));
+    let mgr = mgr_with_fake(None, fake.clone());
+    let spawned = mgr
+        .spawn_direct(
+            &runner,
+            None,
+            None,
+            None,
+            None,
+            Some(app_data.path().to_str().unwrap()),
+            None,
+            None,
+            app_data.path(),
+            pool.clone(),
+            capture(),
+            Some("persona first turn".into()),
+        )
+        .unwrap();
+    let key: String = pool
+        .get()
+        .unwrap()
+        .query_row(
+            "SELECT agent_session_key FROM sessions WHERE id=?1",
+            [&spawned.id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let args = fake.last_spawn_spec().unwrap().args;
+    assert_eq!(
+        args,
+        [
+            "--user-flag",
+            "kept",
+            "--session-id",
+            key.as_str(),
+            "--no-auto-update",
+            "-i",
+            "persona first turn"
+        ]
+    );
+    assert!(fake.inputs.lock().unwrap().is_empty());
+    mgr.kill(&spawned.id).unwrap();
+    mgr.resume(
+        &spawned.id,
+        None,
+        None,
+        app_data.path(),
+        pool.clone(),
+        capture(),
+    )
+    .unwrap();
+    let args = fake.last_spawn_spec().unwrap().args;
+    assert_eq!(
+        args,
+        [
+            "--user-flag",
+            "kept",
+            "--session-id",
+            key.as_str(),
+            "--no-auto-update"
+        ]
+    );
+    mgr.kill(&spawned.id).unwrap();
+}
+
+#[test]
+fn copilot_missing_worker_conversation_keeps_id_and_delivers_first_turn() {
+    let (pool, app_data, id) = slot_respawn_fixture("copilot", false);
+    let key: String = pool
+        .get()
+        .unwrap()
+        .query_row(
+            "SELECT agent_session_key FROM sessions WHERE id=?1",
+            [&id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let fake = fake_runtime();
+    let mgr = mgr_with_fake(None, fake.clone());
+    router::runtime::with_conversation_home(app_data.path(), || {
+        mgr.resume(&id, None, None, app_data.path(), pool.clone(), capture())
+    })
+    .unwrap();
+    let spec = fake.last_spawn_spec().unwrap();
+    assert!(has_arg_pair(&spec.args, "--session-id", &key));
+    assert_eq!(spec.args[spec.args.len() - 2], "-i");
+    assert_eq!(
+        spec.args.last().unwrap(),
+        &router::prompt::compose_worker_first_turn(Some("SLOT_BRIEF"), Some("TEAM_RULES"))
+    );
+    mgr.kill(&id).unwrap();
 }

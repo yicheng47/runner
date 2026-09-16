@@ -53,6 +53,13 @@ const RUNTIME_DEFINITIONS: &[RuntimeDefinition] = &[
         skills_dirs: &[".claude/skills"],
     },
     RuntimeDefinition {
+        name: Runtime::Copilot,
+        display_name: "GitHub Copilot CLI",
+        command: "copilot",
+        native_fork: false,
+        skills_dirs: &[".copilot/skills", ".agents/skills"],
+    },
+    RuntimeDefinition {
         name: Runtime::Trae,
         display_name: "TRAE CLI",
         command: "traecli",
@@ -120,6 +127,8 @@ pub fn supports_native_fork(runtime: Option<Runtime>) -> bool {
 ///     deliberately forwards the value verbatim to avoid a regression
 ///     on already-shipped behavior.
 ///
+/// copilot maps model and effort to `--model <id> --effort <level>`, forwarding both values verbatim.
+///
 /// shell / unknown runtimes: no equivalent flags — degrade silently
 /// so the runner row's preference is recorded but the spawn
 /// doesn't reject on unknown args.
@@ -137,7 +146,7 @@ pub fn model_effort_args(
         return Vec::new();
     }
     match runtime {
-        Some(Runtime::ClaudeCode) => {
+        Some(Runtime::ClaudeCode | Runtime::Copilot) => {
             let mut out = Vec::new();
             if let Some(m) = model {
                 out.push("--model".into());
@@ -359,6 +368,8 @@ pub fn claude_settings_args(
 /// - **Bypass** — `--ask-for-approval never --sandbox
 ///   workspace-write`. Never ask.
 ///
+/// copilot exposes Default (no flag), Accept edits (`--allow-tool=write`), and Bypass (`--yolo`); Auto has no supported equivalent.
+///
 /// trae accepts `default` (ask), `plan` (plan-only), and
 /// `bypass_permissions` (never ask). It has no auto-approve middle ground:
 /// - **Default** — no flag; use TRAE CLI's configured default.
@@ -391,6 +402,7 @@ pub fn permission_mode_args(runtime: Option<Runtime>, mode: PermissionMode) -> V
             Some(Runtime::ClaudeCode)
             | Some(Runtime::Codex)
             | Some(Runtime::Trae)
+            | Some(Runtime::Copilot)
             | Some(Runtime::Shell),
             PermissionMode::Default,
         ) => Vec::new(),
@@ -407,6 +419,9 @@ pub fn permission_mode_args(runtime: Option<Runtime>, mode: PermissionMode) -> V
         (Some(Runtime::ClaudeCode), PermissionMode::Bypass) => {
             vec!["--permission-mode".into(), "bypassPermissions".into()]
         }
+        (Some(Runtime::Copilot), PermissionMode::AcceptEdits) => vec!["--allow-tool=write".into()],
+        (Some(Runtime::Copilot), PermissionMode::Bypass) => vec!["--yolo".into()],
+        (Some(Runtime::Copilot), PermissionMode::Auto) => Vec::new(),
         (Some(Runtime::Trae), PermissionMode::Bypass) => {
             vec!["--permission-mode".into(), "bypass_permissions".into()]
         }
@@ -451,6 +466,8 @@ pub fn permission_mode_args(runtime: Option<Runtime>, mode: PermissionMode) -> V
 ///     strip set so legacy rows that still carry the deprecated flag
 ///     get cleaned up the next time the user touches their row).
 ///   - trae: `--permission-mode <value>` (value-bearing).
+///   - copilot: `--allow-tool[=tools...]` (optional, variadic values)
+///     plus the standalone `--yolo` and `--allow-all*` aliases.
 pub fn strip_permission_flags(runtime: Option<Runtime>, args: &[String]) -> Vec<String> {
     // (flag_name, takes_value)
     let keys: &[(&str, bool)] = match runtime {
@@ -460,6 +477,14 @@ pub fn strip_permission_flags(runtime: Option<Runtime>, args: &[String]) -> Vec<
             ("--permission-mode", true),
         ],
         Some(Runtime::Trae) => &[("--permission-mode", true)],
+        Some(Runtime::Copilot) => &[
+            ("--allow-tool", true),
+            ("--yolo", false),
+            ("--allow-all", false),
+            ("--allow-all-tools", false),
+            ("--allow-all-paths", false),
+            ("--allow-all-urls", false),
+        ],
         Some(Runtime::Shell) | None => &[],
     };
     if keys.is_empty() {
@@ -469,6 +494,13 @@ pub fn strip_permission_flags(runtime: Option<Runtime>, args: &[String]) -> Vec<
     let mut i = 0;
     while i < args.len() {
         let arg = &args[i];
+        if runtime == Some(Runtime::Copilot) && arg == "--allow-tool" {
+            i += 1;
+            while i < args.len() && !args[i].starts_with('-') {
+                i += 1;
+            }
+            continue;
+        }
         // Exact-match `--flag` form. For takes_value flags we also
         // skip the next token if present (it's the value).
         if let Some(&(_, takes_value)) = keys.iter().find(|(name, _)| name == arg) {
@@ -639,6 +671,11 @@ fn mode_pair_matches(runtime: Option<Runtime>, args: &[String], mode: Permission
     {
         return true;
     }
+    if runtime == Some(Runtime::Copilot) && mode == PermissionMode::Bypass {
+        return ["--yolo", "--allow-all"]
+            .iter()
+            .any(|flag| flag_value_matches(args, flag, None));
+    }
     let pairs = mode_match_pairs(runtime, mode);
     if pairs.is_empty() {
         return false;
@@ -674,6 +711,11 @@ fn mode_match_pairs(
         (Some(Runtime::ClaudeCode), PermissionMode::Bypass) => {
             &[("--permission-mode", Some("bypassPermissions"))]
         }
+        (Some(Runtime::Copilot), PermissionMode::AcceptEdits) => &[("--allow-tool", Some("write"))],
+        // Copilot's bypass aliases are recognized together above. Keep the
+        // canonical pair here so this table remains synced with generated args.
+        (Some(Runtime::Copilot), PermissionMode::Bypass) => &[("--yolo", None)],
+        (Some(Runtime::Copilot), PermissionMode::Auto) => &[],
         // Recognize the legacy invalid Auto flag until the runner is saved again.
         (Some(Runtime::Trae), PermissionMode::Auto) => &[("--permission-mode", Some("auto"))],
         (Some(Runtime::Trae), PermissionMode::Bypass) => {
@@ -691,6 +733,7 @@ fn mode_match_pairs(
             Some(Runtime::ClaudeCode)
             | Some(Runtime::Codex)
             | Some(Runtime::Trae)
+            | Some(Runtime::Copilot)
             | Some(Runtime::Shell),
             PermissionMode::Default,
         )
@@ -764,7 +807,7 @@ pub fn system_prompt_args(runtime: Option<Runtime>, system_prompt: Option<&str>)
         // either). First-turn delivery is handled separately.
         Some(Runtime::Codex) => Vec::new(),
         // shell / unknown — no prompt mechanism.
-        Some(Runtime::Trae) | Some(Runtime::Shell) | None => Vec::new(),
+        Some(Runtime::Trae | Runtime::Copilot) | Some(Runtime::Shell) | None => Vec::new(),
     }
 }
 
@@ -781,7 +824,7 @@ pub const FIRST_TURN_ARGV_MAX_BYTES: usize = 32 * 1024;
 /// Map a runtime + composed first-turn body to the positional argv
 /// the agent CLI reads as its first user turn at process spawn.
 ///
-/// claude-code, codex, and trae accept a positional `[PROMPT]` argument.
+/// claude-code, codex, and trae accept a positional `[PROMPT]`; Copilot accepts `-i <PROMPT>`.
 /// Delivering the first turn at spawn-time avoids racing the TUI's
 /// readiness: if the child starts, the prompt is already part of its argv.
 ///
@@ -812,6 +855,7 @@ pub fn first_turn_argv(runtime: Option<Runtime>, body: Option<&str>) -> Vec<Stri
         Some(Runtime::ClaudeCode) | Some(Runtime::Codex) | Some(Runtime::Trae) => {
             vec![body.to_string()]
         }
+        Some(Runtime::Copilot) => vec!["-i".into(), body.to_string()],
         Some(Runtime::Shell) | None => Vec::new(),
     }
 }
@@ -820,9 +864,9 @@ pub fn first_turn_argv(runtime: Option<Runtime>, body: Option<&str>) -> Vec<Stri
 /// Claude settings, any `system_prompt` argv, and first-turn body) in the
 /// order the runtime's CLI expects.
 ///
-/// `system_prompt_args` still returns empty for all three first-class
-/// runtimes (claude-code's `--append-system-prompt` is SDK-only; codex
-/// and trae have no probed equivalent flag). The first user turn —
+/// `system_prompt_args` still returns empty for all four first-class
+/// runtimes (claude-code's `--append-system-prompt` is SDK-only; codex, trae,
+/// and Copilot have no probed equivalent flag). The first user turn —
 /// composed launch prompt for a mission lead, worker preamble for
 /// non-leads, persona for direct chats — rides on `first_turn_argv`
 /// instead and lands as the trailing positional.
@@ -848,6 +892,9 @@ pub fn trailing_runtime_args(
     let mut out = model_effort_args(runtime, model, effort);
     if runtime == Some(Runtime::Codex) {
         out.extend(["-c".into(), "check_for_update_on_startup=false".into()]);
+    }
+    if runtime == Some(Runtime::Copilot) {
+        out.push("--no-auto-update".into());
     }
     out.extend(claude_settings_args(
         runtime,
@@ -877,11 +924,11 @@ pub fn mission_bus_sandbox_args(
     mission_dir: Option<&Path>,
 ) -> Vec<String> {
     match (runtime, mission_dir) {
-        (Some(Runtime::Codex), Some(dir)) => {
+        (Some(Runtime::Codex | Runtime::Copilot), Some(dir)) => {
             vec!["--add-dir".into(), dir.to_string_lossy().to_string()]
         }
         (None, _)
-        | (Some(Runtime::Codex), None)
+        | (Some(Runtime::Codex | Runtime::Copilot), None)
         | (Some(Runtime::ClaudeCode) | Some(Runtime::Trae) | Some(Runtime::Shell), _) => Vec::new(),
     }
 }
@@ -933,6 +980,7 @@ impl ResumePlan {
 ///   - claude-code with no `prior_key` → fresh spawn but with a
 ///     self-assigned UUID via `--session-id`, so the very next respawn can
 ///     resume.
+///   - Copilot with no `prior_key` → fresh spawn with a caller-assigned UUID.
 ///   - codex/trae with no `prior_key` → fresh spawn, no key. Runner captures
 ///     the rollout id post-spawn.
 ///
@@ -978,6 +1026,18 @@ pub fn resume_plan(runtime: Option<Runtime>, prior_key: Option<&str>) -> ResumeP
                 }
             }
         },
+        Some(Runtime::Copilot) => {
+            let prior_key = prior_key.filter(|key| is_uuid(key));
+            let id = prior_key
+                .map(str::to_owned)
+                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+            ResumePlan {
+                args: vec!["--session-id".into(), id.clone()],
+                prepend: false,
+                assigned_key: Some(id),
+                resuming: prior_key.is_some(),
+            }
+        }
         Some(Runtime::Codex) | Some(Runtime::Trae) => match prior_key {
             Some(k) if is_uuid(k) => ResumePlan {
                 // `codex resume <uuid>` is a subcommand prefix. The caller
@@ -1042,7 +1102,7 @@ pub fn fork_plan(
                 source_key: source_key.to_string(),
             })
         }
-        Some(Runtime::Trae) | Some(Runtime::Shell) | None => None,
+        Some(Runtime::Trae | Runtime::Copilot) | Some(Runtime::Shell) | None => None,
     }
 }
 
@@ -1132,6 +1192,38 @@ pub fn claude_code_conversation_exists(cwd: Option<&str>, uuid: &str) -> bool {
     conversation_file_exists(".claude", cwd, uuid, claude_code_project_dir)
 }
 
+pub fn copilot_conversation_exists(key: &str) -> bool {
+    copilot_conversation_exists_with_home(key, None)
+}
+
+pub(crate) fn copilot_conversation_exists_with_home(
+    key: &str,
+    override_home: Option<&str>,
+) -> bool {
+    #[cfg(test)]
+    {
+        if let Some(home) = override_home {
+            return copilot_conversation_exists_at(Path::new(home), key);
+        }
+        CONVERSATION_HOME.with_borrow(|home| {
+            home.as_deref()
+                .is_none_or(|home| copilot_conversation_exists_at(&home.join(".copilot"), key))
+        })
+    }
+    #[cfg(not(test))]
+    {
+        crate::session::copilot_trust::copilot_home(override_home)
+            .is_ok_and(|home| copilot_conversation_exists_at(&home, key))
+    }
+}
+
+fn copilot_conversation_exists_at(home: &Path, key: &str) -> bool {
+    home.join("session-state")
+        .join(key)
+        .join("events.jsonl")
+        .is_file()
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -1177,6 +1269,7 @@ mod tests {
             None,
             Some(Runtime::ClaudeCode),
             Some(Runtime::Trae),
+            Some(Runtime::Copilot),
             Some(Runtime::Shell),
         ] {
             assert!(!inject_codex_hooks(runtime, &[], false));
@@ -1567,6 +1660,7 @@ mod tests {
         assert!(supports_native_fork(Some(Runtime::ClaudeCode)));
         assert!(supports_native_fork(Some(Runtime::Codex)));
         assert!(!supports_native_fork(Some(Runtime::Trae)));
+        assert!(!supports_native_fork(Some(Runtime::Copilot)));
         assert!(!supports_native_fork(Runtime::parse("aider-future")));
     }
 
@@ -1777,6 +1871,142 @@ mod tests {
                  (plan_resuming={plan_resuming}): {args:?}",
             );
         }
+    }
+
+    #[test]
+    fn copilot_permissions_roundtrip_and_strip_every_elevation_flag() {
+        for (mode, expected) in [
+            (PermissionMode::Default, vec![]),
+            (PermissionMode::AcceptEdits, vec!["--allow-tool=write"]),
+            (PermissionMode::Bypass, vec!["--yolo"]),
+            (PermissionMode::Auto, vec![]),
+        ] {
+            let args = permission_mode_args(Some(Runtime::Copilot), mode);
+            assert_eq!(args, expected);
+            assert_eq!(
+                infer_permission_mode(Some(Runtime::Copilot), &args),
+                if mode == PermissionMode::Auto {
+                    PermissionMode::Default
+                } else {
+                    mode
+                }
+            );
+            assert_eq!(
+                apply_permission_mode(
+                    Some(Runtime::Copilot),
+                    &["--yolo".into(), "--debug".into()],
+                    mode
+                ),
+                std::iter::once("--debug".to_string())
+                    .chain(args)
+                    .collect::<Vec<_>>()
+            );
+        }
+        for allow_tool in [vec!["--allow-tool=write"], vec!["--allow-tool", "write"]] {
+            let mut args = vec![
+                "--model",
+                "gpt-5.4",
+                "--yolo",
+                "--allow-all",
+                "--allow-all-tools",
+                "--allow-all-paths",
+                "--allow-all-urls",
+            ];
+            args.extend(allow_tool.iter().copied());
+            let args = args.into_iter().map(String::from).collect::<Vec<_>>();
+            assert_eq!(
+                strip_permission_flags(Some(Runtime::Copilot), &args),
+                ["--model", "gpt-5.4"]
+            );
+            assert_eq!(
+                infer_permission_mode(
+                    Some(Runtime::Copilot),
+                    &allow_tool.into_iter().map(String::from).collect::<Vec<_>>()
+                ),
+                PermissionMode::AcceptEdits
+            );
+        }
+        assert_eq!(
+            strip_permission_flags(
+                Some(Runtime::Copilot),
+                &[
+                    "--allow-tool".into(),
+                    "read".into(),
+                    "write".into(),
+                    "--model".into(),
+                    "gpt-5.4".into(),
+                ],
+            ),
+            ["--model", "gpt-5.4"]
+        );
+        assert_eq!(
+            strip_permission_flags(
+                Some(Runtime::Copilot),
+                &["--allow-tool".into(), "--model".into(), "gpt-5.4".into(),],
+            ),
+            ["--model", "gpt-5.4"]
+        );
+        assert_eq!(
+            mission_permission_mode_args(Some(Runtime::Copilot), MissionPermissionMode::Bypass),
+            Some(vec!["--yolo".into()])
+        );
+        assert_eq!(
+            mission_permission_mode_args(Some(Runtime::Copilot), MissionPermissionMode::Auto),
+            Some(vec![])
+        );
+        assert_eq!(
+            mission_bus_sandbox_args(Some(Runtime::Copilot), Some(Path::new("/mission"))),
+            ["--add-dir", "/mission"]
+        );
+        assert!(mission_bus_sandbox_args(Some(Runtime::Copilot), None).is_empty());
+    }
+
+    #[test]
+    fn copilot_assigns_and_resumes_the_same_id_without_a_capture_thread() {
+        let fresh = resume_plan(Some(Runtime::Copilot), None);
+        let key = fresh.assigned_key.as_deref().unwrap();
+        assert!(uuid::Uuid::parse_str(key).is_ok());
+        assert_eq!(fresh.args, ["--session-id", key]);
+        assert!(!fresh.resuming);
+        assert!(!fresh.prepend);
+        let resumed = resume_plan(Some(Runtime::Copilot), Some(key));
+        assert_eq!(resumed.args, fresh.args);
+        assert_eq!(resumed.assigned_key, fresh.assigned_key);
+        assert!(resumed.resuming);
+        assert!(!resumed.prepend);
+        assert!(!resume_plan(Some(Runtime::Copilot), Some("not-a-uuid")).resuming);
+        assert!(system_prompt_args(Some(Runtime::Copilot), Some("persona")).is_empty());
+        assert_eq!(
+            model_effort_args(Some(Runtime::Copilot), Some("gpt-5.4"), Some("high")),
+            ["--model", "gpt-5.4", "--effort", "high"]
+        );
+        for effort in [
+            "none", "minimal", "low", "medium", "high", "xhigh", "max", "High",
+        ] {
+            assert_eq!(
+                model_effort_args(Some(Runtime::Copilot), None, Some(effort)),
+                ["--effort", effort]
+            );
+        }
+        assert_eq!(
+            first_turn_argv(Some(Runtime::Copilot), Some("body")),
+            ["-i", "body"]
+        );
+    }
+
+    #[test]
+    fn copilot_conversation_probe_uses_events_file_in_its_home() {
+        let home = tempfile::tempdir().unwrap();
+        let key = uuid::Uuid::new_v4().to_string();
+        assert!(!copilot_conversation_exists_at(home.path(), &key));
+        let session = home.path().join("session-state").join(&key);
+        std::fs::create_dir_all(&session).unwrap();
+        assert!(!copilot_conversation_exists_at(home.path(), &key));
+        std::fs::write(session.join("events.jsonl"), "").unwrap();
+        assert!(copilot_conversation_exists_with_home(
+            &key,
+            home.path().to_str()
+        ));
     }
 
     #[test]
@@ -2114,7 +2344,14 @@ mod tests {
             mission_permission_mode_args(Some(Runtime::Trae), M::Auto),
             Some(vec![]),
         );
-        for runtime in ["claude-code", "codex", "trae", "shell", "unknown"] {
+        for runtime in [
+            "claude-code",
+            "codex",
+            "trae",
+            "copilot",
+            "shell",
+            "unknown",
+        ] {
             assert_eq!(
                 mission_permission_mode_args(Runtime::parse(runtime), M::RunnerDefault),
                 None,
@@ -2469,7 +2706,7 @@ mod tests {
 
     #[test]
     fn first_turn_rides_trailing_argv_on_fresh_spawn_for_supported_runtimes() {
-        for runtime in ["claude-code", "codex", "trae"] {
+        for runtime in ["claude-code", "codex", "trae", "copilot"] {
             let body = "You are the architect. Goal: ship 0007.";
             let args = trailing_runtime_args(
                 Runtime::parse(runtime),
@@ -2492,7 +2729,7 @@ mod tests {
 
     #[test]
     fn first_turn_suppressed_on_resume_for_supported_runtimes() {
-        for runtime in ["claude-code", "codex", "trae"] {
+        for runtime in ["claude-code", "codex", "trae", "copilot"] {
             let body = "You are the architect. Goal: ship 0007.";
             let args = trailing_runtime_args(
                 Runtime::parse(runtime),

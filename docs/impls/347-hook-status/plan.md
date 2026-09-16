@@ -11,6 +11,7 @@ Slices for [#347](https://github.com/yicheng47/runner/issues/347) ([spec](../../
 | 4 | TRAE CLI adapter | Not planned — Runner hook integration unsupported; no enterprise account for validation. |
 | 5 | Deferred details, one at a time | Not started |
 | 6 | Remove title-spinner classification | Only for runtime/platform combinations with validated hook coverage; preserve unsupported-platform fallback. |
+| 7 | GitHub Copilot CLI adapter | Briefed 2026-09-16 as [540 mission 2](../archive/gpui-rewrite/briefs/540-m2-copilot-hook-status.md): per-invocation `--plugin-dir` injection, Claude-shaped events with `Notification(permission_prompt | elicitation_dialog)` observed live. |
 
 ## Slice 2 — vocabulary and UI
 

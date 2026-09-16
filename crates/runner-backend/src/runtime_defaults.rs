@@ -9,12 +9,14 @@ pub struct RuntimeDefaults {
 
 const CODEX_CONFIG_RELATIVE_PATH: &str = ".codex/config.toml";
 const CLAUDE_SETTINGS_RELATIVE_PATH: &str = ".claude/settings.json";
+const COPILOT_SETTINGS_RELATIVE_PATH: &str = ".copilot/settings.json";
 const TRAE_CONFIG_RELATIVE_PATH: &str = ".trae/traecli.toml";
 
 pub fn runtime_defaults(runtime: Runtime, home: &Path) -> RuntimeDefaults {
     match runtime {
         Runtime::Codex => toml_defaults(&codex_config_path(home)),
-        Runtime::ClaudeCode => json_defaults(&claude_settings_path(home)),
+        Runtime::ClaudeCode => json_defaults(&claude_settings_path(home), false),
+        Runtime::Copilot => json_defaults(&home.join(COPILOT_SETTINGS_RELATIVE_PATH), true),
         Runtime::Trae => toml_defaults(&trae_config_path(home)),
         Runtime::Shell => RuntimeDefaults::default(),
     }
@@ -68,17 +70,42 @@ fn toml_string(
         .map(|value| value.trim().to_owned())
 }
 
-fn json_defaults(path: &Path) -> RuntimeDefaults {
-    let Some(document) = std::fs::read_to_string(path)
-        .ok()
-        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
-    else {
+fn json_defaults(path: &Path, comments: bool) -> RuntimeDefaults {
+    let Some(document) = std::fs::read_to_string(path).ok().and_then(|raw| {
+        if comments {
+            jsonc_document(&raw).ok()
+        } else {
+            serde_json::from_str(&raw).ok()
+        }
+    }) else {
         return RuntimeDefaults::default();
     };
     RuntimeDefaults {
         model: json_string(&document, "model"),
         effort: json_string(&document, "effortLevel"),
     }
+}
+
+pub(crate) fn jsonc_document(raw: &str) -> serde_json::Result<serde_json::Value> {
+    let mut bytes = raw.as_bytes().to_vec();
+    let mut in_string = false;
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'\\' if in_string => index += 1,
+            b'"' => in_string = !in_string,
+            b'/' if !in_string && bytes.get(index + 1) == Some(&b'/') => {
+                while index < bytes.len() && !matches!(bytes[index], b'\n' | b'\r') {
+                    bytes[index] = b' ';
+                    index += 1;
+                }
+                continue;
+            }
+            _ => {}
+        }
+        index += 1;
+    }
+    serde_json::from_slice(&bytes)
 }
 
 fn json_string(document: &serde_json::Value, key: &str) -> Option<String> {
@@ -177,6 +204,18 @@ mod tests {
                 effort: Some("xhigh".into()),
             }
         );
+    }
+
+    #[test]
+    fn reads_copilot_defaults_with_line_comments_and_literal_slashes() {
+        let home = tempfile::tempdir().unwrap();
+        for raw in [
+            r#"{"model":"gpt-5.4","effortLevel":" high "}"#,
+            "// Copilot settings\n{\n  \"model\": \"gpt-5.4\", // pinned\n  \"effortLevel\": \" high \",\n  \"url\": \"https://example.com\",\n  \"escaped\": \"a\\\"//b\"\n}\n",
+        ] {
+            write(home.path(), COPILOT_SETTINGS_RELATIVE_PATH, raw);
+            assert_eq!(runtime_defaults(Runtime::Copilot, home.path()), RuntimeDefaults { model: Some("gpt-5.4".into()), effort: Some("high".into()) });
+        }
     }
 
     #[test]

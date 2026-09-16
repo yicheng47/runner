@@ -596,6 +596,7 @@ fn tab_and_mission_menus_have_the_trimmed_item_lists() {
         (Some("claude-code"), "claude.svg"),
         (Some("codex"), "openai.svg"),
         (Some("trae"), "trae.svg"),
+        (Some("copilot"), "copilot.svg"),
         (Some("unknown"), "message-square.svg"),
         (None, "message-square.svg"),
     ] {
@@ -883,6 +884,13 @@ fn sidebar_fork_menu_target_exposes_enabled_and_disabled_single_chats() {
     assert_eq!(
         trae_entries[2].0.description.clone(),
         Some("Forking needs claude-code or codex".into())
+    );
+
+    let copilot_members = vec![direct_session("chat", "copilot", SessionStatus::Running)];
+    let copilot_target = sidebar_fork_menu_target(&layout, &copilot_members).unwrap();
+    assert_eq!(
+        copilot_target.disabled_reason,
+        Some("Forking needs claude-code or codex")
     );
 
     let shell_members = vec![direct_session("chat", "shell", SessionStatus::Running)];
