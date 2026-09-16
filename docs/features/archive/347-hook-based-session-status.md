@@ -2,6 +2,7 @@
 
 > Tracking issue: [#347](https://github.com/yicheng47/runner/issues/347)
 > Priority: P1. Platforms: macOS and Windows.
+> Shipped on macOS for Claude Code, Codex and GitHub Copilot CLI (PRs #588, #589, #609); #347 closed 2026-09-16. Windows hook status and the remaining details continue in [610](../610-windows-hook-status.md) ([#610](https://github.com/yicheng47/runner/issues/610)).
 > Decision, 2026-09-13: next step after v0.8.9. The release keeps the merged title-spinner and byte-activity heuristics from [#585](https://github.com/yicheng47/runner/pull/585) unchanged.
 > Design direction, 2026-09-14: define the richer status model and its UI before implementation. Working, Needs you, and Idle are the everyday states. This supersedes the earlier decision to defer needs-you presentation. Proposal for review; runtime capability verification is still required.
 > Mechanism decision, 2026-09-14: the hook bridge is a port of cmux's working implementation, not a new design — per-invocation CLI injection, fire-and-forget hook scripts, and a Runner-owned script directory. cmux is GPL-3.0-or-later and Runner is GPL-3.0, so deriving from it is clean with attribution. What is ours is the product design: the status model and the surfaces on the canvas. See [Mechanism: port, do not invent](#mechanism-port-do-not-invent).

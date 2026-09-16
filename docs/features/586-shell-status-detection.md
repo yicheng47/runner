@@ -8,7 +8,7 @@
 
 A shell running `sleep 4` can become Idle after two seconds because Runner currently infers activity from byte arrival. Foreground process detection improves the ordinary shell → command → shell transition without injecting shell startup scripts. Try that smaller change and evaluate it in live use before implementing semantic prompt integration.
 
-This applies to Runner's shell tabs, panes, and drawer shells. It does not classify agent turns or fix agent inbox routing: Codex and Claude Code remain foreground processes while working and while awaiting input. Their lifecycle belongs to [#347](./347-hook-based-session-status.md).
+This applies to Runner's shell tabs, panes, and drawer shells. It does not classify agent turns or fix agent inbox routing: Codex and Claude Code remain foreground processes while working and while awaiting input. Their lifecycle belongs to [#347](./archive/347-hook-based-session-status.md).
 
 ## First step: process detection
 
