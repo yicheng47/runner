@@ -64,6 +64,8 @@ fn decoration(text: &str, cwd: Option<&str>) -> bool {
         "" | "codex"
             | "claude"
             | "claude code"
+            | "github copilot"
+            | "copilot"
             | "opencode"
             | "gemini"
             | "gemini cli"
@@ -105,6 +107,20 @@ fn decoration(text: &str, cwd: Option<&str>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn copilot_titles_keep_only_the_topic() {
+        assert_eq!(provider_title("GitHub Copilot", None), None);
+        assert_eq!(provider_title("Copilot", None), None);
+        assert_eq!(
+            provider_title("Say hello - GitHub Copilot", None).as_deref(),
+            Some("Say hello")
+        );
+        assert_eq!(
+            provider_title("Run Shell Command Echo - GitHub Copilot", None).as_deref(),
+            Some("Run Shell Command Echo")
+        );
+    }
 
     #[test]
     fn claude_spinner_frames_leave_the_topic_unchanged() {

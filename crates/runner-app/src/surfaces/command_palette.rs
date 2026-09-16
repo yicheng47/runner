@@ -749,6 +749,7 @@ mod tests {
             ("claude-code", "claude.svg"),
             ("codex", "openai.svg"),
             ("trae", "trae.svg"),
+            ("copilot", "copilot.svg"),
             ("shell", "square-terminal.svg"),
             ("unknown", "message-square.svg"),
         ] {

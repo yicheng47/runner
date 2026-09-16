@@ -164,7 +164,7 @@ Each agent keeps its MCP servers and its skills in its own config files. **Setti
 
 ### Drive Runner from your agents
 
-Runner is an MCP server too. **Settings → Agents** registers it with Claude Code, Codex and TRAE CLI, and from then on any of them can create crews and projects, start a mission, read its feed, answer its questions, or open a chat. The part that compounds: your daily agent plans a fix, dispatches a coder and reviewer crew to build it, and keeps working, while every session it spawned is still a real terminal you can open and watch.
+Runner is an MCP server too. **Settings → Agents** registers it with Claude Code, Codex, TRAE CLI, and GitHub Copilot CLI, and from then on any of them can create crews and projects, start a mission, read its feed, answer its questions, or open a chat. The part that compounds: your daily agent plans a fix, dispatches a coder and reviewer crew to build it, and keeps working, while every session it spawned is still a real terminal you can open and watch.
 
 </td>
 </tr>
@@ -202,10 +202,13 @@ Carbon and Runner Light are Runner's own themes; Catppuccin Mocha and Latte ride
 | Claude Code | Supported | Supported |
 | Codex | Supported | Supported |
 | TRAE CLI | Experimental | Not validated |
+| GitHub Copilot CLI | Supported | Supported |
 
 Claude Code and Codex are the primary supported agents, with fixture-tested terminal rendering and tuned launch/nudge timing. TRAE CLI sees less use and may have rough edges; it is enabled by default on macOS when detected, and disabled by default on Windows, where Runner integration has not been validated. [Issues](https://github.com/yicheng47/runner/issues) are welcome.
 
-Hook-based session status is available for Claude Code and Codex on macOS. Runner does not support hook-based status for TRAE CLI; TRAE CLI and Windows sessions use estimated status from terminal activity and titles.
+Hook-based session status is available for Claude Code and Codex on macOS. TRAE CLI and GitHub Copilot CLI use estimated status from terminal activity and titles; Copilot stays on estimated status until its hook adapter lands. Windows sessions also use estimated status.
+
+GitHub Copilot CLI requires a Copilot subscription and is enabled by default on both platforms. Its model catalog is static; native fork and global skill toggles are not supported.
 
 Install the agent CLIs separately. Runner detects them on `PATH`, with per-agent executable overrides in **Settings → Agents**. On Windows, Claude Code also requires Git for Windows for Git Bash; npm-based CLI installations require Node.js. PowerShell 7 is optional. Agents run natively on Windows, without WSL.
 

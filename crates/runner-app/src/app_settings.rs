@@ -893,6 +893,9 @@ mod tests {
     fn agent_enablement_preserves_shipped_defaults_and_explicit_overrides() {
         let mut settings = AppSettings::default();
         assert!(settings.is_agent_enabled(Runtime::Codex, true));
+        assert!(settings.is_agent_enabled(Runtime::Copilot, true));
+        settings.disabled_agents.insert("copilot".into());
+        assert!(!settings.is_agent_enabled(Runtime::Copilot, true));
         assert!(!settings.is_agent_enabled(Runtime::Trae, false));
         settings.enabled_agents.insert("trae".into());
         assert!(settings.is_agent_enabled(Runtime::Trae, false));

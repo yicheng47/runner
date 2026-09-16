@@ -215,6 +215,11 @@ pub(super) fn permission_modes(runtime: &str) -> &'static [PermissionMode] {
         // `plan`, `bypass_permissions` — so offering Auto would write
         // nothing and read back as Default (#599).
         Some(Runtime::Trae) => &[PermissionMode::Default, PermissionMode::Bypass],
+        Some(Runtime::Copilot) => &[
+            PermissionMode::Default,
+            PermissionMode::AcceptEdits,
+            PermissionMode::Bypass,
+        ],
         Some(Runtime::Shell) | None => &[],
     }
 }
@@ -275,6 +280,10 @@ pub(super) fn permission_mode_description(runtime: &str, mode: PermissionMode) -
         (Some(Runtime::Trae), PermissionMode::Bypass) => {
             "Bypass TRAE CLI permission prompts (`--permission-mode bypass_permissions`)."
         }
+        (Some(Runtime::Copilot), PermissionMode::Default) => "Copilot's own manual mode: read-only tools run, writes and shell commands ask. Governed by defaultPermissionMode in ~/.copilot/settings.json.",
+        (Some(Runtime::Copilot), PermissionMode::AcceptEdits) => "File creates and edits run without asking; shell commands, URLs and paths outside the cwd still prompt.",
+        (Some(Runtime::Copilot), PermissionMode::Bypass) => "Every tool, path and URL is allowed. Same flag for the app-wide mission permission mode; chats never carry it (#596).",
+        (Some(Runtime::Copilot), PermissionMode::Auto) => "",
         (Some(Runtime::Codex | Runtime::Trae), PermissionMode::AcceptEdits)
         | (Some(Runtime::Trae), PermissionMode::Auto)
         | (Some(Runtime::Shell) | None, _) => "",

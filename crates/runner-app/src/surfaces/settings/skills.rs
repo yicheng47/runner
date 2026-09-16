@@ -85,6 +85,10 @@ fn matches_search(entry: &SkillEntry, query: &str) -> bool {
     entry.name.to_lowercase().contains(&query) || entry.description.to_lowercase().contains(&query)
 }
 
+fn supports_global_skill_toggle(runtime: Runtime) -> bool {
+    matches!(runtime, Runtime::ClaudeCode | Runtime::Codex)
+}
+
 fn catalog_meta(catalog: &SkillCatalog) -> String {
     let mut text = format!(
         "{} · {} skills",
@@ -333,20 +337,22 @@ impl SkillsPane {
                         })
                     }),
             )
-            .child(
-                Toggle::new(("skill-toggle", index), entry.global != GlobalState::Off)
-                    .disabled(
-                        pending
-                            || (self.runtime == Runtime::Codex
-                                && !entry.files.contains(&entry.marker)),
-                    )
-                    .on_change(move |enabled, _, cx| {
-                        cx.stop_propagation();
-                        toggle_detail.update(cx, |detail, cx| {
-                            detail.set_enabled(toggle_runtime, toggle_path.clone(), enabled, cx)
-                        });
-                    }),
-            )
+            .when(supports_global_skill_toggle(self.runtime), |row| {
+                row.child(
+                    Toggle::new(("skill-toggle", index), entry.global != GlobalState::Off)
+                        .disabled(
+                            pending
+                                || (self.runtime == Runtime::Codex
+                                    && !entry.files.contains(&entry.marker)),
+                        )
+                        .on_change(move |enabled, _, cx| {
+                            cx.stop_propagation();
+                            toggle_detail.update(cx, |detail, cx| {
+                                detail.set_enabled(toggle_runtime, toggle_path.clone(), enabled, cx)
+                            });
+                        }),
+                )
+            })
             .into_any_element()
     }
 }
@@ -869,38 +875,40 @@ impl SkillDetail {
                     skill.entry.files.iter().map(|file| Badge::new(file.clone(), Tone::Muted)),
                 ),
             )
-            .child(
-                    div()
-                        .debug_selector(|| "SKILL_ENABLED_ROW".into())
-                        .flex()
-                        .items_center()
-                        .gap_4()
-                        .rounded(rems(6. / 16.))
-                        .bg(theme::raised())
-                        .px_3()
-                        .py_2()
-                        .child(
-                            div().flex_1().min_w_0().flex().flex_col().gap_1()
-                                .child(div().text_size(theme::text_ui()).child(format!("Enabled in {}", runtime_display_name(skill.runtime.key()))))
-                                .child(
-                                    div().text_size(theme::text_caption())
-                                        .line_height(rems(15. / 16.))
-                                        .text_color(theme::faint())
-                                        .child(if skill.runtime == Runtime::Codex {
-                                            "Applies to new Codex sessions. Writes only this skill’s [[skills.config]] entry in Codex config.toml; Claude Code is unchanged."
-                                        } else {
-                                            "Applies to every new Claude Code session, inside Runner or not. Writes only skillOverrides in ~/.claude/settings.json."
-                                        }),
-                                ),
-                        )
-                        .child(
-                            Toggle::new("skill-detail-toggle", skill.entry.global != GlobalState::Off)
-                                .disabled(self.busy || (skill.runtime == Runtime::Codex && !skill.entry.files.contains(&skill.entry.marker)))
-                                .on_change(move |enabled, _, cx| {
-                                    toggle_owner.update(cx, |this, cx| this.set_enabled(runtime, toggle_path.clone(), enabled, cx));
-                                }),
-                        ),
-            );
+            .when(supports_global_skill_toggle(skill.runtime), |overview| {
+                overview.child(
+                        div()
+                            .debug_selector(|| "SKILL_ENABLED_ROW".into())
+                            .flex()
+                            .items_center()
+                            .gap_4()
+                            .rounded(rems(6. / 16.))
+                            .bg(theme::raised())
+                            .px_3()
+                            .py_2()
+                            .child(
+                                div().flex_1().min_w_0().flex().flex_col().gap_1()
+                                    .child(div().text_size(theme::text_ui()).child(format!("Enabled in {}", runtime_display_name(skill.runtime.key()))))
+                                    .child(
+                                        div().text_size(theme::text_caption())
+                                            .line_height(rems(15. / 16.))
+                                            .text_color(theme::faint())
+                                            .child(if skill.runtime == Runtime::Codex {
+                                                "Applies to new Codex sessions. Writes only this skill’s [[skills.config]] entry in Codex config.toml; Claude Code is unchanged."
+                                            } else {
+                                                "Applies to every new Claude Code session, inside Runner or not. Writes only skillOverrides in ~/.claude/settings.json."
+                                            }),
+                                    ),
+                            )
+                            .child(
+                                Toggle::new("skill-detail-toggle", skill.entry.global != GlobalState::Off)
+                                    .disabled(self.busy || (skill.runtime == Runtime::Codex && !skill.entry.files.contains(&skill.entry.marker)))
+                                    .on_change(move |enabled, _, cx| {
+                                        toggle_owner.update(cx, |this, cx| this.set_enabled(runtime, toggle_path.clone(), enabled, cx));
+                                    }),
+                            ),
+                )
+            });
         let overview = div()
             .relative()
             .flex()
@@ -1372,6 +1380,37 @@ mod tests {
             })
             .unwrap();
         }
+    }
+
+    #[test]
+    fn copilot_detail_omits_unsupported_global_enabled_state() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut cx = gpui::TestAppContext::single();
+        let store = test_store(temp.path(), &mut cx);
+        let host = cx.add_window(|_, cx| SkillsTestHost(cx.new(|cx| SkillsPane::new(store, cx))));
+        let mut visual = gpui::VisualTestContext::from_window(host.into(), &cx);
+        host.update(&mut visual, |host, window, cx| {
+            host.0.update(cx, |pane, cx| {
+                pane.runtime = Runtime::Copilot;
+                let selected = entry();
+                let catalog = SkillCatalog {
+                    runtime: Runtime::Copilot,
+                    roots: vec!["/skills".into()],
+                    root_exists: true,
+                    entries: vec![selected.clone()],
+                };
+                let skill =
+                    OpenSkill::from_read(Runtime::Copilot, selected, Ok("# Shared skill".into()));
+                pane.detail.update(cx, |detail, cx| {
+                    detail.finish_open(Ok((skill, vec![catalog])), false, window, cx);
+                });
+            });
+        })
+        .unwrap();
+        visual.run_until_parked();
+
+        assert!(!supports_global_skill_toggle(Runtime::Copilot));
+        assert!(visual.debug_bounds("SKILL_ENABLED_ROW").is_none());
     }
 
     #[test]

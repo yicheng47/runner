@@ -3087,11 +3087,13 @@ mod tests {
             );
         }
 
-        let trae = direct_session("trae", false, false);
-        assert_eq!(
-            header_fork_state(Some(&trae), false),
-            HeaderForkState::Disabled("Forking needs claude-code or codex")
-        );
+        for runtime in ["trae", "copilot"] {
+            let entry = direct_session(runtime, false, false);
+            assert_eq!(
+                header_fork_state(Some(&entry), false),
+                HeaderForkState::Disabled("Forking needs claude-code or codex")
+            );
+        }
         let waiting = direct_session("codex", true, false);
         assert_eq!(
             header_fork_state(Some(&waiting), false),
@@ -3127,6 +3129,7 @@ mod tests {
         assert_eq!(pane_identity_icon(Some("codex")).path, "openai.svg");
         assert_eq!(pane_identity_icon(Some("claude-code")).path, "claude.svg");
         assert_eq!(pane_identity_icon(Some("trae")).path, "trae.svg");
+        assert_eq!(pane_identity_icon(Some("copilot")).path, "copilot.svg");
         assert_eq!(
             pane_identity_icon(Some("unknown")).path,
             "message-square.svg"
@@ -3159,6 +3162,7 @@ mod tests {
             (Some("claude-code"), "claude.svg"),
             (Some("codex"), "openai.svg"),
             (Some("trae"), "trae.svg"),
+            (Some("copilot"), "copilot.svg"),
             (Some("unknown"), "message-square.svg"),
             (None, "message-square.svg"),
         ] {

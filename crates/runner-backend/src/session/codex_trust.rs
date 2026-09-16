@@ -113,7 +113,7 @@ fn is_broad_trust_root(project_root: &Path, home: Option<&Path>) -> bool {
         == Some(project_root)
 }
 
-fn resolve_config_write_path(config_path: &Path) -> Result<PathBuf> {
+pub(crate) fn resolve_config_write_path(config_path: &Path) -> Result<PathBuf> {
     match fs::symlink_metadata(config_path) {
         Ok(metadata) if metadata.file_type().is_symlink() => fs::canonicalize(config_path)
             .map_err(|e| Error::msg(format!("realpath {}: {e}", config_path.display()))),
@@ -126,7 +126,7 @@ fn resolve_config_write_path(config_path: &Path) -> Result<PathBuf> {
     }
 }
 
-fn write_config_atomically(path: &Path, contents: &[u8]) -> Result<()> {
+pub(crate) fn write_config_atomically(path: &Path, contents: &[u8]) -> Result<()> {
     let parent = path
         .parent()
         .ok_or_else(|| Error::msg(format!("config path has no parent: {}", path.display())))?;

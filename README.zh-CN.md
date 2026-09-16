@@ -164,7 +164,7 @@ macOS 上按 `⇧⌘N`、Windows 上按 `Ctrl+Shift+N` 可以打开更多系统�
 
 ### 让你的 agent 来驱动 Runner
 
-Runner 本身也是一个 MCP 服务。**Settings → Agents** 把它注册到 Claude Code、Codex 和 TRAE CLI，此后它们中的任何一个都可以创建 crew 和项目、启动 mission、读取 feed、回答问题或开一个 chat。真正能复利的地方在于：你日常用的 agent 规划好一个修复，派出一个 coder 加 reviewer 的 crew 去实现，然后继续干自己的事，而它拉起的每个会话仍然是一个你随时可以打开查看的真实终端。
+Runner 本身也是一个 MCP 服务。**Settings → Agents** 把它注册到 Claude Code、Codex、TRAE CLI 和 GitHub Copilot CLI，此后它们中的任何一个都可以创建 crew 和项目、启动 mission、读取 feed、回答问题或开一个 chat。真正能复利的地方在于：你日常用的 agent 规划好一个修复，派出一个 coder 加 reviewer 的 crew 去实现，然后继续干自己的事，而它拉起的每个会话仍然是一个你随时可以打开查看的真实终端。
 
 </td>
 </tr>
@@ -202,10 +202,13 @@ Carbon 和 Runner Light 是 Runner 自己的主题，Catppuccin Mocha 和 Latte 
 | Claude Code | 支持 | 支持 |
 | Codex | 支持 | 支持 |
 | TRAE CLI | 实验性 | 未验证 |
+| GitHub Copilot CLI | 支持 | 支持 |
 
 Claude Code 和 Codex 是主要支持的 agent，终端渲染有夹具测试覆盖，启动和催促时序也做过调优。TRAE CLI 用得较少，可能有粗糙之处；macOS 上检测到后默认启用，Windows 上默认禁用，因为 Runner 与它的集成尚未在 Windows 上验证。欢迎提 [issue](https://github.com/yicheng47/runner/issues)。
 
-macOS 上的 Claude Code 和 Codex 支持基于 hook 的会话状态。Runner 不支持 TRAE CLI 的 hook 状态集成；TRAE CLI 和 Windows 上的会话通过终端活动和标题估算状态。
+macOS 上的 Claude Code 和 Codex 支持基于 hook 的会话状态。TRAE CLI 和 GitHub Copilot CLI 通过终端活动和标题估算状态；Copilot 在其 hook 适配器上线前使用估算状态。Windows 上的会话也使用估算状态。
+
+GitHub Copilot CLI 需要 Copilot 订阅，在两个平台上默认启用。其模型列表为静态配置，暂不支持原生 fork 和技能全局开关。
 
 agent 的命令行工具需要单独安装。Runner 会在 `PATH` 上检测它们，也可以在 **Settings → Agents** 里为每个 agent 单独指定可执行文件。在 Windows 上，Claude Code 还需要 Git for Windows 提供的 Git Bash；通过 npm 安装的 CLI 需要 Node.js。PowerShell 7 可选。agent 在 Windows 上原生运行，不需要 WSL。
 

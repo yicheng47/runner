@@ -838,5 +838,17 @@ mod tests {
         assert!(runtime_select_options(&catalog).is_empty());
         catalog[0].available = true;
         assert_eq!(runtime_select_options(&catalog)[0].value, "codex");
+        let mut copilot = catalog[0].clone();
+        copilot.name = runner_backend::model::Runtime::Copilot;
+        copilot.display_name = "GitHub Copilot CLI".into();
+        copilot.command = "copilot".into();
+        catalog.push(copilot);
+        assert_eq!(
+            runtime_select_options(&catalog)
+                .iter()
+                .map(|entry| entry.value.as_str())
+                .collect::<Vec<_>>(),
+            ["codex", "copilot"]
+        );
     }
 }

@@ -326,7 +326,7 @@ impl DirectSessionEntry {
             }
             // A runner-backed chat is an identity, not a topic. Runner
             // injects the runner's system prompt as the first turn
-            // (there is no system-prompt flag for codex or trae), so the
+            // (there is no system-prompt flag for codex, trae or copilot), so the
             // agent titles every chat from the same runner identically.
             // #587 already keeps the handle on mission surfaces for this
             // reason: identity is the thing you address, so it may not

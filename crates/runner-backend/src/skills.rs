@@ -628,6 +628,32 @@ mod tests {
     }
 
     #[test]
+    fn copilot_catalog_uses_both_personal_roots_without_global_toggles() {
+        let home = tempfile::tempdir().unwrap();
+        for (root, name) in [
+            (".copilot/skills", "copilot-skill"),
+            (".agents/skills", "shared-skill"),
+        ] {
+            let path = home.path().join(root).join(name);
+            std::fs::create_dir_all(&path).unwrap();
+            std::fs::write(path.join("SKILL.md"), "---\ndescription: demo\n---\nbody").unwrap();
+        }
+        let catalog = skill_catalog(Runtime::Copilot, home.path(), None).unwrap();
+        assert_eq!(
+            catalog.roots,
+            [
+                home.path().join(".copilot/skills"),
+                home.path().join(".agents/skills")
+            ]
+        );
+        assert_eq!(catalog.entries.len(), 2);
+        assert!(catalog
+            .entries
+            .iter()
+            .all(|entry| entry.global == GlobalState::On));
+    }
+
+    #[test]
     fn catalogs_sort_alphabetically_across_roots_and_runtimes() {
         let home = tempfile::tempdir().unwrap();
         let agents = home.path().join(".agents/skills");

@@ -14,6 +14,7 @@ pub struct McpConfigSnippet {
     pub claude_code: String,
     pub codex: String,
     pub trae: String,
+    pub copilot: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -24,6 +25,7 @@ pub struct McpIntegrationStatus {
     pub claude_code: McpClientStatus,
     pub codex: McpClientStatus,
     pub trae: McpClientStatus,
+    pub copilot: McpClientStatus,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -61,6 +63,7 @@ pub enum McpClientId {
     ClaudeCode,
     Codex,
     Trae,
+    Copilot,
 }
 
 impl McpClientId {
@@ -71,9 +74,10 @@ impl McpClientId {
         match crate::model::Runtime::parse(raw) {
             Some(crate::model::Runtime::Codex) => Ok(Self::Codex),
             Some(crate::model::Runtime::Trae) => Ok(Self::Trae),
+            Some(crate::model::Runtime::Copilot) => Ok(Self::Copilot),
             Some(crate::model::Runtime::ClaudeCode | crate::model::Runtime::Shell) | None => {
                 Err(Error::msg(format!(
-                    "unknown MCP client: {raw:?} (expected claude_code, codex, or trae)"
+                    "unknown MCP client: {raw:?} (expected claude_code, codex, trae, or copilot)"
                 )))
             }
         }
@@ -94,6 +98,10 @@ pub(crate) fn codex_path() -> Result<PathBuf> {
 
 fn trae_path() -> Result<PathBuf> {
     Ok(crate::runtime_defaults::trae_config_path(&home_dir()?))
+}
+
+fn copilot_path() -> Result<PathBuf> {
+    Ok(home_dir()?.join(".copilot/mcp-config.json"))
 }
 
 fn mcp_binary_path(state: &AppCore) -> String {
@@ -126,6 +134,24 @@ fn json_mcp_entry(binary_path: &str) -> serde_json::Value {
         "type": "stdio",
         "command": binary_path
     })
+}
+
+fn copilot_mcp_entry(binary_path: &str) -> serde_json::Value {
+    json!({"type":"local", "command":binary_path, "args":[], "tools":["*"]})
+}
+
+pub(crate) fn copilot_status_at(path: &Path, binary_path: &str) -> Result<McpClientStatus> {
+    claude_code_status_at(path, binary_path)
+}
+
+pub(crate) fn copilot_write_at(path: &Path, enabled: bool, binary_path: &str) -> Result<()> {
+    write_entry_at(
+        path,
+        McpClientId::Copilot,
+        "runner",
+        enabled.then(|| NativeEntry::Claude(copilot_mcp_entry(binary_path))),
+        false,
+    )
 }
 
 fn json_args(value: Option<&serde_json::Value>) -> Vec<String> {
@@ -245,12 +271,15 @@ pub fn mcp_integration_status(state: &AppCore) -> Result<McpIntegrationStatus> {
     let claude_code_path = claude_code_path()?;
     let codex_path = codex_path()?;
     let trae_path = trae_path()?;
+    let copilot_path = copilot_path()?;
     let claude_code = claude_code_status_at(&claude_code_path, &binary_path)
         .unwrap_or_else(|e| McpClientStatus::error(&claude_code_path, e.to_string()));
     let codex = codex_status_at(&codex_path, &binary_path)
         .unwrap_or_else(|e| McpClientStatus::error(&codex_path, e.to_string()));
     let trae = codex_status_at(&trae_path, &binary_path)
         .unwrap_or_else(|e| McpClientStatus::error(&trae_path, e.to_string()));
+    let copilot = copilot_status_at(&copilot_path, &binary_path)
+        .unwrap_or_else(|error| McpClientStatus::error(&copilot_path, error.to_string()));
     Ok(McpIntegrationStatus {
         environment: environment_label(),
         endpoint: endpoint(state),
@@ -258,6 +287,7 @@ pub fn mcp_integration_status(state: &AppCore) -> Result<McpIntegrationStatus> {
         claude_code,
         codex,
         trae,
+        copilot,
     })
 }
 
@@ -269,6 +299,7 @@ pub fn mcp_set_integration(state: &AppCore, client: &str, enabled: bool) -> Resu
         }
         McpClientId::Codex => codex_write_at(&codex_path()?, enabled, &binary_path),
         McpClientId::Trae => codex_write_at(&trae_path()?, enabled, &binary_path),
+        McpClientId::Copilot => copilot_write_at(&copilot_path()?, enabled, &binary_path),
     }
 }
 
@@ -288,17 +319,22 @@ pub fn mcp_config_snippet(state: &AppCore) -> Result<McpConfigSnippet> {
         claude_code: serde_json::to_string_pretty(&claude_code).unwrap_or_default(),
         codex,
         trae,
+        copilot: serde_json::to_string_pretty(
+            &json!({"mcpServers":{"runner":copilot_mcp_entry(&runner_bin)}}),
+        )
+        .unwrap_or_default(),
     })
 }
 
 impl McpClientId {
-    pub const ALL: [Self; 3] = [Self::ClaudeCode, Self::Codex, Self::Trae];
+    pub const ALL: [Self; 4] = [Self::ClaudeCode, Self::Codex, Self::Trae, Self::Copilot];
 
     pub fn key(self) -> &'static str {
         match self {
             Self::ClaudeCode => "claude_code",
             Self::Codex => "codex",
             Self::Trae => "trae",
+            Self::Copilot => "copilot",
         }
     }
 
@@ -307,6 +343,7 @@ impl McpClientId {
             crate::model::Runtime::ClaudeCode => Some(Self::ClaudeCode),
             crate::model::Runtime::Codex => Some(Self::Codex),
             crate::model::Runtime::Trae => Some(Self::Trae),
+            crate::model::Runtime::Copilot => Some(Self::Copilot),
             crate::model::Runtime::Shell => None,
         }
     }
@@ -316,6 +353,7 @@ impl McpClientId {
             Self::ClaudeCode => crate::model::Runtime::ClaudeCode,
             Self::Codex => crate::model::Runtime::Codex,
             Self::Trae => crate::model::Runtime::Trae,
+            Self::Copilot => crate::model::Runtime::Copilot,
         }
     }
 
@@ -324,6 +362,7 @@ impl McpClientId {
             Self::ClaudeCode => "Claude Code",
             Self::Codex => "Codex",
             Self::Trae => "TRAE CLI",
+            Self::Copilot => "GitHub Copilot CLI",
         }
     }
 
@@ -332,13 +371,14 @@ impl McpClientId {
             Self::ClaudeCode => "~/.claude.json",
             Self::Codex => "~/.codex/config.toml",
             Self::Trae => "~/.trae/traecli.toml",
+            Self::Copilot => "~/.copilot/mcp-config.json",
         }
     }
 
     pub fn entry_key(self, name: &str) -> String {
         format!(
             "{}.{name}",
-            if self == Self::ClaudeCode {
+            if matches!(self, Self::ClaudeCode | Self::Copilot) {
                 "mcpServers"
             } else {
                 "mcp_servers"
@@ -351,6 +391,7 @@ impl McpClientId {
             Self::ClaudeCode => &status.claude_code,
             Self::Codex => &status.codex,
             Self::Trae => &status.trae,
+            Self::Copilot => &status.copilot,
         }
     }
 
@@ -359,6 +400,7 @@ impl McpClientId {
             Self::ClaudeCode => claude_code_path(),
             Self::Codex => codex_path(),
             Self::Trae => trae_path(),
+            Self::Copilot => copilot_path(),
         }
     }
 }
@@ -379,7 +421,7 @@ pub enum McpServerDefinition {
 impl McpServerDefinition {
     pub fn from_claude(value: &serde_json::Value) -> Option<Self> {
         let kind = value.get("type").and_then(serde_json::Value::as_str);
-        if !matches!(kind, None | Some("stdio" | "http")) {
+        if !matches!(kind, None | Some("stdio" | "local" | "http")) {
             return None;
         }
         let strings = |key: &str| -> Option<BTreeMap<String, String>> {
@@ -552,7 +594,7 @@ fn read_entries_at(path: &Path, client: McpClientId) -> Result<BTreeMap<String, 
     if raw.trim().is_empty() {
         return Ok(BTreeMap::new());
     }
-    if client == McpClientId::ClaudeCode {
+    if matches!(client, McpClientId::ClaudeCode | McpClientId::Copilot) {
         let value: serde_json::Value = serde_json::from_str(&raw)
             .map_err(|e| Error::msg(format!("parse {}: {e}", path.display())))?;
         let object = value
@@ -944,7 +986,7 @@ fn write_entry_at(
     if entry.is_none() && !existing.contains_key(name) {
         return Ok(());
     }
-    let output = if client == McpClientId::ClaudeCode {
+    let output = if matches!(client, McpClientId::ClaudeCode | McpClientId::Copilot) {
         let raw = if raw.trim().is_empty() { "{}" } else { &raw };
         let (members, _) = json_members(raw)?;
         let server_member = members.iter().find(|m| m.key == "mcpServers");
@@ -1013,8 +1055,14 @@ fn write_entry_at(
 }
 
 fn translated(definition: &McpServerDefinition, client: McpClientId) -> NativeEntry {
-    if client == McpClientId::ClaudeCode {
-        NativeEntry::Claude(definition.to_claude())
+    if matches!(client, McpClientId::ClaudeCode | McpClientId::Copilot) {
+        let mut value = definition.to_claude();
+        if client == McpClientId::Copilot && matches!(definition, McpServerDefinition::Stdio { .. })
+        {
+            value["type"] = json!("local");
+            value["tools"] = json!(["*"]);
+        }
+        NativeEntry::Claude(value)
     } else {
         let mut table = toml_edit::Table::new();
         definition.write_toml(&mut table);
@@ -1075,7 +1123,7 @@ fn check_server_name(name: &str) -> Result<()> {
 }
 
 fn parse_native(client: McpClientId, name: &str, text: &str) -> Result<NativeEntry> {
-    if client == McpClientId::ClaudeCode {
+    if matches!(client, McpClientId::ClaudeCode | McpClientId::Copilot) {
         let value: serde_json::Value =
             serde_json::from_str(text).map_err(|e| Error::msg(format!("Invalid JSON: {e}")))?;
         if !value.is_object() {
@@ -1191,6 +1239,7 @@ mod tests {
                 claude_code: McpClientStatus::empty(&paths[&McpClientId::ClaudeCode]),
                 codex: McpClientStatus::empty(&paths[&McpClientId::Codex]),
                 trae: McpClientStatus::empty(&paths[&McpClientId::Trae]),
+                copilot: McpClientStatus::empty(&paths[&McpClientId::Copilot]),
             },
             paths,
         )
@@ -1584,6 +1633,76 @@ mod tests {
                 .is_none()
         );
         assert!(McpServerDefinition::from_claude(&json!({"extra": true})).is_none());
+    }
+
+    #[test]
+    fn copilot_registration_creates_local_entry_and_preserves_other_servers_and_formatting() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join(".copilot/mcp-config.json");
+        assert!(!copilot_status_at(&path, "/runner-mcp").unwrap().registered);
+        copilot_write_at(&path, true, "/runner-mcp").unwrap();
+        let raw = std::fs::read_to_string(&path).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(
+            value["mcpServers"]["runner"],
+            json!({"type":"local", "command":"/runner-mcp", "args":[], "tools":["*"]})
+        );
+        assert!(
+            copilot_status_at(&path, "/runner-mcp")
+                .unwrap()
+                .matches_current
+        );
+        assert!(!copilot_status_at(&path, "/other").unwrap().matches_current);
+        let existing = "{ \"before\":1e2, \"mcpServers\" : { \"other\" : {\"type\":\"local\",\"command\":\"other-mcp\",\"tools\":[\"read\"]} }, \"after\":\"\\u0061\" }\n";
+        std::fs::write(&path, existing).unwrap();
+        copilot_write_at(&path, true, "/runner-mcp").unwrap();
+        let written = std::fs::read_to_string(&path).unwrap();
+        assert!(written.starts_with("{ \"before\":1e2,"));
+        assert!(written.ends_with(", \"after\":\"\\u0061\" }\n"));
+        assert!(written.contains(
+            "\"other\" : {\"type\":\"local\",\"command\":\"other-mcp\",\"tools\":[\"read\"]}"
+        ));
+        copilot_write_at(&path, false, "/runner-mcp").unwrap();
+        let value: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(value["mcpServers"].get("runner").is_none());
+        assert_eq!(value["mcpServers"]["other"]["tools"], json!(["read"]));
+    }
+
+    #[test]
+    fn copilot_client_identity_and_cross_client_copy_use_json_local_entries() {
+        use McpClientId::*;
+        assert_eq!(McpClientId::parse("copilot").unwrap(), Copilot);
+        assert_eq!(Copilot.runtime(), crate::model::Runtime::Copilot);
+        assert_eq!(
+            McpClientId::for_runtime(crate::model::Runtime::Copilot),
+            Some(Copilot)
+        );
+        assert_eq!(Copilot.label(), "GitHub Copilot CLI");
+        assert_eq!(Copilot.config_file(), "~/.copilot/mcp-config.json");
+        assert_eq!(Copilot.entry_key("runner"), "mcpServers.runner");
+        let dir = TempDir::new().unwrap();
+        let paths = paths(&dir);
+        std::fs::write(
+            &paths[&ClaudeCode],
+            r#"{"mcpServers":{"other":{"type":"stdio","command":"other-mcp","args":["--stdio"]}}}"#,
+        )
+        .unwrap();
+        copy_at(&paths, ClaudeCode, Copilot, "other").unwrap();
+        let entry = read_entries_at(&paths[&Copilot], Copilot)
+            .unwrap()
+            .remove("other")
+            .unwrap();
+        let native: serde_json::Value = serde_json::from_str(&entry.text("other")).unwrap();
+        assert_eq!(native["type"], "local");
+        assert_eq!(native["tools"], json!(["*"]));
+        assert!(entry.definition().is_some());
+        copy_at(&paths, Copilot, Codex, "other").unwrap();
+        assert_eq!(
+            read_entries_at(&paths[&Codex], Codex).unwrap()["other"].definition(),
+            entry.definition()
+        );
+        assert_eq!(catalog(&paths).runner_server.clients.len(), 4);
     }
 
     #[test]

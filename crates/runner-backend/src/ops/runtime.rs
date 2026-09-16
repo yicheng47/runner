@@ -395,6 +395,59 @@ fn runtime_catalog_options() -> Vec<RuntimeCatalogEntry> {
             models: vec![default_model_option()],
             efforts: common_efforts(),
         },
+        RuntimeCatalogEntry {
+            name: Runtime::Copilot,
+            display_name: "GitHub Copilot CLI".into(),
+            command: "copilot".into(),
+            native_fork: false,
+            description: "GitHub Copilot CLI (requires a Copilot subscription)".into(),
+            default_enabled: true,
+            available: false,
+            default_model: None,
+            default_effort: None,
+            models: std::iter::once(default_model_option())
+                .chain(
+                    [
+                        "auto",
+                        "claude-sonnet-5",
+                        "claude-fable-5.1",
+                        "claude-fable-5",
+                        "claude-opus-5",
+                        "claude-opus-4.8",
+                        "claude-opus-4.8-fast",
+                        "claude-opus-4.7",
+                        "claude-sonnet-4.6",
+                        "claude-haiku-4.5",
+                        "gpt-5.6-sol",
+                        "gpt-5.6-terra",
+                        "gpt-5.6-luna",
+                        "gpt-5.5",
+                        "gpt-5.4",
+                        "gpt-5.4-mini",
+                        "gpt-5.3-codex",
+                        "gpt-5-mini",
+                        "mai-code-1.1-flash",
+                        "mai-code-1-flash-picker",
+                        "gemini-3.8-flash",
+                        "gemini-3.7-flash",
+                        "gemini-3.6-flash",
+                        "gemini-3.5-flash",
+                        "grok-4.5",
+                        "kimi-k3",
+                        "kimi-k2.7-code",
+                    ]
+                    .into_iter()
+                    .map(|model| plain_option(model, model)),
+                )
+                .collect(),
+            efforts: std::iter::once(default_effort())
+                .chain(
+                    ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
+                        .into_iter()
+                        .map(|effort| plain_option(effort, effort)),
+                )
+                .collect(),
+        },
     ]
 }
 
@@ -442,11 +495,27 @@ mod tests {
                 .iter()
                 .map(|runtime| runtime.name)
                 .collect::<Vec<_>>(),
-            [Runtime::Codex, Runtime::ClaudeCode, Runtime::Trae]
+            [
+                Runtime::Codex,
+                Runtime::ClaudeCode,
+                Runtime::Trae,
+                Runtime::Copilot
+            ]
         );
         assert!(catalog[0].default_enabled);
         assert!(catalog[1].default_enabled);
         assert_eq!(catalog[2].default_enabled, cfg!(target_os = "macos"));
+        assert!(catalog[3].default_enabled);
+        assert_eq!(catalog[3].models[1].value, "auto");
+        assert_eq!(catalog[3].models.len(), 28);
+        assert_eq!(
+            catalog[3]
+                .efforts
+                .iter()
+                .map(|effort| effort.value.as_str())
+                .collect::<Vec<_>>(),
+            ["", "none", "minimal", "low", "medium", "high", "xhigh", "max"]
+        );
         assert_eq!(
             catalog[0]
                 .models
@@ -494,9 +563,14 @@ mod tests {
             runtime.available = true;
         }
         let expected = if cfg!(target_os = "macos") {
-            vec![Runtime::Codex, Runtime::ClaudeCode, Runtime::Trae]
+            vec![
+                Runtime::Codex,
+                Runtime::ClaudeCode,
+                Runtime::Trae,
+                Runtime::Copilot,
+            ]
         } else {
-            vec![Runtime::Codex, Runtime::ClaudeCode]
+            vec![Runtime::Codex, Runtime::ClaudeCode, Runtime::Copilot]
         };
         assert_eq!(
             filter_selectable_runtime_catalog(catalog.clone(), None)
