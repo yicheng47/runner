@@ -28,7 +28,7 @@
 </p>
 
 <p align="center">
-  <img src="assets/hero.png" alt="Runner — one tab with Claude Code, Codex and GitHub Copilot CLI side by side, roles, crews, projects and chats in the sidebar" width="100%" />
+  <img src="assets/hero.png" alt="Runner — one tab with a Claude Code and two Codex sessions side by side, projects and chats in the sidebar" width="100%" />
 </p>
 
 <p align="center">
