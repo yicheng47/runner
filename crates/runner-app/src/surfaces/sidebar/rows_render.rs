@@ -22,6 +22,14 @@ use runner_app::ui::Tooltip;
 use runner_backend::ops::mission::MissionSummary;
 use runner_backend::repo::node::{NodeRow, NodeType};
 
+pub(super) fn project_header_icon(collapsed: bool) -> ChatIcon {
+    ChatIcon::generic(if collapsed {
+        "folder.svg"
+    } else {
+        "folder-open.svg"
+    })
+}
+
 impl Sidebar {
     fn live_title(&self, session_id: &str, cx: &App) -> Option<String> {
         self.shell
@@ -335,7 +343,7 @@ impl Sidebar {
                 } else {
                     "chevron-down.svg"
                 }),
-                (ChatIcon::generic("folder-code.svg"), live),
+                (project_header_icon(collapsed), live),
                 if collapsed {
                     attention
                 } else {
@@ -367,7 +375,7 @@ impl Sidebar {
                     })
                     .group_hover("sidebar-row-actions", |icon| icon.text_color(theme::text())),
             )
-            .child(sidebar_icon(ChatIcon::generic("folder-code.svg"), live))
+            .child(sidebar_icon(project_header_icon(collapsed), live))
             .child(
                 Tooltip::new(
                     SharedString::from(format!("project-cwd-{}", project.id)),

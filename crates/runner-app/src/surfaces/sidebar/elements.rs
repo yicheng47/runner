@@ -5,7 +5,7 @@ use super::*;
 use crate::surfaces::sidebar_logic::AttentionState;
 use crate::surfaces::*;
 use crate::*;
-use gpui::{radians, svg, FontWeight, Transformation};
+use gpui::{radians, svg, FontWeight, Hsla, Transformation};
 use runner_app::ui::{focus_ring, Tooltip};
 
 pub(super) fn project_name_from_path(path: &str) -> String {
@@ -343,15 +343,15 @@ pub(super) fn sidebar_icon(icon: ChatIcon, live: bool) -> AnyElement {
         .path(icon.path)
         .size(rems(12. / 16.))
         .flex_none()
-        .text_color(icon.color(
-            if live {
-                theme::accent()
-            } else {
-                theme::muted()
-            },
-            live,
-        ))
+        .text_color(sidebar_icon_color(icon, live))
         .into_any_element()
+}
+
+pub(super) fn sidebar_icon_color(icon: ChatIcon, live: bool) -> Hsla {
+    icon.color(
+        theme::with_alpha(theme::text(), if live { 1. } else { 0.45 }),
+        live,
+    )
 }
 
 /// Leading pin glyph. It stays put while the ⌘ shortcut pills show: the

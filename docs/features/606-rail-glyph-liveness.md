@@ -39,10 +39,10 @@ The frame shows the three folder pairs at 12 px in collapsed and expanded rows a
 
 ### Phase 2 — `runner-app`
 
-- `sidebar_icon(icon, live)` in `surfaces/sidebar`: a generic icon takes `theme::text()` with opacity 1.0 or 0.45 instead of the accent/muted pair; provider marks keep their existing branch. Callers in `rows_render.rs` (project header at the `folder-code.svg` sites, mission row at the `flag.svg` sites, shell and layout tabs through `sidebar_tab_icon`) pass the same `live` they pass today.
-- `assets.rs`: the folder pair; `folder-open.svg` exists, the closed one joins it; `folder-code.svg` is dropped once nothing references it.
-- The project header picks the asset from `collapsed`, next to the chevron that already does.
-- Tests: the icon-colour table in `chat_icon.rs`, `sidebar_tab_icon`, and a project-header test for the asset by expansion state.
+- [x] `sidebar_icon(icon, live)` in `surfaces/sidebar`: a generic icon takes `theme::text()` with opacity 1.0 or 0.45 instead of the accent/muted pair; provider marks keep their existing branch. Callers in `rows_render.rs` (project header at the `folder-code.svg` sites, mission row at the `flag.svg` sites, shell and layout tabs through `sidebar_tab_icon`) pass the same `live` they pass today.
+- [x] `assets.rs`: the folder pair; `folder-open.svg` exists, the closed one joins it; `folder-code.svg` is dropped once nothing references it.
+- [x] The project header picks the asset from `collapsed`, next to the chevron that already does.
+- [x] Tests: the icon-colour table in `chat_icon.rs`, `sidebar_tab_icon`, and a project-header test for the asset by expansion state.
 
 ### Phase 3 — smoke
 
