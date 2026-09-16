@@ -317,6 +317,15 @@ fn role_detail_columns_stay_inside_the_centered_container() {
         })
         .unwrap();
         visual.run_until_parked();
+        #[cfg(not(target_os = "macos"))]
+        {
+            assert!(
+                visual.debug_bounds("ENTITY_SIDEBAR_TOGGLE").is_none(),
+                "{route:?}: the platform chrome owns the sidebar toggle off macOS"
+            );
+            continue;
+        }
+        #[cfg(target_os = "macos")]
         let toggle = visual
             .debug_bounds("ENTITY_SIDEBAR_TOGGLE")
             .unwrap_or_else(|| {
