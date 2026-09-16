@@ -4,7 +4,7 @@ Implementation record for [feature 604](../../features/604-rename-runner-to-role
 
 ## Status (2026-09-16)
 
-Mission 1 (data, backend, MCP) is implemented, reviewed clean by the codex peer crew and by Claude, and sits on `feat/604-m1-backend` as [PR #618](https://github.com/yicheng47/runner/pull/618) against `main`. That PR is the single PR for the feature and stays open until mission 2 (UI copy, `surfaces/runners/` → `surfaces/roles/`, docs) is in and smoked. Migration 0023 has run on Jason's macOS dev database with every row intact; the in-app smoke of stage 1 and the Windows dev-database migration are outstanding.
+Both missions are implemented and reviewed clean by the codex peer crew and by Claude, on `feat/604-m1-backend` as [PR #618](https://github.com/yicheng47/runner/pull/618) against `main`. Mission 1 renamed the data, backend and MCP layers; mission 2 renamed the words users read, moved `surfaces/runners/` to `surfaces/roles/`, and aligned AGENTS.md, both READMEs, the vision doc and the arch doc. Jason's smoke test on the migrated dev database added the role glyph and a layout fix on the role detail page. Migration 0023 has run on the macOS dev database with every row intact; the Windows dev-database migration is outstanding.
 
 ## Decisions that bind
 
@@ -18,6 +18,7 @@ Mission 1 (data, backend, MCP) is implemented, reviewed clean by the codex peer 
 
 ## Open
 
-- In-app smoke of stage 1 on the migrated dev database: Runners page, a crew's detail, Settings → Archived, a chat and a mission with one message. On JASONPC the first `.\make.cmd run` migrates the Windows dev database, which doubles as the Windows check.
-- Mission 2 brief and run; then the `session_status` follow-up; then merge and the next release.
+- Merge #618, archive the spec and this record, then the release that carries the MCP cutover.
+- On JASONPC the first `.\make.cmd run` migrates the Windows dev database, which doubles as the Windows check.
+- Follow-ups outside this feature: `runner_status` → `session_status` with read compatibility, the router's first-turn prompt still saying "lead runner", and the design canvas labels.
 - The leftover branch `feat/604-role-rename` (brief commit only) can be deleted.
