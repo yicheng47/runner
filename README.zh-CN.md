@@ -197,18 +197,24 @@ Carbon 和 Runner Light 是 Runner 自己的主题，Catppuccin Mocha 和 Latte 
 
 ## 支持的 Agent
 
-| Agent | macOS（Apple Silicon） | Windows（x64） |
-| --- | --- | --- |
-| Claude Code | 支持 | 支持 |
-| Codex | 支持 | 支持 |
-| GitHub Copilot CLI | 支持 | 支持 |
-| TRAE CLI | 实验性 | 未验证 |
+| | Claude Code | Codex | GitHub Copilot CLI | TRAE CLI |
+| --- | :---: | :---: | :---: | :---: |
+| 聊天、mission、重启后恢复会话 | ✓ | ✓ | ✓ | ✓ |
+| 在 Windows 上运行 | ✓ | ✓ | ✓ ¹ | — ² |
+| 分叉聊天 | ✓ | ✓ | — | — |
+| 由 agent 自身的 hook 驱动 Working / Idle 状态 ³ | ✓ | ✓ | — | — |
+| Needs you：显示审批和提问对话框 ³ | ✓ | — | — | — |
+| 从 CLI 读取模型列表 | ✓ | ✓ | — | — |
+| 权限模式 | Default · Accept edits · Auto · Bypass | Default · Auto · Bypass | Default · Accept edits · Bypass | Default · Bypass |
+| Skills 面板 | 目录 + 开关 | 目录 + 开关 | 目录 | — |
+| 把 Runner 注册为 MCP 服务 | ✓ | ✓ | ✓ | ✓ |
+| 终端渲染有夹具测试覆盖 | ✓ | ✓ | — | — |
 
-Claude Code 和 Codex 是主要支持的 agent，终端渲染有夹具测试覆盖，启动和催促时序也做过调优。TRAE CLI 用得较少，可能有粗糙之处；macOS 上检测到后默认启用，Windows 上默认禁用，因为 Runner 与它的集成尚未在 Windows 上验证。欢迎提 [issue](https://github.com/yicheng47/runner/issues)。
+¹ GitHub Copilot CLI 在 Windows 上原生运行，但尚未在 Windows 上做过冒烟测试。
+² TRAE CLI 在 Windows 上默认禁用，其集成尚未验证。
+³ 仅 macOS。在 Windows 上，所有 agent 的状态都由终端输出估算，且无法检测对话框，直到 Windows 的 hook 支持落地。
 
-macOS 上的 Claude Code 和 Codex 支持基于 hook 的会话状态。TRAE CLI 和 GitHub Copilot CLI 通过终端活动和标题估算状态；Copilot 在其 hook 适配器上线前使用估算状态。Windows 上的会话也使用估算状态。
-
-GitHub Copilot CLI 需要 Copilot 订阅，在两个平台上默认启用。其模型列表为静态配置，暂不支持原生 fork 和技能全局开关。
+Claude Code 和 Codex 是主要支持的 agent，启动和催促时序做过调优。GitHub Copilot CLI 需要 Copilot 订阅。TRAE CLI 用得较少，可能有粗糙之处。欢迎提 [issue](https://github.com/yicheng47/runner/issues)。
 
 agent 的命令行工具需要单独安装。Runner 会在 `PATH` 上检测它们，也可以在 **Settings → Agents** 里为每个 agent 单独指定可执行文件。在 Windows 上，Claude Code 还需要 Git for Windows 提供的 Git Bash；通过 npm 安装的 CLI 需要 Node.js。PowerShell 7 可选。agent 在 Windows 上原生运行，不需要 WSL。
 
