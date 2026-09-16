@@ -761,7 +761,10 @@ impl NativeRoot {
         )
     }
 
-    /// Whether the window's previous / next page arrows are enabled.
+    /// Whether the window's previous / next page arrows are enabled. The
+    /// arrows live in the macOS title-bar clusters; Windows chrome computes
+    /// its own.
+    #[cfg(target_os = "macos")]
     pub(crate) fn page_navigation_state(&self) -> (bool, bool) {
         let in_settings = self.route == AppRoute::Settings;
         let can_go_back =

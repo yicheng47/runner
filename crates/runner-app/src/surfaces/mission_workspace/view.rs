@@ -3,9 +3,11 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui::prelude::*;
+#[cfg(target_os = "macos")]
+use gpui::WeakEntity;
 use gpui::{
     div, px, rems, svg, AnyElement, App, CursorStyle, DragMoveEvent, FontWeight, MouseButton,
-    SharedString, WeakEntity, Window, WindowControlArea,
+    SharedString, Window, WindowControlArea,
 };
 use runner_app::ui::{
     Button, ButtonSize, IconButton, SessionControl, SessionControlKind, SessionControlVariant,
