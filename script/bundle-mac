@@ -22,7 +22,7 @@ usage() {
 
 workspace_version() {
     awk '
-        $0 == "[package]" { in_package = 1; next }
+        $0 == "[workspace.package]" { in_package = 1; next }
         /^\[/ { in_package = 0 }
         in_package && /^[[:space:]]*version[[:space:]]*=/ {
             value = $0
@@ -31,7 +31,7 @@ workspace_version() {
             print value
             exit
         }
-    ' "$ROOT_DIR/crates/runner-app/Cargo.toml"
+    ' "$ROOT_DIR/Cargo.toml"
 }
 
 while [[ $# -gt 0 ]]; do
