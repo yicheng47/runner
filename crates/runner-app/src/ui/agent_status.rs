@@ -434,19 +434,29 @@ fn render_status_indicator(
             (label && (!header || detail))
                 .then_some(short_label.detail)
                 .flatten()
-                .map(|detail| {
-                    div()
-                        .min_w(px(0.))
-                        .flex_1()
-                        .truncate()
-                        .font_weight(FontWeight::NORMAL)
-                        .text_size(text_size)
-                        .text_color(theme::muted())
-                        .whitespace_nowrap()
-                        .child(format!("· {detail}"))
+                .into_iter()
+                .flat_map(|detail| {
+                    let muted = move || {
+                        div()
+                            .flex_none()
+                            .font_weight(FontWeight::NORMAL)
+                            .text_size(text_size)
+                            .text_color(theme::muted())
+                            .whitespace_nowrap()
+                    };
+                    [
+                        muted().child("·"),
+                        muted().flex_1().min_w(px(0.)).truncate().child(detail),
+                    ]
                 }),
         );
-    status_tooltip(status, (id, "tooltip"), row)
+    // A visible label already says everything the tooltip would; only a
+    // glyph-only indicator (narrow header) keeps the tooltip as its name.
+    if label {
+        row.into_any_element()
+    } else {
+        status_tooltip(status, (id, "tooltip"), row)
+    }
 }
 
 fn status_tooltip(

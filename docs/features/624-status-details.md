@@ -38,11 +38,11 @@ The outcome and the wait timestamp already exist: `TurnOutcome::Interrupted` on 
 
 ## UI rules
 
-The rule that binds every surface: the pane header, the single-pane tab bar and the runner card subtitle show the detail in the label, in one short form produced by one function so the three can never drift: `Idle · Interrupted`, `Approval needed · 2m`, `Working · Using tools`, `Working · Compacting context`. The tooltip repeats it as the accessible name, with the seconds and the concurrent conditions, and nothing depends on hovering. Jason overturned the 347 tooltip-only rule on 2026-09-17 after testing the first build: nobody hovers a header. The label slot reserves its width so a toggling detail never shifts the title or the buttons; when the pane is too narrow the detail drops first, then the label goes icon-only as in 347. Sidebar rows stay glyph-only and gain one glyph, for a failed response.
+The rule that binds every surface: the pane header, the single-pane tab bar and the runner card subtitle show the detail in the label, in one short form produced by one function so the three can never drift: `Idle · Interrupted`, `Approval needed · 2m`, `Working · Using tools`, `Working · Compacting context`. Wherever that label is visible there is no tooltip at all; only a glyph-only indicator (a narrow header, a sidebar row) keeps a tooltip as its name, with the seconds and the concurrent conditions. Jason overturned the 347 tooltip-only rule on 2026-09-17 after testing the first build (nobody hovers a header) and dropped the duplicate tooltip after testing the second. The label slot reserves its width so a toggling detail never shifts the title or the buttons; when the pane is too narrow the detail drops first, then the label goes icon-only as in 347. Sidebar rows stay glyph-only and gain one glyph, for a failed response.
 
 ### Working detail (`z92Zy9`)
 
-- Pane header and single-pane tab bar: the label reads `Working · Using tools` or `Working · Compacting context`, plain `Working` between details; the tooltip says the same.
+- Pane header and single-pane tab bar: the label reads `Working · Using tools` or `Working · Compacting context`, plain `Working` between details. No tooltip while the label is visible.
 - Runner card subtitle: `Working · Using tools` or `Working · Compacting context`, the label at its current weight and the detail regular, as the 347 card frame draws it. Plain `Working` between details. Anything longer than the 216 px line truncates with an ellipsis; the card never grows.
 - Sidebar: unchanged. A single-pane row's tooltip is the pane's tooltip and therefore carries the detail; multi-pane, project, section and mission rollups count working panes and never name a detail. The mission tab strip keeps the glyph only.
 - An estimated Working never carries a detail, and a needs-you wait outranks both details as it does today.
@@ -50,7 +50,7 @@ The rule that binds every surface: the pane header, the single-pane tab bar and 
 
 ### Interrupted outcome (`qKf92`)
 
-- Pane header and tab bar: the Idle ring is unchanged. The label reads `Idle · Interrupted` and the tooltip `Idle · Last response interrupted` when the last turn ended with `TurnOutcome::Interrupted`.
+- Pane header and tab bar: the Idle ring is unchanged. The label reads `Idle · Interrupted` when the last turn ended with `TurnOutcome::Interrupted`; a glyph-only indicator says `Idle · Last response interrupted` in its tooltip.
 - Runner card subtitle: `Idle · Interrupted`, muted, same ring. An interruption is not a failure and never turns red or amber.
 - Sidebar: nothing to chase. An interrupted pane out of view gets no unread dot (there is no response to read), contributes to no rollup count, and a single-pane row's tooltip says the same sentence as the pane header.
 - The outcome lasts until the next prompt, a resume or a restart; new work clears it. Baseline sessions keep `Idle · estimated from terminal activity` and never claim an interruption. The tooltip never says whether the outcome came from a hook or from Runner's own interrupt signal.
@@ -59,7 +59,7 @@ The rule that binds every surface: the pane header, the single-pane tab bar and 
 
 - Elapsed is now minus the interaction's `since`, per interaction. With several waits open the pane reports its oldest, which is also the one a rollup click opens.
 - Format: seconds under a minute (`45s`), whole minutes under an hour (`2m`), then hours and minutes (`1h 12m`).
-- Pane header and tab bar: the amber is unchanged. The label ends with the elapsed minutes once the wait is a minute old, `Approval needed · 2m`, redrawn on the minute and plain under a minute. The tooltip has the seconds, `Waiting for you to approve a command or plan · 2m`, `Waiting for your answer · 45s`, and refreshes every second while it is shown.
+- Pane header and tab bar: the amber is unchanged. The label ends with the elapsed minutes once the wait is a minute old, `Approval needed · 2m`, redrawn on the minute and plain under a minute. A glyph-only indicator's tooltip has the seconds, `Waiting for you to approve a command or plan · 2m`, `Waiting for your answer · 45s`, and refreshes every second while it is shown.
 - Runner card subtitle: `Approval needed · 2m`, `Answer needed · 1h 12m`; the state keeps its amber and its weight, the timer is regular and muted. Minutes only: under a minute the line stays at the plain label, and the card redraws on the minute, so a rail of cards never flickers with seconds.
 - Sidebar: rollups count and never time. `1 approval needed · 1 working` stays exactly that. A single-pane row's tooltip is the pane's and ends with the time, with a masked unread response appended as a second clause; a row whose dominant glyph is the unread dot keeps `1 unread response` as in 347.
 - Time never changes colour, precedence, ordering or delivery. No timer on Working, Idle or errors: a long turn is not a wait.
