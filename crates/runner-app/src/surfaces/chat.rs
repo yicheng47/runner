@@ -243,6 +243,16 @@ impl NativeRoot {
             .get("session_id")
             .and_then(serde_json::Value::as_str)
             .map(str::to_owned);
+        if event.name == "session/status"
+            && event
+                .payload
+                .get("status")
+                .and_then(|status| status.get("failed_since"))
+                .is_some_and(|failed_since| !failed_since.is_null())
+            && session_id.as_deref() == self.active_focused_session_id().as_deref()
+        {
+            self.mark_active_tab_viewed(window, cx);
+        }
         match event.name {
             "session/exit" => {
                 if let Some(session_id) = session_id {

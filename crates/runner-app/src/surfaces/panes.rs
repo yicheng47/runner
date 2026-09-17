@@ -411,7 +411,10 @@ impl NativeRoot {
                     .child(runner_app::ui::agent_status::header_status_indicator(
                         status,
                         status.shows_label(width),
+                        status.shows_detail(width),
                         "tab-status",
+                        window,
+                        cx,
                     ))
                     .on_click(cx.listener(move |this, _, window, cx| {
                         cx.stop_propagation();
@@ -2039,7 +2042,10 @@ impl NativeRoot {
                             .child(runner_app::ui::agent_status::pane_status_indicator(
                                 status,
                                 status.shows_label(width),
+                                status.shows_detail(width),
                                 SharedString::from(format!("status-{target}")),
+                                window,
+                                cx,
                             ))
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 cx.stop_propagation();

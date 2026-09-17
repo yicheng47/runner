@@ -301,7 +301,7 @@ impl Sidebar {
                 self.archiving_missions.contains(&summary.mission.id)
             }
         });
-        self.render_rollup_attention(rollup, node_id, archiving, id, cx)
+        self.render_rollup_attention(rollup, node_id, archiving, false, id, cx)
     }
 
     pub(super) fn render_rollup_attention(
@@ -309,6 +309,7 @@ impl Sidebar {
         rollup: runner_app::ui::agent_status::StatusRollup,
         node_id: Option<String>,
         archiving: bool,
+        pane_tooltip: bool,
         id: SharedString,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -321,7 +322,11 @@ impl Sidebar {
             )
             .into_any_element()
         } else {
-            rollup.render(id.clone())
+            if pane_tooltip {
+                rollup.render_pane(id.clone())
+            } else {
+                rollup.render(id.clone())
+            }
         };
         div()
             .id(id.clone())

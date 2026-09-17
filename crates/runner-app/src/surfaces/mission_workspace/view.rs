@@ -221,6 +221,7 @@ impl MissionWorkspace {
             rail_visibility,
             rail_open || rail_animating,
             rail_open && !rail_animating,
+            window,
             cx,
         );
         div()

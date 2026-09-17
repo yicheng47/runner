@@ -138,6 +138,7 @@ impl Sidebar {
                     members
                         .iter()
                         .any(|member| self.archiving_sessions.contains(&member.session_id)),
+                    pane_count == 1,
                     SharedString::from(format!("attention-{}", node.id)),
                     cx,
                 ),
@@ -269,6 +270,7 @@ impl Sidebar {
                 self.mission_status_rollup(&summary),
                 Some(node.id.clone()),
                 self.archiving_missions.contains(&summary.mission.id),
+                false,
                 SharedString::from(format!("attention-{}", node.id)),
                 cx,
             ))

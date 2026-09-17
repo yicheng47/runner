@@ -6,7 +6,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use super::hook_feed::{self, HookFeed, TranscriptTail};
-use super::status::{Activity, AgentObservation, ObservationSource, TurnOutcome};
+use super::status::{Activity, AgentObservation, ObservationSource, TurnOutcome, WorkDetail};
 use crate::error::Result;
 
 pub(crate) const PATH_ENV: &str = "RUNNER_CODEX_STATUS_PATH";
@@ -59,6 +59,7 @@ pub(crate) fn hook_command(path: &Path, event: &str) -> String {
 struct StatusReport {
     #[serde(default)]
     hook_event_name: String,
+    source: Option<String>,
     session_id: Option<String>,
     turn_id: Option<String>,
     transcript_path: Option<PathBuf>,
@@ -71,8 +72,16 @@ struct CodexObservation {
     session_id: Option<String>,
     turn_id: Option<String>,
     retired_turns: BTreeSet<String>,
+    pending_tools: usize,
+    compacting: bool,
+    compaction_resume: Option<CompactionResume>,
     ended: bool,
     transcript_path: Option<PathBuf>,
+}
+
+struct CompactionResume {
+    working: bool,
+    outcome: Option<TurnOutcome>,
 }
 
 impl CodexObservation {
@@ -87,11 +96,20 @@ impl CodexObservation {
             }
             self.turn_id = None;
             self.retired_turns.clear();
+            self.pending_tools = 0;
+            self.compacting = false;
+            self.compaction_resume = None;
             self.ended = false;
             self.transcript_path = None;
         }
         self.session_id = Some(session_id);
         if report.hook_event_name == "SessionStart" {
+            if report.source.as_deref() == Some("compact") && self.compacting {
+                if let Some(path) = report.transcript_path {
+                    self.transcript_path = Some(path);
+                }
+                return None;
+            }
             // Delayed startup/resume and compaction hooks cannot reset a running turn.
             if self.turn_id.is_some() || self.ended {
                 return None;
@@ -99,6 +117,7 @@ impl CodexObservation {
             self.transcript_path = report.transcript_path;
             self.value.activity = Activity::Unavailable;
             self.value.outcome = None;
+            self.value.detail = None;
             return (self.value.source == ObservationSource::Hook).then(|| self.value.clone());
         }
         if self.ended {
@@ -106,7 +125,11 @@ impl CodexObservation {
         }
         if report.hook_event_name == "SessionEnd" {
             self.ended = true;
+            self.pending_tools = 0;
+            self.compacting = false;
+            self.compaction_resume = None;
             self.value.activity = Activity::Unavailable;
+            self.value.detail = None;
             return (self.value.source == ObservationSource::Hook).then(|| self.value.clone());
         }
         let turn_id = report.turn_id.filter(|id| !id.is_empty())?;
@@ -120,8 +143,12 @@ impl CodexObservation {
             if let Some(previous) = self.turn_id.replace(turn_id) {
                 self.retired_turns.insert(previous);
             }
+            self.pending_tools = 0;
+            self.compacting = false;
+            self.compaction_resume = None;
             self.value.outcome = None;
             self.value.activity = Activity::Working;
+            self.value.detail = None;
         } else {
             if self.turn_id.as_ref() != Some(&turn_id) {
                 return None;
@@ -131,28 +158,73 @@ impl CodexObservation {
                     if self.value.outcome == Some(TurnOutcome::Interrupted) {
                         return None;
                     }
+                    self.pending_tools = 0;
+                    self.compacting = false;
+                    self.compaction_resume = None;
                     self.value.activity = Activity::Unavailable;
                     self.value.outcome = Some(TurnOutcome::Interrupted);
+                    self.value.detail = None;
                 }
                 "Stop" => {
                     if self.value.outcome == Some(TurnOutcome::Interrupted) {
                         return None;
                     }
+                    self.pending_tools = 0;
+                    self.compacting = false;
+                    self.compaction_resume = None;
                     self.value.activity = Activity::Ready;
                     self.value.outcome = Some(TurnOutcome::Completed);
+                    self.value.detail = None;
                 }
-                "PreToolUse" | "PreCompact" => {
+                "PreToolUse" => {
                     if self.value.outcome == Some(TurnOutcome::Interrupted) {
                         return None;
                     }
+                    self.pending_tools += 1;
                     self.value.activity = Activity::Working;
                     self.value.outcome = None;
+                    self.update_detail();
                 }
-                "PostToolUse" | "PostCompact" => {
+                "PostToolUse" => {
                     if self.value.outcome.is_some() {
                         return None;
                     }
+                    self.pending_tools = self.pending_tools.saturating_sub(1);
                     self.value.activity = Activity::Working;
+                    self.update_detail();
+                }
+                "PreCompact" => {
+                    if self.value.outcome == Some(TurnOutcome::Interrupted) {
+                        return None;
+                    }
+                    if !self.compacting {
+                        self.compaction_resume = Some(CompactionResume {
+                            working: self.value.activity == Activity::Working
+                                && self.value.outcome.is_none(),
+                            outcome: self.value.outcome,
+                        });
+                    }
+                    self.compacting = true;
+                    self.value.activity = Activity::Working;
+                    self.value.outcome = None;
+                    self.update_detail();
+                }
+                "PostCompact" => {
+                    if self.value.outcome.is_some() {
+                        return None;
+                    }
+                    self.compacting = false;
+                    match self.compaction_resume.take() {
+                        Some(resume) if !resume.working => {
+                            self.value.activity = Activity::Ready;
+                            self.value.outcome = resume.outcome;
+                            self.update_detail();
+                        }
+                        _ => {
+                            self.value.activity = Activity::Working;
+                            self.update_detail();
+                        }
+                    }
                 }
                 _ => return None,
             }
@@ -162,6 +234,19 @@ impl CodexObservation {
         }
         self.value.source = ObservationSource::Hook;
         Some(self.value.clone())
+    }
+
+    fn update_detail(&mut self) {
+        self.value.detail =
+            if self.value.activity != Activity::Working || self.value.outcome.is_some() {
+                None
+            } else if self.compacting {
+                Some(WorkDetail::CompactingContext)
+            } else if self.pending_tools > 0 {
+                Some(WorkDetail::UsingTools)
+            } else {
+                None
+            };
     }
 
     fn awaiting_abort(&self) -> bool {
@@ -316,6 +401,93 @@ mod tests {
             }
             assert_eq!(state.value.activity, Activity::Working);
         }
+    }
+
+    #[test]
+    fn tool_and_compaction_detail_follow_in_flight_work() {
+        let mut state = CodexObservation::default();
+        let prompt = observe(&mut state, report("UserPromptSubmit", "one")).unwrap();
+        assert_eq!(prompt.detail, None);
+        assert_eq!(
+            observe(&mut state, report("PreToolUse", "one"))
+                .unwrap()
+                .detail,
+            Some(WorkDetail::UsingTools)
+        );
+        assert_eq!(
+            observe(&mut state, report("PreToolUse", "one"))
+                .unwrap()
+                .detail,
+            Some(WorkDetail::UsingTools)
+        );
+        assert_eq!(
+            observe(&mut state, report("PreCompact", "one"))
+                .unwrap()
+                .detail,
+            Some(WorkDetail::CompactingContext)
+        );
+        assert_eq!(
+            observe(&mut state, report("PostCompact", "one"))
+                .unwrap()
+                .detail,
+            Some(WorkDetail::UsingTools)
+        );
+        assert_eq!(
+            observe(&mut state, report("PostToolUse", "one"))
+                .unwrap()
+                .detail,
+            Some(WorkDetail::UsingTools)
+        );
+        assert_eq!(
+            observe(&mut state, report("PostToolUse", "one"))
+                .unwrap()
+                .detail,
+            None
+        );
+
+        observe(&mut state, report("PreCompact", "one"));
+        let stopped = observe(&mut state, report("Stop", "one")).unwrap();
+        assert_eq!(stopped.outcome, Some(TurnOutcome::Completed));
+        assert_eq!(stopped.detail, None);
+        let next = observe(&mut state, report("UserPromptSubmit", "two")).unwrap();
+        assert_eq!(next.detail, None);
+        observe(&mut state, report("PreToolUse", "two"));
+        let interrupted = observe(&mut state, report("Interrupt", "two")).unwrap();
+        assert_eq!(interrupted.outcome, Some(TurnOutcome::Interrupted));
+        assert_eq!(interrupted.detail, None);
+    }
+
+    #[test]
+    fn compact_session_start_restores_manual_idle_and_in_turn_work() {
+        let mut state = CodexObservation::default();
+        observe(&mut state, report("UserPromptSubmit", "one"));
+        observe(&mut state, report("Stop", "one"));
+
+        assert_eq!(
+            observe(&mut state, report("PreCompact", "one"))
+                .unwrap()
+                .detail,
+            Some(WorkDetail::CompactingContext)
+        );
+        let mut compact_start = report("SessionStart", "");
+        compact_start["source"] = json!("compact");
+        assert!(observe(&mut state, compact_start).is_none());
+        assert_eq!(state.value.detail, Some(WorkDetail::CompactingContext));
+        let manual_done = observe(&mut state, report("PostCompact", "one")).unwrap();
+        assert_eq!(manual_done.activity, Activity::Ready);
+        assert_eq!(manual_done.outcome, Some(TurnOutcome::Completed));
+        assert_eq!(manual_done.detail, None);
+
+        observe(&mut state, report("UserPromptSubmit", "two"));
+        observe(&mut state, report("PreToolUse", "two"));
+        observe(&mut state, report("PreCompact", "two"));
+        let mut compact_start = report("SessionStart", "");
+        compact_start["source"] = json!("compact");
+        assert!(observe(&mut state, compact_start).is_none());
+        let automatic_done = observe(&mut state, report("PostCompact", "two")).unwrap();
+        assert_eq!(automatic_done.activity, Activity::Working);
+        assert_eq!(automatic_done.outcome, None);
+        assert_eq!(automatic_done.detail, Some(WorkDetail::UsingTools));
     }
 
     #[test]

@@ -8435,6 +8435,144 @@ fn normalized_status_snapshot_wait_gate_resolution_and_bridge_failure() {
 }
 
 #[test]
+fn failure_attention_is_transient_and_interruption_never_records_unread() {
+    let core = crate::test_support::test_core();
+    core.db.get().unwrap().execute("INSERT INTO sessions(id, status, agent_runtime) VALUES ('status-detail', 'running', 'claude-code')", []).unwrap();
+    install_test_session_handle(&core.sessions, "status-detail");
+    let events = core.session_events();
+    let mut observation = AgentObservation {
+        activity: Activity::Working,
+        source: ObservationSource::Hook,
+        ..Default::default()
+    };
+    core.sessions
+        .publish_observation("status-detail", observation.clone(), &events);
+
+    observation.activity = Activity::Ready;
+    observation.outcome = Some(TurnOutcome::Interrupted);
+    core.sessions
+        .publish_observation("status-detail", observation.clone(), &events);
+    let interrupted = core.sessions.agent_status("status-detail");
+    assert!(interrupted.failed_since.is_none());
+    assert!(interrupted.unread_since.is_none());
+    assert!(!crate::repo::session_attention::any_unread(
+        &core.db.get().unwrap(),
+        &["status-detail".into()]
+    )
+    .unwrap());
+
+    observation.outcome = Some(TurnOutcome::Completed);
+    core.sessions
+        .publish_observation("status-detail", observation.clone(), &events);
+    assert!(core
+        .sessions
+        .agent_status("status-detail")
+        .failed_since
+        .is_none());
+
+    observation.outcome = Some(TurnOutcome::Failed);
+    core.sessions
+        .publish_observation("status-detail", observation.clone(), &events);
+    let failed = core.sessions.agent_status("status-detail");
+    assert!(failed.failed_since.is_some());
+    assert!(failed.unread_since.is_none());
+
+    observation.activity = Activity::Working;
+    observation.outcome = None;
+    observation.detail = Some(crate::session::status::WorkDetail::CompactingContext);
+    core.sessions
+        .publish_observation("status-detail", observation.clone(), &events);
+    assert!(core
+        .sessions
+        .agent_status("status-detail")
+        .failed_since
+        .is_none());
+    assert!(!core
+        .sessions
+        .take_completion_armed(&["status-detail".into()]));
+    observation.activity = Activity::Ready;
+    observation.outcome = Some(TurnOutcome::Failed);
+    observation.detail = None;
+    core.sessions
+        .publish_observation("status-detail", observation.clone(), &events);
+    assert!(core
+        .sessions
+        .agent_status("status-detail")
+        .failed_since
+        .is_some());
+
+    core.sessions.mark_status_viewed(&["status-detail".into()]);
+    let acknowledged = core.sessions.agent_status("status-detail");
+    assert!(acknowledged.failed_since.is_none());
+    assert_eq!(acknowledged.observation.outcome, Some(TurnOutcome::Failed));
+    observation.activity = Activity::Working;
+    observation.outcome = None;
+    observation.detail = Some(crate::session::status::WorkDetail::CompactingContext);
+    core.sessions
+        .publish_observation("status-detail", observation.clone(), &events);
+    assert!(!core
+        .sessions
+        .take_completion_armed(&["status-detail".into()]));
+    observation.activity = Activity::Ready;
+    observation.outcome = Some(TurnOutcome::Failed);
+    observation.detail = None;
+    core.sessions
+        .publish_observation("status-detail", observation.clone(), &events);
+    assert!(core
+        .sessions
+        .agent_status("status-detail")
+        .failed_since
+        .is_none());
+
+    observation.activity = Activity::Idle;
+    core.sessions
+        .publish_observation("status-detail", observation.clone(), &events);
+    assert!(core
+        .sessions
+        .agent_status("status-detail")
+        .failed_since
+        .is_none());
+
+    observation.activity = Activity::Working;
+    observation.outcome = None;
+    core.sessions
+        .publish_observation("status-detail", observation.clone(), &events);
+    assert!(core
+        .sessions
+        .agent_status("status-detail")
+        .failed_since
+        .is_none());
+
+    observation.source = ObservationSource::Baseline;
+    observation.detail = Some(crate::session::status::WorkDetail::UsingTools);
+    core.sessions
+        .publish_observation("status-detail", observation.clone(), &events);
+    assert_eq!(
+        core.sessions
+            .agent_status("status-detail")
+            .observation
+            .detail,
+        None
+    );
+
+    {
+        let state = core.sessions.session_state("status-detail").unwrap();
+        let mut state = state.lock().unwrap();
+        state.handle = None;
+        state.status.lifecycle = Lifecycle::Stopped;
+    }
+    observation.activity = Activity::Ready;
+    observation.outcome = Some(TurnOutcome::Failed);
+    core.sessions
+        .publish_observation("status-detail", observation, &events);
+    assert!(core
+        .sessions
+        .agent_status("status-detail")
+        .failed_since
+        .is_none());
+}
+
+#[test]
 fn bridge_loss_and_unavailable_observations_never_manufacture_a_completion() {
     let core = crate::test_support::test_core();
     core.db.get().unwrap().execute("INSERT INTO sessions(id, status, agent_runtime) VALUES ('status', 'running', 'claude-code')", []).unwrap();
