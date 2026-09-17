@@ -7,7 +7,7 @@ use gpui::prelude::*;
 use gpui::MouseButton;
 use gpui::{
     div, px, rems, svg, AnyElement, App, BoxShadow, CursorStyle, FontWeight, KeyDownEvent,
-    SharedString,
+    SharedString, Window,
 };
 use runner_app::ui::{
     Button, ButtonVariant, Field, IconButton, Modal, OverlayWidth, RoleAvatar, RolePresence,
@@ -24,6 +24,7 @@ impl MissionWorkspace {
         visibility: f32,
         show_rail: bool,
         border_on: bool,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let width = self.settings(cx).mission_rail_width;
@@ -97,7 +98,7 @@ impl MissionWorkspace {
                 ),
             );
         let body = match rail_view {
-            MissionRailView::Roles => self.render_roles_rail(cx),
+            MissionRailView::Roles => self.render_roles_rail(window, cx),
             MissionRailView::Meta => self.render_mission_meta_panel(cx),
         };
         let drag = MissionRailResizeDrag;
@@ -156,7 +157,7 @@ impl MissionWorkspace {
         cx.notify();
     }
 
-    fn render_roles_rail(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_roles_rail(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let selected = match &self.active_tab {
             MissionTab::Session(session_id) => Some(session_id.as_str()),
             MissionTab::Feed => None,
@@ -209,6 +210,8 @@ impl MissionWorkspace {
                 status,
                 true,
                 SharedString::from(format!("mission-card-status-{session_id}")),
+                window,
+                cx,
             );
             let disabled = self.stopping
                 || self.resuming

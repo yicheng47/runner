@@ -35,6 +35,13 @@ pub enum WaitReason {
     Unknown,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkDetail {
+    UsingTools,
+    CompactingContext,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HumanInteraction {
     pub id: String,
@@ -49,6 +56,8 @@ pub struct AgentObservation {
     pub source: ObservationSource,
     pub outcome: Option<TurnOutcome>,
     pub interactions: Vec<HumanInteraction>,
+    #[serde(default)]
+    pub detail: Option<WorkDetail>,
 }
 
 impl AgentObservation {
@@ -74,5 +83,7 @@ pub struct AgentStatus {
     pub observation: AgentObservation,
     pub exit_code: Option<i32>,
     pub error_since: Option<i64>,
+    #[serde(default)]
+    pub failed_since: Option<i64>,
     pub unread_since: Option<i64>,
 }

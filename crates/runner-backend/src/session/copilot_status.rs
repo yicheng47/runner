@@ -12,6 +12,7 @@ use super::claude_status::CTRL_C_INTERRUPT;
 use super::hook_feed::{HookFeed, TranscriptTail};
 use super::status::{
     Activity, AgentObservation, HumanInteraction, ObservationSource, TurnOutcome, WaitReason,
+    WorkDetail,
 };
 use crate::error::Result;
 
@@ -131,6 +132,7 @@ pub(crate) fn install_plugin(app_data_dir: &Path) -> Result<()> {
 struct StatusReport {
     #[serde(default)]
     hook_event_name: String,
+    source: Option<String>,
     #[serde(alias = "sessionId")]
     session_id: Option<String>,
     #[serde(alias = "notificationType")]
@@ -151,6 +153,11 @@ struct PendingTool {
     input: Option<Value>,
 }
 
+struct CompactionResume {
+    working: bool,
+    outcome: Option<TurnOutcome>,
+}
+
 #[derive(Default)]
 struct CopilotObservation {
     value: AgentObservation,
@@ -158,6 +165,9 @@ struct CopilotObservation {
     ended: bool,
     transcript_path: Option<PathBuf>,
     tools: Vec<PendingTool>,
+    completed_tools: Vec<PendingTool>,
+    compacting: bool,
+    compaction_resume: Option<CompactionResume>,
     permission_owners: Vec<String>,
     transcript_calls: BTreeMap<String, String>,
     next_tool: u64,
@@ -171,6 +181,19 @@ impl CopilotObservation {
         }
         let session_id = report.session_id.filter(|id| !id.is_empty())?;
         if report.hook_event_name == "SessionStart" {
+            if report.source.as_deref() == Some("compact")
+                && self.compacting
+                && self
+                    .session_id
+                    .as_ref()
+                    .is_none_or(|current| current == &session_id)
+            {
+                self.session_id = Some(session_id);
+                if let Some(path) = report.transcript_path {
+                    self.transcript_path = Some(path);
+                }
+                return None;
+            }
             if self.session_id.as_ref() == Some(&session_id)
                 && self.value.source == ObservationSource::Hook
             {
@@ -203,6 +226,7 @@ impl CopilotObservation {
                 self.ended = true;
                 self.clear_turn();
                 self.value.activity = Activity::Unavailable;
+                self.update_detail();
             }
             "UserPromptSubmit" => {
                 self.clear_turn();
@@ -210,6 +234,7 @@ impl CopilotObservation {
             }
             "PreToolUse" => {
                 let name = report.tool_name?;
+                self.finish_compaction();
                 self.work();
                 self.next_tool += 1;
                 let owner = format!("copilot-tool-{}", self.next_tool);
@@ -219,6 +244,7 @@ impl CopilotObservation {
                     name,
                     input: report.tool_input,
                 });
+                self.update_detail();
                 if question {
                     self.wait(WaitReason::Answer, vec![owner]);
                 }
@@ -268,27 +294,61 @@ impl CopilotObservation {
                     }
                 }
                 Some("agent_idle") if !self.value.needs_you() => {
+                    self.finish_compaction();
                     self.value.activity = Activity::Ready;
+                    self.update_detail();
                 }
                 _ => return None,
             },
             "PostToolUse" | "PostToolUseFailure" => {
-                let owner =
-                    self.remove_tool(report.tool_name.as_deref()?, report.tool_input.as_ref())?;
-                self.resolve(&owner);
+                let owner = report.tool_name.as_deref().and_then(|name| {
+                    if self.consume_completed_tool(name, report.tool_input.as_ref()) {
+                        Some(None)
+                    } else {
+                        self.remove_tool(name, report.tool_input.as_ref()).map(Some)
+                    }
+                });
+                let owner = match owner {
+                    Some(owner) => owner,
+                    None if self.compacting => None,
+                    None => return None,
+                };
+                let compaction_was_working = self.finish_compaction();
+                if let Some(owner) = owner {
+                    self.resolve(&owner);
+                }
                 if self.value.outcome == Some(TurnOutcome::Interrupted) {
                     if !self.value.needs_you() {
                         self.value.activity = Activity::Ready;
                     }
-                } else {
+                } else if compaction_was_working != Some(false) {
                     self.work();
                 }
+                self.update_detail();
             }
-            "PreCompact" => self.work(),
+            "PreCompact" => {
+                if !self.compacting {
+                    self.compaction_resume = Some(CompactionResume {
+                        working: self.value.activity == Activity::Working
+                            && self.value.outcome.is_none(),
+                        outcome: self.value.outcome,
+                    });
+                }
+                self.work();
+                self.compacting = true;
+                self.update_detail();
+            }
             "Stop" if report.stop_reason.as_deref() == Some("end_turn") => {
+                let manual_compaction_outcome = self
+                    .compaction_resume
+                    .as_ref()
+                    .filter(|resume| !resume.working)
+                    .map(|resume| resume.outcome);
                 self.clear_turn();
                 self.value.activity = Activity::Ready;
-                if self.value.outcome != Some(TurnOutcome::Interrupted) {
+                if let Some(outcome) = manual_compaction_outcome {
+                    self.value.outcome = outcome;
+                } else if self.value.outcome != Some(TurnOutcome::Interrupted) {
                     self.value.outcome = Some(TurnOutcome::Completed);
                 }
             }
@@ -316,11 +376,13 @@ impl CopilotObservation {
             Some("tool.execution_complete") => {
                 let call_id = data.get("toolCallId")?.as_str()?;
                 let owner = self.transcript_calls.remove(call_id)?;
-                self.remove_tool_by_id(&owner);
+                let tool = self.remove_tool_by_id(&owner)?;
+                self.completed_tools.push(tool);
                 self.resolve(&owner);
                 if self.value.outcome == Some(TurnOutcome::Interrupted) && !self.value.needs_you() {
                     self.value.activity = Activity::Ready;
                 }
+                self.update_detail();
             }
             _ => return None,
         }
@@ -351,28 +413,94 @@ impl CopilotObservation {
 
     fn remove_tool(&mut self, name: &str, input: Option<&Value>) -> Option<String> {
         let owner = self.matching_tool(name, input, true)?;
-        self.remove_tool_by_id(&owner);
+        self.remove_tool_by_id(&owner)?;
         Some(owner)
     }
 
-    fn remove_tool_by_id(&mut self, owner: &str) {
-        self.tools.retain(|tool| tool.id != owner);
+    fn remove_tool_by_id(&mut self, owner: &str) -> Option<PendingTool> {
+        let index = self.tools.iter().position(|tool| tool.id == owner)?;
+        let tool = self.tools.remove(index);
         self.permission_owners
             .retain(|candidate| candidate != owner);
         self.transcript_calls
             .retain(|_, candidate| candidate != owner);
+        Some(tool)
+    }
+
+    fn consume_completed_tool(&mut self, name: &str, input: Option<&Value>) -> bool {
+        let name = canonical_tool_name(name);
+        let candidates: Vec<_> = self
+            .completed_tools
+            .iter()
+            .enumerate()
+            .filter(|(_, tool)| canonical_tool_name(&tool.name) == name)
+            .map(|(index, _)| index)
+            .collect();
+        let matching: Vec<_> = candidates
+            .iter()
+            .copied()
+            .filter(|index| inputs_match(self.completed_tools[*index].input.as_ref(), input))
+            .collect();
+        let index = matching.first().copied().or_else(|| {
+            if input.is_none() && candidates.len() == 1 {
+                Some(candidates[0])
+            } else {
+                None
+            }
+        });
+        if let Some(index) = index {
+            self.completed_tools.remove(index);
+            true
+        } else {
+            false
+        }
     }
 
     fn work(&mut self) {
         self.value.activity = Activity::Working;
         self.value.outcome = None;
+        self.update_detail();
     }
 
     fn clear_turn(&mut self) {
         self.value.interactions.clear();
         self.tools.clear();
+        self.completed_tools.clear();
+        self.compacting = false;
+        self.compaction_resume = None;
         self.permission_owners.clear();
         self.transcript_calls.clear();
+        self.value.detail = None;
+    }
+
+    fn update_detail(&mut self) {
+        self.value.detail =
+            if self.value.activity != Activity::Working || self.value.outcome.is_some() {
+                None
+            } else if self.compacting {
+                Some(WorkDetail::CompactingContext)
+            } else if !self.tools.is_empty() {
+                Some(WorkDetail::UsingTools)
+            } else {
+                None
+            };
+    }
+
+    fn finish_compaction(&mut self) -> Option<bool> {
+        if !self.compacting {
+            return None;
+        }
+        self.compacting = false;
+        let resume = self.compaction_resume.take()?;
+        if resume.working {
+            self.value.activity = Activity::Working;
+            self.value.outcome = None;
+        } else {
+            self.value.activity = Activity::Ready;
+            self.value.outcome = resume.outcome;
+        }
+        self.update_detail();
+        Some(resume.working)
     }
 
     fn resolve(&mut self, owner: &str) {
@@ -506,6 +634,9 @@ impl CopilotStatusWatcher {
                 Activity::Ready
             };
             self.observation.value.outcome = Some(TurnOutcome::Interrupted);
+            self.observation.compacting = false;
+            self.observation.compaction_resume = None;
+            self.observation.update_detail();
             transition(self.observation.value.clone(), source);
         }
         self.drain_transcript(&mut transition);
@@ -513,7 +644,7 @@ impl CopilotStatusWatcher {
     }
 
     fn drain_transcript(&mut self, transition: &mut impl FnMut(AgentObservation, &'static str)) {
-        if !self.observation.value.needs_you() {
+        if !self.observation.value.needs_you() && self.observation.tools.is_empty() {
             return;
         }
         let Some(session_id) = self.observation.session_id.as_deref() else {
@@ -679,6 +810,149 @@ mod tests {
             Activity::Unavailable
         );
         assert!(observe(&mut state, report("UserPromptSubmit")).is_none());
+    }
+
+    #[test]
+    fn tool_and_compaction_detail_follow_owned_work_events() {
+        let mut state = CopilotObservation::default();
+        assert_eq!(
+            observe(&mut state, report("UserPromptSubmit"))
+                .unwrap()
+                .detail,
+            None
+        );
+        let edit = json!({"file_path":"/tmp/one","diff":"+one"});
+        let command = json!({"command":"echo two"});
+        for (name, input) in [("Edit", edit.clone()), ("Bash", command.clone())] {
+            assert_eq!(
+                observe(&mut state, pre_tool(name, input)).unwrap().detail,
+                Some(WorkDetail::UsingTools)
+            );
+        }
+        assert_eq!(
+            observe(&mut state, report("PreCompact")).unwrap().detail,
+            Some(WorkDetail::CompactingContext)
+        );
+        assert_eq!(
+            observe(&mut state, post_tool("Edit", edit)).unwrap().detail,
+            Some(WorkDetail::UsingTools)
+        );
+
+        let start = json!({
+            "type":"tool.execution_start",
+            "data":{"toolCallId":"call-two","toolName":"shell","arguments":command},
+        });
+        assert!(state.observe_transcript(&start).is_none());
+        let complete = json!({
+            "type":"tool.execution_complete",
+            "data":{"toolCallId":"call-two","success":true},
+        });
+        assert_eq!(state.observe_transcript(&complete).unwrap().detail, None);
+
+        observe(&mut state, report("PreCompact"));
+        assert_eq!(
+            observe(&mut state, pre_tool("Bash", json!({"command":"echo next"})))
+                .unwrap()
+                .detail,
+            Some(WorkDetail::UsingTools)
+        );
+        observe(&mut state, report("PreCompact"));
+        assert_eq!(
+            observe(
+                &mut state,
+                post_tool("Bash", json!({"command":"echo next"}))
+            )
+            .unwrap()
+            .detail,
+            None
+        );
+        observe(&mut state, report("PreCompact"));
+        assert_eq!(
+            observe(&mut state, report("UserPromptSubmit"))
+                .unwrap()
+                .detail,
+            None
+        );
+        observe(&mut state, report("PreCompact"));
+        let mut stop = report("Stop");
+        stop["stop_reason"] = json!("end_turn");
+        assert_eq!(observe(&mut state, stop).unwrap().detail, None);
+    }
+
+    #[test]
+    fn compaction_end_restores_idle_or_in_turn_work() {
+        let mut state = CopilotObservation::default();
+        observe(&mut state, report("UserPromptSubmit"));
+        let mut stop = report("Stop");
+        stop["stop_reason"] = json!("end_turn");
+        observe(&mut state, stop);
+
+        assert_eq!(
+            observe(&mut state, report("PreCompact")).unwrap().detail,
+            Some(WorkDetail::CompactingContext)
+        );
+        let mut compact_start = report("SessionStart");
+        compact_start["source"] = json!("compact");
+        assert!(observe(&mut state, compact_start).is_none());
+        assert_eq!(state.value.detail, Some(WorkDetail::CompactingContext));
+        let manual_done = observe(&mut state, report("PostToolUse")).unwrap();
+        assert_eq!(manual_done.activity, Activity::Ready);
+        assert_eq!(manual_done.outcome, Some(TurnOutcome::Completed));
+        assert_eq!(manual_done.detail, None);
+
+        observe(&mut state, report("PreCompact"));
+        let mut stop = report("Stop");
+        stop["stop_reason"] = json!("end_turn");
+        let stopped_compaction = observe(&mut state, stop).unwrap();
+        assert_eq!(stopped_compaction.activity, Activity::Ready);
+        assert_eq!(stopped_compaction.outcome, Some(TurnOutcome::Completed));
+        assert_eq!(stopped_compaction.detail, None);
+
+        observe(&mut state, report("UserPromptSubmit"));
+        let one = json!({"command":"echo one"});
+        let two = json!({"command":"echo two"});
+        observe(&mut state, pre_tool("Bash", one.clone()));
+        observe(&mut state, pre_tool("Bash", two));
+        observe(&mut state, report("PreCompact"));
+        let mut compact_start = report("SessionStart");
+        compact_start["source"] = json!("compact");
+        assert!(observe(&mut state, compact_start).is_none());
+        let automatic_done = observe(&mut state, post_tool("Bash", one)).unwrap();
+        assert_eq!(automatic_done.activity, Activity::Working);
+        assert_eq!(automatic_done.outcome, None);
+        assert_eq!(automatic_done.detail, Some(WorkDetail::UsingTools));
+    }
+
+    #[test]
+    fn transcript_completion_tombstone_protects_parallel_same_named_tool() {
+        let mut state = CopilotObservation::default();
+        observe(&mut state, report("UserPromptSubmit"));
+        let one = json!({"command":"echo one"});
+        let two = json!({"command":"echo two"});
+        observe(&mut state, pre_tool("Bash", one.clone()));
+        observe(&mut state, pre_tool("Bash", two.clone()));
+
+        let start = json!({
+            "type":"tool.execution_start",
+            "data":{"toolCallId":"call-one","toolName":"shell","arguments":one},
+        });
+        assert!(state.observe_transcript(&start).is_none());
+        let complete = json!({
+            "type":"tool.execution_complete",
+            "data":{"toolCallId":"call-one","success":true},
+        });
+        assert!(state.observe_transcript(&complete).is_none());
+        assert_eq!(state.value.detail, Some(WorkDetail::UsingTools));
+        assert_eq!(state.tools.len(), 1);
+        assert_eq!(state.completed_tools.len(), 1);
+
+        observe(&mut state, report("PreCompact"));
+        let after_hook =
+            observe(&mut state, post_tool("Bash", json!({"command":"echo one"}))).unwrap();
+        assert_eq!(after_hook.detail, Some(WorkDetail::UsingTools));
+        assert_eq!(state.tools.len(), 1);
+        assert_eq!(state.tools[0].input.as_ref(), Some(&two));
+        assert!(state.completed_tools.is_empty());
     }
 
     #[test]
@@ -974,6 +1248,7 @@ mod tests {
         watcher.drain_observations(|_, _| {}).unwrap();
         assert_eq!(watcher.observation.value.activity, Activity::Unavailable);
         assert!(watcher.observation.value.needs_you());
+        assert_eq!(watcher.observation.value.detail, None);
 
         writeln!(
             OpenOptions::new().append(true).open(&transcript).unwrap(),

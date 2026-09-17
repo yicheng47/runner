@@ -30,6 +30,9 @@ impl MissionWorkspace {
                         || status
                             .get("error_since")
                             .is_some_and(|value| !value.is_null())
+                        || status
+                            .get("failed_since")
+                            .is_some_and(|value| !value.is_null())
                 })))
             && event
                 .payload

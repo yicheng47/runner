@@ -17,6 +17,7 @@ use super::hook_feed::{HookFeed, TranscriptTail};
 use super::runtime::RunnerStatus;
 use super::status::{
     Activity, AgentObservation, HumanInteraction, ObservationSource, TurnOutcome, WaitReason,
+    WorkDetail,
 };
 use std::collections::BTreeMap;
 
@@ -40,6 +41,7 @@ struct StatusReport {
     #[serde(default)]
     hook_event_name: String,
     notification_type: Option<String>,
+    source: Option<String>,
     session_id: Option<String>,
     transcript_path: Option<PathBuf>,
     prompt_id: Option<String>,
@@ -58,6 +60,11 @@ struct PendingTool {
     input: Option<serde_json::Value>,
 }
 
+struct CompactionResume {
+    working: bool,
+    outcome: Option<TurnOutcome>,
+}
+
 #[derive(Default)]
 struct ClaudeObservation {
     value: AgentObservation,
@@ -66,6 +73,8 @@ struct ClaudeObservation {
     transcript_path: Option<PathBuf>,
     cancelled_tool_result: bool,
     tools: BTreeMap<String, PendingTool>,
+    compacting: bool,
+    compaction_resume: Option<CompactionResume>,
     permission_tools: Vec<String>,
     elicitations: BTreeMap<String, String>,
     next_interaction: u64,
@@ -77,6 +86,21 @@ impl ClaudeObservation {
             return None;
         }
         if report.hook_event_name == "SessionStart" {
+            if report.source.as_deref() == Some("compact")
+                && self.compacting
+                && report
+                    .session_id
+                    .as_ref()
+                    .is_none_or(|id| self.session_id.as_ref().is_none_or(|current| current == id))
+            {
+                if let Some(session_id) = report.session_id {
+                    self.session_id = Some(session_id);
+                }
+                if let Some(path) = report.transcript_path {
+                    self.transcript_path = Some(path);
+                }
+                return None;
+            }
             let owned = self.value.source == ObservationSource::Hook;
             self.session_id = report.session_id;
             self.transcript_path = report.transcript_path;
@@ -123,6 +147,31 @@ impl ClaudeObservation {
                             input: report.tool_input,
                         },
                     );
+                    self.update_detail();
+                }
+            }
+            "PreCompact" => {
+                if !self.compacting {
+                    self.compaction_resume = Some(CompactionResume {
+                        working: self.value.activity == Activity::Working
+                            && self.value.outcome.is_none(),
+                        outcome: self.value.outcome,
+                    });
+                }
+                self.work();
+                self.compacting = true;
+                self.update_detail();
+            }
+            "PostCompact" => {
+                self.compacting = false;
+                match self.compaction_resume.take() {
+                    Some(resume) if !resume.working => {
+                        self.value.activity = Activity::Ready;
+                        self.value.outcome = resume.outcome;
+                        self.update_detail();
+                    }
+                    _ if self.value.outcome.is_none() => self.work(),
+                    _ => self.update_detail(),
                 }
             }
             "PermissionRequest" => {
@@ -185,6 +234,7 @@ impl ClaudeObservation {
                 } else if self.value.outcome.is_none() {
                     self.work();
                 }
+                self.update_detail();
             }
             "ElicitationResult" => {
                 let id = report.elicitation_id.or_else(|| {
@@ -251,6 +301,9 @@ impl ClaudeObservation {
                 }
                 Some("idle_prompt") if !self.value.needs_you() => {
                     self.value.activity = Activity::Ready;
+                    self.compacting = false;
+                    self.compaction_resume = None;
+                    self.update_detail();
                 }
                 _ => return None,
             },
@@ -275,14 +328,31 @@ impl ClaudeObservation {
         self.value.activity = Activity::Working;
         self.value.outcome = None;
         self.cancelled_tool_result = false;
+        self.update_detail();
     }
 
     fn clear_turn(&mut self) {
         self.cancelled_tool_result = false;
         self.value.interactions.clear();
         self.tools.clear();
+        self.compacting = false;
+        self.compaction_resume = None;
         self.permission_tools.clear();
         self.elicitations.clear();
+        self.value.detail = None;
+    }
+
+    fn update_detail(&mut self) {
+        self.value.detail =
+            if self.value.activity != Activity::Working || self.value.outcome.is_some() {
+                None
+            } else if self.compacting {
+                Some(WorkDetail::CompactingContext)
+            } else if !self.tools.is_empty() {
+                Some(WorkDetail::UsingTools)
+            } else {
+                None
+            };
     }
 
     fn observe_transcript(&mut self, entry: &serde_json::Value) -> Option<AgentObservation> {
@@ -313,11 +383,12 @@ impl ClaudeObservation {
                     let Some(id) = block.get("tool_use_id").and_then(|value| value.as_str()) else {
                         continue;
                     };
-                    if !self
-                        .value
-                        .interactions
-                        .iter()
-                        .any(|wait| wait.owners.iter().any(|owner| owner == id))
+                    if !self.tools.contains_key(id)
+                        && !self
+                            .value
+                            .interactions
+                            .iter()
+                            .any(|wait| wait.owners.iter().any(|owner| owner == id))
                     {
                         continue;
                     }
@@ -331,6 +402,7 @@ impl ClaudeObservation {
                         self.value.activity = Activity::Unavailable;
                         self.value.outcome = Some(TurnOutcome::Interrupted);
                     }
+                    self.update_detail();
                 }
             }
         } else if entry.get("type").and_then(|value| value.as_str()) == Some("system")
@@ -443,6 +515,9 @@ impl ClaudeStatusWatcher {
                 Activity::Ready
             };
             self.observation.value.outcome = Some(TurnOutcome::Interrupted);
+            self.observation.compacting = false;
+            self.observation.compaction_resume = None;
+            self.observation.update_detail();
             transition(self.observation.value.clone(), source);
         }
         self.drain_transcript(&mut transition);
@@ -450,7 +525,10 @@ impl ClaudeStatusWatcher {
     }
 
     fn drain_transcript(&mut self, transition: &mut impl FnMut(AgentObservation, &'static str)) {
-        if !self.observation.value.needs_you() && !self.observation.cancelled_tool_result {
+        if !self.observation.value.needs_you()
+            && !self.observation.cancelled_tool_result
+            && self.observation.tools.is_empty()
+        {
             return;
         }
         let Some(path) = self.observation.transcript_path.as_ref() else {
@@ -625,6 +703,7 @@ mod tests {
             .drain_observations(|value, _| observations.push(value))
             .unwrap();
         assert!(observations.last().unwrap().needs_you());
+        assert_eq!(observations.last().unwrap().detail, None);
 
         let result = serde_json::json!({"type":"user","sessionId":"main","promptId":"turn","isSidechain":false,"toolDenialKind":"user-rejected","message":{"content":[{"type":"tool_result","tool_use_id":"question","is_error":true}]}}).to_string();
         write!(transcript_file, "{}", &result[..20]).unwrap();
@@ -775,6 +854,155 @@ mod tests {
         );
         assert!(!model.value.needs_you());
         assert_eq!(model.value.activity, Activity::Working);
+    }
+
+    #[test]
+    fn tool_and_compaction_detail_follow_owned_work() {
+        let mut model = ClaudeObservation::default();
+        observe(
+            &mut model,
+            "SessionStart",
+            serde_json::json!({"session_id":"main"}),
+        );
+        let prompt = observe(
+            &mut model,
+            "UserPromptSubmit",
+            serde_json::json!({"prompt_id":"turn"}),
+        )
+        .unwrap();
+        assert_eq!(prompt.detail, None);
+
+        for id in ["one", "two"] {
+            let using = observe(
+                &mut model,
+                "PreToolUse",
+                serde_json::json!({"tool_use_id":id,"tool_name":"Bash"}),
+            )
+            .unwrap();
+            assert_eq!(using.detail, Some(WorkDetail::UsingTools));
+        }
+        let compacting = observe(&mut model, "PreCompact", serde_json::json!({})).unwrap();
+        assert_eq!(compacting.detail, Some(WorkDetail::CompactingContext));
+        let restored = observe(&mut model, "PostCompact", serde_json::json!({})).unwrap();
+        assert_eq!(restored.detail, Some(WorkDetail::UsingTools));
+
+        let one_left = observe(
+            &mut model,
+            "PostToolUse",
+            serde_json::json!({"tool_use_id":"one"}),
+        )
+        .unwrap();
+        assert_eq!(one_left.detail, Some(WorkDetail::UsingTools));
+        let transcript = serde_json::json!({
+            "type":"user",
+            "sessionId":"main",
+            "promptId":"turn",
+            "message":{"content":[{"type":"tool_result","tool_use_id":"two"}]},
+        });
+        assert_eq!(model.observe_transcript(&transcript).unwrap().detail, None);
+
+        observe(
+            &mut model,
+            "PreToolUse",
+            serde_json::json!({"tool_use_id":"failed","tool_name":"Bash"}),
+        );
+        let failed = observe(&mut model, "StopFailure", serde_json::json!({})).unwrap();
+        assert_eq!(failed.outcome, Some(TurnOutcome::Failed));
+        assert_eq!(failed.detail, None);
+
+        assert_eq!(
+            observe(
+                &mut model,
+                "UserPromptSubmit",
+                serde_json::json!({"prompt_id":"next"}),
+            )
+            .unwrap()
+            .detail,
+            None
+        );
+        observe(
+            &mut model,
+            "PreToolUse",
+            serde_json::json!({"tool_use_id":"cancelled","tool_name":"Bash"}),
+        );
+        let interrupted = observe(
+            &mut model,
+            "PostToolUseFailure",
+            serde_json::json!({"tool_use_id":"cancelled","is_interrupt":true}),
+        )
+        .unwrap();
+        assert_eq!(interrupted.outcome, Some(TurnOutcome::Interrupted));
+        assert_eq!(interrupted.detail, None);
+
+        observe(
+            &mut model,
+            "UserPromptSubmit",
+            serde_json::json!({"prompt_id":"third"}),
+        );
+        observe(
+            &mut model,
+            "PreToolUse",
+            serde_json::json!({"tool_use_id":"stopped","tool_name":"Bash"}),
+        );
+        let stopped = observe(&mut model, "Stop", serde_json::json!({})).unwrap();
+        assert_eq!(stopped.outcome, Some(TurnOutcome::Completed));
+        assert_eq!(stopped.detail, None);
+    }
+
+    #[test]
+    fn compact_session_start_restores_manual_idle_and_in_turn_work() {
+        let mut model = ClaudeObservation::default();
+        observe(
+            &mut model,
+            "SessionStart",
+            serde_json::json!({"session_id":"main","source":"startup"}),
+        );
+        observe(
+            &mut model,
+            "UserPromptSubmit",
+            serde_json::json!({"prompt_id":"first"}),
+        );
+        observe(&mut model, "Stop", serde_json::json!({}));
+
+        assert_eq!(
+            observe(&mut model, "PreCompact", serde_json::json!({}))
+                .unwrap()
+                .detail,
+            Some(WorkDetail::CompactingContext)
+        );
+        assert!(observe(
+            &mut model,
+            "SessionStart",
+            serde_json::json!({"session_id":"main","source":"compact"}),
+        )
+        .is_none());
+        assert_eq!(model.value.detail, Some(WorkDetail::CompactingContext));
+        let manual_done = observe(&mut model, "PostCompact", serde_json::json!({})).unwrap();
+        assert_eq!(manual_done.activity, Activity::Ready);
+        assert_eq!(manual_done.outcome, Some(TurnOutcome::Completed));
+        assert_eq!(manual_done.detail, None);
+
+        observe(
+            &mut model,
+            "UserPromptSubmit",
+            serde_json::json!({"prompt_id":"second"}),
+        );
+        observe(
+            &mut model,
+            "PreToolUse",
+            serde_json::json!({"tool_use_id":"tool","tool_name":"Bash"}),
+        );
+        observe(&mut model, "PreCompact", serde_json::json!({}));
+        assert!(observe(
+            &mut model,
+            "SessionStart",
+            serde_json::json!({"session_id":"main","source":"compact"}),
+        )
+        .is_none());
+        let automatic_done = observe(&mut model, "PostCompact", serde_json::json!({})).unwrap();
+        assert_eq!(automatic_done.activity, Activity::Working);
+        assert_eq!(automatic_done.outcome, None);
+        assert_eq!(automatic_done.detail, Some(WorkDetail::UsingTools));
     }
 
     #[test]

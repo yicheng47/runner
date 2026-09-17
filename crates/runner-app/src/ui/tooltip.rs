@@ -1,8 +1,11 @@
+use std::sync::Arc;
+use std::time::Duration;
+
 use gpui::prelude::*;
 use gpui::{
     anchored, deferred, div, point, px, rems, AnchoredPositionMode, AnyElement, AnyView, App,
     Corner, ElementId, FocusHandle, FontWeight, IntoElement, Render, RenderOnce, SharedString,
-    Window,
+    Task, Window,
 };
 
 use crate::theme;
@@ -15,6 +18,19 @@ struct TooltipView {
 impl Render for TooltipView {
     fn render(&mut self, _window: &mut Window, _cx: &mut gpui::Context<Self>) -> impl IntoElement {
         tooltip_content(self.content.clone())
+    }
+}
+
+type TooltipContent = Arc<dyn Fn() -> SharedString + Send + Sync>;
+
+struct RefreshingTooltipView {
+    content: TooltipContent,
+    _refresh_task: Task<()>,
+}
+
+impl Render for RefreshingTooltipView {
+    fn render(&mut self, _window: &mut Window, _cx: &mut gpui::Context<Self>) -> impl IntoElement {
+        tooltip_content((self.content)())
     }
 }
 
@@ -32,6 +48,7 @@ pub struct Tooltip {
     child: AnyElement,
     focus_handle: Option<FocusHandle>,
     expand: bool,
+    refresh: Option<(TooltipContent, Duration)>,
 }
 
 impl Tooltip {
@@ -46,6 +63,24 @@ impl Tooltip {
             child: child.into_any_element(),
             focus_handle: None,
             expand: false,
+            refresh: None,
+        }
+    }
+
+    pub fn refreshing(
+        id: impl Into<ElementId>,
+        content: impl Fn() -> SharedString + Send + Sync + 'static,
+        interval: Duration,
+        child: impl IntoElement,
+    ) -> Self {
+        let content = Arc::new(content);
+        Self {
+            id: id.into(),
+            content: content(),
+            child: child.into_any_element(),
+            focus_handle: None,
+            expand: false,
+            refresh: Some((content, interval)),
         }
     }
 
@@ -64,6 +99,7 @@ impl RenderOnce for Tooltip {
     fn render(self, window: &mut Window, _cx: &mut App) -> impl IntoElement {
         let zoom = app_zoom(window);
         let hover_content = self.content.clone();
+        let refresh = self.refresh.clone();
         let expand = self.expand;
         let focused = self
             .focus_handle
@@ -76,10 +112,26 @@ impl RenderOnce for Tooltip {
             .when(expand, |trigger| trigger.min_w(px(0.)).flex_1())
             .when(!focused, |trigger| {
                 trigger.tooltip(move |_, cx| {
-                    cx.new(|_| TooltipView {
-                        content: hover_content.clone(),
-                    })
-                    .into()
+                    if let Some((content, interval)) = refresh.clone() {
+                        cx.new(move |cx| {
+                            let refresh_task = cx.spawn(async move |weak, cx| loop {
+                                cx.background_executor().timer(interval).await;
+                                if weak.update(cx, |_, cx| cx.notify()).is_err() {
+                                    break;
+                                }
+                            });
+                            RefreshingTooltipView {
+                                content,
+                                _refresh_task: refresh_task,
+                            }
+                        })
+                        .into()
+                    } else {
+                        cx.new(|_| TooltipView {
+                            content: hover_content.clone(),
+                        })
+                        .into()
+                    }
                 })
             })
             .child(self.child)

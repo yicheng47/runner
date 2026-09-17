@@ -107,9 +107,11 @@ pub fn session_status_snapshot(
             "stopped" => {
                 status.lifecycle = Lifecycle::Stopped;
                 status.error_since = None;
+                status.failed_since = None;
             }
             "crashed" => {
                 status.lifecycle = Lifecycle::Error;
+                status.failed_since = None;
                 let stopped = stopped_at
                     .as_deref()
                     .and_then(|time| chrono::DateTime::parse_from_rfc3339(time).ok())

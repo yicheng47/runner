@@ -1,5 +1,5 @@
 use crate::session::status::{
-    Activity, AgentObservation, AgentStatus, Lifecycle, ObservationSource, TurnOutcome,
+    Activity, AgentObservation, AgentStatus, Lifecycle, ObservationSource, TurnOutcome, WorkDetail,
 };
 // Per-role session manager.
 //
@@ -627,6 +627,8 @@ struct SessionState {
     delivery_gate: Arc<DeliveryGate>,
     mission_status_sink: Option<ForwarderEmitCtx>,
     completion_armed: bool,
+    /// Outer `Some` tracks a failure compaction; the inner value preserves acknowledgement.
+    compaction_failed_since: Option<Option<i64>>,
     output_seq: u64,
     /// Latest grid measurement, including pushes that arrive before a PTY
     /// handle exists. Spawn and resume reconcile this under the state lock.
@@ -643,6 +645,7 @@ impl SessionState {
         self.handle.is_none()
             && self.activity.is_none()
             && self.status.error_since.is_none()
+            && self.status.failed_since.is_none()
             && self.status.unread_since.is_none()
             && !self.suppress_local_input_busy
             && !self.title_status_armed
@@ -653,6 +656,7 @@ impl SessionState {
             && self.last_local_input_at.is_none()
             && self.mission_status_sink.is_none()
             && !self.completion_armed
+            && self.compaction_failed_since.is_none()
             && self.output_seq == 0
             && self.last_requested_size.is_none()
             && !self.last_requested_size_dirty
@@ -1102,6 +1106,7 @@ impl SessionManager {
                 unread_since: state.status.unread_since,
                 ..Default::default()
             };
+            state.compaction_failed_since = None;
             state.baseline_activity = None;
             state.hook_status_armed = false;
             state.provisional_idle = false;
@@ -1222,6 +1227,7 @@ impl SessionManager {
         if matches!(source, "input-interrupt" | "input-escape") {
             session.status.observation.activity = Activity::Unavailable;
             session.status.observation.outcome = Some(TurnOutcome::Interrupted);
+            session.status.observation.detail = None;
         } else if !session.hook_status_armed || source == "hook" {
             session.status.observation.source = if source == "hook" {
                 ObservationSource::Hook
@@ -1239,6 +1245,13 @@ impl SessionManager {
                 } else {
                     None
                 };
+            session.status.observation.detail = None;
+        }
+        if session.status.observation.outcome != Some(TurnOutcome::Failed) {
+            session.status.failed_since = None;
+        }
+        if session.status.observation.detail != Some(WorkDetail::CompactingContext) {
+            session.compaction_failed_since = None;
         }
         if session.activity == Some(state)
             && !resolved_provisional_idle
@@ -1327,6 +1340,10 @@ impl SessionManager {
             if let Some(session) = self.session_state(id) {
                 let mut session = session.lock().unwrap();
                 session.status.error_since = None;
+                session.status.failed_since = None;
+                if session.compaction_failed_since.is_some() {
+                    session.compaction_failed_since = Some(None);
+                }
                 session.status.unread_since = None;
             }
         }
@@ -1351,6 +1368,8 @@ impl SessionManager {
             };
             session.status.exit_code = exit_code;
             session.status.error_since = crashed.then(|| chrono::Utc::now().timestamp_millis());
+            session.status.failed_since = None;
+            session.compaction_failed_since = None;
             session.status.observation.interactions.clear();
         }
     }
@@ -1378,9 +1397,12 @@ impl SessionManager {
     fn publish_observation(
         &self,
         session_id: &str,
-        observation: AgentObservation,
+        mut observation: AgentObservation,
         events: &dyn SessionEvents,
     ) {
+        if observation.source != ObservationSource::Hook {
+            observation.detail = None;
+        }
         let source = match observation.source {
             ObservationSource::Hook => "hook",
             ObservationSource::Baseline => "baseline",
@@ -1400,14 +1422,43 @@ impl SessionManager {
                 return;
             }
             let released = session.status.observation.needs_you() && !observation.needs_you();
-            if observation.outcome == Some(TurnOutcome::Interrupted) {
+            if matches!(
+                observation.outcome,
+                Some(TurnOutcome::Interrupted | TurnOutcome::Failed)
+            ) {
                 session.completion_armed = false;
             }
-            if observation.activity == Activity::Working && observation.outcome.is_none() {
+            if observation.activity == Activity::Working
+                && observation.outcome.is_none()
+                && observation.detail != Some(WorkDetail::CompactingContext)
+            {
                 session.completion_armed = true;
             }
             session.hook_status_armed = observation.source == ObservationSource::Hook;
             session.status.lifecycle = Lifecycle::Running;
+            let old_failed = session.status.observation.outcome == Some(TurnOutcome::Failed);
+            let new_failed = observation.outcome == Some(TurnOutcome::Failed);
+            let compacting = observation.detail == Some(WorkDetail::CompactingContext);
+            if old_failed && compacting && session.compaction_failed_since.is_none() {
+                session.compaction_failed_since = Some(session.status.failed_since);
+            }
+            session.status.failed_since = if new_failed
+                && session.status.observation.detail == Some(WorkDetail::CompactingContext)
+            {
+                session
+                    .compaction_failed_since
+                    .take()
+                    .unwrap_or_else(|| Some(chrono::Utc::now().timestamp_millis()))
+            } else {
+                match (old_failed, new_failed) {
+                    (false, true) => Some(chrono::Utc::now().timestamp_millis()),
+                    (true, true) => session.status.failed_since,
+                    (_, false) => None,
+                }
+            };
+            if !compacting && !new_failed {
+                session.compaction_failed_since = None;
+            }
             session.status.observation = observation;
             let state = if session.status.observation.activity == Activity::Working
                 || session.status.observation.needs_you()

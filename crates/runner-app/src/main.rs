@@ -564,6 +564,7 @@ impl NativeRoot {
                         if matches!(
                             event.name,
                             "session/exit"
+                                | "session/status"
                                 | "session/spawned"
                                 | "session/fork-started"
                                 | "session/updated"
