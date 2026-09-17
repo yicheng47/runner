@@ -308,7 +308,7 @@ Output (agent → screen + idle inference):
    (tty stdout                            (blocking      │     └─► TerminalBridge ─► the session's Term
     + stderr)                              OS thread)    │            (alacritty, 10,000-line scrollback)
                                                          │            └─► wake GPUI if a pane is viewing it
-                                                         └─► Idle detector ─► runner_status (forwarder)
+                                                         └─► Idle detector ─► session_status (forwarder)
 ```
 
 Input (UI + router → agent):
@@ -424,7 +424,7 @@ The current sources and precedence are:
 2. **`forwarder`.** Until title detection arms, `IdleDetector` reports Busy on PTY output and Idle after 2 s of silence. A 500 ms grace window re-armed on resize prevents resize output from waking an idle session. Once title detection arms, `note_forwarder_transition` rejects all forwarder status transitions. Before arming, it also rejects forwarder Busy while `suppress_local_input_busy` is set.
 3. **`input-submit` and `agent`.** Input submission can mark the session Busy; the deprecated `runner status` command can report explicit agent status. These sources are not blocked by the title/forwarder guard. The sink clears local-input suppression on an accepted Idle report and deduplicates unchanged activity. These are remaining status writers, not a complete lifecycle precedence model. `InputTracker` supplies input observations and influences local-input suppression; it does not own Busy/Idle.
 
-For mission sessions, the output forwarder appends `runner_status` transitions with their source to the mission log and the router updates its status projection. Direct chats stay off-bus: SessionManager stores their latest activity and emits `session/status` to every window; sidebar aggregation drives activity and completion/unread indicators. False Busy can suppress idle-gated inbox reconciliation, while false Idle can permit a nudge during a turn. Shells still use byte activity in v0.8.9, so silent commands can incorrectly read Idle.
+For mission sessions, the output forwarder appends `session_status` transitions with their source to the mission log and the router updates its status projection. Direct chats stay off-bus: SessionManager stores their latest activity and emits `session/status` to every window; sidebar aggregation drives activity and completion/unread indicators. False Busy can suppress idle-gated inbox reconciliation, while false Idle can permit a nudge during a turn. Shells still use byte activity in v0.8.9, so silent commands can incorrectly read Idle.
 
 Claude Code, Codex, and GitHub Copilot CLI have lifecycle hook adapters on macOS and Windows ([#610](../features/610-windows-hook-status.md)). Hook commands receive the status feed path with `/` separators on both platforms. On Windows, Claude Code runs the same `sh` reporter under its own Git Bash; Codex and Copilot run one PowerShell reporter that copies the payload as raw bytes and serializes its record under a per-feed mutex (Codex as a per-session `<feed>.ps1` run through `ScriptBlock::Create`, which keeps npm-shim command lines under cmd.exe's limit; Copilot inline in the plugin's `powershell` slot), so a hook environment without its shell writes nothing and keeps the baseline. TRAE remains on estimated terminal activity and title status. A missing or failed hook bridge falls back to that baseline; Copilot does not emit the braille title prefix, so its fallback uses byte activity and input submission.
 
@@ -466,7 +466,7 @@ One line per event, append-only, one file per mission. Debuggable (`tail -f | jq
 
 #### 7.1.1 Concurrent-write correctness
 
-Multiple crew members can invoke `runner signal` / `runner msg` at the same time from different PTYs, and the core writes router-generated events (`human_question`, `mission_warning`, `runner_status`) to the same file:
+Multiple crew members can invoke `runner signal` / `runner msg` at the same time from different PTYs, and the core writes router-generated events (`human_question`, `mission_warning`, `session_status`) to the same file:
 
 1. Open the log with `O_APPEND | O_WRONLY | O_CREAT`.
 2. `flock(fd, LOCK_EX)`.
@@ -488,7 +488,7 @@ Two subscribers to each mission's file, both fed by one `notify` watcher:
 
 #### Startup replay
 
-On router boot: open the mission's file, fold `human_question` / `human_response` and `runner_status` rows into in-memory state, record the replay high-water mark, then tail from the current end. Replay rebuilds projections; it never re-runs historical stdin pushes or inbox nudges.
+On router boot: open the mission's file, fold `human_question` / `human_response` and `session_status` rows into in-memory state, record the replay high-water mark, then tail from the current end. Replay rebuilds projections; it never re-runs historical stdin pushes or inbox nudges.
 
 ## 8. Signal router
 
@@ -505,7 +505,7 @@ Stdin pushes are deliberately silent: the router writes bytes into the target PT
 | `ask_lead` | Inject the worker's `{ question, context }` to the lead. |
 | `ask_human` | Append a `human_question` event for the UI. |
 | `human_response` | Look up the matching `question_id` and inject the answer to the session that emitted the original `ask_human`. |
-| `runner_status` | Update the latest-status map from `payload.state`. If a non-lead reports `idle`, inject a short availability update to the lead. |
+| `session_status` | Update the latest-status map from `payload.state`; `runner_status`, the row's name before #632, is read the same way. If a non-lead reports `idle`, inject a short availability update to the lead. |
 | message (any) | Inject a one-line inbox nudge to the recipient (directed) or to every other roster member (broadcast); a message to the virtual `human` handle is rendered in the feed and not nudged. |
 | `inbox_read` | Internal — owned by the bus's projection layer to track read watermarks. |
 

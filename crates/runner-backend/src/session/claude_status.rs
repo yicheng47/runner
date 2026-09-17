@@ -14,7 +14,7 @@ use super::hook_feed::script_path;
 pub(crate) use super::hook_feed::{clear_leftovers, hook_command, hooks_supported, status_path};
 use super::hook_feed::{HookFeed, TranscriptTail};
 #[cfg(test)]
-use super::runtime::RunnerStatus;
+use super::runtime::SessionActivityState;
 use super::status::{
     Activity, AgentObservation, HumanInteraction, ObservationSource, TurnOutcome, WaitReason,
     WorkDetail,
@@ -449,7 +449,7 @@ impl ClaudeObservation {
 }
 
 #[cfg(test)]
-fn parse_transition(line: &[u8], generation: &str) -> Option<RunnerStatus> {
+fn parse_transition(line: &[u8], generation: &str) -> Option<SessionActivityState> {
     let report: serde_json::Value = serde_json::from_slice(line).ok()?;
     if report.get("generation")?.as_str()? != generation {
         return None;
@@ -459,9 +459,9 @@ fn parse_transition(line: &[u8], generation: &str) -> Option<RunnerStatus> {
         return None;
     }
     Some(if value.activity == Activity::Working {
-        RunnerStatus::Busy
+        SessionActivityState::Busy
     } else {
-        RunnerStatus::Idle
+        SessionActivityState::Idle
     })
 }
 
@@ -557,13 +557,16 @@ impl ClaudeStatusWatcher {
         }
     }
     #[cfg(test)]
-    fn drain(&mut self, mut transition: impl FnMut(RunnerStatus, &'static str)) -> Result<()> {
+    fn drain(
+        &mut self,
+        mut transition: impl FnMut(SessionActivityState, &'static str),
+    ) -> Result<()> {
         self.drain_observations(|value, source| {
             transition(
                 if value.activity == Activity::Working {
-                    RunnerStatus::Busy
+                    SessionActivityState::Busy
                 } else {
-                    RunnerStatus::Idle
+                    SessionActivityState::Idle
                 },
                 source,
             )
@@ -1522,19 +1525,19 @@ mod tests {
     #[test]
     fn maps_turn_boundaries_work_and_real_idle_notifications() {
         for (event, notification, expected) in [
-            ("UserPromptSubmit", None, Some(RunnerStatus::Busy)),
-            ("PreToolUse", None, Some(RunnerStatus::Busy)),
-            ("PostToolUse", None, Some(RunnerStatus::Busy)),
+            ("UserPromptSubmit", None, Some(SessionActivityState::Busy)),
+            ("PreToolUse", None, Some(SessionActivityState::Busy)),
+            ("PostToolUse", None, Some(SessionActivityState::Busy)),
             (
                 "Notification",
                 Some("idle_prompt"),
-                Some(RunnerStatus::Idle),
+                Some(SessionActivityState::Idle),
             ),
             ("Notification", Some("permission_prompt"), None),
             ("Notification", Some("agent_completed"), None),
             ("Notification", None, None),
-            ("Stop", None, Some(RunnerStatus::Idle)),
-            ("StopFailure", None, Some(RunnerStatus::Idle)),
+            ("Stop", None, Some(SessionActivityState::Idle)),
+            ("StopFailure", None, Some(SessionActivityState::Idle)),
             ("SubagentStop", None, None),
             ("SessionStart", None, None),
             ("unknown", None, None),
@@ -1595,7 +1598,11 @@ mod tests {
         watcher.drain(|state, _| states.push(state)).unwrap();
         assert_eq!(
             states,
-            [RunnerStatus::Busy, RunnerStatus::Idle, RunnerStatus::Idle]
+            [
+                SessionActivityState::Busy,
+                SessionActivityState::Idle,
+                SessionActivityState::Idle
+            ]
         );
         watcher.feed.dirty.store(true, Ordering::Release);
         watcher.drain(|state, _| states.push(state)).unwrap();
@@ -1672,14 +1679,20 @@ mod tests {
                 .unwrap();
             assert_eq!(
                 transitions,
-                [(RunnerStatus::Busy, "hook"), (RunnerStatus::Idle, source)]
+                [
+                    (SessionActivityState::Busy, "hook"),
+                    (SessionActivityState::Idle, source)
+                ]
             );
             writeln!(file, "{}", report("PreToolUse", None, "current")).unwrap();
             watcher.feed.dirty.store(true, Ordering::Release);
             watcher
                 .drain(|state, source| transitions.push((state, source)))
                 .unwrap();
-            assert_eq!(transitions.last(), Some(&(RunnerStatus::Busy, "hook")));
+            assert_eq!(
+                transitions.last(),
+                Some(&(SessionActivityState::Busy, "hook"))
+            );
             assert_eq!(transitions.len(), 3);
         }
     }
@@ -1733,7 +1746,10 @@ mod tests {
         }
         let mut states = Vec::new();
         watcher.drain(|state, _| states.push(state)).unwrap();
-        assert_eq!(states, [RunnerStatus::Idle, RunnerStatus::Busy]);
+        assert_eq!(
+            states,
+            [SessionActivityState::Idle, SessionActivityState::Busy]
+        );
     }
 
     #[test]
@@ -1817,12 +1833,12 @@ mod tests {
         assert_eq!(
             states,
             [
-                RunnerStatus::Busy,
-                RunnerStatus::Busy,
-                RunnerStatus::Busy,
-                RunnerStatus::Idle,
-                RunnerStatus::Idle,
-                RunnerStatus::Idle,
+                SessionActivityState::Busy,
+                SessionActivityState::Busy,
+                SessionActivityState::Busy,
+                SessionActivityState::Idle,
+                SessionActivityState::Idle,
+                SessionActivityState::Idle,
             ]
         );
 
@@ -1904,12 +1920,12 @@ mod tests {
         assert_eq!(
             states,
             [
-                RunnerStatus::Busy,
-                RunnerStatus::Busy,
-                RunnerStatus::Busy,
-                RunnerStatus::Idle,
-                RunnerStatus::Idle,
-                RunnerStatus::Idle,
+                SessionActivityState::Busy,
+                SessionActivityState::Busy,
+                SessionActivityState::Busy,
+                SessionActivityState::Idle,
+                SessionActivityState::Idle,
+                SessionActivityState::Idle,
             ]
         );
         fs::remove_file(script_path(&path)).unwrap();

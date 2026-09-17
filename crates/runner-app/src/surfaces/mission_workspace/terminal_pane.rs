@@ -143,7 +143,7 @@ impl MissionWorkspace {
             .flatten()
         {
             let idle =
-                self.runner_statuses().get(&session.handle) == Some(&SessionActivityState::Idle);
+                self.session_statuses().get(&session.handle) == Some(&SessionActivityState::Idle);
             let sidebar_width = if self.sidebar_collapsed {
                 0.
             } else {

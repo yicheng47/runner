@@ -57,6 +57,7 @@ impl StoreRefreshKind {
                                 | "ask_human"
                                 | "human_question"
                                 | "human_response"
+                                | "session_status"
                                 | "runner_status"
                         )
                     }) =>

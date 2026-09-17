@@ -72,7 +72,7 @@ impl SessionManager {
     // queries, output for the input stream, pool for the DB row
     // update, events for emitter dispatch, role for the
     // post-reap activity recompute, emit_ctx for the synthetic
-    // runner_status events the forwarder appends to the mission's
+    // session_status events the forwarder appends to the mission's
     // event log (issue #124). Bundling into a Context struct just
     // moves the same arity to the call site without buying clarity.
     #[allow(clippy::too_many_arguments)]
@@ -103,7 +103,7 @@ impl SessionManager {
             // into either the mission event log or a direct-chat
             // live status event so the UI sees busy/idle flips.
             //
-            // Failure bookkeeping for `runner_status` emission lives
+            // Failure bookkeeping for `session_status` emission lives
             // here on the consumer's stack — single-threaded access,
             // no atomics. `drop_streak` resets on each successful
             // append; `drop_total` is a lifetime counter logged at
@@ -164,20 +164,16 @@ impl SessionManager {
                     }
                     Ok(RuntimeOutput::StatusTransition { state, source }) => {
                         if let Some(ctx) = emit_ctx.as_ref() {
-                            if !manager_t.note_forwarder_transition(
-                                &session_id,
-                                state.into(),
-                                source,
-                            ) {
+                            if !manager_t.note_forwarder_transition(&session_id, state, source) {
                                 continue;
                             }
                             events.status(&SessionActivityEvent {
                                 session_id: session_id.clone(),
-                                state: state.into(),
+                                state,
                                 source: source.into(),
                                 status: manager_t.agent_status(&session_id),
                             });
-                            let outcome = ctx.try_append_runner_status(
+                            let outcome = ctx.try_append_session_status(
                                 state,
                                 source,
                                 &manager_t.agent_status(&session_id),
@@ -186,7 +182,7 @@ impl SessionManager {
                                 AppendOutcome::Ok => {
                                     if drop_streak > 0 {
                                         log::info!(
-                                            "runner_status emit recovered for {session_id} \
+                                            "session_status emit recovered for {session_id} \
                                              after {drop_streak} dropped events \
                                              ({drop_total} total this session)",
                                         );
@@ -198,7 +194,7 @@ impl SessionManager {
                                     drop_total += 1;
                                     if drop_streak_is_loggable(drop_streak) {
                                         log::error!(
-                                            "runner_status emit failing for {session_id}; \
+                                            "session_status emit failing for {session_id}; \
                                              {drop_streak} events dropped in a row \
                                              ({drop_total} total this session)",
                                         );
@@ -208,7 +204,7 @@ impl SessionManager {
                         } else {
                             manager_t.publish_direct_activity(
                                 &session_id,
-                                state.into(),
+                                state,
                                 source,
                                 events.as_ref(),
                             );
@@ -573,13 +569,13 @@ impl SessionManager {
         if let Some(transition) = transition.as_ref() {
             if let Some(sink) = mission_status_sink.as_ref() {
                 events.status(transition);
-                if let Err(error) = sink.append_runner_status(
-                    RunnerStatus::Busy,
+                if let Err(error) = sink.append_session_status(
+                    SessionActivityState::Busy,
                     "input-submit",
                     &self.agent_status(session_id),
                 ) {
                     log::error!(
-                        "append input-submit runner_status failed for {session_id}: {error}"
+                        "append input-submit session_status failed for {session_id}: {error}"
                     );
                 }
             } else if !mission_scoped {

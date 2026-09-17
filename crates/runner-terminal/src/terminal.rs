@@ -21,7 +21,7 @@ use runner_backend::model::Runtime;
 use runner_backend::session::manager::{
     ExitEvent, OutputEvent, SessionEvents, SessionSpawnedEvent, SessionUpdatedEvent,
 };
-use runner_backend::session::runtime::RunnerStatus;
+use runner_backend::session::runtime::SessionActivityState;
 use runner_backend::AppCore;
 
 use crate::palette;
@@ -177,29 +177,30 @@ fn sanitize_title(raw: &str) -> String {
         .collect()
 }
 
-fn classify_title(title: &str) -> Option<RunnerStatus> {
+fn classify_title(title: &str) -> Option<SessionActivityState> {
     if title.trim().is_empty() {
         return None;
     }
     Some(
         if matches!(title.chars().next(), Some('\u{2800}'..='\u{28ff}')) {
-            RunnerStatus::Busy
+            SessionActivityState::Busy
         } else {
-            RunnerStatus::Idle
+            SessionActivityState::Idle
         },
     )
 }
 
 #[derive(Default)]
 struct TitleStatus {
-    last: Option<RunnerStatus>,
+    last: Option<SessionActivityState>,
 }
 
 impl TitleStatus {
-    fn observe(&mut self, title: &str) -> Option<RunnerStatus> {
+    fn observe(&mut self, title: &str) -> Option<SessionActivityState> {
         let state = classify_title(title)?;
         // Bare prompt titles must leave shells on byte detection until a spinner appears.
-        if self.last == Some(state) || (self.last.is_none() && state == RunnerStatus::Idle) {
+        if self.last == Some(state) || (self.last.is_none() && state == SessionActivityState::Idle)
+        {
             return None;
         }
         // Remember before reporting so a failed report still debounces subsequent titles.
@@ -1349,8 +1350,8 @@ mod tests {
     };
     use crate::replay::visible_lines;
     use runner_backend::session::runtime::{
-        OutputStream, RunnerStatus, RuntimeOutput, RuntimeResult, RuntimeSession, SessionRuntime,
-        SessionStatus, SpawnSpec,
+        OutputStream, RuntimeOutput, RuntimeResult, RuntimeSession, SessionActivityState,
+        SessionRuntime, SessionStatus, SpawnSpec,
     };
     use runner_backend::AppCore;
 
@@ -1476,17 +1477,20 @@ mod tests {
         for glyph in ['\u{2800}', '⠋', '\u{28ff}'] {
             assert_eq!(
                 classify_title(&format!("{glyph} Task")),
-                Some(RunnerStatus::Busy)
+                Some(SessionActivityState::Busy)
             );
         }
-        assert_eq!(classify_title("✳ Task"), Some(RunnerStatus::Idle));
-        assert_eq!(classify_title("✳\u{fe0f} Task"), Some(RunnerStatus::Idle));
-        assert_eq!(classify_title("Task"), Some(RunnerStatus::Idle));
+        assert_eq!(classify_title("✳ Task"), Some(SessionActivityState::Idle));
+        assert_eq!(
+            classify_title("✳\u{fe0f} Task"),
+            Some(SessionActivityState::Idle)
+        );
+        assert_eq!(classify_title("Task"), Some(SessionActivityState::Idle));
         assert_eq!(
             classify_title("renaming... ⠸ | yicheng47"),
-            Some(RunnerStatus::Idle)
+            Some(SessionActivityState::Idle)
         );
-        assert_eq!(classify_title(" ⠋ Task"), Some(RunnerStatus::Idle));
+        assert_eq!(classify_title(" ⠋ Task"), Some(SessionActivityState::Idle));
         assert_eq!(classify_title(""), None);
         assert_eq!(classify_title(" \t\n"), None);
     }
@@ -1502,12 +1506,12 @@ mod tests {
         }
         assert_eq!(status.observe("✳ Task"), None);
         assert_eq!(status.last, None);
-        assert_eq!(status.observe("⠋ Task"), Some(RunnerStatus::Busy));
+        assert_eq!(status.observe("⠋ Task"), Some(SessionActivityState::Busy));
         assert_eq!(status.observe(""), None);
-        assert_eq!(status.last, Some(RunnerStatus::Busy));
-        assert_eq!(status.observe("Task"), Some(RunnerStatus::Idle));
-        assert_eq!(status.observe("⠙ Task"), Some(RunnerStatus::Busy));
-        assert_eq!(status.observe("✳ Task"), Some(RunnerStatus::Idle));
+        assert_eq!(status.last, Some(SessionActivityState::Busy));
+        assert_eq!(status.observe("Task"), Some(SessionActivityState::Idle));
+        assert_eq!(status.observe("⠙ Task"), Some(SessionActivityState::Busy));
+        assert_eq!(status.observe("✳ Task"), Some(SessionActivityState::Idle));
     }
 
     #[test]
@@ -1522,12 +1526,12 @@ mod tests {
                     .map(|s| (frame * 100, s))
             })
             .collect();
-        assert_eq!(transitions, [(0, RunnerStatus::Busy)]);
+        assert_eq!(transitions, [(0, SessionActivityState::Busy)]);
         assert_eq!(
             (0..10)
                 .filter_map(|_| status.observe("Task"))
                 .collect::<Vec<_>>(),
-            [RunnerStatus::Idle]
+            [SessionActivityState::Idle]
         );
     }
 
@@ -1542,12 +1546,18 @@ mod tests {
         for (name, expected, last_ms) in [
             (
                 "codex-title-working",
-                vec![(177, RunnerStatus::Busy), (7428, RunnerStatus::Idle)],
+                vec![
+                    (177, SessionActivityState::Busy),
+                    (7428, SessionActivityState::Idle),
+                ],
                 10893,
             ),
             (
                 "claude-session",
-                vec![(5038, RunnerStatus::Busy), (7891, RunnerStatus::Idle)],
+                vec![
+                    (5038, SessionActivityState::Busy),
+                    (7891, SessionActivityState::Idle),
+                ],
                 41517,
             ),
             ("top-busy", vec![], 3682),
@@ -1583,9 +1593,13 @@ mod tests {
                         if let Some(state) = status.observe(&title) {
                             transitions.push((ms, state));
                         }
-                        if classify_title(&title) == Some(RunnerStatus::Busy) {
+                        if classify_title(&title) == Some(SessionActivityState::Busy) {
                             spinner_titles += 1;
-                            assert_eq!(status.last, Some(RunnerStatus::Busy), "{name} at {ms} ms");
+                            assert_eq!(
+                                status.last,
+                                Some(SessionActivityState::Busy),
+                                "{name} at {ms} ms"
+                            );
                         }
                     }
                 }
@@ -1603,7 +1617,7 @@ mod tests {
             );
             assert_eq!(
                 status.last,
-                Some(RunnerStatus::Idle),
+                Some(SessionActivityState::Idle),
                 "{name}: later animation must stay idle"
             );
             if name == "codex-title-working" {

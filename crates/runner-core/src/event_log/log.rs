@@ -142,7 +142,7 @@ impl EventLog {
     /// Non-blocking variant of `append`. Returns
     /// `Err(TryAppendError::Contended)` immediately if another writer
     /// is holding the file lock; otherwise behaves identically to
-    /// `append`. Used by the session forwarder's `runner_status`
+    /// `append`. Used by the session forwarder's `session_status`
     /// emission path (issue #124) where the consumer thread must
     /// never block on disk I/O — terminal output and exit-event
     /// processing flow through the same channel, so a stuck flock
@@ -653,7 +653,7 @@ mod tests {
         for lossy in [false, true] {
             let dir = tempfile::tempdir().unwrap();
             let log = EventLog::open(dir.path()).unwrap();
-            let event = log.append(draft_signal("runner_status")).unwrap();
+            let event = log.append(draft_signal("session_status")).unwrap();
             let blocker = OpenOptions::new()
                 .read(true)
                 .write(true)
@@ -692,7 +692,7 @@ mod tests {
 
     #[test]
     fn try_append_returns_contended_when_lock_held() {
-        // Issue #124: the session forwarder's `runner_status` emission
+        // Issue #124: the session forwarder's `session_status` emission
         // calls `try_append` from a thread that also drains terminal
         // output and exit events. If another process is holding the
         // event-log flock, `try_append` must return `Contended`
@@ -716,7 +716,7 @@ mod tests {
         blocker.lock_exclusive().unwrap();
 
         let start = std::time::Instant::now();
-        let res = log.try_append(draft_signal("runner_status"));
+        let res = log.try_append(draft_signal("session_status"));
         let elapsed = start.elapsed();
         // The non-blocking call must not have waited on the lock.
         // 100ms is generous on every CI host we run on; in practice
@@ -732,7 +732,7 @@ mod tests {
 
         // Release and confirm the same call now succeeds.
         blocker.unlock().unwrap();
-        let ok = log.try_append(draft_signal("runner_status")).unwrap();
+        let ok = log.try_append(draft_signal("session_status")).unwrap();
         assert!(!ok.id.is_empty());
     }
 
@@ -780,9 +780,9 @@ mod tests {
                 .unwrap();
 
             let next = if nonblocking {
-                log.try_append(draft_signal("runner_status")).unwrap()
+                log.try_append(draft_signal("session_status")).unwrap()
             } else {
-                log.append(draft_signal("runner_status")).unwrap()
+                log.append(draft_signal("session_status")).unwrap()
             };
             let entries = log.read_from(0).unwrap();
             assert_eq!(entries.len(), 2);

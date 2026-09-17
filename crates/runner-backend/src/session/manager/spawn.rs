@@ -1467,7 +1467,7 @@ impl SessionManager {
             role.clone(),
             plan.resuming,
             emit_activity,
-            None, // direct chats are off-bus — no log to append runner_status to
+            None, // direct chats are off-bus — no log to append session_status to
         );
         self.install_forwarder(&session_id, forwarder);
 

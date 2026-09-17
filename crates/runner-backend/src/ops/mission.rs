@@ -115,7 +115,7 @@ pub struct MissionSummary {
     /// Partial crash/resume states keep the sidebar mission icon muted.
     pub all_sessions_live: bool,
     /// Optional live activity projection derived from per-slot
-    /// `runner_status` events. `None` means the mission has no live
+    /// `session_status` events. `None` means the mission has no live
     /// sessions and keeps the sidebar attention slot clear.
     pub activity: Option<MissionActivityState>,
 }
@@ -744,7 +744,7 @@ pub async fn mission_start_impl_with_size(
     //
     // The bus's initial replay reads from offset 0, so the opening
     // `mission_start` / `mission_goal` events still surface even though
-    // the watcher attaches after the writes. Spawning runners before
+    // the watcher attaches after the writes. Spawning sessions before
     // mount is safe: their PTYs come up here, but `runner` CLI invocations
     // can't run before they receive their first stdin (which only comes
     // after the bus delivers `mission_goal` post-mount), so no log writes
@@ -1055,7 +1055,7 @@ pub(crate) async fn ensure_mission_router_mounted(state: &AppCore, mission_id: &
     // Set the replay watermark so the bus's initial replay doesn't
     // re-fire `mission_goal` / `human_said` / `ask_lead` — handlers
     // would re-inject historical stdin into the (about-to-be-resumed)
-    // PTYs. Pending_asks / runner_status also rehydrate here.
+    // PTYs. Pending_asks / session_status also rehydrate here.
     router.reconstruct_from_log()?;
 
     let roster_handles: Vec<String> = roster.iter().map(|m| m.slot.slot_handle.clone()).collect();
@@ -1346,7 +1346,7 @@ fn count_pending_asks_from_log(mission_dir: &Path) -> usize {
     pending.len()
 }
 
-fn latest_runner_statuses_from_log(
+fn latest_session_statuses_from_log(
     mission_dir: &Path,
 ) -> std::collections::HashMap<String, MissionActivityState> {
     let log = match EventLog::open(mission_dir) {
@@ -1366,7 +1366,7 @@ fn latest_runner_statuses_from_log(
         let Some(t) = event.signal_type.as_ref() else {
             continue;
         };
-        if t.as_str() != "runner_status" {
+        if !t.is_session_status() {
             continue;
         }
         let Some(state) = event.payload.get("state").and_then(|v| v.as_str()) else {
@@ -1406,7 +1406,7 @@ fn mission_activity_from_log(
     if live_handles.is_empty() {
         return None;
     }
-    let latest = latest_runner_statuses_from_log(mission_dir);
+    let latest = latest_session_statuses_from_log(mission_dir);
     mission_activity_from_latest(live_handles, &latest)
 }
 
@@ -1596,7 +1596,7 @@ mod tests {
         (crew_id, mission.id)
     }
 
-    fn append_runner_status(
+    fn append_session_status(
         log: &EventLog,
         crew_id: &str,
         mission_id: &str,
@@ -1607,7 +1607,7 @@ mod tests {
             crew_id.to_string(),
             mission_id.to_string(),
             handle,
-            SignalType::new("runner_status"),
+            SignalType::new("session_status"),
             serde_json::json!({ "state": state }),
         ))
         .unwrap();
@@ -2605,35 +2605,49 @@ mod tests {
         assert_eq!(
             mission_activity_from_log(&mission_dir, &live_handles),
             Some(MissionActivityState::Busy),
-            "live slot without runner_status defaults busy"
+            "live slot without session_status defaults busy"
         );
 
-        append_runner_status(&log, &crew_id, &out.mission.id, "lead", "idle");
+        append_session_status(&log, &crew_id, &out.mission.id, "lead", "idle");
         assert_eq!(
             mission_activity_from_log(&mission_dir, &live_handles),
             Some(MissionActivityState::Busy),
             "one missing live slot still reads busy"
         );
 
-        append_runner_status(&log, &crew_id, &out.mission.id, "reviewer", "idle");
+        append_session_status(&log, &crew_id, &out.mission.id, "reviewer", "idle");
         assert_eq!(
             mission_activity_from_log(&mission_dir, &live_handles),
             Some(MissionActivityState::Idle),
             "all live slots idle reads idle"
         );
 
-        append_runner_status(&log, &crew_id, &out.mission.id, "lead", "busy");
+        append_session_status(&log, &crew_id, &out.mission.id, "lead", "busy");
         assert_eq!(
             mission_activity_from_log(&mission_dir, &live_handles),
             Some(MissionActivityState::Busy),
             "latest busy status wins"
         );
 
-        append_runner_status(&log, &crew_id, &out.mission.id, "lead", "idle");
+        append_session_status(&log, &crew_id, &out.mission.id, "lead", "idle");
         assert_eq!(
             mission_activity_from_log(&mission_dir, &live_handles),
             Some(MissionActivityState::Idle),
             "latest idle status wins after busy"
+        );
+
+        log.append(EventDraft::signal(
+            crew_id.clone(),
+            out.mission.id.clone(),
+            "lead",
+            SignalType::new("runner_status"),
+            serde_json::json!({ "state": "busy" }),
+        ))
+        .unwrap();
+        assert_eq!(
+            mission_activity_from_log(&mission_dir, &live_handles),
+            Some(MissionActivityState::Busy),
+            "a runner_status row from a pre-#632 log counts the same"
         );
     }
 
@@ -2694,8 +2708,8 @@ mod tests {
 
         let mission_dir = event_log::mission_dir(tmp.path(), &crew_id, &out.mission.id);
         let log = EventLog::open(&mission_dir).unwrap();
-        append_runner_status(&log, &crew_id, &out.mission.id, "lead", "idle");
-        append_runner_status(&log, &crew_id, &out.mission.id, "worker", "busy");
+        append_session_status(&log, &crew_id, &out.mission.id, "lead", "idle");
+        append_session_status(&log, &crew_id, &out.mission.id, "worker", "busy");
         assert_eq!(
             mission_activity_from_log(&mission_dir, &handles),
             Some(MissionActivityState::Idle),

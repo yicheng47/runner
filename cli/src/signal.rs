@@ -24,13 +24,13 @@ pub fn run(ty: &str, payload: Option<&str>) -> i32 {
         return 0; // unreachable in practice; the helper exits or returns Some.
     };
 
-    if KnownSignalType::from_name(ty).is_none() {
+    let Some(kind) = KnownSignalType::from_name(ty) else {
         eprintln!(
             "runner signal: unknown type {ty:?}. Known types: {}.",
             known_types_csv(),
         );
         return 1;
-    }
+    };
 
     let payload_value = match payload {
         Some(s) => match serde_json::from_str::<serde_json::Value>(s) {
@@ -43,10 +43,10 @@ pub fn run(ty: &str, payload: Option<&str>) -> i32 {
         None => serde_json::json!({}),
     };
 
-    append(&env, ty, payload_value)
+    append(&env, kind.as_str(), payload_value)
 }
 
-/// `runner status busy|idle [--note <text>]` — emits a `runner_status`
+/// `runner status busy|idle [--note <text>]` — emits a `session_status`
 /// signal with the validated state. Validation lives here so the CLI can
 /// reject typos like `runner status sleeping` before they hit the log.
 ///
@@ -90,7 +90,7 @@ pub fn run_status(state: &str, note: Option<&str>) -> i32 {
     let Some(env) = env::require_mission_or_handle_offbus("status") else {
         return 0;
     };
-    append(&env, "runner_status", value)
+    append(&env, "session_status", value)
 }
 
 fn append(env: &env::MissionEnv, ty: &str, payload: serde_json::Value) -> i32 {

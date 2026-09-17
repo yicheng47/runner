@@ -40,7 +40,7 @@ use crate::error::{Error, Result};
 use crate::model::{Mission, Role};
 use crate::router;
 use crate::session::runtime::{
-    OutputStream, RunnerStatus, RuntimeOutput, RuntimeSession, SessionRuntime, SpawnSpec,
+    OutputStream, RuntimeOutput, RuntimeSession, SessionRuntime, SpawnSpec,
 };
 
 mod lifecycle;
@@ -113,7 +113,7 @@ const CLAUDE_LAUNCH_GATE_GRACE: Duration = Duration::from_millis(1500);
 const CLAUDE_LAUNCH_GATE_GRACE: Duration = Duration::from_millis(0);
 
 /// Inputs the forwarder consumer needs to translate a
-/// `RuntimeOutput::StatusTransition` into a real `runner_status`
+/// `RuntimeOutput::StatusTransition` into a real `session_status`
 /// event on the mission's NDJSON log (issue #124). All fields are
 /// correlated — a mission spawn has all of them; a direct chat has
 /// none — so they live together in one optional struct. The
@@ -184,39 +184,39 @@ enum AppendOutcome {
 }
 
 impl ForwarderEmitCtx {
-    fn runner_status_draft(
+    fn session_status_draft(
         &self,
-        state: RunnerStatus,
+        state: SessionActivityState,
         source: &'static str,
         status: &AgentStatus,
     ) -> EventDraft {
         let state_str = match state {
-            RunnerStatus::Busy => "busy",
-            RunnerStatus::Idle => "idle",
+            SessionActivityState::Busy => "busy",
+            SessionActivityState::Idle => "idle",
         };
         EventDraft::signal(
             self.crew_id.clone(),
             self.mission_id.clone(),
             self.handle.clone(),
-            SignalType::new("runner_status"),
+            SignalType::new("session_status"),
             serde_json::json!({ "state": state_str, "source": source, "status": status }),
         )
     }
 
-    /// Non-blocking append of a forwarder-emitted `runner_status`
+    /// Non-blocking append of a forwarder-emitted `session_status`
     /// row. The consumer thread runs this on every status
     /// transition; it must not block (it shares the mpsc receiver
     /// with the terminal output stream and the exit-event reap, so
     /// a stuck flock would freeze them too). Wire shape mirrors
     /// `cli/src/signal.rs::run_status` so router / UI projections
     /// can't tell the two apart except by `payload.source`.
-    fn try_append_runner_status(
+    fn try_append_session_status(
         &self,
-        state: RunnerStatus,
+        state: SessionActivityState,
         source: &'static str,
         status: &AgentStatus,
     ) -> AppendOutcome {
-        match self.try_append_with_retry(self.runner_status_draft(state, source, status)) {
+        match self.try_append_with_retry(self.session_status_draft(state, source, status)) {
             Ok(()) => AppendOutcome::Ok,
             Err(TryAppendError::Contended) => AppendOutcome::Contended,
             Err(TryAppendError::Failed(_)) => AppendOutcome::Failed,
@@ -236,20 +236,20 @@ impl ForwarderEmitCtx {
         unreachable!("bounded append loop always returns")
     }
 
-    fn append_runner_status(
+    fn append_session_status(
         &self,
-        state: RunnerStatus,
+        state: SessionActivityState,
         source: &'static str,
         status: &AgentStatus,
     ) -> runner_core::Result<()> {
         self.event_log
-            .append(self.runner_status_draft(state, source, status))
+            .append(self.session_status_draft(state, source, status))
             .map(|_| ())
     }
 }
 
 /// Streak indices at which the forwarder consumer logs a WARN about
-/// dropped `runner_status` events. Picked to cover the common
+/// dropped `session_status` events. Picked to cover the common
 /// cases (first drop, sustained failure on a stuck mission log)
 /// without spamming once it's clear the log is broken.
 fn drop_streak_is_loggable(streak: u64) -> bool {
@@ -270,7 +270,7 @@ pub trait SessionEvents: Send + Sync + 'static {
     /// fakes don't have to opt in.
     fn updated(&self, _ev: &SessionUpdatedEvent) {}
     /// Live direct-chat activity projection. Mission sessions keep using
-    /// `runner_status` rows in the mission log instead.
+    /// `session_status` rows in the mission log instead.
     fn status(&self, _ev: &SessionActivityEvent) {}
     /// Live activity counter for a role — emitted on every spawn/reap so
     /// the Roles list can update its "N sessions / M missions" badges
@@ -315,21 +315,7 @@ pub struct RoleActivityEvent {
     pub direct_session_id: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum SessionActivityState {
-    Busy,
-    Idle,
-}
-
-impl From<RunnerStatus> for SessionActivityState {
-    fn from(state: RunnerStatus) -> Self {
-        match state {
-            RunnerStatus::Busy => Self::Busy,
-            RunnerStatus::Idle => Self::Idle,
-        }
-    }
-}
+pub use crate::session::runtime::SessionActivityState;
 
 /// Payload for `session/status`. Shared by direct chats and mission sessions, where
 /// busy/idle is a live UI projection rather than persisted DB state.
@@ -995,7 +981,11 @@ impl SessionManager {
         Ok(router::DeliveryReservation::Ready(delivery.generation))
     }
 
-    pub fn report_declared_status(&self, session_id: &str, state: RunnerStatus) -> Result<()> {
+    pub fn report_declared_status(
+        &self,
+        session_id: &str,
+        state: SessionActivityState,
+    ) -> Result<()> {
         let session = self
             .session_state(session_id)
             .ok_or_else(|| Error::msg(format!("session not found: {session_id}")))?;
@@ -1484,15 +1474,7 @@ impl SessionManager {
         });
         let status = self.agent_status(session_id);
         if let Some(sink) = sink {
-            let draft = sink.runner_status_draft(
-                if state == SessionActivityState::Busy {
-                    RunnerStatus::Busy
-                } else {
-                    RunnerStatus::Idle
-                },
-                source,
-                &status,
-            );
+            let draft = sink.session_status_draft(state, source, &status);
             if let Err(error) = sink.try_append_with_retry(draft) {
                 log::warn!("publish hook observation: {error:?}");
             }

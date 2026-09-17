@@ -911,6 +911,7 @@ fn mission_refresh_filters_appended_signals() {
         "ask_human",
         "human_question",
         "human_response",
+        "session_status",
         "runner_status",
     ] {
         assert_eq!(

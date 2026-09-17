@@ -1,12 +1,12 @@
 // Signal router v0 — flat parent-process dispatcher.
 //
-// What this is. The lead runner is the agent that *thinks* about
+// What this is. The lead is the agent that *thinks* about
 // coordination — it plans, dispatches workers via directed messages,
 // decides when to escalate. The router is the parent-process plumbing
 // underneath: bootstrap (write the launch prompt to the lead's stdin on
 // `mission_goal`), cross-process stdin push (`ask_lead`, `human_said`,
 // `human_response`), the UI bridge (`ask_human` → `human_question` event),
-// and the runner-availability map (`runner_status`). See arch §5.5 and
+// and the runner-availability map (`session_status`). See arch §5.5 and
 // docs/impls/archive/0001-v0-mvp.md `C8 — Signal router v0`.
 //
 // What this is not. There is no policy engine, no rule abstraction, no
@@ -151,13 +151,13 @@ pub trait SessionDeliveryListener: Send + Sync + 'static {
     fn session_delivery_event(&self, session_id: &str, event: SessionDeliveryEvent);
 }
 
-// `RunnerStatus` now lives in `session::runtime` because the forwarder
+// `SessionActivityState` now lives in `session::runtime` because the forwarder
 // is the authoritative source (issue #124). The router consumes it via
-// `runner_status` events the forwarder appends. Agent-reported events
+// `session_status` events the forwarder appends. Agent-reported events
 // from the deprecated `runner status` CLI verb feed the same map; both
 // converge under latest-wins, so the router doesn't branch on
 // `payload.source`.
-pub use crate::session::runtime::RunnerStatus;
+pub use crate::session::runtime::SessionActivityState;
 
 /// Inputs to the launch-prompt composer, captured at mount so the
 /// `mission_goal` handler doesn't have to round-trip the DB. The lead row
@@ -260,8 +260,8 @@ struct RouterState {
     /// is dispatched (the appended card's id is the canonical question_id
     /// per arch §5.5.0) and consumed by the matching `human_response`.
     pending_asks: HashMap<String, String>,
-    /// Latest `runner_status` per handle.
-    status: HashMap<String, RunnerStatus>,
+    /// Latest `session_status` per handle.
+    status: HashMap<String, SessionActivityState>,
     /// Replay high-water ULID. Set by `reconstruct_from_log` on reopen;
     /// `handle_event` short-circuits any event whose `id` is `≤` this so
     /// the bus's initial replay doesn't re-inject historical stdin or
@@ -389,7 +389,7 @@ impl Router {
     ///   to match each ask with its following card via
     ///   `human_question.payload.triggered_by`). Asks already answered
     ///   by a `human_response` are removed.
-    /// - `runner_status` from the latest `runner_status` row per handle.
+    /// - `session_status` from the latest `session_status` row per handle.
     ///
     /// What is *not* rebuilt: stdin pushes. The launch prompt, ask_lead
     /// relays, human_said echoes, and message_nudge fan-outs are all
@@ -422,7 +422,7 @@ impl Router {
         // needed.
         let mut ask_human_asker: HashMap<String, String> = HashMap::new();
         let mut pending: HashMap<String, String> = HashMap::new();
-        let mut status: HashMap<String, RunnerStatus> = HashMap::new();
+        let mut status: HashMap<String, SessionActivityState> = HashMap::new();
         let mut last_id: Option<String> = None;
 
         for entry in &entries {
@@ -451,10 +451,10 @@ impl Router {
                         pending.remove(qid);
                     }
                 }
-                "runner_status" => {
+                "session_status" | "runner_status" => {
                     let s = match event.payload.get("state").and_then(|v| v.as_str()) {
-                        Some("busy") => Some(RunnerStatus::Busy),
-                        Some("idle") => Some(RunnerStatus::Idle),
+                        Some("busy") => Some(SessionActivityState::Busy),
+                        Some("idle") => Some(SessionActivityState::Idle),
                         _ => None,
                     };
                     if let Some(s) = s {
@@ -505,7 +505,7 @@ impl Router {
                     "ask_lead" => handlers::ask_lead(self, event),
                     "ask_human" => handlers::ask_human(self, event),
                     "human_response" => handlers::human_response(self, event),
-                    "runner_status" => handlers::runner_status(self, event),
+                    "session_status" | "runner_status" => handlers::session_status(self, event),
                     // mission_start, mission_stopped, inbox_read,
                     // human_question, mission_warning — observed but
                     // not routed here. inbox_read is owned by the
@@ -521,7 +521,7 @@ impl Router {
     // ---- helpers used by handlers --------------------------------------
 
     /// Mark a runner as busy when the router is about to wake them via
-    /// stdin injection (issue #32). Appends a synthetic `runner_status`
+    /// stdin injection (issue #32). Appends a synthetic `session_status`
     /// busy event with `from = handle` so the workspace rail projection
     /// keys the badge against the recipient, and updates router state so
     /// back-to-back nudges within
@@ -533,7 +533,7 @@ impl Router {
     /// `human_said`, `human_response`, and the lead's `mission_goal`
     /// bootstrap.
     ///
-    /// Post-issue-#124: the session forwarder also fires `runner_status`
+    /// Post-issue-#124: the session forwarder also fires `session_status`
     /// busy on the agent's first response byte. This path remains as a
     /// faster cover for the inject→idle race (we may inject before the
     /// agent has written any byte yet) and as defense against an agent
@@ -553,14 +553,14 @@ impl Router {
         }
         let session_id = {
             let state = self.state.lock().unwrap();
-            if matches!(state.status.get(handle), Some(RunnerStatus::Busy)) {
+            if matches!(state.status.get(handle), Some(SessionActivityState::Busy)) {
                 return;
             }
             state.session_by_handle.get(handle).cloned()
         };
         let Some(session_id) = session_id else {
             log::error!(
-                "cannot synthesize runner_status busy for @{handle} on mission {}: no session",
+                "cannot synthesize session_status busy for @{handle} on mission {}: no session",
                 self.mission_id,
             );
             return;
@@ -569,17 +569,17 @@ impl Router {
             self.crew_id.clone(),
             self.mission_id.clone(),
             handle,
-            SignalType::new("runner_status"),
+            SignalType::new("session_status"),
             serde_json::json!({ "state": "busy" }),
         );
         if let Err(e) = self.injector.synthesize_wake_busy(&session_id, draft) {
             log::error!(
-                "failed to synthesize runner_status busy for @{handle} on mission {}: {e}",
+                "failed to synthesize session_status busy for @{handle} on mission {}: {e}",
                 self.mission_id,
             );
             return;
         }
-        self.set_status(handle.to_string(), RunnerStatus::Busy);
+        self.set_status(handle.to_string(), SessionActivityState::Busy);
     }
 
     pub(crate) fn inject_and_submit(&self, handle: &str, body: &[u8]) -> Result<()> {
@@ -633,7 +633,7 @@ impl Router {
                     .is_some_and(|last| now.saturating_duration_since(*last) < backoff);
                 if !state.live_sessions.contains(&session_id)
                     || state.unread_by_handle.get(handle).copied().unwrap_or(0) == 0
-                    || !matches!(state.status.get(handle), Some(RunnerStatus::Idle))
+                    || !matches!(state.status.get(handle), Some(SessionActivityState::Idle))
                     || delivery_pending
                     || backoff_active
                 {
@@ -1264,7 +1264,7 @@ impl Router {
         self.state.lock().unwrap().pending_asks.len()
     }
 
-    pub(crate) fn set_status(&self, handle: String, status: RunnerStatus) {
+    pub(crate) fn set_status(&self, handle: String, status: SessionActivityState) {
         self.state.lock().unwrap().status.insert(handle, status);
     }
 

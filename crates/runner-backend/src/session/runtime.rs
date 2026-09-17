@@ -95,14 +95,14 @@ pub struct SessionStatus {
     pub command: Option<String>,
 }
 
-/// Latest-known availability of a runtime session, as inferred by
-/// the forwarder from PTY-byte activity (issue #124). The router
-/// projects this into a per-handle availability map; the workspace
-/// rail dot reads off the same projection. Lives here (rather than
-/// in `router/`) because the forwarder is the authoritative source
-/// — the router consumes it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RunnerStatus {
+/// Busy/idle of one session. The forwarder infers it from PTY-byte
+/// activity (issue #124), the hook adapters and the CLI's `runner status`
+/// verb report it, the router projects it per handle and the UI reads
+/// the same projection. Serialized lowercase in `session/status` events
+/// and in `session_status` rows on the mission log.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SessionActivityState {
     Busy,
     Idle,
 }
@@ -124,7 +124,7 @@ pub enum RuntimeOutput {
     /// the log without going through this channel). Static-str
     /// because both producers' values are known at compile time.
     StatusTransition {
-        state: RunnerStatus,
+        state: SessionActivityState,
         source: &'static str,
     },
 }
@@ -268,7 +268,7 @@ pub trait SessionRuntime: Send + Sync {
     fn note_declared_status(
         &self,
         _session: &RuntimeSession,
-        _state: RunnerStatus,
+        _state: SessionActivityState,
     ) -> RuntimeResult<()> {
         Err(RuntimeError::Msg("declared status is unsupported".into()))
     }
@@ -294,7 +294,7 @@ mod tests {
         assert_eq!(output.try_recv().unwrap_err(), mpsc::TryRecvError::Empty);
         tx.send(RuntimeOutput::Stream(b"hello".to_vec())).unwrap();
         tx.send(RuntimeOutput::StatusTransition {
-            state: RunnerStatus::Idle,
+            state: SessionActivityState::Idle,
             source: "forwarder",
         })
         .unwrap();
@@ -305,7 +305,7 @@ mod tests {
         assert!(matches!(
             output.try_recv().unwrap(),
             RuntimeOutput::StatusTransition {
-                state: RunnerStatus::Idle,
+                state: SessionActivityState::Idle,
                 source: "forwarder",
             }
         ));

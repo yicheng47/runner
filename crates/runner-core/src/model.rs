@@ -21,6 +21,11 @@ impl SignalType {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    /// `session_status` under either its current or its pre-#632 name.
+    pub fn is_session_status(&self) -> bool {
+        KnownSignalType::from_name(&self.0) == Some(KnownSignalType::SessionStatus)
+    }
 }
 
 impl From<&str> for SignalType {
@@ -49,7 +54,7 @@ pub enum KnownSignalType {
     AskHuman,
     HumanQuestion,
     HumanResponse,
-    RunnerStatus,
+    SessionStatus,
     InboxRead,
 }
 
@@ -61,7 +66,7 @@ impl KnownSignalType {
         KnownSignalType::AskHuman,
         KnownSignalType::HumanQuestion,
         KnownSignalType::HumanResponse,
-        KnownSignalType::RunnerStatus,
+        KnownSignalType::SessionStatus,
         KnownSignalType::InboxRead,
     ];
 
@@ -73,12 +78,19 @@ impl KnownSignalType {
             KnownSignalType::AskHuman => "ask_human",
             KnownSignalType::HumanQuestion => "human_question",
             KnownSignalType::HumanResponse => "human_response",
-            KnownSignalType::RunnerStatus => "runner_status",
+            KnownSignalType::SessionStatus => "session_status",
             KnownSignalType::InboxRead => "inbox_read",
         }
     }
 
+    /// The pre-#632 name of `session_status`. Mission logs and briefs
+    /// written before the rename still carry it, so readers accept both.
+    pub const LEGACY_SESSION_STATUS: &'static str = "runner_status";
+
     pub fn from_name(s: &str) -> Option<Self> {
+        if s == Self::LEGACY_SESSION_STATUS {
+            return Some(Self::SessionStatus);
+        }
         Self::ALL.iter().copied().find(|k| k.as_str() == s)
     }
 }
@@ -190,6 +202,13 @@ mod tests {
             assert_eq!(KnownSignalType::from_name(kind.as_str()), Some(*kind));
         }
         assert_eq!(KnownSignalType::from_name("not_a_real_type"), None);
+        assert_eq!(
+            KnownSignalType::from_name("runner_status"),
+            Some(KnownSignalType::SessionStatus)
+        );
+        assert!(SignalType::new("runner_status").is_session_status());
+        assert!(SignalType::new("session_status").is_session_status());
+        assert!(!SignalType::new("ask_human").is_session_status());
     }
 
     #[test]

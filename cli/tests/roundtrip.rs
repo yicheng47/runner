@@ -326,7 +326,7 @@ fn i2_5_msg_read_prints_inbox_in_order_and_emits_inbox_read() {
 #[test]
 fn i2_5c_msg_read_with_from_filter_does_not_emit_inbox_read() {
     // Regression: `--from` only filters which messages are *printed*,
-    // but `inbox_read` advances a global per-runner watermark in the
+    // but `inbox_read` advances a global per-handle watermark in the
     // bus. If the CLI emitted inbox_read on filtered reads, every
     // message with id ≤ the printed last would be marked read —
     // including unread messages from other senders that the user
@@ -398,7 +398,7 @@ fn i2_5b_msg_read_with_empty_inbox_does_not_emit_inbox_read() {
 }
 
 #[test]
-fn i2_6_status_idle_emits_runner_status_signal() {
+fn i2_6_status_idle_emits_session_status_signal() {
     let f = Fixture::new("C", "M");
 
     let out = f
@@ -415,11 +415,11 @@ fn i2_6_status_idle_emits_runner_status_signal() {
     assert_eq!(events.len(), 1);
     let ev = &events[0];
     assert!(matches!(ev.kind, EventKind::Signal));
-    assert_eq!(ev.signal_type.as_ref().unwrap().as_str(), "runner_status");
+    assert_eq!(ev.signal_type.as_ref().unwrap().as_str(), "session_status");
     assert_eq!(ev.from, "impl");
     assert_eq!(ev.payload["state"], "idle");
     assert_eq!(ev.payload["note"], "ready for next task");
-    // Issue #124: CLI-emitted runner_status events stamp the
+    // Issue #124: CLI-emitted session_status events stamp the
     // payload with `source: "agent"` so debug tooling can tell them
     // apart from forwarder-inferred transitions (`source:
     // "forwarder"`). Router consumers ignore the field.
