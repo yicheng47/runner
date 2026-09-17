@@ -77,9 +77,8 @@ The nonblocking ask (cut above); any new state; any approval or answer control i
 ## Implementation phases
 
 1. Design: done, the four frames above, signed off 2026-09-17.
-2. Mission 1, codex peer crew: the three UI-only items (interrupted tooltip, wait timers, failure attention) plus the `failed_since` field, one PR.
-3. Mission 2: the working detail, model field plus the three adapters plus Claude's two new hook registrations, one PR.
-4. Smoke on both platforms in the shape of `docs/tests/347-status-ui-smoke.md`, recorded in `docs/tests/624-status-details-smoke.md`.
+2. Mission 1, codex peer crew: all four items in one PR: the three UI-only ones (interrupted tooltip, wait timers, failure attention) plus `failed_since`, and the working detail (model field, the three adapters, Claude's two new hook registrations). Planned as two missions; folded into one on 2026-09-17.
+3. Smoke on both platforms in the shape of `docs/tests/347-status-ui-smoke.md`, recorded in `docs/tests/624-status-details-smoke.md`.
 
 ## Verification
 
