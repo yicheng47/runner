@@ -30,9 +30,11 @@ impl ChatIcon {
     }
 
     pub fn color(self, fallback: Hsla, live: bool) -> Hsla {
-        self.tint.map_or(fallback, |tint| {
-            theme::with_alpha(tint, if live { 1. } else { 0.45 })
-        })
+        match self.tint {
+            None => fallback,
+            Some(tint) if live => tint,
+            Some(_) => theme::with_alpha(theme::text(), 0.45),
+        }
     }
 }
 
@@ -41,7 +43,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn provider_marks_keep_their_tint_and_dim_only_when_not_live() {
+    fn provider_marks_keep_their_tint_only_while_live() {
         let _theme = crate::theme_snapshot::ThemeGuard::new();
         for variant in [
             theme::ThemeVariant::Carbon,
@@ -58,7 +60,10 @@ mod tests {
                 assert_eq!(icon.path, path);
                 for fallback in [theme::accent(), theme::muted(), theme::faint()] {
                     assert_eq!(icon.color(fallback, true), tint);
-                    assert_eq!(icon.color(fallback, false), theme::with_alpha(tint, 0.45));
+                    assert_eq!(
+                        icon.color(fallback, false),
+                        theme::with_alpha(theme::text(), 0.45)
+                    );
                 }
             }
         }

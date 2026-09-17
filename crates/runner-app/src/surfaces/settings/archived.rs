@@ -838,7 +838,7 @@ mod tests {
     }
 
     #[test]
-    fn archived_chat_marks_keep_the_runtime_and_are_dimmed() {
+    fn archived_chat_marks_keep_the_runtime_and_draw_neutral() {
         let _theme = crate::theme_snapshot::ThemeGuard::new();
         let mut chat = chat(
             "c1",
@@ -847,11 +847,11 @@ mod tests {
             "2026-08-21T01:00:00Z",
         );
         chat.role_id = Some("role".into());
-        for (runtime, path, tint) in [
-            ("claude-code", "claude.svg", gpui::rgb(0xd97757).into()),
-            ("codex", "openai.svg", theme::text()),
-            ("trae", "trae.svg", gpui::rgb(0x32f08c).into()),
-            ("copilot", "copilot.svg", gpui::rgb(0x8534f3).into()),
+        for (runtime, path) in [
+            ("claude-code", "claude.svg"),
+            ("codex", "openai.svg"),
+            ("trae", "trae.svg"),
+            ("copilot", "copilot.svg"),
         ] {
             chat.agent_runtime = runtime.into();
             let items = merge_archived_items(&[], std::slice::from_ref(&chat));
@@ -859,7 +859,7 @@ mod tests {
             assert_eq!(items[0].icon().path, path);
             assert_eq!(
                 items[0].icon().color(theme::faint(), false),
-                theme::with_alpha(tint, 0.45)
+                theme::with_alpha(theme::text(), 0.45)
             );
         }
         chat.agent_runtime = "unknown".into();
