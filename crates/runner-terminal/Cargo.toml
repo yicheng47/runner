@@ -1,6 +1,6 @@
 [package]
 name = "runner-terminal"
-version = "0.9.4"
+version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
