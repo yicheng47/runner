@@ -28,7 +28,7 @@
 </p>
 
 <p align="center">
-  <img src="assets/hero.png" alt="Runner — 一个标签页里并排着一个 Claude Code 和两个 Codex 会话，侧边栏是项目和对话" width="100%" />
+  <img src="assets/hero.png" alt="Runner — 一个标签页分成四个窗格，分别是 Claude Code、GitHub Copilot CLI、TRAE CLI 和 Codex，侧边栏是项目和对话" width="100%" />
 </p>
 
 <p align="center">
@@ -116,7 +116,7 @@ https://github.com/user-attachments/assets/fb3669a4-010d-42d0-9555-2a3ba3223c75
 </tr>
 <tr>
 <td width="50%">
-  <img src="assets/chat_split.png" alt="三个分栏的对话标签页和整理好的侧边栏" width="100%" />
+  <img src="assets/chat_split.png" alt="四个分栏的对话标签页和整理好的侧边栏" width="100%" />
   <img src="assets/chat_drag.png" alt="拖动窗格的把手——目标窗格高亮的那一半就是它落下的位置" width="100%" />
 </td>
 <td width="50%" valign="middle">

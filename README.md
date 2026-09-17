@@ -28,7 +28,7 @@
 </p>
 
 <p align="center">
-  <img src="assets/hero.png" alt="Runner — one tab with a Claude Code and two Codex sessions side by side, projects and chats in the sidebar" width="100%" />
+  <img src="assets/hero.png" alt="Runner — one tab with Claude Code, GitHub Copilot CLI, TRAE CLI and Codex in four panes, projects and chats in the sidebar" width="100%" />
 </p>
 
 <p align="center">
@@ -116,7 +116,7 @@ Starting a mission spawns one live PTY per slot into a tabbed workspace. The **f
 </tr>
 <tr>
 <td width="50%">
-  <img src="assets/chat_split.png" alt="Chat tab with three split panes and organized sidebar" width="100%" />
+  <img src="assets/chat_split.png" alt="Chat tab with four split panes and organized sidebar" width="100%" />
   <img src="assets/chat_drag.png" alt="Dragging a pane by its grip — the highlighted half of the target shows where it lands" width="100%" />
 </td>
 <td width="50%" valign="middle">
