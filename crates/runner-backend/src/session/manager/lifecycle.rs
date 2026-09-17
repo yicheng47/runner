@@ -77,7 +77,6 @@ impl SessionManager {
                     state.activity = None;
                     state.activity_revision = state.activity_revision.wrapping_add(1);
                     state.suppress_local_input_busy = false;
-                    state.title_status_armed = false;
                     state.hook_status_armed = false;
                     state.provisional_idle = false;
                     state.local_input_pending = false;
@@ -302,7 +301,6 @@ impl SessionManager {
                 state.activity = None;
                 state.activity_revision = state.activity_revision.wrapping_add(1);
                 state.suppress_local_input_busy = false;
-                state.title_status_armed = false;
                 state.hook_status_armed = false;
                 state.provisional_idle = false;
                 state.local_input_pending = false;

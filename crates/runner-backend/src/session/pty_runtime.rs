@@ -146,7 +146,6 @@ struct SessionHandle {
     /// to ignore SIGWINCH repaint bursts for `RESIZE_GRACE` (see
     /// `IdleDetector`), so resizing an idle session doesn't read as Busy.
     last_resize: Mutex<Option<Instant>>,
-    status_tx: Mutex<Option<mpsc::Sender<RuntimeOutput>>>,
     idle_detector: Arc<Mutex<IdleDetector>>,
     hook_interrupt: Option<Arc<AtomicU8>>,
     pid: Option<i32>,
@@ -366,7 +365,6 @@ impl SessionRuntime for PtyRuntime {
             exit_code: AtomicI32::new(EXIT_UNSET),
             alive: AtomicBool::new(true),
             last_resize: Mutex::new(None),
-            status_tx: Mutex::new(Some(tx.clone())),
             idle_detector: Arc::new(Mutex::new(IdleDetector::new(DEFAULT_IDLE_THRESHOLD))),
             hook_interrupt: hook_status
                 .as_ref()
@@ -485,28 +483,6 @@ impl SessionRuntime for PtyRuntime {
             }
             None => stop_child_owned_by_reader(&session.session_id, &handle),
         }
-    }
-
-    fn note_declared_status(
-        &self,
-        session: &RuntimeSession,
-        state: SessionActivityState,
-    ) -> RuntimeResult<()> {
-        let handle = lookup(self, &session.session_id)?;
-        let tx = handle.status_tx.lock().expect("status sender poisoned");
-        let tx = tx
-            .as_ref()
-            .ok_or_else(|| RuntimeError::Msg(format!("session exited: {}", session.session_id)))?;
-        handle
-            .idle_detector
-            .lock()
-            .expect("idle detector poisoned")
-            .current = state;
-        tx.send(RuntimeOutput::StatusTransition {
-            state,
-            source: "title",
-        })
-        .map_err(|error| RuntimeError::Msg(error.to_string()))
     }
 
     fn send_bytes(&self, session: &RuntimeSession, bytes: &[u8]) -> RuntimeResult<()> {
@@ -1025,12 +1001,6 @@ fn reader_thread(
             }
         }
     }
-    // Release the retained title sender too, so EOF still disconnects the forwarder.
-    handle
-        .status_tx
-        .lock()
-        .expect("status sender poisoned")
-        .take();
     // tx dropped on scope exit → OutputStream::recv_timeout sees
     // Disconnected on the manager side, which is how the existing
     // forwarder thread knows to wind down.
@@ -1452,6 +1422,65 @@ mod tests {
         assert_eq!(
             detector.on_bytes_at(1, repaint + Duration::from_millis(20)),
             Some(SessionActivityState::Busy)
+        );
+    }
+
+    #[derive(serde::Deserialize)]
+    struct RecordedOutput {
+        ms: u64,
+        data: String,
+    }
+
+    fn replay_byte_activity_fixture(name: &str) -> Vec<(u64, SessionActivityState)> {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../runner-terminal/fixtures")
+            .join(format!("{name}.ndjson"));
+        let fixture = std::fs::read_to_string(path).unwrap();
+        let outputs: Vec<RecordedOutput> = fixture
+            .lines()
+            .skip(1)
+            .filter_map(|line| serde_json::from_str(line).ok())
+            .filter(|event: &RecordedOutput| !event.data.is_empty())
+            .collect();
+        let start = Instant::now();
+        let mut detector = IdleDetector::new_at(DEFAULT_IDLE_THRESHOLD, start);
+        let mut transitions = Vec::new();
+        for output in &outputs {
+            let at = start + Duration::from_millis(output.ms);
+            if let Some(state) = detector.tick_at(at) {
+                transitions.push((output.ms, state));
+            }
+            if let Some(state) = detector.on_bytes_at(output.data.len(), at) {
+                transitions.push((output.ms, state));
+            }
+        }
+        let last_ms = outputs.last().unwrap().ms;
+        if let Some(state) =
+            detector.tick_at(start + Duration::from_millis(last_ms) + DEFAULT_IDLE_THRESHOLD)
+        {
+            transitions.push((last_ms + DEFAULT_IDLE_THRESHOLD.as_millis() as u64, state));
+        }
+        transitions
+    }
+
+    #[test]
+    fn recorded_fixture_byte_activity_transitions() {
+        assert_eq!(
+            replay_byte_activity_fixture("codex-title-working"),
+            vec![(12_893, SessionActivityState::Idle)],
+            "Codex byte activity must stay Busy through its animation tail and become Idle only after its last output"
+        );
+        assert_eq!(
+            replay_byte_activity_fixture("claude-session"),
+            vec![
+                (2_637, SessionActivityState::Idle),
+                (2_637, SessionActivityState::Busy),
+                (12_646, SessionActivityState::Idle),
+                (12_646, SessionActivityState::Busy),
+                (40_001, SessionActivityState::Idle),
+                (40_001, SessionActivityState::Busy),
+                (43_517, SessionActivityState::Idle),
+            ]
         );
     }
 
@@ -1909,48 +1938,6 @@ mod tests {
 
     #[test]
     #[cfg(unix)]
-    fn declared_status_updates_detector_and_releases_sender_at_eof() {
-        let rt = PtyRuntime::new();
-        let (session, stream) = rt
-            .spawn(spec(
-                "title-status",
-                "/bin/sh",
-                &["-c", "read line; exit 7"],
-            ))
-            .unwrap();
-        let handle = lookup(&rt, &session.session_id).unwrap();
-        for state in [SessionActivityState::Busy, SessionActivityState::Idle] {
-            rt.note_declared_status(&session, state).unwrap();
-            assert_eq!(handle.idle_detector.lock().unwrap().current, state);
-            assert!(
-                matches!(stream.recv_timeout(Duration::from_secs(1)).unwrap(),
-                RuntimeOutput::StatusTransition { state: actual, source: "title" } if actual == state)
-            );
-        }
-        rt.send_bytes(&session, b"done\n").unwrap();
-        let deadline = Instant::now() + Duration::from_secs(3);
-        loop {
-            assert!(
-                Instant::now() < deadline,
-                "retained title sender kept output open after EOF"
-            );
-            if matches!(
-                stream.recv_timeout(Duration::from_millis(100)),
-                Err(mpsc::RecvTimeoutError::Disconnected)
-            ) {
-                break;
-            }
-        }
-        assert_eq!(rt.status(&session).unwrap().unwrap().exit_code, Some(7));
-        assert!(handle.status_tx.lock().unwrap().is_none());
-        assert!(rt
-            .note_declared_status(&session, SessionActivityState::Busy)
-            .is_err());
-        rt.stop(&session).unwrap();
-    }
-
-    #[test]
-    #[cfg(unix)]
     fn spawn_exit_seven_records_exit_code() {
         let rt = PtyRuntime::new();
         let (sess, stream) = rt
@@ -1959,13 +1946,21 @@ mod tests {
         // Drain until EOF — the reader thread breaks on EOF and the
         // sender drops, so recv eventually returns Disconnected.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        let mut disconnected = false;
         while std::time::Instant::now() < deadline {
             match stream.recv_timeout(std::time::Duration::from_millis(100)) {
                 Ok(_) => continue,
-                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    disconnected = true;
+                    break;
+                }
                 Err(mpsc::RecvTimeoutError::Timeout) => continue,
             }
         }
+        assert!(
+            disconnected,
+            "output stream stayed connected after child exit"
+        );
         // Reader thread also writes exit_code + alive=false before the
         // channel closes; give it a moment to settle.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);

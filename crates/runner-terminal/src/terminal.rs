@@ -21,7 +21,6 @@ use runner_backend::model::Runtime;
 use runner_backend::session::manager::{
     ExitEvent, OutputEvent, SessionEvents, SessionSpawnedEvent, SessionUpdatedEvent,
 };
-use runner_backend::session::runtime::SessionActivityState;
 use runner_backend::AppCore;
 
 use crate::palette;
@@ -175,38 +174,6 @@ fn sanitize_title(raw: &str) -> String {
             }
         })
         .collect()
-}
-
-fn classify_title(title: &str) -> Option<SessionActivityState> {
-    if title.trim().is_empty() {
-        return None;
-    }
-    Some(
-        if matches!(title.chars().next(), Some('\u{2800}'..='\u{28ff}')) {
-            SessionActivityState::Busy
-        } else {
-            SessionActivityState::Idle
-        },
-    )
-}
-
-#[derive(Default)]
-struct TitleStatus {
-    last: Option<SessionActivityState>,
-}
-
-impl TitleStatus {
-    fn observe(&mut self, title: &str) -> Option<SessionActivityState> {
-        let state = classify_title(title)?;
-        // Bare prompt titles must leave shells on byte detection until a spinner appears.
-        if self.last == Some(state) || (self.last.is_none() && state == SessionActivityState::Idle)
-        {
-            return None;
-        }
-        // Remember before reporting so a failed report still debounces subsequent titles.
-        self.last = Some(state);
-        Some(state)
-    }
 }
 
 #[derive(Clone, Copy)]
@@ -403,7 +370,6 @@ impl TerminalSession {
         thread::Builder::new()
             .name(format!("native-term-events-{session_id}"))
             .spawn(move || {
-                let mut title_status = TitleStatus::default();
                 let write = |bytes: &[u8]| {
                     let _ = core.sessions.inject_stdin(&session_id, bytes);
                 };
@@ -454,14 +420,6 @@ impl TerminalSession {
                                 Event::Title(title) => title,
                                 _ => String::new(),
                             };
-                            // Status classifies the raw title: the spinner prefix is the signal.
-                            if let Some(state) = title_status.observe(&new_title) {
-                                if let Err(error) =
-                                    core.sessions.report_declared_status(&session_id, state)
-                                {
-                                    log::warn!("report title status for {session_id}: {error}");
-                                }
-                            }
                             let cleaned = if agent {
                                 let Some(title) = runner_backend::session::title::provider_title(
                                     &new_title,
@@ -1344,14 +1302,11 @@ mod tests {
         ExitEvent, OutputEvent, SessionEvents, SessionSpawnedEvent, SessionUpdatedEvent,
     };
 
-    use super::{
-        classify_title, sanitize_title, LinkTarget, TerminalBridge, TerminalSession, TitleStatus,
-        UserInputMode,
-    };
+    use super::{sanitize_title, LinkTarget, TerminalBridge, TerminalSession, UserInputMode};
     use crate::replay::visible_lines;
     use runner_backend::session::runtime::{
-        OutputStream, RuntimeOutput, RuntimeResult, RuntimeSession, SessionActivityState,
-        SessionRuntime, SessionStatus, SpawnSpec,
+        OutputStream, RuntimeOutput, RuntimeResult, RuntimeSession, SessionRuntime, SessionStatus,
+        SpawnSpec,
     };
     use runner_backend::AppCore;
 
@@ -1470,174 +1425,6 @@ mod tests {
         );
         let reopened = TerminalSession::attach(core, row.id, 80, 24, Arc::new(|| {})).unwrap();
         assert_eq!(reopened.title(), "");
-    }
-
-    #[test]
-    fn title_classifier_only_recognizes_a_leading_spinner() {
-        for glyph in ['\u{2800}', '⠋', '\u{28ff}'] {
-            assert_eq!(
-                classify_title(&format!("{glyph} Task")),
-                Some(SessionActivityState::Busy)
-            );
-        }
-        assert_eq!(classify_title("✳ Task"), Some(SessionActivityState::Idle));
-        assert_eq!(
-            classify_title("✳\u{fe0f} Task"),
-            Some(SessionActivityState::Idle)
-        );
-        assert_eq!(classify_title("Task"), Some(SessionActivityState::Idle));
-        assert_eq!(
-            classify_title("renaming... ⠸ | yicheng47"),
-            Some(SessionActivityState::Idle)
-        );
-        assert_eq!(classify_title(" ⠋ Task"), Some(SessionActivityState::Idle));
-        assert_eq!(classify_title(""), None);
-        assert_eq!(classify_title(" \t\n"), None);
-    }
-
-    #[test]
-    fn title_status_arms_only_on_a_spinner_and_ignores_blanks() {
-        let mut status = TitleStatus::default();
-        for _ in 0..10 {
-            assert_eq!(
-                status.observe("jason@Jasons-Mac-Studio:~/repos/runner"),
-                None
-            );
-        }
-        assert_eq!(status.observe("✳ Task"), None);
-        assert_eq!(status.last, None);
-        assert_eq!(status.observe("⠋ Task"), Some(SessionActivityState::Busy));
-        assert_eq!(status.observe(""), None);
-        assert_eq!(status.last, Some(SessionActivityState::Busy));
-        assert_eq!(status.observe("Task"), Some(SessionActivityState::Idle));
-        assert_eq!(status.observe("⠙ Task"), Some(SessionActivityState::Busy));
-        assert_eq!(status.observe("✳ Task"), Some(SessionActivityState::Idle));
-    }
-
-    #[test]
-    fn title_status_debounces_ten_classifications_per_second() {
-        let mut status = TitleStatus::default();
-        let transitions: Vec<_> = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
-            .chars()
-            .enumerate()
-            .filter_map(|(frame, glyph)| {
-                status
-                    .observe(&format!("{glyph} Task"))
-                    .map(|s| (frame * 100, s))
-            })
-            .collect();
-        assert_eq!(transitions, [(0, SessionActivityState::Busy)]);
-        assert_eq!(
-            (0..10)
-                .filter_map(|_| status.observe("Task"))
-                .collect::<Vec<_>>(),
-            [SessionActivityState::Idle]
-        );
-    }
-
-    #[test]
-    fn recorded_title_status_transitions() {
-        use crate::fixtures::{decode_chunk, Fixture, FixtureEvent};
-        use alacritty_terminal::event::Event;
-        use alacritty_terminal::term::test::TermSize;
-        use alacritty_terminal::term::{Config, Term};
-        use alacritty_terminal::vte::ansi::Processor;
-
-        for (name, expected, last_ms) in [
-            (
-                "codex-title-working",
-                vec![
-                    (177, SessionActivityState::Busy),
-                    (7428, SessionActivityState::Idle),
-                ],
-                10893,
-            ),
-            (
-                "claude-session",
-                vec![
-                    (5038, SessionActivityState::Busy),
-                    (7891, SessionActivityState::Idle),
-                ],
-                41517,
-            ),
-            ("top-busy", vec![], 3682),
-        ] {
-            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("fixtures")
-                .join(format!("{name}.ndjson"));
-            let fixture = Fixture::load(&path).unwrap();
-            let (tx, rx) = std::sync::mpsc::channel();
-            let mut term = Term::new(
-                Config::default(),
-                &TermSize::new(fixture.header.cols as usize, fixture.header.rows as usize),
-                super::EventProxy {
-                    tx,
-                    waker: Arc::new(|| {}),
-                },
-            );
-            let mut parser: Processor = Processor::new();
-            let mut status = TitleStatus::default();
-            let mut transitions = Vec::new();
-            let mut last_output_ms = 0;
-            let mut output_times = Vec::new();
-            let mut spinner_titles = 0;
-            for event in fixture.events {
-                let FixtureEvent::Data { ms, data } = event else {
-                    continue;
-                };
-                last_output_ms = ms;
-                output_times.push(ms);
-                parser.advance(&mut term, &decode_chunk(&data).unwrap());
-                for event in rx.try_iter() {
-                    if let Event::Title(title) = event {
-                        if let Some(state) = status.observe(&title) {
-                            transitions.push((ms, state));
-                        }
-                        if classify_title(&title) == Some(SessionActivityState::Busy) {
-                            spinner_titles += 1;
-                            assert_eq!(
-                                status.last,
-                                Some(SessionActivityState::Busy),
-                                "{name} at {ms} ms"
-                            );
-                        }
-                    }
-                }
-            }
-            assert_eq!(transitions, expected, "{name}");
-            assert_eq!(last_output_ms, last_ms, "{name}");
-            if name == "top-busy" {
-                assert_eq!(status.last, None);
-                assert_eq!(spinner_titles, 0);
-                continue;
-            }
-            assert!(
-                spinner_titles > transitions.len(),
-                "{name}: repeated frames must debounce"
-            );
-            assert_eq!(
-                status.last,
-                Some(SessionActivityState::Idle),
-                "{name}: later animation must stay idle"
-            );
-            if name == "codex-title-working" {
-                let idle_ms = transitions.last().unwrap().0;
-                let tail: Vec<_> = std::iter::once(idle_ms)
-                    .chain(output_times.into_iter().filter(|ms| *ms > idle_ms))
-                    .collect();
-                assert_eq!(tail.len() - 1, 46);
-                assert!(
-                    last_output_ms - idle_ms > 2000,
-                    "animation outlasts the byte idle threshold"
-                );
-                let gaps: Vec<_> = tail.windows(2).map(|pair| pair[1] - pair[0]).collect();
-                assert_eq!(gaps.iter().max(), Some(&153));
-                assert!(
-                    gaps.iter().all(|gap| *gap < 2000),
-                    "bytes never go quiet enough to declare idle"
-                );
-            }
-        }
     }
 
     /// Minimal `AppCore` over a temp dir — the pieces `boot_core` wires
