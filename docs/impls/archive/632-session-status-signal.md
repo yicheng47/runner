@@ -1,6 +1,6 @@
 # 632 — Rename the `runner_status` signal to `session_status`
 
-Tracking issue: [#632](https://github.com/yicheng47/runner/issues/632). Follow-up left on the [604 role rename record](./604-role-rename/README.md) (decision 6). Chore, P2. Implemented inline on 2026-09-17 on `chore/632-session-status-signal` over `main` at `dc28cdc`.
+Tracking issue: [#632](https://github.com/yicheng47/runner/issues/632). Follow-up left on the [604 role rename record](./604-role-rename/README.md) (decision 6). Chore, P2. Shipped 2026-09-17 in [#636](https://github.com/yicheng47/runner/pull/636), implemented inline over `main` at `dc28cdc`.
 
 ## Why
 
