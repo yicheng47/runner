@@ -1272,6 +1272,34 @@ impl SessionManager {
         });
     }
 
+    pub(crate) fn publish_mission_activity(
+        &self,
+        session_id: &str,
+        state: SessionActivityState,
+        source: &'static str,
+        events: &dyn SessionEvents,
+    ) {
+        if !self.note_forwarder_transition(session_id, state, source) {
+            return;
+        }
+        let (status, sink) = {
+            let session = self.session_state(session_id).unwrap();
+            let session = session.lock().unwrap();
+            (session.status.clone(), session.mission_status_sink.clone())
+        };
+        events.status(&SessionActivityEvent {
+            session_id: session_id.to_string(),
+            state,
+            source: source.to_string(),
+            status: status.clone(),
+        });
+        if let Some(sink) = sink {
+            if let Err(error) = sink.append_session_status(state, source, &status) {
+                log::warn!("append spawn session_status failed for {session_id}: {error}");
+            }
+        }
+    }
+
     pub(crate) fn arm_completion(&self, session_id: &str) {
         self.session_state_or_insert(session_id)
             .lock()
