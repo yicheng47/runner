@@ -74,7 +74,7 @@ fn is_hidden_system_signal(event: &Event) -> bool {
     event.kind == EventKind::Signal
         && matches!(
             event.signal_type.as_ref().map(SignalType::as_str),
-            Some("inbox_read" | "runner_status" | "ask_human")
+            Some("inbox_read" | "session_status" | "runner_status" | "ask_human")
         )
 }
 
@@ -249,7 +249,7 @@ mod tests {
                 300,
                 "coder",
                 EventKind::Signal,
-                Some("runner_status"),
+                Some("session_status"),
             ),
             event("signal", 301, "coder", EventKind::Signal, Some("ask_lead")),
             event("c", 302, "coder", EventKind::Message, None),

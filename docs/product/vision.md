@@ -29,7 +29,7 @@ These are the words the product surfaces to the user; they also map 1:1 to the a
 - **Slot** — a position inside a crew, filled by a role. The slot carries the per-crew handle (`@impl`, `@reviewer`, …) and the lead flag. Two slots in different crews can both be filled by the same role.
 - **Mission** — one live activation of a crew. Everyone spawns together, shares a coordination bus, ends together.
 - **Session** — the live PTY process for one slot inside a mission, one role-backed direct chat, or one runtime-only direct chat.
-- **Signal** — a typed notification crew members emit for the router to handle. Verb grammar (`ask_lead`, `ask_human`, `mission_goal`, `runner_status`).
+- **Signal** — a typed notification crew members emit for the router to handle. Verb grammar (`ask_lead`, `ask_human`, `mission_goal`, `session_status`).
 - **Message** — prose posted to the mission. Broadcast or directed (`--to <handle>`).
 - **Inbox** — each crew member's projection of the mission: broadcasts plus directs addressed to me. Pull-based — crew members check it on convention; nothing auto-interrupts a working session.
 - **Lead** — the human's counterpart in the crew. The mission goal lands on the lead; the lead dispatches work; the lead is the default HITL gateway when workers need a human.
@@ -77,7 +77,7 @@ The user-facing surfaces, described by the value they deliver, not by their impl
 
 - **Sessions rail** — every slot in the crew with a busy/idle dot. Click to focus its terminal.
 - **Focused terminal** — the selected slot's terminal pane.
-- **Event feed** — chronological view of messages plus user-visible signals for the mission. Router-internal signals (`inbox_read`, agent-source `runner_status`) are filtered.
+- **Event feed** — chronological view of messages plus user-visible signals for the mission. Router-internal signals (`inbox_read`, agent-source `session_status`) are filtered.
 - **HITL cards** — pending `ask_human` prompts, always visible.
 - **Mission header** — crew, goal, cwd, start time, controls.
 

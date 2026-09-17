@@ -36,7 +36,7 @@ use super::process::{kill_process, ProcessTree};
 #[cfg(unix)]
 use super::process::{process_command_line, reap_descendants, wait_for_process_exit_until};
 use super::runtime::{
-    OutputStream, RunnerStatus, RuntimeError, RuntimeOutput, RuntimeResult, RuntimeSession,
+    OutputStream, RuntimeError, RuntimeOutput, RuntimeResult, RuntimeSession, SessionActivityState,
     SessionRuntime, SessionStatus, SpawnSpec,
 };
 
@@ -490,7 +490,7 @@ impl SessionRuntime for PtyRuntime {
     fn note_declared_status(
         &self,
         session: &RuntimeSession,
-        state: RunnerStatus,
+        state: SessionActivityState,
     ) -> RuntimeResult<()> {
         let handle = lookup(self, &session.session_id)?;
         let tx = handle.status_tx.lock().expect("status sender poisoned");
@@ -809,7 +809,7 @@ fn record_exit_status(handle: &SessionHandle, status: ExitStatus) {
 
 struct IdleDetector {
     last_byte: Instant,
-    current: RunnerStatus,
+    current: SessionActivityState,
     threshold: Duration,
 }
 
@@ -821,23 +821,23 @@ impl IdleDetector {
     fn new_at(threshold: Duration, now: Instant) -> Self {
         Self {
             last_byte: now,
-            current: RunnerStatus::Busy,
+            current: SessionActivityState::Busy,
             threshold,
         }
     }
 
-    fn on_bytes(&mut self, n: usize) -> Option<RunnerStatus> {
+    fn on_bytes(&mut self, n: usize) -> Option<SessionActivityState> {
         self.on_bytes_at(n, Instant::now())
     }
 
-    fn on_bytes_at(&mut self, n: usize, now: Instant) -> Option<RunnerStatus> {
+    fn on_bytes_at(&mut self, n: usize, now: Instant) -> Option<SessionActivityState> {
         if n == 0 {
             return None;
         }
         self.last_byte = now;
-        if self.current == RunnerStatus::Idle {
-            self.current = RunnerStatus::Busy;
-            Some(RunnerStatus::Busy)
+        if self.current == SessionActivityState::Idle {
+            self.current = SessionActivityState::Busy;
+            Some(SessionActivityState::Busy)
         } else {
             None
         }
@@ -854,16 +854,16 @@ impl IdleDetector {
         self.last_byte = now;
     }
 
-    fn tick(&mut self) -> Option<RunnerStatus> {
+    fn tick(&mut self) -> Option<SessionActivityState> {
         self.tick_at(Instant::now())
     }
 
-    fn tick_at(&mut self, now: Instant) -> Option<RunnerStatus> {
-        if self.current == RunnerStatus::Busy
+    fn tick_at(&mut self, now: Instant) -> Option<SessionActivityState> {
+        if self.current == SessionActivityState::Busy
             && now.duration_since(self.last_byte) >= self.threshold
         {
-            self.current = RunnerStatus::Idle;
-            Some(RunnerStatus::Idle)
+            self.current = SessionActivityState::Idle;
+            Some(SessionActivityState::Idle)
         } else {
             None
         }
@@ -1397,7 +1397,7 @@ mod tests {
         );
         assert_eq!(
             detector.tick_at(start + threshold),
-            Some(RunnerStatus::Idle)
+            Some(SessionActivityState::Idle)
         );
         assert_eq!(
             detector.tick_at(start + threshold + Duration::from_secs(1)),
@@ -1413,11 +1413,11 @@ mod tests {
 
         assert_eq!(
             detector.tick_at(start + threshold),
-            Some(RunnerStatus::Idle)
+            Some(SessionActivityState::Idle)
         );
         assert_eq!(
             detector.on_bytes_at(1, start + threshold + Duration::from_millis(1)),
-            Some(RunnerStatus::Busy)
+            Some(SessionActivityState::Busy)
         );
         assert_eq!(
             detector.on_bytes_at(1, start + threshold + Duration::from_millis(2)),
@@ -1436,7 +1436,7 @@ mod tests {
 
         assert_eq!(
             detector.tick_at(start + threshold),
-            Some(RunnerStatus::Idle)
+            Some(SessionActivityState::Idle)
         );
 
         // Repaint bytes during the grace window: no Busy transition.
@@ -1451,7 +1451,7 @@ mod tests {
         // still wakes it.
         assert_eq!(
             detector.on_bytes_at(1, repaint + Duration::from_millis(20)),
-            Some(RunnerStatus::Busy)
+            Some(SessionActivityState::Busy)
         );
     }
 
@@ -1698,9 +1698,9 @@ mod tests {
             {
                 statuses.push(
                     if observation.activity == super::super::status::Activity::Working {
-                        RunnerStatus::Busy
+                        SessionActivityState::Busy
                     } else {
-                        RunnerStatus::Idle
+                        SessionActivityState::Idle
                     },
                 );
             }
@@ -1708,11 +1708,11 @@ mod tests {
         assert_eq!(
             statuses,
             [
-                RunnerStatus::Busy,
-                RunnerStatus::Idle,
-                RunnerStatus::Busy,
-                RunnerStatus::Idle,
-                RunnerStatus::Idle,
+                SessionActivityState::Busy,
+                SessionActivityState::Idle,
+                SessionActivityState::Busy,
+                SessionActivityState::Idle,
+                SessionActivityState::Idle,
             ]
         );
         rt.stop(&session).unwrap();
@@ -1757,7 +1757,7 @@ mod tests {
                 ready.extend(bytes);
             }
         }
-        let wait_for_status = |expected: RunnerStatus, expected_source: &str| {
+        let wait_for_status = |expected: SessionActivityState, expected_source: &str| {
             let deadline = Instant::now() + Duration::from_secs(3);
             loop {
                 assert!(
@@ -1768,14 +1768,14 @@ mod tests {
                     stream.recv_timeout(IDLE_MONITOR_POLL)
                 {
                     let state = if observation.activity == super::super::status::Activity::Working {
-                        RunnerStatus::Busy
+                        SessionActivityState::Busy
                     } else {
-                        RunnerStatus::Idle
+                        SessionActivityState::Idle
                     };
                     if state == expected {
                         assert_eq!(
                             observation.activity,
-                            if expected == RunnerStatus::Busy {
+                            if expected == SessionActivityState::Busy {
                                 super::super::status::Activity::Working
                             } else {
                                 super::super::status::Activity::Ready
@@ -1794,7 +1794,7 @@ mod tests {
         let mut file = OpenOptions::new().append(true).open(&path).unwrap();
         for (interrupt, source) in [(b"\x03", "input-interrupt"), (b"\x1b", "input-escape")] {
             writeln!(file, r#"{{"generation":"current","hook_event_name":"PreToolUse","tool_name":"AskUserQuestion"}}"#).unwrap();
-            wait_for_status(RunnerStatus::Busy, "hook");
+            wait_for_status(SessionActivityState::Busy, "hook");
             for bytes in [
                 b"\x1b[A".as_slice(),
                 b"x",
@@ -1816,7 +1816,7 @@ mod tests {
                 ));
             }
             rt.send_bytes(&session, interrupt).unwrap();
-            wait_for_status(RunnerStatus::Idle, source);
+            wait_for_status(SessionActivityState::Idle, source);
         }
         // Cancelling a dialog can continue the turn without another prompt.
         writeln!(
@@ -1824,7 +1824,7 @@ mod tests {
             r#"{{"generation":"current","hook_event_name":"PreToolUse"}}"#
         )
         .unwrap();
-        wait_for_status(RunnerStatus::Busy, "hook");
+        wait_for_status(SessionActivityState::Busy, "hook");
         rt.stop(&session).unwrap();
     }
 
@@ -1883,7 +1883,7 @@ mod tests {
                     statuses.push(state);
                     if statuses
                         .windows(2)
-                        .any(|w| w == [RunnerStatus::Idle, RunnerStatus::Busy])
+                        .any(|w| w == [SessionActivityState::Idle, SessionActivityState::Busy])
                     {
                         break;
                     }
@@ -1901,7 +1901,7 @@ mod tests {
         assert!(
             statuses
                 .windows(2)
-                .any(|w| w == [RunnerStatus::Idle, RunnerStatus::Busy]),
+                .any(|w| w == [SessionActivityState::Idle, SessionActivityState::Busy]),
             "expected idle then busy transition, got {statuses:?}"
         );
         let _ = rt.stop(&sess);
@@ -1919,7 +1919,7 @@ mod tests {
             ))
             .unwrap();
         let handle = lookup(&rt, &session.session_id).unwrap();
-        for state in [RunnerStatus::Busy, RunnerStatus::Idle] {
+        for state in [SessionActivityState::Busy, SessionActivityState::Idle] {
             rt.note_declared_status(&session, state).unwrap();
             assert_eq!(handle.idle_detector.lock().unwrap().current, state);
             assert!(
@@ -1944,7 +1944,7 @@ mod tests {
         assert_eq!(rt.status(&session).unwrap().unwrap().exit_code, Some(7));
         assert!(handle.status_tx.lock().unwrap().is_none());
         assert!(rt
-            .note_declared_status(&session, RunnerStatus::Busy)
+            .note_declared_status(&session, SessionActivityState::Busy)
             .is_err());
         rt.stop(&session).unwrap();
     }
@@ -2438,7 +2438,7 @@ mod tests {
                     statuses.push(state);
                     if statuses
                         .windows(2)
-                        .any(|w| w == [RunnerStatus::Idle, RunnerStatus::Busy])
+                        .any(|w| w == [SessionActivityState::Idle, SessionActivityState::Busy])
                     {
                         break;
                     }
@@ -2453,7 +2453,7 @@ mod tests {
         assert!(
             statuses
                 .windows(2)
-                .any(|w| w == [RunnerStatus::Idle, RunnerStatus::Busy]),
+                .any(|w| w == [SessionActivityState::Idle, SessionActivityState::Busy]),
             "got {statuses:?}"
         );
     }

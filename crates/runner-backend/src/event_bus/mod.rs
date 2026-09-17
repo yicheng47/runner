@@ -2,11 +2,11 @@
 // new event to the rest of the process.
 //
 // Why this layer exists: C4 gave us durable append. C5 emits the opening
-// events. C6 spawns the runners. None of those are enough for the UI or the
+// events. C6 spawns the sessions. None of those are enough for the UI or the
 // orchestrator to *react* — they need a stream of envelopes as they land.
 // Once C8 arrives, the orchestrator subscribes to this bus to inject stdin
 // in response to signals; until then, the bus already powers replay + the
-// per-runner inbox/watermark accounting that C10's workspace UI consumes.
+// per-handle inbox/watermark accounting that C10's workspace UI consumes.
 //
 // Design notes:
 //
@@ -629,7 +629,7 @@ mod tests {
 
     #[test]
     fn projection_excludes_sender_and_directs_only_to_target() {
-        // Two runners on roster. The sender's broadcast stays out of their
+        // Two slots on roster. The sender's broadcast stays out of their
         // own inbox; the other runner receives both it and the direct.
         let dir = fresh_mission_dir();
         let log = EventLog::open(dir.path()).unwrap();
@@ -862,7 +862,7 @@ mod tests {
             cap.inbox.lock().unwrap()
         );
 
-        // Now post a real message — it must inbox normally for both runners.
+        // Now post a real message — it must inbox normally for both slots.
         log.append(message("human", None, "broadcast")).unwrap();
         wait_until(3000, || cap.inbox.lock().unwrap().len() == 2);
         assert_eq!(

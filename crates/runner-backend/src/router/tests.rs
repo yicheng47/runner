@@ -23,7 +23,7 @@ use crate::session::manager::InputState;
 
 struct RecordingInjector {
     status_log: Arc<EventLog>,
-    activity: Mutex<HashMap<String, super::RunnerStatus>>,
+    activity: Mutex<HashMap<String, super::SessionActivityState>>,
     pushes: Mutex<Vec<(String, Vec<u8>)>>,
     blocked_events: Mutex<Vec<DeliveryBlockedEvent>>,
     /// Optional `dead_session` set simulating a stopped or crashed PTY.
@@ -54,7 +54,7 @@ impl RecordingInjector {
         }
     }
 
-    fn activity_for(&self, session_id: &str) -> Option<super::RunnerStatus> {
+    fn activity_for(&self, session_id: &str) -> Option<super::SessionActivityState> {
         self.activity.lock().unwrap().get(session_id).copied()
     }
 
@@ -337,7 +337,7 @@ impl StdinInjector for RecordingInjector {
         self.activity
             .lock()
             .unwrap()
-            .insert(session_id.to_string(), super::RunnerStatus::Busy);
+            .insert(session_id.to_string(), super::SessionActivityState::Busy);
         Ok(())
     }
 
@@ -670,7 +670,7 @@ fn reconciliation_tick_does_not_churn_blocked_notifications() {
     router
         .inject_inbox_nudge("impl", b"[inbox] waiting")
         .unwrap();
-    router.set_status("impl".into(), super::RunnerStatus::Idle);
+    router.set_status("impl".into(), super::SessionActivityState::Idle);
 
     assert_eq!(
         router.reconcile_inbox_at(Instant::now(), Duration::from_secs(120)),
@@ -686,7 +686,7 @@ fn reconciliation_tick_is_silent_for_empty_inbox() {
         vec![slot_with_role("lead", true), slot_with_role("impl", false)],
         &[("lead", "S-LEAD"), ("impl", "S-IMPL")],
     );
-    router.set_status("impl".into(), super::RunnerStatus::Idle);
+    router.set_status("impl".into(), super::SessionActivityState::Idle);
 
     assert_eq!(
         router.reconcile_inbox_at(Instant::now(), Duration::from_secs(120)),
@@ -708,7 +708,7 @@ fn reconciliation_tick_is_silent_for_busy_session() {
         watermark: None,
         unread_count: 1,
     });
-    router.set_status("impl".into(), super::RunnerStatus::Busy);
+    router.set_status("impl".into(), super::SessionActivityState::Busy);
 
     assert_eq!(
         router.reconcile_inbox_at(Instant::now(), Duration::from_secs(120)),
@@ -730,7 +730,7 @@ fn reconciliation_tick_renudges_idle_session_with_unread_mail() {
         watermark: None,
         unread_count: 1,
     });
-    router.set_status("impl".into(), super::RunnerStatus::Idle);
+    router.set_status("impl".into(), super::SessionActivityState::Idle);
 
     assert_eq!(
         router.reconcile_inbox_at(Instant::now(), Duration::from_secs(120)),
@@ -742,7 +742,7 @@ fn reconciliation_tick_renudges_idle_session_with_unread_mail() {
     );
     assert!(matches!(
         router.state.lock().unwrap().status.get("impl"),
-        Some(super::RunnerStatus::Busy)
+        Some(super::SessionActivityState::Busy)
     ));
 }
 
@@ -760,7 +760,7 @@ fn reconciliation_tick_does_not_park_when_input_is_pending() {
         watermark: None,
         unread_count: 1,
     });
-    router.set_status("impl".into(), super::RunnerStatus::Idle);
+    router.set_status("impl".into(), super::SessionActivityState::Idle);
 
     assert_eq!(
         router.reconcile_inbox_at(Instant::now(), Duration::from_secs(120)),
@@ -779,7 +779,7 @@ fn reconciliation_tick_does_not_park_when_input_is_pending() {
         watermark: Some("watermark".into()),
         unread_count: 0,
     });
-    router.set_status("impl".into(), super::RunnerStatus::Busy);
+    router.set_status("impl".into(), super::SessionActivityState::Busy);
     injector.clear_pending("S-IMPL");
     std::thread::sleep(Duration::from_millis(550));
     assert!(
@@ -805,7 +805,7 @@ fn reconciliation_tick_does_not_duplicate_a_parked_nudge() {
         watermark: None,
         unread_count: 1,
     });
-    router.set_status("impl".into(), super::RunnerStatus::Idle);
+    router.set_status("impl".into(), super::SessionActivityState::Idle);
 
     assert_eq!(
         router.reconcile_inbox_at(Instant::now(), Duration::from_secs(120)),
@@ -833,7 +833,7 @@ fn reconciliation_reservation_error_does_not_start_backoff() {
         watermark: None,
         unread_count: 1,
     });
-    router.set_status("impl".into(), super::RunnerStatus::Idle);
+    router.set_status("impl".into(), super::SessionActivityState::Idle);
     injector.mark_dead("S-IMPL");
 
     assert_eq!(
@@ -861,7 +861,7 @@ fn reconciliation_tick_honors_per_handle_backoff() {
         watermark: None,
         unread_count: 1,
     });
-    router.set_status("impl".into(), super::RunnerStatus::Idle);
+    router.set_status("impl".into(), super::SessionActivityState::Idle);
     let now = Instant::now();
     let backoff = Duration::from_secs(120);
 
@@ -874,7 +874,7 @@ fn reconciliation_tick_honors_per_handle_backoff() {
             .outbox_by_session
             .contains_key("S-IMPL")
     });
-    router.set_status("impl".into(), super::RunnerStatus::Idle);
+    router.set_status("impl".into(), super::SessionActivityState::Idle);
     assert_eq!(
         router.reconcile_inbox_at(now + Duration::from_secs(119), backoff),
         0
@@ -899,7 +899,7 @@ fn reconciliation_tick_quiesces_after_watermark_advance() {
         watermark: None,
         unread_count: 1,
     });
-    router.set_status("impl".into(), super::RunnerStatus::Idle);
+    router.set_status("impl".into(), super::SessionActivityState::Idle);
     assert_eq!(router.reconcile_inbox_at(now, Duration::from_secs(120)), 1);
     wait_until(Duration::from_millis(300), || {
         !router
@@ -917,7 +917,7 @@ fn reconciliation_tick_quiesces_after_watermark_advance() {
         watermark: Some("watermark".into()),
         unread_count: 0,
     });
-    router.set_status("impl".into(), super::RunnerStatus::Idle);
+    router.set_status("impl".into(), super::SessionActivityState::Idle);
 
     assert_eq!(
         router.reconcile_inbox_at(now + Duration::from_secs(120), Duration::from_secs(120)),
@@ -939,7 +939,7 @@ fn reconciliation_clock_stops_with_mission_and_skips_stopped_sessions() {
         watermark: None,
         unread_count: 1,
     });
-    router.set_status("impl".into(), super::RunnerStatus::Idle);
+    router.set_status("impl".into(), super::SessionActivityState::Idle);
     let registry = RouterRegistry::new();
     registry.register_with_timings(
         "mission-1".into(),
@@ -960,7 +960,7 @@ fn reconciliation_clock_stops_with_mission_and_skips_stopped_sessions() {
     });
 
     injector.clear_pushes();
-    router.set_status("impl".into(), super::RunnerStatus::Idle);
+    router.set_status("impl".into(), super::SessionActivityState::Idle);
     injector.exit("S-IMPL");
     std::thread::sleep(Duration::from_millis(40));
     assert!(
@@ -969,7 +969,7 @@ fn reconciliation_clock_stops_with_mission_and_skips_stopped_sessions() {
     );
 
     injector.respawn("S-IMPL");
-    router.set_status("impl".into(), super::RunnerStatus::Idle);
+    router.set_status("impl".into(), super::SessionActivityState::Idle);
     wait_until(Duration::from_millis(100), || {
         injector.submitted_bodies_for("S-IMPL").len() == 1
     });
@@ -983,7 +983,7 @@ fn reconciliation_clock_stops_with_mission_and_skips_stopped_sessions() {
     });
     registry.unregister("mission-1");
     injector.clear_pushes();
-    router.set_status("impl".into(), super::RunnerStatus::Idle);
+    router.set_status("impl".into(), super::SessionActivityState::Idle);
     std::thread::sleep(Duration::from_millis(40));
     assert!(
         injector.pushes_for("S-IMPL").is_empty(),
@@ -1024,7 +1024,7 @@ fn input_clear_flush_reparks_when_typing_resumes_during_grace() {
     assert!(injector.pushes_for("S-IMPL").is_empty());
     assert!(!matches!(
         router.state.lock().unwrap().status.get("impl"),
-        Some(super::RunnerStatus::Busy)
+        Some(super::SessionActivityState::Busy)
     ));
 
     injector.clear_pending("S-IMPL");
@@ -1547,8 +1547,8 @@ fn human_response_without_matching_question_emits_mission_warning() {
 }
 
 #[test]
-fn runner_status_updates_state_map_without_injecting_to_lead() {
-    // Contract: runner_status is observability, not coordination. It must
+fn session_status_updates_state_map_without_injecting_to_lead() {
+    // Contract: session_status is observability, not coordination. It must
     // never inject into any session — including the lead's — under any
     // state transition. The in-memory status map is the only side effect.
     let (router, injector, log, _dir) = fixture(
@@ -1560,7 +1560,7 @@ fn runner_status_updates_state_map_without_injecting_to_lead() {
     let busy = log
         .append(signal(
             "impl",
-            "runner_status",
+            "session_status",
             serde_json::json!({ "state": "busy" }),
         ))
         .unwrap();
@@ -1572,28 +1572,28 @@ fn runner_status_updates_state_map_without_injecting_to_lead() {
     let idle = log
         .append(signal(
             "impl",
-            "runner_status",
+            "session_status",
             serde_json::json!({ "state": "idle" }),
         ))
         .unwrap();
     router.handle_event(&idle);
     assert!(
         injector.pushes_for("S-LEAD").is_empty(),
-        "runner_status idle must not inject into the lead",
+        "session_status idle must not inject into the lead",
     );
 
     // Observability path still works: the state map reflects the latest
     // status from the worker.
     assert!(matches!(
         router.state.lock().unwrap().status.get("impl"),
-        Some(super::RunnerStatus::Idle),
+        Some(super::SessionActivityState::Idle),
     ));
 
     // idle from the lead itself — defense-in-depth, still no push.
     let lead_idle = log
         .append(signal(
             "lead",
-            "runner_status",
+            "session_status",
             serde_json::json!({ "state": "idle" }),
         ))
         .unwrap();
@@ -1605,8 +1605,8 @@ fn runner_status_updates_state_map_without_injecting_to_lead() {
 }
 
 #[test]
-fn runner_status_latest_wins_across_forwarder_and_agent_sources() {
-    // Spec 13 / issue #124 keeps the router's `runner_status` handler
+fn session_status_latest_wins_across_forwarder_and_agent_sources() {
+    // Spec 13 / issue #124 keeps the router's `session_status` handler
     // unchanged: it doesn't branch on `payload.source`. Forwarder-
     // emitted (`source: "forwarder"`) and agent-emitted (`source:
     // "agent"`) events both feed the same per-handle map under a
@@ -1632,7 +1632,7 @@ fn runner_status_latest_wins_across_forwarder_and_agent_sources() {
         let ev = log
             .append(signal(
                 "impl",
-                "runner_status",
+                "session_status",
                 serde_json::json!({ "state": state, "source": source }),
             ))
             .unwrap();
@@ -1643,21 +1643,21 @@ fn runner_status_latest_wins_across_forwarder_and_agent_sources() {
     // should reflect.
     assert!(matches!(
         router.state.lock().unwrap().status.get("impl"),
-        Some(super::RunnerStatus::Idle),
+        Some(super::SessionActivityState::Idle),
     ));
 
     // One more flip — agent says busy, that wins.
     let agent_busy = log
         .append(signal(
             "impl",
-            "runner_status",
+            "session_status",
             serde_json::json!({ "state": "busy", "source": "agent" }),
         ))
         .unwrap();
     router.handle_event(&agent_busy);
     assert!(matches!(
         router.state.lock().unwrap().status.get("impl"),
-        Some(super::RunnerStatus::Busy),
+        Some(super::SessionActivityState::Busy),
     ));
 }
 
@@ -1798,11 +1798,9 @@ fn pending_ask_map_reconstructs_from_log_on_reopen() {
 }
 
 #[test]
-fn reconstruct_recovers_latest_runner_status_only() {
-    // Reopen-path test for arch §5.5.1: latest reported state per handle.
-    // busy → idle → busy must leave status[impl] = Busy after reconstruct,
-    // and replay of the historical sequence must never inject into the
-    // lead (runner_status is observability-only since #125).
+fn reconstruct_and_dispatch_read_legacy_runner_status_rows() {
+    // Mission logs written before #632 carry `runner_status` rows; the
+    // replay fold and the live dispatch both read them as `session_status`.
     let dir = tempfile::tempdir().unwrap();
     let log = Arc::new(EventLog::open(dir.path()).unwrap());
     let roster = vec![slot_with_role("lead", true), slot_with_role("impl", false)];
@@ -1813,15 +1811,71 @@ fn reconstruct_recovers_latest_runner_status_only() {
         serde_json::json!({ "state": "busy" }),
     ))
     .unwrap();
+
+    let injector = Arc::new(RecordingInjector::new(Arc::clone(&log)));
+    let injector_dyn: Arc<dyn StdinInjector> = injector.clone();
+    let router = Router::new(
+        "mission-1".into(),
+        "crew-1".into(),
+        "Crew One".into(),
+        &roster,
+        vec![],
+        None,
+        log.clone(),
+        injector_dyn,
+        injector.clone(),
+    )
+    .unwrap();
+    router.register_sessions(&[
+        ("lead".into(), "S-LEAD".into()),
+        ("impl".into(), "S-IMPL".into()),
+    ]);
+    router.reconstruct_from_log().unwrap();
+    assert!(matches!(
+        router.state.lock().unwrap().status.get("impl"),
+        Some(super::SessionActivityState::Busy),
+    ));
+
+    let live_idle = log
+        .append(signal(
+            "impl",
+            "runner_status",
+            serde_json::json!({ "state": "idle" }),
+        ))
+        .unwrap();
+    router.handle_event(&live_idle);
+    assert!(matches!(
+        router.state.lock().unwrap().status.get("impl"),
+        Some(super::SessionActivityState::Idle),
+    ));
+    assert!(injector.all_pushes().is_empty());
+}
+
+#[test]
+fn reconstruct_recovers_latest_session_status_only() {
+    // Reopen-path test for arch §5.5.1: latest reported state per handle.
+    // busy → idle → busy must leave status[impl] = Busy after reconstruct,
+    // and replay of the historical sequence must never inject into the
+    // lead (session_status is observability-only since #125).
+    let dir = tempfile::tempdir().unwrap();
+    let log = Arc::new(EventLog::open(dir.path()).unwrap());
+    let roster = vec![slot_with_role("lead", true), slot_with_role("impl", false)];
+
     log.append(signal(
         "impl",
-        "runner_status",
+        "session_status",
+        serde_json::json!({ "state": "busy" }),
+    ))
+    .unwrap();
+    log.append(signal(
+        "impl",
+        "session_status",
         serde_json::json!({ "state": "idle", "note": "first idle" }),
     ))
     .unwrap();
     log.append(signal(
         "impl",
-        "runner_status",
+        "session_status",
         serde_json::json!({ "state": "busy" }),
     ))
     .unwrap();
@@ -1849,17 +1903,17 @@ fn reconstruct_recovers_latest_runner_status_only() {
     // After reconstruct, the state map reflects the latest reported state.
     assert!(matches!(
         router.state.lock().unwrap().status.get("impl"),
-        Some(super::RunnerStatus::Busy),
+        Some(super::SessionActivityState::Busy),
     ));
 
     // Bus replay of the historical events must not inject into the lead —
-    // runner_status is observability-only.
+    // session_status is observability-only.
     for entry in log.read_from(0).unwrap() {
         router.handle_event(&entry.event);
     }
     assert!(
         injector.all_pushes().is_empty(),
-        "historical runner_status replay must not push to lead; got {:?}",
+        "historical session_status replay must not push to lead; got {:?}",
         injector.all_pushes(),
     );
 
@@ -1868,18 +1922,18 @@ fn reconstruct_recovers_latest_runner_status_only() {
     let live_idle = log
         .append(signal(
             "impl",
-            "runner_status",
+            "session_status",
             serde_json::json!({ "state": "idle" }),
         ))
         .unwrap();
     router.handle_event(&live_idle);
     assert!(
         injector.pushes_for("S-LEAD").is_empty(),
-        "live runner_status idle must not push to lead",
+        "live session_status idle must not push to lead",
     );
     assert!(matches!(
         router.state.lock().unwrap().status.get("impl"),
-        Some(super::RunnerStatus::Idle),
+        Some(super::SessionActivityState::Idle),
     ));
 }
 
@@ -2132,7 +2186,7 @@ fn reconstruct_tolerates_malformed_lines_like_the_bus() {
 fn directed_wake_synthesizes_busy_and_idle_clears_it() {
     // Issue #32: the rail badge stayed `idle` because nothing flipped
     // a worker to `busy` on dispatch — only the worker's own end-of-task
-    // `idle` was emitted. The router now synthesizes `runner_status busy`
+    // `idle` was emitted. The router now synthesizes `session_status busy`
     // (with `from = recipient`) for any wake nudge, and the existing
     // worker-emitted `idle` clears it.
     let (router, injector, log, _dir) = fixture(
@@ -2146,7 +2200,7 @@ fn directed_wake_synthesizes_busy_and_idle_clears_it() {
             .filter(|s| {
                 s.signal_type
                     .as_ref()
-                    .map(|t| t.as_str() == "runner_status")
+                    .map(|t| t.as_str() == "session_status")
                     .unwrap_or(false)
                     && s.from == "impl"
                     && s.payload.get("state").and_then(|v| v.as_str()) == Some("busy")
@@ -2155,7 +2209,7 @@ fn directed_wake_synthesizes_busy_and_idle_clears_it() {
     };
 
     // (a) directed `runner msg post --to impl` → recipient flips to busy
-    // and a synthetic runner_status busy event lands in the log.
+    // and a synthetic session_status busy event lands in the log.
     let direct = log.append(message("lead", Some("impl"), "go")).unwrap();
     router.handle_event(&direct);
     assert_eq!(
@@ -2165,11 +2219,11 @@ fn directed_wake_synthesizes_busy_and_idle_clears_it() {
     );
     assert!(matches!(
         router.state.lock().unwrap().status.get("impl"),
-        Some(super::RunnerStatus::Busy),
+        Some(super::SessionActivityState::Busy),
     ));
     assert_eq!(
         injector.activity_for("S-IMPL"),
-        Some(super::RunnerStatus::Busy),
+        Some(super::SessionActivityState::Busy),
         "synthetic busy must update the session-side activity store",
     );
 
@@ -2185,18 +2239,18 @@ fn directed_wake_synthesizes_busy_and_idle_clears_it() {
         "back-to-back wake while busy must not append a second busy event",
     );
 
-    // (b) worker emits runner_status idle → state flips back to Idle.
+    // (b) worker emits session_status idle → state flips back to Idle.
     let idle = log
         .append(signal(
             "impl",
-            "runner_status",
+            "session_status",
             serde_json::json!({ "state": "idle" }),
         ))
         .unwrap();
     router.handle_event(&idle);
     assert!(matches!(
         router.state.lock().unwrap().status.get("impl"),
-        Some(super::RunnerStatus::Idle),
+        Some(super::SessionActivityState::Idle),
     ));
 
     // (c) follow-up directed message → flips back to busy. This is the
@@ -2211,14 +2265,14 @@ fn directed_wake_synthesizes_busy_and_idle_clears_it() {
     );
     assert!(matches!(
         router.state.lock().unwrap().status.get("impl"),
-        Some(super::RunnerStatus::Busy),
+        Some(super::SessionActivityState::Busy),
     ));
 }
 
 #[test]
-fn synthetic_busy_replays_through_existing_runner_status_projection() {
+fn synthetic_busy_replays_through_existing_session_status_projection() {
     // The reconstruct_from_log path at router/mod.rs handles
-    // runner_status events generically — synthetic ones written by
+    // session_status events generically — synthetic ones written by
     // inject_and_submit must replay correctly without any special
     // handling. This pins that contract: a busy event from a prior
     // session is recovered into router state on reopen.
@@ -2273,7 +2327,7 @@ fn synthetic_busy_replays_through_existing_runner_status_projection() {
 
     assert!(matches!(
         router2.state.lock().unwrap().status.get("impl"),
-        Some(super::RunnerStatus::Busy),
+        Some(super::SessionActivityState::Busy),
     ));
 }
 

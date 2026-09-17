@@ -25,6 +25,44 @@ fn signal(signal_type: &str, payload: serde_json::Value) -> Event {
 }
 
 #[test]
+fn session_status_projection_reads_legacy_runner_status_rows() {
+    let from = |handle: &str, event: Event| Event {
+        from: handle.into(),
+        ..event
+    };
+    let events = vec![
+        from(
+            "coder",
+            signal("runner_status", serde_json::json!({ "state": "busy" })),
+        ),
+        from(
+            "reviewer",
+            signal("runner_status", serde_json::json!({ "state": "idle" })),
+        ),
+        from(
+            "coder",
+            signal("session_status", serde_json::json!({ "state": "idle" })),
+        ),
+        from(
+            "reviewer",
+            signal("ask_lead", serde_json::json!({ "state": "busy" })),
+        ),
+    ];
+
+    let (statuses, observations) = state::project_session_statuses(&events);
+
+    assert_eq!(
+        statuses.get("coder"),
+        Some(&runner_backend::session::manager::SessionActivityState::Idle)
+    );
+    assert_eq!(
+        statuses.get("reviewer"),
+        Some(&runner_backend::session::manager::SessionActivityState::Idle)
+    );
+    assert!(observations.is_empty());
+}
+
+#[test]
 fn sidebar_and_mission_fills_follow_carbon_and_runner_light() {
     use crate::theme_snapshot::{assert_fill, ThemeGuard};
     use gpui::{TestAppContext, VisualTestContext};
@@ -197,7 +235,7 @@ fn sidebar_and_mission_fills_follow_carbon_and_runner_light() {
             workspace.sessions = vec![archived_slot.clone()];
             workspace.active_tab = MissionTab::Session("archived-slot".into());
             workspace.mission.as_mut().unwrap().archived_at = Some(Utc::now());
-            workspace.runner_observations.insert(
+            workspace.session_observations.insert(
                 "archived".into(),
                 runner_backend::session::status::AgentStatus {
                     lifecycle: runner_backend::session::status::Lifecycle::Stopped,

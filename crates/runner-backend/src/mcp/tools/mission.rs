@@ -105,7 +105,7 @@ pub struct MissionStatusSnapshot {
     pub mission: Mission,
     pub crew: Crew,
     pub sessions: Vec<session::SessionRow>,
-    pub latest_runner_status_by_handle: BTreeMap<String, RunnerStatusSnapshot>,
+    pub latest_session_status_by_handle: BTreeMap<String, SessionStatusSnapshot>,
     pub pending_asks: Vec<PendingAskSnapshot>,
     pub pending_ask_count: usize,
     pub live_session_count: usize,
@@ -118,7 +118,7 @@ pub struct MissionStatusSnapshot {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct RunnerStatusSnapshot {
+pub struct SessionStatusSnapshot {
     pub state: String,
     pub event_id: String,
     pub ts: Timestamp,
@@ -147,7 +147,7 @@ pub struct MissionWarningSnapshot {
 
 #[derive(Default)]
 struct EventProjection {
-    latest_runner_status_by_handle: BTreeMap<String, RunnerStatusSnapshot>,
+    latest_session_status_by_handle: BTreeMap<String, SessionStatusSnapshot>,
     pending_asks: BTreeMap<String, PendingAskSnapshot>,
     recent_warnings: Vec<MissionWarningSnapshot>,
 }
@@ -210,12 +210,12 @@ impl EventProjection {
                         projection.pending_asks.remove(question_id);
                     }
                 }
-                "runner_status" => {
+                "session_status" | "runner_status" => {
                     if let Some(state) = event.payload.get("state").and_then(|v| v.as_str()) {
                         if matches!(state, "busy" | "idle") {
-                            projection.latest_runner_status_by_handle.insert(
+                            projection.latest_session_status_by_handle.insert(
                                 event.from.clone(),
-                                RunnerStatusSnapshot {
+                                SessionStatusSnapshot {
                                     state: state.to_string(),
                                     event_id: event.id.clone(),
                                     ts: event.ts,
@@ -427,7 +427,7 @@ impl RunnerMcpHandler {
             mission,
             crew,
             sessions,
-            latest_runner_status_by_handle: projection.latest_runner_status_by_handle,
+            latest_session_status_by_handle: projection.latest_session_status_by_handle,
             pending_ask_count: projection.pending_asks.len(),
             pending_asks: projection.pending_asks.into_values().collect(),
             live_session_count,
@@ -830,7 +830,7 @@ mod tests {
     }
 
     #[test]
-    fn event_projection_tracks_status_pending_asks_and_warnings() {
+    fn event_projection_reads_legacy_runner_status_rows() {
         let dir = tempfile::tempdir().unwrap();
         let log = EventLog::open(dir.path()).unwrap();
         log.append(signal(
@@ -841,7 +841,40 @@ mod tests {
         .unwrap();
         log.append(signal(
             "coder",
+            "session_status",
+            serde_json::json!({ "state": "idle" }),
+        ))
+        .unwrap();
+        log.append(signal(
+            "reviewer",
             "runner_status",
+            serde_json::json!({ "state": "busy", "source": "forwarder" }),
+        ))
+        .unwrap();
+        let (entries, _) = log.read_from_lossy(0).unwrap();
+
+        let projection = EventProjection::from_entries(&entries);
+
+        let coder = &projection.latest_session_status_by_handle["coder"];
+        assert_eq!(coder.state, "idle");
+        let reviewer = &projection.latest_session_status_by_handle["reviewer"];
+        assert_eq!(reviewer.state, "busy");
+        assert_eq!(reviewer.source.as_deref(), Some("forwarder"));
+    }
+
+    #[test]
+    fn event_projection_tracks_status_pending_asks_and_warnings() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = EventLog::open(dir.path()).unwrap();
+        log.append(signal(
+            "coder",
+            "session_status",
+            serde_json::json!({ "state": "busy" }),
+        ))
+        .unwrap();
+        log.append(signal(
+            "coder",
+            "session_status",
             serde_json::json!({ "state": "idle" }),
         ))
         .unwrap();
@@ -876,7 +909,7 @@ mod tests {
 
         assert_eq!(
             projection
-                .latest_runner_status_by_handle
+                .latest_session_status_by_handle
                 .get("coder")
                 .unwrap()
                 .state,
@@ -989,7 +1022,7 @@ mod tests {
         let third = log
             .append(signal(
                 "coder",
-                "runner_status",
+                "session_status",
                 serde_json::json!({ "state": "idle" }),
             ))
             .unwrap();

@@ -172,8 +172,8 @@ impl MissionWorkspace {
             crew: None,
             sessions: Vec::new(),
             events: Vec::new(),
-            runner_statuses: BTreeMap::new(),
-            runner_observations: BTreeMap::new(),
+            session_statuses: BTreeMap::new(),
+            session_observations: BTreeMap::new(),
             goal: None,
             feed_blocks: Vec::new(),
             feed_selection: None,
@@ -241,7 +241,7 @@ impl MissionWorkspace {
         self.crew = None;
         self.sessions.clear();
         self.events.clear();
-        self.runner_statuses.clear();
+        self.session_statuses.clear();
         self.goal = None;
         self.feed_blocks.clear();
         self.feed_selection = None;
@@ -334,36 +334,9 @@ impl MissionWorkspace {
     }
 
     pub(super) fn rebuild_event_projection(&mut self) {
-        let mut statuses = BTreeMap::new();
-        let mut observations = BTreeMap::new();
-        for event in &self.events {
-            if event.kind != EventKind::Signal
-                || event.signal_type.as_ref().map(|kind| kind.as_str()) != Some("runner_status")
-            {
-                continue;
-            }
-            if let Some(status) = event
-                .payload
-                .get("status")
-                .and_then(|value| serde_json::from_value(value.clone()).ok())
-            {
-                observations.insert(event.from.clone(), status);
-            }
-            let state = event
-                .payload
-                .get("state")
-                .and_then(serde_json::Value::as_str);
-            let state = match state {
-                Some("busy") => Some(SessionActivityState::Busy),
-                Some("idle") => Some(SessionActivityState::Idle),
-                _ => None,
-            };
-            if let Some(state) = state {
-                statuses.insert(event.from.clone(), state);
-            }
-        }
-        self.runner_statuses = statuses;
-        self.runner_observations = observations;
+        let (statuses, observations) = project_session_statuses(&self.events);
+        self.session_statuses = statuses;
+        self.session_observations = observations;
         self.feed_blocks = group_feed_blocks(&self.events);
         if self.feed_selection.as_ref().is_some_and(|selection| {
             !self
@@ -421,16 +394,16 @@ impl MissionWorkspace {
         let mut status = snapshot
             .get(session_id)
             .cloned()
-            .or_else(|| self.runner_observations.get(&session.handle).cloned())
+            .or_else(|| self.session_observations.get(&session.handle).cloned())
             .unwrap_or_else(|| AgentStatus {
                 lifecycle: Lifecycle::Running,
                 observation: runner_backend::session::status::AgentObservation {
-                    activity: match self.runner_statuses.get(&session.handle) {
+                    activity: match self.session_statuses.get(&session.handle) {
                         Some(SessionActivityState::Busy) => Activity::Working,
                         Some(SessionActivityState::Idle) => Activity::Idle,
                         None => Activity::Unavailable,
                     },
-                    source: if self.runner_statuses.contains_key(&session.handle) {
+                    source: if self.session_statuses.contains_key(&session.handle) {
                         ObservationSource::Baseline
                     } else {
                         ObservationSource::Unavailable
@@ -454,8 +427,8 @@ impl MissionWorkspace {
         status
     }
 
-    pub(super) fn runner_statuses(&self) -> &BTreeMap<String, SessionActivityState> {
-        &self.runner_statuses
+    pub(super) fn session_statuses(&self) -> &BTreeMap<String, SessionActivityState> {
+        &self.session_statuses
     }
 
     pub(super) fn goal(&self) -> Option<String> {
@@ -667,4 +640,47 @@ impl MissionWorkspace {
             });
         }
     }
+}
+
+/// Latest `session_status` row per handle: the busy/idle state and, when the
+/// row carries one, the full hook-era status. `runner_status` rows from logs
+/// written before #632 are read the same way.
+pub(super) fn project_session_statuses(
+    events: &[Event],
+) -> (
+    BTreeMap<String, SessionActivityState>,
+    BTreeMap<String, runner_backend::session::status::AgentStatus>,
+) {
+    let mut statuses = BTreeMap::new();
+    let mut observations = BTreeMap::new();
+    for event in events {
+        if event.kind != EventKind::Signal
+            || !event
+                .signal_type
+                .as_ref()
+                .is_some_and(|kind| kind.is_session_status())
+        {
+            continue;
+        }
+        if let Some(status) = event
+            .payload
+            .get("status")
+            .and_then(|value| serde_json::from_value(value.clone()).ok())
+        {
+            observations.insert(event.from.clone(), status);
+        }
+        let state = event
+            .payload
+            .get("state")
+            .and_then(serde_json::Value::as_str);
+        let state = match state {
+            Some("busy") => Some(SessionActivityState::Busy),
+            Some("idle") => Some(SessionActivityState::Idle),
+            _ => None,
+        };
+        if let Some(state) = state {
+            statuses.insert(event.from.clone(), state);
+        }
+    }
+    (statuses, observations)
 }

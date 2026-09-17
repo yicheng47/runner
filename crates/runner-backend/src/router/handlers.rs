@@ -16,7 +16,7 @@
 
 use runner_core::model::Event;
 
-use super::{Router, RunnerStatus};
+use super::{Router, SessionActivityState};
 
 /// Strip any trailing `\n`/`\r` so the body can be handed to
 /// `Router::inject_and_submit` cleanly — the trailing carriage
@@ -196,13 +196,13 @@ pub(super) fn message_nudge(router: &Router, event: &Event) {
     }
 }
 
-pub(super) fn runner_status(router: &Router, event: &Event) {
+pub(super) fn session_status(router: &Router, event: &Event) {
     let state = match event.payload.get("state").and_then(|v| v.as_str()) {
-        Some("busy") => RunnerStatus::Busy,
-        Some("idle") => RunnerStatus::Idle,
+        Some("busy") => SessionActivityState::Busy,
+        Some("idle") => SessionActivityState::Idle,
         other => {
             router.warn(format!(
-                "runner_status from @{} has unknown state {:?}",
+                "session_status from @{} has unknown state {:?}",
                 event.from, other
             ));
             return;

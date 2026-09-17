@@ -45,7 +45,7 @@ pub fn post(text: &str, to: Option<&str>) -> i32 {
             eprintln!(
                 "runner msg post: --to @{handle} is not in this mission's roster. \
                  Use one of the handles printed by `runner msg read --from <handle>` \
-                 or check the mission workspace's runner rail."
+                 or check the mission workspace's session rail."
             );
             return 1;
         }
@@ -149,7 +149,7 @@ pub fn read(since: Option<&str>, from: Option<&str>) -> i32 {
     // Emit `inbox_read` only when:
     //   1. Something was actually shown — an empty inbox shouldn't add
     //      noise (or a redundant watermark) to the log.
-    //   2. The read was NOT filtered by `--from`. The bus's per-runner
+    //   2. The read was NOT filtered by `--from`. The bus's per-handle
     //      watermark is global across the inbox projection (any inbox
     //      message with `id <= up_to` is marked read). If we advance
     //      it from a filtered read, unread messages from other senders

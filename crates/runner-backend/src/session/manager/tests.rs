@@ -159,11 +159,11 @@ impl FakeRuntime {
         }
     }
 
-    fn push_status(&self, i: usize, state: RunnerStatus) {
+    fn push_status(&self, i: usize, state: SessionActivityState) {
         self.push_status_from(i, state, "forwarder");
     }
 
-    fn push_status_from(&self, i: usize, state: RunnerStatus, source: &'static str) {
+    fn push_status_from(&self, i: usize, state: SessionActivityState, source: &'static str) {
         let spawns = self.spawns.lock().unwrap();
         if let Some(tx) = spawns.get(i).and_then(|s| s.tx.as_ref()) {
             let _ = tx.send(RuntimeOutput::StatusTransition { state, source });
@@ -331,7 +331,7 @@ impl SessionRuntime for FakeRuntime {
     fn note_declared_status(
         &self,
         session: &RuntimeSession,
-        state: RunnerStatus,
+        state: SessionActivityState,
     ) -> RuntimeResult<()> {
         let spawns = self.spawns.lock().unwrap();
         let spawn = spawns
@@ -491,7 +491,7 @@ fn forwarder_preserves_status_transition_between_stream_chunks() {
     let events = forward_queued_output(vec![
         RuntimeOutput::Stream(b"before".to_vec()),
         RuntimeOutput::StatusTransition {
-            state: RunnerStatus::Idle,
+            state: SessionActivityState::Idle,
             source: "forwarder",
         },
         RuntimeOutput::Stream(b"after".to_vec()),
@@ -3496,7 +3496,7 @@ fn rejected_declared_status_leaves_byte_detection_active() {
         manager_with_runtime(crate::shell_path::LoginShellEnv::default(), inert_runtime());
     install_test_session_handle(&manager, "unsupported-title");
     assert!(manager
-        .report_declared_status("unsupported-title", RunnerStatus::Busy)
+        .report_declared_status("unsupported-title", SessionActivityState::Busy)
         .is_err());
     assert!(
         !manager
@@ -3583,29 +3583,29 @@ fn assert_status_uses_existing_direct_and_mission_consumers(source: &'static str
             .unwrap()
         };
         for state in [
-            RunnerStatus::Busy,
-            RunnerStatus::Idle,
-            RunnerStatus::Busy,
-            RunnerStatus::Idle,
+            SessionActivityState::Busy,
+            SessionActivityState::Idle,
+            SessionActivityState::Busy,
+            SessionActivityState::Idle,
         ] {
             for _ in 0..2 {
                 if source == "title" {
                     mgr.report_declared_status(&spawned.id, state).unwrap();
                 } else {
                     let event_source = if matches!(source, "input-interrupt" | "input-escape")
-                        && state == RunnerStatus::Idle
+                        && state == SessionActivityState::Idle
                     {
                         source
                     } else {
                         "hook"
                     };
                     fake.push_status_from(0, state, event_source);
-                    fake.push_status_from(0, RunnerStatus::Busy, "title");
-                    fake.push_status_from(0, RunnerStatus::Idle, "title");
+                    fake.push_status_from(0, SessionActivityState::Busy, "title");
+                    fake.push_status_from(0, SessionActivityState::Idle, "title");
                 }
             }
-            fake.push_status(0, RunnerStatus::Busy);
-            fake.push_status(0, RunnerStatus::Idle);
+            fake.push_status(0, SessionActivityState::Busy);
+            fake.push_status(0, SessionActivityState::Idle);
         }
         fake.close_spawn(0);
         join_forwarder_for_test(&mgr, &spawned.id);
@@ -3621,7 +3621,7 @@ fn assert_status_uses_existing_direct_and_mission_consumers(source: &'static str
                     event
                         .signal_type
                         .as_ref()
-                        .is_some_and(|ty| ty.as_str() == "runner_status")
+                        .is_some_and(|ty| ty.as_str() == "session_status")
                 })
                 .map(|event| {
                     (
@@ -3733,10 +3733,10 @@ fn direct_chat_status_transition_emits_session_status_busy() {
     );
     cap.status.lock().unwrap().clear();
 
-    fake.push_status(0, RunnerStatus::Idle);
+    fake.push_status(0, SessionActivityState::Idle);
     wait_for_session_status_event(&cap, &spawned.id, SessionActivityState::Idle);
     cap.status.lock().unwrap().clear();
-    fake.push_status(0, RunnerStatus::Busy);
+    fake.push_status(0, SessionActivityState::Busy);
     let ev = wait_for_session_status_event(&cap, &spawned.id, SessionActivityState::Busy);
 
     assert_eq!(ev.session_id, spawned.id);
@@ -3785,7 +3785,7 @@ fn direct_chat_status_transition_emits_session_status_idle() {
         "direct chats must not carry a mission status sink",
     );
 
-    fake.push_status(0, RunnerStatus::Idle);
+    fake.push_status(0, SessionActivityState::Idle);
     let ev = wait_for_session_status_event(&cap, &spawned.id, SessionActivityState::Idle);
 
     assert_eq!(ev.session_id, spawned.id);
@@ -3824,7 +3824,7 @@ fn direct_chat_typing_stays_idle_until_submit() {
         )
         .unwrap();
 
-    fake.push_status(0, RunnerStatus::Idle);
+    fake.push_status(0, SessionActivityState::Idle);
     wait_for_session_status_event(&cap, &spawned.id, SessionActivityState::Idle);
     cap.status.lock().unwrap().clear();
 
@@ -3888,8 +3888,8 @@ fn direct_chat_typing_stays_idle_until_submit() {
         !mgr.take_completion_armed(std::slice::from_ref(&spawned.id)),
         "typing without submit must not arm completion",
     );
-    fake.push_status(0, RunnerStatus::Busy);
-    fake.push_status(0, RunnerStatus::Idle);
+    fake.push_status(0, SessionActivityState::Busy);
+    fake.push_status(0, SessionActivityState::Idle);
     fake.push_output(0, b"typing-echo-drained");
     wait_for_output_event(&cap, &spawned.id);
 
@@ -4027,8 +4027,8 @@ fn mission_status_transition_appends_once_and_matches_incremental_status() {
         )
         .unwrap();
 
-    fake.push_status(0, RunnerStatus::Busy);
-    fake.push_status(0, RunnerStatus::Busy);
+    fake.push_status(0, SessionActivityState::Busy);
+    fake.push_status(0, SessionActivityState::Busy);
     fake.close_spawn(0);
     join_forwarder_for_test(&mgr, &spawned.id);
 
@@ -4042,7 +4042,7 @@ fn mission_status_transition_appends_once_and_matches_incremental_status() {
             event
                 .signal_type
                 .as_ref()
-                .is_some_and(|ty| ty.as_str() == "runner_status")
+                .is_some_and(|ty| ty.as_str() == "session_status")
         })
         .collect();
     assert_eq!(
@@ -4107,7 +4107,7 @@ fn mission_typing_stays_idle_until_submit() {
         )
         .unwrap();
 
-    fake.push_status(0, RunnerStatus::Idle);
+    fake.push_status(0, SessionActivityState::Idle);
     fake.push_output(0, b"initial-idle-synced");
     wait_for_output_event(&cap, &spawned.id);
     cap.output.lock().unwrap().clear();
@@ -4122,7 +4122,7 @@ fn mission_typing_stays_idle_until_submit() {
                 event
                     .signal_type
                     .as_ref()
-                    .is_some_and(|ty| ty.as_str() == "runner_status")
+                    .is_some_and(|ty| ty.as_str() == "session_status")
             })
             .collect::<Vec<_>>()
     };
@@ -4133,9 +4133,9 @@ fn mission_typing_stays_idle_until_submit() {
 
     mgr.inject_direct_stdin(&spawned.id, b"x", cap.as_ref())
         .unwrap();
-    fake.push_status(0, RunnerStatus::Busy);
-    fake.push_status(0, RunnerStatus::Idle);
-    fake.push_status(0, RunnerStatus::Idle);
+    fake.push_status(0, SessionActivityState::Busy);
+    fake.push_status(0, SessionActivityState::Idle);
+    fake.push_status(0, SessionActivityState::Idle);
     fake.push_output(0, b"typing-echo-drained");
     wait_for_output_event(&cap, &spawned.id);
 
@@ -5128,7 +5128,7 @@ fn synthetic_wake_busy_updates_activity_and_allows_final_idle() {
         )
         .unwrap();
 
-    fake.push_status(0, RunnerStatus::Idle);
+    fake.push_status(0, SessionActivityState::Idle);
     fake.push_output(0, b"initial-idle-synced");
     wait_for_output_event(&cap, &spawned.id);
     cap.output.lock().unwrap().clear();
@@ -5140,7 +5140,7 @@ fn synthetic_wake_busy_updates_activity_and_allows_final_idle() {
             mission.crew_id.clone(),
             mission.id.clone(),
             role.handle.clone(),
-            SignalType::new("runner_status"),
+            SignalType::new("session_status"),
             serde_json::json!({ "state": "busy" }),
         ),
     )
@@ -5160,13 +5160,13 @@ fn synthetic_wake_busy_updates_activity_and_allows_final_idle() {
             event
                 .signal_type
                 .as_ref()
-                .is_some_and(|ty| ty.as_str() == "runner_status")
+                .is_some_and(|ty| ty.as_str() == "session_status")
         })
         .collect();
     assert_eq!(after_busy.len(), 2);
     assert_eq!(after_busy[1].payload["state"], "busy");
 
-    fake.push_status(0, RunnerStatus::Idle);
+    fake.push_status(0, SessionActivityState::Idle);
     fake.push_output(0, b"final-idle-drained");
     wait_for_output_event(&cap, &spawned.id);
 
@@ -5179,7 +5179,7 @@ fn synthetic_wake_busy_updates_activity_and_allows_final_idle() {
             event
                 .signal_type
                 .as_ref()
-                .is_some_and(|ty| ty.as_str() == "runner_status")
+                .is_some_and(|ty| ty.as_str() == "session_status")
         })
         .collect();
     assert_eq!(statuses.len(), 3);
@@ -5227,7 +5227,7 @@ fn suppressed_busy_then_agent_output_and_quiet_appends_final_idle() {
         )
         .unwrap();
 
-    fake.push_status(0, RunnerStatus::Idle);
+    fake.push_status(0, SessionActivityState::Idle);
     fake.push_output(0, b"initial-idle-synced");
     wait_for_output_event(&cap, &spawned.id);
     cap.output.lock().unwrap().clear();
@@ -5250,15 +5250,15 @@ fn suppressed_busy_then_agent_output_and_quiet_appends_final_idle() {
             mission.crew_id.clone(),
             mission.id.clone(),
             role.handle.clone(),
-            SignalType::new("runner_status"),
+            SignalType::new("session_status"),
             serde_json::json!({ "state": "busy" }),
         ),
     )
     .unwrap();
 
-    fake.push_status(0, RunnerStatus::Busy);
+    fake.push_status(0, SessionActivityState::Busy);
     fake.push_output(0, b"agent output");
-    fake.push_status(0, RunnerStatus::Idle);
+    fake.push_status(0, SessionActivityState::Idle);
     fake.push_output(0, b"quiet-transition-drained");
 
     let deadline = Instant::now() + Duration::from_secs(2);
@@ -5272,7 +5272,7 @@ fn suppressed_busy_then_agent_output_and_quiet_appends_final_idle() {
                 event
                     .signal_type
                     .as_ref()
-                    .is_some_and(|ty| ty.as_str() == "runner_status")
+                    .is_some_and(|ty| ty.as_str() == "session_status")
             })
             .collect();
         if statuses.last().is_some_and(|event| {
@@ -5308,15 +5308,15 @@ fn suppressed_busy_then_agent_output_and_quiet_appends_final_idle() {
 #[test]
 fn forwarder_status_emit_stays_bounded_under_event_log_contention() {
     // Issue #124 / @reviewer P1: the forwarder consumer drains
-    // terminal output, exit-event reap, AND `runner_status`
-    // emission through the same thread. If `try_append_runner_status`
+    // terminal output, exit-event reap, AND `session_status`
+    // emission through the same thread. If `try_append_session_status`
     // ever blocked on the event-log flock, a stuck mission log
     // would freeze terminal output too — the user would see a
     // hang the moment a second CLI writer took the lock.
     // Construct a real ForwarderEmitCtx against a tempdir,
     // steal the flock from another "process" (a parallel fd
     // holding LOCK_EX), and assert that
-    // `try_append_runner_status` exhausts its bounded retries and
+    // `try_append_session_status` exhausts its bounded retries and
     // returns `Contended` within a hard 100ms bound.
     use fs2::FileExt;
     use std::fs::OpenOptions;
@@ -5338,13 +5338,16 @@ fn forwarder_status_emit_stays_bounded_under_event_log_contention() {
     };
 
     let start = Instant::now();
-    let outcome =
-        ctx.try_append_runner_status(RunnerStatus::Idle, "forwarder", &AgentStatus::default());
+    let outcome = ctx.try_append_session_status(
+        SessionActivityState::Idle,
+        "forwarder",
+        &AgentStatus::default(),
+    );
     let elapsed = start.elapsed();
 
     assert!(
         elapsed < ci_scaled_budget(Duration::from_millis(100)),
-        "try_append_runner_status must not block; took {elapsed:?}",
+        "try_append_session_status must not block; took {elapsed:?}",
     );
     assert!(
         matches!(outcome, AppendOutcome::Contended),
@@ -5370,8 +5373,11 @@ fn forwarder_status_emit_stays_bounded_under_event_log_contention() {
     // Proves the test setup isn't accidentally getting Contended
     // for the wrong reason.
     blocker.unlock().unwrap();
-    let outcome =
-        ctx.try_append_runner_status(RunnerStatus::Busy, "forwarder", &AgentStatus::default());
+    let outcome = ctx.try_append_session_status(
+        SessionActivityState::Busy,
+        "forwarder",
+        &AgentStatus::default(),
+    );
     assert!(matches!(outcome, AppendOutcome::Ok));
 }
 
@@ -5397,8 +5403,8 @@ fn forwarder_status_emit_retries_brief_event_log_contention() {
         event_log: Arc::clone(&event_log),
     };
     assert!(matches!(
-        event_log.try_append(ctx.runner_status_draft(
-            RunnerStatus::Idle,
+        event_log.try_append(ctx.session_status_draft(
+            SessionActivityState::Idle,
             "forwarder",
             &AgentStatus::default()
         )),
@@ -5409,7 +5415,11 @@ fn forwarder_status_emit_retries_brief_event_log_contention() {
     let retry_ctx = ctx.clone();
     let append = std::thread::spawn(move || {
         started_tx.send(()).unwrap();
-        retry_ctx.try_append_runner_status(RunnerStatus::Idle, "forwarder", &AgentStatus::default())
+        retry_ctx.try_append_session_status(
+            SessionActivityState::Idle,
+            "forwarder",
+            &AgentStatus::default(),
+        )
     });
     started_rx.recv().unwrap();
     // Keep the unlock well inside the ~35ms retry budget so a loaded CI
@@ -5427,7 +5437,7 @@ fn forwarder_status_emit_retries_brief_event_log_contention() {
             event
                 .signal_type
                 .as_ref()
-                .is_some_and(|ty| ty.as_str() == "runner_status")
+                .is_some_and(|ty| ty.as_str() == "session_status")
         })
         .collect();
     assert_eq!(statuses.len(), 1);
@@ -5487,7 +5497,7 @@ fn wake_busy_draft() -> EventDraft {
         "crew",
         "mission",
         "runner",
-        SignalType::new("runner_status"),
+        SignalType::new("session_status"),
         serde_json::json!({ "state": "busy", "source": "router-wake" }),
     )
 }

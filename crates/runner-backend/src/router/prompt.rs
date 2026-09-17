@@ -4,7 +4,7 @@
 // unit-test against fixture rosters and goal strings.
 //
 // The four sections (brief, mission, crewmates, coordination) mirror the
-// example in arch §4.3. We diverge from the per-runner spawn-time prompt in
+// example in arch §4.3. We diverge from the per-slot spawn-time prompt in
 // one place: this is what the *lead* sees on `mission_goal`, not every
 // runner's startup prompt. Worker runtime adapters get the runner's own
 // `system_prompt` via `--append-system-prompt`-equivalent flags at spawn
@@ -43,7 +43,7 @@ pub struct LaunchPromptInput<'a> {
     pub allowed_signals: &'a [SignalType],
     /// Layer-2 team conventions text (`crew.system_prompt_addendum`).
     /// Spliced under a `== Team conventions ==` section between the
-    /// "You are X, lead runner in crew Y" intro and the `== Your
+    /// "You are X, the lead of crew Y" intro and the `== Your
     /// brief ==` section. Empty / whitespace-only → no splice. See #54.
     pub crew_addendum: Option<&'a str>,
 }
@@ -52,7 +52,7 @@ pub struct LaunchPromptInput<'a> {
 /// platform-injected coordination preamble (Layer 1 — verbs the
 /// worker needs to participate in the bus), the optional crew-level
 /// addendum spliced under a `== Team conventions ==` section (Layer
-/// 2), and the worker's per-runner system_prompt as a `== Your brief
+/// 2), and the worker's per-role system_prompt as a `== Your brief
 /// ==` section (Layer 3 — persona). Returns the full composed body,
 /// never empty (preamble is always present).
 ///
@@ -114,7 +114,7 @@ pub fn compose_launch_prompt(input: &LaunchPromptInput<'_>) -> String {
     let mut out = String::new();
 
     out.push_str(&format!(
-        "You are `{}` ({}), lead runner in crew \"{}\".\n\n",
+        "You are `{}` ({}), the lead of crew \"{}\".\n\n",
         input.lead.handle, input.lead.display_name, input.crew_name,
     ));
 
@@ -362,7 +362,7 @@ mod tests {
             with_addendum.contains("== Team conventions =="),
             "addendum must be wrapped in a `== Team conventions ==` section; got: {with_addendum}",
         );
-        let intro_pos = with_addendum.find("lead runner in crew").unwrap();
+        let intro_pos = with_addendum.find("the lead of crew").unwrap();
         let header_pos = with_addendum.find("== Team conventions ==").unwrap();
         let addendum_pos = with_addendum.find("TEAM_TEXT").unwrap();
         let brief_pos = with_addendum.find("== Your brief ==").unwrap();
