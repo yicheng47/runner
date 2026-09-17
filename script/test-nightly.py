@@ -234,11 +234,17 @@ class NightlyTests(unittest.TestCase):
 
     def test_versions_and_lockfile_agree(self):
         lock = tomllib.loads((ROOT / 'Cargo.lock').read_text())
-        version = tomllib.loads((ROOT / 'crates/runner-app/Cargo.toml').read_text())['package']['version']
-        for name in ['runner-app', 'runner-backend', 'runner-terminal']:
-            manifest = tomllib.loads((ROOT / 'crates' / name / 'Cargo.toml').read_text())
-            self.assertEqual(manifest['package']['version'], version)
-            self.assertEqual(next(p['version'] for p in lock['package'] if p['name'] == name), version)
+        version = tomllib.loads((ROOT / 'Cargo.toml').read_text())['workspace']['package']['version']
+        for name, path in [
+            ('runner-app', 'crates/runner-app'),
+            ('runner-backend', 'crates/runner-backend'),
+            ('runner-terminal', 'crates/runner-terminal'),
+            ('runner-core', 'crates/runner-core'),
+            ('runner-cli', 'cli'),
+        ]:
+            manifest = tomllib.loads((ROOT / path / 'Cargo.toml').read_text())
+            self.assertEqual(manifest['package']['version'], {'workspace': True}, name)
+            self.assertEqual(next(p['version'] for p in lock['package'] if p['name'] == name), version, name)
 
     def test_publication_order_and_single_platform_isolation(self):
         for platform, exists in itertools.product(['both', 'macos', 'windows'], ['true', 'false']):
