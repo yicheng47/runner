@@ -89,7 +89,8 @@ https://github.com/user-attachments/assets/fb3669a4-010d-42d0-9555-2a3ba3223c75
 <table>
 <tr>
 <td width="50%">
-  <img src="assets/crew.png" alt="Crew editor — slots, prompts, team conventions, one lead" width="100%" />
+  <img src="assets/roles.png" alt="Roles — reusable agent configurations, each with its runtime, command, and the crews and sessions using it" width="100%" />
+  <img src="assets/crews.png" alt="Crews — codex-crew and claude crew, each a coder lead and a reviewer drawn from roles" width="100%" />
 </td>
 <td width="50%" valign="middle">
 
@@ -129,7 +130,7 @@ Every chat is a real 1:1 PTY with a role, no mission required. Split a tab as fa
 </tr>
 <tr>
 <td width="50%">
-  <img src="assets/terminal_drawer.png" alt="A zsh drawer open beneath a Claude Code chat, in the same repository" width="100%" />
+  <img src="assets/terminal_drawer.png" alt="A zsh drawer open beneath a tab with Claude Code and Codex side by side, in the same directory" width="100%" />
 </td>
 <td width="50%" valign="middle">
 
@@ -141,7 +142,7 @@ Every chat and every mission has a shell beneath it, one shortcut away, opened i
 </tr>
 <tr>
 <td width="50%">
-  <img src="assets/multi_window.png" alt="Two Runner windows working different chats side by side" width="100%" />
+  <img src="assets/multi_window.png" alt="Two Runner windows, a Claude Code chat in front and a Codex chat behind" width="100%" />
 </td>
 <td width="50%" valign="middle">
 
@@ -216,6 +217,8 @@ Carbon and Runner Light are Runner's own themes; Catppuccin Mocha and Latte ride
 Claude Code and Codex are the primary agents, with tuned launch and nudge timing. GitHub Copilot CLI needs a Copilot subscription. TRAE CLI sees less use and may have rough edges. [Issues](https://github.com/yicheng47/runner/issues) are welcome.
 
 Install the agent CLIs separately. Runner detects them on `PATH`, with per-agent executable overrides in **Settings → Agents**. On Windows, Claude Code also requires Git for Windows for Git Bash; npm-based CLI installations require Node.js. PowerShell 7 is optional. Agents run natively on Windows, without WSL.
+
+<img src="assets/agents.png" alt="Settings → Agents — each detected agent CLI with its executable, model, effort, and an enable toggle" width="100%" />
 
 ## Example crew
 

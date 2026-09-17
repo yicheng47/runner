@@ -89,7 +89,8 @@ https://github.com/user-attachments/assets/fb3669a4-010d-42d0-9555-2a3ba3223c75
 <table>
 <tr>
 <td width="50%">
-  <img src="assets/crew.png" alt="Crew 编辑器 — 槽位、提示词、团队约定、一个 lead" width="100%" />
+  <img src="assets/roles.png" alt="角色列表 — 可复用的 agent 配置，每个都列出运行时、命令，以及用到它的 crew 和会话" width="100%" />
+  <img src="assets/crews.png" alt="Crew 列表 — codex-crew 和 claude crew，各由一个 coder lead 和一个 reviewer 组成，都取自角色" width="100%" />
 </td>
 <td width="50%" valign="middle">
 
@@ -129,7 +130,7 @@ https://github.com/user-attachments/assets/fb3669a4-010d-42d0-9555-2a3ba3223c75
 </tr>
 <tr>
 <td width="50%">
-  <img src="assets/terminal_drawer.png" alt="Claude Code 对话下方展开的 zsh 抽屉，在同一个仓库里" width="100%" />
+  <img src="assets/terminal_drawer.png" alt="Claude Code 和 Codex 并排的标签页下方展开的 zsh 抽屉，在同一个目录里" width="100%" />
 </td>
 <td width="50%" valign="middle">
 
@@ -141,7 +142,7 @@ https://github.com/user-attachments/assets/fb3669a4-010d-42d0-9555-2a3ba3223c75
 </tr>
 <tr>
 <td width="50%">
-  <img src="assets/multi_window.png" alt="两个 Runner 窗口并排处理不同的对话" width="100%" />
+  <img src="assets/multi_window.png" alt="两个 Runner 窗口，前面是 Claude Code 对话，后面是 Codex 对话" width="100%" />
 </td>
 <td width="50%" valign="middle">
 
@@ -216,6 +217,8 @@ Carbon 和 Runner Light 是 Runner 自己的主题，Catppuccin Mocha 和 Latte 
 Claude Code 和 Codex 是主要支持的 agent，启动和催促时序做过调优。GitHub Copilot CLI 需要 Copilot 订阅。TRAE CLI 用得较少，可能有粗糙之处。欢迎提 [issue](https://github.com/yicheng47/runner/issues)。
 
 agent 的命令行工具需要单独安装。Runner 会在 `PATH` 上检测它们，也可以在 **Settings → Agents** 里为每个 agent 单独指定可执行文件。在 Windows 上，Claude Code 还需要 Git for Windows 提供的 Git Bash；通过 npm 安装的 CLI 需要 Node.js。PowerShell 7 可选。agent 在 Windows 上原生运行，不需要 WSL。
+
+<img src="assets/agents.png" alt="Settings → Agents — 检测到的每个 agent CLI，带可执行文件、模型、effort 和启用开关" width="100%" />
 
 ## 示例 Crew
 
