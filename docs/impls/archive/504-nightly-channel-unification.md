@@ -74,15 +74,3 @@ Dispatched by the landing session from the PR branch to validate before merge: `
 - `nightly-win` is untouched with its `ec86f28` installer and signature. `releases/latest` still resolves to `v0.8.2`.
 
 Still open: the two hand installs (the DMG over `Runner.app` on the Mac, the installer on the PC), the next-cut in-place updates that follow them, single-platform cuts, and the manual deletion of `nightly-win` and `Runner Nightly.app`.
-
-## Cut — 2026-09-16, both platforms
-
-Dispatched after [#618](https://github.com/yicheng47/runner/pull/618) merged: `gh workflow run nightly.yml --ref main` with the default `both`, run [35092008653](https://github.com/yicheng47/runner/actions/runs/35092008653) on source `8fefe12c263d3951b67bedeaf5edfd6945c7406b`, identity `nightly.8fefe12.20260916.1145`, stamp `20260916.1145`. All four jobs succeeded and the publish job's verification of the public release passed before pruning. The `nightly` tag resolves to `8fefe12`.
-
-- `nightly` now holds `Runner-Nightly-8fefe12.20260916.1145-arm64.dmg`, `appcast.xml`, `Runner-Setup-nightly.8fefe12.20260916.1145-x64.exe` and its `.sig`, all anonymously downloadable at `https://github.com/yicheng47/runner/releases/download/nightly/`, beside the retained `d3838a5` DMG and `100f1c3` installer. Public prerelease, not a draft; two DMGs and two installers after pruning.
-- The appcast has one enclosure pointing at that DMG, short version `8fefe12`, with the arm64 requirement present.
-- `releases/latest` still resolves to `v0.9.4`.
-- Carries the #604 runner → role rename (migration 0023, the `role_*` MCP cutover, the UI copy and `surfaces/roles/`) plus everything since v0.9.4.
-
-Not observed from here: the installed macOS upgrade through Sparkle and the PC's in-app update, and the first `.\make.cmd run` on JASONPC that migrates its dev database.
-
