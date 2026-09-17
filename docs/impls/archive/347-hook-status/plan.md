@@ -10,7 +10,7 @@ Slices for [#347](https://github.com/yicheng47/runner/issues/347) ([spec](../../
 | 3 | Codex adapter and Claude follow-ups | Merged via [PR #589](https://github.com/yicheng47/runner/pull/589), `3dd37b0`; review, both-platform CI, and all reported smoke tests passed. Codex human-wait holds remain unsupported. |
 | 4 | TRAE CLI adapter | Not planned — Runner hook integration unsupported; no enterprise account for validation. |
 | 5 | Deferred details, one at a time | Not started |
-| 6 | Remove title-spinner classification | Only for runtime/platform combinations with validated hook coverage; preserve unsupported-platform fallback. |
+| 6 | Remove title-spinner classification | Removed on both platforms by #625 after #610 validated Windows hook coverage; byte activity is the only baseline. |
 | 7 | GitHub Copilot CLI adapter | Implemented on `feat/540-copilot-runtime` in [540 mission 2](../gpui-rewrite/briefs/540-m2-copilot-hook-status.md); working-tree review clean in Runner message `01M2MASYZ4ZSBEXGAC66Q5H3YB`, Jason's manual smoke passed 2026-09-16. |
 
 ## Slice 2 — vocabulary and UI
@@ -35,7 +35,7 @@ Runner hook integration is unsupported. Jason no longer has an enterprise accoun
 
 ## Slice 6 — remove the title heuristic
 
-Remove title-spinner classification only where the runtime and platform have validated hook coverage. Windows and unsupported runtimes still use the existing title and byte-activity baseline; do not remove their fallback merely because the macOS adapters shipped. Byte activity remains the permanent baseline.
+#625 removed title-spinner classification on both platforms after #610 validated Windows hook coverage. Byte activity is now the only baseline for every runtime, including unsupported runtimes and hook bridge loss.
 
 ## Slice 7 — GitHub Copilot CLI
 

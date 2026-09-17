@@ -604,7 +604,6 @@ struct SessionState {
     baseline_activity: Option<SessionActivityState>,
     activity_revision: u64,
     suppress_local_input_busy: bool,
-    title_status_armed: bool,
     hook_status_armed: bool,
     provisional_idle: bool,
     local_input_pending: bool,
@@ -634,7 +633,6 @@ impl SessionState {
             && self.status.failed_since.is_none()
             && self.status.unread_since.is_none()
             && !self.suppress_local_input_busy
-            && !self.title_status_armed
             && !self.hook_status_armed
             && !self.provisional_idle
             && !self.local_input_pending
@@ -981,27 +979,6 @@ impl SessionManager {
         Ok(router::DeliveryReservation::Ready(delivery.generation))
     }
 
-    pub fn report_declared_status(
-        &self,
-        session_id: &str,
-        state: SessionActivityState,
-    ) -> Result<()> {
-        let session = self
-            .session_state(session_id)
-            .ok_or_else(|| Error::msg(format!("session not found: {session_id}")))?;
-        let mut session = session.lock().unwrap();
-        let rt_session = session
-            .handle
-            .as_ref()
-            .ok_or_else(|| Error::msg(format!("session not found: {session_id}")))?
-            .runtime_session
-            .clone();
-        // Keep the consumer behind this lock until a successful report arms title precedence.
-        self.runtime.note_declared_status(&rt_session, state)?;
-        session.title_status_armed = true;
-        Ok(())
-    }
-
     pub fn report_input_state(&self, session_id: &str, observation: InputObservation) {
         let Some(session) = self.session_state(session_id) else {
             return;
@@ -1174,7 +1151,7 @@ impl SessionManager {
     ) -> bool {
         let session = self.session_state_or_insert(session_id);
         let mut session = session.lock().unwrap();
-        if matches!(source, "forwarder" | "title") {
+        if source == "forwarder" {
             session.baseline_activity = Some(state);
         }
         let old_status = session.status.clone();
@@ -1195,10 +1172,7 @@ impl SessionManager {
             }
             session.completion_armed = false;
         }
-        if session.hook_status_armed && matches!(source, "forwarder" | "title") {
-            return false;
-        }
-        if source == "forwarder" && session.title_status_armed {
+        if session.hook_status_armed && source == "forwarder" {
             return false;
         }
         if source == "forwarder"

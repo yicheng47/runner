@@ -263,16 +263,6 @@ pub trait SessionRuntime: Send + Sync {
     /// `exit_code`. Errors are reserved for transport failures.
     fn status(&self, session: &RuntimeSession) -> RuntimeResult<Option<SessionStatus>>;
 
-    /// Emit the declared status through the runtime's output channel.
-    /// The default rejects unsupported reports so the manager keeps byte detection active.
-    fn note_declared_status(
-        &self,
-        _session: &RuntimeSession,
-        _state: SessionActivityState,
-    ) -> RuntimeResult<()> {
-        Err(RuntimeError::Msg("declared status is unsupported".into()))
-    }
-
     /// Whether the PTY's foreground process group differs from the spawned
     /// shell. Runtimes without a local PTY can leave this unknown.
     fn has_foreground_process(&self, _session: &RuntimeSession) -> RuntimeResult<Option<bool>> {

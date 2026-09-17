@@ -327,29 +327,6 @@ impl SessionRuntime for FakeRuntime {
     fn status(&self, _: &RuntimeSession) -> RuntimeResult<Option<SessionStatus>> {
         Ok(Some(self.status_response.lock().unwrap().clone()))
     }
-
-    fn note_declared_status(
-        &self,
-        session: &RuntimeSession,
-        state: SessionActivityState,
-    ) -> RuntimeResult<()> {
-        let spawns = self.spawns.lock().unwrap();
-        let spawn = spawns
-            .iter()
-            .rev()
-            .find(|spawn| spawn.rt_session.session_id == session.session_id)
-            .unwrap();
-        spawn
-            .tx
-            .as_ref()
-            .unwrap()
-            .send(RuntimeOutput::StatusTransition {
-                state,
-                source: "title",
-            })
-            .unwrap();
-        Ok(())
-    }
 }
 
 fn fake_runtime() -> Arc<FakeRuntime> {
@@ -3299,9 +3276,7 @@ fn ordered_interrupt_is_idle_only_for_a_busy_hook_session() {
         SessionActivityState::Idle,
         "input-interrupt"
     ));
-    for source in ["forwarder", "title"] {
-        assert!(!manager.note_forwarder_transition("hooks", SessionActivityState::Busy, source));
-    }
+    assert!(!manager.note_forwarder_transition("hooks", SessionActivityState::Busy, "forwarder"));
     assert_eq!(
         manager.activity_snapshot()["hooks"],
         SessionActivityState::Idle
@@ -3421,22 +3396,18 @@ fn hook_status_owns_activity_until_teardown_without_changing_submit_or_wake() {
     assert!(manager.note_forwarder_transition("hooks", SessionActivityState::Busy, "forwarder"));
     // Source changes must reach attached views even when activity is unchanged.
     assert!(manager.note_forwarder_transition("hooks", SessionActivityState::Busy, "hook"));
-    for source in ["forwarder", "title"] {
-        assert!(!manager.note_forwarder_transition("hooks", SessionActivityState::Idle, source));
-    }
+    assert!(!manager.note_forwarder_transition("hooks", SessionActivityState::Idle, "forwarder"));
     assert_eq!(
         manager.activity_snapshot()["hooks"],
         SessionActivityState::Busy
     );
     assert!(manager.note_forwarder_transition("hooks", SessionActivityState::Idle, "hook"));
-    for source in ["forwarder", "title"] {
-        assert!(!manager.note_forwarder_transition("hooks", SessionActivityState::Busy, source));
-    }
+    assert!(!manager.note_forwarder_transition("hooks", SessionActivityState::Busy, "forwarder"));
     assert!(manager.note_forwarder_transition("hooks", SessionActivityState::Busy, "input-submit"));
     assert!(manager.note_forwarder_transition("hooks", SessionActivityState::Idle, "hook"));
     assert!(manager.note_forwarder_transition("hooks", SessionActivityState::Busy, "wake"));
     assert!(manager.note_forwarder_transition("baseline", SessionActivityState::Idle, "forwarder"));
-    assert!(manager.note_forwarder_transition("baseline", SessionActivityState::Busy, "title"));
+    assert!(manager.note_forwarder_transition("baseline", SessionActivityState::Busy, "forwarder"));
 
     assert!(manager.note_forwarder_transition("hooks", SessionActivityState::Idle, "input-escape"));
     let runtime_session = manager.live_runtime_session("hooks").unwrap();
@@ -3451,73 +3422,6 @@ fn hook_status_owns_activity_until_teardown_without_changing_submit_or_wake() {
     install_test_session_handle(&manager, "hooks");
     assert!(manager.note_forwarder_transition("hooks", SessionActivityState::Busy, "forwarder"));
     assert!(manager.note_forwarder_transition("hooks", SessionActivityState::Idle, "forwarder"));
-}
-
-#[test]
-fn title_status_suppresses_only_armed_sessions_forwarder_transitions() {
-    let manager =
-        manager_with_runtime(crate::shell_path::LoginShellEnv::default(), inert_runtime());
-    install_test_session_handle(&manager, "title");
-    install_test_session_handle(&manager, "bytes");
-    for state in [
-        SessionActivityState::Busy,
-        SessionActivityState::Idle,
-        SessionActivityState::Busy,
-    ] {
-        assert!(manager.note_forwarder_transition("title", state, "forwarder"));
-        assert!(manager.note_forwarder_transition("bytes", state, "forwarder"));
-    }
-    manager
-        .session_state("title")
-        .unwrap()
-        .lock()
-        .unwrap()
-        .title_status_armed = true;
-    assert!(!manager.note_forwarder_transition("title", SessionActivityState::Idle, "forwarder"));
-    assert!(manager.note_forwarder_transition("title", SessionActivityState::Idle, "title"));
-    assert!(!manager.note_forwarder_transition("title", SessionActivityState::Busy, "forwarder"));
-    assert!(manager.note_forwarder_transition("bytes", SessionActivityState::Idle, "forwarder"));
-    assert!(manager.note_forwarder_transition("bytes", SessionActivityState::Busy, "forwarder"));
-    assert!(manager.note_forwarder_transition("title", SessionActivityState::Busy, "input-submit"));
-    assert!(manager.note_forwarder_transition("title", SessionActivityState::Idle, "agent"));
-
-    let runtime_session = manager.live_runtime_session("title").unwrap();
-    manager
-        .forget_runtime_handle("title", &runtime_session)
-        .unwrap();
-    install_test_session_handle(&manager, "title");
-    assert!(manager.note_forwarder_transition("title", SessionActivityState::Busy, "forwarder"));
-    assert!(manager.note_forwarder_transition("title", SessionActivityState::Idle, "forwarder"));
-}
-
-#[test]
-fn rejected_declared_status_leaves_byte_detection_active() {
-    let manager =
-        manager_with_runtime(crate::shell_path::LoginShellEnv::default(), inert_runtime());
-    install_test_session_handle(&manager, "unsupported-title");
-    assert!(manager
-        .report_declared_status("unsupported-title", SessionActivityState::Busy)
-        .is_err());
-    assert!(
-        !manager
-            .session_state("unsupported-title")
-            .unwrap()
-            .lock()
-            .unwrap()
-            .title_status_armed
-    );
-    for state in [
-        SessionActivityState::Busy,
-        SessionActivityState::Idle,
-        SessionActivityState::Busy,
-    ] {
-        assert!(manager.note_forwarder_transition("unsupported-title", state, "forwarder"));
-    }
-}
-
-#[test]
-fn declared_status_uses_existing_direct_and_mission_consumers() {
-    assert_status_uses_existing_direct_and_mission_consumers("title");
 }
 
 #[test]
@@ -3589,20 +3493,14 @@ fn assert_status_uses_existing_direct_and_mission_consumers(source: &'static str
             SessionActivityState::Idle,
         ] {
             for _ in 0..2 {
-                if source == "title" {
-                    mgr.report_declared_status(&spawned.id, state).unwrap();
+                let event_source = if matches!(source, "input-interrupt" | "input-escape")
+                    && state == SessionActivityState::Idle
+                {
+                    source
                 } else {
-                    let event_source = if matches!(source, "input-interrupt" | "input-escape")
-                        && state == SessionActivityState::Idle
-                    {
-                        source
-                    } else {
-                        "hook"
-                    };
-                    fake.push_status_from(0, state, event_source);
-                    fake.push_status_from(0, SessionActivityState::Busy, "title");
-                    fake.push_status_from(0, SessionActivityState::Idle, "title");
-                }
+                    "hook"
+                };
+                fake.push_status_from(0, state, event_source);
             }
             fake.push_status(0, SessionActivityState::Busy);
             fake.push_status(0, SessionActivityState::Idle);
@@ -3689,9 +3587,6 @@ fn assert_status_uses_existing_direct_and_mission_consumers(source: &'static str
             assert_eq!(statuses, expected);
         }
         assert!(!mgr.activity_snapshot().contains_key(&spawned.id));
-        assert!(!mgr
-            .session_state(&spawned.id)
-            .is_some_and(|state| state.lock().unwrap().title_status_armed));
     }
 }
 
