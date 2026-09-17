@@ -3,8 +3,8 @@ use std::rc::Rc;
 use gpui::prelude::*;
 use gpui::{
     div, px, relative, rems, AnyElement, App, BoxShadow, CursorStyle, Entity, FocusHandle,
-    FontWeight, IntoElement, KeyDownEvent, MouseButton, RenderOnce, ScrollHandle, SharedString,
-    Window,
+    FontWeight, IntoElement, KeyDownEvent, MouseButton, Pixels, RenderOnce, ScrollHandle,
+    SharedString, Window,
 };
 
 use crate::theme;
@@ -27,6 +27,22 @@ impl OverlayWidth {
             Self::Md => 512.,
             Self::Lg => 576.,
             Self::Custom(width) => width,
+        }
+    }
+
+    // The rem-scaled design width, clamped to what the window leaves the
+    // panel. Modal and Drawer spell their widths out in pixels because
+    // their centering row probes the panel at min-content, where a
+    // percentage width resolves to a known width of 0 and gpui's layout
+    // cache keeps whichever result the probe order produced: the body
+    // then sits at its max-content width inside a full-width panel
+    // (#626), the same defect the confirm dialog had in c8da303.
+    fn panel_width(self, rem: Pixels, available: Pixels) -> Pixels {
+        let preferred = rem * (self.pixels() / 16.);
+        if preferred < available {
+            preferred
+        } else {
+            available
         }
     }
 }
@@ -91,7 +107,7 @@ impl Modal {
 }
 
 impl RenderOnce for Modal {
-    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
+    fn render(self, window: &mut Window, _cx: &mut App) -> impl IntoElement {
         let close_backdrop = Rc::clone(&self.on_close);
         let close_key = Rc::clone(&self.on_close);
         let focus_order = self.focus_order;
@@ -99,6 +115,11 @@ impl RenderOnce for Modal {
         let fixed_height = self.height.is_some();
         let scroll_handle = self.scroll.as_ref().map(|(handle, _)| handle.clone());
         let scrollbar = self.scroll.map(|(_, scrollbar)| scrollbar);
+        let rem = window.rem_size();
+        let panel_width = self
+            .width
+            .panel_width(rem, window.viewport_size().width - rem * 2.);
+        let content_width = panel_width - px(2.);
         div()
             .absolute()
             .inset_0()
@@ -136,8 +157,7 @@ impl RenderOnce for Modal {
             })
             .child(
                 div()
-                    .w_full()
-                    .max_w(rems(self.width.pixels() / 16.))
+                    .w(panel_width)
                     .max_h(relative(0.85))
                     .when_some(self.height, |panel, height| panel.h(rems(height / 16.)))
                     .flex()
@@ -148,6 +168,7 @@ impl RenderOnce for Modal {
                     .border_color(theme::border_strong())
                     .bg(theme::panel())
                     .shadow_2xl()
+                    .debug_selector(|| "MODAL_PANEL".into())
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .child(
                         div()
@@ -172,7 +193,8 @@ impl RenderOnce for Modal {
                             .child(
                                 div()
                                     .id("modal-scroll-content")
-                                    .size_full()
+                                    .w(content_width)
+                                    .h_full()
                                     .overflow_y_scroll()
                                     .when(fixed_height, |body| {
                                         body.flex().flex_col().min_h_0().overflow_hidden()
@@ -182,6 +204,7 @@ impl RenderOnce for Modal {
                                     })
                                     .px(rems(24. / 16.))
                                     .py(rems(20. / 16.))
+                                    .debug_selector(|| "MODAL_CONTENT".into())
                                     .child(self.body),
                             )
                             .children(scrollbar),
@@ -257,13 +280,17 @@ impl Drawer {
 }
 
 impl RenderOnce for Drawer {
-    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
+    fn render(self, window: &mut Window, _cx: &mut App) -> impl IntoElement {
         let close_backdrop = Rc::clone(&self.on_close);
         let close_key = Rc::clone(&self.on_close);
         let focus_order = self.focus_order;
         let busy = self.busy;
         let scroll_handle = self.scroll.as_ref().map(|(handle, _)| handle.clone());
         let scrollbar = self.scroll.map(|(_, scrollbar)| scrollbar);
+        let panel_width = self
+            .width
+            .panel_width(window.rem_size(), window.viewport_size().width);
+        let content_width = panel_width - px(1.);
         div()
             .absolute()
             .inset_0()
@@ -299,8 +326,7 @@ impl RenderOnce for Drawer {
             })
             .child(
                 div()
-                    .w_full()
-                    .max_w(rems(self.width.pixels() / 16.))
+                    .w(panel_width)
                     .h_full()
                     .flex()
                     .flex_col()
@@ -308,6 +334,7 @@ impl RenderOnce for Drawer {
                     .border_color(theme::border_strong())
                     .bg(theme::panel())
                     .shadow_2xl()
+                    .debug_selector(|| "DRAWER_PANEL".into())
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .child(
                         div()
@@ -328,13 +355,15 @@ impl RenderOnce for Drawer {
                             .child(
                                 div()
                                     .id("drawer-scroll-content")
-                                    .size_full()
+                                    .w(content_width)
+                                    .h_full()
                                     .overflow_y_scroll()
                                     .when_some(scroll_handle, |body, handle| {
                                         body.scrollbar_width(px(0.)).track_scroll(&handle)
                                     })
                                     .px(rems(24. / 16.))
                                     .py(rems(20. / 16.))
+                                    .debug_selector(|| "DRAWER_CONTENT".into())
                                     .child(self.body),
                             )
                             .children(scrollbar),
@@ -937,6 +966,184 @@ mod tests {
                             .unwrap();
                     }
                 }
+            }
+        }
+    }
+
+    struct ProjectModalTest {
+        cwd: Entity<crate::ui::TextField>,
+        name: Entity<crate::ui::TextField>,
+    }
+
+    impl gpui::Render for ProjectModalTest {
+        fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+            div().size_full().child(
+                Modal::new(
+                    "Start project",
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_5()
+                        .debug_selector(|| "PROJECT_BODY".into())
+                        .child(crate::ui::Field::new(
+                            "project-directory",
+                            "Directory",
+                            div().debug_selector(|| "PROJECT_DIRECTORY".into()).child(
+                                crate::ui::WorkingDirField::new(
+                                    self.cwd.clone(),
+                                    false,
+                                    Rc::new(|_, _| {}),
+                                ),
+                            ),
+                        ))
+                        .child(crate::ui::Field::new(
+                            "project-name",
+                            "Name",
+                            div()
+                                .debug_selector(|| "PROJECT_NAME".into())
+                                .child(self.name.clone()),
+                        )),
+                    Rc::new(|_, _| {}),
+                )
+                .width(OverlayWidth::Custom(560.))
+                .footer(div().child("Cancel · Create project")),
+            )
+        }
+    }
+
+    #[test]
+    fn modal_body_and_fields_span_the_panel_inner_width() {
+        use gpui::{TestAppContext, VisualTestContext};
+        let mut cx = TestAppContext::single();
+        let window = cx.add_window(|_, cx| ProjectModalTest {
+            cwd: cx.new(|cx| {
+                crate::ui::TextField::new(cx.focus_handle(), "", "/Users/jason/repos", false)
+            }),
+            name: cx.new(|cx| crate::ui::TextField::new(cx.focus_handle(), "", "runner", false)),
+        });
+        cx.run_until_parked();
+        let mut visual = VisualTestContext::from_window(window.into(), &cx);
+        for rem in [16., 20.8] {
+            window
+                .update(&mut visual, |_, window, _| window.set_rem_size(px(rem)))
+                .unwrap();
+            for size in [
+                gpui::size(px(700.), px(500.)),
+                gpui::size(px(900.), px(600.)),
+                gpui::size(px(1440.), px(900.)),
+                gpui::size(px(2560.), px(1440.)),
+            ] {
+                visual.simulate_resize(size);
+                visual.run_until_parked();
+                let panel = visual.debug_bounds("MODAL_PANEL").unwrap();
+                let content = visual.debug_bounds("MODAL_CONTENT").unwrap();
+                let body = visual.debug_bounds("PROJECT_BODY").unwrap();
+                let directory = visual.debug_bounds("PROJECT_DIRECTORY").unwrap();
+                let name = visual.debug_bounds("PROJECT_NAME").unwrap();
+                let expected_panel = (rem * 560. / 16.).min(f32::from(size.width) - 2. * rem);
+                let padding = px(2. * 24. * rem / 16.);
+                let tolerance = px(1.);
+                assert!(
+                    (panel.size.width - px(expected_panel)).abs() <= tolerance,
+                    "rem {rem} {size:?}: panel width: {panel:?}"
+                );
+                let centered = (size.width - panel.size.width) / 2.;
+                assert!(
+                    (panel.left() - centered).abs() <= tolerance,
+                    "rem {rem} {size:?}: panel not centered: {panel:?}"
+                );
+                assert!(
+                    (content.size.width - (panel.size.width - px(2.))).abs() <= tolerance,
+                    "rem {rem} {size:?}: content narrower than the panel: panel={panel:?} content={content:?}"
+                );
+                assert!(
+                    (body.size.width - (content.size.width - padding)).abs() <= tolerance,
+                    "rem {rem} {size:?}: body narrower than the content: content={content:?} body={body:?}"
+                );
+                for (label, field) in [("directory", directory), ("name", name)] {
+                    assert!(
+                        (field.size.width - body.size.width).abs() <= tolerance,
+                        "rem {rem} {size:?}: {label} field narrower than the body: body={body:?} field={field:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    struct RoleDrawerTest;
+
+    impl gpui::Render for RoleDrawerTest {
+        fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+            div().size_full().child(
+                Drawer::new(
+                    "Edit role",
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_5()
+                        .debug_selector(|| "ROLE_BODY".into())
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .debug_selector(|| "ROLE_DIRECTORY".into())
+                                .child(div().flex_1().min_w_0().child("Directory"))
+                                .child("Browse…"),
+                        ),
+                    Rc::new(|_, _| {}),
+                )
+                .width(OverlayWidth::Lg)
+                .footer(div().child("Cancel · Save")),
+            )
+        }
+    }
+
+    #[test]
+    fn drawer_body_spans_the_panel_inner_width() {
+        use gpui::{TestAppContext, VisualTestContext};
+        let mut cx = TestAppContext::single();
+        let window = cx.add_window(|_, _| RoleDrawerTest);
+        cx.run_until_parked();
+        let mut visual = VisualTestContext::from_window(window.into(), &cx);
+        for rem in [16., 20.8] {
+            window
+                .update(&mut visual, |_, window, _| window.set_rem_size(px(rem)))
+                .unwrap();
+            for size in [
+                gpui::size(px(400.), px(500.)),
+                gpui::size(px(900.), px(600.)),
+                gpui::size(px(1440.), px(900.)),
+            ] {
+                visual.simulate_resize(size);
+                visual.run_until_parked();
+                let panel = visual.debug_bounds("DRAWER_PANEL").unwrap();
+                let content = visual.debug_bounds("DRAWER_CONTENT").unwrap();
+                let body = visual.debug_bounds("ROLE_BODY").unwrap();
+                let row = visual.debug_bounds("ROLE_DIRECTORY").unwrap();
+                let expected_panel = (rem * 576. / 16.).min(f32::from(size.width));
+                let padding = px(2. * 24. * rem / 16.);
+                let tolerance = px(1.);
+                assert!(
+                    (panel.size.width - px(expected_panel)).abs() <= tolerance,
+                    "rem {rem} {size:?}: panel width: {panel:?}"
+                );
+                assert!(
+                    (panel.right() - size.width).abs() <= tolerance,
+                    "rem {rem} {size:?}: panel not flush right: {panel:?}"
+                );
+                assert!(
+                    (content.size.width - (panel.size.width - px(1.))).abs() <= tolerance,
+                    "rem {rem} {size:?}: content narrower than the panel: panel={panel:?} content={content:?}"
+                );
+                assert!(
+                    (body.size.width - (content.size.width - padding)).abs() <= tolerance,
+                    "rem {rem} {size:?}: body narrower than the content: content={content:?} body={body:?}"
+                );
+                assert!(
+                    (row.size.width - body.size.width).abs() <= tolerance,
+                    "rem {rem} {size:?}: row narrower than the body: body={body:?} row={row:?}"
+                );
             }
         }
     }
