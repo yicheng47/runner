@@ -1007,6 +1007,12 @@ impl SessionManager {
         if first_turn_delivered_via_argv {
             self.arm_completion(&session_id);
         }
+        self.publish_mission_activity(
+            &session_id,
+            SessionActivityState::Busy,
+            "spawn",
+            events.as_ref(),
+        );
 
         #[cfg(windows)]
         self.queue_windows_batch_first_turn(
