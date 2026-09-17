@@ -30,10 +30,15 @@ jobs:
       - name: Install Rust toolchain
         run: rustup show active-toolchain
 
+      - name: Hash build settings
+        id: cache-key
+        shell: bash
+        run: echo "hash=$(grep -v '^version = ' Cargo.toml | git hash-object --stdin)" >> "$GITHUB_OUTPUT"
+
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ hashFiles('Cargo.toml') }}
+          key: ${{ steps.cache-key.outputs.hash }}
           cache-on-failure: false
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
@@ -76,10 +81,15 @@ jobs:
       - name: Install Rust toolchain
         run: rustup show active-toolchain
 
+      - name: Hash build settings
+        id: cache-key
+        shell: bash
+        run: echo "hash=$(grep -v '^version = ' Cargo.toml | git hash-object --stdin)" >> "$GITHUB_OUTPUT"
+
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ hashFiles('Cargo.toml') }}
+          key: ${{ steps.cache-key.outputs.hash }}
           cache-on-failure: false
           save-if: ${{ github.ref == 'refs/heads/main' }}
 

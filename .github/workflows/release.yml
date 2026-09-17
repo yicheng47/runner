@@ -90,10 +90,15 @@ jobs:
           rustup show active-toolchain
           rustup target add aarch64-apple-darwin
 
+      - name: Hash build settings
+        id: cache-key
+        shell: bash
+        run: echo "hash=$(grep -v '^version = ' Cargo.toml | git hash-object --stdin)" >> "$GITHUB_OUTPUT"
+
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ hashFiles('Cargo.toml') }}
+          key: ${{ steps.cache-key.outputs.hash }}
           cache-on-failure: true
 
       - name: Install Metal toolchain
@@ -241,10 +246,15 @@ jobs:
           rustup show active-toolchain
           rustup target add x86_64-pc-windows-msvc
 
+      - name: Hash build settings
+        id: cache-key
+        shell: bash
+        run: echo "hash=$(grep -v '^version = ' Cargo.toml | git hash-object --stdin)" >> "$GITHUB_OUTPUT"
+
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ hashFiles('Cargo.toml') }}
+          key: ${{ steps.cache-key.outputs.hash }}
           cache-on-failure: true
 
       - name: Connect to Certum SimplySign
