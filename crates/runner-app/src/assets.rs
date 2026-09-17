@@ -24,7 +24,7 @@ const CIRCLE_ALERT: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox=
 const CIRCLE_QUESTION_MARK: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 3-3 3m.1 4h.01"/></svg>"#;
 const APP_ICON: &[u8] = include_bytes!("../../../assets/icon.png");
 
-const BRAND_MARK: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32"><svg x="3" y="3" width="9" height="9" viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" opacity=".4"/></svg><svg x="9" y="9" width="14" height="14" viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg><svg x="3" y="20" width="9" height="9" viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" opacity=".4"/></svg></svg>"#;
+const BRAND_MARK: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 72 72"><path d="M14 22l14 14-14 14" fill="none" stroke="currentColor" stroke-width="9" stroke-linecap="round" stroke-linejoin="round" opacity=".28"/><path d="M29 22l14 14-14 14" fill="none" stroke="currentColor" stroke-width="9" stroke-linecap="round" stroke-linejoin="round" opacity=".55"/><path d="M44 22l14 14-14 14" fill="none" stroke="currentColor" stroke-width="9.6" stroke-linecap="round" stroke-linejoin="round"/></svg>"#;
 const PANEL_LEFT_HIDDEN: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 9v6"/></svg>"#;
 const PANEL_LEFT_OPEN: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/></svg>"#;
 const PANEL_RIGHT_HIDDEN: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M15 9v6"/></svg>"#;
@@ -338,6 +338,15 @@ mod tests {
             app_icon_source(),
             ImageSource::Resource(Resource::Embedded(path)) if path.as_ref() == "app-icon.png"
         ));
+    }
+
+    #[test]
+    fn brand_mark_uses_trail_geometry() {
+        let mark = Assets.load("brand-mark.svg").unwrap().expect("brand mark");
+        let mark = std::str::from_utf8(&mark).unwrap();
+        assert!(mark.contains(r#"viewBox="0 0 72 72""#));
+        assert_eq!(mark.matches("<path ").count(), 3);
+        assert!(mark.contains(r#"d="M44 22l14 14-14 14""#));
     }
 
     #[test]
