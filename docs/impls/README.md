@@ -6,6 +6,7 @@ A plan stays here while its work is in flight and moves to [`archive/`](./archiv
 
 ## Active
 
+- [Trail app icon](./archive/633-trail-app-icon.md) — issue [#633](https://github.com/yicheng47/runner/issues/633), shipped 2026-09-17 in [#640](https://github.com/yicheng47/runner/pull/640): the app icon, the Windows icon and the in-app brand mark draw the Trail chevrons from the brand mark exploration.
 - [Mission slot spawn seed](./archive/623-mission-slot-spawn-seed.md) — bug [#623](https://github.com/yicheng47/runner/issues/623), shipped 2026-09-17 in [#639](https://github.com/yicheng47/runner/pull/639): mission slots are seeded Busy at spawn like direct chats, so a baseline-only slot reads Working · estimated from its first turn.
 - [Title heuristic removal](./archive/625-title-heuristic-removal.md) — issue [#625](https://github.com/yicheng47/runner/issues/625), shipped 2026-09-17 in [#638](https://github.com/yicheng47/runner/pull/638): title-spinner classification is gone on both platforms; byte activity is the only baseline under the hook adapters.
 - [Session status signal](./archive/632-session-status-signal.md) — issue [#632](https://github.com/yicheng47/runner/issues/632), shipped 2026-09-17 in [#636](https://github.com/yicheng47/runner/pull/636): the busy/idle signal, its enum and the `mission_status` field carry the session term; readers accept the old `runner_status` rows.
