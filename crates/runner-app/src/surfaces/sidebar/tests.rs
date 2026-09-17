@@ -969,7 +969,7 @@ fn shell_sessions_default_to_the_shell_command_name() {
 }
 
 #[test]
-fn sidebar_icons_use_text_opacity_for_liveness_without_changing_provider_tints() {
+fn sidebar_icons_use_text_opacity_for_liveness_and_provider_tints_only_while_live() {
     let _theme = crate::theme_snapshot::ThemeGuard::new();
     for variant in [
         theme::ThemeVariant::Carbon,
@@ -988,7 +988,7 @@ fn sidebar_icons_use_text_opacity_for_liveness_without_changing_provider_tints()
         assert_eq!(sidebar_icon_color(provider, true), tint);
         assert_eq!(
             sidebar_icon_color(provider, false),
-            theme::with_alpha(tint, 0.45)
+            theme::with_alpha(theme::text(), 0.45)
         );
     }
 }
