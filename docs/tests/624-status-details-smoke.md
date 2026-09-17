@@ -1,6 +1,8 @@
 # 624 — Status details smoke checklist
 
-Scope: [feature spec](../features/624-status-details.md), [implementation plan](../impls/624-status-details.md), and the uncommitted mission-1 working tree on `feat/624-status-details`. These are manual checks; none is marked passed by automated tests.
+Scope: [feature spec](../features/archive/624-status-details.md), [implementation plan](../impls/archive/624-status-details.md), and [PR #631](https://github.com/yicheng47/runner/pull/631). These are manual checks; none is marked passed by automated tests.
+
+Jason ran the macOS checklist on the dev build on 2026-09-17 and reported an overall pass ("Everything works"); rows were not separately enumerated, so the boxes below stay as a per-row record for the next run. Along the way he asked for the detail to move into the header label and for the duplicate hover tooltip to go, both landed before the merge. A Codex steer test (three prompts in quick succession) showed plain `Idle`: Codex fires `Interrupt` but no `UserPromptSubmit` for a steered prompt, so the adapter never owns the turn; that is 347 behaviour, not this feature. The Windows column has not been run.
 
 ## Coverage boundary
 

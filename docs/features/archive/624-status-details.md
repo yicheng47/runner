@@ -2,9 +2,10 @@
 
 > Tracking issue: [#624](https://github.com/yicheng47/runner/issues/624)
 > Priority: P2. Platforms: macOS and Windows, one implementation.
-> Continues [347](./archive/347-hook-based-session-status.md), whose slice 5 deferred these details, and lands on top of [610](./610-windows-hook-status.md), which put the three hook adapters on both platforms (PR #627).
+> Shipped 2026-09-17 in [PR #631](https://github.com/yicheng47/runner/pull/631) after Jason's macOS smoke pass; the Windows smoke is outstanding.
+> Continues [347](./347-hook-based-session-status.md), whose slice 5 deferred these details, and lands on top of [610](../610-windows-hook-status.md), which put the three hook adapters on both platforms (PR #627).
 > Design: `design/runner.pen`, band `STATUS DETAILS (624)` right of the 606 and brand-mark specs. One frame per item: `z92Zy9` working detail, `qKf92` interrupted, `HiZ5G` wait timers, `bqwlq` failure attention. Jason signed the four frames off on 2026-09-17.
-> Implementation plan: [`docs/impls/624-status-details.md`](../impls/624-status-details.md).
+> Implementation plan: [`docs/impls/archive/624-status-details.md`](../../impls/archive/624-status-details.md).
 
 ## Motivation
 
