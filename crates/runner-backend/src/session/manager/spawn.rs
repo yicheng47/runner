@@ -512,16 +512,15 @@ impl SessionManager {
             first_turn
         };
         // Rekey reports from an earlier spawn must be cleared even with custom settings.
-        if Runtime::parse(&role.runtime) == Some(Runtime::ClaudeCode) {
+        let runtime = Runtime::parse(&role.runtime);
+        if matches!(runtime, Some(Runtime::ClaudeCode | Runtime::Pi)) {
             let _ = std::fs::remove_file(crate::session::claude_rekey::drop_path(
                 app_data_dir,
                 &spec.session_id,
             ));
         }
-        if crate::session::claude_status::hooks_supported(
-            Runtime::parse(&role.runtime),
-            cfg!(windows),
-        ) && router::runtime::inject_claude_settings(Runtime::parse(&role.runtime), &role.args)
+        if crate::session::claude_status::hooks_supported(runtime, cfg!(windows))
+            && router::runtime::inject_claude_settings(runtime, &role.args)
         {
             let status_path =
                 crate::session::claude_status::status_path(app_data_dir, &spec.session_id);
@@ -535,11 +534,7 @@ impl SessionManager {
             );
         }
         let mut composed: Vec<String> = Vec::new();
-        if router::runtime::inject_codex_hooks(
-            Runtime::parse(&role.runtime),
-            &role.args,
-            cfg!(windows),
-        ) {
+        if router::runtime::inject_codex_hooks(runtime, &role.args, cfg!(windows)) {
             spec.env.insert(
                 crate::session::codex_status::PATH_ENV.into(),
                 crate::session::hook_feed::hook_path(&crate::session::hook_feed::status_path(
@@ -565,6 +560,36 @@ impl SessionManager {
             spec.env.insert(
                 crate::session::copilot_status::GENERATION_ENV.into(),
                 uuid::Uuid::new_v4().to_string(),
+            );
+        }
+        if runtime == Some(Runtime::Pi)
+            && crate::session::hook_feed::hooks_supported(Some(Runtime::Pi), cfg!(windows))
+        {
+            let session_key = plan
+                .assigned_key
+                .as_ref()
+                .expect("pi spawn plan must assign --session-id");
+            spec.env.insert(
+                crate::session::pi_status::PATH_ENV.into(),
+                crate::session::hook_feed::hook_path(&crate::session::hook_feed::status_path(
+                    app_data_dir,
+                    &spec.session_id,
+                )),
+            );
+            spec.env.insert(
+                crate::session::pi_status::GENERATION_ENV.into(),
+                uuid::Uuid::new_v4().to_string(),
+            );
+            spec.env.insert(
+                crate::session::pi_status::SESSION_KEY_ENV.into(),
+                session_key.clone(),
+            );
+            spec.env.insert(
+                crate::session::pi_status::REKEY_PATH_ENV.into(),
+                crate::session::hook_feed::hook_path(&crate::session::claude_rekey::drop_path(
+                    app_data_dir,
+                    &spec.session_id,
+                )),
             );
         }
         if plan.prepend {

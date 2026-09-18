@@ -18,7 +18,7 @@ pub(crate) const fn hooks_supported(runtime: Option<Runtime>, windows: bool) -> 
     matches!(
         (runtime, windows),
         (
-            Some(Runtime::ClaudeCode | Runtime::Codex | Runtime::Copilot),
+            Some(Runtime::ClaudeCode | Runtime::Codex | Runtime::Copilot | Runtime::Pi),
             false | true
         )
     )
@@ -394,7 +394,7 @@ mod tests {
                     hooks_supported(Some(runtime), windows),
                     matches!(
                         runtime,
-                        Runtime::ClaudeCode | Runtime::Codex | Runtime::Copilot
+                        Runtime::ClaudeCode | Runtime::Codex | Runtime::Copilot | Runtime::Pi
                     ),
                     "{runtime:?} windows={windows}"
                 );
