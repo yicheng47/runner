@@ -32,6 +32,7 @@ struct SessionStartReport {
     session_id: String,
 }
 
+/// Watches atomic session-key reports written by Claude Code and pi hooks.
 pub(crate) struct ClaudeSessionKeyWatcher {
     shutdown: Arc<AtomicBool>,
     _consumer: JoinHandle<()>,
