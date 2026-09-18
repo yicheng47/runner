@@ -1,5 +1,6 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use clap::{Args, Parser, Subcommand};
 use runner_cli::client::{ClientError, SocketClient, ToolResponse};
@@ -7,6 +8,11 @@ use serde_json::{json, Value};
 
 use crate::env::{BusContext, MissionEnv};
 use crate::{env, help, msg, output, signal};
+
+#[cfg(not(test))]
+const FEED_POLL_INTERVAL: Duration = Duration::from_millis(500);
+#[cfg(test)]
+const FEED_POLL_INTERVAL: Duration = Duration::from_millis(1);
 
 #[derive(Parser, Debug)]
 #[command(
@@ -56,7 +62,7 @@ enum Command {
         #[command(subcommand)]
         command: ChatCommand,
     },
-    /// List and resume sessions.
+    /// Inspect and manage sessions.
     Session {
         #[command(subcommand)]
         command: SessionCommand,
@@ -324,6 +330,9 @@ enum MissionCommand {
     /// Print a window from the mission event feed.
     Feed {
         mission: Option<String>,
+        /// Keep polling and print new events as they arrive.
+        #[arg(long)]
+        follow: bool,
         /// Start after this byte offset.
         #[arg(long)]
         since: Option<u64>,
@@ -333,6 +342,15 @@ enum MissionCommand {
         /// Ask the backend for chronological order.
         #[arg(long)]
         oldest_first: bool,
+        /// Comma-separated signal kinds (or message) to include.
+        #[arg(long, conflicts_with = "all")]
+        types: Option<String>,
+        /// Include only events from this handle.
+        #[arg(long)]
+        from: Option<String>,
+        /// Include session_status and inbox_read noise.
+        #[arg(long)]
+        all: bool,
     },
     /// Answer a pending person question.
     Answer {
@@ -369,6 +387,12 @@ enum ChatCommand {
 enum SessionCommand {
     /// List recent direct-chat sessions.
     List,
+    /// Show one session with its live agent status.
+    Show { session: String },
+    /// Stop a session and leave it resumable.
+    Stop { session: String },
+    /// Stop and archive a direct chat.
+    Archive { session: String },
     /// Resume a stopped session.
     Resume { session: String },
     /// Restart a mission session with a fresh conversation.
@@ -496,10 +520,12 @@ pub fn run(cli: Cli) -> i32 {
         }
     };
     match runtime.block_on(run_remote(&cli, &context)) {
-        Ok(response) => {
+        Ok(Some(response)) => {
+            let response = postprocess_response(&cli, response);
             output::print(&response, cli.json, cli.quiet, output_view(&cli.command));
             0
         }
+        Ok(None) => 0,
         Err(error) => {
             eprintln!("{}", error.message);
             error.code
@@ -511,7 +537,7 @@ fn output_view(command: &Command) -> output::View {
     use output::View;
 
     match command {
-        Command::Status => View::Generic,
+        Command::Status => View::Status,
         Command::Project { command } => match command {
             ProjectCommand::List => View::ProjectList,
             ProjectCommand::Show { .. }
@@ -555,6 +581,9 @@ fn output_view(command: &Command) -> output::View {
         Command::Chat { .. } => View::Confirmation("Started session"),
         Command::Session { command } => match command {
             SessionCommand::List => View::SessionList,
+            SessionCommand::Show { .. } => View::SessionShow,
+            SessionCommand::Stop { .. } => View::Confirmation("Stopped session"),
+            SessionCommand::Archive { .. } => View::Confirmation("Archived session"),
             SessionCommand::Resume { .. } => View::Confirmation("Resumed session"),
             SessionCommand::Restart { .. } => View::Confirmation("Restarted session"),
         },
@@ -733,6 +762,12 @@ fn validate_remote(cli: &Cli, context: &BusContext) -> Result<(), CliError> {
             Ok(())
         }
         Command::Mission {
+            command: MissionCommand::Feed { types, .. },
+        } => {
+            parse_feed_types(types.as_deref())?;
+            Ok(())
+        }
+        Command::Mission {
             command: MissionCommand::Move {
                 project, unfile, ..
             },
@@ -767,12 +802,44 @@ fn mission_arg(command: &MissionCommand) -> Option<&Option<String>> {
     }
 }
 
-async fn run_remote(cli: &Cli, context: &BusContext) -> Result<ToolResponse, CliError> {
+async fn run_remote(cli: &Cli, context: &BusContext) -> Result<Option<ToolResponse>, CliError> {
     let client = SocketClient::connect().await?;
     if matches!(cli.command, Command::Status) {
-        return status_response(&client, context);
+        return status_response(&client, context).map(Some);
     }
-    run_connected(&client, cli, context).await
+    if let Command::Mission {
+        command:
+            MissionCommand::Feed {
+                mission,
+                follow: true,
+                since,
+                limit,
+                oldest_first,
+                types,
+                from,
+                all,
+            },
+    } = &cli.command
+    {
+        let mission_id = resolve_mission_arg(&client, mission.as_deref(), context).await?;
+        let filter = FeedFilter::new(types.as_deref(), from.as_deref(), *all)?;
+        let stdout = std::io::stdout();
+        let mut stdout = stdout.lock();
+        follow_feed(
+            &client,
+            &mission_id,
+            *since,
+            *limit,
+            *oldest_first,
+            &filter,
+            cli.json,
+            cli.quiet,
+            &mut stdout,
+        )
+        .await?;
+        return Ok(None);
+    }
+    run_connected(&client, cli, context).await.map(Some)
 }
 
 async fn run_connected(
@@ -824,6 +891,9 @@ fn status_response(client: &SocketClient, context: &BusContext) -> Result<ToolRe
     let sidecar = app_data
         .join("bin")
         .join(format!("runner{}", std::env::consts::EXE_SUFFIX));
+    let home = runner_core::app_paths::home_dir()
+        .ok_or_else(|| CliError::usage("Runner home directory could not be resolved"))?;
+    let skills = skill_statuses(&home, debug);
     let mode = match context {
         BusContext::Mission(mission) => {
             format!(
@@ -841,7 +911,26 @@ fn status_response(client: &SocketClient, context: &BusContext) -> Result<ToolRe
         "sidecar": sidecar,
         "sidecar_present": sidecar.is_file(),
         "mode": mode,
+        "skills": skills,
     }))
+}
+
+fn skill_statuses(home: &Path, debug: bool) -> Vec<Value> {
+    let skill_name = runner_core::runner_skill_name(debug);
+    runner_core::RUNNER_SKILL_ROOTS
+        .iter()
+        .map(|relative| {
+            let folder = home.join(relative).join(skill_name);
+            let state = if !folder.exists() {
+                "missing"
+            } else if folder.join(runner_core::RUNNER_SKILL_MARKER).is_file() {
+                "managed"
+            } else {
+                "foreign"
+            };
+            json!({"root": home.join(relative), "folder": folder, "state": state})
+        })
+        .collect()
 }
 
 async fn run_project(
@@ -1174,9 +1263,13 @@ async fn run_mission(
         }
         MissionCommand::Feed {
             mission,
+            follow: _,
             since,
             limit,
             oldest_first,
+            types: _,
+            from: _,
+            all: _,
         } => {
             let mission_id = resolve_mission_arg(client, mission.as_deref(), context).await?;
             call(
@@ -1210,6 +1303,233 @@ async fn run_mission(
             .await
         }
     }
+}
+
+#[derive(Debug)]
+struct FeedFilter {
+    types: Option<HashSet<String>>,
+    from: Option<String>,
+    all: bool,
+}
+
+impl FeedFilter {
+    fn new(types: Option<&str>, from: Option<&str>, all: bool) -> Result<Self, CliError> {
+        Ok(Self {
+            types: parse_feed_types(types)?,
+            from: from.map(str::to_owned),
+            all,
+        })
+    }
+
+    fn is_explicit(&self) -> bool {
+        self.types.is_some() || self.from.is_some() || self.all
+    }
+
+    fn matches(&self, entry: &Value) -> bool {
+        let event = entry.get("event").unwrap_or(entry);
+        if self
+            .from
+            .as_deref()
+            .is_some_and(|from| field(event, "from") != Some(from))
+        {
+            return false;
+        }
+        let event_type = field(event, "type").or_else(|| field(event, "kind"));
+        if let Some(types) = &self.types {
+            return event_type.is_some_and(|kind| types.contains(kind));
+        }
+        self.all
+            || !event_type.is_some_and(|kind| {
+                matches!(kind, "session_status" | "runner_status" | "inbox_read")
+            })
+    }
+}
+
+fn parse_feed_types(types: Option<&str>) -> Result<Option<HashSet<String>>, CliError> {
+    let Some(types) = types else {
+        return Ok(None);
+    };
+    let values = types
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .collect::<HashSet<_>>();
+    if values.is_empty() {
+        return Err(CliError::usage(
+            "runner mission feed: --types requires at least one event kind",
+        ));
+    }
+    Ok(Some(values))
+}
+
+fn filter_feed_response(response: &ToolResponse, filter: &FeedFilter) -> ToolResponse {
+    let mut value = response.value.clone();
+    if let Some(events) = value.get_mut("events").and_then(Value::as_array_mut) {
+        events.retain(|entry| filter.matches(entry));
+    }
+    ToolResponse {
+        raw_json: serde_json::to_string(&value).unwrap_or_else(|_| response.raw_json.clone()),
+        value,
+    }
+}
+
+fn postprocess_response(cli: &Cli, response: ToolResponse) -> ToolResponse {
+    let Command::Mission {
+        command:
+            MissionCommand::Feed {
+                follow: false,
+                types,
+                from,
+                all,
+                ..
+            },
+    } = &cli.command
+    else {
+        return response;
+    };
+    let filter = FeedFilter::new(types.as_deref(), from.as_deref(), *all)
+        .expect("feed filters were validated before connecting");
+    if cli.json && !filter.is_explicit() {
+        response
+    } else {
+        filter_feed_response(&response, &filter)
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn follow_feed(
+    client: &impl ToolCaller,
+    mission_id: &str,
+    since: Option<u64>,
+    limit: Option<usize>,
+    oldest_first: bool,
+    filter: &FeedFilter,
+    json: bool,
+    quiet: bool,
+    writer: &mut impl std::io::Write,
+) -> Result<(), CliError> {
+    let ctrl_c = tokio::signal::ctrl_c();
+    tokio::pin!(ctrl_c);
+    let initial = tokio::select! {
+        signal = &mut ctrl_c => {
+            handle_ctrl_c(signal)?;
+            return Ok(());
+        }
+        response = call(
+            client,
+            "mission_feed",
+            json!({
+                "mission_id": mission_id,
+                "since_offset": since,
+                "limit": limit,
+                "order": if oldest_first { "oldest_first" } else { "newest_first" },
+            }),
+        ) => response?,
+    };
+    let mut cursor = initial
+        .value
+        .get("next_offset")
+        .and_then(Value::as_u64)
+        .or(since)
+        .unwrap_or(0);
+    let mut seen = HashSet::new();
+    write_follow_events(&initial, filter, json, quiet, &mut seen, writer)?;
+    let archived = tokio::select! {
+        signal = &mut ctrl_c => {
+            handle_ctrl_c(signal)?;
+            return Ok(());
+        }
+        archived = mission_is_archived(client, mission_id) => archived?,
+    };
+    if archived {
+        return Ok(());
+    }
+
+    let mut polls = 0_u64;
+    loop {
+        let response = tokio::select! {
+            signal = &mut ctrl_c => {
+                handle_ctrl_c(signal)?;
+                return Ok(());
+            }
+            response = async {
+                tokio::time::sleep(FEED_POLL_INTERVAL).await;
+                call(
+                    client,
+                    "mission_feed",
+                    json!({
+                        "mission_id": mission_id,
+                        "since_offset": cursor,
+                        "limit": limit,
+                        "order": "oldest_first",
+                    }),
+                )
+                .await
+            } => response?,
+        };
+        if let Some(next) = response.value.get("next_offset").and_then(Value::as_u64) {
+            cursor = cursor.max(next);
+        }
+        write_follow_events(&response, filter, json, quiet, &mut seen, writer)?;
+        polls += 1;
+        if polls.is_multiple_of(4) {
+            let archived = tokio::select! {
+                signal = &mut ctrl_c => {
+                    handle_ctrl_c(signal)?;
+                    return Ok(());
+                }
+                archived = mission_is_archived(client, mission_id) => archived?,
+            };
+            if archived {
+                return Ok(());
+            }
+        }
+    }
+}
+
+fn handle_ctrl_c(result: std::io::Result<()>) -> Result<(), CliError> {
+    result.map_err(|error| CliError {
+        code: 1,
+        message: format!("runner mission feed: Ctrl-C handler failed: {error}"),
+    })
+}
+
+fn write_follow_events(
+    response: &ToolResponse,
+    filter: &FeedFilter,
+    json: bool,
+    quiet: bool,
+    seen: &mut HashSet<String>,
+    writer: &mut impl std::io::Write,
+) -> Result<(), CliError> {
+    let mut filtered = filter_feed_response(response, filter);
+    if let Some(events) = filtered
+        .value
+        .get_mut("events")
+        .and_then(Value::as_array_mut)
+    {
+        events.retain(|entry| {
+            let event = entry.get("event").unwrap_or(entry);
+            let key = field(event, "id")
+                .map(str::to_owned)
+                .or_else(|| entry.get("next_offset").map(Value::to_string))
+                .unwrap_or_else(|| event.to_string());
+            seen.insert(key)
+        });
+    }
+    output::write_feed_events(&filtered.value, json, quiet, writer).map_err(|error| CliError {
+        code: 1,
+        message: format!("runner mission feed: write failed: {error}"),
+    })
+}
+
+async fn mission_is_archived(client: &impl ToolCaller, mission_id: &str) -> Result<bool, CliError> {
+    let mission = call(client, "mission_get", json!({"id": mission_id})).await?;
+    Ok(mission
+        .value
+        .get("archived_at")
+        .is_some_and(|value| !value.is_null()))
 }
 
 async fn run_chat(
@@ -1262,6 +1582,18 @@ async fn run_session(
 ) -> Result<ToolResponse, CliError> {
     match command {
         SessionCommand::List => call(client, "session_list", json!({})).await,
+        SessionCommand::Show { session }
+        | SessionCommand::Stop { session }
+        | SessionCommand::Archive { session } => {
+            let session_id = resolve_session(client, session).await?;
+            let tool = match command {
+                SessionCommand::Show { .. } => "session_get",
+                SessionCommand::Stop { .. } => "session_stop",
+                SessionCommand::Archive { .. } => "session_archive",
+                _ => unreachable!(),
+            };
+            call(client, tool, json!({"session_id": session_id})).await
+        }
         SessionCommand::Resume { session } | SessionCommand::Restart { session } => {
             let id = resolve_session(client, session).await?;
             let tool = if matches!(command, SessionCommand::Resume { .. }) {
@@ -1772,6 +2104,7 @@ fn nullable(value: &str) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::VecDeque;
     use std::sync::Mutex;
 
     #[derive(Default)]
@@ -1781,6 +2114,25 @@ mod tests {
 
     struct FailingMissionGetClient {
         code: i32,
+    }
+
+    struct SequenceClient {
+        responses: Mutex<VecDeque<(String, Result<Value, CliError>)>>,
+        calls: Mutex<Vec<(String, Value)>>,
+    }
+
+    impl SequenceClient {
+        fn new(responses: Vec<(&str, Result<Value, CliError>)>) -> Self {
+            Self {
+                responses: Mutex::new(
+                    responses
+                        .into_iter()
+                        .map(|(name, response)| (name.to_owned(), response))
+                        .collect(),
+                ),
+                calls: Mutex::new(Vec::new()),
+            }
+        }
     }
 
     impl ToolCaller for RecordingClient {
@@ -1820,6 +2172,198 @@ mod tests {
                 _ => panic!("unexpected tool {name}"),
             }
         }
+    }
+
+    impl ToolCaller for SequenceClient {
+        async fn call(&self, name: &str, arguments: Value) -> Result<ToolResponse, CliError> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push((name.to_owned(), arguments));
+            let (expected, response_value) = self
+                .responses
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or_else(|| panic!("unexpected tool call {name}"));
+            assert_eq!(name, expected);
+            response_value.and_then(response)
+        }
+    }
+
+    fn feed_event(id: &str, next_offset: u64, kind: &str, from: &str) -> Value {
+        json!({
+            "next_offset": next_offset,
+            "event": {
+                "id": id,
+                "ts": format!("2026-09-18T10:20:{id}Z"),
+                "kind": if kind == "message" { "message" } else { "signal" },
+                "from": from,
+                "to": null,
+                "type": if kind == "message" { Value::Null } else { json!(kind) },
+                "payload": {"text": id},
+            }
+        })
+    }
+
+    #[tokio::test]
+    async fn follow_prints_each_event_once_across_empty_and_multi_event_polls() {
+        let e1 = feed_event("01", 10, "message", "human");
+        let e2 = feed_event("02", 20, "ask_lead", "coder");
+        let e3 = feed_event("03", 30, "message", "reviewer");
+        let e4 = feed_event("04", 40, "human_response", "human");
+        let client = SequenceClient::new(vec![
+            (
+                "mission_feed",
+                Ok(json!({"events": [e1.clone()], "next_offset": 10, "skipped": []})),
+            ),
+            ("mission_get", Ok(json!({"archived_at": null}))),
+            (
+                "mission_feed",
+                Ok(json!({"events": [], "next_offset": null, "skipped": []})),
+            ),
+            (
+                "mission_feed",
+                Ok(json!({"events": [e1, e2], "next_offset": 20, "skipped": []})),
+            ),
+            (
+                "mission_feed",
+                Ok(json!({"events": [e3, e4], "next_offset": 40, "skipped": []})),
+            ),
+            (
+                "mission_feed",
+                Ok(json!({"events": [], "next_offset": null, "skipped": []})),
+            ),
+            (
+                "mission_get",
+                Ok(json!({"archived_at": "2026-09-18T10:21:00Z"})),
+            ),
+        ]);
+        let mut output = Vec::new();
+        follow_feed(
+            &client,
+            "mission",
+            None,
+            None,
+            false,
+            &FeedFilter::new(None, None, false).unwrap(),
+            true,
+            false,
+            &mut output,
+        )
+        .await
+        .unwrap();
+        let lines = String::from_utf8(output).unwrap();
+        let ids = lines
+            .lines()
+            .map(|line| {
+                serde_json::from_str::<Value>(line).unwrap()["id"]
+                    .as_str()
+                    .unwrap()
+                    .to_owned()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(ids, ["01", "02", "03", "04"]);
+        let calls = client.calls.into_inner().unwrap();
+        let cursors = calls
+            .iter()
+            .filter(|(name, _)| name == "mission_feed")
+            .skip(1)
+            .map(|(_, arguments)| arguments["since_offset"].as_u64().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(cursors, [10, 10, 20, 40]);
+    }
+
+    #[tokio::test]
+    async fn follow_returns_exit_three_when_the_app_goes_away() {
+        let client = SequenceClient::new(vec![
+            (
+                "mission_feed",
+                Ok(json!({"events": [], "next_offset": null, "skipped": []})),
+            ),
+            ("mission_get", Ok(json!({"archived_at": null}))),
+            (
+                "mission_feed",
+                Err(CliError {
+                    code: 3,
+                    message: runner_cli::client::NOT_RUNNING_MESSAGE.into(),
+                }),
+            ),
+        ]);
+        let error = follow_feed(
+            &client,
+            "mission",
+            None,
+            None,
+            false,
+            &FeedFilter::new(None, None, false).unwrap(),
+            false,
+            false,
+            &mut Vec::new(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.code, 3);
+        assert_eq!(error.message, runner_cli::client::NOT_RUNNING_MESSAGE);
+    }
+
+    #[test]
+    fn feed_filters_types_senders_and_default_noise() {
+        let message = feed_event("01", 10, "message", "human");
+        let status = feed_event("02", 20, "session_status", "coder");
+        let inbox = feed_event("03", 30, "inbox_read", "coder");
+        let ask = feed_event("04", 40, "ask_lead", "reviewer");
+        let legacy = feed_event("05", 50, "runner_status", "coder");
+        let response = response(json!({
+            "events": [message, status, inbox, ask, legacy],
+            "next_offset": 50,
+            "skipped": []
+        }))
+        .unwrap();
+
+        let default = filter_feed_response(&response, &FeedFilter::new(None, None, false).unwrap());
+        assert_eq!(default.value["events"].as_array().unwrap().len(), 2);
+        let all = filter_feed_response(&response, &FeedFilter::new(None, None, true).unwrap());
+        assert_eq!(all.value["events"].as_array().unwrap().len(), 5);
+        let statuses = filter_feed_response(
+            &response,
+            &FeedFilter::new(Some("session_status,inbox_read"), None, false).unwrap(),
+        );
+        assert_eq!(statuses.value["events"].as_array().unwrap().len(), 2);
+        let reviewer = filter_feed_response(
+            &response,
+            &FeedFilter::new(None, Some("reviewer"), false).unwrap(),
+        );
+        assert_eq!(reviewer.value["events"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn plain_json_feed_without_filters_stays_verbatim() {
+        let cli = Cli::try_parse_from(["runner", "mission", "feed", "01M", "--json"]).unwrap();
+        let response = ToolResponse {
+            value: json!({"events": [], "next_offset": null}),
+            raw_json: "{ \"events\" : [], \"next_offset\" : null }".into(),
+        };
+        assert_eq!(
+            postprocess_response(&cli, response).raw_json,
+            "{ \"events\" : [], \"next_offset\" : null }"
+        );
+    }
+
+    #[test]
+    fn runner_status_classifies_managed_foreign_and_missing_skill_roots() {
+        let home = tempfile::tempdir().unwrap();
+        let managed = home.path().join(".claude/skills/runner-dev");
+        std::fs::create_dir_all(&managed).unwrap();
+        std::fs::write(managed.join(runner_core::RUNNER_SKILL_MARKER), "managed").unwrap();
+        let foreign = home.path().join(".agents/skills/runner-dev");
+        std::fs::create_dir_all(&foreign).unwrap();
+
+        let statuses = skill_statuses(home.path(), true);
+
+        assert_eq!(statuses[0]["state"], "managed");
+        assert_eq!(statuses[1]["state"], "foreign");
+        assert_eq!(statuses[2]["state"], "missing");
     }
 
     #[test]
@@ -2283,6 +2827,21 @@ mod tests {
             ),
             (vec!["session", "list"], vec!["session_list"], json!({})),
             (
+                vec!["session", "show", "01S"],
+                vec!["session_list", "session_get"],
+                json!({"session_id": SESSION_ID}),
+            ),
+            (
+                vec!["session", "stop", "01S"],
+                vec!["session_list", "session_stop"],
+                json!({"session_id": SESSION_ID}),
+            ),
+            (
+                vec!["session", "archive", "01S"],
+                vec!["session_list", "session_archive"],
+                json!({"session_id": SESSION_ID}),
+            ),
+            (
                 vec!["session", "resume", "01S"],
                 vec!["session_list", "session_resume"],
                 json!({"session_id": SESSION_ID}),
@@ -2458,6 +3017,9 @@ mod tests {
             &["chat", "start", "coder"],
             &["chat", "start", "--runtime", "codex"],
             &["session", "list"],
+            &["session", "show", "01S"],
+            &["session", "stop", "01S"],
+            &["session", "archive", "01S"],
             &["session", "resume", "01S"],
             &["session", "restart", "01S"],
             &["msg", "post", "hello", "--mission", "01M"],

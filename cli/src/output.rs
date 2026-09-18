@@ -7,6 +7,7 @@ const MAX_KEY_VALUE_WIDTH: usize = 96;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum View {
     Generic,
+    Status,
     ProjectList,
     Project,
     RoleList,
@@ -19,6 +20,7 @@ pub enum View {
     MissionShow,
     MissionFeed,
     SessionList,
+    SessionShow,
     Confirmation(&'static str),
 }
 
@@ -65,6 +67,7 @@ fn ids(value: &Value) -> Vec<String> {
 fn render_default(view: View, value: &Value) -> Vec<String> {
     match view {
         View::Generic => render_generic(value),
+        View::Status => render_status(value),
         View::ProjectList => render_project_list(value),
         View::Project => render_project(value),
         View::RoleList => render_role_list(value),
@@ -77,6 +80,7 @@ fn render_default(view: View, value: &Value) -> Vec<String> {
         View::MissionShow => render_mission_show(value),
         View::MissionFeed => render_mission_feed(value),
         View::SessionList => render_session_list(value),
+        View::SessionShow => render_session_show(value),
         View::Confirmation(action) => render_confirmation(action, value),
     }
 }
@@ -384,6 +388,20 @@ fn render_mission_show(value: &Value) -> Vec<String> {
 }
 
 fn render_mission_feed(value: &Value) -> Vec<String> {
+    let mut lines = feed_event_lines(value);
+    let skipped = value
+        .get("skipped")
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .unwrap_or(0);
+    if skipped > 0 {
+        lines.push(format!("skipped      {skipped}"));
+    }
+    lines.push(format!("next_offset  {}", cell(value.get("next_offset"))));
+    lines
+}
+
+fn feed_event_lines(value: &Value) -> Vec<String> {
     let mut events = value
         .get("events")
         .and_then(Value::as_array)
@@ -396,7 +414,7 @@ fn render_mission_feed(value: &Value) -> Vec<String> {
             .cmp(&text(right.get("ts")))
             .then_with(|| text(left.get("id")).cmp(&text(right.get("id"))))
     });
-    let mut lines = events
+    events
         .into_iter()
         .map(|entry| {
             let event = entry.get("event").unwrap_or(entry);
@@ -414,17 +432,40 @@ fn render_mission_feed(value: &Value) -> Vec<String> {
                 event_text(event),
             )
         })
-        .collect::<Vec<_>>();
-    let skipped = value
-        .get("skipped")
+        .collect()
+}
+
+pub fn write_feed_events(
+    value: &Value,
+    json: bool,
+    quiet: bool,
+    writer: &mut impl std::io::Write,
+) -> std::io::Result<()> {
+    let mut events = value
+        .get("events")
         .and_then(Value::as_array)
-        .map(Vec::len)
-        .unwrap_or(0);
-    if skipped > 0 {
-        lines.push(format!("skipped      {skipped}"));
+        .map(|events| events.iter().collect::<Vec<_>>())
+        .unwrap_or_default();
+    events.sort_by(|left, right| {
+        let left = left.get("event").unwrap_or(left);
+        let right = right.get("event").unwrap_or(right);
+        text(left.get("ts"))
+            .cmp(&text(right.get("ts")))
+            .then_with(|| text(left.get("id")).cmp(&text(right.get("id"))))
+    });
+    let human = feed_event_lines(value);
+    for (index, entry) in events.into_iter().enumerate() {
+        let event = entry.get("event").unwrap_or(entry);
+        if json {
+            writeln!(writer, "{}", serde_json::to_string(event).unwrap())?;
+        } else if quiet {
+            writeln!(writer, "{}", text(event.get("id")))?;
+        } else {
+            writeln!(writer, "{}", human[index])?;
+        }
+        writer.flush()?;
     }
-    lines.push(format!("next_offset  {}", cell(value.get("next_offset"))));
-    lines
+    Ok(())
 }
 
 fn event_text(event: &Value) -> String {
@@ -456,11 +497,43 @@ fn render_session_list(value: &Value) -> Vec<String> {
                 cell(role),
                 cell(title),
                 cell(row.get("status")),
+                cell(row.get("activity")),
                 cell(row.get("cwd")),
             ]
         })
         .collect();
-    table(&["ID", "RUNTIME", "ROLE", "TITLE", "STATUS", "CWD"], rows)
+    table(
+        &[
+            "ID", "RUNTIME", "ROLE", "TITLE", "STATUS", "ACTIVITY", "CWD",
+        ],
+        rows,
+    )
+}
+
+fn render_session_show(value: &Value) -> Vec<String> {
+    let status = value.get("agent_status").unwrap_or(&Value::Null);
+    let observation = status.get("observation").unwrap_or(&Value::Null);
+    let waits = observation
+        .get("interactions")
+        .and_then(Value::as_array)
+        .map(|values| values.len().to_string())
+        .unwrap_or_else(|| "0".into());
+    let waits = Value::String(waits);
+    key_values(&[
+        ("ID", value.get("session_id").or_else(|| value.get("id"))),
+        ("MISSION", value.get("mission_id")),
+        ("RUNTIME", value.get("agent_runtime")),
+        ("ROLE", value.get("handle").or_else(|| value.get("role_id"))),
+        ("ROW STATUS", value.get("status")),
+        ("LIFECYCLE", status.get("lifecycle")),
+        ("ACTIVITY", observation.get("activity")),
+        ("RAW ACTIVITY", value.get("activity")),
+        ("SOURCE", observation.get("source")),
+        ("OUTCOME", observation.get("outcome")),
+        ("DETAIL", observation.get("detail")),
+        ("WAITS", Some(&waits)),
+        ("CWD", value.get("cwd")),
+    ])
 }
 
 fn render_confirmation(action: &str, value: &Value) -> Vec<String> {
@@ -485,6 +558,29 @@ fn render_generic(value: &Value) -> Vec<String> {
         Value::Null => Vec::new(),
         value => vec![cell(Some(value))],
     }
+}
+
+fn render_status(value: &Value) -> Vec<String> {
+    let mut lines = key_values(&[
+        ("CLI VERSION", value.get("cli_version")),
+        ("APP VERSION", value.get("app_version")),
+        ("SOCKET", value.get("socket")),
+        ("SIDECAR", value.get("sidecar")),
+        ("SIDECAR PRESENT", value.get("sidecar_present")),
+        ("MODE", value.get("mode")),
+    ]);
+    if let Some(skills) = value.get("skills").and_then(Value::as_array) {
+        lines.push(String::new());
+        lines.push("SKILLS".into());
+        lines.extend(skills.iter().map(|skill| {
+            format!(
+                "{}  {}",
+                cell_width(skill.get("state"), 12),
+                cell_width(skill.get("folder"), MAX_KEY_VALUE_WIDTH),
+            )
+        }));
+    }
+    lines
 }
 
 fn generic_table(rows: &[Value]) -> Vec<String> {
@@ -636,6 +732,24 @@ fn array(value: &Value) -> &[Value] {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[derive(Default)]
+    struct FlushTrackingWriter {
+        bytes: Vec<u8>,
+        flushes: usize,
+    }
+
+    impl std::io::Write for FlushTrackingWriter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.bytes.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            self.flushes += 1;
+            Ok(())
+        }
+    }
 
     #[test]
     fn quiet_ids_cover_nested_mission_lists_and_augmented_deletes() {
@@ -850,16 +964,39 @@ mod tests {
         );
         let sessions = json!([{
             "session_id": "session-id", "agent_runtime": "codex", "handle": "coder",
-            "title": null, "live_title": "Fix\nCLI", "display_name": "Coder", "status": "running", "cwd": "/repo",
+            "title": null, "live_title": "Fix\nCLI", "display_name": "Coder", "status": "running", "activity": "working", "cwd": "/repo",
             "nested": {"ignored": true}
         }]);
         assert_eq!(
             render_default(View::SessionList, &sessions),
             [
-                "ID          RUNTIME  ROLE   TITLE    STATUS   CWD",
-                "session-id  codex    coder  Fix CLI  running  /repo",
+                "ID          RUNTIME  ROLE   TITLE    STATUS   ACTIVITY  CWD",
+                "session-id  codex    coder  Fix CLI  running  working   /repo",
             ]
         );
+    }
+
+    #[test]
+    fn follow_json_is_flushed_ndjson_without_cursor_lines() {
+        let feed = json!({
+            "events": [
+                {"next_offset": 20, "event": {"id": "2", "ts": "2026-09-18T10:20:31Z", "kind": "signal", "from": "coder", "type": "ask_lead", "payload": {}}},
+                {"next_offset": 10, "event": {"id": "1", "ts": "2026-09-18T10:20:30Z", "kind": "message", "from": "human", "payload": {"text": "go"}}}
+            ],
+            "next_offset": 20
+        });
+        let mut writer = FlushTrackingWriter::default();
+        write_feed_events(&feed, true, false, &mut writer).unwrap();
+        assert_eq!(writer.flushes, 2);
+        let lines = String::from_utf8(writer.bytes).unwrap();
+        let parsed = lines
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0]["id"], "1");
+        assert_eq!(parsed[1]["id"], "2");
+        assert!(!lines.contains("next_offset"));
     }
 
     #[test]

@@ -18,6 +18,7 @@ pub struct AutoResumeReport {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativePaths {
+    pub home_dir: Option<PathBuf>,
     pub app_data_dir: PathBuf,
     pub log_dir: PathBuf,
 }
@@ -60,6 +61,7 @@ impl Drop for NativeMcpServer {
 impl NativePaths {
     pub fn new(app_data_dir: PathBuf, log_dir: PathBuf) -> Self {
         Self {
+            home_dir: None,
             app_data_dir,
             log_dir,
         }
@@ -73,6 +75,7 @@ pub fn native_paths() -> Result<NativePaths> {
 
 fn paths_for_home(home: &Path, debug: bool) -> NativePaths {
     NativePaths {
+        home_dir: Some(home.to_path_buf()),
         app_data_dir: runner_backend::app_paths::app_data_dir_for_home(home, debug),
         log_dir: runner_backend::app_paths::log_dir_for_home(home, debug),
     }

@@ -1225,9 +1225,14 @@ fn run() -> Result<()> {
             Ok(settings) => (settings, None),
             Err(error) => (AppSettings::default(), Some(error.to_string())),
         };
+        #[cfg(not(test))]
+        let skill_home = paths.home_dir.clone();
+        #[cfg(test)]
+        let skill_home = None;
         let app_store = cx.new(|cx| {
             AppStore::new(
                 core.clone(),
+                skill_home,
                 ui_settings_path.clone(),
                 settings,
                 settings_error,

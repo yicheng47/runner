@@ -109,6 +109,7 @@ fn sidebar_and_mission_fills_follow_carbon_and_runner_light() {
     let store = cx.new(|cx| {
         AppStore::new(
             core.clone(),
+            None,
             temp.path().join("settings.json"),
             AppSettings {
                 app_theme: theme::ThemeIntent::Dark,

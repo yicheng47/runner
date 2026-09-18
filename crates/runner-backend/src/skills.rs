@@ -645,9 +645,26 @@ mod tests {
         std::fs::write(custom.path().join("config.toml"), "invalid = [").unwrap();
         let catalog = skill_catalog(Runtime::Codex, home.path(), Some(custom.path())).unwrap();
         assert_eq!(catalog.entries[0].global, GlobalState::On);
-        for runtime in [Runtime::Trae, Runtime::Shell] {
-            assert!(skill_catalog(runtime, home.path(), None).is_none());
+        let trae = skill_catalog(Runtime::Trae, home.path(), None).unwrap();
+        assert_eq!(trae.roots, [home.path().join(".trae/skills")]);
+        assert!(trae.entries.is_empty());
+        assert!(skill_catalog(Runtime::Shell, home.path(), None).is_none());
+    }
+
+    #[test]
+    fn trae_catalog_reads_only_its_documented_user_root() {
+        let home = tempfile::tempdir().unwrap();
+        for root in [".trae/skills", ".coco/skills", ".trae-cn/skills"] {
+            let path = home.path().join(root).join("demo");
+            std::fs::create_dir_all(&path).unwrap();
+            std::fs::write(path.join("SKILL.md"), "---\ndescription: demo\n---\nbody").unwrap();
         }
+        let catalog = skill_catalog(Runtime::Trae, home.path(), None).unwrap();
+        assert_eq!(catalog.roots, [home.path().join(".trae/skills")]);
+        assert_eq!(catalog.entries.len(), 1);
+        assert!(catalog.entries[0]
+            .path
+            .starts_with(home.path().join(".trae/skills")));
     }
 
     #[test]

@@ -1400,7 +1400,7 @@ impl SessionManager {
             resolved_cwd.clone(),
             false,
             None, // shim_dir — off-bus
-            None, // bundled_bin_dir — off-bus
+            Some(app_data_dir.join("bin")),
             initial_size,
             direct_env,
         );
@@ -1793,7 +1793,7 @@ impl SessionManager {
             resolved_cwd.clone(),
             false,
             None,
-            None,
+            Some(app_data_dir.join("bin")),
             initial_size,
             direct_env,
         );
@@ -2452,8 +2452,7 @@ impl SessionManager {
             )
             .ok()
         });
-        // Direct-chat resume stays off-bus.
-        let bundled_bin_dir = mission_ctx.as_ref().map(|_| app_data_dir.join("bin"));
+        let bundled_bin_dir = Some(app_data_dir.join("bin"));
 
         // Mission resume stamps the slot's in-mission identity; direct
         // chat resume falls through to the template handle.

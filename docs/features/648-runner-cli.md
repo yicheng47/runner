@@ -37,7 +37,7 @@ Orca's coordinator surface is a CLI plus a skill (`orca orchestration …`, with
   - Archived missions are absent from `mission_list`. Any full 26-character mission id therefore passes through after `mission_get` validates that the mission exists; the requested tool then decides whether its operation is valid for an archived mission. A missing name, prefix or full id remains an unresolvable reference and exits 2.
   - The CLI resolves references with the matching list tool before calling the target tool. Full mission ids and full mission-session ids are the documented pass-through cases because their list tools omit archived missions and mission sessions respectively; the backend validates the target or refuses the operation.
 - **Context.** Inside a mission PTY, mission-scoped commands use the caller's mission and handle. Outside, they take `--mission <id>`: agent shells do not keep environment variables between calls, so context is a flag, not an exported variable.
-- **Identity.** A caller is the person at the app or a handle in the mission's roster; where a call comes from does not decide who it is. Inside a mission the CLI fills the handle from `RUNNER_HANDLE`. Outside, `--as <handle>` names a seat the caller holds, and a call with no handle is the person at a terminal, which is `human` on the bus. An agent that drives a mission from outside takes a seat first (562 adds the seats; without one it is indistinguishable from the person). `human` is never a location: `ask_human`, `human_question` and `human_response` keep meaning the person at the app.
+- **Identity.** A caller is the person at the app or a handle in the mission's roster; where a call comes from does not decide who it is. Inside a mission the CLI fills the handle from `RUNNER_HANDLE`. Outside a mission the caller acts for the user: posts and answers with no handle appear as the person, which is `human` on the bus. `--as <handle>` exists for a slot the caller holds and must never be used to speak as another agent's slot; #562 adds the seats an outside agent can take. `human` is never a location: `ask_human`, `human_question` and `human_response` keep meaning the person at the app.
 - **Output.**
   - stdout carries data and stderr carries messages.
   - By default, each noun prints a curated table or key-value block: list views include only identifying and operational columns, role prompts are blocks, mission snapshots split sessions, pending asks and warnings into readable sections, and feed events are one line each in chronological order. Every table cell collapses whitespace, truncates long values with an ellipsis at a fixed width, and prints null as `-`. `--json` prints the tool's JSON result verbatim, which is what agents should use.
@@ -90,14 +90,14 @@ runner mission rename <mission> <title>
 runner mission pin | unpin [<mission>]
 runner mission move [<mission>] (--project <project> | --unfile)
 runner mission feed [<mission>] [--follow] [--since <offset>] [--limit <n>] [--oldest-first]
-                    [--types <kind,…>] [--from <handle>]
+                    [--types <kind,…> | --all] [--from <handle>]
 runner mission answer <mission> <question id> <choice>
 
 # chats and sessions
 runner chat start (<role> | --runtime <runtime>) [--model <model>] [--effort <effort>]
                   [--project <project> | --cwd <dir>]
 runner session list
-runner session resume | restart <session>
+runner session show | stop | archive | resume | restart <session>
 
 # mission-scoped: the caller's mission inside one, --mission <id> outside
 runner msg post [--to <handle>] <text>
@@ -129,6 +129,9 @@ What each command calls:
 | `mission answer` | `mission_signal` | Posts `human_response` with `{question_id, choice}` |
 | `chat start` | `session_start_direct` | Runtime-only chats need the tool change below |
 | `session list` | `session_list` | New tool, below |
+| `session show` | `session_get` | Persisted row plus the live `AgentStatus` and raw activity; direct chats resolve by id/prefix, mission sessions by full id |
+| `session stop` | `session_stop` | Stops a direct chat or mission slot and leaves the row resumable |
+| `session archive` | `session_archive` | Stops then archives a direct chat; mission sessions are refused |
 | `session resume \| restart` | `session_resume`, `session_restart` | Direct chats resolve through `session_list`; a full mission-session id passes through because that list intentionally omits mission sessions |
 | `msg post`, outside a mission | `mission_post` with `from` (decision 7) | Inside a mission: unchanged, appends to the log as the caller's handle |
 | `signal`, outside a mission | `mission_signal` with `from` | Inside a mission: unchanged |
@@ -158,16 +161,17 @@ What each command calls:
   - a `session_list` tool for direct chats (id, role or runtime, title, status, project, cwd);
   - `session_start_direct` accepting `runtime` without `role_id`, for the runtime-only chats the app already starts, while preserving a role's explicit runtime override;
   - nothing for `crew add --effort`, which the CLI covers by calling `slot_update` after `slot_create`.
-- **`runner mission feed --follow`.** Prints the requested window, then polls `mission_feed` from the last `next_offset` (oldest first, every 500 ms) and prints each new event as it lands. It exits on Ctrl-C, when the mission is archived, or with code 3 if the app goes away. It reads nothing from disk, so it keeps working when #562 moves crewless logs. With `--json` it prints one event per line (NDJSON), which a Claude Code Monitor or a shell pipe can consume directly.
+- **`runner mission feed --follow`.** Prints the requested window, then polls `mission_feed` from the last `next_offset` (oldest first, every 500 ms) and prints each new event as it lands. It checks `mission_get` every two seconds, exits 0 on Ctrl-C or when the mission is archived, and exits 3 if the app goes away. It reads nothing from disk, so it keeps working when #562 moves crewless logs. `--types` and `--from` filter client-side. Human output and every follow stream hide `session_status` (including its legacy `runner_status` spelling) and `inbox_read` unless `--all` is passed or `--types` names them; one-shot `--json` remains the verbatim tool result unless a filter flag is present. With `--follow --json` it prints and flushes one event per NDJSON line, with no cursor line, which a Claude Code Monitor or a shell pipe can consume directly.
 - **`runner help agents`.** A compact guide printed by the binary itself, so it always matches the installed version (Orca's pattern). It covers the command tree, `--json`, `-q`, the exit codes, and the common flows: find a crew, start a mission, follow its feed, answer a question, post to the lead, archive. `runner help` and `runner <noun> --help` remain the full reference.
 - **Embedded `runner` skill.**
-  - **Content.** A `SKILL.md` template compiled into the app. Frontmatter `name: runner`, and a description that fires on Runner, missions, crews, roles, or handing work to another agent: "Operate Runner, the local cockpit for CLI coding agents, through the `runner` CLI: start, follow and steer missions, list crews and roles, start chats. Use when the user mentions Runner, a mission, a crew or a role, or asks to hand work to another agent such as Codex, Claude Code or pi." The body is a stub, as Orca's is. It says what Runner is in two lines. It names the executable: `runner` when it is on PATH, else the absolute sidecar path Runner writes into the file at install (quoted, because it contains a space on macOS). It points to `runner help agents` for the version-matched guide. And it states four rules: prefer `--json`; exit code 3 means ask the user to open Runner; use `--help` rather than guessing commands; inside a mission, mission commands carry the caller's handle; outside, an agent takes a seat with `--as` before it posts, signals or spawns, since a call with no handle is the person.
+  - **Content.** A `SKILL.md` template compiled into the app. Frontmatter `name: runner`, and a description that fires on Runner, missions, crews, roles, or handing work to another agent: "Operate Runner, the local cockpit for CLI coding agents, through the `runner` CLI: start, follow and steer missions, list crews and roles, start chats. Use when the user mentions Runner, a mission, a crew or a role, or asks to hand work to another agent such as Codex, Claude Code or pi." The body is a stub, as Orca's is. It says what Runner is in two lines. It names the executable: `runner` when it is on PATH, else the absolute sidecar path Runner writes into the file at install (quoted, because it contains a space on macOS). It points to `runner help agents` for the version-matched guide. And it states four rules: prefer `--json`; exit code 3 means ask the user to open Runner; use `--help` rather than guessing commands; inside a mission, mission commands carry the caller's own handle; outside a mission the caller acts for the user, so posts and answers appear as the person, and must never pass `--as` to speak as a slot it was not given. #562 adds the seats an outside agent can take.
   - **Where.** `~/.claude/skills/runner/` for Claude Code, `~/.agents/skills/runner/` for Codex, Copilot and pi, which all read that root (`RuntimeDefinition::skills_dirs`), and `~/.trae/skills/runner/` for TRAE CLI. Three folders cover five runtimes.
   - **TRAE's skills root.** `RuntimeDefinition::skills_dirs` for TRAE becomes `[".trae/skills"]` (TRAE also reads `~/.coco/skills/` and `~/.trae-cn/skills/`, which Runner does not list). The Skills pane lists it through the generic catalog with a caption and no global toggle, the pi shape: TRAE's only per-skill switch is `disable-model-invocation` in the skill's own frontmatter.
   - **Ownership.** Each installed folder carries a `.runner-managed` marker. On startup Runner rewrites a marked folder whose content or sidecar path has changed, so the skill follows app updates. A `runner/` folder without the marker belongs to someone else: it is never touched, and Settings reports it.
   - **Default.** On first run the skill is installed for every available agent that reads one of the three roots. It happens once, recorded in settings, so a removal is respected. One toggle in Settings → General installs or removes all three folders. Per-runtime visibility stays with the Skills pane's existing toggles (`skillOverrides`, `[[skills.config]]`).
-  - **Debug builds** install `runner-dev`, pointing at the debug sidecar, so a dev app never overwrites the release skill.
-  - **Runner's own sessions** are unchanged. Mission slots keep the coordination preamble, and direct chats find the global skill like any other session.
+  - **Debug builds** install `runner-dev`, pointing at the debug sidecar, so a dev app never overwrites the release skill. Its frontmatter description leads with "Development build of Runner (the `make run` app, separate data from the installed app)", keeps the CLI/cockpit purpose, and narrows its trigger to dev, development build, `make run`, or `runner-dev`, so an installed release skill and development skill do not compete for ordinary Runner requests. Its body always names the quoted absolute development sidecar, including for `help agents`, because a bare `runner` outside a development-spawned session may belong to the installed app.
+  - **Runner's own sessions.** Mission slots keep the coordination preamble and their per-slot shim. Every direct chat, terminal, resume and fork puts the spawning app's sidecar folder first on PATH (after the mission shim when one exists), so a release skill loaded inside a development session still resolves bare `runner` to the development sidecar. PATH does not control which skills a runtime loads. The socket remains a compile-time debug/release choice; there is no environment override.
+- **Three session controls.** `session_get`, `session_stop`, and `session_archive` are thin socket tools over the existing session row/status, kill, and archive paths. `session list` adds the manager's current activity. These make a bad status inspectable and let CLI-driven direct chats be stopped and archived without the window.
 - **Install `runner` command.** One row in Settings → General with an **Install** button, for people at a terminal and for scripts. Agents don't need it, since the skill carries the absolute path. The row shows the installed path once done, or a warning if something else already owns the name.
   - **macOS:** the button links `~/.local/bin/runner` to the sidecar `$APPDATA/runner/bin/runner` and says so if `~/.local/bin` is not on the login shell's PATH. The link targets the sidecar and never `Runner.app/Contents/MacOS/`: on a case-insensitive volume `MacOS/runner` resolves to the GUI binary `Runner`, and launching it bootstraps a second app that kills every live session (2026-09-18).
   - **Windows:** the button adds the sidecar directory to the user PATH (`HKCU\Environment`) and broadcasts the environment change.
@@ -207,13 +211,15 @@ What each command calls:
 ### Phase 2 — following and the agent guide
 
 - `mission feed --follow` with the cursor loop and its three exits; `--types` and `--from` filtering; `help agents`.
-- Tests: the follow loop prints each event exactly once across polls that return nothing, one event, and several events; an archived mission ends the loop; the filters drop the right events.
+- Tests: the follow loop prints each event exactly once across polls that return nothing, one event, and several events; an archived mission ends the loop and a disconnected app exits 3; the filters and default noise suppression drop the right events, `--all` restores them, and follow JSON is parseable flushed NDJSON.
 
 ### Phase 3 — the embedded skill on all five runtimes
 
 - `crates/runner-backend/src/agent_skill.rs`: the template, rendering with the sidecar path, and install, remove, and status for the three roots with the marker; the startup refresh.
 - `router/runtime.rs`: TRAE's `skills_dirs` becomes `[".trae/skills"]`; `surfaces/settings/skills.rs` gains the TRAE caption; the tests that expect an empty TRAE catalog change.
 - `app_store`: `initialize_skill_defaults` beside `initialize_mcp_defaults`, which this phase leaves alone.
+- Every spawn, resume, and fork carries the spawning app's sidecar folder on PATH, with a mission shim still ahead of it.
+- `session_get`, `session_stop`, and `session_archive`, their CLI commands, and `session list` activity.
 - Tests:
   - install writes the three folders with the marker and the rendered path;
   - a startup refresh rewrites a stale marked folder and leaves an unmarked `runner/` alone;

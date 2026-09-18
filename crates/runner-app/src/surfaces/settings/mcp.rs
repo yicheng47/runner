@@ -1489,6 +1489,7 @@ mod tests {
         cx.new(|cx| {
             AppStore::new(
                 core,
+                None,
                 path.join("settings.json"),
                 AppSettings::default(),
                 None,

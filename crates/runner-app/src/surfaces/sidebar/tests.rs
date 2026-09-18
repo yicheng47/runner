@@ -87,6 +87,7 @@ fn mission_rename_commits_when_the_field_loses_focus() {
     let store = cx.new(|cx| {
         AppStore::new(
             core,
+            None,
             temp.path().join("settings.json"),
             AppSettings::default(),
             None,

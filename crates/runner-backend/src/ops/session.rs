@@ -440,6 +440,29 @@ pub fn session_get(state: &AppCore, session_id: &str) -> Result<Option<DirectSes
     get_direct(&conn, session_id)
 }
 
+pub fn session_get_with_status(state: &AppCore, session_id: &str) -> Result<serde_json::Value> {
+    let mut row = if let Some(direct) = session_get(state, session_id)? {
+        serde_json::to_value(direct)?
+    } else {
+        let conn = state.db.get()?;
+        let row = repo::session::get_row(&conn, session_id)?
+            .ok_or_else(|| Error::msg(format!("session not found: {session_id}")))?;
+        serde_json::to_value(row)?
+    };
+    let object = row
+        .as_object_mut()
+        .ok_or_else(|| Error::msg("session row did not serialize as an object"))?;
+    object.insert(
+        "agent_status".into(),
+        serde_json::to_value(state.sessions.agent_status(session_id))?,
+    );
+    object.insert(
+        "activity".into(),
+        serde_json::to_value(state.sessions.activity_snapshot().remove(session_id))?,
+    );
+    Ok(row)
+}
+
 /// The PTY geometry the manager last recorded for the session: the fork
 /// size, then every applied or persisted resize. Terminals attach and
 /// create its terminal grid at this size rather than at a layout estimate,

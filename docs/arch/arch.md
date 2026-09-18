@@ -230,6 +230,8 @@ The mission workspace's per-slot terminal switcher predates this hierarchy and i
 
 Settings is a full-window route rendered in place of the app shell, with its own grouped sidebar and card-grouped panes: Appearance (zoom, theme), Terminal (font, cursor, theme palette), Agents (runtime discovery and overrides, the login-shell probe outcome, model and effort), Skills (global skill visibility and editing), MCP (the global server catalog and Runner registration), Keyboard shortcuts (a view over the registry in `runner-app/src/keymap.rs`), Updates, Diagnostics (log path, open-log), About, and Archived. Entry points — the sidebar Settings row, the command palette, and `⌘,` — navigate to the route and return to the caller's location.
 
+Settings → Skills reads each runtime's declared user roots. TRAE CLI contributes only `~/.trae/skills` (not its `.coco` or `.trae-cn` compatibility roots); its pane is a read/edit catalog with no Runner toggle, and its caption points to the skill frontmatter's `disable-model-invocation` switch.
+
 Settings → MCP reads the union of Claude Code, Codex, TRAE CLI, and GitHub Copilot CLI's global server entries directly from their config files, with no Runner-side server store. A runtime dropdown selects a detected, enabled agent; toggles register or unregister the named server for that agent, copying the first registered entry in agent order when turning it on. Runner's own server is pinned first, and a manual registration choice persists in `initialized_mcp_clients` so the default pass respects an opt-out. The detail modal shows each agent's native entry and any conflicting definition; its JSON/TOML editor can also translate the change to the other registered agents while preserving their unmodelled keys. Each write changes only the named entry and preserves the rest of the file, including formatting and comments; adding servers and auth flows stay with the agents' own tooling. Reads refresh on entry, Refresh, and after writes; running sessions pick up changes on their next launch. Copilot's registration is `~/.copilot/mcp-config.json` under `mcpServers`, with a `local` entry containing `command`, empty `args`, and `tools: ["*"]`; the file is created when absent. See [#555](../features/archive/555-mcp-settings.md).
 
 Preferences persist in `$APPDATA/ui-settings.json`, read by the app at launch; a first launch starts from defaults (resume-on-launch off).
@@ -580,7 +582,7 @@ The bundled CLI is Runner's external command surface for people, scripts, direct
 ```
 # meta
 runner status
-runner help [<noun>]
+runner help [agents | <noun>]
 runner call <tool> [<json>]
 
 # projects and roles
@@ -606,10 +608,11 @@ runner mission start --crew <crew> [--goal <text> | --goal-file <path | ->] [--t
                      [--project <project> | --cwd <dir>]
 runner mission stop | resume | archive | unarchive | pin | unpin [<mission>]
 runner mission rename <mission> <title> | move [<mission>] (--project <project> | --unfile)
-runner mission feed [<mission>] [--since <offset>] [--limit <n>] [--oldest-first]
+runner mission feed [<mission>] [--follow] [--since <offset>] [--limit <n>] [--oldest-first]
+                    [--types <kind,...> | --all] [--from <handle>]
 runner mission answer <mission> <question_id> <choice>
 runner chat start (<role> | --runtime <runtime>) [--model <model>] [--effort <effort>] [--project <project> | --cwd <dir>]
-runner session list | resume <session> | restart <session>
+runner session list | show <session> | stop <session> | archive <session> | resume <session> | restart <session>
 
 # mission-scoped
 runner msg post [--mission <mission>] [--as <handle>] [--to <handle>] <text>
@@ -629,19 +632,27 @@ Roles resolve by their unique handle. Crews and projects resolve by id or exact 
 
 Default output is command-aware rather than a generic JSON projection. List commands expose only their identifying and operational columns; show commands use key-value blocks plus noun-specific sections; mission feed emits one chronological line per event. Table cells collapse whitespace, truncate at a fixed width with an ellipsis, and render null as `-`. `--json` preserves the tool's JSON text verbatim and `-q` prints ids only.
 
+`mission feed --follow` prints the requested window, then polls `mission_feed` from its last `next_offset` every 500 ms in oldest-first order. Each event is printed once. Ctrl-C and an archived mission end successfully; a lost app connection exits 3. `--types` and `--from` filter client-side. Human feed output and every follow stream hide `session_status`/legacy `runner_status` and `inbox_read` unless `--all` is present or `--types` explicitly names them. One-shot `--json` without a filter remains the exact tool result; follow JSON is one flushed event per NDJSON line and never prints the cursor.
+
+`runner help agents` is compiled into the CLI and therefore matches its installed version. It summarizes the real command tree, references, output modes, exit codes, identity rule, and the copyable mission start/follow/answer/message/stop/archive flow.
+
 ### 9.3 Two modes and one identity rule
 
 Inside a mission, `RUNNER_CREW_ID`, `RUNNER_MISSION_ID`, `RUNNER_HANDLE`, and `RUNNER_EVENT_LOG` identify the caller. `msg post`, `msg read`, `signal`, and `ask` append or read the event log directly and do not start a Tokio runtime or connect to the app. Other commands use the socket, and mission commands with no explicit target default to the caller's mission. An explicit different mission uses the outside path.
 
-Outside a mission, mission-scoped writes require `--mission`; `msg read` is inside-only and points outside callers to `mission feed`. `--as <handle>` becomes the socket tool's `from` after roster validation. With no handle the caller is the person, represented as `human`. `ask` requires `--as` outside; `mission answer` is always the person's verb and posts `human_response` without a handle.
+Outside a mission, mission-scoped writes require `--mission`; `msg read` is inside-only and points outside callers to `mission feed`. The caller acts for the user, so posts and answers with no handle appear as the person, represented as `human`. `--as <handle>` becomes the socket tool's `from` after roster validation, but must only name a slot the caller holds, never another agent's slot; #562 adds the seats an outside agent can take. `ask` requires `--as` outside; `mission answer` is always the person's verb and posts `human_response` without a handle.
 
 ### 9.4 Direct chats
 
-Direct chats remain off the mission bus, so they have no implicit mission, mission identity, event log, router, or inbox. Agent direct chats export `RUNNER_HANDLE` as their process label, but the CLI treats that handle-only environment as off-bus; it does not turn the label into a caller identity. Direct chats use the same general CLI as any outside shell when it is discoverable: workspace commands go through the socket, mission-scoped writes name `--mission`, `--as` explicitly supplies a roster handle, and `msg read` is unavailable.
+Direct chats remain off the mission bus, so they have no implicit mission, mission identity, event log, router, or inbox. Agent direct chats export `RUNNER_HANDLE` as their process label, but the CLI treats that handle-only environment as off-bus; it does not turn the label into a caller identity. Every chat, terminal, resume, and fork gets `<app data>/bin` first on PATH, so bare `runner` is the sidecar belonging to the app that spawned it even if the runtime loads a skill installed by another build; a mission slot's identity shim remains ahead of that folder. PATH does not select or suppress skills. The socket endpoint remains selected at compile time, with no environment override. Workspace commands go through the socket, mission-scoped writes name `--mission`, calls without `--as` act for the user, and `msg read` is unavailable. Until #562 adds outside seats, direct chats and terminals must not use `--as` to speak as a mission slot.
 
 ### 9.5 Socket transport and the compatibility bridge
 
 Each outside command opens `$APPDATA/mcp.sock`, bounds connection establishment to 500 ms and the MCP handshake separately to 3 s, performs the reference-list calls and one requested operation, prints the result, and exits. The backend registry and the tools reached by the CLI's exhaustive recorder test assert against one shared list of tool names. `runner-mcp` uses the same socket client and remains as a temporary stdio compatibility bridge; it is removed later in 0.11 after the CLI skill is proven across all supported runtimes.
+
+### 9.6 Agent discovery skill
+
+Runner embeds a compact `SKILL.md` that points agents to `runner help agents`. Release builds install `runner` and prefer bare `runner` on PATH. Development builds install a separate `runner-dev` skill with a development-only frontmatter trigger and always invoke its quoted absolute sidecar, including for `help agents`, so it neither competes with the release skill nor follows a production `runner` from another PATH. The three user roots are `~/.claude/skills`, `~/.agents/skills` (shared by Codex, Copilot and pi), and `~/.trae/skills`. Each Runner-owned folder has `.runner-managed`; startup refreshes only marked folders, never touches a foreign folder of the same name, and records the first default attempt per root so deleting a skill is respected. TRAE also appears in Settings → Skills from `~/.trae/skills`; Runner does not toggle TRAE skills, whose own per-skill control is `disable-model-invocation` in frontmatter.
 
 ## 10. Data model
 
