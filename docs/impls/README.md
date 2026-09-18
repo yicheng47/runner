@@ -6,6 +6,7 @@ A plan stays here while its work is in flight and moves to [`archive/`](./archiv
 
 ## Active
 
+- [648 — general `runner` CLI](./648-runner-cli.md) — feature [648](../features/648-runner-cli.md) ([#648](https://github.com/yicheng47/runner/issues/648), 0.11): five missions, ending with the MCP integration removed in the same release; mission 1 (the command tree over the socket, the caller handle, the backend tools) is briefed in [`briefs/648-m1-command-tree.md`](./briefs/648-m1-command-tree.md) and not started.
 - [539 — pi runtime](./539-pi-runtime.md) — feature [539](../features/539-pi-runtime.md) ([#539](https://github.com/yicheng47/runner/issues/539), 0.11): missions 1 and 2 shipped in [#646](https://github.com/yicheng47/runner/pull/646) and [#649](https://github.com/yicheng47/runner/pull/649); mission 3 (fixture, smoke test, JASONPC, archive) remains.
 
 ## Archive

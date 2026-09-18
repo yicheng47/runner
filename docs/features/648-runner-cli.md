@@ -2,9 +2,9 @@
 
 > Tracking issue: [#648](https://github.com/yicheng47/runner/issues/648)
 > Priority: P1, milestone 0.11. With pi ([539](./539-pi-runtime.md)) it makes 0.11.0; the rest of the milestone ships in 0.11.0 if ready, otherwise in 0.11.x. Platforms: macOS and Windows.
-> Design: `design/specs/648-runner-cli.pen`, one frame for the Settings → General rows (the `runner` command and the agent skill), drawn before Phase 4.
+> Design: `design/specs/648-runner-cli.pen`, one frame for the Settings → General rows (the `runner` command and the agent skill), drawn before Phase 5.
 > Related: [562](./562-mission-spawn.md) (missions as containers, milestone 0.12) builds its coordinator commands (`spawn`, `ps`, `wait`, `stop`, `done`) and the seats an outside agent takes on this CLI. The two stay separate issues: this one is a surface over tools that exist, 562 changes the mission model.
-> Command set designed with Jason on 2026-09-18: the principles, the command tree and seven decisions below. The identity model (decision 7) and the release plan were decided the same day, after 539's mission 2 merged.
+> Command set designed with Jason on 2026-09-18: the principles, the command tree and eight decisions below. The identity model (decision 7), the release plan, and the removal of the MCP integration in the same release (decision 8, with TRAE gaining a skills root so no runtime is cut off) were decided the same day, after 539's mission 2 merged.
 
 ## Motivation
 
@@ -19,12 +19,12 @@ Everything else is MCP-only: 39 tools over projects, crews, roles, slots, missio
 
 Orca's coordinator surface is a CLI plus a skill (`orca orchestration …`, with the guide served by the binary), not MCP. #562 needs an agent outside the mission (Claude Code in a terminal, a Runner chat, a script) to spawn, wait, and stop agents from a shell.
 
-## Decision: the CLI first, discovered through a skill, MCP as a compatibility layer
+## Decision: the CLI replaces the MCP integration, discovered through a skill
 
-- The CLI becomes the main surface for agents, scripts, and people at a terminal. Every MCP tool gets a command, and new capabilities land in the CLI first.
-- MCP stays, with the same tools over the same socket, for clients that prefer tools and for existing configs. It gets nothing the CLI lacks. Whether to retire `runner-mcp` is decided after 0.11, based on how colleagues actually use it.
-- **Transport.** The CLI is an MCP client of `mcp.sock`, as `runner-mcp`'s `proxy_call_tool` already is (`cli/src/mcp.rs`). It connects per command, calls one tool, prints the result, and exits. There is no new protocol, and the socket's tool registry stays the single source of truth. Because every command fetches from the running app, a CLI call never sees stale schemas.
-- **Discovery.** Agents learn that the CLI exists from a `runner` skill embedded in the app, not from MCP registration. New installs get the skill by default and no longer register `runner-mcp`. Existing registrations are left alone, and Settings → MCP keeps its toggles. TRAE has no skills directory, so it keeps MCP registration as its default.
+- The CLI becomes the one external surface for agents, scripts, and people at a terminal. Every tool in the app's registry gets a command, and new capabilities land as commands.
+- **The MCP integration is removed in 0.11.0, the release that ships the CLI** (Jason, 2026-09-18: two ways in at once would be confusing). Removed: the `runner-mcp` stdio bridge, Runner's registration of itself in each agent's config (the first-run default and the toggles), and the pinned Runner row in Settings → MCP. On the first launch of 0.11.0, Runner removes the `runner` entry it wrote from every client's config. Settings → MCP stays as the catalog of the user's other servers.
+- **Transport.** The socket and its tool registry stay: they are the CLI's transport, an implementation detail no agent is configured to talk to. The CLI is an MCP client of `mcp.sock`, as `runner-mcp`'s `proxy_call_tool` was (`cli/src/mcp.rs`). It connects per command, calls one tool, prints the result, and exits. There is no new protocol, and the socket's tool registry stays the single source of truth. Because every command fetches from the running app, a CLI call never sees stale schemas.
+- **Discovery.** Agents learn that the CLI exists from a `runner` skill embedded in the app, installed by default for every available agent. All five runtimes read a skills root: TRAE CLI documents user-level skills at `~/.trae/skills/<name>/SKILL.md` (its manual, `traecli doc skills`, 0.120.52), which Runner had not recorded, so TRAE gains a `skills_dirs` entry and the Skills pane gains its catalog.
 - **Trust.** There is no new boundary: anything that can reach `mcp.sock` today can already do all of this.
 
 ## Principles
@@ -143,7 +143,8 @@ What each command calls:
 4. **Slots are crew verbs addressed by handle**: `crew add`, `set`, `remove`, `lead`, `order`. No command asks for a slot id.
 5. **Shortcut commands over signals.** `ask` and `mission answer` build the signal payloads (`ask_lead`, `ask_human`, `human_response`), and #562 adds `done` and `spawn` the same way. `signal` stays for everything else.
 6. **One `mission show`**, backed by `mission_status`.
-7. **The socket carries the caller.** `mission_post_human_message` and `mission_post_human_signal` become `mission_post` and `mission_signal` with an optional `from` handle, validated against the mission's roster; absent, the caller is `human`, which is what every existing MCP client gets today. The old names stay registered as aliases until the `runner-mcp` retirement decision after 0.11. MCP clients pass `from` the same way, so the compatibility layer does not keep the location-means-human assumption alive.
+7. **The socket carries the caller.** `mission_post_human_message` and `mission_post_human_signal` become `mission_post` and `mission_signal` with an optional `from` handle, validated against the mission's roster; absent, the caller is `human`. It is a clean rename with no aliases, as the `role_*` cutover was (#604): with decision 8 the CLI is the socket's only client.
+8. **The MCP integration goes in the same release.** The order inside 0.11.0 is fixed: the command tree, then the skill on all five runtimes with Jason's smoke of an agent finding and using the CLI with no MCP entry, and only then the removal. The removal is one upgrade step (unregister the `runner` entry from each client Runner registered, through the existing `mcp_set_integration(client, false)` path, once, recorded in settings), the end of `initialize_mcp_defaults`, the Runner row and its config snippet out of Settings → MCP, and the `runner-mcp` bin target, `install_mcp_cli` and the stale sidecar file gone. An entry a user wrote by hand is not Runner's to remove; a config Runner cannot parse is left alone and reported in the log. A running agent session keeps its already-started bridge process until it ends, so nothing breaks mid-session.
 
 ## Scope
 
@@ -151,7 +152,7 @@ What each command calls:
 
 - The principles, command tree, and decisions above, with `--json`, `-q`, and the exit codes on every command.
 - **Five backend additions**, each small:
-  - the `from` handle on `mission_post` and `mission_signal` (decision 7), validated against the roster, with the old `_human_` names as aliases;
+  - the `from` handle on `mission_post` and `mission_signal` (decision 7), validated against the roster, renamed from the `_human_` tools with no aliases;
   - a `mission_resume` tool over the existing mission-wide Resume;
   - a `session_list` tool for direct chats (id, role or runtime, title, status, project, cwd);
   - `session_start_direct` accepting `runtime` without `role_id`, for the runtime-only chats the app already starts;
@@ -160,9 +161,10 @@ What each command calls:
 - **`runner help agents`.** A compact guide printed by the binary itself, so it always matches the installed version (Orca's pattern). It covers the command tree, `--json`, `-q`, the exit codes, and the common flows: find a crew, start a mission, follow its feed, answer a question, post to the lead, archive. `runner help` and `runner <noun> --help` remain the full reference.
 - **Embedded `runner` skill.**
   - **Content.** A `SKILL.md` template compiled into the app. Frontmatter `name: runner`, and a description that fires on Runner, missions, crews, roles, or handing work to another agent: "Operate Runner, the local cockpit for CLI coding agents, through the `runner` CLI: start, follow and steer missions, list crews and roles, start chats. Use when the user mentions Runner, a mission, a crew or a role, or asks to hand work to another agent such as Codex, Claude Code or pi." The body is a stub, as Orca's is. It says what Runner is in two lines. It names the executable: `runner` when it is on PATH, else the absolute sidecar path Runner writes into the file at install (quoted, because it contains a space on macOS). It points to `runner help agents` for the version-matched guide. And it states four rules: prefer `--json`; exit code 3 means ask the user to open Runner; use `--help` rather than guessing commands; inside a mission, mission commands carry the caller's handle; outside, an agent takes a seat with `--as` before it posts, signals or spawns, since a call with no handle is the person.
-  - **Where.** `~/.claude/skills/runner/` for Claude Code, and `~/.agents/skills/runner/` for Codex, Copilot and pi, which all read that root (`RuntimeDefinition::skills_dirs`). Two folders cover four runtimes.
+  - **Where.** `~/.claude/skills/runner/` for Claude Code, `~/.agents/skills/runner/` for Codex, Copilot and pi, which all read that root (`RuntimeDefinition::skills_dirs`), and `~/.trae/skills/runner/` for TRAE CLI. Three folders cover five runtimes.
+  - **TRAE's skills root.** `RuntimeDefinition::skills_dirs` for TRAE becomes `[".trae/skills"]` (TRAE also reads `~/.coco/skills/` and `~/.trae-cn/skills/`, which Runner does not list). The Skills pane lists it through the generic catalog with a caption and no global toggle, the pi shape: TRAE's only per-skill switch is `disable-model-invocation` in the skill's own frontmatter.
   - **Ownership.** Each installed folder carries a `.runner-managed` marker. On startup Runner rewrites a marked folder whose content or sidecar path has changed, so the skill follows app updates. A `runner/` folder without the marker belongs to someone else: it is never touched, and Settings reports it.
-  - **Default.** On first run the skill is installed for every available agent that reads one of the two roots. Like `initialized_mcp_clients`, this happens once, so a removal is respected. One toggle in Settings → General installs or removes both folders. Per-runtime visibility stays with the Skills pane's existing toggles (`skillOverrides`, `[[skills.config]]`).
+  - **Default.** On first run the skill is installed for every available agent that reads one of the three roots. It happens once, recorded in settings, so a removal is respected. One toggle in Settings → General installs or removes all three folders. Per-runtime visibility stays with the Skills pane's existing toggles (`skillOverrides`, `[[skills.config]]`).
   - **Debug builds** install `runner-dev`, pointing at the debug sidecar, so a dev app never overwrites the release skill.
   - **Runner's own sessions** are unchanged. Mission slots keep the coordination preamble, and direct chats find the global skill like any other session.
 - **Install `runner` command.** One row in Settings → General with an **Install** button, for people at a terminal and for scripts. Agents don't need it, since the skill carries the absolute path. The row shows the installed path once done, or a warning if something else already owns the name.
@@ -171,15 +173,16 @@ What each command calls:
   - **Both:** it never replaces a `runner` it did not create. Debug builds install as `runner-dev` and reach the debug app's socket, as `runner-mcp` already does through `cfg!(debug_assertions)`.
 - **Docs.**
   - arch §9 carries the command reference, drops `status busy|idle`, describes the two modes, and states the identity rule: a caller is the person or a handle.
-  - vision §4.9 says the CLI is the main external surface, agents find it through the skill, and MCP is the compatibility layer.
+  - vision §4.9 says the CLI is the external surface and agents find it through the skill; every mention of Runner's own MCP server as a way in goes, in the vision, arch §9.5 and both READMEs.
   - `README.md` and `README.zh-CN.md` gain a CLI section together.
   - The mission-watch skill in the memory repo switches from its hand-rolled tail to `runner mission feed --follow --json`.
 
 ### Out of scope
 
 - #562's commands: `spawn`, `ps`, `wait`, `stop <handle>`, `done`, seats without a session (how an outside agent gets a handle), and `mission start` without a crew. They land with #562 on this CLI; the names are reserved here, and the caller handle they need is decision 7.
-- New MCP tools beyond the three backend additions, freezing the MCP surface in code, retiring `runner-mcp`, or removing existing registrations.
-- A skill for TRAE, which has no skills directory.
+- Socket tools beyond the backend additions above, and replacing MCP as the socket's wire protocol.
+- Removing a `runner` MCP entry the user wrote by hand, and anything about the user's other MCP servers: Settings → MCP keeps its catalog, toggles and editing for them.
+- Toggling TRAE skills from Runner.
 - Launching Runner from the CLI. The not-running error tells the user to open it.
 - Remote hosts. The CLI talks to the local app only.
 - Shell completions.
@@ -188,9 +191,9 @@ What each command calls:
 
 ### Phase 1 — the command tree over the socket
 
-- Move `endpoint`, `connect_app`, and the call-tool path out of `cli/src/mcp.rs` into a module both binaries use. `runner-mcp` keeps its behavior byte for byte.
+- Move `endpoint`, `connect_app`, and the call-tool path out of `cli/src/mcp.rs` into code both binaries use. `runner-mcp` keeps working until Phase 4 removes it.
 - `cli/src/main.rs`: the clap tree beside the in-mission commands, the mode switch on `env::resolve()`, the caller handle (`RUNNER_HANDLE` inside a mission, `--as` outside, else none), reference resolution, `runner call`, `status`, table, `--json` and `-q` output, and the exit codes. Remove the `status busy|idle` alias and its help text.
-- Backend: the `from` handle on `mission_post` and `mission_signal` with the `_human_` aliases, `mission_resume`, `session_list`, and runtime-only `session_start_direct`, each with its tool test, and the registry list in `mcp/server.rs` updated.
+- Backend: `mission_post` and `mission_signal` with the `from` handle, renamed from the `_human_` tools, `mission_resume`, `session_list`, and runtime-only `session_start_direct`, each with its tool test, and the registry list in `mcp/server.rs` updated.
 - Tests:
   - every command builds the right tool name and argument JSON, checked without a socket;
   - a parity test fails when the app's tool registry has a tool with no command;
@@ -205,23 +208,32 @@ What each command calls:
 - `mission feed --follow` with the cursor loop and its three exits; `--types` and `--from` filtering; `help agents`.
 - Tests: the follow loop prints each event exactly once across polls that return nothing, one event, and several events; an archived mission ends the loop; the filters drop the right events.
 
-### Phase 3 — the embedded skill and the new default
+### Phase 3 — the embedded skill on all five runtimes
 
-- `crates/runner-backend/src/agent_skill.rs`: the template, rendering with the sidecar path, and install, remove, and status for the two roots with the marker; the startup refresh.
-- `app_store`: `initialize_skill_defaults` beside `initialize_mcp_defaults`. For new installs, `initialize_mcp_defaults` stops registering Claude Code, Codex, and Copilot. Clients already in `initialized_mcp_clients` are untouched, and TRAE still registers.
+- `crates/runner-backend/src/agent_skill.rs`: the template, rendering with the sidecar path, and install, remove, and status for the three roots with the marker; the startup refresh.
+- `router/runtime.rs`: TRAE's `skills_dirs` becomes `[".trae/skills"]`; `surfaces/settings/skills.rs` gains the TRAE caption; the tests that expect an empty TRAE catalog change.
+- `app_store`: `initialize_skill_defaults` beside `initialize_mcp_defaults`, which this phase leaves alone.
 - Tests:
-  - install writes both folders with the marker and the rendered path;
+  - install writes the three folders with the marker and the rendered path;
   - a startup refresh rewrites a stale marked folder and leaves an unmarked `runner/` alone;
   - removal deletes only marked folders, and a restart after removal does not reinstall;
-  - a fresh settings file registers MCP for TRAE only, while an existing one keeps its registrations.
+  - the TRAE catalog lists `~/.trae/skills` and nothing else.
+- Jason's smoke gates Phase 4: with the Runner entry switched off in Settings → MCP, a fresh Claude Code, Codex, pi and TRAE session each find the skill and start and follow a mission through the CLI.
 
-### Phase 4 — design, then the install actions
+### Phase 4 — remove the MCP integration
+
+- `app_store/mcp_defaults.rs`: `initialize_mcp_defaults` goes; one upgrade step unregisters the `runner` entry from every client in `initialized_mcp_clients` through `ops::mcp::mcp_set_integration(client, false)`, records that it ran, and logs a config it could not parse without touching it.
+- `surfaces/settings/mcp.rs` and `ops/mcp.rs`: the pinned Runner row, `mcp_integration_status`, `mcp_set_integration`'s UI callers and `mcp_config_snippet` go; the catalog of the user's other servers stays.
+- `cli/`: the `runner-mcp` bin target, `mcp_main.rs` and the stdio proxy in `mcp.rs` go, keeping the shared socket client; `cli_install::install_mcp_cli` goes and startup deletes a stale `<app data>/bin/runner-mcp`; the bundle scripts and workflows stop packaging and signing it.
+- Tests: the upgrade step removes exactly the entries Runner wrote, runs once, and leaves a hand-written entry and an unparseable config alone; a fresh settings file registers nothing; the Settings catalog renders without the Runner row; the stale sidecar is deleted.
+
+### Phase 5 — design, then the install actions
 
 - Draw the Settings → General rows (the command and the skill) in `design/specs/648-runner-cli.pen` and stop for sign-off.
 - `crates/runner-backend/src/cli_install.rs`: install and uninstall for both platforms, detection of an existing `runner`, and the `runner-dev` name for debug builds. `crates/runner-app/src/surfaces/settings_page.rs`: the two rows.
 - Tests: the link target is the sidecar path; an existing foreign `runner` is left untouched and reported; reinstalling is a no-op.
 
-### Phase 5 — docs and smoke
+### Phase 6 — docs and smoke
 
 - The arch, vision, README, and mission-watch updates above.
 - Smoke on macOS:
@@ -237,7 +249,6 @@ What each command calls:
 - [ ] Every tool in the registry has a CLI command, and `runner call` reaches any tool by name.
 - [ ] References resolve by handle, exact name, id, and unique prefix; ambiguity exits 2 with the candidates.
 - [ ] Inside a mission, `signal`, `msg post`, and `msg read` behave exactly as before, and mission commands default to the caller's mission and handle; outside, `--mission` routes them to `mission_post` and `mission_signal`, `--as` becomes `from`, and no handle means the person.
-- [ ] An MCP client calling the old `mission_post_human_*` names gets the same result as `mission_post` and `mission_signal` without `from`.
 - [ ] `--json` output equals the tool result; `-q` prints only the id; the default output is readable without either.
 - [ ] Exit codes are 0, 1, 2, and 3 as documented, and Runner not running always gives 3 with the message.
 - [ ] `mission start`, `chat start`, and `project create` default to the current directory.
@@ -245,8 +256,10 @@ What each command calls:
 - [ ] `mission resume`, `session list`, and a runtime-only `chat start` work through their new tools.
 - [ ] `mission feed --follow` prints every new event once, in order, and exits on archive, on Ctrl-C, and when the app quits.
 - [ ] `runner help agents` prints the guide for the installed version.
-- [ ] A fresh install puts the skill in both roots for the available agents and registers MCP for TRAE only; an existing install keeps its MCP registrations.
-- [ ] Claude Code, Codex, and pi sessions with no Runner MCP entry find and use the CLI through the skill.
+- [ ] A fresh install puts the skill in the three roots for the available agents and registers no MCP entry anywhere.
+- [ ] The first launch of 0.11.0 on an existing install removes the `runner` entry Runner wrote from each client's config, once, and leaves hand-written entries and unparseable configs alone.
+- [ ] Settings → MCP shows the user's other servers and no Runner row; `runner-mcp` is absent from the bundle and from `<app data>/bin/`.
+- [ ] TRAE's skills appear in the Skills pane from `~/.trae/skills`.
+- [ ] Claude Code, Codex, pi, and TRAE sessions with no Runner MCP entry find and use the CLI through the skill.
 - [ ] An app update refreshes a marked skill; an unmarked `runner/` folder is never touched; a removal survives restarts.
 - [ ] Install links the sidecar (never the app bundle), refuses a foreign `runner`, and debug builds install `runner-dev` against the debug app.
-- [ ] `runner-mcp` behaves unchanged against the same socket.
