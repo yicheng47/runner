@@ -41,7 +41,7 @@ Runner is a local desktop app for macOS and Windows. A user configures a **crew*
 │          │                                └───────┬────────────────────┘     │
 │          └────────────────────────────────────────┘ runs `runner` CLI        │
 │                                                                              │
-│   MCP server (rmcp, Unix socket $APPDATA/mcp.sock) ◄── runner-mcp bridge ◄── external clients │
+│   MCP server (rmcp, Unix socket $APPDATA/mcp.sock) ◄── runner CLI / temporary runner-mcp bridge │
 │   SQLite runner.db (rusqlite + r2d2, WAL) — config + session lifecycle, off the hot path │
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -383,7 +383,7 @@ Restart records a human `slot_restarted` signal followed by a `runner` message a
 
 **Human takeover is a first-class capability.** At any moment the human can type directly into any session's stdin — the same writer the router uses. The pane is a real terminal, not a log viewer: special keys pass through untouched, and the agent cannot tell whether bytes came from the router, the human, or its normal terminal input.
 
-The mission feed is read-mostly: it renders coordination events and historical human-authored events, has no free-form composer, and its only input is the choice control on a pending `human_question` card. External orchestrators post `human_said` through MCP when they need to relay an operator instruction programmatically.
+The mission feed is read-mostly: it renders coordination events and historical human-authored events, has no free-form composer, and its only input is the choice control on a pending `human_question` card. External orchestrators use the `runner` CLI to post `human_said` when they need to relay an operator instruction programmatically.
 
 ### 5.5 Sessions outlive views; terminals outlive panes
 
@@ -424,7 +424,7 @@ The baseline detector infers activity from PTY byte traffic ([#124](../features/
 The current sources and precedence are:
 
 1. **`forwarder`.** `IdleDetector` reports Busy on PTY output and Idle after 2 s of silence. A 500 ms grace window re-armed on resize prevents resize output from waking an idle session. An active hook adapter owns activity and makes `note_forwarder_transition` reject forwarder status transitions. Without hook ownership, it rejects forwarder Busy while `suppress_local_input_busy` is set.
-2. **`input-submit` and `agent`.** Input submission can mark the session Busy; the deprecated `runner status` command can report explicit agent status. These sources are not blocked by the forwarder guards. The sink clears local-input suppression on an accepted Idle report and deduplicates unchanged activity. These are remaining status writers, not a complete lifecycle precedence model. `InputTracker` supplies input observations and influences local-input suppression; it does not own Busy/Idle.
+2. **`input-submit`.** Input submission can mark the session Busy and is not blocked by the forwarder guards. The sink clears local-input suppression on an accepted Idle report and deduplicates unchanged activity. This is a remaining status writer, not a complete lifecycle precedence model. `InputTracker` supplies input observations and influences local-input suppression; it does not own Busy/Idle.
 
 Mission sessions and direct chats are both seeded Busy with source `spawn` at spawn, so a slot reads Working · estimated from its first byte. After that seed, the output forwarder appends mission `session_status` transitions with their source to the mission log and the router updates its status projection. Direct chats stay off-bus: SessionManager stores their latest activity and emits `session/status` to every window; sidebar aggregation drives activity and completion/unread indicators. False Busy can suppress idle-gated inbox reconciliation, while false Idle can permit a nudge during a turn. Shells still use byte activity in v0.8.9, so silent commands can incorrectly read Idle.
 
@@ -573,39 +573,75 @@ Message *bodies* are never pushed; recipients read them with `msg read`. What th
 
 ## 9. The `runner` CLI
 
-The bundled CLI is the agent-facing surface for everything in §4–§8. Spawned children invoke it directly (it's prepended onto their `PATH` at spawn) to participate in the bus. There is no other supported way for an agent to talk to the rest of the crew.
+The bundled CLI is Runner's external command surface for people, scripts, direct chats, and mission sessions. It connects to the app's local MCP socket for workspace and lifecycle operations; the socket protocol is an implementation detail. Mission sessions continue to use the same binary for direct event-log messaging.
 
 ### 9.1 Surface
 
 ```
-runner signal <type> [--payload <json>]
-runner msg    post <text> [--to <handle>]
-runner msg    read [--since <ts>] [--from <handle>]
-runner status busy|idle [--note <text>]      (deprecated)
-runner help
+# meta
+runner status
+runner help [<noun>]
+runner call <tool> [<json>]
+
+# projects and roles
+runner project list | show <project> | create <name> [--path <dir>] | rename <project> <name> | delete <project> [--force]
+runner role list | show <handle>
+runner role create <handle> --runtime <runtime> [--name <display name>] [--model <model>] [--effort <effort>]
+                   [--permission <mode>] [--prompt <text> | --prompt-file <path | ->]
+                   [--arg <arg>]... [--env KEY=VALUE]... [--cwd <dir>]
+runner role update <handle> [the same optional flags] | delete <handle>
+
+# crews; slots are addressed by handle
+runner crew list | show <crew>
+runner crew create <name> [--purpose <text>] [--goal <text>] [--conventions-file <path | ->]
+runner crew update <crew> [--name <name>] [--purpose <text>] [--goal <text>] [--conventions-file <path | ->]
+runner crew delete <crew>
+runner crew add <crew> <role> [--as <handle>] [--runtime <runtime>] [--model <model>] [--effort <effort>]
+runner crew set <crew> <handle> [--as <new handle>] [--runtime <runtime>] [--model <model>] [--effort <effort>]
+runner crew remove <crew> <handle> | lead <crew> <handle> | order <crew> <handle> <handle>...
+
+# missions, chats, and sessions
+runner mission list [--crew <crew>] | show [<mission>]
+runner mission start --crew <crew> [--goal <text> | --goal-file <path | ->] [--title <title>]
+                     [--project <project> | --cwd <dir>]
+runner mission stop | resume | archive | unarchive | pin | unpin [<mission>]
+runner mission rename <mission> <title> | move [<mission>] (--project <project> | --unfile)
+runner mission feed [<mission>] [--since <offset>] [--limit <n>] [--oldest-first]
+runner mission answer <mission> <question_id> <choice>
+runner chat start (<role> | --runtime <runtime>) [--model <model>] [--effort <effort>] [--project <project> | --cwd <dir>]
+runner session list | resume <session> | restart <session>
+
+# mission-scoped
+runner msg post [--mission <mission>] [--as <handle>] [--to <handle>] <text>
+runner msg read [--since <ulid>] [--from <handle>]
+runner signal <type> [--mission <mission>] [--as <handle>] [--payload <json>]
+runner ask <question> [--context <text>] [--mission <mission>] [--as <handle>]
+runner ask --human <prompt> --choices <a,b,...> [--mission <mission>] [--as <handle>]
 ```
 
-Context always comes from env vars injected at spawn (`RUNNER_CREW_ID`, `RUNNER_MISSION_ID`, `RUNNER_HANDLE`, `RUNNER_EVENT_LOG`); the CLI is otherwise stateless and side-effect-free outside of the one log append. Message bodies are capped at 32 KB.
+Every command accepts `--json` for JSON output and `-q` for result ids. stdout carries data; stderr carries diagnostics. Exit 0 is success, 1 means the tool refused the operation, 2 is usage or reference resolution, and 3 means the app is not running. `spawn`, `ps`, `wait`, `stop <handle>`, and `done` are reserved for #562.
 
-### 9.2 Verb-by-verb
+### 9.2 References and defaults
 
-- **`signal <type> [--payload <json>]`** — append a `kind: signal` event. The router runs its fixed handler. `<type>` is validated against the closed `runner_core::model::KnownSignalType` enum.
-- **`msg post <text>`** — broadcast: `to: null`. **`msg post --to <handle> <text>`** — directed; the handle must be a slot in the mission roster.
-- **`msg read [--since <ts>] [--from <handle>]`** — the inbox projection (§4.3), sorted by ULID; also records an `inbox_read` watermark.
-- **`status busy|idle`** — **deprecated**; status is inferred (§5.10). Kept as an alias stamped `source: "agent"`, prints a deprecation notice.
-- **`help`** — long-form usage from `cli/src/help.rs`.
+Roles resolve by their unique handle. Crews and projects resolve by id or exact name; an ambiguous name exits 2 and prints the matching ids. Missions and sessions resolve by id or unique id prefix. `session_list` contains direct chats only, so a mission session can be resumed or restarted only by its full 26-character id, which passes through for backend validation. Active mission lookup comes from `mission_list`; because archived missions are absent from that tool, any full 26-character mission id is validated with `mission_get` and then passed to the requested tool. An active-only operation on an archived mission is therefore a tool refusal (exit 1), while a missing name, prefix or full mission id remains an unresolvable reference (exit 2).
 
-### 9.3 What the CLI does *not* do
+`mission start`, `chat start`, and `project create` default to the shell's current directory exactly unless a project or explicit directory is supplied. Relative paths are joined to that directory and normalized lexically by removing `.` and resolving `..`, without filesystem canonicalization. Long text accepts an inline flag or a file, and `-` reads stdin. On update/set commands, an empty optional value clears the field.
 
-No event-DAG flags (causality is ULID order or in-payload), no daemon, no socket, no per-crew allowlist. Each invocation is a one-shot process: read env, build the event, `flock` + append, exit.
+Default output is command-aware rather than a generic JSON projection. List commands expose only their identifying and operational columns; show commands use key-value blocks plus noun-specific sections; mission feed emits one chronological line per event. Table cells collapse whitespace, truncate at a fixed width with an ellipsis, and render null as `-`. `--json` preserves the tool's JSON text verbatim and `-q` prints ids only.
 
-### 9.4 Direct chats: the CLI is absent
+### 9.3 Two modes and one identity rule
 
-Direct-chat sessions don't get the bundled CLI on PATH — there is no bus, no router, no inbox. This is deliberate: direct chats are one-on-one with the human.
+Inside a mission, `RUNNER_CREW_ID`, `RUNNER_MISSION_ID`, `RUNNER_HANDLE`, and `RUNNER_EVENT_LOG` identify the caller. `msg post`, `msg read`, `signal`, and `ask` append or read the event log directly and do not start a Tokio runtime or connect to the app. Other commands use the socket, and mission commands with no explicit target default to the caller's mission. An explicit different mission uses the outside path.
 
-### 9.5 External control: MCP, not the CLI
+Outside a mission, mission-scoped writes require `--mission`; `msg read` is inside-only and points outside callers to `mission feed`. `--as <handle>` becomes the socket tool's `from` after roster validation. With no handle the caller is the person, represented as `human`. `ask` requires `--as` outside; `mission answer` is always the person's verb and posts `human_response` without a handle.
 
-Outside agents and tools operate Runner itself through the MCP server the app hosts on `$APPDATA/mcp.sock` (bridged from stdio by `runner-mcp`): `crew_*`, `role_*`, `slot_*`, `project_*` (including `project_create`, `project_rename`, and `project_delete`), `mission_set_project`, `mission_*` (start, stop, archive, reset, status, feed, post human message/signal, pin, rename) and `session_start_direct`, `session_resume`, and `session_restart`. This is how a Claude Code session drives a crew mission from the outside — the loop the rewrite itself was built with.
+### 9.4 Direct chats
+
+Direct chats remain off the mission bus, so they have no implicit mission, mission identity, event log, router, or inbox. Agent direct chats export `RUNNER_HANDLE` as their process label, but the CLI treats that handle-only environment as off-bus; it does not turn the label into a caller identity. Direct chats use the same general CLI as any outside shell when it is discoverable: workspace commands go through the socket, mission-scoped writes name `--mission`, `--as` explicitly supplies a roster handle, and `msg read` is unavailable.
+
+### 9.5 Socket transport and the compatibility bridge
+
+Each outside command opens `$APPDATA/mcp.sock`, bounds connection establishment to 500 ms and the MCP handshake separately to 3 s, performs the reference-list calls and one requested operation, prints the result, and exits. The backend registry and the tools reached by the CLI's exhaustive recorder test assert against one shared list of tool names. `runner-mcp` uses the same socket client and remains as a temporary stdio compatibility bridge; it is removed later in 0.11 after the CLI skill is proven across all supported runtimes.
 
 ## 10. Data model
 
@@ -719,8 +755,8 @@ Migrations live in `crates/runner-backend/migrations/` (`0001_init.sql` … `002
 ├── ui-settings.json                        # preferences (§3.7)
 ├── mcp.sock                                # MCP server socket while the app runs
 ├── bin/
-│   ├── runner                              # bundled agent CLI (signal + msg)
-│   └── runner-mcp                          # stdio MCP bridge
+│   ├── runner                              # general CLI + direct mission-bus verbs
+│   └── runner-mcp                          # temporary stdio compatibility bridge
 └── crews/{crew_id}/missions/{mission_id}/
     └── events.ndjson                       # per-mission event log (+ roster sidecar)
 
@@ -787,7 +823,7 @@ A panic in a PTY reader thread only affects that session: the forwarder ends, th
 2. **Slot is the indirection** that lets one role participate in many crews and direct chats without duplication.
 3. **PTY in-process via `portable-pty`, not pipes, not tmux.** TUI fidelity is non-negotiable.
 4. **NDJSON file per mission, not a broker.** Debuggable and crash-durable.
-5. **CLI wrapper for spawned agents; MCP for external controllers.**
+5. **One CLI for people, scripts, and agents.** The local MCP socket is its internal transport.
 6. **Signals and messages as distinct primitives.** Keeps the router simple and prose natural.
 7. **The signal router is the only urgent wake-up path**, and every push goes through one delivery gate.
 8. **Prompt composition at spawn time (Layer 1/2/3).** Replaces runtime handshakes.

@@ -6,7 +6,7 @@ Since 2026-09-01 a spec's number **is** its tracking issue number: file the issu
 
 ## Active
 
-- [648 — A general `runner` CLI](./648-runner-cli.md) — every MCP tool as a `runner <noun> <verb>` command, `mission feed --follow`, and an embedded agent skill in place of MCP registration; a caller is the person or a roster handle ([#648](https://github.com/yicheng47/runner/issues/648), P1, 0.11).
+- [648 — A general `runner` CLI](./648-runner-cli.md) — every socket tool as a `runner <noun> <verb>` command, `mission feed --follow`, an embedded agent skill on all five runtimes, and Runner's MCP integration removed in the same release; a caller is the person or a roster handle ([#648](https://github.com/yicheng47/runner/issues/648), P1, 0.11).
 - [539 — pi runtime](./539-pi-runtime.md) — pi as a runtime with the system-prompt channel, caller-assigned keys, native fork and hook status through a Runner-owned extension; plan in [`../impls/539-pi-runtime.md`](../impls/539-pi-runtime.md) ([#539](https://github.com/yicheng47/runner/issues/539), P1, 0.11).
 - [562 — Missions as containers](./562-mission-spawn.md) — the mission owns its roster, a mission starts from a crew or a role, and the lead or an outside seat spawns, lists, waits on and stops slots ([#562](https://github.com/yicheng47/runner/issues/562), P2, 0.12).
 - [403 — Opt-in worktree isolation per mission](./403-mission-worktree-isolation.md) — a mission runs in its own `git worktree` so crews and the human's checkout never collide ([#403](https://github.com/yicheng47/runner/issues/403), P1, 0.14).

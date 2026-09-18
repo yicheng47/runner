@@ -1,6 +1,6 @@
-// `runner signal <type> [--payload <json>]` and the `runner status` sugar
-// wrapper. Both append a single `EventDraft::signal` line to the
-// mission's NDJSON event log via `runner_core::event_log::EventLog`.
+// `runner signal <type> [--payload <json>]` appends a single
+// `EventDraft::signal` line to the mission's NDJSON event log via
+// `runner_core::event_log::EventLog`.
 //
 // Per arch §5.2, signals always carry `to: null`; per-target routing
 // lives in `payload.target` (only `human_said` uses this in v0). The CLI
@@ -19,81 +19,39 @@ fn known_types_csv() -> String {
         .join(", ")
 }
 
-pub fn run(ty: &str, payload: Option<&str>) -> i32 {
-    let Some(env) = env::require_mission_or_handle_offbus("signal") else {
-        return 0; // unreachable in practice; the helper exits or returns Some.
-    };
-
+pub fn run(env: &env::MissionEnv, ty: &str, payload: Option<&str>) -> i32 {
     let Some(kind) = KnownSignalType::from_name(ty) else {
         eprintln!(
             "runner signal: unknown type {ty:?}. Known types: {}.",
             known_types_csv(),
         );
-        return 1;
+        return 2;
     };
 
-    let payload_value = match payload {
-        Some(s) => match serde_json::from_str::<serde_json::Value>(s) {
-            Ok(v) => v,
-            Err(e) => {
-                eprintln!("runner signal: --payload is not valid JSON: {e}");
-                return 1;
-            }
-        },
-        None => serde_json::json!({}),
-    };
-
-    append(&env, kind.as_str(), payload_value)
-}
-
-/// `runner status busy|idle [--note <text>]` — emits a `session_status`
-/// signal with the validated state. Validation lives here so the CLI can
-/// reject typos like `runner status sleeping` before they hit the log.
-///
-/// Deprecated since issue #124: the session forwarder is now the
-/// authoritative source for busy/idle via PTY silence
-/// (`docs/features/archive/13-pty-silence-idle-detection.md`). The verb is kept
-/// as a back-compat alias so user-authored templates that still call it
-/// don't crash; we stamp `source: "agent"` on the payload so the router
-/// / debug tooling can tell agent-reported events apart from
-/// forwarder-inferred ones. Removal scheduled for the release after the
-/// forwarder ships.
-pub fn run_status(state: &str, note: Option<&str>) -> i32 {
-    let normalized = match state {
-        "busy" | "idle" => state,
-        other => {
-            eprintln!("runner status: state must be \"busy\" or \"idle\"; got {other:?}");
-            return 1;
+    let payload_value = match parse_payload(payload) {
+        Ok(value) => value,
+        Err(message) => {
+            eprintln!("{message}");
+            return 2;
         }
     };
-    eprintln!(
-        "runner status: deprecated; busy/idle is now inferred from PTY activity (issue #124).",
-    );
-    let mut payload = serde_json::Map::new();
-    payload.insert(
-        "state".into(),
-        serde_json::Value::String(normalized.to_string()),
-    );
-    // `source` tells consumers this event came from the agent itself
-    // (vs. `"forwarder"`, which the session forwarder stamps onto
-    // PTY-silence-inferred transitions). Old consumers that don't look
-    // at the field are unaffected.
-    payload.insert(
-        "source".into(),
-        serde_json::Value::String("agent".to_string()),
-    );
-    if let Some(n) = note {
-        payload.insert("note".into(), serde_json::Value::String(n.to_string()));
-    }
-    let value = serde_json::Value::Object(payload);
 
-    let Some(env) = env::require_mission_or_handle_offbus("status") else {
-        return 0;
-    };
-    append(&env, "session_status", value)
+    append(env, kind.as_str(), payload_value)
 }
 
-fn append(env: &env::MissionEnv, ty: &str, payload: serde_json::Value) -> i32 {
+pub fn parse_payload(payload: Option<&str>) -> Result<serde_json::Value, String> {
+    let value = match payload {
+        Some(value) => serde_json::from_str(value)
+            .map_err(|error| format!("runner signal: --payload is not valid JSON: {error}"))?,
+        None => serde_json::json!({}),
+    };
+    if !value.is_object() {
+        return Err("runner signal: --payload must be a JSON object".to_owned());
+    }
+    Ok(value)
+}
+
+pub fn append(env: &env::MissionEnv, ty: &str, payload: serde_json::Value) -> i32 {
     // `EventLog::open` recreates the dir if needed; here it just resolves
     // the existing mission_dir. The flock + ULID floor logic lives there.
     let Some(mission_dir) = env.event_log.parent() else {

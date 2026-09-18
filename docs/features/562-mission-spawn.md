@@ -11,7 +11,7 @@
 
 A mission's roster is fixed the moment it starts. `ops::mission::start` snapshots the crew's slots into `roster.json`, one session is spawned per slot, and the router and bus hold the roster immutably. When the lead finds mid-flight that the task splits three ways, or needs a reviewer the crew never had, the only move is to stop, edit the crew, and start over, losing every conversation.
 
-The crew also sits in front of every delegation. The pattern Jason uses daily (a Claude Code session plans, a Codex agent implements) runs today from an external session over MCP, and needed a one-slot crew ("codex solo") just so one agent could hand work to another. A crew of one is a spawn with setup in front of it.
+The crew also sits in front of every delegation. The pattern Jason uses daily (a Claude Code session plans, a Codex agent implements) ran until 0.11 from an external session over MCP, and from 0.11.0 runs over the `runner` CLI, and needed a one-slot crew ("codex solo") just so one agent could hand work to another. A crew of one is a spawn with setup in front of it.
 
 Delegation across runtimes is the lane nobody else covers: Claude Code's subagents spawn Claude, Codex's spawn Codex. A lead that picks a role (runtime, model, effort and brief already set) for each piece of work is also the token-subscription positioning working without the human choosing each time.
 
@@ -22,7 +22,7 @@ Crews stay. A repeatable shape (coder plus reviewer, or #630's re-runnable jobs)
 - **Mission**: a container with one event log, a cwd, a goal, a roster of slots, and exactly one lead. The mission owns its roster.
 - **Crew**: a template. Starting a mission from a crew copies the crew's slots into the mission. Editing the crew afterwards never touches a running mission.
 - **Role-seeded mission**: a mission started from one role, which becomes the lead. Its roster grows by spawning.
-- **Spawn**: add a slot to a running mission and start its session. The lead, the human, or an MCP client can spawn.
+- **Spawn**: add a slot to a running mission and start its session. The lead, the human, or an outside caller through the `runner` CLI can spawn.
 - **Caller**: the person at the app, `human` on the bus, or a handle in the mission's roster. A seat is a roster entry and does not need a Runner-spawned session behind it. An outside agent that drives a mission takes a seat, and from then on its posts, spawns, stops and answers carry that handle, and workers reach it with `--to <handle>` like any crewmate.
 - **Direct chats** stay off the bus.
 
@@ -45,7 +45,7 @@ Vocabulary: **crew slot** (a row the crew page edits) and **mission slot** (a ro
 - **Outside seats.** A mission can have a lead seat that Runner did not spawn: an outside agent (a Claude Code session at a terminal, a script) that started the mission holds `lead`, and its inbox is `runner mission feed --follow` or `wait`. A worker's `ask_lead` to an outside lead is left on the feed, not injected, and `wait` returns on it; `done` closes the mission from that seat. The command that takes the seat (a flag on `mission start`, or a join verb) is designed with the rest of the verbs in Phase 2. The roster entry has no `session_id`, `runner ps` lists it as `external`, and the human's Add role path is unchanged. This is what 648 reserved `wait` and `done` for.
 - **The human's path** (app). Under the rail's sessions list, a **+ Add role** row shown while the mission is running. It opens an **Add role** modal: the role picker from the crew page's add-slot form, runtime, model and effort options, a handle field pre-filled with the suggested unique handle and validated with `slot_handle_error`, and an optional multi-line **Task**. Add calls the op with `requested_by: Human`. The new card appears at the end of the rail with the starting pill and an "added by @lead" or "added by you" caption. Starting a mission gains a choice between a crew and a role, and a role's detail page gains **Start mission**.
 - **Feed rows.** `role_joined` renders as a signal row on the requester's avatar: "@lead · spawned @coder-2 (Coder, codex)". `slot_exited` renders as a warning row when the outcome is `crashed` and a muted row otherwise. `spawn_role` and `stop_slot` requests, and their bounces, render through the existing signal and warning rows.
-- **MCP.** `mission_spawn(mission_id, role, as?, runtime?, model?, effort?, task?)` beside `mission_start`, which maps to `requested_by: Human`. `mission_start` accepts `role` as an alternative to `crew_id`, so an outside session can start a one-role mission and spawn into it.
+- **Socket tools and their commands.** Runner's MCP integration is gone by then ([648](./648-runner-cli.md) decision 8), so these are tools on the CLI's socket, each with a command. `mission_spawn(mission_id, role, as?, runtime?, model?, effort?, task?)` beside `mission_start`, which maps to `requested_by: Human`. `mission_start` accepts `role` as an alternative to `crew_id`, so an outside session can start a one-role mission and spawn into it.
 - **Per-slot lifecycle.** #542's Stop, Resume, and Restart work on a spawned slot unchanged, resolved through `sessions.slot_id`. The mission-wide Resume respawns spawned slots with the rest, and an app restart rebuilds the router from `list_for_mission`.
 
 ### What the lead hears without asking

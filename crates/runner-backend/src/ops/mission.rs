@@ -120,6 +120,13 @@ pub struct MissionSummary {
     pub activity: Option<MissionActivityState>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct ResumeMissionOutput {
+    pub mission_id: String,
+    pub resumed_session_ids: Vec<String>,
+    pub sessions: Vec<crate::ops::session::SessionRow>,
+}
+
 pub fn get(conn: &Connection, id: &str) -> Result<Mission> {
     // Intentionally no `archived_at` filter — opening an archived
     // mission by direct URL has to still resolve so the workspace can
@@ -390,10 +397,13 @@ fn write_roster_sidecar(mission_dir: &Path, roster: &[crate::model::SlotWithRole
 }
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
-pub struct PostHumanSignalInput {
+pub struct PostSignalInput {
     pub mission_id: String,
-    /// Signal type — restricted to the human-originated ones the workspace
-    /// UI is allowed to emit. Anything else is rejected.
+    /// Omit for the person at the app; otherwise a mission roster handle.
+    #[serde(default)]
+    pub from: Option<String>,
+    /// Signal type. Human-originated calls keep the workspace whitelist;
+    /// roster handles may emit any known type except person/app-only types.
     pub signal_type: String,
     /// Free-form JSON object carried with the signal. Annotated so schemars
     /// emits a schema with an explicit `type`; a bare `serde_json::Value`
@@ -404,8 +414,11 @@ pub struct PostHumanSignalInput {
 }
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
-pub struct PostHumanMessageInput {
+pub struct PostMessageInput {
     pub mission_id: String,
+    /// Omit for the person at the app; otherwise a mission roster handle.
+    #[serde(default)]
+    pub from: Option<String>,
     pub text: String,
     /// Omit for a crew-wide channel post; set to a slot handle for a
     /// targeted message.
@@ -438,25 +451,56 @@ pub fn mission_events_replay(
     read_events(&state.app_data_dir, &conn, mission_id)
 }
 
-pub async fn mission_post_human_signal_impl(
-    state: &AppCore,
-    input: PostHumanSignalInput,
-) -> Result<runner_core::model::Event> {
-    // Whitelist: only human_said from MCP and human_response from the
-    // workspace UI. The router treats `from = "human"` as authoritative
-    // for these, so a buggy client that posted `mission_goal` or `ask_lead`
-    // could trigger handler side-effects from the wrong identity.
-    let allowed = matches!(input.signal_type.as_str(), "human_said" | "human_response");
-    if !allowed {
-        return Err(Error::msg(format!(
-            "signal_type {:?} is not allowed from the workspace UI",
-            input.signal_type
-        )));
+fn validate_roster_handle(conn: &Connection, mission: &Mission, from: Option<&str>) -> Result<()> {
+    let Some(from) = from else {
+        return Ok(());
+    };
+    let roster = slot::list(conn, &mission.crew_id)?;
+    if roster.iter().any(|member| member.slot.slot_handle == from) {
+        Ok(())
+    } else {
+        Err(Error::msg(format!("@{from} is not in the mission roster")))
     }
+}
 
-    let mission = {
+pub async fn mission_signal_impl(
+    state: &AppCore,
+    input: PostSignalInput,
+) -> Result<runner_core::model::Event> {
+    let (mission, from) = {
         let conn = state.db.get()?;
-        get(&conn, &input.mission_id)?
+        let mission = get(&conn, &input.mission_id)?;
+        validate_roster_handle(&conn, &mission, input.from.as_deref())?;
+        let from = if let Some(from) = input.from.as_deref() {
+            let Some(signal_type) = KnownSignalType::from_name(&input.signal_type) else {
+                return Err(Error::msg(format!(
+                    "unknown signal_type {:?}",
+                    input.signal_type
+                )));
+            };
+            if matches!(
+                signal_type,
+                KnownSignalType::HumanSaid
+                    | KnownSignalType::HumanResponse
+                    | KnownSignalType::HumanQuestion
+                    | KnownSignalType::MissionGoal
+            ) {
+                return Err(Error::msg(format!(
+                    "signal_type {:?} is reserved for the person or Runner",
+                    input.signal_type
+                )));
+            }
+            from.to_owned()
+        } else {
+            if !matches!(input.signal_type.as_str(), "human_said" | "human_response") {
+                return Err(Error::msg(format!(
+                    "signal_type {:?} is not allowed without --as <handle>",
+                    input.signal_type
+                )));
+            }
+            "human".to_owned()
+        };
+        (mission, from)
     };
     if !matches!(mission.status, MissionStatus::Running) {
         return Err(Error::msg(format!(
@@ -471,7 +515,7 @@ pub async fn mission_post_human_signal_impl(
         crew_id: mission.crew_id.clone(),
         mission_id: mission.id.clone(),
         kind: EventKind::Signal,
-        from: "human".into(),
+        from,
         to: None,
         signal_type: Some(SignalType::new(input.signal_type)),
         payload: input.payload,
@@ -479,10 +523,10 @@ pub async fn mission_post_human_signal_impl(
     Ok(event)
 }
 
-fn post_human_message(
+fn post_message(
     app_data_dir: &Path,
     conn: &Connection,
-    input: PostHumanMessageInput,
+    input: PostMessageInput,
 ) -> Result<runner_core::model::Event> {
     let text = input.text.trim().to_string();
     if text.is_empty() {
@@ -496,6 +540,8 @@ fn post_human_message(
             mission.id, mission.status
         )));
     }
+
+    validate_roster_handle(conn, &mission, input.from.as_deref())?;
 
     if let Some(target) = input.to.as_deref() {
         if target == "human" {
@@ -517,19 +563,19 @@ fn post_human_message(
     let event = log.append(EventDraft::message(
         mission.crew_id,
         mission.id,
-        "human",
+        input.from.unwrap_or_else(|| "human".to_owned()),
         input.to,
         text,
     ))?;
     Ok(event)
 }
 
-pub async fn mission_post_human_message_impl(
+pub async fn mission_post_impl(
     state: &AppCore,
-    input: PostHumanMessageInput,
+    input: PostMessageInput,
 ) -> Result<runner_core::model::Event> {
     let conn = state.db.get()?;
-    post_human_message(&state.app_data_dir, &conn, input)
+    post_message(&state.app_data_dir, &conn, input)
 }
 
 pub async fn mission_start_impl(
@@ -1145,6 +1191,56 @@ pub async fn mission_stop_impl(state: &AppCore, id: String) -> Result<Mission> {
     get(&conn, &id)
 }
 
+pub fn mission_resume(state: &AppCore, id: &str) -> Result<ResumeMissionOutput> {
+    mission_resume_with(state, id, |state, session_id| {
+        crate::ops::session::session_resume(state, session_id, None, None).map(|_| ())
+    })
+}
+
+fn mission_resume_with(
+    state: &AppCore,
+    id: &str,
+    mut resume: impl FnMut(&AppCore, &str) -> Result<()>,
+) -> Result<ResumeMissionOutput> {
+    let candidates = crate::ops::session::session_list(state, id)?;
+    let mut resumed_session_ids = Vec::new();
+    let mut first_error = None;
+    for candidate in candidates {
+        if matches!(candidate.session.status, SessionStatus::Running) {
+            continue;
+        }
+        match resume(state, &candidate.session.id) {
+            Ok(_) => resumed_session_ids.push(candidate.session.id),
+            Err(error) => {
+                let message = error.to_string();
+                if !is_concurrent_resume_error(&message) {
+                    first_error.get_or_insert((candidate.session.id, message));
+                }
+            }
+        }
+    }
+    if let Some((session_id, error)) = first_error {
+        return Err(Error::msg(format!(
+            "mission {id} resume failed for session {session_id}: {error}; resumed session ids: [{}]",
+            resumed_session_ids.join(", ")
+        )));
+    }
+    Ok(ResumeMissionOutput {
+        mission_id: id.to_owned(),
+        resumed_session_ids,
+        sessions: crate::ops::session::session_list(state, id)?,
+    })
+}
+
+fn is_concurrent_resume_error(error: &str) -> bool {
+    [
+        "is already being resumed",
+        "is already running — attach instead",
+    ]
+    .iter()
+    .any(|fragment| error.contains(fragment))
+}
+
 /// Toggle a mission's pin. Pinned missions float to the top of the
 /// sidebar's MISSION list (sort key: `pinned_at IS NULL, pinned_at
 /// DESC, started_at DESC`). Setting `pinned = false` clears the
@@ -1724,17 +1820,18 @@ mod tests {
     }
 
     #[test]
-    fn post_human_message_appends_broadcast_message() {
+    fn post_message_appends_broadcast_message() {
         let pool = pool();
         let mut conn = pool.get().unwrap();
         let tmp = tempfile::tempdir().unwrap();
         let (crew_id, mission_id) = start_message_test_mission(&mut conn, tmp.path());
 
-        let event = post_human_message(
+        let event = post_message(
             tmp.path(),
             &conn,
-            PostHumanMessageInput {
+            PostMessageInput {
                 mission_id: mission_id.clone(),
+                from: None,
                 text: "Heads up".into(),
                 to: None,
             },
@@ -1755,17 +1852,18 @@ mod tests {
     }
 
     #[test]
-    fn post_human_message_appends_targeted_roster_message() {
+    fn post_message_appends_targeted_roster_message() {
         let pool = pool();
         let mut conn = pool.get().unwrap();
         let tmp = tempfile::tempdir().unwrap();
         let (_crew_id, mission_id) = start_message_test_mission(&mut conn, tmp.path());
 
-        let event = post_human_message(
+        let event = post_message(
             tmp.path(),
             &conn,
-            PostHumanMessageInput {
+            PostMessageInput {
                 mission_id,
+                from: None,
                 text: "  Please review\n".into(),
                 to: Some("reviewer".into()),
             },
@@ -1782,17 +1880,251 @@ mod tests {
     }
 
     #[test]
-    fn post_human_message_rejects_unknown_target() {
+    fn post_message_uses_validated_roster_handle_as_sender() {
         let pool = pool();
         let mut conn = pool.get().unwrap();
         let tmp = tempfile::tempdir().unwrap();
         let (_crew_id, mission_id) = start_message_test_mission(&mut conn, tmp.path());
 
-        let err = post_human_message(
+        let event = post_message(
             tmp.path(),
             &conn,
-            PostHumanMessageInput {
+            PostMessageInput {
+                mission_id: mission_id.clone(),
+                from: Some("reviewer".into()),
+                text: "Reviewed".into(),
+                to: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(event.from, "reviewer");
+
+        let error = post_message(
+            tmp.path(),
+            &conn,
+            PostMessageInput {
                 mission_id,
+                from: Some("missing".into()),
+                text: "Nope".into(),
+                to: None,
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error.to_string(), "@missing is not in the mission roster");
+    }
+
+    #[tokio::test]
+    async fn mission_signal_preserves_human_calls_and_gates_roster_handles() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = crate::test_support::test_core_in(temp.path().to_path_buf());
+        let mission_id = {
+            let mut conn = state.db.get().unwrap();
+            let (_crew_id, mission_id) = start_message_test_mission(&mut conn, &state.app_data_dir);
+            mission_id
+        };
+
+        let human = mission_signal_impl(
+            &state,
+            PostSignalInput {
+                mission_id: mission_id.clone(),
+                from: None,
+                signal_type: "human_said".into(),
+                payload: serde_json::json!({"text": "hello"}),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(human.from, "human");
+
+        let roster = mission_signal_impl(
+            &state,
+            PostSignalInput {
+                mission_id: mission_id.clone(),
+                from: Some("reviewer".into()),
+                signal_type: "ask_lead".into(),
+                payload: serde_json::json!({"question": "ready?"}),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(roster.from, "reviewer");
+
+        let unknown = mission_signal_impl(
+            &state,
+            PostSignalInput {
+                mission_id: mission_id.clone(),
+                from: Some("missing".into()),
+                signal_type: "ask_lead".into(),
+                payload: serde_json::json!({}),
+            },
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(unknown.to_string(), "@missing is not in the mission roster");
+
+        for signal_type in [
+            "human_said",
+            "human_response",
+            "human_question",
+            "mission_goal",
+        ] {
+            let error = mission_signal_impl(
+                &state,
+                PostSignalInput {
+                    mission_id: mission_id.clone(),
+                    from: Some("reviewer".into()),
+                    signal_type: signal_type.into(),
+                    payload: serde_json::json!({}),
+                },
+            )
+            .await
+            .unwrap_err();
+            assert!(
+                error.to_string().contains("reserved"),
+                "{signal_type}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn mission_resume_skips_sessions_already_marked_running() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = crate::test_support::test_core_in(temp.path().to_path_buf());
+        let (mission_id, slot_id) = {
+            let mut conn = state.db.get().unwrap();
+            let crew_id = seed_crew(&conn, "Resume crew", None);
+            let slot_id = add_role(&mut conn, &crew_id, "lead");
+            let mission_id = start(
+                &mut conn,
+                &state.app_data_dir,
+                StartMissionInput {
+                    crew_id,
+                    project_id: None,
+                    title: "Resume mission".into(),
+                    goal_override: None,
+                    cwd: None,
+                },
+                MissionPermissionMode::Bypass,
+            )
+            .unwrap()
+            .mission
+            .id;
+            (mission_id, slot_id)
+        };
+        let role_id = {
+            let conn = state.db.get().unwrap();
+            let role_id: String = conn
+                .query_row(
+                    "SELECT role_id FROM slots WHERE id = ?1",
+                    [&slot_id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            conn.execute(
+                "INSERT INTO sessions (id, mission_id, role_id, slot_id, status, started_at)
+                 VALUES ('already-running', ?1, ?2, ?3, 'running', '2026-09-18T00:00:00Z')",
+                params![mission_id, role_id, slot_id],
+            )
+            .unwrap();
+            role_id
+        };
+        assert!(!role_id.is_empty());
+
+        let output = mission_resume(&state, &mission_id).unwrap();
+        assert!(output.resumed_session_ids.is_empty());
+        assert_eq!(output.sessions.len(), 1);
+        assert_eq!(output.sessions[0].session.id, "already-running");
+    }
+
+    #[test]
+    fn mission_resume_reports_completed_sessions_when_a_later_resume_fails() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = crate::test_support::test_core_in(temp.path().to_path_buf());
+        let mission_id = {
+            let mut conn = state.db.get().unwrap();
+            let crew_id = seed_crew(&conn, "Partial resume crew", None);
+            let good_slot = add_role(&mut conn, &crew_id, "good");
+            let broken_slot = add_role(&mut conn, &crew_id, "broken");
+            let mission_id = start(
+                &mut conn,
+                &state.app_data_dir,
+                StartMissionInput {
+                    crew_id,
+                    project_id: None,
+                    title: "Partial resume mission".into(),
+                    goal_override: None,
+                    cwd: None,
+                },
+                MissionPermissionMode::Bypass,
+            )
+            .unwrap()
+            .mission
+            .id;
+            let good_role: String = conn
+                .query_row(
+                    "SELECT role_id FROM slots WHERE id = ?1",
+                    [&good_slot],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            let broken_role: String = conn
+                .query_row(
+                    "SELECT role_id FROM slots WHERE id = ?1",
+                    [&broken_slot],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            conn.execute(
+                "INSERT INTO sessions (id, mission_id, role_id, slot_id, status, started_at)
+                 VALUES ('resume-ok', ?1, ?2, ?3, 'stopped', '2026-09-18T00:00:00Z')",
+                params![mission_id, good_role, good_slot],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO sessions (id, mission_id, role_id, slot_id, status, started_at)
+                 VALUES ('resume-fails', ?1, ?2, ?3, 'stopped', '2026-09-18T00:00:01Z')",
+                params![mission_id, broken_role, broken_slot],
+            )
+            .unwrap();
+            mission_id
+        };
+
+        let error = mission_resume_with(&state, &mission_id, |_, session_id| {
+            if session_id == "resume-ok" {
+                Ok(())
+            } else {
+                Err(Error::msg("synthetic resume failure"))
+            }
+        })
+        .unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("resume-fails"), "{message}");
+        assert!(
+            message.contains("resumed session ids: [resume-ok]"),
+            "{message}"
+        );
+
+        let output = mission_resume_with(&state, &mission_id, |_, _| {
+            Err(Error::msg("session is already being resumed"))
+        })
+        .unwrap();
+        assert!(output.resumed_session_ids.is_empty());
+        assert_eq!(output.sessions.len(), 2);
+    }
+
+    #[test]
+    fn post_message_rejects_unknown_target() {
+        let pool = pool();
+        let mut conn = pool.get().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let (_crew_id, mission_id) = start_message_test_mission(&mut conn, tmp.path());
+
+        let err = post_message(
+            tmp.path(),
+            &conn,
+            PostMessageInput {
+                mission_id,
+                from: None,
                 text: "Hello?".into(),
                 to: Some("missing".into()),
             },
@@ -1806,17 +2138,18 @@ mod tests {
     }
 
     #[test]
-    fn post_human_message_rejects_human_target() {
+    fn post_message_rejects_human_target() {
         let pool = pool();
         let mut conn = pool.get().unwrap();
         let tmp = tempfile::tempdir().unwrap();
         let (_crew_id, mission_id) = start_message_test_mission(&mut conn, tmp.path());
 
-        let err = post_human_message(
+        let err = post_message(
             tmp.path(),
             &conn,
-            PostHumanMessageInput {
+            PostMessageInput {
                 mission_id,
+                from: None,
                 text: "Echo".into(),
                 to: Some("human".into()),
             },
@@ -1830,18 +2163,19 @@ mod tests {
     }
 
     #[test]
-    fn post_human_message_rejects_empty_or_whitespace_text() {
+    fn post_message_rejects_empty_or_whitespace_text() {
         let pool = pool();
         let mut conn = pool.get().unwrap();
         let tmp = tempfile::tempdir().unwrap();
         let (_crew_id, mission_id) = start_message_test_mission(&mut conn, tmp.path());
 
         for text in ["", "  \n\t"] {
-            let err = post_human_message(
+            let err = post_message(
                 tmp.path(),
                 &conn,
-                PostHumanMessageInput {
+                PostMessageInput {
                     mission_id: mission_id.clone(),
+                    from: None,
                     text: text.into(),
                     to: None,
                 },
@@ -1855,18 +2189,19 @@ mod tests {
     }
 
     #[test]
-    fn post_human_message_rejects_non_running_mission() {
+    fn post_message_rejects_non_running_mission() {
         let pool = pool();
         let mut conn = pool.get().unwrap();
         let tmp = tempfile::tempdir().unwrap();
         let (_crew_id, mission_id) = start_message_test_mission(&mut conn, tmp.path());
         stop(&mut conn, tmp.path(), &mission_id).unwrap();
 
-        let err = post_human_message(
+        let err = post_message(
             tmp.path(),
             &conn,
-            PostHumanMessageInput {
+            PostMessageInput {
                 mission_id,
+                from: None,
                 text: "Too late".into(),
                 to: None,
             },

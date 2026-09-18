@@ -96,10 +96,9 @@ pub struct SessionStatus {
 }
 
 /// Busy/idle of one session. The forwarder infers it from PTY-byte
-/// activity (issue #124), the hook adapters and the CLI's `runner status`
-/// verb report it, the router projects it per handle and the UI reads
-/// the same projection. Serialized lowercase in `session/status` events
-/// and in `session_status` rows on the mission log.
+/// activity (issue #124), hook adapters may report it, the router projects
+/// it per handle, and the UI reads the same projection. Serialized lowercase
+/// in `session/status` events and in `session_status` rows on the mission log.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SessionActivityState {
@@ -119,10 +118,8 @@ pub enum RuntimeOutput {
     AgentObservation(super::status::AgentObservation),
     StatusBridgeFailed,
     /// Forwarder-inferred busy/idle transition. `source` is
-    /// `"forwarder"` for these synthetic events (the CLI's
-    /// `runner status` verb emits `source: "agent"` directly into
-    /// the log without going through this channel). Static-str
-    /// because both producers' values are known at compile time.
+    /// `"forwarder"` for these synthetic events. Static-str because
+    /// producer values are known at compile time.
     StatusTransition {
         state: SessionActivityState,
         source: &'static str,

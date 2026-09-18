@@ -1606,13 +1606,10 @@ fn session_status_updates_state_map_without_injecting_to_lead() {
 
 #[test]
 fn session_status_latest_wins_across_forwarder_and_agent_sources() {
-    // Spec 13 / issue #124 keeps the router's `session_status` handler
-    // unchanged: it doesn't branch on `payload.source`. Forwarder-
-    // emitted (`source: "forwarder"`) and agent-emitted (`source:
-    // "agent"`) events both feed the same per-handle map under a
-    // strict latest-wins policy. The forwarder fires more often than
-    // the deprecated CLI verb, so in practice it dominates; this test
-    // proves the invariant holds regardless of interleaving order.
+    // The router doesn't branch on `payload.source`. Forwarder-emitted
+    // (`source: "forwarder"`) and historical or hook-emitted
+    // (`source: "agent"`) events both feed the same per-handle map under
+    // a strict latest-wins policy.
     let (router, _injector, log, _dir) = fixture(
         vec![slot_with_role("lead", true), slot_with_role("impl", false)],
         &[("lead", "S-LEAD"), ("impl", "S-IMPL")],

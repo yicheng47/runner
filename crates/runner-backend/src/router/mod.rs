@@ -153,10 +153,8 @@ pub trait SessionDeliveryListener: Send + Sync + 'static {
 
 // `SessionActivityState` now lives in `session::runtime` because the forwarder
 // is the authoritative source (issue #124). The router consumes it via
-// `session_status` events the forwarder appends. Agent-reported events
-// from the deprecated `runner status` CLI verb feed the same map; both
-// converge under latest-wins, so the router doesn't branch on
-// `payload.source`.
+// `session_status` events the forwarder and hook adapters append. Both
+// converge under latest-wins, so the router doesn't branch on `payload.source`.
 pub use crate::session::runtime::SessionActivityState;
 
 /// Inputs to the launch-prompt composer, captured at mount for fresh

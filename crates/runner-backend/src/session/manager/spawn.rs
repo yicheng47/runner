@@ -1231,11 +1231,10 @@ impl SessionManager {
     /// Differences vs. the mission-flavored `spawn`:
     ///   - No `RUNNER_MISSION_ID`, `RUNNER_EVENT_LOG`, or
     ///     `RUNNER_CREW_ID` env vars. The bundled `runner` CLI is also
-    ///     deliberately NOT on PATH for direct chats: `runner msg post`,
-    ///     `runner status idle`, etc. would have no event log to write
-    ///     to and no crew/mission to attribute against, so removing the
-    ///     shim avoids tempting the agent to call verbs that fail
-    ///     silently. Direct chats are off-bus.
+    ///     deliberately NOT on PATH for direct chats: direct sessions
+    ///     have no event log or crew/mission identity for the local
+    ///     `runner msg`, `runner signal`, and `runner ask` paths. Direct
+    ///     chats are off-bus.
     ///   - `cwd` lives on the session row directly, since there's no
     ///     mission to inherit it from.
     ///   - The session does not show up in `kill_all_for_mission` for any

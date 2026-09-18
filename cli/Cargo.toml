@@ -4,12 +4,15 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "Bundled `runner` CLI agents use to append signals/messages to a mission's NDJSON event log."
+description = "Bundled `runner` CLI for operating Runner and participating in mission coordination."
 autobins = false
 
+[lib]
+name = "runner_cli"
+path = "src/lib.rs"
+
 # Source-side agent binary. `cli_install` renames this to `runner` when
-# copying into `$APPDATA/runner/bin/` so spawned agents get the compact
-# mission-communication command on PATH. The GPUI app binary is `Runner`.
+# copying into `$APPDATA/runner/bin/`. The GPUI app binary is `Runner`.
 [[bin]]
 name = "runner-agent-cli"
 path = "src/main.rs"

@@ -470,6 +470,22 @@ impl RunnerMcpHandler {
     }
 
     #[tool(
+        description = "Resume every stopped session in a mission; already-running sessions are left alone."
+    )]
+    pub async fn mission_resume(
+        &self,
+        Parameters(MissionIdArgs { id }): Parameters<MissionIdArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let state = self.state.clone();
+        let output = tokio::task::spawn_blocking(move || mission::mission_resume(&state, &id))
+            .await
+            .map_err(|error| ErrorData::internal_error(error.to_string(), None))?
+            .map_err(command_error)?;
+        emit_mission_changed(self);
+        Ok(CallToolResult::success(vec![Content::json(&output)?]))
+    }
+
+    #[tool(
         description = "Archive a mission, stopping live sessions and hiding it from active lists."
     )]
     pub async fn mission_archive(
@@ -571,27 +587,29 @@ impl RunnerMcpHandler {
         Ok(CallToolResult::success(vec![Content::json(&mission)?]))
     }
 
-    #[tool(description = "Post a human-originated signal into a mission feed.")]
-    pub async fn mission_post_human_signal(
+    #[tool(
+        description = "Post a signal into a mission feed as the person or an optional roster handle."
+    )]
+    pub async fn mission_signal(
         &self,
-        Parameters(input): Parameters<mission::PostHumanSignalInput>,
+        Parameters(input): Parameters<mission::PostSignalInput>,
     ) -> Result<CallToolResult, ErrorData> {
         let app_state = self.state.clone();
-        let event = mission::mission_post_human_signal_impl(&app_state, input)
+        let event = mission::mission_signal_impl(&app_state, input)
             .await
             .map_err(mcp_error)?;
         Ok(CallToolResult::success(vec![Content::json(&event)?]))
     }
 
     #[tool(
-        description = "Post a human-authored message into a running mission channel. Omit `to` to broadcast to the crew, or set it to one roster handle for a targeted message."
+        description = "Post a message into a running mission channel as the person or an optional roster handle. Omit `to` to broadcast."
     )]
-    pub async fn mission_post_human_message(
+    pub async fn mission_post(
         &self,
-        Parameters(input): Parameters<mission::PostHumanMessageInput>,
+        Parameters(input): Parameters<mission::PostMessageInput>,
     ) -> Result<CallToolResult, ErrorData> {
         let app_state = self.state.clone();
-        let event = mission::mission_post_human_message_impl(&app_state, input)
+        let event = mission::mission_post_impl(&app_state, input)
             .await
             .map_err(mcp_error)?;
         Ok(CallToolResult::success(vec![Content::json(&event)?]))
