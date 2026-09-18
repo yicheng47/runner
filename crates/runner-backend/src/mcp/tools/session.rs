@@ -13,7 +13,7 @@ pub struct StartDirectSessionArgs {
     /// Role ID.
     pub role_id: String,
     /// Optional runtime override (registry name, e.g. "codex",
-    /// "claude-code", "trae", or "copilot"). Omit to use the role's own runtime. When it
+    /// "claude-code", "trae", "copilot", or "pi"). Omit to use the role's own runtime. When it
     /// differs, the chat spawns that engine with registry defaults
     /// while the role's persona (system prompt, working dir, env)
     /// carries over.

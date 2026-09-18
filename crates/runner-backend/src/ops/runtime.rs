@@ -436,6 +436,25 @@ fn runtime_catalog_options() -> Vec<RuntimeCatalogEntry> {
                 .collect(),
         },
         RuntimeCatalogEntry {
+            name: Runtime::Pi,
+            display_name: "pi".into(),
+            command: "pi".into(),
+            native_fork: crate::router::runtime::supports_native_fork(Some(Runtime::Pi)),
+            description: "pi coding agent (bring your own model provider)".into(),
+            default_enabled: true,
+            available: false,
+            default_model: None,
+            default_effort: None,
+            models: vec![default_model_option()],
+            efforts: std::iter::once(default_effort())
+                .chain(
+                    ["off", "minimal", "low", "medium", "high", "xhigh", "max"]
+                        .into_iter()
+                        .map(|effort| plain_option(effort, effort)),
+                )
+                .collect(),
+        },
+        RuntimeCatalogEntry {
             name: Runtime::Trae,
             display_name: "TRAE CLI".into(),
             command: "traecli".into(),
@@ -489,6 +508,14 @@ mod tests {
 
     #[test]
     fn catalog_matches_supported_runtime_order_and_defaults() {
+        let definitions = runtime_list();
+        let pi = definitions
+            .iter()
+            .find(|runtime| runtime.name == Runtime::Pi)
+            .unwrap();
+        assert_eq!(pi.command, "pi");
+        assert!(pi.native_fork);
+
         let catalog = runtime_catalog_options();
         assert_eq!(
             catalog
@@ -499,7 +526,8 @@ mod tests {
                 Runtime::Codex,
                 Runtime::ClaudeCode,
                 Runtime::Copilot,
-                Runtime::Trae
+                Runtime::Pi,
+                Runtime::Trae,
             ]
         );
         assert!(catalog[0].default_enabled);
@@ -507,7 +535,18 @@ mod tests {
         assert!(catalog[2].default_enabled);
         assert_eq!(catalog[2].models[1].value, "auto");
         assert_eq!(catalog[2].models.len(), 28);
-        assert_eq!(catalog[3].default_enabled, cfg!(target_os = "macos"));
+        assert_eq!(catalog[4].default_enabled, cfg!(target_os = "macos"));
+        assert!(catalog[3].default_enabled);
+        assert!(catalog[3].native_fork);
+        assert_eq!(catalog[3].models.len(), 1);
+        assert_eq!(
+            catalog[3]
+                .efforts
+                .iter()
+                .map(|effort| effort.value.as_str())
+                .collect::<Vec<_>>(),
+            ["", "off", "minimal", "low", "medium", "high", "xhigh", "max"]
+        );
         assert_eq!(
             catalog[2]
                 .efforts
@@ -543,7 +582,7 @@ mod tests {
             ["", "low", "medium", "high", "xhigh", "max", "ultra"]
         );
         assert_eq!(
-            catalog[3]
+            catalog[4]
                 .efforts
                 .iter()
                 .map(|effort| effort.value.as_str())
@@ -567,10 +606,16 @@ mod tests {
                 Runtime::Codex,
                 Runtime::ClaudeCode,
                 Runtime::Copilot,
+                Runtime::Pi,
                 Runtime::Trae,
             ]
         } else {
-            vec![Runtime::Codex, Runtime::ClaudeCode, Runtime::Copilot]
+            vec![
+                Runtime::Codex,
+                Runtime::ClaudeCode,
+                Runtime::Copilot,
+                Runtime::Pi,
+            ]
         };
         assert_eq!(
             filter_selectable_runtime_catalog(catalog.clone(), None)

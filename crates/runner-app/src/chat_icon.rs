@@ -20,6 +20,7 @@ impl ChatIcon {
             Some(Runtime::Codex) => ("openai.svg", theme::text()),
             Some(Runtime::Trae) => ("trae.svg", gpui::rgb(0x32f08c).into()),
             Some(Runtime::Copilot) => ("copilot.svg", gpui::rgb(0x8534f3).into()),
+            Some(Runtime::Pi) => ("pi.svg", theme::text()),
             Some(Runtime::Shell) => return Self::generic("square-terminal.svg"),
             None => return Self::generic("message-square.svg"),
         };
@@ -55,6 +56,7 @@ mod tests {
                 ("codex", "openai.svg", theme::text()),
                 ("trae", "trae.svg", gpui::rgb(0x32f08c).into()),
                 ("copilot", "copilot.svg", gpui::rgb(0x8534f3).into()),
+                ("pi", "pi.svg", theme::text()),
             ] {
                 let icon = ChatIcon::for_runtime(runtime);
                 assert_eq!(icon.path, path);

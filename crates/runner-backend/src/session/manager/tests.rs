@@ -380,6 +380,7 @@ fn forward_queued_output(items: Vec<RuntimeOutput>) -> Vec<ForwardedEvent> {
     }
     fake.close_spawn(0);
     let capture = Arc::new(ForwarderCapture::default());
+    let app_data = tempfile::tempdir().unwrap();
     mgr.start_forwarder_thread(
         rt_session.session_id.clone(),
         None,
@@ -391,6 +392,7 @@ fn forward_queued_output(items: Vec<RuntimeOutput>) -> Vec<ForwardedEvent> {
         false,
         false,
         None,
+        app_data.path().to_path_buf(),
     )
     .join()
     .unwrap();
@@ -435,6 +437,7 @@ fn forwarder_delivers_a_cursor_burst_without_waiting_for_eof() {
     fake.push_output(0, redraw);
     fake.push_output(0, restore);
     let capture = Arc::new(ForwarderCapture::default());
+    let app_data = tempfile::tempdir().unwrap();
     let forwarder = mgr.start_forwarder_thread(
         rt_session.session_id.clone(),
         None,
@@ -446,6 +449,7 @@ fn forwarder_delivers_a_cursor_burst_without_waiting_for_eof() {
         false,
         false,
         None,
+        app_data.path().to_path_buf(),
     );
     let deadline = Instant::now() + Duration::from_secs(2);
     while capture.0.lock().unwrap().is_empty() && Instant::now() < deadline {
@@ -2328,7 +2332,7 @@ fn direct_chat_spawn_and_resume_strip_permission_flags_and_preserve_row_args() {
 
 #[test]
 fn runtime_only_chat_spawn_and_resume_assert_no_permission_posture() {
-    for runtime in ["claude-code", "codex", "trae", "copilot"] {
+    for runtime in ["claude-code", "codex", "trae", "copilot", "pi"] {
         let pool = pool_with_schema();
         let app_data = tempfile::tempdir().unwrap();
         let role = runtime_direct_role(
@@ -2355,10 +2359,10 @@ fn runtime_only_chat_spawn_and_resume_assert_no_permission_posture() {
         let args = fake.last_spawn_spec().unwrap().args;
         assert_chat_has_no_permission_flags(&args);
         assert!(has_arg_pair(&args, "--model", "test-model"));
-        let effort = if matches!(runtime, "claude-code" | "copilot") {
-            ("--effort", "high")
-        } else {
-            ("-c", "model_reasoning_effort=high")
+        let effort = match runtime {
+            "claude-code" | "copilot" => ("--effort", "high"),
+            "pi" => ("--thinking", "high"),
+            _ => ("-c", "model_reasoning_effort=high"),
         };
         assert!(has_arg_pair(&args, effort.0, effort.1));
 
@@ -2428,6 +2432,7 @@ fn mission_registration_preserves_initial_terminal_size() {
             PathBuf::from("/dev/null"),
             Arc::clone(&pool),
             None,
+            None,
             Some((132, 41)),
             "caller-supplied",
         )
@@ -2473,6 +2478,7 @@ fn hinted_mission_start_forks_slots_at_the_hint() {
             fixture_tmp_dir(),
             PathBuf::from("/dev/null"),
             Arc::clone(&pool),
+            None,
             None,
             size,
             source,
@@ -2540,6 +2546,7 @@ fn mission_fork_uses_a_size_pushed_before_the_pty_existed() {
             PathBuf::from("/dev/null"),
             Arc::clone(&pool),
             None,
+            None,
             Some((113, 38)),
             "mission-hint",
         )
@@ -2586,6 +2593,7 @@ fn mission_fork_applies_a_size_pushed_mid_fork() {
             fixture_tmp_dir(),
             PathBuf::from("/dev/null"),
             Arc::clone(&pool),
+            None,
             None,
             Some((113, 38)),
             "mission-hint",
@@ -2659,6 +2667,7 @@ fn unhinted_mission_start_still_forks_at_default() {
             PathBuf::from("/dev/null"),
             Arc::clone(&pool),
             None,
+            None,
             size,
             source,
         )
@@ -2712,6 +2721,7 @@ fn mission_registration_defaults_to_80x24_when_unsized() {
             fixture_tmp_dir(),
             PathBuf::from("/dev/null"),
             Arc::clone(&pool),
+            None,
             None,
             None,
             "DEFAULT_PTY_SIZE",
@@ -5737,6 +5747,7 @@ fn custom_claude_settings_do_not_prepare_a_status_watcher() {
             root.path(),
             None,
             None,
+            None,
         );
         assert!(!spec
             .env
@@ -5770,6 +5781,7 @@ fn spawn_argv_injects_runtime_settings_for_fresh_and_resume() {
             &role,
             &plan,
             &fixture_tmp_dir().join("runner-app-data"),
+            None,
             Some("first turn"),
             None,
         );
@@ -5834,7 +5846,7 @@ fn spawn_argv_injects_runtime_settings_for_fresh_and_resume() {
         .any(|args| args == ["-c", "check_for_update_on_startup=false"]));
     assert!(!resumed.iter().any(|arg| arg == "first turn"));
 
-    for runtime in ["claude-code", "trae", "copilot"] {
+    for runtime in ["claude-code", "trae", "copilot", "pi"] {
         let args = compose(
             runtime,
             router::runtime::resume_plan(Runtime::parse(runtime), None),
@@ -8660,6 +8672,7 @@ fn codex_spawn_composes_hooks_without_changing_user_home_and_respects_overrides(
                 &role,
                 &router::runtime::resume_plan(Some(Runtime::Codex), key),
                 root.path(),
+                None,
                 Some("first turn"),
                 None,
             );
@@ -8931,4 +8944,430 @@ fn copilot_missing_worker_conversation_keeps_id_and_delivers_first_turn() {
         &router::prompt::compose_worker_first_turn(Some("SLOT_BRIEF"), Some("TEAM_RULES"))
     );
     mgr.kill(&id).unwrap();
+}
+
+#[test]
+fn pi_direct_spawn_persists_key_uses_live_prompt_file_and_never_approves() {
+    let pool = pool_with_schema();
+    let app_data = tempfile::tempdir().unwrap();
+    let cwd = app_data.path().to_string_lossy().into_owned();
+    let mut role = role("pi-custom", &["--role-flag"]);
+    role.runtime = "pi".into();
+    role.system_prompt = Some("PERSONA_V1".into());
+    role.model = Some("deepseek/deepseek-v4-pro".into());
+    role.effort = Some("High".into());
+    insert_role_row(&pool.get().unwrap(), &role);
+
+    let fake = fake_runtime();
+    let spawn_pool = Arc::clone(&pool);
+    *fake.spawn_hook.lock().unwrap() = Some(Box::new(move || {
+        let key: String = spawn_pool
+            .get()
+            .unwrap()
+            .query_row("SELECT agent_session_key FROM sessions", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert!(uuid::Uuid::parse_str(&key).is_ok());
+    }));
+    let mgr = mgr_with_fake(None, Arc::clone(&fake));
+    let spawned = mgr
+        .spawn_direct(
+            &role,
+            None,
+            None,
+            None,
+            None,
+            Some(&cwd),
+            None,
+            None,
+            app_data.path(),
+            Arc::clone(&pool),
+            capture(),
+            Some("PERSONA_V1".into()),
+        )
+        .unwrap();
+    let row = crate::repo::session::get_row(&pool.get().unwrap(), &spawned.id)
+        .unwrap()
+        .unwrap();
+    let key = row.agent_session_key.unwrap();
+    let prompt_path = crate::session::system_prompt::path(app_data.path(), &spawned.id);
+    let fresh = fake.last_spawn_spec().unwrap();
+    assert_eq!(
+        fresh.args,
+        [
+            "--session-id",
+            key.as_str(),
+            "--role-flag",
+            "--model",
+            "deepseek/deepseek-v4-pro",
+            "--thinking",
+            "high",
+            "--append-system-prompt",
+            prompt_path.to_str().unwrap(),
+        ]
+    );
+    assert_eq!(
+        fresh.env.get("PI_SKIP_VERSION_CHECK").map(String::as_str),
+        Some("1")
+    );
+    assert!(!fresh.args.iter().any(|arg| arg == "--approve"));
+    assert_eq!(std::fs::read_to_string(&prompt_path).unwrap(), "PERSONA_V1");
+
+    mgr.kill(&spawned.id).unwrap();
+    wait_for_session_exit(&mgr, &pool, &spawned.id);
+    assert!(!prompt_path.exists());
+
+    role.system_prompt = Some("PERSONA_V2".into());
+    update_role_row(&pool.get().unwrap(), &role);
+    let slug = router::runtime::pi_project_slug(&cwd);
+    let pi_sessions = app_data.path().join(".pi/agent/sessions").join(slug);
+    std::fs::create_dir_all(&pi_sessions).unwrap();
+    std::fs::write(pi_sessions.join(format!("resume_{key}.jsonl")), "").unwrap();
+
+    router::runtime::with_conversation_home(app_data.path(), || {
+        mgr.resume(
+            &spawned.id,
+            None,
+            None,
+            app_data.path(),
+            Arc::clone(&pool),
+            capture(),
+        )
+    })
+    .unwrap();
+    let resumed = fake.last_spawn_spec().unwrap();
+    assert!(has_arg_pair(&resumed.args, "--session-id", &key));
+    assert!(has_arg_pair(
+        &resumed.args,
+        "--append-system-prompt",
+        prompt_path.to_str().unwrap()
+    ));
+    assert!(!resumed.args.iter().any(|arg| arg == "--"));
+    assert!(!resumed.args.iter().any(|arg| arg == "--approve"));
+    assert_eq!(std::fs::read_to_string(&prompt_path).unwrap(), "PERSONA_V2");
+    mgr.kill(&spawned.id).unwrap();
+}
+
+#[test]
+fn pi_lead_and_worker_split_prompt_channels_and_approve_only_the_slot() {
+    let worker_body =
+        router::prompt::compose_worker_first_turn(Some("WORKER_BRIEF"), Some("TEAM_RULES"));
+
+    for lead in [true, false] {
+        let pool = pool_with_schema();
+        let app_data = tempfile::tempdir().unwrap();
+        let mut role = role("pi-custom", &["--role-flag"]);
+        role.runtime = "pi".into();
+        role.system_prompt = Some(if lead { "LEAD_BRIEF" } else { "WORKER_BRIEF" }.into());
+        let (mission, mut slot) = seed_mission_rows(&pool, &role);
+        slot.lead = lead;
+        pool.get()
+            .unwrap()
+            .execute(
+                "UPDATE slots SET lead = ?1 WHERE id = ?2",
+                params![lead, slot.id],
+            )
+            .unwrap();
+        let fake = fake_runtime();
+        let mgr = mgr_with_fake(None, Arc::clone(&fake));
+        let prompt_channels = if lead {
+            let roster = [
+                router::prompt::RosterEntry {
+                    handle: "lead",
+                    display_name: "Lead",
+                    lead: true,
+                },
+                router::prompt::RosterEntry {
+                    handle: "worker",
+                    display_name: "Worker",
+                    lead: false,
+                },
+            ];
+            router::prompt::compose_lead_prompt_channels(
+                Some(Runtime::Pi),
+                &router::prompt::LaunchPromptInput {
+                    lead: router::prompt::LeadView {
+                        handle: "lead",
+                        display_name: "Lead",
+                        system_prompt: Some("LEAD_BRIEF"),
+                    },
+                    crew_name: "crew",
+                    mission_goal: "@ship - safely",
+                    roster: &roster,
+                    allowed_signals: &[],
+                    crew_addendum: None,
+                },
+            )
+        } else {
+            router::prompt::split_session_prompt(
+                Some(Runtime::Pi),
+                router::prompt::SessionPromptKind::Worker,
+                Some(worker_body.clone()),
+            )
+        };
+        let spawned = mgr
+            .spawn_with_prompt_channels(
+                &mission,
+                &role,
+                &slot,
+                app_data.path(),
+                runner_core::event_log::path::events_path(
+                    app_data.path(),
+                    &mission.crew_id,
+                    &mission.id,
+                ),
+                Arc::clone(&pool),
+                capture(),
+                prompt_channels.0.clone(),
+                prompt_channels.1.clone(),
+            )
+            .unwrap();
+        let spec = fake.last_spawn_spec().unwrap();
+        let key = crate::repo::session::get_row(&pool.get().unwrap(), &spawned.id)
+            .unwrap()
+            .unwrap()
+            .agent_session_key
+            .unwrap();
+        assert_eq!(
+            &spec.args[..3],
+            ["--session-id", key.as_str(), "--role-flag"]
+        );
+        assert!(spec.args.iter().any(|arg| arg == "--approve"));
+        let prompt_path = crate::session::system_prompt::path(app_data.path(), &spawned.id);
+        assert!(has_arg_pair(
+            &spec.args,
+            "--append-system-prompt",
+            prompt_path.to_str().unwrap()
+        ));
+        if lead {
+            assert_eq!(
+                std::fs::read_to_string(&prompt_path).unwrap(),
+                prompt_channels.0.unwrap()
+            );
+            assert_eq!(
+                &spec.args[spec.args.len() - 2..],
+                ["--", prompt_channels.1.as_deref().unwrap()]
+            );
+        } else {
+            assert_eq!(std::fs::read_to_string(&prompt_path).unwrap(), worker_body);
+            assert!(!spec.args.iter().any(|arg| arg == "--"));
+            assert!(!spec.args.iter().any(|arg| arg == "WORKER_BRIEF"));
+        }
+        mgr.kill(&spawned.id).unwrap();
+    }
+}
+
+#[test]
+fn pi_missing_lead_conversation_keeps_id_and_resends_only_the_goal_turn() {
+    let (pool, app_data, id) = slot_respawn_fixture("pi", true);
+    let key = crate::repo::session::get_row(&pool.get().unwrap(), &id)
+        .unwrap()
+        .unwrap()
+        .agent_session_key
+        .unwrap();
+    let fake = fake_runtime();
+    let mgr = mgr_with_fake(None, Arc::clone(&fake));
+    router::runtime::with_conversation_home(app_data.path(), || {
+        mgr.resume(
+            &id,
+            None,
+            None,
+            app_data.path(),
+            Arc::clone(&pool),
+            capture(),
+        )
+    })
+    .unwrap();
+    let spec = fake.last_spawn_spec().unwrap();
+    assert!(has_arg_pair(&spec.args, "--session-id", &key));
+    assert!(spec.args.iter().any(|arg| arg == "--approve"));
+    assert_eq!(spec.args[spec.args.len() - 2], "--");
+    assert_eq!(
+        spec.args.last().map(String::as_str),
+        Some("== Mission ==\nGoal: LATEST_GOAL\n\n")
+    );
+    let persisted = crate::repo::session::get_row(&pool.get().unwrap(), &id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(persisted.agent_session_key.as_deref(), Some(key.as_str()));
+    let prompt =
+        std::fs::read_to_string(crate::session::system_prompt::path(app_data.path(), &id)).unwrap();
+    assert!(prompt.contains("SLOT_BRIEF"));
+    assert!(prompt.contains("TEAM_RULES"));
+    assert!(prompt.contains("== Coordination =="));
+    assert!(!prompt.contains("== Mission =="));
+    mgr.kill(&id).unwrap();
+}
+
+#[test]
+fn pi_launch_resume_recreates_an_untouched_worker_with_the_same_id() {
+    let (pool, app_data, id) = slot_respawn_fixture("pi", false);
+    let key = crate::repo::session::get_row(&pool.get().unwrap(), &id)
+        .unwrap()
+        .unwrap()
+        .agent_session_key
+        .unwrap();
+    let fake = fake_runtime();
+    let mgr = mgr_with_fake(None, Arc::clone(&fake));
+
+    router::runtime::with_conversation_home(app_data.path(), || {
+        mgr.resume_on_launch(
+            &id,
+            None,
+            None,
+            app_data.path(),
+            Arc::clone(&pool),
+            capture(),
+        )
+    })
+    .unwrap();
+
+    let spec = fake.last_spawn_spec().unwrap();
+    assert!(has_arg_pair(&spec.args, "--session-id", &key));
+    assert!(!spec.args.iter().any(|arg| arg == "--"));
+    assert_eq!(
+        crate::repo::session::get_row(&pool.get().unwrap(), &id)
+            .unwrap()
+            .unwrap()
+            .agent_session_key
+            .as_deref(),
+        Some(key.as_str())
+    );
+    mgr.kill(&id).unwrap();
+}
+
+#[test]
+fn pi_launch_resume_refuses_a_row_without_an_assigned_key() {
+    let (pool, app_data, id) = slot_respawn_fixture("pi", false);
+    pool.get()
+        .unwrap()
+        .execute(
+            "UPDATE sessions SET agent_session_key = NULL WHERE id = ?1",
+            params![id],
+        )
+        .unwrap();
+    let fake = fake_runtime();
+    let mgr = mgr_with_fake(None, Arc::clone(&fake));
+
+    let error = mgr
+        .resume_on_launch(
+            &id,
+            None,
+            None,
+            app_data.path(),
+            Arc::clone(&pool),
+            capture(),
+        )
+        .unwrap_err();
+
+    assert!(error.to_string().contains("cannot resume"));
+    assert_eq!(fake.spawn_count(), 0);
+}
+
+#[test]
+fn pi_restart_running_worker_rewrites_prompt_after_old_forwarder_exits() {
+    let (pool, app_data, id) = slot_respawn_fixture("pi", false);
+    let fake = fake_runtime();
+    let mgr = mgr_with_fake(None, Arc::clone(&fake));
+    mgr.restart(
+        &id,
+        None,
+        None,
+        app_data.path(),
+        Arc::clone(&pool),
+        capture(),
+    )
+    .unwrap();
+
+    let mut role = crate::repo::role::list(&pool.get().unwrap())
+        .unwrap()
+        .pop()
+        .unwrap();
+    role.system_prompt = Some("UPDATED_BRIEF".into());
+    update_role_row(&pool.get().unwrap(), &role);
+    mgr.restart(
+        &id,
+        None,
+        None,
+        app_data.path(),
+        Arc::clone(&pool),
+        capture(),
+    )
+    .unwrap();
+
+    let prompt_path = crate::session::system_prompt::path(app_data.path(), &id);
+    assert_eq!(
+        std::fs::read_to_string(&prompt_path).unwrap(),
+        router::prompt::compose_worker_first_turn(Some("UPDATED_BRIEF"), Some("TEAM_RULES"))
+    );
+    assert!(has_arg_pair(
+        &fake.last_spawn_spec().unwrap().args,
+        "--append-system-prompt",
+        prompt_path.to_str().unwrap()
+    ));
+    assert_eq!(fake.spawn_count(), 2);
+    mgr.kill(&id).unwrap();
+}
+
+#[test]
+fn pi_direct_fork_uses_native_args_and_gets_its_own_prompt_file() {
+    let pool = pool_with_schema();
+    let app_data = tempfile::tempdir().unwrap();
+    let role_id = ulid::Ulid::new().to_string();
+    let source_id = ulid::Ulid::new().to_string();
+    let source_key = uuid::Uuid::new_v4().to_string();
+    let mut persisted_role = role("pi-custom", &["--role-flag"]);
+    persisted_role.id = role_id.clone();
+    persisted_role.runtime = "pi".into();
+    persisted_role.system_prompt = Some("FORK_PERSONA".into());
+    insert_role_row(&pool.get().unwrap(), &persisted_role);
+    let mut source = crate::repo::session::SessionRowDb::new_running(source_id.clone());
+    source.role_id = Some(role_id);
+    source.cwd = Some(app_data.path().to_string_lossy().into_owned());
+    source.agent_session_key = Some(source_key.clone());
+    source.status = crate::model::SessionStatus::Stopped;
+    crate::repo::session::insert(&pool.get().unwrap(), &source).unwrap();
+
+    let fake = fake_runtime();
+    let mgr = mgr_with_fake(None, Arc::clone(&fake));
+    let forked = mgr
+        .spawn_fork(
+            &source_id,
+            None,
+            None,
+            None,
+            app_data.path(),
+            Arc::clone(&pool),
+            capture(),
+        )
+        .unwrap();
+    let row = crate::repo::session::get_row(&pool.get().unwrap(), &forked.id)
+        .unwrap()
+        .unwrap();
+    let fork_key = row.agent_session_key.unwrap();
+    let prompt_path = crate::session::system_prompt::path(app_data.path(), &forked.id);
+    let spec = fake.last_spawn_spec().unwrap();
+    assert_eq!(
+        &spec.args[..5],
+        [
+            "--fork",
+            source_key.as_str(),
+            "--session-id",
+            fork_key.as_str(),
+            "--role-flag",
+        ]
+    );
+    assert!(has_arg_pair(
+        &spec.args,
+        "--append-system-prompt",
+        prompt_path.to_str().unwrap()
+    ));
+    assert_eq!(
+        std::fs::read_to_string(&prompt_path).unwrap(),
+        "FORK_PERSONA"
+    );
+    assert_ne!(forked.id, source_id);
+    assert!(!crate::session::system_prompt::path(app_data.path(), &source_id).exists());
+    mgr.kill(&forked.id).unwrap();
 }

@@ -536,6 +536,7 @@ mod tests {
                 (Runtime::Codex, "Codex", "codex"),
                 (Runtime::ClaudeCode, "Claude Code", "claude"),
                 (Runtime::Copilot, "GitHub Copilot CLI", "copilot"),
+                (Runtime::Pi, "pi", "pi"),
                 (Runtime::Trae, "TRAE CLI", "traecli"),
             ],
         );

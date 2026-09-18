@@ -35,9 +35,10 @@ Runner is a local desktop app for macOS and Windows. A user configures a **crew*
 │          │                                         │ PTY master             │
 │   ┌──────┴───────────┐  ┌──────────────┐  ┌───────┴────────────────────┐     │
 │   │ events.ndjson    │◄─│ MissionMgr   │  │ child: claude-code / codex │     │
-│   │  per mission     │  │ (ops::mission│  │   / trae / copilot / shell │     │
-│   └──────▲───────────┘  │  lifecycle)  │  │  env: RUNNER_*, PATH=…     │     │
-│          │ flock append └──────────────┘  └───────┬────────────────────┘     │
+│   │  per mission     │  │ (ops::mission│  │   / trae / copilot / pi /  │     │
+│   └──────▲───────────┘  │  lifecycle)  │  │   shell                    │     │
+│          │ flock append └──────────────┘  │  env: RUNNER_*, PATH=…     │     │
+│          │                                └───────┬────────────────────┘     │
 │          └────────────────────────────────────────┘ runs `runner` CLI        │
 │                                                                              │
 │   MCP server (rmcp, Unix socket $APPDATA/mcp.sock) ◄── runner-mcp bridge ◄── external clients │
@@ -143,7 +144,7 @@ A mission is a container. Everything in the runtime column is either the contain
 
 ### 3.2 Role — *one configured agent*
 
-A reusable template: handle, display name, runtime, command + args, working dir, system prompt (persona), env, optional model and effort. Known runtimes use the `Runtime` enum in code (`ClaudeCode`, `Codex`, `Trae`, `Copilot`, `Shell`); SQLite runtime names remain plain strings, and legacy or arbitrary names, including `qoder` rows from before v0.6.7, stay unchanged and readable without a migration. Dispatch parses those names while preserving the existing behavior for unknown runtimes. **Top-level, not nested under a crew.** The same role can be used by many crews simultaneously, and can also be the subject of standalone direct-chat sessions.
+A reusable template: handle, display name, runtime, command + args, working dir, system prompt (persona), env, optional model and effort. Known runtimes use the `Runtime` enum in code (`ClaudeCode`, `Codex`, `Trae`, `Copilot`, `Pi`, `Shell`); SQLite runtime names remain plain strings, and legacy or arbitrary names, including `qoder` rows from before v0.6.7, stay unchanged and readable without a migration. Dispatch parses those names while preserving the existing behavior for unknown runtimes. **Top-level, not nested under a crew.** The same role can be used by many crews simultaneously, and can also be the subject of standalone direct-chat sessions.
 
 A role has two identifying fields:
 
@@ -152,7 +153,7 @@ A role has two identifying fields:
 
 Keeping these separate means renaming a role for the UI doesn't break briefs or historical events.
 
-Runtime argv is composed by the adapter in `router/runtime.rs` from the stored role args, and is not itself stored: the permission mode (`--permission-mode` / Codex `--ask-for-approval` + `--sandbox` / Copilot `--yolo`) follows `MissionPermissionMode` for mission slots, while attended chats strip permission flags without replacement; the adapter adds model and effort flags, Codex and Copilot's `--add-dir` grant for the mission directory, the first-turn body, and — for claude-code — one compact `--settings` JSON that selects Claude Code's alternate-screen renderer (`"tui":"fullscreen"`), installs the `/clear` rekey hook, and, when the effective mode is Bypass, acknowledges Claude Code's bypass consent dialog (`"skipDangerousModePermissionPrompt":true`) so a mission slot never waits on it, unless the role's own args already pass `--settings`. Runner owns the renderer for the sessions it spawns; `--settings` outranks the user's `~/.claude/settings.json`. Copilot always receives `--no-auto-update` and an additive `--plugin-dir <app data>/copilot-hooks` backed by a Runner-owned plugin regenerated at startup; each hook entry carries a `command` (the `sh` reporter, run on macOS) and a `powershell` slot (an inline reporter, run on Windows), and Copilot picks the slot by OS. The plugin takes its per-session feed path and generation from the spawn environment, so repeated user `--plugin-dir` flags compose and no file under `~/.copilot` is changed. A user `disableAllHooks` setting produces no feed and leaves the terminal-activity baseline in control.
+Runtime argv is composed by the adapter in `router/runtime.rs` from the stored role args, and is not itself stored: the permission mode (`--permission-mode` / Codex `--ask-for-approval` + `--sandbox` / Copilot `--yolo`) follows `MissionPermissionMode` for mission slots, while attended chats strip permission flags without replacement; the adapter adds model and effort flags, Codex and Copilot's `--add-dir` grant for the mission directory, and the first-turn body. Pi has no permission flags: mission slots receive `--approve`, chats do not, every spawn sets `PI_SKIP_VERSION_CHECK=1`, and model/thinking map to `--model <value>` and lowercased `--thinking <value>`. Claude Code additionally receives one compact `--settings` JSON that selects its alternate-screen renderer (`"tui":"fullscreen"`), installs the `/clear` rekey hook, and, when the effective mode is Bypass, acknowledges its bypass consent dialog (`"skipDangerousModePermissionPrompt":true`) so a mission slot never waits on it, unless the role's own args already pass `--settings`. Runner owns the renderer for the sessions it spawns; `--settings` outranks the user's `~/.claude/settings.json`. Copilot always receives `--no-auto-update` and an additive `--plugin-dir <app data>/copilot-hooks` backed by a Runner-owned plugin regenerated at startup; each hook entry carries a `command` (the `sh` reporter, run on macOS) and a `powershell` slot (an inline reporter, run on Windows), and Copilot picks the slot by OS. The plugin takes its per-session feed path and generation from the spawn environment, so repeated user `--plugin-dir` flags compose and no file under `~/.copilot` is changed. A user `disableAllHooks` setting produces no feed and leaves the terminal-activity baseline in control.
 
 ### 3.3 Crew — *a configured team, composed of slots*
 
@@ -330,7 +331,7 @@ The whole system runs many of these side-by-side — one per slot per live missi
 
 ### 5.2 Why PTY (not pipes) and why alacritty
 
-Claude Code, Codex, TRAE CLI, and GitHub Copilot CLI are TUIs. They check `isatty()`; if false they degrade. Their output is escape sequences that only a terminal emulator can render. The PTY gives the child a real terminal; `alacritty_terminal` gives Runner a correct emulator — grid, VTE parser, alt screen, scrollback reflow, selection, mouse reporting modes — without reinventing one. GPUI paints the grid it maintains.
+Claude Code, Codex, TRAE CLI, GitHub Copilot CLI, and pi are TUIs. They check `isatty()`; if false they degrade. Their output is escape sequences that only a terminal emulator can render. The PTY gives the child a real terminal; `alacritty_terminal` gives Runner a correct emulator — grid, VTE parser, alt screen, scrollback reflow, selection, mouse reporting modes — without reinventing one. GPUI paints the grid it maintains.
 
 ### 5.3 Spawn
 
@@ -366,9 +367,9 @@ Reader thread (blocking):
   on EOF: wait(child) → emit session/exit { code } → update sessions row
 ```
 
-The first-turn body (persona, brief, launch prompt) is delivered through the runtime adapter in `router/runtime.rs`: as a positional argument for runtimes that accept one, as `-i <body>` for Copilot, or as a verified paste after the TUI is ready for Windows batch wrappers. Claude Code's `--append-system-prompt` is SDK-only (requires `-p`), so interactive claude sessions get their brief as a first user turn. Resumed conversations suppress it.
+The composed prompt is split into the runtime's system-prompt and first-turn channels in `router/prompt.rs`, then delivered by the adapter in `router/runtime.rs`. Claude Code, Codex, TRAE and Copilot preserve their existing byte-identical first turns: a positional argument where accepted, `-i <body>` for Copilot, or a verified paste after a Windows batch wrapper is ready; genuine resumes suppress that first turn. Pi instead receives `--append-system-prompt <app data>/session-prompts/<Runner session id>.md` on every fresh spawn and resume. Runner rewrites that file from the current role, crew and roster rows before each spawn, removes it when the session ends, and sweeps leftovers at startup. A Pi direct chat and worker have no first turn; only the lead's `== Mission ==` section follows `--` as its first turn.
 
-Every fresh mission-slot spawn carries the cold-start first turn: `compose_launch_prompt` for the lead (brief, crew conventions, roster, and latest mission goal), or `compose_worker_first_turn` for a worker (coordination preamble, crew conventions, and brief). This includes Restart and a manual Resume that falls back to fresh because a Claude or Copilot conversation file is missing or Codex/TRAE has no captured key. A genuine conversation resume sends no first turn. Fresh Codex/TRAE respawns receive a new capture marker; Windows batch wrappers queue the same body through the existing first-turn delivery fallback.
+Every fresh mission-slot spawn carries the cold-start composed prompt: `compose_launch_prompt` for the lead (brief, crew conventions, roster, and latest mission goal), or `compose_worker_first_turn` for a worker (coordination preamble, crew conventions, and brief). This includes Restart and a manual Resume that falls back to fresh because a Claude, Copilot or Pi conversation file is missing or Codex/TRAE has no captured key. A genuine conversation resume sends no first turn; Pi still refreshes its system-prompt file so role edits take effect. Fresh Codex/TRAE respawns receive a new capture marker; Windows batch wrappers queue the same body through the existing first-turn delivery fallback.
 
 A mission slot has three lifecycle actions ([542](../features/archive/542-slot-restart.md)): **Stop** synchronously kills and reaps only its PTY, leaving the mission and sibling slots running; **Resume** respawns its existing row and asks the agent CLI to restore its conversation; **Restart** kills a running PTY and respawns the same row as a fresh conversation with its cold-start first turn. Restart replaces the agent key while retaining the Runner session id, router mapping, tabs, and mission event history. Resume and Restart share a per-session claim so concurrent requests cannot spawn twice or kill an in-flight respawn. Both accept current pane dimensions ahead of the persisted size, including when a stopped pane was resized. A mission slot only resumes or restarts while its mission is running and unarchived.
 
@@ -390,11 +391,13 @@ Sessions live in the core and belong to the mission, not to any window, tab or p
 
 Since M6.8 the same is true of the screen. `TerminalBridge` holds a strong `Arc<TerminalSession>` per live session: created on `session/spawned` (with a first-output fallback as an ordering safety net), fed from the first byte, released on `session/exit` and `session/archived`, replaced when a resume or reset spawns a new child under the same id. Panes take a *viewer lease* on the terminal they show; a hidden terminal keeps ingesting but does not wake GPUI. Tab switches, route changes and re-opened panes re-render an existing grid instead of rebuilding one. Consequence, recorded as a deviation from `main`: a stopped pane shows the Ended/Resume card over a neutral background, not the final screen; flip the release point from exit to archive if that is ever missed.
 
-**Rows persist across app restart; PTY children do not.** On quit, `stop_running_sessions_on_quit` kills every process group (SIGHUP, then SIGKILL) and joins the forwarders; the startup orphan sweep is the crash fallback and a failing sweep is fatal at boot. On next launch Runner re-mounts router/bus state for `running` missions, replays the logs, demotes stale `running` session rows to `stopped`, and re-spawns sessions flagged `resume_on_launch`. Resume spawns a fresh PTY against the same session row; for claude-code/codex/trae/copilot, `agent_session_key` lets the agent CLI continue its own conversation when supported.
+**Rows persist across app restart; PTY children do not.** On quit, `stop_running_sessions_on_quit` kills every process group (SIGHUP, then SIGKILL) and joins the forwarders; the startup orphan sweep is the crash fallback and a failing sweep is fatal at boot. On next launch Runner re-mounts router/bus state for `running` missions, replays the logs, demotes stale `running` session rows to `stopped`, and re-spawns sessions flagged `resume_on_launch`. Resume spawns a fresh PTY against the same session row; for claude-code/codex/trae/copilot/pi, `agent_session_key` lets the agent CLI continue its own conversation when supported.
 
 Copilot assigns a UUID before spawning and persists it as `agent_session_key`, then passes `--session-id <uuid>` for both fresh starts and resumes. The conversation probe checks `$COPILOT_HOME` (otherwise `~/.copilot`), `session-state/<uuid>/events.jsonl`; a missing transcript starts fresh with the same id and includes the cold-start first turn. Before every Copilot spawn, Runner seeds the exact cwd in `config.json` `trustedFolders`, keeping the leading `//` header and unrelated values; `--yolo` alone does not bypass folder trust. Default and Accept edits role permission modes respectively write no permission flag and `--allow-tool=write`; Auto is not offered. Chats strip all Copilot permission flags.
 
-Fork creates a new direct-chat row without writing the source row, key, PTY, or conversation file. The new row copies the source's project, role, cwd, runtime, command, model, and effort columns. Claude Code starts the visible TUI directly with `--resume <source> --fork-session --session-id <new>` and a caller-assigned key; Codex runs a bounded headless `exec fork` until it has a lineage-validated `thread.started` key, persists that key, marks the temporary row stopped, and starts the visible PTY through the ordinary resume path. A direct-spawn, materialization, or resume failure removes both the fork row and its tab. The runtime definition's `native_fork` capability enables Claude Code and Codex and excludes TRAE and Copilot. An untouched Claude fork is intentionally copy-on-write: manual resume falls back to a fresh chat and launch-time resume reports it unavailable; re-fork the source instead of adding recovery state.
+Pi also assigns and persists a UUID before the first process spawn, then passes `--session-id <uuid>` on fresh and resumed sessions. Its conversation probe uses one glob under pi's default `~/.pi/agent/sessions/<slug>/` directory for `*_<uuid>.jsonl`; `sessionDir`, `--session-dir` and `PI_CODING_AGENT_SESSION_DIR` are not honoured. A missing file starts fresh under the same id, with only a lead receiving its goal again. The refreshed `--append-system-prompt` file applies current role edits even to a genuine resume.
+
+Fork creates a new direct-chat row without writing the source row, key, PTY, or conversation file. The new row copies the source's project, role, cwd, runtime, command, model, and effort columns. Claude Code starts the visible TUI directly with `--resume <source> --fork-session --session-id <new>` and a caller-assigned key; Pi uses `--fork <source> --session-id <new>` with the fork row's own refreshed system-prompt file; Codex runs a bounded headless `exec fork` until it has a lineage-validated `thread.started` key, persists that key, marks the temporary row stopped, and starts the visible PTY through the ordinary resume path. A direct-spawn, materialization, or resume failure removes both the fork row and its tab. The runtime definition's `native_fork` capability enables Claude Code, Codex and Pi and excludes TRAE and Copilot. An untouched Claude fork is intentionally copy-on-write: manual resume falls back to a fresh chat and launch-time resume reports it unavailable; re-fork the source instead of adding recovery state.
 
 ### 5.6 Writer serialization
 
@@ -425,17 +428,17 @@ The current sources and precedence are:
 
 Mission sessions and direct chats are both seeded Busy with source `spawn` at spawn, so a slot reads Working · estimated from its first byte. After that seed, the output forwarder appends mission `session_status` transitions with their source to the mission log and the router updates its status projection. Direct chats stay off-bus: SessionManager stores their latest activity and emits `session/status` to every window; sidebar aggregation drives activity and completion/unread indicators. False Busy can suppress idle-gated inbox reconciliation, while false Idle can permit a nudge during a turn. Shells still use byte activity in v0.8.9, so silent commands can incorrectly read Idle.
 
-Claude Code, Codex, and GitHub Copilot CLI have lifecycle hook adapters on macOS and Windows ([#610](../features/610-windows-hook-status.md)). Hook commands receive the status feed path with `/` separators on both platforms. On Windows, Claude Code runs the same `sh` reporter under its own Git Bash; Codex and Copilot run one PowerShell reporter that copies the payload as raw bytes and serializes its record under a per-feed mutex (Codex as a per-session `<feed>.ps1` run through `ScriptBlock::Create`, which keeps npm-shim command lines under cmd.exe's limit; Copilot inline in the plugin's `powershell` slot), so a hook environment without its shell writes nothing and keeps the baseline. TRAE remains on estimated byte activity. A missing or failed hook bridge falls back to that baseline.
+Claude Code, Codex, and GitHub Copilot CLI have lifecycle hook adapters on macOS and Windows ([#610](../features/610-windows-hook-status.md)). Hook commands receive the status feed path with `/` separators on both platforms. On Windows, Claude Code runs the same `sh` reporter under its own Git Bash; Codex and Copilot run one PowerShell reporter that copies the payload as raw bytes and serializes its record under a per-feed mutex (Codex as a per-session `<feed>.ps1` run through `ScriptBlock::Create`, which keeps npm-shim command lines under cmd.exe's limit; Copilot inline in the plugin's `powershell` slot), so a hook environment without its shell writes nothing and keeps the baseline. TRAE and Pi remain on estimated byte activity. A missing or failed hook bridge falls back to that baseline.
 
 The adapter contract is [#347, hook-based agent status](../features/archive/347-hook-based-session-status.md): supported Claude Code, Codex, and Copilot lifecycle adapters own activity, while output silence never overrides a healthy hook-driven turn. Only unresolved surfaced approvals or questions hold crew delivery; Working and Idle do not. Byte activity remains the fallback for unsupported runtime/platform combinations and bridge loss. [#586](../features/586-shell-status-detection.md) separately tries process detection for shell command lifetime before optional semantic shell integration. [#587](../features/archive/587-terminal-provided-titles.md) displays terminal-provided titles independently of status and routing.
 
 ## 6. System prompt composition
 
-Every spawned session receives a composed system prompt — different shape for workers, the lead, and direct chats. The composition is mechanical: pure functions over slot + crew + mission inputs, no LLM in the loop. Source of truth lives in `crates/runner-backend/src/router/prompt.rs`; delivery mechanics in `router/runtime.rs`.
+Every spawned session receives a composed prompt — different shape for workers, the lead, and direct chats. The composition and its split across system-prompt and first-turn channels are mechanical: pure functions over slot + crew + mission inputs, no LLM in the loop. Source of truth lives in `crates/runner-backend/src/router/prompt.rs`; delivery mechanics in `router/runtime.rs`.
 
 ### 6.1 The three layers
 
-1. **Layer 1 — platform preamble** (code-owned). For workers: a fixed block describing the `runner` CLI verbs and the inbox convention. For the lead: the launch prompt composed at `mission_goal` time (§6.3).
+1. **Layer 1 — platform preamble** (code-owned). For workers: a fixed block describing the `runner` CLI verbs and the inbox convention. For the lead: the launch prompt composed before session registration (§6.3).
 2. **Layer 2 — crew team conventions** (`crews.system_prompt_addendum`, optional). Spliced under `== Team conventions ==`.
 3. **Layer 3 — role prompt** (`roles.system_prompt`). Spliced under `== Your brief ==`.
 
@@ -443,15 +446,15 @@ Every spawned session receives a composed system prompt — different shape for 
 
 | Session kind | Layer 1 | Layer 2 | Layer 3 | Delivery |
 |---|:---:|:---:|:---:|---|
-| Mission worker | preamble | if set | persona | first-turn body (argv when the runtime accepts it, otherwise a verified stdin paste) |
-| Mission lead | launch prompt (composed by router on `mission_goal`) | if set | persona | persona at spawn + router-injected launch body on `mission_goal` |
-| Direct chat | — | — | persona | first turn |
+| Mission worker | preamble | if set | persona | established runtimes: first turn; Pi: system-prompt file, no first turn |
+| Mission lead | coordination + mission goal | if set | persona | established runtimes: first turn; Pi: all except `== Mission ==` in the system-prompt file, mission section as first turn |
+| Direct chat | — | — | persona | established runtimes: first turn; Pi: system-prompt file, no first turn |
 
 Direct chats see *only* Layer 3 — the worker preamble's verbs and the team conventions don't make sense off-bus.
 
 ### 6.3 The lead's launch prompt
 
-The lead's startup is short. Once `mission_goal` fires, the router composes a launch-prompt body — identity, the mission goal (`missions.goal_override` or `crews.goal`), the roster, the addendum, the known signal types from `runner_core::model::KnownSignalType`, and a reminder of the lead's job — and writes it to the lead's stdin once the TUI is ready. This keeps the spawn fast and lets the user edit the goal up to the moment they click Start Mission.
+Before registering mission sessions, MissionManager composes the lead's launch-prompt body — identity, the mission goal (`missions.goal_override` or `crews.goal`), the roster, the addendum, the known signal types from `runner_core::model::KnownSignalType`, and a reminder of the lead's job. The prompt is passed into the runtime adapter at spawn, so the opening `mission_goal` event remains a durable feed record but has no stdin-injection side effect. Pi's split makes the mission section the lead's only first turn; the rest is refreshed in its system-prompt file on later spawns.
 
 ## 7. Coordination bus
 
@@ -499,7 +502,7 @@ Stdin pushes are deliberately silent: the router writes bytes into the target PT
 
 | Event | Fixed handler |
 |---|---|
-| `mission_goal` | Compose the launch prompt and inject it to the lead. |
+| `mission_goal` | No runtime side effect; the launch prompt was composed before spawn and this event remains the durable goal record. |
 | `human_said` | Inject MCP-provided `payload.text` to `payload.target` if present, otherwise to the lead. |
 | `ask_lead` | Inject the worker's `{ question, context }` to the lead. |
 | `ask_human` | Append a `human_question` event for the UI. |
@@ -622,7 +625,7 @@ roles (
   id TEXT PRIMARY KEY,
   handle TEXT NOT NULL UNIQUE,        -- globally unique slug; §3.2
   display_name TEXT NOT NULL,
-  runtime TEXT NOT NULL,              -- claude-code | codex | trae | copilot | shell (qoder: legacy rows only)
+  runtime TEXT NOT NULL,              -- claude-code | codex | trae | copilot | pi | shell (qoder: legacy rows only)
   command TEXT NOT NULL,
   args_json TEXT,
   working_dir TEXT,                   -- direct-chat working dir; missions use mission.cwd

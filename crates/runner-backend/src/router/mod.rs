@@ -3,10 +3,10 @@
 // What this is. The lead is the agent that *thinks* about
 // coordination — it plans, dispatches workers via directed messages,
 // decides when to escalate. The router is the parent-process plumbing
-// underneath: bootstrap (write the launch prompt to the lead's stdin on
-// `mission_goal`), cross-process stdin push (`ask_lead`, `human_said`,
-// `human_response`), the UI bridge (`ask_human` → `human_question` event),
-// and the runner-availability map (`session_status`). See arch §5.5 and
+// underneath: spawn-time prompt composition, cross-process stdin push
+// (`ask_lead`, `human_said`, `human_response`), the UI bridge
+// (`ask_human` → `human_question` event), and the runner-availability
+// map (`session_status`). See arch §5.5 and
 // docs/impls/archive/0001-v0-mvp.md `C8 — Signal router v0`.
 //
 // What this is not. There is no policy engine, no rule abstraction, no
@@ -35,7 +35,7 @@ use serde::Serialize;
 use crate::error::Result;
 use crate::event_bus::{AppendedEvent, BusEmitter, InboxUpdate, WatermarkUpdate};
 use crate::events::EventChannel;
-use crate::model::SlotWithRole;
+use crate::model::{Runtime, SlotWithRole};
 use crate::session::manager::SessionManager;
 
 /// What the router uses to push bytes into a child's PTY. The full
@@ -159,9 +159,8 @@ pub trait SessionDeliveryListener: Send + Sync + 'static {
 // `payload.source`.
 pub use crate::session::runtime::SessionActivityState;
 
-/// Inputs to the launch-prompt composer, captured at mount so the
-/// `mission_goal` handler doesn't have to round-trip the DB. The lead row
-/// also doubles as the lead-resolved handle the dispatcher routes to.
+/// Inputs to the launch-prompt composer, captured at mount for fresh
+/// respawns. The lead row also doubles as the lead-resolved handle the dispatcher routes to.
 /// Fields are pre-merged from (slot, role template) so the composer
 /// doesn't need to know about the join shape.
 pub(crate) struct LaunchInputs {
@@ -265,9 +264,7 @@ struct RouterState {
     /// Replay high-water ULID. Set by `reconstruct_from_log` on reopen;
     /// `handle_event` short-circuits any event whose `id` is `≤` this so
     /// the bus's initial replay doesn't re-inject historical stdin or
-    /// re-emit `human_question` cards. `None` for fresh missions: the
-    /// opening `mission_goal` event must reach the live dispatcher to
-    /// bootstrap the lead.
+    /// re-emit `human_question` cards. `None` for fresh missions.
     replay_high_water: Option<String>,
     outbox_by_session: HashMap<String, SessionOutbox>,
     blocked_unread_by_session: HashMap<String, usize>,
@@ -391,15 +388,13 @@ impl Router {
     ///   by a `human_response` are removed.
     /// - `session_status` from the latest `session_status` row per handle.
     ///
-    /// What is *not* rebuilt: stdin pushes. The launch prompt, ask_lead
-    /// relays, human_said echoes, and message_nudge fan-outs are all
+    /// What is *not* rebuilt: stdin pushes. Ask-lead relays, human_said
+    /// echoes, and message_nudge fan-outs are all
     /// live-only side effects. Per the C8 plan, replay does not re-inject
     /// prompts into a sleeping LLM.
     ///
-    /// **MUST NOT be called for fresh missions.** Setting the watermark
-    /// over the just-written opening `mission_goal` would cause the bus
-    /// initial replay to no-op the bootstrap injection, leaving the lead
-    /// without its launch prompt.
+    /// Fresh missions skip reconstruction because they have no historical
+    /// projections to rebuild.
     pub fn reconstruct_from_log(&self) -> Result<()> {
         // Lossy read so a single malformed NDJSON line — a buggy CLI
         // release, a partial write the writer recovered from — doesn't
@@ -530,8 +525,7 @@ impl Router {
     ///
     /// Centralized here so the policy applies uniformly to every wake
     /// source: directed/broadcast `message_nudge`, `ask_lead` relay,
-    /// `human_said`, `human_response`, and the lead's `mission_goal`
-    /// bootstrap.
+    /// `human_said`, and `human_response`.
     ///
     /// Post-issue-#124: the session forwarder also fires `session_status`
     /// busy on the agent's first response byte. This path remains as a
@@ -1419,7 +1413,11 @@ impl LaunchInputs {
         })
     }
 
-    pub(crate) fn first_turn(&self, log: &EventLog) -> String {
+    pub(crate) fn prompt_channels(
+        &self,
+        log: &EventLog,
+        runtime: Option<Runtime>,
+    ) -> (Option<String>, Option<String>) {
         let goal = Self::latest_mission_goal_text(log);
         let roster: Vec<crate::router::prompt::RosterEntry> = self
             .roster()
@@ -1430,18 +1428,21 @@ impl LaunchInputs {
                 lead: slot.is_lead(),
             })
             .collect();
-        crate::router::prompt::compose_launch_prompt(&crate::router::prompt::LaunchPromptInput {
-            lead: crate::router::prompt::LeadView {
-                handle: self.lead().handle(),
-                display_name: self.lead().display_name(),
-                system_prompt: self.lead().system_prompt(),
+        crate::router::prompt::compose_lead_prompt_channels(
+            runtime,
+            &crate::router::prompt::LaunchPromptInput {
+                lead: crate::router::prompt::LeadView {
+                    handle: self.lead().handle(),
+                    display_name: self.lead().display_name(),
+                    system_prompt: self.lead().system_prompt(),
+                },
+                crew_name: self.crew_name(),
+                mission_goal: &goal,
+                roster: &roster,
+                allowed_signals: self.allowed_signals(),
+                crew_addendum: self.crew_addendum(),
             },
-            crew_name: self.crew_name(),
-            mission_goal: &goal,
-            roster: &roster,
-            allowed_signals: self.allowed_signals(),
-            crew_addendum: self.crew_addendum(),
-        })
+        )
     }
 
     fn latest_mission_goal_text(log: &EventLog) -> String {

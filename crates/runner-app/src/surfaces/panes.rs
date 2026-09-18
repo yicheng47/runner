@@ -366,7 +366,7 @@ impl NativeRoot {
                     HeaderForkState::Enabled if fork_pending => (true, None),
                     HeaderForkState::Enabled => (false, Some("Fork chat into a new tab")),
                     HeaderForkState::Disabled(_) if fork_pending => (true, None),
-                    HeaderForkState::Disabled(caption) => (true, Some(caption)),
+                    HeaderForkState::Disabled(caption) => (true, caption),
                     HeaderForkState::Hidden => return None,
                 };
             let mut button = IconButton::new("fork-chat", "git-fork.svg")
@@ -2786,7 +2786,7 @@ fn side_panel_open(setting_open: bool, focused_shell: bool) -> bool {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum HeaderForkState {
     Enabled,
-    Disabled(&'static str),
+    Disabled(Option<&'static str>),
     Hidden,
 }
 
@@ -2803,9 +2803,9 @@ fn header_fork_state(
         return HeaderForkState::Hidden;
     }
     if !entry.native_fork {
-        HeaderForkState::Disabled("Forking needs claude-code or codex")
+        HeaderForkState::Disabled(None)
     } else if !entry.forkable {
-        HeaderForkState::Disabled("No session key captured yet")
+        HeaderForkState::Disabled(Some("No session key captured yet"))
     } else {
         HeaderForkState::Enabled
     }
@@ -3085,7 +3085,7 @@ mod tests {
 
     #[test]
     fn header_fork_state_uses_capability_key_and_focused_pane_kind() {
-        for runtime in ["claude-code", "codex"] {
+        for runtime in ["claude-code", "codex", "pi"] {
             let entry = direct_session(runtime, true, true);
             assert_eq!(
                 header_fork_state(Some(&entry), false),
@@ -3097,13 +3097,13 @@ mod tests {
             let entry = direct_session(runtime, false, false);
             assert_eq!(
                 header_fork_state(Some(&entry), false),
-                HeaderForkState::Disabled("Forking needs claude-code or codex")
+                HeaderForkState::Disabled(None)
             );
         }
         let waiting = direct_session("codex", true, false);
         assert_eq!(
             header_fork_state(Some(&waiting), false),
-            HeaderForkState::Disabled("No session key captured yet")
+            HeaderForkState::Disabled(Some("No session key captured yet"))
         );
         let shell = direct_session("shell", false, false);
         assert_eq!(
@@ -3136,6 +3136,7 @@ mod tests {
         assert_eq!(pane_identity_icon(Some("claude-code")).path, "claude.svg");
         assert_eq!(pane_identity_icon(Some("trae")).path, "trae.svg");
         assert_eq!(pane_identity_icon(Some("copilot")).path, "copilot.svg");
+        assert_eq!(pane_identity_icon(Some("pi")).path, "pi.svg");
         assert_eq!(
             pane_identity_icon(Some("unknown")).path,
             "message-square.svg"
@@ -3169,6 +3170,7 @@ mod tests {
             (Some("codex"), "openai.svg"),
             (Some("trae"), "trae.svg"),
             (Some("copilot"), "copilot.svg"),
+            (Some("pi"), "pi.svg"),
             (Some("unknown"), "message-square.svg"),
             (None, "message-square.svg"),
         ] {

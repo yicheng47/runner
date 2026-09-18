@@ -1200,29 +1200,32 @@ mod tests {
     }
 
     #[test]
-    fn create_no_op_for_runtime_without_bypass_concept() {
-        // shell has no bypass flags. Toggle on is a no-op — the args
-        // column matches what the caller passed verbatim.
+    fn create_no_op_for_runtimes_without_permission_modes() {
         let pool = ctx();
         let conn = pool.get().unwrap();
-        let r = create(
-            &conn,
-            CreateRoleInput {
-                handle: "shell-tester".into(),
-                display_name: "Sh".into(),
-                runtime: crate::model::Runtime::Shell,
-                command: "/bin/sh".into(),
-                args: vec!["-c".into(), "echo hi".into()],
-                working_dir: None,
-                system_prompt: None,
-                env: HashMap::new(),
-                model: None,
-                effort: None,
-                permission_mode: PermissionMode::Auto,
-            },
-        )
-        .unwrap();
-        assert_eq!(r.args, vec!["-c".to_string(), "echo hi".to_string()]);
+        for (handle, runtime, command) in [
+            ("shell-tester", crate::model::Runtime::Shell, "/bin/sh"),
+            ("pi-tester", crate::model::Runtime::Pi, "pi"),
+        ] {
+            let r = create(
+                &conn,
+                CreateRoleInput {
+                    handle: handle.into(),
+                    display_name: handle.into(),
+                    runtime,
+                    command: command.into(),
+                    args: vec!["--custom".into()],
+                    working_dir: None,
+                    system_prompt: None,
+                    env: HashMap::new(),
+                    model: None,
+                    effort: None,
+                    permission_mode: PermissionMode::Bypass,
+                },
+            )
+            .unwrap();
+            assert_eq!(r.args, vec!["--custom".to_string()]);
+        }
     }
 
     #[test]

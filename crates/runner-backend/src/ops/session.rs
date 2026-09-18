@@ -326,10 +326,10 @@ impl DirectSessionEntry {
                     .filter(|title| !title.trim().is_empty())
                     .map(str::to_owned);
             }
-            // A role-backed chat is an identity, not a topic. Role
-            // injects the role's system prompt as the first turn
-            // (there is no system-prompt flag for codex, trae or copilot), so the
-            // agent titles every chat from the same role identically.
+            // A role-backed chat is an identity, not a topic. Most runtimes
+            // inject the role's system prompt as the first turn, while pi uses
+            // its native system-prompt channel. Either way, the agent-derived
+            // topic must not replace the role identity.
             // #587 already keeps the handle on mission surfaces for this
             // reason: identity is the thing you address, so it may not
             // move under you. A name the user typed still wins above.
@@ -1543,7 +1543,7 @@ mod tests {
             .unwrap()
         };
 
-        for runtime in ["claude-code", "codex"] {
+        for runtime in ["claude-code", "codex", "pi"] {
             let row = entry(runtime, true, false, false);
             assert!(row.native_fork);
             assert!(row.forkable);

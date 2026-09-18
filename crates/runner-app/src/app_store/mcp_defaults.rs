@@ -43,7 +43,7 @@ impl AppStore {
                     Runtime::Codex => ("codex", &status.codex),
                     Runtime::Trae => ("trae", &status.trae),
                     Runtime::Copilot => ("copilot", &status.copilot),
-                    Runtime::Shell => continue,
+                    Runtime::Pi | Runtime::Shell => continue,
                 };
                 match initialize_client(&mut self.settings, client, client_status, || {
                     mcp_set_integration(&self.core, client, true)

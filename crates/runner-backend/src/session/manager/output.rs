@@ -88,6 +88,7 @@ impl SessionManager {
         resuming: bool,
         emit_activity: bool,
         emit_ctx: Option<ForwarderEmitCtx>,
+        app_data_dir: PathBuf,
     ) -> thread::JoinHandle<()> {
         let manager_t: Arc<SessionManager> = Arc::clone(self);
         let started_at = std::time::Instant::now();
@@ -228,6 +229,7 @@ impl SessionManager {
             let _ = manager_t.runtime.stop(&rt_session);
 
             let was_killed = manager_t.take_killed(&session_id);
+            crate::session::system_prompt::remove(&app_data_dir, &session_id);
             // Resume failure heuristic: prior conversation rejected
             // and the agent died fast.
             let resume_failed = resuming

@@ -462,6 +462,9 @@ impl SessionManager {
             env.insert("CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY".into(), "1".into());
             env.insert("DISABLE_INSTALLATION_CHECKS".into(), "1".into());
         }
+        if Runtime::parse(&role.runtime) == Some(Runtime::Pi) {
+            env.insert("PI_SKIP_VERSION_CHECK".into(), "1".into());
+        }
         let process_has_locale = LOCALE_VARS
             .iter()
             .any(|var| std::env::var_os(var).is_some());
@@ -498,6 +501,7 @@ impl SessionManager {
         role: &Role,
         plan: &router::runtime::ResumePlan,
         app_data_dir: &Path,
+        system_prompt_path: Option<&Path>,
         first_turn: Option<&str>,
         mission_bus_dir: Option<&Path>,
     ) -> bool {
@@ -577,6 +581,9 @@ impl SessionManager {
             Runtime::parse(&role.runtime),
             mission_bus_dir,
         ));
+        if spec.mission && Runtime::parse(&role.runtime) == Some(Runtime::Pi) {
+            composed.push("--approve".into());
+        }
         for extra in router::runtime::trailing_runtime_args(
             Runtime::parse(&role.runtime),
             &role.args,
@@ -585,7 +592,9 @@ impl SessionManager {
             plan.resuming,
             role.model.as_deref(),
             role.effort.as_deref(),
-            role.system_prompt.as_deref(),
+            system_prompt_path
+                .map(|path| path.to_string_lossy())
+                .as_deref(),
             first_turn,
         ) {
             composed.push(extra);
@@ -635,6 +644,7 @@ impl SessionManager {
         app_data_dir: &Path,
         events_log_path: PathBuf,
         pool: Arc<DbPool>,
+        system_prompt: Option<String>,
         first_turn: Option<String>,
         initial_size: Option<(u16, u16)>,
         size_source: &'static str,
@@ -716,6 +726,10 @@ impl SessionManager {
         }
 
         let session_id = ulid::Ulid::new().to_string();
+        let system_prompt_path = system_prompt
+            .as_deref()
+            .map(|body| crate::session::system_prompt::write(app_data_dir, &session_id, body))
+            .transpose()?;
         let (first_turn, codex_prompt_marker) = Self::codex_capture_prompt_marker(
             Runtime::parse(&role.runtime),
             &session_id,
@@ -738,6 +752,7 @@ impl SessionManager {
             &role,
             &plan,
             app_data_dir,
+            system_prompt_path.as_deref(),
             first_turn.as_deref(),
             Some(&mission_bus_dir),
         );
@@ -748,7 +763,7 @@ impl SessionManager {
         // runtime hands them back.
         let started_at_dt = Utc::now();
         let started_at = started_at_dt.to_rfc3339();
-        {
+        let insert_result = (|| -> Result<()> {
             let conn = pool.get()?;
             let mut row = crate::repo::session::SessionRowDb::new_running(session_id.clone());
             row.mission_id = Some(mission.id.clone());
@@ -773,6 +788,11 @@ impl SessionManager {
                 row.agent_effort = role.effort.clone();
             }
             crate::repo::session::insert(&conn, &row)?;
+            Ok(())
+        })();
+        if let Err(error) = insert_result {
+            crate::session::system_prompt::remove(app_data_dir, &session_id);
+            return Err(error);
         }
 
         Ok(PendingMissionSpawn {
@@ -851,6 +871,7 @@ impl SessionManager {
                 session_id,
                 slot_handle,
             );
+            crate::session::system_prompt::remove(&app_data_dir, &session_id);
             return Ok(CompleteSpawnOutcome::Cancelled);
         }
 
@@ -874,6 +895,7 @@ impl SessionManager {
                 session_id,
                 slot_handle,
             );
+            crate::session::system_prompt::remove(&app_data_dir, &session_id);
             return Ok(CompleteSpawnOutcome::Cancelled);
         }
 
@@ -899,10 +921,13 @@ impl SessionManager {
             spec.cwd.as_deref(),
             role.env.get("COPILOT_HOME").map(String::as_str),
         );
-        let (rt_session, output) = self
-            .runtime
-            .spawn(spec)
-            .map_err(|e| Error::msg(format!("spawn {}: {e}", role.command)))?;
+        let (rt_session, output) = match self.runtime.spawn(spec) {
+            Ok(spawned) => spawned,
+            Err(error) => {
+                crate::session::system_prompt::remove(&app_data_dir, &session_id);
+                return Err(Error::msg(format!("spawn {}: {error}", role.command)));
+            }
+        };
 
         // Post-spawn cancellation. Two triggers reach this branch:
         //   1. A `Stop`/`Archive` that fired while the
@@ -927,6 +952,7 @@ impl SessionManager {
                     "failed to stop just-spawned PTY for cancelled session {session_id}: {e}"
                 );
             }
+            crate::session::system_prompt::remove(&app_data_dir, &session_id);
             return Ok(CompleteSpawnOutcome::Cancelled);
         }
 
@@ -1034,6 +1060,7 @@ impl SessionManager {
             plan.resuming,
             true,
             spawn_emit_ctx,
+            app_data_dir.clone(),
         );
         self.install_forwarder(&session_id, forwarder);
 
@@ -1089,6 +1116,46 @@ impl SessionManager {
         events: Arc<dyn SessionEvents>,
         first_turn: Option<String>,
     ) -> Result<SpawnedSession> {
+        if Runtime::parse(&role.runtime) == Some(Runtime::Pi) && slot.lead {
+            return Err(Error::msg(
+                "pi lead prompts must be passed through the structured prompt channels",
+            ));
+        }
+        let (system_prompt, first_turn) = router::prompt::split_session_prompt(
+            Runtime::parse(&role.runtime),
+            if slot.lead {
+                router::prompt::SessionPromptKind::Lead
+            } else {
+                router::prompt::SessionPromptKind::Worker
+            },
+            first_turn,
+        );
+        self.spawn_with_prompt_channels(
+            mission,
+            role,
+            slot,
+            app_data_dir,
+            events_log_path,
+            pool,
+            events,
+            system_prompt,
+            first_turn,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn spawn_with_prompt_channels(
+        self: &Arc<Self>,
+        mission: &Mission,
+        role: &Role,
+        slot: &crate::model::Slot,
+        app_data_dir: &Path,
+        events_log_path: PathBuf,
+        pool: Arc<DbPool>,
+        events: Arc<dyn SessionEvents>,
+        system_prompt: Option<String>,
+        first_turn: Option<String>,
+    ) -> Result<SpawnedSession> {
         let pending = self.register_mission_session(
             mission,
             role,
@@ -1096,6 +1163,7 @@ impl SessionManager {
             app_data_dir,
             events_log_path,
             Arc::clone(&pool),
+            system_prompt,
             first_turn,
             None,
             "DEFAULT_PTY_SIZE",
@@ -1285,6 +1353,15 @@ impl SessionManager {
         let initial_size = Some(cols.zip(rows).unwrap_or(DEFAULT_PTY_SIZE));
 
         let session_id = ulid::Ulid::new().to_string();
+        let (system_prompt, first_turn) = router::prompt::split_session_prompt(
+            Runtime::parse(&role.runtime),
+            router::prompt::SessionPromptKind::Direct,
+            first_turn,
+        );
+        let system_prompt_path = system_prompt
+            .as_deref()
+            .map(|body| crate::session::system_prompt::write(app_data_dir, &session_id, body))
+            .transpose()?;
         let (first_turn, codex_prompt_marker) = Self::codex_capture_prompt_marker(
             Runtime::parse(&role.runtime),
             &session_id,
@@ -1308,6 +1385,7 @@ impl SessionManager {
             &role,
             &plan,
             app_data_dir,
+            system_prompt_path.as_deref(),
             first_turn.as_deref(),
             None,
         );
@@ -1319,7 +1397,7 @@ impl SessionManager {
         // runtime override was explicitly requested — then the row
         // records the effective runtime so resume respawns the same
         // engine even if the role template is edited later.
-        {
+        let insert_result = (|| -> Result<()> {
             let conn = pool.get()?;
             let mut row = crate::repo::session::SessionRowDb::new_running(session_id.clone());
             row.project_id = project_id.map(str::to_string);
@@ -1338,6 +1416,11 @@ impl SessionManager {
                 row.agent_effort = role.effort.clone();
             }
             crate::repo::session::insert(&conn, &row)?;
+            Ok(())
+        })();
+        if let Err(error) = insert_result {
+            crate::session::system_prompt::remove(app_data_dir, &session_id);
+            return Err(error);
         }
 
         // Same gate as the mission spawn path — direct chats are
@@ -1351,6 +1434,7 @@ impl SessionManager {
         // session row is gone; spawning a PTY now would attach to
         // nothing.
         if !Self::session_row_exists(&pool, &session_id) {
+            crate::session::system_prompt::remove(app_data_dir, &session_id);
             return Err(Error::msg(format!(
                 "direct-chat session {session_id} row vanished before spawn — role deleted?"
             )));
@@ -1371,6 +1455,7 @@ impl SessionManager {
                 if let Ok(conn) = pool.get() {
                     let _ = crate::repo::session::delete(&conn, &session_id);
                 }
+                crate::session::system_prompt::remove(app_data_dir, &session_id);
                 return Err(Error::msg(format!("spawn {}: {e}", role.command)));
             }
         };
@@ -1386,6 +1471,7 @@ impl SessionManager {
                      {session_id}: {e}"
                 );
             }
+            crate::session::system_prompt::remove(app_data_dir, &session_id);
             return Err(Error::msg(format!(
                 "direct-chat session {session_id} row vanished mid-spawn — role deleted?"
             )));
@@ -1474,6 +1560,7 @@ impl SessionManager {
             plan.resuming,
             emit_activity,
             None, // direct chats are off-bus — no log to append session_status to
+            app_data_dir.to_path_buf(),
         );
         self.install_forwarder(&session_id, forwarder);
 
@@ -1486,8 +1573,15 @@ impl SessionManager {
         }
         let missing_first_turn = matches!(
             Runtime::parse(role.runtime.as_str()),
-            Some(Runtime::ClaudeCode | Runtime::Codex | Runtime::Trae | Runtime::Copilot)
+            Some(
+                Runtime::ClaudeCode
+                    | Runtime::Codex
+                    | Runtime::Trae
+                    | Runtime::Copilot
+                    | Runtime::Pi
+            )
         ) && !plan.resuming
+            && first_turn.is_some()
             && !first_turn_delivered_via_argv;
         #[cfg(windows)]
         let missing_first_turn =
@@ -1519,7 +1613,13 @@ impl SessionManager {
     ) {
         if matches!(
             Runtime::parse(role.runtime.as_str()),
-            Some(Runtime::ClaudeCode | Runtime::Codex | Runtime::Trae | Runtime::Copilot)
+            Some(
+                Runtime::ClaudeCode
+                    | Runtime::Codex
+                    | Runtime::Trae
+                    | Runtime::Copilot
+                    | Runtime::Pi
+            )
         ) && !plan.resuming
             && crate::session::launch::is_windows_batch(&role.command)
         {
@@ -1720,7 +1820,37 @@ impl SessionManager {
 
         match plan {
             router::runtime::ForkPlan::Direct(plan) => {
-                let _ = Self::apply_runtime_args(&mut spec, &role, &plan, app_data_dir, None, None);
+                let system_prompt = if Runtime::parse(&role.runtime) == Some(Runtime::Pi) {
+                    router::prompt::compose_direct_first_turn(role.system_prompt.as_deref())
+                } else {
+                    None
+                };
+                let system_prompt_path = match system_prompt
+                    .as_deref()
+                    .map(|body| {
+                        crate::session::system_prompt::write(app_data_dir, &session_id, body)
+                    })
+                    .transpose()
+                {
+                    Ok(path) => path,
+                    Err(error) => {
+                        let _ = delete_failed_fork(&pool, &session_id);
+                        events.updated(&SessionUpdatedEvent {
+                            session_id: session_id.clone(),
+                            mission_id: None,
+                        });
+                        return Err(error);
+                    }
+                };
+                let _ = Self::apply_runtime_args(
+                    &mut spec,
+                    &role,
+                    &plan,
+                    app_data_dir,
+                    system_prompt_path.as_deref(),
+                    None,
+                    None,
+                );
                 let direct_spawn_started_at = Instant::now();
                 let (rt_session, output) = match self.runtime.spawn(spec) {
                     Ok(spawned) => spawned,
@@ -1738,6 +1868,7 @@ impl SessionManager {
                                 role.command,
                             )));
                         }
+                        crate::session::system_prompt::remove(app_data_dir, &session_id);
                         events.updated(&SessionUpdatedEvent {
                             session_id: session_id.clone(),
                             mission_id: None,
@@ -1753,6 +1884,7 @@ impl SessionManager {
                         );
                     }
                     let _ = delete_failed_fork(&pool, &session_id);
+                    crate::session::system_prompt::remove(app_data_dir, &session_id);
                     events.updated(&SessionUpdatedEvent {
                         session_id: session_id.clone(),
                         mission_id: None,
@@ -1808,6 +1940,7 @@ impl SessionManager {
                     plan.resuming,
                     source.role_id.is_some(),
                     None,
+                    app_data_dir.to_path_buf(),
                 );
                 self.install_forwarder(&session_id, forwarder);
                 if source.role_id.is_some() {
@@ -2181,6 +2314,7 @@ impl SessionManager {
             role.args =
                 router::runtime::strip_permission_flags(Runtime::parse(&role.runtime), &role.args);
         }
+        let runtime = Runtime::parse(&role.runtime);
 
         // Resume plan: hand the prior agent_session_key back to the
         // runtime adapter so claude-code uses `--resume <uuid>` and
@@ -2195,10 +2329,7 @@ impl SessionManager {
             snap.cwd.as_deref(),
             snap.role_id.as_ref().and(role.working_dir.as_deref()),
         );
-        let conversation_missing = match (
-            Runtime::parse(&role.runtime),
-            snap.agent_session_key.as_deref(),
-        ) {
+        let conversation_missing = match (runtime, snap.agent_session_key.as_deref()) {
             (Some(Runtime::ClaudeCode), Some(key)) => {
                 !router::runtime::claude_code_conversation_exists(
                     resolved_cwd_for_check.as_deref(),
@@ -2211,29 +2342,32 @@ impl SessionManager {
                     role.env.get("COPILOT_HOME").map(String::as_str),
                 )
             }
-            (Some(Runtime::ClaudeCode | Runtime::Copilot), None)
+            (Some(Runtime::Pi), Some(key)) => {
+                !router::runtime::pi_conversation_exists(resolved_cwd_for_check.as_deref(), key)
+            }
+            (Some(Runtime::ClaudeCode | Runtime::Copilot | Runtime::Pi), None)
             | (Some(Runtime::Codex | Runtime::Trae | Runtime::Shell) | None, _) => false,
         };
-        if conversation_missing && !allow_fresh_fallback {
+        if conversation_missing && !allow_fresh_fallback && runtime != Some(Runtime::Pi) {
             return Err(Error::msg(format!(
                 "session {session_id} conversation is unavailable; resume it manually to start fresh"
             )));
         }
         let effective_prior_key = if fresh
-            || (conversation_missing && Runtime::parse(&role.runtime) != Some(Runtime::Copilot))
+            || (conversation_missing && !matches!(runtime, Some(Runtime::Copilot | Runtime::Pi)))
         {
             None
         } else {
             snap.agent_session_key.as_deref()
         };
-        let mut plan =
-            router::runtime::resume_plan(Runtime::parse(&role.runtime), effective_prior_key);
+        let mut plan = router::runtime::resume_plan(runtime, effective_prior_key);
         if conversation_missing {
             plan.resuming = false;
         }
         if !allow_fresh_fallback
             && !plan.resuming
-            && Runtime::parse(&role.runtime) != Some(Runtime::Shell)
+            && runtime != Some(Runtime::Shell)
+            && !(runtime == Some(Runtime::Pi) && conversation_missing)
         {
             return Err(Error::msg(format!(
                 "session {session_id} cannot resume its prior conversation; resume it manually to start fresh"
@@ -2342,11 +2476,11 @@ impl SessionManager {
         let mission_bus_dir = mission_ctx.as_ref().map(|ctx| {
             runner_core::event_log::path::mission_dir(app_data_dir, &ctx.crew_id, &ctx.mission_id)
         });
-        let first_turn = if !plan.resuming {
+        let (system_prompt, first_turn) = if !plan.resuming || runtime == Some(Runtime::Pi) {
             if let Some(ctx) = mission_ctx.as_ref() {
                 let conn = pool.get()?;
                 let crew = crate::ops::crew::get(&conn, &ctx.crew_id)?;
-                let body = if ctx.lead {
+                if ctx.lead {
                     let roster = crate::ops::slot::list(&conn, &ctx.crew_id)?;
                     let launch = router::LaunchInputs::new(
                         crew.name,
@@ -2356,46 +2490,62 @@ impl SessionManager {
                     )?;
                     let log = open_mission_event_log(app_data_dir, &ctx.crew_id, &ctx.mission_id)
                         .ok_or_else(|| Error::msg("mission event log unavailable"))?;
-                    launch.first_turn(&log)
+                    launch.prompt_channels(&log, runtime)
                 } else {
-                    router::prompt::compose_worker_first_turn(
-                        role.system_prompt.as_deref(),
-                        crew.system_prompt_addendum.as_deref(),
+                    router::prompt::split_session_prompt(
+                        runtime,
+                        router::prompt::SessionPromptKind::Worker,
+                        Some(router::prompt::compose_worker_first_turn(
+                            role.system_prompt.as_deref(),
+                            crew.system_prompt_addendum.as_deref(),
+                        )),
                     )
-                };
-                crate::ops::mission::ensure_first_turn_fits(&ctx.slot_handle, &body)?;
-                Some(body)
+                }
             } else {
-                None
+                router::prompt::split_session_prompt(
+                    runtime,
+                    router::prompt::SessionPromptKind::Direct,
+                    (runtime == Some(Runtime::Pi))
+                        .then(|| {
+                            router::prompt::compose_direct_first_turn(role.system_prompt.as_deref())
+                        })
+                        .flatten(),
+                )
             }
         } else {
-            None
+            (None, None)
         };
+        if let (Some(ctx), Some(body)) = (mission_ctx.as_ref(), first_turn.as_deref()) {
+            crate::ops::mission::ensure_first_turn_fits(&ctx.slot_handle, body)?;
+        }
         // A new marker prevents the reused row from capturing its previous rollout.
         let marker_id = ulid::Ulid::new().to_string();
-        let (first_turn, codex_prompt_marker) = Self::codex_capture_prompt_marker(
-            Runtime::parse(&role.runtime),
-            &marker_id,
-            first_turn,
-        );
-        let first_turn_delivered_via_argv = Self::apply_runtime_args(
-            &mut spec,
-            &role,
-            &plan,
-            app_data_dir,
-            first_turn.as_deref(),
-            mission_bus_dir.as_deref(),
-        );
+        let (first_turn, codex_prompt_marker) =
+            Self::codex_capture_prompt_marker(runtime, &marker_id, first_turn);
 
         if fresh && matches!(snap.status, crate::model::SessionStatus::Running) {
             self.kill(session_id)?;
         }
 
+        let system_prompt_path = system_prompt
+            .as_deref()
+            .map(|body| crate::session::system_prompt::write(app_data_dir, session_id, body))
+            .transpose()?;
+        let first_turn_delivered_via_argv = Self::apply_runtime_args(
+            &mut spec,
+            &role,
+            &plan,
+            app_data_dir,
+            system_prompt_path.as_deref(),
+            first_turn.as_deref(),
+            mission_bus_dir.as_deref(),
+        );
+
         let started_at_dt = Utc::now();
         let started_at = started_at_dt.to_rfc3339();
 
         // UPDATE in place: same id, same conversation thread.
-        {
+        let resume_result = (|| -> Result<()> {
             let conn = pool.get()?;
             crate::repo::session::resume_in_place(
                 &conn,
@@ -2406,6 +2556,11 @@ impl SessionManager {
                 initial_size.0,
                 initial_size.1,
             )?;
+            Ok(())
+        })();
+        if let Err(error) = resume_result {
+            crate::session::system_prompt::remove(app_data_dir, session_id);
+            return Err(error);
         }
 
         if !plan.resuming {
@@ -2432,6 +2587,7 @@ impl SessionManager {
                         Utc::now(),
                     );
                 }
+                crate::session::system_prompt::remove(app_data_dir, session_id);
                 return Err(Error::msg(format!("spawn {}: {e}", role.command)));
             }
         };
@@ -2555,6 +2711,7 @@ impl SessionManager {
             plan.resuming,
             snap.role_id.is_some(),
             resume_emit_ctx,
+            app_data_dir.to_path_buf(),
         );
         self.install_forwarder(session_id, forwarder);
 

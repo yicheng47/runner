@@ -20,8 +20,10 @@ use crate::shell_path::LoginShellEnv;
 
 mod claude;
 mod codex;
+mod pi;
 
-pub(crate) const DISCOVERY_RUNTIMES: [Runtime; 2] = [Runtime::Codex, Runtime::ClaudeCode];
+pub(crate) const DISCOVERY_RUNTIMES: [Runtime; 3] =
+    [Runtime::Codex, Runtime::ClaudeCode, Runtime::Pi];
 const REFRESH_SECONDS: i64 = 10 * 60;
 const MAX_OUTPUT_BYTES: u64 = 32 * 1024 * 1024;
 const CACHE_VERSION: u32 = 4;
@@ -197,6 +199,7 @@ pub(crate) fn request(
             let (method, result) = match runtime {
                 Runtime::Codex => ("debug models", codex::query(&source.command, &env)),
                 Runtime::ClaudeCode => ("list_models", claude::query(&source.command, &env)),
+                Runtime::Pi => ("--offline --list-models", pi::query(&source.command, &env)),
                 _ => unreachable!(),
             };
             let duration_ms = started.elapsed().as_millis();
@@ -261,9 +264,16 @@ pub(crate) fn source(runtime: Runtime, command: &str) -> ModelSource {
             .and_then(|elapsed| i64::try_from(elapsed.as_millis()).ok()),
         len: metadata.len(),
     });
-    let (variable, directory) = match runtime {
-        Runtime::Codex => ("CODEX_HOME", ".codex"),
-        Runtime::ClaudeCode => ("CLAUDE_CONFIG_DIR", ".claude"),
+    let config_home = match runtime {
+        Runtime::Codex => std::env::var_os("CODEX_HOME")
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+            .or_else(|| runner_core::app_paths::home_dir().map(|home| home.join(".codex"))),
+        Runtime::ClaudeCode => std::env::var_os("CLAUDE_CONFIG_DIR")
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+            .or_else(|| runner_core::app_paths::home_dir().map(|home| home.join(".claude"))),
+        Runtime::Pi => runner_core::app_paths::home_dir().map(|home| home.join(".pi/agent")),
         _ => {
             return ModelSource {
                 command: command.into(),
@@ -272,10 +282,6 @@ pub(crate) fn source(runtime: Runtime, command: &str) -> ModelSource {
             }
         }
     };
-    let config_home = std::env::var_os(variable)
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| runner_core::app_paths::home_dir().map(|home| home.join(directory)));
     ModelSource {
         command: command.into(),
         executable,

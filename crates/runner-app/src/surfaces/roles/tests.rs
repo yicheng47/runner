@@ -15,7 +15,9 @@ fn legacy_slot_pins_reach_validation_as_raw_names() {
         let error = runner_backend::ops::slot::validate_runtime_override(raw_override).unwrap_err();
         assert_eq!(
             error.to_string(),
-            format!("unknown runtime '{name}' — valid runtimes: codex, claude-code, copilot, trae")
+            format!(
+                "unknown runtime '{name}' — valid runtimes: codex, claude-code, copilot, pi, trae"
+            )
         );
     }
 }
@@ -139,7 +141,8 @@ fn trae_does_not_offer_a_mode_it_cannot_write() {
     assert!(permission_modes("claude-code").contains(&PermissionMode::Auto));
 
     // Every offered mode describes itself.
-    for runtime in ["claude-code", "codex", "trae", "copilot"] {
+    assert!(permission_modes("pi").is_empty());
+    for runtime in ["claude-code", "codex", "trae", "copilot", "pi"] {
         for mode in permission_modes(runtime) {
             assert!(
                 !permission_mode_description(runtime, *mode).is_empty(),

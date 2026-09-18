@@ -843,12 +843,17 @@ mod tests {
         copilot.display_name = "GitHub Copilot CLI".into();
         copilot.command = "copilot".into();
         catalog.push(copilot);
+        let mut pi = catalog[0].clone();
+        pi.name = runner_backend::model::Runtime::Pi;
+        pi.display_name = "pi".into();
+        pi.command = "pi".into();
+        catalog.push(pi);
         assert_eq!(
             runtime_select_options(&catalog)
                 .iter()
                 .map(|entry| entry.value.as_str())
                 .collect::<Vec<_>>(),
-            ["codex", "copilot"]
+            ["codex", "copilot", "pi"]
         );
     }
 }

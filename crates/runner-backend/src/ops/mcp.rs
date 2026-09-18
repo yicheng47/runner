@@ -75,11 +75,14 @@ impl McpClientId {
             Some(crate::model::Runtime::Codex) => Ok(Self::Codex),
             Some(crate::model::Runtime::Trae) => Ok(Self::Trae),
             Some(crate::model::Runtime::Copilot) => Ok(Self::Copilot),
-            Some(crate::model::Runtime::ClaudeCode | crate::model::Runtime::Shell) | None => {
-                Err(Error::msg(format!(
-                    "unknown MCP client: {raw:?} (expected claude_code, codex, trae, or copilot)"
-                )))
-            }
+            Some(
+                crate::model::Runtime::ClaudeCode
+                | crate::model::Runtime::Pi
+                | crate::model::Runtime::Shell,
+            )
+            | None => Err(Error::msg(format!(
+                "unknown MCP client: {raw:?} (expected claude_code, codex, trae, or copilot)"
+            ))),
         }
     }
 }
@@ -344,7 +347,7 @@ impl McpClientId {
             crate::model::Runtime::Codex => Some(Self::Codex),
             crate::model::Runtime::Trae => Some(Self::Trae),
             crate::model::Runtime::Copilot => Some(Self::Copilot),
-            crate::model::Runtime::Shell => None,
+            crate::model::Runtime::Pi | crate::model::Runtime::Shell => None,
         }
     }
 
