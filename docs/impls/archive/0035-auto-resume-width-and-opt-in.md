@@ -2,7 +2,7 @@
 
 ## Status
 
-Implemented. Follows [0032](0032-in-place-resume-seam-and-width-hardening.md) (which introduced the persisted-dims fallback this bug lives in) and the auto-resume feature shipped in 0.4.2 ([#320](https://github.com/yicheng47/runner/issues/320), spec `docs/features/45-auto-resume-on-launch.md`). Two changes: fix the fork width, and flip the setting to opt-in.
+Implemented. Follows [0032](0032-in-place-resume-seam-and-width-hardening.md) (which introduced the persisted-dims fallback this bug lives in) and the auto-resume feature shipped in 0.4.2 ([#320](https://github.com/yicheng47/runner/issues/320), spec `docs/features/archive/45-auto-resume-on-launch.md`). Two changes: fix the fork width, and flip the setting to opt-in.
 
 ## Release note
 
@@ -74,7 +74,7 @@ Note this is a genuine race, not a fixed ordering: `consumeResumeOnLaunch` fires
 
 ### Phase 4 — docs
 
-- `docs/features/45-auto-resume-on-launch.md`: the spec says "One toggle in Settings … default on." Update it and record why.
+- `docs/features/archive/45-auto-resume-on-launch.md`: the spec says "One toggle in Settings … default on." Update it and record why.
 - The GitHub release notes must manually include this document's release note stating that auto-resume is now opt-in, including for users who had it working by default (decision 6); the repository has no changelog that publishes it automatically.
 
 ## Verification

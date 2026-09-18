@@ -121,15 +121,15 @@ If this loop doesn't work end-to-end without the user touching a terminal outsid
 These are intentionally out of scope — they belong to a different product or a later phase.
 
 - Cross-mission memory / persistent crew brain.
-- Remote runners / SSH / multi-host coordination bus.
+- A multi-host coordination bus. Sessions on other machines come through the session host ([#645](https://github.com/yicheng47/runner/issues/645), 0.13), which runs the process half of the backend next to the agent; the bus itself stays local.
 - Sandboxing beyond the child process's own permissions.
-- Cost tracking / observability dashboards.
+- Observability dashboards. The token ledger ([#630](https://github.com/yicheng47/runner/issues/630), 0.11) shows spend and remaining quota per subscription; anything beyond that is a different product.
 - Marketplace of roles.
 - Multi-human collaboration on the same mission.
 - Thread/fact primitives for mission coordination.
 - Secrets management beyond plain env vars.
 - LLM-based signal routing (the router is a flat dispatcher by design — the lead owns coordination judgment).
-- Linux desktop support. macOS is the production platform; Windows is scoped to an unsigned x64 nightly pre-release zip, with no installer, signing, updater, or production channel ([#437](https://github.com/yicheng47/runner/issues/437)).
+- Linux desktop support. macOS and Windows are the shipping platforms, both built from `main` with signed installers and updaters since 0.8.0.
 
 ## 7. Open product questions
 
@@ -142,6 +142,6 @@ Decisions we have not taken; revisit when the product surfaces them.
 
 ## 8. Risks
 
-- **PTY and process-lifecycle edge cases.** Orphan reaping, resume, and geometry are the recurring trouble spots. The Windows nightly ([#437](https://github.com/yicheng47/runner/issues/437)) adds ConPTY and Job Objects as a second lifecycle implementation; each phase must preserve macOS behavior and pass its existing checks.
+- **PTY and process-lifecycle edge cases.** Orphan reaping, resume, and geometry are the recurring trouble spots. Windows runs a second lifecycle implementation on ConPTY and Job Objects, so every PTY change is checked on both platforms.
 - **TUI rendering edge cases in the terminal renderer.** Claude / codex use rich TUIs (alt-screen, OSC 8 hyperlinks, OSC 52 clipboard); every new TUI quirk is a tuning loop.
 - **Agents that don't know the `runner signal` / `runner msg` conventions.** We ship sensible default briefs per runtime so even an untuned agent participates correctly.

@@ -1,6 +1,6 @@
 # 633 — Replace the app icon with the Trail mark
 
-Tracking issue: [#633](https://github.com/yicheng47/runner/issues/633). Feature, P2. Shipped 2026-09-17 in [#640](https://github.com/yicheng47/runner/pull/640). Direction **3 · TRAIL** from *Spec — Brand mark exploration · v1* in `design/runner.pen` (frame `RuZ6e`, app tile `cweXT`), picked by Jason on 2026-09-17. The icon files were made by a codex solo crew mission from the [brief](./gpui-rewrite/briefs/633-m1-trail-app-icon.md); the in-app brand mark was updated during Jason's smoke; the driving Claude session landed it.
+Tracking issue: [#633](https://github.com/yicheng47/runner/issues/633). Feature, P2. Shipped 2026-09-17 in [#640](https://github.com/yicheng47/runner/pull/640). Direction **3 · TRAIL** from *Spec — Brand mark exploration · v1* in `design/runner.pen` (frame `RuZ6e`, app tile `cweXT`), picked by Jason on 2026-09-17. The icon files were made by a codex solo crew mission from the [brief](../briefs/633-m1-trail-app-icon.md); the in-app brand mark was updated during Jason's smoke; the driving Claude session landed it.
 
 ## Why
 

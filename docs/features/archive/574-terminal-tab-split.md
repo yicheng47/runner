@@ -30,7 +30,7 @@ Ghostty is the reference. A split there means "another shell here, now": no empt
 
 1. **Gate.** `split_decision` drops the terminal-only → NotSplittable arm; the header split icon renders on a terminal-only single-pane tab; the drawer icon still does not. Tests: a terminal-only tab is allowed or blocked by size like a chat tab.
 2. **Split.** In `split_pane`, after `layout.split`, when the tab is terminal-only spawn a shell into the new pane with the existing spawn-into-pane helper, using the split-from session's cwd, then the same persist → reload → attach → focus; otherwise the empty stub as today. `new_terminal` with a terminal-only tab active calls the same split path on the focused pane.
-3. **Docs.** `docs/arch/arch.md` pane paragraph; `docs/tests/64-terminal-as-pane-option-smoke.md` §1 and §4; the 570 archived spec gets a superseded note on its "chats only" line.
+3. **Docs.** `docs/arch/arch.md` pane paragraph; `docs/tests/archive/64-terminal-as-pane-option-smoke.md` §1 and §4; the 570 archived spec gets a superseded note on its "chats only" line.
 
 ## Verification
 

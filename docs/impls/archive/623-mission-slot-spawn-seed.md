@@ -1,6 +1,6 @@
 # 623 — Seed mission slots Busy at spawn
 
-Tracking issue: [#623](https://github.com/yicheng47/runner/issues/623). Bug, P2. Shipped 2026-09-17 in [#639](https://github.com/yicheng47/runner/pull/639). Found on JASONPC during the #610 mission 1 smoke. Implemented by a codex solo crew mission on 2026-09-17 from the [brief](./gpui-rewrite/briefs/623-m1-mission-slot-spawn-seed.md), landed by the driving Claude session.
+Tracking issue: [#623](https://github.com/yicheng47/runner/issues/623). Bug, P2. Shipped 2026-09-17 in [#639](https://github.com/yicheng47/runner/pull/639). Found on JASONPC during the #610 mission 1 smoke. Implemented by a codex solo crew mission on 2026-09-17 from the [brief](../briefs/623-m1-mission-slot-spawn-seed.md), landed by the driving Claude session.
 
 ## Why
 

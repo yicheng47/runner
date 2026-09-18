@@ -245,7 +245,7 @@ coupled and not worth splitting across PRs.
 - **Rename UI.** Schema column ships now; affordance ships later.
 - **Archived workspace surface.** The destination for archived
   sessions and (eventually) archived missions. See
-  `docs/impls/0001-v0-mvp.md` "Out of scope for MVP".
+  `docs/impls/archive/0001-v0-mvp.md` "Out of scope for MVP".
 - **Per-runner grouping in the sidebar.** Started flat; if the tray
   gets noisy with many chats per runner, can collapse later. Don't
   preempt.

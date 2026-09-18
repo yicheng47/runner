@@ -3,7 +3,7 @@
 > Tracking issue: [#624](https://github.com/yicheng47/runner/issues/624)
 > Priority: P2. Platforms: macOS and Windows, one implementation.
 > Shipped 2026-09-17 in [PR #631](https://github.com/yicheng47/runner/pull/631) after Jason's macOS smoke pass; the Windows smoke is outstanding.
-> Continues [347](./347-hook-based-session-status.md), whose slice 5 deferred these details, and lands on top of [610](../610-windows-hook-status.md), which put the three hook adapters on both platforms (PR #627).
+> Continues [347](./347-hook-based-session-status.md), whose slice 5 deferred these details, and lands on top of [610](./610-windows-hook-status.md), which put the three hook adapters on both platforms (PR #627).
 > Design: `design/runner.pen`, band `STATUS DETAILS (624)` right of the 606 and brand-mark specs. One frame per item: `z92Zy9` working detail, `qKf92` interrupted, `HiZ5G` wait timers, `bqwlq` failure attention. Jason signed the four frames off on 2026-09-17.
 > Implementation plan: [`docs/impls/archive/624-status-details.md`](../../impls/archive/624-status-details.md).
 
@@ -80,7 +80,7 @@ The nonblocking ask (cut above); any new state; any approval or answer control i
 
 1. Design: done, the four frames above, signed off 2026-09-17.
 2. Mission 1, codex peer crew: all four items in one PR: the three UI-only ones (interrupted tooltip, wait timers, failure attention) plus `failed_since`, and the working detail (model field, the three adapters, Claude's two new hook registrations). Planned as two missions; folded into one on 2026-09-17.
-3. Smoke on both platforms in the shape of `docs/tests/347-status-ui-smoke.md`, recorded in `docs/tests/624-status-details-smoke.md`.
+3. Smoke on both platforms in the shape of `docs/tests/archive/347-status-ui-smoke.md`, recorded in `docs/tests/archive/624-status-details-smoke.md`.
 
 ## Verification
 

@@ -159,7 +159,7 @@ In the `attach_streaming` block-comment (lines 805-829), add a note to Step 2
 |------|--------|
 | `src-tauri/src/session/tmux_runtime.rs` | Prepend `ESC[?1049h\x1b[H` in `capture_replay_bytes` when alt-screen is on. Update attach_streaming comment. |
 | `src/components/RunnerTerminal.tsx` | Replace SIGWINCH dance (two resizes) with a single resize call. |
-| `docs/impls/0009-terminal-alt-screen-reattach.md` | This document. |
+| `docs/impls/archive/0009-terminal-alt-screen-reattach.md` | This document. |
 
 No backend API shape change. No DB migration. No new dependencies.
 

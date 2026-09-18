@@ -9,7 +9,7 @@ Implement one nightly dispatch that builds macOS and Windows from one commit and
 ## Checkout and authorization
 
 - Work in the existing `/Users/jason/repos/yicheng47/runner` checkout. The coder creates `feat/502-unified-nightly` before editing implementation files. Do not create another checkout or worktree.
-- The uncommitted changes to `docs/features/502-unified-nightly.md`, this brief, and `docs/impls/README.md` were prepared for this mission and belong to it. Preserve and include them in review; they are not unrelated user edits.
+- The uncommitted changes to `docs/features/archive/502-unified-nightly.md`, this brief, and `docs/impls/README.md` were prepared for this mission and belong to it. Preserve and include them in review; they are not unrelated user edits.
 - The two existing crew slots are the authorized workers. Do not spawn additional agents, crews, or review fan-outs.
 - Implement, validate, and exchange review messages through Runner. The reviewer waits for the coder's handoff, critiques the diff, and does not edit it. Iterate until there are no must-fix findings, then report to Jason.
 - Leave all changes uncommitted. No commit, push, PR, merge, tag, workflow dispatch, release mutation, app launch/restart, or installer execution against the real installation. The nightly skill is a reference and an edit target, not a request to execute its outward actions. Do not copy the commit authorization from the archived #493 brief.
@@ -104,7 +104,7 @@ The first sandboxed full-app run failed only because an existing MCP socket test
 | Workflow and validation | `.github/workflows/nightly.yml`, `Makefile`, `script/test-nightly.py` (new), `script/verify-nightly-appcast.py` (new) |
 | Packaging and app display | `script/bundle-mac`, `script/bundle-windows.ps1`, `crates/runner-app/src/updater.rs`, `crates/runner-app/src/updater/windows.rs` (test only), `crates/runner-app/src/version.rs` (test only), `crates/runner-app/tests/bundle_mac.rs` |
 | Skill and architecture | `.agents/skills/nightly/SKILL.md`, `docs/arch/arch.md`, `docs/arch/windows.md` |
-| Spec/brief and live instructions | `docs/features/502-unified-nightly.md`, `docs/features/README.md`, `docs/impls/502-unified-nightly.md` (new), `docs/impls/README.md`, `docs/features/468-landing-page.md`, `docs/impls/gpui-rewrite/README.md`, `docs/impls/gpui-rewrite/m6-remainder.md` |
+| Spec/brief and live instructions | `docs/features/archive/502-unified-nightly.md`, `docs/features/README.md`, `docs/impls/archive/502-unified-nightly.md` (new), `docs/impls/README.md`, `docs/features/468-landing-page.md`, `docs/impls/archive/gpui-rewrite/README.md`, `docs/impls/archive/gpui-rewrite/m6-remainder.md` |
 
 All 20 files are mission-owned working-tree changes on `feat/502-unified-nightly`, uncommitted and unstaged. The package manifests and `Cargo.lock` are no longer part of the diff.
 

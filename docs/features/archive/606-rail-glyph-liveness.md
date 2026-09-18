@@ -2,7 +2,7 @@
 
 > Tracking issue: [#606](https://github.com/yicheng47/runner/issues/606)
 > Priority: P2. Platforms: macOS and Windows.
-> Shipped 2026-09-16 in [#613](https://github.com/yicheng47/runner/pull/613) (codex peer mission, Jason's macOS smoke passed); the Windows look at the rail rides with the [610](../610-windows-hook-status.md) JASONPC pass.
+> Shipped 2026-09-16 in [#613](https://github.com/yicheng47/runner/pull/613) (codex peer mission, Jason's macOS smoke passed); the Windows look at the rail rides with the [610](./610-windows-hook-status.md) JASONPC pass.
 > Design: `design/runner.pen`, frame `Spec — Rail glyphs (606) · v1` (`Xk8NM`), to the right of the 540 frame. Signed off 2026-09-16: Jason chose the lucide outline pair (`QHByO`).
 
 ## Motivation

@@ -10,8 +10,8 @@ Phase 0 done: `cmp/MarkCopilot` (`QGeFI`) and the frame `Spec — GitHub Copilot
 
 | Mission | Scope | Crew | State |
 | --- | --- | --- | --- |
-| 1 | Spec phases 1 and 2: enum, adapter argv, trust preseed, defaults, catalog, MCP client, title filter, mark, permission copy, every enumerating test, README and arch docs. No hook adapter, no fixture. | codex peer, [brief](./gpui-rewrite/briefs/540-m1-copilot-runtime.md) | Merged via [PR #607](https://github.com/yicheng47/runner/pull/607), `a308719`; Jason's smoke passed 2026-09-16 |
-| 2 | Spec phase 3: the hook status adapter on macOS — Runner-owned `--plugin-dir` plugin, `copilot_status.rs`, `HookStatusWatcher::Copilot`, decision 3's event mapping — as a slice under `docs/impls/347-hook-status/`. | codex peer, [brief](./gpui-rewrite/briefs/540-m2-copilot-hook-status.md) | Reviewed clean 2026-09-16 (`01M2MASYZ4ZSBEXGAC66Q5H3YB`); Jason's smoke passed; landed with the Agents marks and Skills pane fixes |
+| 1 | Spec phases 1 and 2: enum, adapter argv, trust preseed, defaults, catalog, MCP client, title filter, mark, permission copy, every enumerating test, README and arch docs. No hook adapter, no fixture. | codex peer, [brief](../briefs/540-m1-copilot-runtime.md) | Merged via [PR #607](https://github.com/yicheng47/runner/pull/607), `a308719`; Jason's smoke passed 2026-09-16 |
+| 2 | Spec phase 3: the hook status adapter on macOS — Runner-owned `--plugin-dir` plugin, `copilot_status.rs`, `HookStatusWatcher::Copilot`, decision 3's event mapping — as a slice under `docs/impls/347-hook-status/`. | codex peer, [brief](../briefs/540-m2-copilot-hook-status.md) | Reviewed clean 2026-09-16 (`01M2MASYZ4ZSBEXGAC66Q5H3YB`); Jason's smoke passed; landed with the Agents marks and Skills pane fixes |
 | 3 | Spec phase 4: smoke on macOS and JASONPC, the terminal fixture, archive the spec. | Jason + inline | macOS smoke passed 2026-09-16; fixture `copilot-first-turn.ndjson` recorded through a PTY driver and blessed; spec and plan archived; JASONPC smoke outstanding (README footnote) |
 
 ## Decisions that bind

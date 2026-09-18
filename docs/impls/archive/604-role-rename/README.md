@@ -2,7 +2,7 @@
 
 Archived after [#618](https://github.com/yicheng47/runner/pull/618) merged on 2026-09-16 (`8fefe12`). The entity is `role` in the database, the backend, the MCP tools, the UI and the docs; the product stays Runner.
 
-Implementation record for [feature 604](../../../features/archive/604-rename-runner-to-role.md) ([#604](https://github.com/yicheng47/runner/issues/604)). The spec says *what*; this directory says *how, in what order, and what has landed*. Same shape as the [hook-status](../347-hook-status/README.md) record: this file is the condensed state and the decisions that bind, [plan.md](plan.md) is the mission plan, [impl_log.md](impl_log.md) is the dated log. Briefs live in [`docs/impls/archive/gpui-rewrite/briefs/`](../gpui-rewrite/briefs/).
+Implementation record for [feature 604](../../../features/archive/604-rename-runner-to-role.md) ([#604](https://github.com/yicheng47/runner/issues/604)). The spec says *what*; this directory says *how, in what order, and what has landed*. Same shape as the [hook-status](../347-hook-status/README.md) record: this file is the condensed state and the decisions that bind, [plan.md](plan.md) is the mission plan, [impl_log.md](impl_log.md) is the dated log. Briefs live in [`docs/impls/briefs/`](../../briefs/).
 
 ## Status (2026-09-16)
 

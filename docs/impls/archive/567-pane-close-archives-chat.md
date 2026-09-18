@@ -17,7 +17,7 @@ Tracking issue: [#567](https://github.com/yicheng47/runner/issues/567). Spec: [5
 - `crates/runner-app/src/surfaces/sidebar.rs:4078` `session_label`; `DirectSessionEntry.status == SessionStatus::Running` is "alive".
 - `crates/runner-app/src/pane_layout.rs:581` `PaneLayout::close_pane` refuses on a single leaf.
 - `crates/runner-backend/src/repo/node.rs:646` `ensure_active_sessions`: re-adopts an active, uncovered session as a new tab and (`:790`) deletes a tab with no sessions and an empty drawer. Archived sessions are excluded. Do not change it.
-- `docs/features/archive/64-native-terminal.md:49` and `docs/tests/64-terminal-as-pane-option-smoke.md:54`, `:60`.
+- `docs/features/archive/64-native-terminal.md:49` and `docs/tests/archive/64-terminal-as-pane-option-smoke.md:54`, `:60`.
 
 ## Fix shape
 

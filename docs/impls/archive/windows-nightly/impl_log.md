@@ -64,7 +64,7 @@ Mission `01M1RD61YNDQE4PSQYAXX95X1F`, PR mode against `nightly-windows`. Four co
 
 Mission `01M1RJD9Z2GVFM8698J7AKJ65T`, branch `fix/437-windows-titlebar`, [#485](https://github.com/yicheng47/runner/pull/485), five commits, three review rounds. Jason chose the toggle at the left of the title row (iconless) over "beside the logo". Review findings that changed the brief: caption buttons must render above every overlay (the brief said under the modals; a modal without outside-dismiss would have trapped the window), `SessionControl` needed the same mouse-down stop-propagation as `Button` (Stop/Resume inside a Drag hitbox became a window drag), the header inset is gated on the side panel and mission rail being closed, and the Runners/Crews list "New" buttons ran under the caption strip. Landed as `2a28ada`; second nightly cut at 13:23 UTC. Missions stopped after landing.
 
-**Housekeeping the same day**: this directory created (plan moved from `docs/impls/437-windows-nightly.md`, README and this log added); the `nightly` skill's Windows paths repointed; fork-chat (feature 60, shipped in #460 on 2026-09-01) archived.
+**Housekeeping the same day**: this directory created (plan moved from `docs/features/archive/437-windows-nightly.md`, README and this log added); the `nightly` skill's Windows paths repointed; fork-chat (feature 60, shipped in #460 on 2026-09-01) archived.
 
 ## 2026-09-05 — Todo 1: ConPTY cursor jump
 

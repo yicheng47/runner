@@ -1,6 +1,6 @@
 # Fork a chat — implementation plan
 
-Implementation plan for [feature 60 — Fork a chat into a split pane or a new tab](../../features/archive/60-fork-chat-to-pane-or-tab.md) ([#398](https://github.com/yicheng47/runner/issues/398)). The spec says what; this file says how, against the GPUI code as surveyed on 2026-08-28. One `codex peer` mission on a task branch off `main`; the brief is derived from §Backend and §App when the mission starts and lives at `docs/impls/archive/gpui-rewrite/briefs/fork-chat.md`.
+Implementation plan for [feature 60 — Fork a chat into a split pane or a new tab](../../features/archive/60-fork-chat-to-pane-or-tab.md) ([#398](https://github.com/yicheng47/runner/issues/398)). The spec says what; this file says how, against the GPUI code as surveyed on 2026-08-28. One `codex peer` mission on a task branch off `main`; the brief is derived from §Backend and §App when the mission starts and lives at `docs/impls/archive/fork-chat.md`.
 
 ## Status
 
@@ -153,4 +153,4 @@ Side-panel button, split-pane destination, pane-kebab rows, command-palette entr
 
 ## Landing
 
-Task branch off `main` → working-tree review by the crew's reviewer → Jason smoke-tests §Verification → PR → `Rust / macOS` → merge → `docs(fork-chat)` landing commit that records the outcome here (including which §0 branch applied), moves spec 60 to `docs/features/archive/`, and adds the timeline row in `docs/impls/gpui-rewrite/README.md`. Standing GPUI rules from that record apply; crews do not launch the app.
+Task branch off `main` → working-tree review by the crew's reviewer → Jason smoke-tests §Verification → PR → `Rust / macOS` → merge → `docs(fork-chat)` landing commit that records the outcome here (including which §0 branch applied), moves spec 60 to `docs/features/archive/`, and adds the timeline row in `docs/impls/archive/gpui-rewrite/README.md`. Standing GPUI rules from that record apply; crews do not launch the app.

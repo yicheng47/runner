@@ -56,5 +56,5 @@ The web layer cannot close it alone. `DataTransfer` deliberately withholds files
 - `src-tauri/src/commands/session.rs` — `session_paste_image` and its MIME→OSType table, the plumbing neighborhood for the new read command.
 - `src-tauri/Cargo.toml` — `objc2-app-kit` with `default-features = false`; `NSPasteboard` must be added to its feature list.
 - `src/lib/api.ts` — `session.injectStdin`; `session.pasteImage`, the call shape to mirror.
-- `docs/features/54-draft-aware-delivery-gate.md` — the draft model a pasted path feeds into (decision 6).
+- `docs/features/archive/54-draft-aware-delivery-gate.md` — the draft model a pasted path feeds into (decision 6).
 - Reverted implementation for reference: PR #369, commit `61cafd2` (local branch `fix/367-368-spawn-width-and-paste-paths`) — `src/lib/terminalPaste.ts`, `src/lib/terminalPaste.test.ts`, and `session_clipboard_file_paths` are all reusable; only the orchestration's precedence order changes.
