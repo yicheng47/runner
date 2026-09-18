@@ -18,11 +18,7 @@ use crate::{env, roster};
 
 const MAX_MESSAGE_BYTES: usize = 32 * 1024;
 
-pub fn post(text: &str, to: Option<&str>) -> i32 {
-    let Some(env) = env::require_mission_or_handle_offbus("msg post") else {
-        return 0;
-    };
-
+pub fn post(env: &env::MissionEnv, text: &str, to: Option<&str>) -> i32 {
     if text.len() > MAX_MESSAGE_BYTES {
         let size_kb = text.len().div_ceil(1024);
         eprintln!(
@@ -84,11 +80,7 @@ pub fn post(text: &str, to: Option<&str>) -> i32 {
     }
 }
 
-pub fn read(since: Option<&str>, from: Option<&str>) -> i32 {
-    let Some(env) = env::require_mission_or_handle_offbus("msg read") else {
-        return 0;
-    };
-
+pub fn read(env: &env::MissionEnv, since: Option<&str>, from: Option<&str>) -> i32 {
     let Some(mission_dir) = env.event_log.parent() else {
         eprintln!(
             "runner: RUNNER_EVENT_LOG has no parent directory: {}",

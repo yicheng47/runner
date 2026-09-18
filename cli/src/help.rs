@@ -1,60 +1,34 @@
-// `runner help` — long-form help, in the same shape as docs/arch
-// §6.3. clap's `--help` covers the short auto-generated form; this is
-// the verbose one with examples.
-
-use runner_core::model::KnownSignalType;
-
-pub fn print() {
-    let known_signals = KnownSignalType::ALL
-        .iter()
-        .map(|k| k.as_str())
-        .collect::<Vec<_>>()
-        .join(", ");
+pub fn print(topic: Option<&str>) {
+    if let Some(topic) = topic {
+        println!("runner help {topic}: use `runner {topic} --help` for the command reference.");
+        return;
+    }
     println!(
-        r#"runner — coordinate with the rest of the crew via the mission event log.
+        r#"runner — operate Runner from a shell or a mission session
 
-USAGE:
-  runner signal <type> [--payload <json>]
-  runner msg post <text> [--to <handle>]
-  runner msg read [--since <ulid>] [--from <handle>]
-  runner status busy|idle [--note <text>]   (deprecated, see below)
-  runner help
+USAGE
+  runner status
+  runner project list|show|create|rename|delete
+  runner role list|show|create|update|delete
+  runner crew list|show|create|update|delete|add|set|remove|lead|order
+  runner mission list|show|start|stop|resume|archive|unarchive|rename|pin|unpin|move|feed|answer
+  runner chat start
+  runner session list|resume|restart
+  runner msg post|read
+  runner signal <type>
+  runner ask <question> | runner ask --human <prompt> --choices <a,b,...>
+  runner call <tool> [<json>]
 
-ENVIRONMENT:
-  RUNNER_CREW_ID, RUNNER_MISSION_ID, RUNNER_HANDLE, RUNNER_EVENT_LOG
-  Set automatically by the parent app when this binary is spawned inside
-  a mission session. Direct-chat sessions intentionally don't set them;
-  every verb except `help` is a no-op in that context.
+OUTPUT
+  --json   print the JSON result
+  -q       print only result ids
 
-SIGNALS:
-  Known signal types accepted by `runner signal <type>`:
-  {known_signals}
+CONTEXT
+  Inside a mission, msg post/read, signal, and ask use the event log directly.
+  Outside, mission-scoped writes require --mission; --as names a roster handle.
 
-EXAMPLES:
-  runner signal mission_goal --payload '{{"text":"ship v0"}}'
-      Emit a typed signal that the parent-process router handles.
-
-  runner msg post --to reviewer "ready for review on PR #42"
-      Direct message; lands in @reviewer's inbox only.
-
-  runner msg post "starting work on feature X"
-      Broadcast; lands in every crewmate's inbox.
-
-  runner msg read --since 01HG... --from coder
-      Print messages addressed to you (broadcasts + directs) since the
-      given ULID, optionally filtered by sender. Emits inbox_read on
-      success so the parent's watermark advances.
-
-  runner status idle --note "ready for next task"
-      DEPRECATED (issue #124). Busy/idle is now inferred from PTY
-      activity by the session forwarder; you do not need to call this.
-      The verb still emits the event (with `source: "agent"`) so
-      existing templates don't crash, but it prints a deprecation
-      notice on stderr and is slated for removal next release.
-
-DOCS:
-  Architecture: docs/arch/arch.md (§5 coordination bus, §7.3 CLI)
-  Implementation: docs/impls/archive/0001-v0-mvp.md (C9 — runner CLI binary)
+RESERVED FOR #562
+  spawn, ps, wait, stop <handle>, done
 "#
     );
 }

@@ -1,7 +1,4 @@
-use std::time::Duration;
-
-use crate::ipc::IpcStream;
-use runner_core::app_paths::IpcEndpoint;
+use crate::client::{ClientError, SocketClient};
 
 use rmcp::handler::server::ServerHandler;
 use rmcp::model::{
@@ -10,16 +7,6 @@ use rmcp::model::{
     ServerInfo,
 };
 use rmcp::service::{serve_directly, RequestContext, RoleServer};
-use rmcp::ServiceExt;
-use tokio::time::timeout;
-
-const CONNECT_TIMEOUT: Duration = Duration::from_millis(500);
-
-fn endpoint() -> Option<IpcEndpoint> {
-    let debug = cfg!(debug_assertions);
-    let app_data_dir = runner_core::app_paths::app_data_dir(debug)?;
-    Some(runner_core::app_paths::mcp_endpoint(&app_data_dir, debug))
-}
 
 pub fn run() -> i32 {
     let rt = match tokio::runtime::Builder::new_current_thread()
@@ -108,65 +95,25 @@ impl ServerHandler for RunnerMcpProxy {
 async fn proxy_list_tools(
     request: Option<PaginatedRequestParams>,
 ) -> Result<ListToolsResult, ErrorData> {
-    let stream = connect_app().await?;
-    let (read, write) = stream.into_split();
-    let write = tokio::io::BufWriter::new(write);
-    let client = ().serve((read, write)).await.map_err(proxy_init_error)?;
-    client
-        .peer()
+    SocketClient::connect()
+        .await
+        .map_err(proxy_error)?
         .list_tools(request)
         .await
-        .map_err(proxy_service_error)
+        .map_err(proxy_error)
 }
 
 async fn proxy_call_tool(request: CallToolRequestParams) -> Result<CallToolResult, ErrorData> {
-    let stream = connect_app().await?;
-    let (read, write) = stream.into_split();
-    let write = tokio::io::BufWriter::new(write);
-    let client = ().serve((read, write)).await.map_err(proxy_init_error)?;
-    client
-        .peer()
-        .call_tool(request)
+    SocketClient::connect()
         .await
-        .map_err(proxy_service_error)
+        .map_err(proxy_error)?
+        .call_result(request)
+        .await
+        .map_err(proxy_error)
 }
 
-async fn connect_app() -> Result<IpcStream, ErrorData> {
-    let path = endpoint().ok_or_else(|| {
-        ErrorData::internal_error(
-            "Runner app data directory could not be resolved from the home directory.",
-            None,
-        )
-    })?;
-
-    match timeout(CONNECT_TIMEOUT, IpcStream::connect(&path)).await {
-        Ok(Ok(stream)) => Ok(stream),
-        Ok(Err(e)) => Err(ErrorData::internal_error(
-            format!(
-                "Runner.app is not running. Open Runner and retry. Could not connect to {}: {e}",
-                path
-            ),
-            None,
-        )),
-        Err(_) => Err(ErrorData::internal_error(
-            format!(
-                "Runner.app did not accept the MCP connection within {}ms. Open Runner and retry.",
-                CONNECT_TIMEOUT.as_millis()
-            ),
-            None,
-        )),
-    }
-}
-
-fn proxy_init_error(e: impl std::fmt::Display) -> ErrorData {
-    ErrorData::internal_error(
-        format!("Runner.app MCP server did not initialize: {e}"),
-        None,
-    )
-}
-
-fn proxy_service_error(e: impl std::fmt::Display) -> ErrorData {
-    ErrorData::internal_error(format!("Runner.app MCP call failed: {e}"), None)
+fn proxy_error(error: ClientError) -> ErrorData {
+    ErrorData::internal_error(error.to_string(), None)
 }
 
 #[cfg(test)]

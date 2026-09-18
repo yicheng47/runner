@@ -71,50 +71,10 @@ mod tests {
             .into_iter()
             .map(|tool| tool.name.to_string())
             .collect();
-        let expected: std::collections::BTreeSet<_> = [
-            "crew_list",
-            "crew_get",
-            "crew_create",
-            "crew_update",
-            "crew_delete",
-            "role_list",
-            "role_get",
-            "role_get_by_handle",
-            "role_create",
-            "role_update",
-            "role_delete",
-            "slot_list",
-            "slot_create",
-            "slot_update",
-            "slot_delete",
-            "slot_set_lead",
-            "slot_reorder",
-            "project_list",
-            "project_get",
-            "project_create",
-            "project_rename",
-            "project_delete",
-            "mission_list",
-            "mission_get",
-            "mission_list_summary",
-            "mission_feed",
-            "mission_status",
-            "mission_start",
-            "mission_stop",
-            "mission_archive",
-            "mission_unarchive",
-            "mission_pin",
-            "mission_rename",
-            "mission_set_project",
-            "mission_post_human_signal",
-            "mission_post_human_message",
-            "session_start_direct",
-            "session_resume",
-            "session_restart",
-        ]
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
+        let expected: std::collections::BTreeSet<_> = runner_core::RUNNER_TOOL_NAMES
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
         assert_eq!(names, expected, "MCP tool registry diverged");
 
         let handler = RunnerMcpHandler::new(crate::test_support::test_core());

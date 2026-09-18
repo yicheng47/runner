@@ -110,6 +110,38 @@ fn i2_1_signal_appends_one_line_with_correct_envelope() {
 }
 
 #[test]
+fn ask_shortcuts_append_directly_inside_a_mission() {
+    let f = Fixture::new("C", "M");
+
+    let lead = f
+        .cmd("impl", &["ask", "Ship?", "--context", "Checks pass"])
+        .output()
+        .unwrap();
+    assert!(lead.status.success());
+    let human = f
+        .cmd("impl", &["ask", "--human", "Ship?", "--choices", "yes,no"])
+        .output()
+        .unwrap();
+    assert!(human.status.success());
+
+    let events = f.read_log();
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[0].signal_type.as_ref().unwrap().as_str(), "ask_lead");
+    assert_eq!(
+        events[0].payload,
+        serde_json::json!({"question": "Ship?", "context": "Checks pass"})
+    );
+    assert_eq!(
+        events[1].signal_type.as_ref().unwrap().as_str(),
+        "ask_human"
+    );
+    assert_eq!(
+        events[1].payload,
+        serde_json::json!({"prompt": "Ship?", "choices": ["yes", "no"]})
+    );
+}
+
+#[test]
 fn i2_2_signal_rejects_unknown_type_and_does_not_append() {
     let f = Fixture::new("C", "M");
 
@@ -398,40 +430,15 @@ fn i2_5b_msg_read_with_empty_inbox_does_not_emit_inbox_read() {
 }
 
 #[test]
-fn i2_6_status_idle_emits_session_status_signal() {
+fn status_busy_idle_alias_is_removed_without_appending() {
     let f = Fixture::new("C", "M");
 
     let out = f
         .cmd("impl", &["status", "idle", "--note", "ready for next task"])
         .output()
         .unwrap();
-    assert!(
-        out.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-
-    let events = f.read_log();
-    assert_eq!(events.len(), 1);
-    let ev = &events[0];
-    assert!(matches!(ev.kind, EventKind::Signal));
-    assert_eq!(ev.signal_type.as_ref().unwrap().as_str(), "session_status");
-    assert_eq!(ev.from, "impl");
-    assert_eq!(ev.payload["state"], "idle");
-    assert_eq!(ev.payload["note"], "ready for next task");
-    // Issue #124: CLI-emitted session_status events stamp the
-    // payload with `source: "agent"` so debug tooling can tell them
-    // apart from forwarder-inferred transitions (`source:
-    // "forwarder"`). Router consumers ignore the field.
-    assert_eq!(ev.payload["source"], "agent");
-
-    // And the deprecation notice lands on stderr — issue #124 keeps
-    // the verb working but tells the agent to stop calling it.
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        stderr.contains("deprecated"),
-        "expected deprecation notice on stderr, got: {stderr:?}",
-    );
+    assert_eq!(out.status.code(), Some(2));
+    assert_eq!(f.line_count(), 0);
 }
 
 #[test]
@@ -529,23 +536,76 @@ fn i2_8_partial_env_fails_fast_with_pointer() {
 }
 
 #[test]
-fn off_bus_with_no_env_vars_exits_zero_with_notice() {
-    // Direct-chat sessions deliberately set none of the four. The CLI
-    // must no-op cleanly so an agent that calls `runner status idle` in
-    // a direct chat doesn't crash.
+fn off_bus_mission_write_requires_mission() {
     let mut cmd = Command::new(runner_bin());
-    cmd.args(["status", "idle"]);
+    cmd.args(["msg", "post", "hello"]);
     cmd.env_remove("RUNNER_CREW_ID");
     cmd.env_remove("RUNNER_MISSION_ID");
     cmd.env_remove("RUNNER_HANDLE");
     cmd.env_remove("RUNNER_EVENT_LOG");
 
     let out = cmd.output().unwrap();
-    assert!(out.status.success(), "off-bus must exit 0");
+    assert_eq!(out.status.code(), Some(2));
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("no mission context") || stderr.contains("ignoring"),
-        "stderr should explain the no-op; got: {stderr}",
+        stderr.contains("--mission"),
+        "stderr should name the required flag; got: {stderr}",
+    );
+}
+
+#[test]
+fn local_usage_errors_win_over_a_missing_app() {
+    let mut cmd = Command::new(runner_bin());
+    cmd.args(["role", "create", "coder"]);
+    cmd.env_remove("RUNNER_CREW_ID");
+    cmd.env_remove("RUNNER_MISSION_ID");
+    cmd.env_remove("RUNNER_HANDLE");
+    cmd.env_remove("RUNNER_EVENT_LOG");
+
+    let out = cmd.output().unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("--runtime is required"));
+}
+
+#[cfg(unix)]
+#[test]
+fn health_status_reports_not_running_with_exit_three() {
+    let home = tempfile::tempdir().unwrap();
+    let mut cmd = Command::new(runner_bin());
+    cmd.arg("status");
+    cmd.env("HOME", home.path());
+    cmd.env("XDG_DATA_HOME", home.path());
+    cmd.env_remove("RUNNER_CREW_ID");
+    cmd.env_remove("RUNNER_MISSION_ID");
+    cmd.env_remove("RUNNER_HANDLE");
+    cmd.env_remove("RUNNER_EVENT_LOG");
+
+    let out = cmd.output().unwrap();
+    assert_eq!(out.status.code(), Some(3));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stderr),
+        "Runner is not running. Open Runner and retry.\n"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn direct_chat_handle_only_reaches_not_running_path() {
+    let home = tempfile::tempdir().unwrap();
+    let mut cmd = Command::new(runner_bin());
+    cmd.arg("status");
+    cmd.env("HOME", home.path());
+    cmd.env("XDG_DATA_HOME", home.path());
+    cmd.env_remove("RUNNER_CREW_ID");
+    cmd.env_remove("RUNNER_MISSION_ID");
+    cmd.env("RUNNER_HANDLE", "coder");
+    cmd.env_remove("RUNNER_EVENT_LOG");
+
+    let out = cmd.output().unwrap();
+    assert_eq!(out.status.code(), Some(3));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stderr),
+        "Runner is not running. Open Runner and retry.\n"
     );
 }
 
@@ -564,6 +624,48 @@ fn help_works_without_env_vars() {
     assert!(stdout.contains("USAGE"));
     assert!(stdout.contains("runner signal"));
     assert!(stdout.contains("runner msg"));
+    assert!(!stdout.contains("status busy"));
+}
+
+#[test]
+fn command_help_describes_verbs_and_flags() {
+    let cases = [
+        (
+            vec!["project", "--help"],
+            vec!["List projects", "Show one project", "--json", "-q"],
+        ),
+        (
+            vec!["mission", "start", "--help"],
+            vec![
+                "--goal-file",
+                "Read the mission goal from a file",
+                "--cwd",
+                "defaults to the current directory",
+            ],
+        ),
+        (
+            vec!["msg", "post", "--help"],
+            vec![
+                "--mission",
+                "required outside a mission",
+                "--as",
+                "roster handle",
+            ],
+        ),
+    ];
+    for (args, expected) in cases {
+        let mut cmd = Command::new(runner_bin());
+        cmd.args(args);
+        let out = cmd.output().unwrap();
+        assert!(out.status.success());
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        for needle in expected {
+            assert!(
+                stdout.contains(needle),
+                "help output did not contain {needle:?}:\n{stdout}"
+            );
+        }
+    }
 }
 
 // Avoid unused-warning on Path import when the file body changes.

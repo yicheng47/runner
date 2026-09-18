@@ -1,6 +1,3 @@
-mod ipc;
-mod mcp;
-
 fn main() {
-    std::process::exit(mcp::run());
+    std::process::exit(runner_cli::mcp::run());
 }

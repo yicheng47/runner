@@ -8,7 +8,7 @@
 
 ## Motivation
 
-`runner` today is only the command agents use inside a mission (`cli/src/main.rs`): `signal`, `msg post`, `msg read`, the deprecated `status`, and `help`. It needs the four `RUNNER_*` variables a mission session gets (`cli/src/env.rs`); in a direct chat it prints a notice and exits 0. `cli_install` puts it in `$APPDATA/runner/bin/`, which is on PATH only inside terminals Runner spawns.
+`runner` today is only the command agents use inside a mission (`cli/src/main.rs`): `signal`, `msg post`, `msg read`, the deprecated `status`, and `help`. It needs the four `RUNNER_*` variables a mission session gets (`cli/src/env.rs`); an agent direct chat has only `RUNNER_HANDLE` and therefore exits 2 as a partial environment, while a plain off-bus shell prints a notice and exits 0. `cli_install` puts it in `$APPDATA/runner/bin/`, which is on PATH only inside terminals Runner spawns.
 
 Everything else is MCP-only: 39 tools over projects, crews, roles, slots, missions, and sessions (`crates/runner-backend/src/mcp/tools/`), reached through the `runner-mcp` stdio proxy to the app's `mcp.sock`. That has four costs:
 
@@ -33,16 +33,17 @@ Orca's coordinator surface is a CLI plus a skill (`orca orchestration …`, with
 - **References.**
   - Roles are named by handle, which is unique.
   - Crews and projects are named by id or by exact name. Names are not unique, so an ambiguous name exits 2 and lists the matching ids.
-  - Missions and sessions are named by id or by a unique id prefix, as git short SHAs are. An ambiguous prefix exits 2 and lists the matches.
-  - The CLI resolves every reference with the matching list tool before calling the target tool, so no tool needs to change for this.
+  - Missions and sessions are named by id or by a unique id prefix, as git short SHAs are. An ambiguous prefix exits 2 and lists the matches. `session_list` exposes direct chats only, so a mission session can be resumed or restarted only by its full 26-character id; the backend validates that pass-through id.
+  - Archived missions are absent from `mission_list`. Any full 26-character mission id therefore passes through after `mission_get` validates that the mission exists; the requested tool then decides whether its operation is valid for an archived mission. A missing name, prefix or full id remains an unresolvable reference and exits 2.
+  - The CLI resolves references with the matching list tool before calling the target tool. Full mission ids and full mission-session ids are the documented pass-through cases because their list tools omit archived missions and mission sessions respectively; the backend validates the target or refuses the operation.
 - **Context.** Inside a mission PTY, mission-scoped commands use the caller's mission and handle. Outside, they take `--mission <id>`: agent shells do not keep environment variables between calls, so context is a flag, not an exported variable.
 - **Identity.** A caller is the person at the app or a handle in the mission's roster; where a call comes from does not decide who it is. Inside a mission the CLI fills the handle from `RUNNER_HANDLE`. Outside, `--as <handle>` names a seat the caller holds, and a call with no handle is the person at a terminal, which is `human` on the bus. An agent that drives a mission from outside takes a seat first (562 adds the seats; without one it is indistinguishable from the person). `human` is never a location: `ask_human`, `human_question` and `human_response` keep meaning the person at the app.
 - **Output.**
   - stdout carries data and stderr carries messages.
-  - By default, commands print tables and key-value blocks. `--json` prints the tool's JSON result verbatim, which is what agents should use.
+  - By default, each noun prints a curated table or key-value block: list views include only identifying and operational columns, role prompts are blocks, mission snapshots split sessions, pending asks and warnings into readable sections, and feed events are one line each in chronological order. Every table cell collapses whitespace, truncates long values with an ellipsis at a fixed width, and prints null as `-`. `--json` prints the tool's JSON result verbatim, which is what agents should use.
   - `-q` prints only the id of the object a command created or changed: `id=$(runner mission start --crew peer --goal "…" -q)`.
 - **Exit codes.** `0` success. `1` the tool refused, with its message on stderr. `2` a usage error or an unresolvable reference. `3` Runner is not running: "Runner is not running. Open Runner and retry.", the proxy's existing wording. `4` is reserved for #562's `wait` timing out.
-- **Defaults follow the shell.** `mission start`, `chat start`, and `project create` use the current directory unless `--project` or `--cwd` (`--path` for projects) is given. MCP defaults to the project's directory; a shell tool acts where it stands.
+- **Defaults follow the shell.** `mission start`, `chat start`, and `project create` use the current directory exactly unless `--project` or `--cwd` (`--path` for projects) is given. Relative paths are joined to that directory and normalized lexically (`.` is removed and `..` is resolved) without requiring the path to exist. MCP defaults to the project's directory; a shell tool acts where it stands.
 - **Text inputs.** Long text (a goal, a role prompt, crew conventions) comes from a flag or a file. `-` reads stdin, so `cat brief.md | runner mission start --crew peer --goal-file -` works without shell quoting.
 - **Clearing a field.** On `update` and `set`, an empty value clears an optional field (`--model ''`), matching the backend's rule that blank means NULL or inherit.
 
@@ -71,24 +72,24 @@ runner role delete <handle>
 # crews; slots are addressed by their handle inside the crew
 runner crew list | show <crew>                show prints the crew and its slot table
 runner crew create <name> [--purpose <text>] [--goal <text>] [--conventions-file <path | ->]
-runner crew update <crew> [the same flags]
+runner crew update <crew> [--name <name>] [--purpose <text>] [--goal <text>] [--conventions-file <path | ->]
 runner crew delete <crew>
 runner crew add <crew> <role> [--as <handle>] [--runtime <runtime>] [--model <model>] [--effort <effort>]
-runner crew set <crew> <handle> [--as <new handle>] [--runtime] [--model] [--effort]
+runner crew set <crew> <handle> [--as <new handle>] [--runtime <runtime>] [--model <model>] [--effort <effort>]
 runner crew remove <crew> <handle>
 runner crew lead <crew> <handle>
 runner crew order <crew> <handle> <handle>…
 
 # missions
 runner mission list [--crew <crew>]
-runner mission show <mission>
+runner mission show [<mission>]
 runner mission start --crew <crew> [--goal <text> | --goal-file <path | ->] [--title <title>]
                      [--project <project> | --cwd <dir>]
-runner mission stop | resume | archive | unarchive <mission>
+runner mission stop | resume | archive | unarchive [<mission>]
 runner mission rename <mission> <title>
-runner mission pin | unpin <mission>
-runner mission move <mission> (--project <project> | --unfile)
-runner mission feed <mission> [--follow] [--since <offset>] [--limit <n>] [--oldest-first]
+runner mission pin | unpin [<mission>]
+runner mission move [<mission>] (--project <project> | --unfile)
+runner mission feed [<mission>] [--follow] [--since <offset>] [--limit <n>] [--oldest-first]
                     [--types <kind,…>] [--from <handle>]
 runner mission answer <mission> <question id> <choice>
 
@@ -115,7 +116,7 @@ What each command calls:
 |---|---|---|
 | `status` | none | Connects to the socket, reads the app version from the handshake, and checks the install state on disk |
 | `project …` | `project_list`, `project_get`, `project_create`, `project_rename`, `project_delete` | `--path` fills `cwd` |
-| `role …` | `role_list`, `role_get_by_handle`, `role_create`, `role_update`, `role_delete` | `update` and `delete` resolve the handle to an id first |
+| `role …` | `role_list`, `role_get_by_handle`, `role_create`, `role_update`, `role_delete` | `show` uses the handle-native getter; `update` and `delete` resolve the handle to an id first; create maps the runtime to its registry executable because `role_create` requires `command`; the id-native `role_get` remains available through `runner call` |
 | `crew list \| show \| create \| update \| delete` | `crew_*`, and `slot_list` for `show` | `--conventions-file` fills `system_prompt_addendum` |
 | `crew add` | `slot_create`, then `slot_update` when `--effort` is given | `slot_create` takes no effort |
 | `crew set \| remove \| lead \| order` | `slot_update`, `slot_delete`, `slot_set_lead`, `slot_reorder` | Handles are resolved to slot ids through `slot_list` |
@@ -128,7 +129,7 @@ What each command calls:
 | `mission answer` | `mission_signal` | Posts `human_response` with `{question_id, choice}` |
 | `chat start` | `session_start_direct` | Runtime-only chats need the tool change below |
 | `session list` | `session_list` | New tool, below |
-| `session resume \| restart` | `session_resume`, `session_restart` | |
+| `session resume \| restart` | `session_resume`, `session_restart` | Direct chats resolve through `session_list`; a full mission-session id passes through because that list intentionally omits mission sessions |
 | `msg post`, outside a mission | `mission_post` with `from` (decision 7) | Inside a mission: unchanged, appends to the log as the caller's handle |
 | `signal`, outside a mission | `mission_signal` with `from` | Inside a mission: unchanged |
 | `msg read` | none | Inside a mission only, as today; an outside caller reads with `mission feed` |
@@ -155,7 +156,7 @@ What each command calls:
   - the `from` handle on `mission_post` and `mission_signal` (decision 7), validated against the roster, renamed from the `_human_` tools with no aliases;
   - a `mission_resume` tool over the existing mission-wide Resume;
   - a `session_list` tool for direct chats (id, role or runtime, title, status, project, cwd);
-  - `session_start_direct` accepting `runtime` without `role_id`, for the runtime-only chats the app already starts;
+  - `session_start_direct` accepting `runtime` without `role_id`, for the runtime-only chats the app already starts, while preserving a role's explicit runtime override;
   - nothing for `crew add --effort`, which the CLI covers by calling `slot_update` after `slot_create`.
 - **`runner mission feed --follow`.** Prints the requested window, then polls `mission_feed` from the last `next_offset` (oldest first, every 500 ms) and prints each new event as it lands. It exits on Ctrl-C, when the mission is archived, or with code 3 if the app goes away. It reads nothing from disk, so it keeps working when #562 moves crewless logs. With `--json` it prints one event per line (NDJSON), which a Claude Code Monitor or a shell pipe can consume directly.
 - **`runner help agents`.** A compact guide printed by the binary itself, so it always matches the installed version (Orca's pattern). It covers the command tree, `--json`, `-q`, the exit codes, and the common flows: find a crew, start a mission, follow its feed, answer a question, post to the lead, archive. `runner help` and `runner <noun> --help` remain the full reference.

@@ -132,8 +132,7 @@ const CLAUDE_LAUNCH_GATE_GRACE: Duration = Duration::from_millis(0);
 #[derive(Clone)]
 pub(crate) struct ForwarderEmitCtx {
     /// `mission.crew_id` — needed for the `EventDraft.crew_id`
-    /// field so the appended row matches what the CLI's
-    /// `runner status` would have written.
+    /// field so the appended row matches the event-log schema.
     pub crew_id: String,
     /// Mission id, redundant with the forwarder's outer
     /// `mission_id` argument but copied here so this struct is

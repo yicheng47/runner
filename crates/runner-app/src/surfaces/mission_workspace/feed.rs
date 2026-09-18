@@ -854,10 +854,11 @@ impl MissionWorkspace {
         let core = self.core(cx).clone();
         let post_question = question_id.clone();
         let task = cx.background_spawn(async move {
-            runner_backend::ops::mission::mission_post_human_signal_impl(
+            runner_backend::ops::mission::mission_signal_impl(
                 &core,
-                runner_backend::ops::mission::PostHumanSignalInput {
+                runner_backend::ops::mission::PostSignalInput {
                     mission_id,
+                    from: None,
                     signal_type: "human_response".into(),
                     payload: serde_json::json!({
                         "question_id": post_question,

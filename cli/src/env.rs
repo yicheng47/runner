@@ -1,7 +1,7 @@
 // Resolve the four `RUNNER_*` env vars that locate the caller in the
 // coordination bus. Mission sessions set all four (see
-// `SessionManager::spawn`); direct-chat sessions set none
-// (`spawn_direct`). Anything in between is a bug.
+// `SessionManager::spawn`); agent direct chats set only RUNNER_HANDLE,
+// while terminals and ordinary shells set none. Anything else is a bug.
 //
 // We don't read any other env. PATH manipulation, signal handling, etc.
 // are out of scope — the parent process owns those.
@@ -17,9 +17,7 @@ const VAR_LOG: &str = "RUNNER_EVENT_LOG";
 pub enum BusContext {
     /// All four vars present — proceed normally.
     Mission(MissionEnv),
-    /// None of the four set — direct-chat / off-bus session. The verb
-    /// caller should print a soft notice on stderr and exit 0 so the
-    /// agent process doesn't bail out.
+    /// None set, or only a direct-chat handle set — off the mission bus.
     OffBus,
     /// Some-but-not-all set — the parent process is buggy. Bail with a
     /// pointer at the missing names.
@@ -47,7 +45,7 @@ pub fn resolve_from<F: Fn(&str) -> Option<String>>(get: F) -> BusContext {
         get(VAR_HANDLE),
         get(VAR_LOG),
     ) {
-        (None, None, None, None) => BusContext::OffBus,
+        (None, None, None, None) | (None, None, Some(_), None) => BusContext::OffBus,
         (Some(crew_id), Some(mission_id), Some(handle), Some(event_log)) => {
             BusContext::Mission(MissionEnv {
                 crew_id,
@@ -67,32 +65,6 @@ pub fn resolve_from<F: Fn(&str) -> Option<String>>(get: F) -> BusContext {
             .filter_map(|(name, missing)| missing.then_some(name))
             .collect();
             BusContext::Partial { missing }
-        }
-    }
-}
-
-/// Top-level helper used by every verb except `help`. Encapsulates the
-/// "off-bus → notice + exit 0" / "partial → exit 2" boilerplate so the
-/// verb implementations stay focused on their actual work.
-///
-/// Returns `Some(MissionEnv)` to proceed, or `None` if the caller has
-/// already exited via the side-channels above.
-pub fn require_mission_or_handle_offbus(verb: &str) -> Option<MissionEnv> {
-    match resolve() {
-        BusContext::Mission(m) => Some(m),
-        BusContext::OffBus => {
-            // Soft no-op. arch §2.6 + the C8.5 risk: direct-chat sessions
-            // are off-bus by design; an agent that didn't read the system
-            // prompt and tried `runner status idle` here shouldn't crash.
-            eprintln!("runner {verb}: no mission context (RUNNER_* env vars unset); ignoring.");
-            std::process::exit(0);
-        }
-        BusContext::Partial { missing } => {
-            eprintln!(
-                "runner {verb}: missing required env var(s): {}",
-                missing.join(", ")
-            );
-            std::process::exit(2);
         }
     }
 }
@@ -126,6 +98,12 @@ mod tests {
     #[test]
     fn none_set_is_off_bus() {
         let map = HashMap::new();
+        assert!(matches!(resolve_from(lookup(map)), BusContext::OffBus));
+    }
+
+    #[test]
+    fn direct_chat_handle_only_is_off_bus() {
+        let map = HashMap::from([(VAR_HANDLE, "coder")]);
         assert!(matches!(resolve_from(lookup(map)), BusContext::OffBus));
     }
 

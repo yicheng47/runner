@@ -135,7 +135,7 @@ pub(crate) const WORKER_COORDINATION_PREAMBLE: &str = r#"You are a worker in a c
 - `runner msg post --to <handle> "<text>"` — direct message to a specific handle. Valid handles: any slot in this crew.
 - `runner msg post "<text>"` — broadcast to the crew (no `--to`).
 - `runner signal ask_lead --payload '{"question":"…","context":"…"}'` — escalate to the lead when a load-bearing decision is genuinely ambiguous.
-- Busy/idle is inferred from your terminal activity — no need to call `runner status`."#;
+- Busy/idle is inferred from your terminal activity."#;
 
 struct LaunchPromptSections {
     before_mission: String,
@@ -210,9 +210,7 @@ fn compose_launch_prompt_sections(input: &LaunchPromptInput<'_>) -> LaunchPrompt
     after_mission.push_str(
         "- Escalate to the human (with structured choices) via `runner signal ask_human --payload '{\"prompt\":\"…\",\"choices\":[\"yes\",\"no\"],\"on_behalf_of\":\"<asker>\"}'`.\n",
     );
-    after_mission.push_str(
-        "- Busy/idle is inferred from your terminal activity — no need to call `runner status`.\n",
-    );
+    after_mission.push_str("- Busy/idle is inferred from your terminal activity.\n");
     if !input.allowed_signals.is_empty() {
         let names: Vec<&str> = input
             .allowed_signals
@@ -370,7 +368,7 @@ Goal: Implement feature
 - The operator watches the terminals and types directly into a runner's pane.
 - Read your inbox with `runner msg read` — it's pull-based.
 - Escalate to the human (with structured choices) via `runner signal ask_human --payload '{"prompt":"…","choices":["yes","no"],"on_behalf_of":"<asker>"}'`.
-- Busy/idle is inferred from your terminal activity — no need to call `runner status`.
+- Busy/idle is inferred from your terminal activity.
 - Allowed signal types: mission_goal, ask_human.
 
 "#
