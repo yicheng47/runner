@@ -4,6 +4,8 @@ Pencil (`.pen`) source files for the Runners UI. Open these in the Pencil app; t
 
 Conventions:
 
+Feature specs, since 2026-09-18, live one file per spec in `specs/<issue>-<slug>.pen`, mirroring `docs/features/`. A spec file starts from a copy of `runner.pen`'s tokens and the components it needs, so it is a snapshot of that day; Pencil cannot reference components across files. `runner.pen` stays the product canvas, screens plus `cmp/` components, and changes only when a shipped surface changes or a spec introduces a component that ships (`cmp/MarkPi` from #539 is on both). Spec frames designed before then stay on `runner.pen` in the spec rows, where the feature docs point at them by frame id. The first is `specs/539-pi-runtime.pen`.
+
 The macOS titlebar cluster (sidebar toggle, Previous page, Next page; #494) is recorded in `runner.pen`: the two arrows live inside `cmp/SidebarC`'s header row `sbDrag` (`sbBackIcon`, `sbNextIcon`) so every screen that instances the sidebar shows them, and the chrome spec is frame `YRWg3` ("Header navigation — #494 chrome spec") beside the #246 sidebar-toggle spec `w83yF`: control states, expanded/collapsed/fullscreen placement, and behavior notes.
 
 The Windows shared title bar is recorded in `windows-header.pen`, frame `winShell` and header `winTitlebar`: a 32 px row above the sidebar and workspace, sidebar/history controls on the left, and 46 px caption buttons on the right. It is separate from the macOS chrome.

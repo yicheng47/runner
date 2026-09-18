@@ -122832,6 +122832,35 @@
           ]
         }
       ]
+    },
+    {
+      "type": "frame",
+      "id": "nag6Z",
+      "x": 1580,
+      "y": 460,
+      "name": "cmp/MarkPi",
+      "reusable": true,
+      "width": 12,
+      "height": 12,
+      "justifyContent": "center",
+      "alignItems": "center",
+      "children": [
+        {
+          "type": "path",
+          "id": "It305",
+          "name": "path",
+          "geometry": "M0 0h18v12h-6v6h-6v6h-6z m6 6v6h6v-6z m12 6h6v12h-6z",
+          "viewBox": [
+            0,
+            0,
+            24,
+            24
+          ],
+          "fill": "$text-1",
+          "width": 12,
+          "height": 12
+        }
+      ]
     }
   ],
   "themes": {
