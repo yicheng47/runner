@@ -9020,7 +9020,7 @@ fn pi_direct_spawn_persists_key_uses_live_prompt_file_and_never_approves() {
 
     role.system_prompt = Some("PERSONA_V2".into());
     update_role_row(&pool.get().unwrap(), &role);
-    let slug = format!("--{}--", cwd.trim_start_matches('/').replace('/', "-"));
+    let slug = router::runtime::pi_project_slug(&cwd);
     let pi_sessions = app_data.path().join(".pi/agent/sessions").join(slug);
     std::fs::create_dir_all(&pi_sessions).unwrap();
     std::fs::write(pi_sessions.join(format!("resume_{key}.jsonl")), "").unwrap();

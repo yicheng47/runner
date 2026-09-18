@@ -1301,7 +1301,7 @@ fn copilot_conversation_exists_at(home: &Path, key: &str) -> bool {
         .is_file()
 }
 
-fn pi_project_slug(cwd: &str) -> String {
+pub(crate) fn pi_project_slug(cwd: &str) -> String {
     let cwd = cwd
         .strip_prefix('/')
         .or_else(|| cwd.strip_prefix('\\'))
