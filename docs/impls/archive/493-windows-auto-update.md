@@ -10,7 +10,7 @@ Three phases, in order, each reviewed before the next starts. Phase 1 is CI and 
 
 ## Working tree at start
 
-The tree already holds three uncommitted files that belong to this feature: `docs/features/493-windows-auto-update.md`, `design/README.md`, and `design/windows-updates.pen`, plus this brief. They are not unrelated changes. First action on the feature branch: commit them as `docs(features): specify #493 Windows auto-update` before touching anything else.
+The tree already holds three uncommitted files that belong to this feature: `docs/features/archive/493-windows-auto-update.md`, `design/README.md`, and `design/windows-updates.pen`, plus this brief. They are not unrelated changes. First action on the feature branch: commit them as `docs(features): specify #493 Windows auto-update` before touching anything else.
 
 ## Phase 1 — Signed assets and installer handoff
 

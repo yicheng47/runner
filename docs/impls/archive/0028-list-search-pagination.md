@@ -81,5 +81,5 @@ Disabled/hover styles against all four themes (tokens only — no hardcoded colo
 ## References
 
 - Issue #220 — feat: add pagination and search to runners and crews.
-- Spec `docs/features/29-runner-crew-list-pagination-search.md`.
+- Spec `docs/features/archive/29-runner-crew-list-pagination-search.md`.
 - Design `design/runner-crew-list-search.pen` — `cmp/SearchField`, `cmp/Pager`, the four page states, and the pager windowing strip.

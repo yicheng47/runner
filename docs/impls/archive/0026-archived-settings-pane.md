@@ -2,7 +2,7 @@
 
 ## Status
 
-Planned. Feature #31, direction revised 2026-07-11: a pane inside the full-page Settings (impl 0025), not a standalone route. Spec: `docs/features/01-archived-tab.md` (includes the feasibility audit). Design: `design/runner-setting.pen`, screen "Settings — Archived" (`FGYcY`) — committed on this branch.
+Planned. Feature #31, direction revised 2026-07-11: a pane inside the full-page Settings (impl 0025), not a standalone route. Spec: `docs/features/archive/01-archived-tab.md` (includes the feasibility audit). Design: `design/runner-setting.pen`, screen "Settings — Archived" (`FGYcY`) — committed on this branch.
 
 ## Problem
 
@@ -62,7 +62,7 @@ Settings sidebar gains a fourth group **Archived** → item **"Archived chats & 
 - `src/components/Sidebar.tsx:472,555,563` — `mission/changed` / `session/archived` / `session/updated` listeners (refresh channels).
 - `src/components/settings/` + `src/pages/SettingsPage.tsx` — pane registry and shells from impl 0025; `AppearancePane.tsx` — segmented control pattern.
 - `design/runner-setting.pen` — screen `FGYcY`; sidebar Archived groups on all screens.
-- `docs/features/01-archived-tab.md` — spec + feasibility audit.
+- `docs/features/archive/01-archived-tab.md` — spec + feasibility audit.
 
 ## Open questions
 

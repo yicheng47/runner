@@ -306,8 +306,8 @@ succeeds.
 - `src-tauri/src/session/tmux.rs` — delete
 - `src-tauri/src/session/mod.rs` — drop the tmux mods
 - `src-tauri/Cargo.toml` — drop tmux-only deps if any
-- `docs/impls/0004-tmux-session-runtime.md` — mark superseded by 0011
-- `docs/impls/0009-terminal-alt-screen-reattach.md` — mark superseded
+- `docs/impls/archive/0004-tmux-session-runtime.md` — mark superseded by 0011
+- `docs/impls/archive/0009-terminal-alt-screen-reattach.md` — mark superseded
 - `docs/impls/0010-terminal-replay-cols-alignment.md` — already
   shelved; delete in this step's landing commit if still present
 

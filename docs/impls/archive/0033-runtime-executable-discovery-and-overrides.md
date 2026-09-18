@@ -2,7 +2,7 @@
 
 ## Status
 
-Implemented. Tracking issue [#279](https://github.com/yicheng47/runner/issues/279), scoped to built-in runtimes only — the user-defined custom-runtime extension is explicitly cut (see spec 37 "Out of scope"). Spec: `docs/features/37-agent-runtime-executable-settings.md`. Design: `design/runner-setting.pen`, frame `Settings — Agents` (node `Zes2l`) and `Spec — Agent runtime row states` (node `cXdkp`).
+Implemented. Tracking issue [#279](https://github.com/yicheng47/runner/issues/279), scoped to built-in runtimes only — the user-defined custom-runtime extension is explicitly cut (see spec 37 "Out of scope"). Spec: `docs/features/archive/37-agent-runtime-executable-settings.md`. Design: `design/runner-setting.pen`, frame `Settings — Agents` (node `Zes2l`) and `Spec — Agent runtime row states` (node `cXdkp`).
 
 ## Problem
 

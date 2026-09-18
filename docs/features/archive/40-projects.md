@@ -4,7 +4,7 @@
 
 ## Motivation
 
-Runner has no project entity — cwd is metadata, not identity (stated outright in `docs/features/01-archived-tab.md:15`). Every chat and mission carries a working directory, but nothing binds the work you do in one repo into a durable home. As Runner is dogfooded across many repos at once (runner, quill, memory, alpha, …), the flat MISSION and CHAT lists scatter that work with no repo-scoped grouping — you re-pick the cwd every time and hunt for "the chats I had about quill" across an undifferentiated list.
+Runner has no project entity — cwd is metadata, not identity (stated outright in `docs/features/archive/01-archived-tab.md:15`). Every chat and mission carries a working directory, but nothing binds the work you do in one repo into a durable home. As Runner is dogfooded across many repos at once (runner, quill, memory, alpha, …), the flat MISSION and CHAT lists scatter that work with no repo-scoped grouping — you re-pick the cwd every time and hunt for "the chats I had about quill" across an undifferentiated list.
 
 A **Project** fixes this: a named container bound to a working directory. Open a project and new chats/missions default to its cwd and collect under it in the sidebar. This mirrors the Codex/Cursor projects model — a PROJECT section whose rows are directories, with tasks nested underneath, and a `+` for binding another directory as a project.
 

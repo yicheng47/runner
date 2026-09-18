@@ -40,7 +40,7 @@ Do not run `make run`. The spec's Verification list is the smoke script.
 
 ### Phase 4 — docs
 
-`docs/arch/arch.md`: the Settings section describes the catalog in one paragraph, and references to Runner registration on Settings → Agents point at Settings → MCP; `docs/features/73-runner-skills.md`'s "later spec" pointer resolves to #555.
+`docs/arch/arch.md`: the Settings section describes the catalog in one paragraph, and references to Runner registration on Settings → Agents point at Settings → MCP; `docs/features/archive/73-runner-skills.md`'s "later spec" pointer resolves to #555.
 
 ## Rules of the road
 

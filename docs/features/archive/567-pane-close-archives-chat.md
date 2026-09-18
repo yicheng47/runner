@@ -68,7 +68,7 @@ The `×` tooltip stays **Close pane** on every pane; the dialog carries the mean
 1. **Design.** The frame above. Stop for sign-off.
 2. **Close request.** One `request_close_chat_pane(pane_id, session_id)` on the root: if `archive_targets_for_chats` grows the set, hand off to `request_archive_all`; otherwise set a new `TerminalCloseTarget::ArchiveChatPane { pane_id, session_id }` and let `render_terminal_close_confirm` pick the copy by the entry's status. On confirm, archive through the existing `archive_all_sessions` path, then drop the pane once the archive has completed and tabs have reloaded: at that point the leaf is an empty stub, so the drop is the existing layout-only `close_pane` and no tree read can re-adopt the session in between.
 3. **`⌘W` and the fork.** `pane_close_behavior` gains the chat case so the button and the `close-pane` handler in `main.rs` share one fork instead of two copies.
-4. **Docs.** Supersede the "× is a layout action" paragraph in `docs/features/archive/64-native-terminal.md` with a pointer here, and rewrite the chat `×` line in `docs/tests/64-terminal-as-pane-option-smoke.md`.
+4. **Docs.** Supersede the "× is a layout action" paragraph in `docs/features/archive/64-native-terminal.md` with a pointer here, and rewrite the chat `×` line in `docs/tests/archive/64-terminal-as-pane-option-smoke.md`.
 
 ## Verification
 

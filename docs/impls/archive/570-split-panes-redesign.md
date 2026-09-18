@@ -20,7 +20,7 @@ In a split tab the focused pane has no border, and every unfocused pane's body b
 1. **Border.** Delete the `.when(grouped, …border…)` at `:2345`. No placeholder border on any pane.
 2. **Fade.** `pub(crate) const UNFOCUSED_PANE_OPACITY: f32 = 0.7;` and a pure `fn pane_body_opacity(grouped: bool, focused: bool) -> f32` returning the constant for `grouped && !focused`, else `1.`. Wrap `body` in a `div().flex_1().min_h(px(0.)).min_w(px(0.)).flex().flex_col().opacity(pane_body_opacity(grouped, focused))` before `.child(…)` at `:2351`, so the identity line (`header`) stays outside it. The wrapper must not add padding, background, or a hitbox of its own. Both branches of `body` sit inside it: the ended card and the empty stub dim with the grid, and their buttons keep working on the first click.
 3. **Glyph.** `pane_identity_icon`: non-shell runtimes → `message-square.svg`. Header: extract the three-way choice at `:450`–`:456` into a pure `fn workspace_header_icon(grouped: bool, focused_shell: bool) -> &'static str` and return `message-square.svg` for the single-chat case; `square-split-horizontal.svg` and `square-terminal.svg` unchanged.
-4. **Docs.** `docs/tests/64-terminal-as-pane-option-smoke.md` section 4 (`:46`) gains one line: in a split, the focused pane has no border and unfocused panes are dimmed, identity lines excluded. The spec stays in `docs/features/`; PR 2 archives it.
+4. **Docs.** `docs/tests/archive/64-terminal-as-pane-option-smoke.md` section 4 (`:46`) gains one line: in a split, the focused pane has no border and unfocused panes are dimmed, identity lines excluded. The spec stays in `docs/features/`; PR 2 archives it.
 
 ## Rules of the road
 

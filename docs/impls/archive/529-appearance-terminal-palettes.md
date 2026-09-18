@@ -32,7 +32,7 @@ Match app goes away. The terminal palette is picked per mode, like the app palet
 2. **Selects.** Two new `StyledSelect`s (`light_terminal_theme`, `dark_terminal_theme`) with fixed option lists (no per-variant refresh; delete the refresh in `render_terminal_settings`), `SettingsSelection::{LightTerminalTheme, DarkTerminalTheme}` writing the fields; the old `TerminalTheme` selection and helpers go. Keys: `runner-light`, `runner-dark`, `rose-pine-dawn`, `catppuccin-mocha`. Give the five palette selects one width (a `SETTINGS_SELECT_WIDTH` const in `settings_page.rs`, 176 px in rems).
 3. **Appearance pane** per the frame: `render_appearance_settings` becomes Theme card, preview, Light label + card, Dark label + card. The preview is a private `render_theme_preview(&self, cx)` in `settings_page.rs` (or a small `surfaces/settings/theme_preview.rs` if it passes 150 lines) taking `(ThemeColors, TerminalPalette, caption, active: bool)` per pane; colours only from its arguments. Debug selectors `SETTINGS_THEME_PREVIEW_LIGHT` / `_DARK` on the panes.
 4. **Terminal pane**: drop the Theme row and the `terminal_theme` select.
-5. **Docs**: spec `docs/features/529-runner-light-theme.md` "Terminal" section rewritten to the per-mode model (Match app gone, the two keys, the alias); `README.md:150` themes line to match.
+5. **Docs**: spec `docs/features/archive/529-runner-light-theme.md` "Terminal" section rewritten to the per-mode model (Match app gone, the two keys, the alias); `README.md:150` themes line to match.
 
 ## Rules of the road
 

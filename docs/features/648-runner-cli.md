@@ -3,7 +3,7 @@
 > Tracking issue: [#648](https://github.com/yicheng47/runner/issues/648)
 > Priority: P1, milestone 0.11. With pi ([539](./539-pi-runtime.md)) it makes 0.11.0; the rest of the milestone ships in 0.11.0 if ready, otherwise in 0.11.x. Platforms: macOS and Windows.
 > Design: `design/specs/648-runner-cli.pen`, one frame for the Settings → General rows (the `runner` command and the agent skill), drawn before Phase 4.
-> Related: [562](./562-mission-spawn.md) (missions as containers, milestone 0.12) builds its coordinator commands (`spawn`, `ps`, `wait`, `stop`, `peek`, `done`) and the seats an outside agent takes on this CLI. The two stay separate issues: this one is a surface over tools that exist, 562 changes the mission model.
+> Related: [562](./562-mission-spawn.md) (missions as containers, milestone 0.12) builds its coordinator commands (`spawn`, `ps`, `wait`, `stop`, `done`) and the seats an outside agent takes on this CLI. The two stay separate issues: this one is a surface over tools that exist, 562 changes the mission model.
 > Command set designed with Jason on 2026-09-18: the principles, the command tree and seven decisions below. The identity model (decision 7) and the release plan were decided the same day, after 539's mission 2 merged.
 
 ## Motivation
@@ -106,7 +106,7 @@ runner ask <question> [--context <text>]
 runner ask --human <prompt> --choices <a,b,…>
 
 # reserved for #562 (coordinator and worker commands)
-runner spawn | ps | wait | stop <handle> | peek <handle> | done
+runner spawn | ps | wait | stop <handle> | done
 ```
 
 What each command calls:
@@ -177,7 +177,7 @@ What each command calls:
 
 ### Out of scope
 
-- #562's commands: `spawn`, `ps`, `wait`, `stop <handle>`, `peek`, `done`, seats without a session (how an outside agent gets a handle), and `mission start` without a crew. They land with #562 on this CLI; the names are reserved here, and the caller handle they need is decision 7.
+- #562's commands: `spawn`, `ps`, `wait`, `stop <handle>`, `done`, seats without a session (how an outside agent gets a handle), and `mission start` without a crew. They land with #562 on this CLI; the names are reserved here, and the caller handle they need is decision 7.
 - New MCP tools beyond the three backend additions, freezing the MCP surface in code, retiring `runner-mcp`, or removing existing registrations.
 - A skill for TRAE, which has no skills directory.
 - Launching Runner from the CLI. The not-running error tells the user to open it.

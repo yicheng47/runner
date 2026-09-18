@@ -66,7 +66,7 @@ The #475 suppression is unchanged. Sessions still get `check_for_update_on_start
 - **TRAE.** No update subcommand is known; the row gains the version probe if `traecli --version` prints one and nothing else.
 - **An MCP tool** for `runtime_update_start`. Updating is a human action in Settings; agents do not update their own runtime.
 - **Restoring the Claude Code startup nudge** by dropping `DISABLE_INSTALLATION_CHECKS`. The sessions stay quiet.
-- **Remote hosts** ([510](./510-remote-ssh-session.md)). The version probe and the update pane run on this machine against the local executable; a remote CLI is updated on the remote.
+- **Remote hosts** ([510](./archive/510-remote-ssh-session.md)). The version probe and the update pane run on this machine against the local executable; a remote CLI is updated on the remote.
 
 ## Implementation Phases
 
