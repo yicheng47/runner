@@ -293,6 +293,21 @@ pub fn copilot_status_args(runtime: Option<Runtime>, app_data_dir: &Path) -> Vec
     ]
 }
 
+pub fn pi_status_args(runtime: Option<Runtime>, app_data_dir: &Path) -> Vec<String> {
+    if runtime != Some(Runtime::Pi)
+        || !crate::session::hook_feed::hooks_supported(runtime, cfg!(windows))
+        || !crate::session::pi_status::extension_available(app_data_dir)
+    {
+        return Vec::new();
+    }
+    vec![
+        "-e".into(),
+        crate::session::pi_status::extension_path(app_data_dir)
+            .to_string_lossy()
+            .into_owned(),
+    ]
+}
+
 pub fn claude_settings_args(
     runtime: Option<Runtime>,
     role_args: &[String],
@@ -961,6 +976,7 @@ pub fn trailing_runtime_args(
         app_data_dir,
         runner_session_id,
     ));
+    out.extend(pi_status_args(runtime, app_data_dir));
     let prompt_for_argv = if plan_resuming && runtime != Some(Runtime::Pi) {
         None
     } else {
@@ -2240,6 +2256,23 @@ mod tests {
     }
 
     #[test]
+    fn pi_status_extension_args_require_the_installed_extension() {
+        let root = tempfile::tempdir().unwrap();
+        assert!(pi_status_args(Some(Runtime::Pi), root.path()).is_empty());
+        crate::session::pi_status::install_extension(root.path()).unwrap();
+        assert_eq!(
+            pi_status_args(Some(Runtime::Pi), root.path()),
+            [
+                "-e".to_owned(),
+                crate::session::pi_status::extension_path(root.path())
+                    .to_string_lossy()
+                    .into_owned(),
+            ]
+        );
+        assert!(pi_status_args(Some(Runtime::Copilot), root.path()).is_empty());
+    }
+
+    #[test]
     fn copilot_assigns_and_resumes_the_same_id_without_a_capture_thread() {
         let fresh = resume_plan(Some(Runtime::Copilot), None);
         let key = fresh.assigned_key.as_deref().unwrap();
@@ -2316,6 +2349,57 @@ mod tests {
         assert_eq!(
             first_turn_argv(Some(Runtime::Pi), Some("-goal")),
             ["--", "-goal"]
+        );
+    }
+
+    #[test]
+    fn pi_status_extension_precedes_the_system_prompt_and_goal_on_spawn_and_resume() {
+        let root = tempfile::tempdir().unwrap();
+        crate::session::pi_status::install_extension(root.path()).unwrap();
+        let extension = crate::session::pi_status::extension_path(root.path())
+            .to_string_lossy()
+            .into_owned();
+        let fresh = trailing_runtime_args(
+            Some(Runtime::Pi),
+            &[],
+            root.path(),
+            "runner-session",
+            false,
+            None,
+            None,
+            Some("/tmp/prompt.md"),
+            Some("== Mission ==\nGoal"),
+        );
+        assert_eq!(
+            fresh,
+            [
+                "-e",
+                extension.as_str(),
+                "--append-system-prompt",
+                "/tmp/prompt.md",
+                "--",
+                "== Mission ==\nGoal",
+            ]
+        );
+        let resumed = trailing_runtime_args(
+            Some(Runtime::Pi),
+            &[],
+            root.path(),
+            "runner-session",
+            true,
+            None,
+            None,
+            Some("/tmp/prompt.md"),
+            Some("not replayed"),
+        );
+        assert_eq!(
+            resumed,
+            [
+                "-e",
+                extension.as_str(),
+                "--append-system-prompt",
+                "/tmp/prompt.md",
+            ]
         );
     }
 

@@ -30,6 +30,7 @@ use super::claude_status::{
 use super::codex_status::CodexStatusWatcher;
 use super::copilot_status::CopilotStatusWatcher;
 use super::launch;
+use super::pi_status::PiStatusWatcher;
 #[cfg(any(unix, test))]
 use super::process::process_exists;
 use super::process::{kill_process, ProcessTree};
@@ -98,6 +99,7 @@ enum HookStatusWatcher {
     Claude(ClaudeStatusWatcher),
     Codex(CodexStatusWatcher),
     Copilot(CopilotStatusWatcher),
+    Pi(PiStatusWatcher),
 }
 
 impl HookStatusWatcher {
@@ -106,6 +108,7 @@ impl HookStatusWatcher {
             Self::Claude(watcher) => Some(watcher.interrupt_signal()),
             Self::Codex(_) => None,
             Self::Copilot(watcher) => Some(watcher.interrupt_signal()),
+            Self::Pi(_) => None,
         }
     }
 
@@ -117,6 +120,7 @@ impl HookStatusWatcher {
             Self::Claude(watcher) => watcher.drain_observations(transition),
             Self::Codex(watcher) => watcher.drain_observations(transition),
             Self::Copilot(watcher) => watcher.drain_observations(transition),
+            Self::Pi(watcher) => watcher.drain_observations(transition),
         }
     }
 }
@@ -267,6 +271,23 @@ impl SessionRuntime for PtyRuntime {
                 Err(error) => {
                     log::warn!(
                         "Codex status bridge unavailable for {}: {error}",
+                        spec.session_id
+                    );
+                    None
+                }
+            }
+        });
+        let hook_status = hook_status.or_else(|| {
+            if !super::hook_feed::hooks_supported(Some(crate::model::Runtime::Pi), cfg!(windows)) {
+                return None;
+            }
+            let path = spec.env.get(super::pi_status::PATH_ENV)?;
+            let generation = spec.env.get(super::pi_status::GENERATION_ENV)?;
+            match PiStatusWatcher::start(std::path::Path::new(path), generation.clone()) {
+                Ok(watcher) => Some(HookStatusWatcher::Pi(watcher)),
+                Err(error) => {
+                    log::warn!(
+                        "pi status bridge unavailable for {}: {error}",
                         spec.session_id
                     );
                     None
@@ -1675,6 +1696,100 @@ mod tests {
         assert_eq!(values[2].activity, Activity::Working);
         assert_eq!(values[3].activity, Activity::Ready);
         assert_eq!(values[3].outcome, Some(TurnOutcome::Interrupted));
+        assert_eq!(
+            std::fs::read_dir(path.parent().unwrap()).unwrap().count(),
+            0
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn pi_hook_runtime_uses_external_extension_without_an_input_interrupt_signal() {
+        use super::super::{
+            hook_feed, pi_status,
+            status::{Activity, TurnOutcome},
+        };
+        let root = tempfile::tempdir().unwrap();
+        pi_status::install_extension(root.path()).unwrap();
+        let path = hook_feed::status_path(root.path(), "pi-hooks");
+        let rt = PtyRuntime::new();
+        let mut spawn = spec("pi-hooks", "/bin/cat", &[]);
+        spawn.env.insert(
+            pi_status::PATH_ENV.into(),
+            path.to_string_lossy().into_owned(),
+        );
+        spawn
+            .env
+            .insert(pi_status::GENERATION_ENV.into(), "current".into());
+        let (session, stream) = rt.spawn(spawn).unwrap();
+        assert!(lookup(&rt, &session.session_id)
+            .unwrap()
+            .hook_interrupt
+            .is_none());
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        for report in [
+            serde_json::json!({
+                "generation":"current",
+                "hook_event_name":"session_start",
+                "reason":"startup",
+                "session_id":"11111111-1111-4111-8111-111111111111",
+            }),
+            serde_json::json!({
+                "generation":"current",
+                "hook_event_name":"agent_start",
+            }),
+            serde_json::json!({
+                "generation":"current",
+                "hook_event_name":"message_end",
+                "stopReason":"stop",
+            }),
+            serde_json::json!({
+                "generation":"current",
+                "hook_event_name":"agent_settled",
+            }),
+        ] {
+            writeln!(file, "{report}").unwrap();
+        }
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut values = Vec::new();
+        while values.len() < 2 && Instant::now() < deadline {
+            if let Ok(RuntimeOutput::AgentObservation(value)) =
+                stream.recv_timeout(Duration::from_millis(50))
+            {
+                values.push(value);
+            }
+        }
+        std::fs::remove_file(pi_status::extension_path(root.path())).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut failed = false;
+        while !failed && Instant::now() < deadline {
+            failed = matches!(
+                stream.recv_timeout(Duration::from_millis(50)),
+                Ok(RuntimeOutput::StatusBridgeFailed)
+            );
+        }
+        rt.stop(&session).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut closed = false;
+        while !closed && Instant::now() < deadline {
+            closed = matches!(
+                stream.recv_timeout(Duration::from_millis(50)),
+                Err(mpsc::RecvTimeoutError::Disconnected)
+            );
+        }
+        assert!(failed);
+        assert!(closed);
+        assert_eq!(
+            values
+                .iter()
+                .map(|value| value.activity)
+                .collect::<Vec<_>>(),
+            [Activity::Working, Activity::Ready]
+        );
+        assert_eq!(values[1].outcome, Some(TurnOutcome::Completed));
         assert_eq!(
             std::fs::read_dir(path.parent().unwrap()).unwrap().count(),
             0
