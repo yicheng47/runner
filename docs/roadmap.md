@@ -6,7 +6,7 @@ Snapshot as of 2026-09-18. The live source is the [GitHub milestones page](https
 
 - **Latest release:** 0.10.0 on 2026-09-17. Hook-based status on Windows, status detail in the label (`Working · Using tools`, `Idle · Interrupted`), the Runners menu renamed to Roles, a new icon. The nightly feed builds from `main`.
 - **Landed on `main` since 0.10.0:** the pi runtime, missions 1 and 2 of [#539](https://github.com/yicheng47/runner/issues/539) ([#646](https://github.com/yicheng47/runner/pull/646), [#649](https://github.com/yicheng47/runner/pull/649)). pi is a runtime with the system-prompt channel, caller-assigned session keys, native fork, hook-based status through a Runner-owned extension, and rekey on `/new`, `/resume` and `/fork`. Mission 3 remains: the terminal fixture, `pi_runtime_smoke.rs`, the JASONPC Windows checklist in [`tests/539-pi-hooks-smoke.md`](./tests/539-pi-hooks-smoke.md), then archiving the spec and plan.
-- **In flight:** the general `runner` CLI ([spec](./features/648-runner-cli.md), [plan](./impls/648-runner-cli.md)), mission 1 merged, mission 2 next. The missions-as-containers spec ([`features/562-mission-spawn.md`](./features/562-mission-spawn.md)) is written and waits for 0.12.
+- **In flight:** the general `runner` CLI ([spec](./features/648-runner-cli.md), [plan](./impls/648-runner-cli.md)), mission 1 merged, mission 2 briefed on branch `feat/648-agent-skill`. The missions-as-containers spec ([`features/562-mission-spawn.md`](./features/562-mission-spawn.md)) is written and waits for 0.12.
 
 ## Releases
 
@@ -25,7 +25,7 @@ A minor is a change to the model or a new surface; a patch is fixes and follow-t
 | Issue | Priority | State on 2026-09-18 |
 | --- | --- | --- |
 | [#539](https://github.com/yicheng47/runner/issues/539) pi runtime | P1 | Missions 1 and 2 merged; mission 3 (fixture, smoke test, JASONPC, archive) not started |
-| [#648](https://github.com/yicheng47/runner/issues/648) general `runner` CLI | P1 | Spec and command set designed; [plan](./impls/648-runner-cli.md) in five missions; mission 1 (the command tree, the caller handle, the backend tools) merged in [#650](https://github.com/yicheng47/runner/pull/650), mission 2 not started |
+| [#648](https://github.com/yicheng47/runner/issues/648) general `runner` CLI | P1 | Spec and command set designed; [plan](./impls/648-runner-cli.md) in five missions; mission 1 (the command tree, the caller handle, the backend tools) merged in [#650](https://github.com/yicheng47/runner/pull/650), mission 2 (feed follow, the agent guide, the embedded skill) briefed |
 | [#630](https://github.com/yicheng47/runner/issues/630) token ledger and per-subscription quota | P2 | Not started |
 | [#617](https://github.com/yicheng47/runner/issues/617) Settings → Agents split into Installed and Not installed | P2 | Not started |
 | [#592](https://github.com/yicheng47/runner/issues/592) OpenCode runtime | P2 | Not started |
