@@ -25,6 +25,7 @@ const CLAUDE_CAPTION: &str = "Toggles hide a skill from every new Claude Code se
 const CODEX_CAPTION: &str = "Toggles hide a skill from every new Codex session, inside Runner or not; the only write is a [[skills.config]] entry in ~/.codex/config.toml. Click a row to read a skill, hover it to edit. Codex's system skills (~/.codex/skills/.system) and plugin skills always load and are not listed.";
 const COPILOT_CAPTION: &str = "Toggles hide a skill from every new GitHub Copilot CLI session, inside Runner or not; the only write is the disabledSkills list in ~/.copilot/settings.json, the list `copilot plugins disable --skill` keeps. Click a row to read a skill, hover it to edit. Project skills (.github/skills, .agents/skills) and plugin skills always load and are not listed.";
 const PI_CAPTION: &str = "Every skill in ~/.pi/agent/skills and ~/.agents/skills loads in every new pi session; Runner does not toggle skills for pi. Click a row to read a skill, hover it to edit.";
+const TRAE_CAPTION: &str = "Every skill in ~/.trae/skills loads in every new TRAE CLI session; Runner does not toggle skills for TRAE. TRAE's per-skill switch is disable-model-invocation in the skill frontmatter. Click a row to read a skill, hover it to edit.";
 const READ_ONLY_CAPTION: &str = "Every skill in these roots loads in every new session; Runner does not toggle skills for this agent. Click a row to read a skill, hover it to edit.";
 
 fn catalog_caption(runtime: Runtime) -> &'static str {
@@ -33,6 +34,7 @@ fn catalog_caption(runtime: Runtime) -> &'static str {
         Runtime::Codex => CODEX_CAPTION,
         Runtime::Copilot => COPILOT_CAPTION,
         Runtime::Pi => PI_CAPTION,
+        Runtime::Trae => TRAE_CAPTION,
         _ => READ_ONLY_CAPTION,
     }
 }
@@ -1269,6 +1271,7 @@ mod tests {
         cx.new(|cx| {
             AppStore::new(
                 core,
+                None,
                 path.join("settings.json"),
                 crate::app_settings::AppSettings::default(),
                 Some("test settings".into()),

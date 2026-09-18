@@ -168,6 +168,7 @@ fn crew_editor_sections_stay_inside_the_centered_container() {
     let store = cx.new(|cx| {
         AppStore::new(
             core.clone(),
+            None,
             temp.path().join("settings.json"),
             AppSettings::default(),
             None,

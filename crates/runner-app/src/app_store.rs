@@ -22,6 +22,7 @@ use crate::app_settings::{
 };
 
 mod mcp_defaults;
+mod skill_defaults;
 
 #[derive(Clone)]
 pub(crate) struct GlobalAppStore(pub(crate) Entity<AppStore>);
@@ -247,6 +248,7 @@ pub(crate) struct AppStore {
     pub(crate) session_activity: BTreeMap<String, SessionActivityState>,
     pub(crate) settings: AppSettings,
     settings_path: PathBuf,
+    skill_home: Option<PathBuf>,
     pub(crate) revisions: StoreRevisions,
     pub(crate) error: Option<String>,
     collecting_startup_errors: bool,
@@ -255,6 +257,7 @@ pub(crate) struct AppStore {
 impl AppStore {
     pub(crate) fn new(
         core: AppCore,
+        skill_home: Option<PathBuf>,
         settings_path: PathBuf,
         settings: AppSettings,
         settings_error: Option<String>,
@@ -355,6 +358,7 @@ impl AppStore {
             session_activity: BTreeMap::new(),
             settings,
             settings_path,
+            skill_home,
             revisions: StoreRevisions::default(),
             error: None,
             collecting_startup_errors: true,
@@ -363,6 +367,7 @@ impl AppStore {
             store.record_error(error);
         } else {
             store.initialize_mcp_defaults();
+            store.initialize_skill_defaults();
         }
         store
             .core
@@ -382,6 +387,7 @@ impl AppStore {
     pub(crate) fn refresh(&mut self, refresh: StoreRefreshKind, cx: &mut Context<Self>) {
         if matches!(refresh, StoreRefreshKind::Runtimes | StoreRefreshKind::All) {
             self.initialize_mcp_defaults();
+            self.initialize_skill_defaults();
         }
         if matches!(refresh, StoreRefreshKind::Activity | StoreRefreshKind::All) {
             self.refresh_activity_inner();
@@ -526,6 +532,7 @@ impl AppStore {
             )
         {
             self.initialize_mcp_defaults();
+            self.initialize_skill_defaults();
         }
         if persist {
             self.save_settings();

@@ -8,6 +8,7 @@
 
 pub use runner_core::app_paths;
 
+pub mod agent_skill;
 pub mod cli_install;
 pub mod db;
 pub mod error;

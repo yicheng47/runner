@@ -2061,6 +2061,7 @@ mod tests {
         let store = cx.new(|cx| {
             AppStore::new(
                 core,
+                None,
                 temp.path().join("settings.json"),
                 AppSettings::default(),
                 None,

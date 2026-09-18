@@ -282,6 +282,7 @@ pub struct AppSettings {
     pub disabled_agents: BTreeSet<String>,
     pub enabled_agents: BTreeSet<String>,
     pub initialized_mcp_clients: BTreeSet<String>,
+    pub initialized_skill_roots: BTreeSet<String>,
     #[serde(default, deserialize_with = "keymap::deserialize_overrides")]
     pub keymap_overrides: KeymapOverrides,
 }
@@ -320,6 +321,7 @@ impl Default for AppSettings {
             disabled_agents: BTreeSet::new(),
             enabled_agents: BTreeSet::new(),
             initialized_mcp_clients: BTreeSet::new(),
+            initialized_skill_roots: BTreeSet::new(),
             keymap_overrides: KeymapOverrides::new(),
         }
     }
@@ -956,6 +958,18 @@ mod tests {
         assert_eq!(
             settings.initialized_mcp_clients,
             ["codex".to_owned()].into_iter().collect()
+        );
+    }
+
+    #[test]
+    fn settings_without_initialized_skill_roots_decode_to_empty() {
+        let settings: AppSettings = serde_json::from_str(r#"{"appZoom":1.25}"#).unwrap();
+        assert!(settings.initialized_skill_roots.is_empty());
+        let settings: AppSettings =
+            serde_json::from_str(r#"{"initializedSkillRoots":[".agents/skills"]}"#).unwrap();
+        assert_eq!(
+            settings.initialized_skill_roots,
+            [".agents/skills".to_owned()].into_iter().collect()
         );
     }
 

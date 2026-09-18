@@ -71,7 +71,7 @@ const RUNTIME_DEFINITIONS: &[RuntimeDefinition] = &[
         display_name: "TRAE CLI",
         command: "traecli",
         native_fork: false,
-        skills_dirs: &[],
+        skills_dirs: &[".trae/skills"],
     },
 ];
 

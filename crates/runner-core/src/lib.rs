@@ -10,6 +10,17 @@ pub use error::{Error, Result};
 pub use event_log::{EventLog, EVENTS_FILENAME};
 pub use model::{Event, EventDraft, EventKind, SignalType, Timestamp, Ulid};
 
+pub const RUNNER_SKILL_ROOTS: &[&str] = &[".claude/skills", ".agents/skills", ".trae/skills"];
+pub const RUNNER_SKILL_MARKER: &str = ".runner-managed";
+
+pub const fn runner_skill_name(debug: bool) -> &'static str {
+    if debug {
+        "runner-dev"
+    } else {
+        "runner"
+    }
+}
+
 /// Socket tools exposed by Runner. The backend registry and the `runner`
 /// command map both assert against this list so a new tool cannot ship
 /// without a CLI path.
@@ -52,6 +63,9 @@ pub const RUNNER_TOOL_NAMES: &[&str] = &[
     "mission_post",
     "mission_signal",
     "session_list",
+    "session_get",
+    "session_stop",
+    "session_archive",
     "session_start_direct",
     "session_resume",
     "session_restart",

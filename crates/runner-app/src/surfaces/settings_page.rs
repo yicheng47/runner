@@ -2309,6 +2309,7 @@ mod tests {
         let store = cx.new(|cx| {
             AppStore::new(
                 core,
+                None,
                 temp.path().join("settings.json"),
                 AppSettings {
                     app_theme: ThemeIntent::Dark,

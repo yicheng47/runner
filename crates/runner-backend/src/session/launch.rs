@@ -123,9 +123,8 @@ const FALLBACK_SYSTEM_DIRS: &[&str] = &["/opt/homebrew/bin", "/usr/local/bin"];
 ///
 /// 1. `shim_dir` (mission only — per-(mission, slot) `runner`
 ///    shim that injects mission-bus env vars).
-/// 2. `bundled_bin_dir` (mission only — the bundled `runner` CLI
-///    that the shim execs into; direct chats omit both to enforce
-///    the off-bus invariant from PR #51).
+/// 2. `bundled_bin_dir` (every Runner-spawned session — the bundled
+///    `runner` CLI from the app that launched it).
 /// 3. `shell_path` (best-effort login-shell PATH from
 ///    `shell_path::resolve_login_shell_env`, possibly None).
 /// 4. Fallback CLI dirs (`~/.local/bin` etc.). Always included so
@@ -376,12 +375,11 @@ mod tests {
     }
 
     #[test]
-    fn compose_path_direct_chat_omits_runner_cli_dirs() {
-        // Off-bus invariant from PR #51: direct chats must not
-        // see the bundled `runner` CLI on PATH.
+    fn compose_path_direct_chat_puts_the_spawning_apps_cli_first() {
+        let bundled = PathBuf::from("/data/runner/bin");
         let path = compose_path(
             None,
-            None,
+            Some(&bundled),
             Some(
                 &std::env::join_paths(["/opt/homebrew/bin", "/usr/local/bin"])
                     .unwrap()
@@ -394,12 +392,10 @@ mod tests {
                     .to_string_lossy(),
             ),
         );
-        // Doesn't contain the per-mission shim or "/runner/bin"
-        // bundled-bin path shapes — neither was passed in. Version
-        // manager fallback paths may legitimately contain "shims".
         assert!(!path.contains("/data/shims/build/bin"), "path = {path}");
-        assert!(!path.contains("runner/bin"), "path = {path}");
-        assert!(path.contains("/opt/homebrew/bin"), "path = {path}");
+        let parts: Vec<_> = std::env::split_paths(&path).collect();
+        assert_eq!(parts[0], bundled);
+        assert!(parts.contains(&PathBuf::from("/opt/homebrew/bin")));
     }
 
     #[test]

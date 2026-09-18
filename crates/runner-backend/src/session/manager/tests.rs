@@ -2318,7 +2318,12 @@ fn direct_chat_spawn_and_resume_strip_permission_flags_and_preserve_row_args() {
             capture(),
         )
         .unwrap();
-        let args = fake.last_spawn_spec().unwrap().args;
+        let resumed_spec = fake.last_spawn_spec().unwrap();
+        assert_eq!(
+            resumed_spec.bundled_bin_dir.as_deref(),
+            Some(app_data.path().join("bin").as_path())
+        );
+        let args = resumed_spec.args;
         assert_chat_has_no_permission_flags(&args);
         assert_eq!(&args[..kept.len()], kept);
         let persisted_args = crate::repo::role::get(&pool.get().unwrap(), &role.id)
@@ -3170,14 +3175,13 @@ fn spawn_direct_writes_session_with_null_mission_id_and_emits_activity() {
     assert_eq!(stored_project_id.as_deref(), Some(project.id.as_str()));
     assert_eq!(stored_cwd.as_deref(), Some(project.cwd.as_str()));
 
-    // Direct chat must NOT have a mission-side shim or
-    // bundled-bin in its SpawnSpec — the off-bus invariant.
+    // Direct chat stays off-bus, but gets the spawning app's CLI.
     let spec = fake.last_spawn_spec().expect("spawn was called");
     assert!(!spec.mission, "spawn_direct must spawn with mission=false");
     assert!(spec.shim_dir.is_none(), "direct chat must not have a shim");
-    assert!(
-        spec.bundled_bin_dir.is_none(),
-        "direct chat must not have the bundled bin on PATH",
+    assert_eq!(
+        spec.bundled_bin_dir.as_deref(),
+        Some(fixture_tmp_dir().join("bin").as_path()),
     );
 
     // Simulate clean exit so the activity emission cycle
@@ -6172,7 +6176,10 @@ fn shell_runtime_spawns_and_resumes_as_plain_login_shell() {
         Some("/usr/local/bin:/usr/bin:/bin")
     );
     assert!(spec.shim_dir.is_none());
-    assert!(spec.bundled_bin_dir.is_none());
+    assert_eq!(
+        spec.bundled_bin_dir.as_deref(),
+        Some(std::path::Path::new("/tmp/bin"))
+    );
     assert!(spec.env.keys().all(|key| !key.starts_with("RUNNER_")));
 
     let stored = crate::repo::session::get_row(&pool.get().unwrap(), &spawned.id)
@@ -7110,6 +7117,8 @@ fn claude_direct_chat_fork_spawns_tui_directly_with_copied_row() {
 
     let assigned_key = fork.agent_session_key.as_deref().unwrap();
     let spec = fake.last_spawn_spec().expect("fork should spawn the TUI");
+    assert!(spec.shim_dir.is_none());
+    assert_eq!(spec.bundled_bin_dir.as_deref(), Some(Path::new("/tmp/bin")));
     assert_chat_has_no_permission_flags(&spec.args);
     assert_eq!(spec.command, command);
     assert_eq!(
