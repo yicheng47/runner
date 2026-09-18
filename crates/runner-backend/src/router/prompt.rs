@@ -1,19 +1,46 @@
-// Composed launch prompt for the lead, written to stdin on `mission_goal`.
+// Composed session prompts, split across each runtime's prompt channels.
 //
 // Pure function over the inputs: no I/O, no DB access, no globals — easy to
 // unit-test against fixture rosters and goal strings.
 //
 // The four sections (brief, mission, crewmates, coordination) mirror the
-// example in arch §4.3. We diverge from the per-slot spawn-time prompt in
-// one place: this is what the *lead* sees on `mission_goal`, not every
-// runner's startup prompt. Worker runtime adapters get the runner's own
-// `system_prompt` via `--append-system-prompt`-equivalent flags at spawn
-// time (see runtime.rs); this composer is the lead's coordination kit.
-//
-// Output ends with a trailing `\n` so it lands as a single submitted line
-// when injected into a TUI's input box.
+// example in arch §6. The runtime adapter sends the composed body at spawn;
+// pi splits the mission section into the lead's only first turn and writes
+// the other sections to its per-session system-prompt file.
 
 use runner_core::model::SignalType;
+
+use crate::model::Runtime;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionPromptKind {
+    Direct,
+    Worker,
+    Lead,
+}
+
+/// Split an already-composed session prompt across the runtime's native
+/// prompt channels. The four established runtimes keep the complete body as
+/// their first user turn. pi receives the persona and coordination layers as
+/// a system prompt; only a lead's mission section remains a first turn.
+pub fn split_session_prompt(
+    runtime: Option<Runtime>,
+    kind: SessionPromptKind,
+    composed: Option<String>,
+) -> (Option<String>, Option<String>) {
+    if runtime != Some(Runtime::Pi) {
+        return (None, composed);
+    }
+    let Some(composed) = composed else {
+        return (None, None);
+    };
+    match kind {
+        SessionPromptKind::Direct | SessionPromptKind::Worker => (Some(composed), None),
+        SessionPromptKind::Lead => {
+            unreachable!("pi lead prompts must be composed from LaunchPromptInput")
+        }
+    }
+}
 
 /// View of the lead slot the launch prompt needs. `handle` is the
 /// slot's in-crew handle (slot_handle); `display_name` and
@@ -110,10 +137,16 @@ pub(crate) const WORKER_COORDINATION_PREAMBLE: &str = r#"You are a worker in a c
 - `runner signal ask_lead --payload '{"question":"…","context":"…"}'` — escalate to the lead when a load-bearing decision is genuinely ambiguous.
 - Busy/idle is inferred from your terminal activity — no need to call `runner status`."#;
 
-pub fn compose_launch_prompt(input: &LaunchPromptInput<'_>) -> String {
-    let mut out = String::new();
+struct LaunchPromptSections {
+    before_mission: String,
+    mission: String,
+    after_mission: String,
+}
 
-    out.push_str(&format!(
+fn compose_launch_prompt_sections(input: &LaunchPromptInput<'_>) -> LaunchPromptSections {
+    let mut before_mission = String::new();
+
+    before_mission.push_str(&format!(
         "You are `{}` ({}), the lead of crew \"{}\".\n\n",
         input.lead.handle, input.lead.display_name, input.crew_name,
     ));
@@ -121,59 +154,63 @@ pub fn compose_launch_prompt(input: &LaunchPromptInput<'_>) -> String {
     if let Some(addendum) = input.crew_addendum {
         let addendum = addendum.trim();
         if !addendum.is_empty() {
-            out.push_str("== Team conventions ==\n");
-            out.push_str(addendum);
-            out.push_str("\n\n");
+            before_mission.push_str("== Team conventions ==\n");
+            before_mission.push_str(addendum);
+            before_mission.push_str("\n\n");
         }
     }
 
     if let Some(brief) = input.lead.system_prompt {
         let brief = brief.trim();
         if !brief.is_empty() {
-            out.push_str("== Your brief ==\n");
-            out.push_str(brief);
-            out.push_str("\n\n");
+            before_mission.push_str("== Your brief ==\n");
+            before_mission.push_str(brief);
+            before_mission.push_str("\n\n");
         }
     }
 
-    out.push_str("== Mission ==\n");
+    let mut mission = String::from("== Mission ==\n");
     if input.mission_goal.trim().is_empty() {
-        out.push_str(
+        mission.push_str(
             "Goal: (no goal set; await the operator's instructions in your terminal).\n\n",
         );
     } else {
-        out.push_str(&format!("Goal: {}\n\n", input.mission_goal.trim()));
+        mission.push_str(&format!("Goal: {}\n\n", input.mission_goal.trim()));
     }
 
+    let mut after_mission = String::new();
     let crewmates: Vec<&RosterEntry> = input
         .roster
         .iter()
         .filter(|r| r.handle != input.lead.handle)
         .collect();
     if !crewmates.is_empty() {
-        out.push_str("== Your crewmates ==\n");
+        after_mission.push_str("== Your crewmates ==\n");
         for r in crewmates {
-            out.push_str(&format!(
+            after_mission.push_str(&format!(
                 "- `{}` ({}){}\n",
                 r.handle,
                 r.display_name,
                 if r.lead { " — lead" } else { "" },
             ));
         }
-        out.push('\n');
+        after_mission.push('\n');
     }
 
-    out.push_str("== Coordination ==\n");
-    out.push_str("- You are the human's counterpart. Workers escalate to you via `ask_lead`.\n");
-    out.push_str(
+    after_mission.push_str("== Coordination ==\n");
+    after_mission
+        .push_str("- You are the human's counterpart. Workers escalate to you via `ask_lead`.\n");
+    after_mission.push_str(
         "- Reply to a worker with `runner msg post --to <handle> \"…\"`; broadcasts omit `--to`.\n",
     );
-    out.push_str("- The operator watches the terminals and types directly into a runner's pane.\n");
-    out.push_str("- Read your inbox with `runner msg read` — it's pull-based.\n");
-    out.push_str(
+    after_mission.push_str(
+        "- The operator watches the terminals and types directly into a runner's pane.\n",
+    );
+    after_mission.push_str("- Read your inbox with `runner msg read` — it's pull-based.\n");
+    after_mission.push_str(
         "- Escalate to the human (with structured choices) via `runner signal ask_human --payload '{\"prompt\":\"…\",\"choices\":[\"yes\",\"no\"],\"on_behalf_of\":\"<asker>\"}'`.\n",
     );
-    out.push_str(
+    after_mission.push_str(
         "- Busy/idle is inferred from your terminal activity — no need to call `runner status`.\n",
     );
     if !input.allowed_signals.is_empty() {
@@ -182,11 +219,36 @@ pub fn compose_launch_prompt(input: &LaunchPromptInput<'_>) -> String {
             .iter()
             .map(SignalType::as_str)
             .collect();
-        out.push_str(&format!("- Allowed signal types: {}.\n", names.join(", ")));
+        after_mission.push_str(&format!("- Allowed signal types: {}.\n", names.join(", ")));
     }
 
-    out.push('\n');
+    after_mission.push('\n');
+    LaunchPromptSections {
+        before_mission,
+        mission,
+        after_mission,
+    }
+}
+
+pub fn compose_launch_prompt(input: &LaunchPromptInput<'_>) -> String {
+    let sections = compose_launch_prompt_sections(input);
+    let mut out = sections.before_mission;
+    out.push_str(&sections.mission);
+    out.push_str(&sections.after_mission);
     out
+}
+
+pub fn compose_lead_prompt_channels(
+    runtime: Option<Runtime>,
+    input: &LaunchPromptInput<'_>,
+) -> (Option<String>, Option<String>) {
+    if runtime != Some(Runtime::Pi) {
+        return (None, Some(compose_launch_prompt(input)));
+    }
+    let sections = compose_launch_prompt_sections(input);
+    let mut system_prompt = sections.before_mission;
+    system_prompt.push_str(&sections.after_mission);
+    (Some(system_prompt), Some(sections.mission))
 }
 
 #[cfg(test)]
@@ -199,6 +261,174 @@ mod tests {
             display_name: "Lead",
             system_prompt,
         }
+    }
+
+    fn launch_fixture() -> String {
+        let roster = [
+            RosterEntry {
+                handle: "lead",
+                display_name: "Lead",
+                lead: true,
+            },
+            RosterEntry {
+                handle: "worker",
+                display_name: "Worker",
+                lead: false,
+            },
+        ];
+        let signals = [SignalType::new("mission_goal")];
+        compose_launch_prompt(&LaunchPromptInput {
+            lead: lead("lead", Some("LEAD_BRIEF")),
+            crew_name: "Alpha",
+            mission_goal: "@ship - safely",
+            roster: &roster,
+            allowed_signals: &signals,
+            crew_addendum: Some("TEAM_TEXT"),
+        })
+    }
+
+    #[test]
+    fn established_runtimes_keep_composed_bodies_byte_identical() {
+        let direct = compose_direct_first_turn(Some("  persona  "));
+        let worker = Some(compose_worker_first_turn(Some("brief"), Some("team")));
+        let lead = Some(launch_fixture());
+        for runtime in [
+            Runtime::ClaudeCode,
+            Runtime::Codex,
+            Runtime::Trae,
+            Runtime::Copilot,
+        ] {
+            for (kind, body) in [
+                (SessionPromptKind::Direct, direct.clone()),
+                (SessionPromptKind::Worker, worker.clone()),
+                (SessionPromptKind::Lead, lead.clone()),
+            ] {
+                assert_eq!(
+                    split_session_prompt(Some(runtime), kind, body.clone()),
+                    (None, body)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn compose_launch_prompt_matches_established_literal_contract() {
+        let roster = [
+            RosterEntry {
+                handle: "coder",
+                display_name: "Coder",
+                lead: true,
+            },
+            RosterEntry {
+                handle: "reviewer",
+                display_name: "Reviewer",
+                lead: false,
+            },
+            RosterEntry {
+                handle: "tester",
+                display_name: "Tester",
+                lead: false,
+            },
+        ];
+        let signals = [
+            SignalType::new("mission_goal"),
+            SignalType::new("ask_human"),
+        ];
+        let prompt = compose_launch_prompt(&LaunchPromptInput {
+            lead: LeadView {
+                handle: "coder",
+                display_name: "Coder",
+                system_prompt: Some("Ship code."),
+            },
+            crew_name: "Codex peer",
+            mission_goal: "Implement feature",
+            roster: &roster,
+            allowed_signals: &signals,
+            crew_addendum: Some("Review first."),
+        });
+
+        assert_eq!(
+            prompt,
+            r#"You are `coder` (Coder), the lead of crew "Codex peer".
+
+== Team conventions ==
+Review first.
+
+== Your brief ==
+Ship code.
+
+== Mission ==
+Goal: Implement feature
+
+== Your crewmates ==
+- `reviewer` (Reviewer)
+- `tester` (Tester)
+
+== Coordination ==
+- You are the human's counterpart. Workers escalate to you via `ask_lead`.
+- Reply to a worker with `runner msg post --to <handle> "…"`; broadcasts omit `--to`.
+- The operator watches the terminals and types directly into a runner's pane.
+- Read your inbox with `runner msg read` — it's pull-based.
+- Escalate to the human (with structured choices) via `runner signal ask_human --payload '{"prompt":"…","choices":["yes","no"],"on_behalf_of":"<asker>"}'`.
+- Busy/idle is inferred from your terminal activity — no need to call `runner status`.
+- Allowed signal types: mission_goal, ask_human.
+
+"#
+        );
+    }
+
+    #[test]
+    fn pi_uses_system_prompt_for_direct_and_worker_sessions() {
+        for (kind, body) in [
+            (SessionPromptKind::Direct, "persona"),
+            (SessionPromptKind::Worker, "coordination and brief"),
+        ] {
+            assert_eq!(
+                split_session_prompt(Some(Runtime::Pi), kind, Some(body.into())),
+                (Some(body.into()), None),
+            );
+        }
+    }
+
+    #[test]
+    fn pi_lead_keeps_only_the_mission_as_first_turn() {
+        let roster = [
+            RosterEntry {
+                handle: "lead",
+                display_name: "Lead",
+                lead: true,
+            },
+            RosterEntry {
+                handle: "worker",
+                display_name: "Worker",
+                lead: false,
+            },
+        ];
+        let signals = [SignalType::new("mission_goal")];
+        let input = LaunchPromptInput {
+            lead: lead("lead", Some("LEAD_BRIEF\n== Mission ==\nstill the brief")),
+            crew_name: "Alpha",
+            mission_goal: "@ship - safely\n== Coordination ==\nstill the goal",
+            roster: &roster,
+            allowed_signals: &signals,
+            crew_addendum: Some("TEAM_TEXT"),
+        };
+        let composed = compose_launch_prompt(&input);
+        let (system_prompt, first_turn) = compose_lead_prompt_channels(Some(Runtime::Pi), &input);
+        let system_prompt = system_prompt.unwrap();
+        let first_turn = first_turn.unwrap();
+        assert_eq!(
+            first_turn,
+            "== Mission ==\nGoal: @ship - safely\n== Coordination ==\nstill the goal\n\n"
+        );
+        assert!(system_prompt.contains("LEAD_BRIEF\n== Mission ==\nstill the brief"));
+        assert!(system_prompt.contains("TEAM_TEXT"));
+        assert!(system_prompt.contains("== Your crewmates =="));
+        assert!(system_prompt.contains("== Coordination =="));
+        let insertion = system_prompt.find("== Your crewmates ==").unwrap();
+        let mut recomposed = system_prompt;
+        recomposed.insert_str(insertion, &first_turn);
+        assert_eq!(composed, recomposed);
     }
 
     #[test]

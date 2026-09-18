@@ -740,6 +740,7 @@ mod tests {
             ("codex", "openai.svg"),
             ("trae", "trae.svg"),
             ("copilot", "copilot.svg"),
+            ("pi", "pi.svg"),
             ("shell", "square-terminal.svg"),
             ("unknown", "message-square.svg"),
         ] {

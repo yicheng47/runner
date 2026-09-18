@@ -636,13 +636,10 @@ pub async fn mission_start_impl_with_size(
         .unwrap_or("")
         .to_string();
 
-    // Pre-compose each slot's first-user-turn body. Lead gets the
-    // full launch prompt (preamble + brief + goal + roster +
-    // coordination). Non-leads get the worker preamble + brief.
-    // Both delivery paths (spawn-time argv vs post-spawn paste
-    // fallback) read from the same composer in `router::prompt`,
-    // so the body is byte-identical regardless of route.
-    let first_turns: Vec<Option<String>> = {
+    // Pre-compose each slot's prompt channels. The established runtimes
+    // keep the complete body as their first turn. Pi puts the durable
+    // layers in its system-prompt file and gives only the lead its goal.
+    let prompt_channels: Vec<(Option<String>, Option<String>)> = {
         let roster_entries: Vec<crate::router::prompt::RosterEntry> = roster
             .iter()
             .map(|m| crate::router::prompt::RosterEntry {
@@ -651,32 +648,40 @@ pub async fn mission_start_impl_with_size(
                 lead: m.slot.lead,
             })
             .collect();
-        let lead_member = roster.iter().find(|m| m.slot.lead);
         roster
             .iter()
             .map(|m| {
+                let runtime = Runtime::parse(
+                    m.slot
+                        .runtime_override
+                        .as_deref()
+                        .unwrap_or(&m.role.runtime),
+                );
                 if m.slot.lead {
-                    lead_member.map(|lm| {
-                        crate::router::prompt::compose_launch_prompt(
-                            &crate::router::prompt::LaunchPromptInput {
-                                lead: crate::router::prompt::LeadView {
-                                    handle: lm.slot.slot_handle.as_str(),
-                                    display_name: lm.role.display_name.as_str(),
-                                    system_prompt: lm.role.system_prompt.as_deref(),
-                                },
-                                crew_name: crew_name.as_str(),
-                                mission_goal: goal_text.as_str(),
-                                roster: &roster_entries,
-                                allowed_signals: &allowed_signals,
-                                crew_addendum: crew_addendum.as_deref(),
+                    crate::router::prompt::compose_lead_prompt_channels(
+                        runtime,
+                        &crate::router::prompt::LaunchPromptInput {
+                            lead: crate::router::prompt::LeadView {
+                                handle: m.slot.slot_handle.as_str(),
+                                display_name: m.role.display_name.as_str(),
+                                system_prompt: m.role.system_prompt.as_deref(),
                             },
-                        )
-                    })
+                            crew_name: crew_name.as_str(),
+                            mission_goal: goal_text.as_str(),
+                            roster: &roster_entries,
+                            allowed_signals: &allowed_signals,
+                            crew_addendum: crew_addendum.as_deref(),
+                        },
+                    )
                 } else {
-                    Some(crate::router::prompt::compose_worker_first_turn(
-                        m.role.system_prompt.as_deref(),
-                        crew_addendum.as_deref(),
-                    ))
+                    crate::router::prompt::split_session_prompt(
+                        runtime,
+                        crate::router::prompt::SessionPromptKind::Worker,
+                        Some(crate::router::prompt::compose_worker_first_turn(
+                            m.role.system_prompt.as_deref(),
+                            crew_addendum.as_deref(),
+                        )),
+                    )
                 }
             })
             .collect()
@@ -687,9 +692,9 @@ pub async fn mission_start_impl_with_size(
     // `ensure_first_turn_fits`); on overflow, roll the half-open mission
     // back to `aborted` and surface an actionable error rather than
     // booting an agent with an empty first turn.
-    for (member, body) in roster.iter().zip(&first_turns) {
-        if let Some(body) = body {
-            if let Err(e) = ensure_first_turn_fits(&member.slot.slot_handle, body) {
+    for (member, (_, first_turn)) in roster.iter().zip(&prompt_channels) {
+        if let Some(first_turn) = first_turn {
+            if let Err(e) = ensure_first_turn_fits(&member.slot.slot_handle, first_turn) {
                 if let Ok(conn) = state.db.get() {
                     let _ = repo::mission::abort(&conn, &out.mission.id, Utc::now());
                 }
@@ -736,19 +741,16 @@ pub async fn mission_start_impl_with_size(
     };
 
     // Spawn sessions BEFORE the bus mounts so `register_sessions` can
-    // populate the handle→session_id map up front. The bus's consumer
-    // thread starts its initial replay asynchronously inside `mount`; if
-    // we mounted first, the `mission_goal` injection could race the
-    // session registration and silently no-op (the lead would never get
-    // its launch prompt — review finding P1).
+    // populate the handle→session_id map up front. The launch prompt is
+    // already part of each pending spawn; the map must be ready before
+    // later coordination events can target sessions.
     //
     // The bus's initial replay reads from offset 0, so the opening
     // `mission_start` / `mission_goal` events still surface even though
     // the watcher attaches after the writes. Spawning sessions before
     // mount is safe: their PTYs come up here, but `runner` CLI invocations
-    // can't run before they receive their first stdin (which only comes
-    // after the bus delivers `mission_goal` post-mount), so no log writes
-    // can race the watcher attachment.
+    // start concurrently with the mount, and replay picks up any log rows
+    // written before the watcher attaches.
     let emitter: Arc<dyn SessionEvents> = Arc::new(state.session_events());
     let mut spawned_pairs: Vec<(String, String)> = Vec::with_capacity(roster.len());
     let mut pendings: Vec<crate::session::PendingMissionSpawn> = Vec::with_capacity(roster.len());
@@ -764,7 +766,7 @@ pub async fn mission_start_impl_with_size(
     // on the gate, so there's no user-visible benefit to promoting
     // the lead ahead of position-zero workers.
     for (idx, member) in roster.iter().enumerate() {
-        let first_turn = first_turns.get(idx).cloned().flatten();
+        let (system_prompt, first_turn) = prompt_channels.get(idx).cloned().unwrap_or_default();
         let register_res = state.sessions.register_mission_session(
             &out.mission,
             &member.role,
@@ -772,6 +774,7 @@ pub async fn mission_start_impl_with_size(
             &state.app_data_dir,
             events_log_path.clone(),
             state.db.clone(),
+            system_prompt,
             first_turn,
             initial_size,
             size_source,
@@ -794,6 +797,9 @@ pub async fn mission_start_impl_with_size(
                     let _ = repo::session::delete_all_for_mission(&conn, &out.mission.id);
                     let _ = repo::mission::abort(&conn, &out.mission.id, Utc::now());
                 }
+                for (_, session_id) in &spawned_pairs {
+                    crate::session::system_prompt::remove(&state.app_data_dir, session_id);
+                }
                 return Err(e);
             }
         }
@@ -804,12 +810,9 @@ pub async fn mission_start_impl_with_size(
     router.register_pending_sessions(&spawned_pairs);
 
     // Now mount the bus. Initial replay from offset 0 picks up the opening
-    // events (durable since `start()` committed them under the DB tx),
-    // fans them to the GPUI event channel and the RouterSubscriber (which
-    // dispatches `mission_goal` → launch prompt to the lead). Fresh
-    // mission: NO `reconstruct_from_log()` call — setting a watermark
-    // over the just-written `mission_goal` would suppress the bootstrap
-    // (reviewer's caveat).
+    // events (durable since `start()` committed them under the DB tx) and
+    // fans them to the GPUI event channel and RouterSubscriber. Fresh
+    // missions have no historical projections to reconstruct.
     let roster_handles: Vec<String> = roster.iter().map(|m| m.slot.slot_handle.clone()).collect();
     let channel_emitter: Arc<dyn BusEmitter> = Arc::new(ChannelBusEvents(state.events.clone()));
     let router_emitter: Arc<dyn BusEmitter> = Arc::new(RouterSubscriber(Arc::clone(&router)));
@@ -832,6 +835,9 @@ pub async fn mission_start_impl_with_size(
         if let Ok(conn) = state.db.get() {
             let _ = repo::session::delete_all_for_mission(&conn, &out.mission.id);
             let _ = repo::mission::abort(&conn, &out.mission.id, Utc::now());
+        }
+        for (_, session_id) in &spawned_pairs {
+            crate::session::system_prompt::remove(&state.app_data_dir, session_id);
         }
         return Err(e);
     }

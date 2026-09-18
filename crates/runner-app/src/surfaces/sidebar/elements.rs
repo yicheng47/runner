@@ -314,16 +314,17 @@ pub(super) fn sidebar_fork_menu_target(
     let entry = members
         .first()
         .filter(|entry| Runtime::parse(&entry.agent_runtime) != Some(Runtime::Shell))?;
-    let disabled_reason = if !entry.native_fork {
-        Some("Forking needs claude-code or codex")
+    let (disabled, description) = if !entry.native_fork {
+        (true, None)
     } else if !entry.forkable {
-        Some("No session key captured yet")
+        (true, Some("No session key captured yet"))
     } else {
-        None
+        (false, None)
     };
     Some(SidebarForkMenuTarget {
         session_id: entry.session_id.clone(),
-        disabled_reason,
+        disabled,
+        description,
     })
 }
 

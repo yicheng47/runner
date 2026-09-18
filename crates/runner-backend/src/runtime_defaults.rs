@@ -10,6 +10,7 @@ pub struct RuntimeDefaults {
 const CODEX_CONFIG_RELATIVE_PATH: &str = ".codex/config.toml";
 const CLAUDE_SETTINGS_RELATIVE_PATH: &str = ".claude/settings.json";
 const COPILOT_SETTINGS_RELATIVE_PATH: &str = ".copilot/settings.json";
+const PI_SETTINGS_RELATIVE_PATH: &str = ".pi/agent/settings.json";
 const TRAE_CONFIG_RELATIVE_PATH: &str = ".trae/traecli.toml";
 
 pub fn runtime_defaults(runtime: Runtime, home: &Path) -> RuntimeDefaults {
@@ -17,6 +18,7 @@ pub fn runtime_defaults(runtime: Runtime, home: &Path) -> RuntimeDefaults {
         Runtime::Codex => toml_defaults(&codex_config_path(home)),
         Runtime::ClaudeCode => json_defaults(&claude_settings_path(home), false),
         Runtime::Copilot => json_defaults(&copilot_settings_path(home), true),
+        Runtime::Pi => pi_defaults(&home.join(PI_SETTINGS_RELATIVE_PATH)),
         Runtime::Trae => toml_defaults(&trae_config_path(home)),
         Runtime::Shell => RuntimeDefaults::default(),
     }
@@ -87,6 +89,24 @@ fn json_defaults(path: &Path, comments: bool) -> RuntimeDefaults {
     RuntimeDefaults {
         model: json_string(&document, "model"),
         effort: json_string(&document, "effortLevel"),
+    }
+}
+
+fn pi_defaults(path: &Path) -> RuntimeDefaults {
+    let Some(document) = std::fs::read_to_string(path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+    else {
+        return RuntimeDefaults::default();
+    };
+    let model = json_string(&document, "defaultModel");
+    let provider = json_string(&document, "defaultProvider");
+    RuntimeDefaults {
+        model: model.map(|model| match provider {
+            Some(provider) if !provider.is_empty() => format!("{provider}/{model}"),
+            _ => model,
+        }),
+        effort: json_string(&document, "defaultThinkingLevel"),
     }
 }
 
@@ -220,6 +240,36 @@ mod tests {
             write(home.path(), COPILOT_SETTINGS_RELATIVE_PATH, raw);
             assert_eq!(runtime_defaults(Runtime::Copilot, home.path()), RuntimeDefaults { model: Some("gpt-5.4".into()), effort: Some("high".into()) });
         }
+    }
+
+    #[test]
+    fn reads_pi_provider_model_and_thinking_defaults() {
+        let home = tempfile::tempdir().unwrap();
+        write(
+            home.path(),
+            PI_SETTINGS_RELATIVE_PATH,
+            r#"{"defaultProvider":"deepseek","defaultModel":"deepseek-v4-pro","defaultThinkingLevel":" high "}"#,
+        );
+        assert_eq!(
+            runtime_defaults(Runtime::Pi, home.path()),
+            RuntimeDefaults {
+                model: Some("deepseek/deepseek-v4-pro".into()),
+                effort: Some("high".into()),
+            }
+        );
+
+        write(
+            home.path(),
+            PI_SETTINGS_RELATIVE_PATH,
+            r#"{"defaultModel":"gpt-5.5"}"#,
+        );
+        assert_eq!(
+            runtime_defaults(Runtime::Pi, home.path()),
+            RuntimeDefaults {
+                model: Some("gpt-5.5".into()),
+                effort: None,
+            }
+        );
     }
 
     #[test]

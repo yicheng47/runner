@@ -277,5 +277,6 @@ fn node_project_id(nodes: &[NodeRow], node: &NodeRow) -> Option<String> {
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct SidebarForkMenuTarget {
     session_id: String,
-    disabled_reason: Option<&'static str>,
+    disabled: bool,
+    description: Option<&'static str>,
 }

@@ -351,8 +351,8 @@ pub(super) fn tab_menu_entries(
     if let Some(target) = fork_target {
         let mut item = UiMenuItem::new("Fork chat")
             .icon("git-fork.svg")
-            .disabled(fork_pending || target.disabled_reason.is_some());
-        if let Some(reason) = target.disabled_reason {
+            .disabled(fork_pending || target.disabled);
+        if let Some(reason) = target.description {
             item = item.description(reason);
         }
         entries.push((item, SidebarMenuAction::ForkChat(target.session_id)));

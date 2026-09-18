@@ -156,7 +156,7 @@ fn direct_session(id: &str, runtime: &str, status: SessionStatus) -> DirectSessi
         started_at: None,
         stopped_at: None,
         resumable: false,
-        native_fork: matches!(runtime, "codex" | "claude-code"),
+        native_fork: matches!(runtime, "codex" | "claude-code" | "pi"),
         forkable: false,
         agent_session_key: None,
         pinned: false,
@@ -599,6 +599,7 @@ fn tab_and_mission_menus_have_the_trimmed_item_lists() {
         (Some("codex"), "openai.svg"),
         (Some("trae"), "trae.svg"),
         (Some("copilot"), "copilot.svg"),
+        (Some("pi"), "pi.svg"),
         (Some("unknown"), "message-square.svg"),
         (None, "message-square.svg"),
     ] {
@@ -803,7 +804,8 @@ fn sidebar_fork_menu_target_exposes_enabled_and_disabled_single_chats() {
     let members = vec![codex];
     let target = sidebar_fork_menu_target(&layout, &members).expect("fork target");
     assert_eq!(target.session_id, "chat");
-    assert_eq!(target.disabled_reason, None);
+    assert!(!target.disabled);
+    assert_eq!(target.description, None);
 
     let entries = tab_menu_entries(
         "tab-1",
@@ -842,8 +844,9 @@ fn sidebar_fork_menu_target_exposes_enabled_and_disabled_single_chats() {
     waiting.native_fork = true;
     let waiting_members = vec![waiting];
     let waiting_target = sidebar_fork_menu_target(&layout, &waiting_members).unwrap();
+    assert!(waiting_target.disabled);
     assert_eq!(
-        waiting_target.disabled_reason,
+        waiting_target.description,
         Some("No session key captured yet")
     );
     let waiting_entries = tab_menu_entries(
@@ -866,10 +869,8 @@ fn sidebar_fork_menu_target_exposes_enabled_and_disabled_single_chats() {
 
     let trae_members = vec![direct_session("chat", "trae", SessionStatus::Running)];
     let trae_target = sidebar_fork_menu_target(&layout, &trae_members).unwrap();
-    assert_eq!(
-        trae_target.disabled_reason,
-        Some("Forking needs claude-code or codex")
-    );
+    assert!(trae_target.disabled);
+    assert_eq!(trae_target.description, None);
     let trae_entries = tab_menu_entries(
         "tab-1",
         false,
@@ -883,17 +884,12 @@ fn sidebar_fork_menu_target_exposes_enabled_and_disabled_single_chats() {
         None,
     );
     assert!(trae_entries[2].0.disabled);
-    assert_eq!(
-        trae_entries[2].0.description.clone(),
-        Some("Forking needs claude-code or codex".into())
-    );
+    assert_eq!(trae_entries[2].0.description, None);
 
     let copilot_members = vec![direct_session("chat", "copilot", SessionStatus::Running)];
     let copilot_target = sidebar_fork_menu_target(&layout, &copilot_members).unwrap();
-    assert_eq!(
-        copilot_target.disabled_reason,
-        Some("Forking needs claude-code or codex")
-    );
+    assert!(copilot_target.disabled);
+    assert_eq!(copilot_target.description, None);
 
     let shell_members = vec![direct_session("chat", "shell", SessionStatus::Running)];
     assert!(sidebar_fork_menu_target(&layout, &shell_members).is_none());

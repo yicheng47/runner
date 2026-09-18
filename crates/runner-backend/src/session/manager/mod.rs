@@ -826,6 +826,9 @@ impl SessionManager {
         if let Err(error) = super::claude_status::clear_leftovers(app_data_dir) {
             log::warn!("clear stale Claude status files: {error}");
         }
+        if let Err(error) = super::system_prompt::clear_leftovers(app_data_dir) {
+            log::warn!("clear stale session prompt files: {error}");
+        }
         if super::hook_feed::hooks_supported(Some(crate::model::Runtime::Copilot), cfg!(windows)) {
             if let Err(error) = super::copilot_status::install_plugin(app_data_dir) {
                 log::warn!("install Copilot status plugin: {error}");

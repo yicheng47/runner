@@ -219,7 +219,7 @@ pub(super) fn permission_modes(runtime: &str) -> &'static [PermissionMode] {
             PermissionMode::AcceptEdits,
             PermissionMode::Bypass,
         ],
-        Some(Runtime::Shell) | None => &[],
+        Some(Runtime::Pi | Runtime::Shell) | None => &[],
     }
 }
 
@@ -285,6 +285,7 @@ pub(super) fn permission_mode_description(runtime: &str, mode: PermissionMode) -
         (Some(Runtime::Copilot), PermissionMode::Auto) => "",
         (Some(Runtime::Codex | Runtime::Trae), PermissionMode::AcceptEdits)
         | (Some(Runtime::Trae), PermissionMode::Auto)
+        | (Some(Runtime::Pi), _)
         | (Some(Runtime::Shell) | None, _) => "",
     }
 }
