@@ -1,10 +1,10 @@
 # 648 — A general `runner` CLI
 
 > Tracking issue: [#648](https://github.com/yicheng47/runner/issues/648)
-> Priority: P1, milestone 0.11. Platforms: macOS and Windows.
+> Priority: P1, milestone 0.11. With pi ([539](./539-pi-runtime.md)) it makes 0.11.0; the rest of the milestone ships in 0.11.0 if ready, otherwise in 0.11.x. Platforms: macOS and Windows.
 > Design: `design/specs/648-runner-cli.pen`, one frame for the Settings → General rows (the `runner` command and the agent skill), drawn before Phase 4.
-> Related: [562](./562-mission-spawn.md) (missions as containers) builds its coordinator commands (`spawn`, `ps`, `wait`, `stop`, `peek`, `done`) on this CLI.
-> Command set designed with Jason on 2026-09-18: the principles, the command tree and six decisions below.
+> Related: [562](./562-mission-spawn.md) (missions as containers, milestone 0.12) builds its coordinator commands (`spawn`, `ps`, `wait`, `stop`, `peek`, `done`) and the seats an outside agent takes on this CLI. The two stay separate issues: this one is a surface over tools that exist, 562 changes the mission model.
+> Command set designed with Jason on 2026-09-18: the principles, the command tree and seven decisions below. The identity model (decision 7) and the release plan were decided the same day, after 539's mission 2 merged.
 
 ## Motivation
 
@@ -36,7 +36,7 @@ Orca's coordinator surface is a CLI plus a skill (`orca orchestration …`, with
   - Missions and sessions are named by id or by a unique id prefix, as git short SHAs are. An ambiguous prefix exits 2 and lists the matches.
   - The CLI resolves every reference with the matching list tool before calling the target tool, so no tool needs to change for this.
 - **Context.** Inside a mission PTY, mission-scoped commands use the caller's mission and handle. Outside, they take `--mission <id>`: agent shells do not keep environment variables between calls, so context is a flag, not an exported variable.
-- **Identity.** Outside a mission the CLI acts as the human, the identity MCP calls carry today (`mission_post_human_message`, `mission_post_human_signal`). #562 adds the coordinator seat: an outside caller takes the `lead` seat when the mission has no lead slot, and stays the human otherwise.
+- **Identity.** A caller is the person at the app or a handle in the mission's roster; where a call comes from does not decide who it is. Inside a mission the CLI fills the handle from `RUNNER_HANDLE`. Outside, `--as <handle>` names a seat the caller holds, and a call with no handle is the person at a terminal, which is `human` on the bus. An agent that drives a mission from outside takes a seat first (562 adds the seats; without one it is indistinguishable from the person). `human` is never a location: `ask_human`, `human_question` and `human_response` keep meaning the person at the app.
 - **Output.**
   - stdout carries data and stderr carries messages.
   - By default, commands print tables and key-value blocks. `--json` prints the tool's JSON result verbatim, which is what agents should use.
@@ -125,12 +125,12 @@ What each command calls:
 | `mission stop \| archive \| unarchive \| rename \| pin \| unpin \| move` | `mission_stop`, `mission_archive`, `mission_unarchive`, `mission_rename`, `mission_pin`, `mission_set_project` | |
 | `mission resume` | `mission_resume` | New tool, below |
 | `mission feed` | `mission_feed` | `--types` and `--from` filter client-side; `--follow` is below |
-| `mission answer` | `mission_post_human_signal` | Posts `human_response` with `{question_id, choice}` |
+| `mission answer` | `mission_signal` | Posts `human_response` with `{question_id, choice}` |
 | `chat start` | `session_start_direct` | Runtime-only chats need the tool change below |
 | `session list` | `session_list` | New tool, below |
 | `session resume \| restart` | `session_resume`, `session_restart` | |
-| `msg post`, outside a mission | `mission_post_human_message` | Inside a mission: unchanged, appends to the log as the caller's handle |
-| `signal`, outside a mission | `mission_post_human_signal` | Inside a mission: unchanged |
+| `msg post`, outside a mission | `mission_post` with `from` (decision 7) | Inside a mission: unchanged, appends to the log as the caller's handle |
+| `signal`, outside a mission | `mission_signal` with `from` | Inside a mission: unchanged |
 | `msg read` | none | Inside a mission only, as today; an outside caller reads with `mission feed` |
 | `ask` | inside: appends `ask_lead` or `ask_human` like `runner signal` | Builds the payload so agents never hand-write JSON |
 | `call` | any | Passes the JSON object through as the tool's arguments |
@@ -143,13 +143,15 @@ What each command calls:
 4. **Slots are crew verbs addressed by handle**: `crew add`, `set`, `remove`, `lead`, `order`. No command asks for a slot id.
 5. **Shortcut commands over signals.** `ask` and `mission answer` build the signal payloads (`ask_lead`, `ask_human`, `human_response`), and #562 adds `done` and `spawn` the same way. `signal` stays for everything else.
 6. **One `mission show`**, backed by `mission_status`.
+7. **The socket carries the caller.** `mission_post_human_message` and `mission_post_human_signal` become `mission_post` and `mission_signal` with an optional `from` handle, validated against the mission's roster; absent, the caller is `human`, which is what every existing MCP client gets today. The old names stay registered as aliases until the `runner-mcp` retirement decision after 0.11. MCP clients pass `from` the same way, so the compatibility layer does not keep the location-means-human assumption alive.
 
 ## Scope
 
 ### In scope
 
 - The principles, command tree, and decisions above, with `--json`, `-q`, and the exit codes on every command.
-- **Four backend additions**, each small:
+- **Five backend additions**, each small:
+  - the `from` handle on `mission_post` and `mission_signal` (decision 7), validated against the roster, with the old `_human_` names as aliases;
   - a `mission_resume` tool over the existing mission-wide Resume;
   - a `session_list` tool for direct chats (id, role or runtime, title, status, project, cwd);
   - `session_start_direct` accepting `runtime` without `role_id`, for the runtime-only chats the app already starts;
@@ -157,7 +159,7 @@ What each command calls:
 - **`runner mission feed --follow`.** Prints the requested window, then polls `mission_feed` from the last `next_offset` (oldest first, every 500 ms) and prints each new event as it lands. It exits on Ctrl-C, when the mission is archived, or with code 3 if the app goes away. It reads nothing from disk, so it keeps working when #562 moves crewless logs. With `--json` it prints one event per line (NDJSON), which a Claude Code Monitor or a shell pipe can consume directly.
 - **`runner help agents`.** A compact guide printed by the binary itself, so it always matches the installed version (Orca's pattern). It covers the command tree, `--json`, `-q`, the exit codes, and the common flows: find a crew, start a mission, follow its feed, answer a question, post to the lead, archive. `runner help` and `runner <noun> --help` remain the full reference.
 - **Embedded `runner` skill.**
-  - **Content.** A `SKILL.md` template compiled into the app. Frontmatter `name: runner`, and a description that fires on Runner, missions, crews, roles, or handing work to another agent: "Operate Runner, the local cockpit for CLI coding agents, through the `runner` CLI: start, follow and steer missions, list crews and roles, start chats. Use when the user mentions Runner, a mission, a crew or a role, or asks to hand work to another agent such as Codex, Claude Code or pi." The body is a stub, as Orca's is. It says what Runner is in two lines. It names the executable: `runner` when it is on PATH, else the absolute sidecar path Runner writes into the file at install (quoted, because it contains a space on macOS). It points to `runner help agents` for the version-matched guide. And it states four rules: prefer `--json`; exit code 3 means ask the user to open Runner; use `--help` rather than guessing commands; inside a mission, `msg` and `signal` talk to the crew while the control commands act as the human.
+  - **Content.** A `SKILL.md` template compiled into the app. Frontmatter `name: runner`, and a description that fires on Runner, missions, crews, roles, or handing work to another agent: "Operate Runner, the local cockpit for CLI coding agents, through the `runner` CLI: start, follow and steer missions, list crews and roles, start chats. Use when the user mentions Runner, a mission, a crew or a role, or asks to hand work to another agent such as Codex, Claude Code or pi." The body is a stub, as Orca's is. It says what Runner is in two lines. It names the executable: `runner` when it is on PATH, else the absolute sidecar path Runner writes into the file at install (quoted, because it contains a space on macOS). It points to `runner help agents` for the version-matched guide. And it states four rules: prefer `--json`; exit code 3 means ask the user to open Runner; use `--help` rather than guessing commands; inside a mission, mission commands carry the caller's handle; outside, an agent takes a seat with `--as` before it posts, signals or spawns, since a call with no handle is the person.
   - **Where.** `~/.claude/skills/runner/` for Claude Code, and `~/.agents/skills/runner/` for Codex, Copilot and pi, which all read that root (`RuntimeDefinition::skills_dirs`). Two folders cover four runtimes.
   - **Ownership.** Each installed folder carries a `.runner-managed` marker. On startup Runner rewrites a marked folder whose content or sidecar path has changed, so the skill follows app updates. A `runner/` folder without the marker belongs to someone else: it is never touched, and Settings reports it.
   - **Default.** On first run the skill is installed for every available agent that reads one of the two roots. Like `initialized_mcp_clients`, this happens once, so a removal is respected. One toggle in Settings → General installs or removes both folders. Per-runtime visibility stays with the Skills pane's existing toggles (`skillOverrides`, `[[skills.config]]`).
@@ -168,14 +170,14 @@ What each command calls:
   - **Windows:** the button adds the sidecar directory to the user PATH (`HKCU\Environment`) and broadcasts the environment change.
   - **Both:** it never replaces a `runner` it did not create. Debug builds install as `runner-dev` and reach the debug app's socket, as `runner-mcp` already does through `cfg!(debug_assertions)`.
 - **Docs.**
-  - arch §9 carries the command reference, drops `status busy|idle`, and describes the two modes.
+  - arch §9 carries the command reference, drops `status busy|idle`, describes the two modes, and states the identity rule: a caller is the person or a handle.
   - vision §4.9 says the CLI is the main external surface, agents find it through the skill, and MCP is the compatibility layer.
   - `README.md` and `README.zh-CN.md` gain a CLI section together.
   - The mission-watch skill in the memory repo switches from its hand-rolled tail to `runner mission feed --follow --json`.
 
 ### Out of scope
 
-- #562's commands: `spawn`, `ps`, `wait`, `stop <handle>`, `peek`, `done`, the coordinator seat, and `mission start` without a crew. They land with #562 on this CLI; the names are reserved here.
+- #562's commands: `spawn`, `ps`, `wait`, `stop <handle>`, `peek`, `done`, seats without a session (how an outside agent gets a handle), and `mission start` without a crew. They land with #562 on this CLI; the names are reserved here, and the caller handle they need is decision 7.
 - New MCP tools beyond the three backend additions, freezing the MCP surface in code, retiring `runner-mcp`, or removing existing registrations.
 - A skill for TRAE, which has no skills directory.
 - Launching Runner from the CLI. The not-running error tells the user to open it.
@@ -187,15 +189,15 @@ What each command calls:
 ### Phase 1 — the command tree over the socket
 
 - Move `endpoint`, `connect_app`, and the call-tool path out of `cli/src/mcp.rs` into a module both binaries use. `runner-mcp` keeps its behavior byte for byte.
-- `cli/src/main.rs`: the clap tree beside the in-mission commands, the mode switch on `env::resolve()`, reference resolution, `runner call`, `status`, table, `--json` and `-q` output, and the exit codes. Remove the `status busy|idle` alias and its help text.
-- Backend: `mission_resume`, `session_list`, and runtime-only `session_start_direct`, each with its tool test, and the registry list in `mcp/server.rs` updated.
+- `cli/src/main.rs`: the clap tree beside the in-mission commands, the mode switch on `env::resolve()`, the caller handle (`RUNNER_HANDLE` inside a mission, `--as` outside, else none), reference resolution, `runner call`, `status`, table, `--json` and `-q` output, and the exit codes. Remove the `status busy|idle` alias and its help text.
+- Backend: the `from` handle on `mission_post` and `mission_signal` with the `_human_` aliases, `mission_resume`, `session_list`, and runtime-only `session_start_direct`, each with its tool test, and the registry list in `mcp/server.rs` updated.
 - Tests:
   - every command builds the right tool name and argument JSON, checked without a socket;
   - a parity test fails when the app's tool registry has a tool with no command;
   - references: a role handle, a crew by exact name, an ambiguous crew name, a mission id prefix, and an ambiguous prefix each resolve or exit 2 as specified;
   - `-q` prints only the id; `--json` passes the result through unchanged;
   - the not-running path exits 3 with the message;
-  - `msg post` and `signal` behave exactly as before inside a mission, and call the human tools with `--mission` outside;
+  - `msg post` and `signal` behave exactly as before inside a mission, and call `mission_post` and `mission_signal` with `--mission` outside, passing `--as` through as `from` and nothing when absent; a `from` not in the roster is refused by the tool and exits 1;
   - `ask` builds the `ask_lead` and `ask_human` payloads, and `mission answer` builds `human_response`.
 
 ### Phase 2 — following and the agent guide
@@ -234,7 +236,8 @@ What each command calls:
 
 - [ ] Every tool in the registry has a CLI command, and `runner call` reaches any tool by name.
 - [ ] References resolve by handle, exact name, id, and unique prefix; ambiguity exits 2 with the candidates.
-- [ ] Inside a mission, `signal`, `msg post`, and `msg read` behave exactly as before, and mission commands default to the caller's mission; outside, `--mission` routes them to the human tools.
+- [ ] Inside a mission, `signal`, `msg post`, and `msg read` behave exactly as before, and mission commands default to the caller's mission and handle; outside, `--mission` routes them to `mission_post` and `mission_signal`, `--as` becomes `from`, and no handle means the person.
+- [ ] An MCP client calling the old `mission_post_human_*` names gets the same result as `mission_post` and `mission_signal` without `from`.
 - [ ] `--json` output equals the tool result; `-q` prints only the id; the default output is readable without either.
 - [ ] Exit codes are 0, 1, 2, and 3 as documented, and Runner not running always gives 3 with the message.
 - [ ] `mission start`, `chat start`, and `project create` default to the current directory.

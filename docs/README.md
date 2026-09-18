@@ -4,6 +4,7 @@ Project markdown lives here. Keep repo docs close to the code; the memory repo h
 
 ## Layout
 
+- [`roadmap.md`](./roadmap.md) — where the project is: the latest release, what has landed since, the release plan mirrored from the GitHub milestones, and the decisions shaping the next releases. Dated; update it when an issue moves milestone, a release is cut, or a mission lands.
 - [`arch/`](./arch/) — architecture references: how the system works today.
 - [`product/`](./product/) — product vision and direction: why we're building this, which surfaces matter.
 - [`features/`](./features/README.md) — feature specs, `{number}-{slug}.md`. Since 2026-09-01 the number **is** the spec's GitHub tracking issue — file the issue first, then name the spec after it.
