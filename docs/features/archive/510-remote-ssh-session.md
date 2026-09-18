@@ -1,6 +1,6 @@
 # Remote SSH session — direct chats and terminals on another host
 
-Tracking issue: [#510](https://github.com/yicheng47/runner/issues/510). Status: planned. Priority P2.
+Tracking issue: [#510](https://github.com/yicheng47/runner/issues/510). Status: **closed as not planned 2026-09-17**, superseded by [#645](https://github.com/yicheng47/runner/issues/645), the session host, whose phase 2 covers remote chats and mission slots alike; kept as the record of the Start Chat host field and the local-only spawn checks. Priority was P2.
 
 ## Motivation
 
