@@ -14,10 +14,12 @@ use crate::ipc::IpcStream;
 const CONNECT_TIMEOUT: Duration = Duration::from_millis(500);
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(3);
 pub const NOT_RUNNING_MESSAGE: &str = "Runner is not running. Open Runner and retry.";
+pub const BLOCKED_MESSAGE: &str = "Runner cannot be reached from this process: connecting to its socket was denied, which usually means a command sandbox. Run the same command again outside the sandbox.";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClientError {
     NotRunning,
+    Blocked,
     Refused(String),
     Protocol(String),
 }
@@ -26,6 +28,7 @@ impl std::fmt::Display for ClientError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::NotRunning => f.write_str(NOT_RUNNING_MESSAGE),
+            Self::Blocked => f.write_str(BLOCKED_MESSAGE),
             Self::Refused(message) | Self::Protocol(message) => f.write_str(message),
         }
     }
@@ -41,6 +44,29 @@ pub fn endpoint() -> Option<IpcEndpoint> {
     let debug = cfg!(debug_assertions);
     let app_data_dir = runner_core::app_paths::app_data_dir(debug)?;
     Some(runner_core::app_paths::mcp_endpoint(&app_data_dir, debug))
+}
+
+/// A sandboxed caller (Codex's default Seatbelt profile, for one) sees the socket but is
+/// denied the connection. That is not "Runner is not running", and telling the user to
+/// open an app that is already open is wrong advice.
+fn connect_failure(kind: std::io::ErrorKind, endpoint_exists: bool) -> ClientError {
+    if kind == std::io::ErrorKind::PermissionDenied && endpoint_exists {
+        ClientError::Blocked
+    } else {
+        ClientError::NotRunning
+    }
+}
+
+#[cfg(unix)]
+fn endpoint_exists(endpoint: &IpcEndpoint) -> bool {
+    endpoint.0.exists()
+}
+
+/// Opening a named pipe that is not there fails with not-found, so access denied
+/// already means the pipe exists.
+#[cfg(windows)]
+fn endpoint_exists(_endpoint: &IpcEndpoint) -> bool {
+    true
 }
 
 pub struct SocketClient {
@@ -59,7 +85,10 @@ impl SocketClient {
         })?;
         let stream = match timeout(CONNECT_TIMEOUT, IpcStream::connect(&endpoint)).await {
             Ok(Ok(stream)) => stream,
-            Ok(Err(_)) | Err(_) => return Err(ClientError::NotRunning),
+            Ok(Err(error)) => {
+                return Err(connect_failure(error.kind(), endpoint_exists(&endpoint)));
+            }
+            Err(_) => return Err(ClientError::NotRunning),
         };
         let (read, write) = stream.into_split();
         let write = tokio::io::BufWriter::new(write);
@@ -222,6 +251,36 @@ mod tests {
                 None,
             ))),
             ClientError::Refused("bad request".into())
+        );
+    }
+}
+
+#[cfg(test)]
+mod connect_failure_tests {
+    use super::*;
+    use std::io::ErrorKind;
+
+    #[test]
+    fn a_denied_connection_to_an_existing_socket_is_blocked_not_stopped() {
+        assert_eq!(
+            connect_failure(ErrorKind::PermissionDenied, true),
+            ClientError::Blocked
+        );
+        assert_eq!(ClientError::Blocked.to_string(), BLOCKED_MESSAGE);
+    }
+
+    #[test]
+    fn every_other_connect_failure_still_means_not_running() {
+        for kind in [
+            ErrorKind::NotFound,
+            ErrorKind::ConnectionRefused,
+            ErrorKind::TimedOut,
+        ] {
+            assert_eq!(connect_failure(kind, true), ClientError::NotRunning);
+        }
+        assert_eq!(
+            connect_failure(ErrorKind::PermissionDenied, false),
+            ClientError::NotRunning
         );
     }
 }
