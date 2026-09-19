@@ -32,6 +32,10 @@ Run these checks against `make run`. They intentionally change the development c
 - Confirm the healthy skill row has no status line and Settings → Skills shows `Managed by Runner` on the managed folder's ordinary row.
 - Stop a mission and confirm the human `runner-dev mission show <mission>` view prints `STATUS stopped`; confirm `mission stop`, `resume`, and `archive` print the crew name rather than its id.
 
+### Result, 2026-09-19
+
+Jason ran the checklist against `make run` on the PR branch and it passed. Windows CI needed two follow-ups before [#654](https://github.com/yicheng47/runner/pull/654) merged, both in tests only: helpers used solely by Unix tests were dead code under `-D warnings`, and two tests built a colon-separated login PATH from a temp folder, which a Windows drive letter splits.
+
 ## JASONPC checklist for mission 5
 
 - From a fresh release install, confirm the sidecar directory appears exactly once in the current user's `Path` and retains the registry value's original type.

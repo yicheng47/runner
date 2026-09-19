@@ -61,8 +61,12 @@ DISCOVER
 
 OUTPUT AND EXITS
   Add --json for structured output. Add -q when only the changed object's id is needed.
-  0 success; 1 Runner refused; 2 usage or reference error; 3 Runner is not running.
-  On exit 3, ask the user to open Runner. Use --help instead of guessing a command.
+  0 success; 1 Runner refused; 2 usage or reference error; 3 Runner is not running;
+  5 a sandbox kept this command from reaching Runner.
+  On exit 3, ask the user to open Runner. On exit 5, nothing is known about Runner yet:
+  run the same command again outside the sandbox (in Codex, request escalated permissions
+  for it) before telling the user anything.
+  Use --help instead of guessing a command.
 
 REFERENCES
   Roles use their unique handle. Crews and projects accept an id or exact name.

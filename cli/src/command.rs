@@ -468,6 +468,7 @@ impl From<ClientError> for CliError {
     fn from(error: ClientError) -> Self {
         let code = match error {
             ClientError::NotRunning => 3,
+            ClientError::Blocked => 5,
             ClientError::Refused(_) | ClientError::Protocol(_) => 1,
         };
         Self {
@@ -2657,6 +2658,9 @@ mod tests {
     fn client_failures_map_to_documented_exit_codes() {
         assert_eq!(CliError::from(ClientError::Refused("no".into())).code, 1);
         assert_eq!(CliError::from(ClientError::NotRunning).code, 3);
+        let blocked = CliError::from(ClientError::Blocked);
+        assert_eq!(blocked.code, 5);
+        assert_eq!(blocked.message, runner_cli::client::BLOCKED_MESSAGE);
     }
 
     #[test]

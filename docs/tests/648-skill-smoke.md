@@ -46,9 +46,13 @@ Run this gate against a nightly or release build, not `make run`, because the re
 
 | Runtime | Skill fired unprompted | Read guide | Started mission | Followed feed | Notes |
 | --- | --- | --- | --- | --- | --- |
-| Claude Code | [ ] | [ ] | [ ] | [ ] | |
-| Codex | [ ] | [ ] | [ ] | [ ] | |
-| pi | [ ] | [ ] | [ ] | [ ] | |
-| TRAE CLI | [ ] | [ ] | [ ] | [ ] | |
+| Claude Code | [ ] | [ ] | [ ] | [ ] | Not run fresh. A session that already knew the CLI drove the production app through the skill on 2026-09-19 (mechanics only, not the unprompted trigger); `/skills` lists `runner` as on. |
+| Codex | [x] | [x] | [ ] | [ ] | 2026-09-19 on `nightly.5b6030a`, Ghostty: read the skill unprompted, recovered by itself from running the absolute path unquoted, read `help agents`; then `status` exited 3 although Runner was open, because Codex's default sandbox (`workspace-write`, network off) denies the socket connection with `EPERM`. Fixed by exit code 5 and its rule; re-run on the next nightly. |
+| pi | [x] | [x] | [x] | [x] | 2026-09-19 on `nightly.5b6030a`, Ghostty: passed; pi has no command sandbox. |
+| TRAE CLI | [ ] | [ ] | [ ] | [ ] | Not run. On `nightly.5b6030a` TRAE's root is skipped while TRAE is switched off in Settings → Agents; from mission 4's build detection alone decides. |
 
 Mission 3 does not start until all four rows pass.
+
+### The sandbox finding (2026-09-19)
+
+Reproduce without an agent: `codex sandbox -- "<sidecar>" status` exits 5 with the blocked message where the same command outside exits 0 or 3, and `help agents` works inside because it needs no socket. A probe inside the sandbox sees the socket file and gets `EPERM` from `connect()`. With Codex's `on-request` approval the agent can ask to run the command outside the sandbox, which is what the skill's rule 2 and `help agents` now tell it to do. Runner's own Codex chats launch with the same `--ask-for-approval on-request --sandbox workspace-write` by default, so the rule matters inside Runner too; mission slots run in bypass mode and write the event log without the socket, so they were never affected.

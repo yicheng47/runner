@@ -77,7 +77,7 @@ Runner is the local cockpit for coordinating CLI coding agents. Crews are reusab
 Rules:
 
 1. Prefer `--json` for structured output.
-2. Exit code 3 means Runner is not running; ask the user to open Runner.
+2. Exit code 3 means Runner is not running; ask the user to open Runner. Exit code 5 means a sandbox kept the command from reaching Runner, so nothing is known about Runner yet: run the same command again outside the sandbox (in Codex, request escalated permissions for it) before telling the user anything.
 3. Use `--help` rather than guessing commands.
 4. Inside a mission, mission commands carry your own handle. Outside a mission you act for the user: your posts and answers appear as the person. Never pass `--as` to speak as a slot you were not given.
 "#
