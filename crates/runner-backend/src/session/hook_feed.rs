@@ -630,12 +630,22 @@ mod tests {
     }
 
     #[cfg(windows)]
+    fn drained_ids(feed: &mut HookFeed) -> Vec<usize> {
+        let mut ids = Vec::new();
+        feed.drain(true, |report| {
+            assert_eq!(report["hook_event_name"], "Stop");
+            ids.push(report["id"].as_u64().unwrap() as usize);
+        })
+        .unwrap();
+        ids.sort_unstable();
+        ids
+    }
+
+    #[cfg(windows)]
     #[test]
-    fn powershell_reporter_serializes_concurrent_appends_under_the_feed_mutex() {
-        use std::io::Write;
-        const WAVE: usize = 25;
+    fn powershell_reporter_waits_for_the_feed_mutex() {
         let root = tempfile::tempdir().unwrap();
-        let path = status_path(&root.path().join("Jason's app data"), "concurrent");
+        let path = status_path(&root.path().join("Jason's app data"), "held");
         for shell in POWERSHELLS {
             if run_powershell(shell, "exit 0", &[], b"").is_none() {
                 continue;
@@ -654,9 +664,64 @@ mod tests {
             drop(lock);
             assert_quiet_success(blocked);
 
-            // A hundred writers in waves: every hook in a wave starts, blocks on stdin,
-            // then all stdins close together, the overlap that lost records before the mutex.
-            for wave in 0..4 {
+            assert_eq!(drained_ids(&mut feed), vec![0], "{shell}");
+            drop(feed);
+            assert_eq!(fs::read_dir(path.parent().unwrap()).unwrap().count(), 0);
+        }
+    }
+
+    /// The reporter waits one second for the mutex and then gives its report up, so a hook
+    /// can never stall an agent. Nothing may be appended and no payload may be left behind.
+    #[cfg(windows)]
+    #[test]
+    fn powershell_reporter_drops_its_report_when_the_feed_mutex_stays_held() {
+        let root = tempfile::tempdir().unwrap();
+        let path = status_path(&root.path().join("Jason's app data"), "dropped");
+        for shell in POWERSHELLS {
+            if run_powershell(shell, "exit 0", &[], b"").is_none() {
+                continue;
+            }
+            let mut feed = HookFeed::start_powershell(&path, "current".into(), "").unwrap();
+
+            let lock = HeldFeedLock::acquire(&path);
+            let starved = spawn_powershell_hook(shell, &path, 7);
+            wait_for_payloads(&path, 1);
+            assert_quiet_success(starved);
+            assert_eq!(
+                fs::metadata(&path).unwrap().len(),
+                0,
+                "{shell} appended without the lock"
+            );
+            assert_eq!(payload_count(&path), 0, "{shell} left its payload behind");
+            drop(lock);
+
+            assert!(drained_ids(&mut feed).is_empty(), "{shell}");
+            drop(feed);
+            assert_eq!(fs::read_dir(path.parent().unwrap()).unwrap().count(), 0);
+        }
+    }
+
+    /// Appends that overlap must all land: before the mutex two hooks could seek to the same
+    /// end of the feed and one record was lost. Overlap is what reproduces that, not volume,
+    /// so the waves stay small enough that the last hook in line never reaches the reporter's
+    /// one-second wait, even on a slow runner. A wave of 25 did, and lost records to the
+    /// timeout rather than to a race.
+    #[cfg(windows)]
+    #[test]
+    fn powershell_reporter_loses_no_record_when_appends_overlap() {
+        use std::io::Write;
+        const WAVE: usize = 6;
+        const WAVES: usize = 6;
+        let root = tempfile::tempdir().unwrap();
+        let path = status_path(&root.path().join("Jason's app data"), "concurrent");
+        for shell in POWERSHELLS {
+            if run_powershell(shell, "exit 0", &[], b"").is_none() {
+                continue;
+            }
+            let mut feed = HookFeed::start_powershell(&path, "current".into(), "").unwrap();
+
+            // Every hook in a wave starts and blocks on stdin, then all stdins close together.
+            for wave in 0..WAVES {
                 let mut hooks = (0..WAVE)
                     .map(|_| start_powershell_hook(shell, &path))
                     .collect::<Vec<_>>();
@@ -666,7 +731,7 @@ mod tests {
                     .enumerate()
                     .map(|(index, hook)| {
                         let mut stdin = hook.stdin.take().unwrap();
-                        let id = 1 + wave * WAVE + index;
+                        let id = wave * WAVE + index;
                         stdin
                             .write_all(format!("{{\"id\":{id}}}").as_bytes())
                             .unwrap();
@@ -676,14 +741,12 @@ mod tests {
                 drop(stdins);
                 hooks.into_iter().for_each(assert_quiet_success);
             }
-            let mut ids = Vec::new();
-            feed.drain(true, |report| {
-                assert_eq!(report["hook_event_name"], "Stop");
-                ids.push(report["id"].as_u64().unwrap() as usize);
-            })
-            .unwrap();
-            ids.sort_unstable();
-            assert_eq!(ids, (0..=4 * WAVE).collect::<Vec<_>>(), "{shell}");
+
+            assert_eq!(
+                drained_ids(&mut feed),
+                (0..WAVES * WAVE).collect::<Vec<_>>(),
+                "{shell}"
+            );
             drop(feed);
             assert_eq!(fs::read_dir(path.parent().unwrap()).unwrap().count(), 0);
         }
