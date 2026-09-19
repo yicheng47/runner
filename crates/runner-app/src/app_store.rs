@@ -21,8 +21,14 @@ use crate::app_settings::{
     AppSettings, DarkTerminalTheme, LightTerminalTheme, TerminalCursorStyle, TerminalFontFamily,
 };
 
+mod command_default;
 mod mcp_defaults;
 mod skill_defaults;
+pub(crate) use command_default::{
+    mark_command_install_initialized, run_user_command_action, CommandInstallSupport,
+    UserCommandAction,
+};
+pub(crate) use skill_defaults::RunnerSkillStatus;
 
 #[derive(Clone)]
 pub(crate) struct GlobalAppStore(pub(crate) Entity<AppStore>);
@@ -230,6 +236,7 @@ impl From<&AppSettings> for ShellSettingsSnapshot {
         settings.default_runtime.hash(&mut hasher);
         settings.disabled_agents.hash(&mut hasher);
         settings.enabled_agents.hash(&mut hasher);
+        settings.runner_skill_enabled.hash(&mut hasher);
         settings.keymap_overrides.hash(&mut hasher);
         Self(hasher.finish())
     }
@@ -248,7 +255,12 @@ pub(crate) struct AppStore {
     pub(crate) session_activity: BTreeMap<String, SessionActivityState>,
     pub(crate) settings: AppSettings,
     settings_path: PathBuf,
-    skill_home: Option<PathBuf>,
+    pub(crate) home_dir: Option<PathBuf>,
+    command_install_support: Option<CommandInstallSupport>,
+    runner_command_status: Option<runner_backend::cli_install::RunnerCommandStatus>,
+    command_install_requires_escalation: bool,
+    command_action_target: Option<PathBuf>,
+    runner_skill_status: RunnerSkillStatus,
     pub(crate) revisions: StoreRevisions,
     pub(crate) error: Option<String>,
     collecting_startup_errors: bool,
@@ -257,7 +269,8 @@ pub(crate) struct AppStore {
 impl AppStore {
     pub(crate) fn new(
         core: AppCore,
-        skill_home: Option<PathBuf>,
+        home_dir: Option<PathBuf>,
+        command_install_support: Option<CommandInstallSupport>,
         settings_path: PathBuf,
         settings: AppSettings,
         settings_error: Option<String>,
@@ -358,7 +371,12 @@ impl AppStore {
             session_activity: BTreeMap::new(),
             settings,
             settings_path,
-            skill_home,
+            home_dir,
+            command_install_support,
+            runner_command_status: None,
+            command_install_requires_escalation: false,
+            command_action_target: None,
+            runner_skill_status: RunnerSkillStatus::default(),
             revisions: StoreRevisions::default(),
             error: None,
             collecting_startup_errors: true,
@@ -368,6 +386,7 @@ impl AppStore {
         } else {
             store.initialize_mcp_defaults();
             store.initialize_skill_defaults();
+            store.initialize_command_default();
         }
         store
             .core
@@ -388,6 +407,7 @@ impl AppStore {
         if matches!(refresh, StoreRefreshKind::Runtimes | StoreRefreshKind::All) {
             self.initialize_mcp_defaults();
             self.initialize_skill_defaults();
+            self.initialize_command_default();
         }
         if matches!(refresh, StoreRefreshKind::Activity | StoreRefreshKind::All) {
             self.refresh_activity_inner();
@@ -533,6 +553,7 @@ impl AppStore {
         {
             self.initialize_mcp_defaults();
             self.initialize_skill_defaults();
+            self.initialize_command_default();
         }
         if persist {
             self.save_settings();

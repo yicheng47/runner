@@ -1,50 +1,107 @@
-use runner_backend::agent_skill::{self, InstallOutcome};
+use std::path::{Path, PathBuf};
+
+use runner_backend::agent_skill::{self, SkillRootState};
 use runner_backend::model::Runtime;
 use runner_backend::ops::runtime::runtime_catalog;
 
 use super::AppStore;
-use crate::app_settings::AppSettings;
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct RunnerSkillStatus {
+    pub(crate) detected: bool,
+    pub(crate) foreign: Option<PathBuf>,
+}
 
 impl AppStore {
     pub(crate) fn initialize_skill_defaults(&mut self) {
-        let Some(home) = self.skill_home.clone() else {
+        let Some(home) = self.home_dir.clone() else {
+            self.runner_skill_status = RunnerSkillStatus::default();
             return;
         };
         let debug = cfg!(debug_assertions);
-        if let Err(error) = agent_skill::refresh(&home, &self.core.app_data_dir, debug) {
-            eprintln!("Runner skill refresh failed: {error}");
+        if !self.settings.runner_skill_enabled {
+            if let Err(error) = agent_skill::remove(&home, debug) {
+                eprintln!("Runner skill removal failed: {error}");
+            }
         }
         let catalog = match runtime_catalog(&self.core) {
             Ok(catalog) => catalog,
             Err(error) => {
                 eprintln!("Runner skill defaults failed: {error}");
+                self.runner_skill_status = RunnerSkillStatus::default();
                 return;
             }
         };
         let content =
             agent_skill::render(debug, &agent_skill::sidecar_path(&self.core.app_data_dir));
-        let mut changed = false;
-        for relative in agent_skill::SKILL_ROOTS {
-            let eligible = root_runtimes(relative).iter().any(|runtime| {
-                catalog.iter().any(|entry| {
-                    entry.name == *runtime
-                        && entry.available
-                        && self
-                            .settings
-                            .is_agent_enabled(entry.name, entry.default_enabled)
-                })
-            });
-            match initialize_root(&mut self.settings, relative, eligible, || {
-                agent_skill::install_root(&home.join(relative), debug, &content)
-            }) {
-                Ok(initialized) => changed |= initialized,
-                Err(error) => eprintln!("Runner skill default for {relative} failed: {error}"),
-            }
+        let available = catalog
+            .iter()
+            .filter(|entry| entry.available)
+            .map(|entry| entry.name)
+            .collect::<Vec<_>>();
+        if self.settings.runner_skill_enabled {
+            reconcile_skill_roots(&home, debug, &content, &available);
         }
-        if changed {
-            self.save_settings();
+        self.runner_skill_status = skill_status(&home, debug, &content, &available);
+    }
+
+    pub(crate) fn refresh_runner_skill_status(&mut self) {
+        let Some(home) = &self.home_dir else {
+            self.runner_skill_status = RunnerSkillStatus::default();
+            return;
+        };
+        let Ok(catalog) = runtime_catalog(&self.core) else {
+            self.runner_skill_status = RunnerSkillStatus::default();
+            return;
+        };
+        let debug = cfg!(debug_assertions);
+        let expected =
+            agent_skill::render(debug, &agent_skill::sidecar_path(&self.core.app_data_dir));
+        let available = catalog
+            .iter()
+            .filter(|entry| entry.available)
+            .map(|entry| entry.name)
+            .collect::<Vec<_>>();
+        self.runner_skill_status = skill_status(home, debug, &expected, &available);
+    }
+
+    pub(crate) fn runner_skill_status(&self) -> &RunnerSkillStatus {
+        &self.runner_skill_status
+    }
+}
+
+fn skill_status(
+    home: &Path,
+    debug: bool,
+    expected: &str,
+    available: &[Runtime],
+) -> RunnerSkillStatus {
+    let mut status = RunnerSkillStatus::default();
+    for relative in agent_skill::SKILL_ROOTS {
+        let detected = root_is_detected(relative, available);
+        status.detected |= detected;
+        let root_status = agent_skill::status_root(&home.join(relative), debug, expected);
+        if root_status.state == SkillRootState::Foreign && status.foreign.is_none() {
+            status.foreign = Some(root_status.folder);
         }
     }
+    status
+}
+
+fn reconcile_skill_roots(home: &Path, debug: bool, content: &str, available: &[Runtime]) {
+    for relative in agent_skill::SKILL_ROOTS {
+        if root_is_detected(relative, available) {
+            if let Err(error) = agent_skill::install_root(&home.join(relative), debug, content) {
+                eprintln!("Runner skill default for {relative} failed: {error}");
+            }
+        }
+    }
+}
+
+fn root_is_detected(relative: &str, available: &[Runtime]) -> bool {
+    root_runtimes(relative)
+        .iter()
+        .any(|runtime| available.contains(runtime))
 }
 
 fn root_runtimes(relative: &str) -> &'static [Runtime] {
@@ -54,19 +111,6 @@ fn root_runtimes(relative: &str) -> &'static [Runtime] {
         ".trae/skills" => &[Runtime::Trae],
         _ => &[],
     }
-}
-
-fn initialize_root(
-    settings: &mut AppSettings,
-    relative: &str,
-    eligible: bool,
-    install: impl FnOnce() -> runner_backend::error::Result<InstallOutcome>,
-) -> runner_backend::error::Result<bool> {
-    if settings.initialized_skill_roots.contains(relative) || !eligible {
-        return Ok(false);
-    }
-    install()?;
-    Ok(settings.initialized_skill_roots.insert(relative.into()))
 }
 
 #[cfg(test)]
@@ -79,90 +123,27 @@ mod tests {
     use std::fs;
     use std::sync::{Arc, Mutex, RwLock};
 
-    #[test]
-    fn root_runtime_ownership_matches_the_three_shared_locations() {
-        assert_eq!(root_runtimes(".claude/skills"), &[Runtime::ClaudeCode]);
-        assert_eq!(
-            root_runtimes(".agents/skills"),
-            &[Runtime::Codex, Runtime::Copilot, Runtime::Pi]
-        );
-        assert_eq!(root_runtimes(".trae/skills"), &[Runtime::Trae]);
-    }
-
-    #[test]
-    fn initializes_each_eligible_root_once_and_respects_removal() {
-        let mut settings = AppSettings::default();
-        let mut installs = 0;
-        assert!(initialize_root(&mut settings, ".agents/skills", true, || {
-            installs += 1;
-            Ok(InstallOutcome::Installed)
-        })
-        .unwrap());
-        assert_eq!(installs, 1);
-        assert!(!initialize_root(&mut settings, ".agents/skills", true, || {
-            panic!("a removed skill must not be reinstalled")
-        })
-        .unwrap());
-
-        let reloaded: AppSettings =
-            serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
-        assert!(reloaded.initialized_skill_roots.contains(".agents/skills"));
-    }
-
-    #[test]
-    fn unavailable_root_is_not_recorded_and_can_install_later() {
-        let mut settings = AppSettings::default();
-        assert!(!initialize_root(&mut settings, ".trae/skills", false, || {
-            panic!("an unavailable root must not be installed")
-        })
-        .unwrap());
-        assert!(settings.initialized_skill_roots.is_empty());
-        assert!(initialize_root(&mut settings, ".trae/skills", true, || {
-            Ok(InstallOutcome::Installed)
-        })
-        .unwrap());
-    }
-
-    #[test]
-    fn foreign_root_is_attempted_once_without_becoming_runner_owned() {
-        let mut settings = AppSettings::default();
-        assert!(initialize_root(&mut settings, ".claude/skills", true, || {
-            Ok(InstallOutcome::Foreign)
-        })
-        .unwrap());
-        assert!(settings.initialized_skill_roots.contains(".claude/skills"));
-    }
-
-    #[test]
-    fn app_store_startup_uses_only_the_injected_skill_home() {
-        let temp = tempfile::tempdir().unwrap();
-        let skill_home = temp.path().join("test-home");
-        let untouched_home = temp.path().join("not-the-test-home");
-        let app_data = temp.path().join("app-data");
-        let executable = temp
-            .path()
-            .join(format!("codex{}", std::env::consts::EXE_SUFFIX));
-        fs::write(&executable, "test").unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
-        }
-        for home in [&skill_home, &untouched_home] {
-            for relative in [".claude/skills", ".trae/skills"] {
-                let folder = home.join(relative).join("runner-dev");
-                fs::create_dir_all(&folder).unwrap();
-                fs::write(folder.join(agent_skill::SKILL_MARKER), "managed").unwrap();
-                fs::write(folder.join("SKILL.md"), "stale canary").unwrap();
-            }
-        }
-
-        let runtime_shell_env = Arc::new(RwLock::new(shell_path::LoginShellEnv::default()));
-        let runtime_discovery =
-            Arc::new(RwLock::new(shell_path::DiscoveryState::startup(None, None)));
-        let core = AppCore {
-            db: Arc::new(db::open_pool(&temp.path().join("runner.db")).unwrap()),
-            app_data_dir: app_data.clone(),
+    fn test_core(temp: &Path, app_data: PathBuf) -> AppCore {
+        let isolated_path = temp.join("empty-bin").display().to_string();
+        let runtime_shell_env = Arc::new(RwLock::new(shell_path::LoginShellEnv {
+            path: Some(isolated_path.clone()),
+            ..Default::default()
+        }));
+        let mut discovery = shell_path::DiscoveryState::startup(None, None);
+        discovery.checking = false;
+        discovery.result = Some(shell_path::DiscoveryResult {
+            shell: None,
+            outcome: shell_path::DiscoveryOutcome::Ok,
+            duration_ms: 0,
+            env: shell_path::LoginShellEnv {
+                path: Some(isolated_path),
+                ..Default::default()
+            },
+        });
+        let runtime_discovery = Arc::new(RwLock::new(discovery));
+        AppCore {
+            db: Arc::new(db::open_pool(&temp.join("runner.db")).unwrap()),
+            app_data_dir: app_data,
             sessions: session::SessionManager::new(
                 Arc::clone(&runtime_shell_env),
                 Arc::clone(&runtime_discovery),
@@ -178,38 +159,141 @@ mod tests {
             events: events::EventChannel::new(),
             session_event_observer: Default::default(),
             app_version: "0.0.0-test".into(),
-        };
+        }
+    }
+
+    #[test]
+    fn root_runtime_ownership_matches_the_three_shared_locations() {
+        assert_eq!(root_runtimes(".claude/skills"), &[Runtime::ClaudeCode]);
+        assert_eq!(
+            root_runtimes(".agents/skills"),
+            &[Runtime::Codex, Runtime::Copilot, Runtime::Pi]
+        );
+        assert_eq!(root_runtimes(".trae/skills"), &[Runtime::Trae]);
+    }
+
+    #[test]
+    fn detected_roots_install_restore_and_pick_up_later_detection() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join("home");
+        let content = "managed skill";
+
+        reconcile_skill_roots(&home, true, content, &[Runtime::Codex]);
+        assert_eq!(
+            fs::read_to_string(home.join(".agents/skills/runner-dev/SKILL.md")).unwrap(),
+            content
+        );
+        assert!(!home.join(".claude/skills/runner-dev").exists());
+        assert!(!home.join(".trae/skills/runner-dev").exists());
+
+        fs::remove_dir_all(home.join(".agents/skills/runner-dev")).unwrap();
+        reconcile_skill_roots(&home, true, content, &[Runtime::Codex]);
+        assert_eq!(
+            fs::read_to_string(home.join(".agents/skills/runner-dev/SKILL.md")).unwrap(),
+            content
+        );
+
+        reconcile_skill_roots(&home, true, content, &[Runtime::Codex, Runtime::ClaudeCode]);
+        assert_eq!(
+            fs::read_to_string(home.join(".claude/skills/runner-dev/SKILL.md")).unwrap(),
+            content
+        );
+    }
+
+    #[test]
+    fn startup_uses_only_the_injected_home_and_detection_ignores_agent_switches() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join("test-home");
+        let untouched_home = temp.path().join("not-the-test-home");
+        let app_data = temp.path().join("app-data");
+        let executable = temp
+            .path()
+            .join(format!("codex{}", std::env::consts::EXE_SUFFIX));
+        fs::write(&executable, "test").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        for target_home in [&home, &untouched_home] {
+            let folder = target_home.join(".agents/skills/runner-dev");
+            fs::create_dir_all(&folder).unwrap();
+            fs::write(folder.join(agent_skill::SKILL_MARKER), "managed").unwrap();
+            fs::write(folder.join("SKILL.md"), "stale canary").unwrap();
+        }
+
+        let core = test_core(temp.path(), app_data.clone());
         db::set_runtime_override(&core.db, Runtime::Codex.key(), executable.to_str()).unwrap();
+        let mut settings = crate::app_settings::AppSettings::default();
+        settings.disabled_agents.insert("codex".into());
         let mut cx = TestAppContext::single();
         let store = cx.new(|cx| {
             AppStore::new(
                 core,
-                Some(skill_home.clone()),
+                Some(home.clone()),
+                None,
                 temp.path().join("settings.json"),
-                AppSettings::default(),
+                settings,
                 None,
                 cx,
             )
         });
 
         let expected = agent_skill::render(true, &agent_skill::sidecar_path(&app_data));
+        assert_eq!(
+            fs::read_to_string(home.join(".agents/skills/runner-dev/SKILL.md")).unwrap(),
+            expected
+        );
+        assert_eq!(
+            fs::read_to_string(untouched_home.join(".agents/skills/runner-dev/SKILL.md")).unwrap(),
+            "stale canary"
+        );
+        assert!(store.read_with(&cx, |store, _| store.runner_skill_status().detected));
+
+        fs::remove_dir_all(home.join(".agents/skills/runner-dev")).unwrap();
+        store.update(&mut cx, |store, _| store.initialize_skill_defaults());
+        assert_eq!(
+            fs::read_to_string(home.join(".agents/skills/runner-dev/SKILL.md")).unwrap(),
+            expected
+        );
+    }
+
+    #[test]
+    fn disabled_switch_removes_all_owned_roots_and_stays_off() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join("home");
+        let app_data = temp.path().join("app");
+        agent_skill::install(&home, &app_data, true).unwrap();
+        let foreign = home.join(".trae/skills/runner-dev");
+        fs::remove_file(foreign.join(agent_skill::SKILL_MARKER)).unwrap();
+        let settings = crate::app_settings::AppSettings {
+            runner_skill_enabled: false,
+            ..Default::default()
+        };
+        let core = test_core(temp.path(), app_data);
+        let mut cx = TestAppContext::single();
+        let store = cx.new(|cx| {
+            AppStore::new(
+                core,
+                Some(home.clone()),
+                None,
+                temp.path().join("settings.json"),
+                settings,
+                None,
+                cx,
+            )
+        });
         for relative in agent_skill::SKILL_ROOTS {
-            assert_eq!(
-                fs::read_to_string(skill_home.join(relative).join("runner-dev/SKILL.md")).unwrap(),
-                expected
-            );
+            let folder = home.join(relative).join("runner-dev");
+            if *relative == ".trae/skills" {
+                assert!(folder.exists());
+            } else {
+                assert!(!folder.exists());
+            }
         }
-        assert!(store.read_with(&cx, |store, _| store
-            .settings
-            .initialized_skill_roots
-            .contains(".agents/skills")));
-        for relative in [".claude/skills", ".trae/skills"] {
-            assert_eq!(
-                fs::read_to_string(untouched_home.join(relative).join("runner-dev/SKILL.md"))
-                    .unwrap(),
-                "stale canary"
-            );
-        }
-        assert!(!untouched_home.join(".agents/skills/runner-dev").exists());
+        assert_eq!(
+            store.read_with(&cx, |store, _| store.runner_skill_status().foreign.clone()),
+            Some(foreign)
+        );
     }
 }

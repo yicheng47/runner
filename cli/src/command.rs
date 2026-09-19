@@ -567,7 +567,7 @@ fn output_view(command: &Command) -> output::View {
             MissionCommand::List { .. } => View::MissionList,
             MissionCommand::Show { .. } => View::MissionShow,
             MissionCommand::Feed { .. } => View::MissionFeed,
-            MissionCommand::Resume { .. } => View::Confirmation("Resumed mission"),
+            MissionCommand::Resume { .. } => View::Mission,
             MissionCommand::Answer { .. } => View::Confirmation("Answered question"),
             MissionCommand::Start { .. }
             | MissionCommand::Stop { .. }
@@ -894,6 +894,7 @@ fn status_response(client: &SocketClient, context: &BusContext) -> Result<ToolRe
     let home = runner_core::app_paths::home_dir()
         .ok_or_else(|| CliError::usage("Runner home directory could not be resolved"))?;
     let skills = skill_statuses(&home, debug);
+    let command = command_install_status(&home, &sidecar, &app_data, debug);
     let mode = match context {
         BusContext::Mission(mission) => {
             format!(
@@ -911,8 +912,152 @@ fn status_response(client: &SocketClient, context: &BusContext) -> Result<ToolRe
         "sidecar": sidecar,
         "sidecar_present": sidecar.is_file(),
         "mode": mode,
+        "command": command,
         "skills": skills,
     }))
+}
+
+fn command_install_status(home: &Path, sidecar: &Path, app_data: &Path, debug: bool) -> Value {
+    let process_path = std::env::var("PATH").unwrap_or_default();
+    command_install_status_with_path(home, sidecar, app_data, debug, &process_path)
+}
+
+fn command_install_status_with_path(
+    home: &Path,
+    sidecar: &Path,
+    app_data: &Path,
+    debug: bool,
+    process_path: &str,
+) -> Value {
+    #[cfg(windows)]
+    let _ = home;
+    #[cfg(windows)]
+    let status = {
+        let sidecar_dir = sidecar.parent().unwrap_or(Path::new(""));
+        let user_path = read_windows_user_path().unwrap_or_default();
+        let mut search_path = path_without_runner_entries(
+            process_path,
+            app_data,
+            runner_core::command_install::PathStyle::Windows,
+        );
+        if !search_path.is_empty() {
+            search_path.push(';');
+        }
+        search_path.push_str(&sidecar_dir.to_string_lossy());
+        runner_core::command_install::inspect_windows_command(
+            sidecar_dir,
+            &user_path,
+            &search_path,
+            debug,
+        )
+    };
+    #[cfg(not(windows))]
+    let status = runner_core::command_install::inspect_unix_command(
+        sidecar,
+        &path_without_runner_entries(
+            process_path,
+            app_data,
+            runner_core::command_install::PathStyle::Unix,
+        ),
+        &home.join(".local/bin"),
+        Path::new("/usr/local/bin"),
+        debug,
+    );
+    serde_json::to_value(status).expect("command status is serializable")
+}
+
+fn path_without_runner_entries(
+    search_path: &str,
+    app_data: &Path,
+    style: runner_core::command_install::PathStyle,
+) -> String {
+    let separator = match style {
+        runner_core::command_install::PathStyle::Unix => ":",
+        runner_core::command_install::PathStyle::Windows => ";",
+    };
+    runner_core::command_install::path_entries(search_path, style)
+        .into_iter()
+        .filter(|entry| !runner_core::command_install::path_is_within(entry, app_data, style))
+        .map(|entry| entry.to_string_lossy().into_owned())
+        .collect::<Vec<_>>()
+        .join(separator)
+}
+
+#[cfg(windows)]
+fn read_windows_user_path() -> Result<String, CliError> {
+    use windows_sys::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_SUCCESS};
+    use windows_sys::Win32::System::Registry::{
+        RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY_CURRENT_USER, KEY_QUERY_VALUE,
+    };
+
+    let environment = "Environment"
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let name = "Path"
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let mut key = std::ptr::null_mut();
+    let status = unsafe {
+        RegOpenKeyExW(
+            HKEY_CURRENT_USER,
+            environment.as_ptr(),
+            0,
+            KEY_QUERY_VALUE,
+            &mut key,
+        )
+    };
+    if status != ERROR_SUCCESS {
+        return Err(CliError {
+            code: 1,
+            message: format!("open HKCU\\Environment failed with code {status}"),
+        });
+    }
+    let mut bytes = 0;
+    let status = unsafe {
+        RegQueryValueExW(
+            key,
+            name.as_ptr(),
+            std::ptr::null(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &mut bytes,
+        )
+    };
+    if status == ERROR_FILE_NOT_FOUND {
+        unsafe { RegCloseKey(key) };
+        return Ok(String::new());
+    }
+    if status != ERROR_SUCCESS {
+        unsafe { RegCloseKey(key) };
+        return Err(CliError {
+            code: 1,
+            message: format!("read HKCU\\Environment Path size failed with code {status}"),
+        });
+    }
+    let mut data = vec![0u16; bytes as usize / 2];
+    let status = unsafe {
+        RegQueryValueExW(
+            key,
+            name.as_ptr(),
+            std::ptr::null(),
+            std::ptr::null_mut(),
+            data.as_mut_ptr().cast(),
+            &mut bytes,
+        )
+    };
+    unsafe { RegCloseKey(key) };
+    if status != ERROR_SUCCESS {
+        return Err(CliError {
+            code: 1,
+            message: format!("read HKCU\\Environment Path failed with code {status}"),
+        });
+    }
+    while data.last() == Some(&0) {
+        data.pop();
+    }
+    Ok(String::from_utf16_lossy(&data))
 }
 
 fn skill_statuses(home: &Path, debug: bool) -> Vec<Value> {
@@ -1710,7 +1855,47 @@ async fn mission_lifecycle(
     context: &BusContext,
 ) -> Result<ToolResponse, CliError> {
     let id = resolve_mission_arg(client, mission, context).await?;
-    call(client, tool, json!({"id": id})).await
+    let mut response = call(client, tool, json!({"id": id})).await?;
+    if tool == "mission_resume" {
+        let mission = call(client, "mission_get", json!({"id": id})).await?;
+        response.value = mission.value;
+    } else if tool == "mission_stop" {
+        if let Some(mission) = mission_value_mut(&mut response.value).as_object_mut() {
+            mission.insert("status".into(), Value::String("stopped".into()));
+        }
+    }
+    let crew_id = mission_value(&response.value)
+        .get("crew_id")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    if let Some(crew_id) = crew_id {
+        if let Ok(crews) = list(client, "crew_list", json!({})).await {
+            if let Some(name) = crews
+                .iter()
+                .find(|crew| field(crew, "id") == Some(&crew_id))
+                .and_then(|crew| field(crew, "name"))
+                .map(str::to_owned)
+            {
+                let mission = mission_value_mut(&mut response.value);
+                if let Some(mission) = mission.as_object_mut() {
+                    mission.insert("crew_name".into(), Value::String(name));
+                }
+            }
+        }
+    }
+    Ok(response)
+}
+
+fn mission_value(value: &Value) -> &Value {
+    value.get("mission").unwrap_or(value)
+}
+
+fn mission_value_mut(value: &mut Value) -> &mut Value {
+    if value.get("mission").is_some() {
+        value.get_mut("mission").expect("mission exists")
+    } else {
+        value
+    }
 }
 
 async fn resolve_scoped_mission(
@@ -2535,6 +2720,67 @@ mod tests {
         );
     }
 
+    #[test]
+    fn command_status_path_filter_drops_only_runner_app_data_entries() {
+        assert_eq!(
+            path_without_runner_entries(
+                "/app/data/missions/id/shims/coder/bin:/app/data/bin:/usr/local/bin",
+                Path::new("/app/data"),
+                runner_core::command_install::PathStyle::Unix,
+            ),
+            "/usr/local/bin"
+        );
+        assert_eq!(
+            path_without_runner_entries(
+                r"C:\Runner\Data\bin;C:\Runner\Data\missions\id\shims\coder\bin;C:\Tools",
+                Path::new(r"c:\runner\data"),
+                runner_core::command_install::PathStyle::Windows,
+            ),
+            r"C:\Tools"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn command_status_ignores_runner_sidecar_and_shim_before_the_owned_link() {
+        use std::os::unix::fs::{symlink, PermissionsExt as _};
+
+        let temp = tempfile::tempdir().unwrap();
+        let app_data = temp.path().join("app-data");
+        let sidecar = app_data.join("bin/runner");
+        let shim_dir = app_data.join("missions/mission/shims/coder/bin");
+        let shim = shim_dir.join("runner");
+        let home = temp.path().join("home");
+        let local_bin = home.join(".local/bin");
+        let link = local_bin.join("runner");
+        for executable in [&sidecar, &shim] {
+            std::fs::create_dir_all(executable.parent().unwrap()).unwrap();
+            std::fs::write(executable, "runner").unwrap();
+            std::fs::set_permissions(executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        std::fs::create_dir_all(&local_bin).unwrap();
+        symlink(&sidecar, &link).unwrap();
+        let path = format!(
+            "{}:{}:{}",
+            shim_dir.display(),
+            sidecar.parent().unwrap().display(),
+            local_bin.display()
+        );
+
+        let installed = command_install_status_with_path(&home, &sidecar, &app_data, false, &path);
+        assert_eq!(installed["state"], "installed");
+
+        let foreign_dir = temp.path().join("foreign-bin");
+        let foreign = foreign_dir.join("runner");
+        std::fs::create_dir_all(&foreign_dir).unwrap();
+        std::fs::write(&foreign, "foreign").unwrap();
+        std::fs::set_permissions(&foreign, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let path = format!("{}:{path}", foreign_dir.display());
+        let shadowed = command_install_status_with_path(&home, &sidecar, &app_data, false, &path);
+        assert_eq!(shadowed["state"], "shadowed");
+        assert_eq!(shadowed["shadowed_by"], foreign.display().to_string());
+    }
+
     #[tokio::test]
     async fn nonexistent_full_mission_id_is_an_unresolvable_reference() {
         let client = FailingMissionGetClient { code: 1 };
@@ -2562,6 +2808,56 @@ mod tests {
             .unwrap();
         assert_eq!(response.value["id"], "project-id");
         assert_eq!(response.raw_json, r#"{"id":"changed-id"}"#);
+    }
+
+    #[tokio::test]
+    async fn mission_lifecycle_uses_real_shapes_and_adds_the_crew_name() {
+        const MISSION_ID: &str = "01M00000000000000000000000";
+        let cases = [
+            (
+                "mission_stop",
+                json!({"id": MISSION_ID, "title": "CLI", "status": "running", "crew_id": "crew-id"}),
+                None,
+                "stopped",
+            ),
+            (
+                "mission_resume",
+                json!({"mission_id": MISSION_ID, "resumed_session_ids": ["session-id"], "sessions": []}),
+                Some(
+                    json!({"id": MISSION_ID, "title": "CLI", "status": "running", "crew_id": "crew-id"}),
+                ),
+                "running",
+            ),
+            (
+                "mission_archive",
+                json!({"id": MISSION_ID, "title": "CLI", "status": "completed", "crew_id": "crew-id"}),
+                None,
+                "completed",
+            ),
+        ];
+        for (tool, tool_value, fetched_mission, expected_status) in cases {
+            let mut calls = vec![
+                (
+                    "mission_list",
+                    Ok(json!([{"id": MISSION_ID, "title": "CLI"}])),
+                ),
+                (tool, Ok(tool_value.clone())),
+            ];
+            if let Some(mission) = fetched_mission {
+                calls.push(("mission_get", Ok(mission)));
+            }
+            calls.push(("crew_list", Ok(json!([{"id": "crew-id", "name": "Peer"}]))));
+            let client = SequenceClient::new(calls);
+            let response = mission_lifecycle(&client, tool, Some("01M"), &BusContext::OffBus)
+                .await
+                .unwrap();
+            assert_eq!(response.value["crew_name"], "Peer");
+            assert_eq!(response.value["status"], expected_status);
+            assert_eq!(
+                response.raw_json,
+                serde_json::to_string(&tool_value).unwrap()
+            );
+        }
     }
 
     #[tokio::test]
@@ -2749,7 +3045,7 @@ mod tests {
             ),
             (
                 vec!["mission", "resume", "01M"],
-                vec!["mission_list", "mission_resume"],
+                vec!["mission_list", "mission_resume", "mission_get"],
                 json!({"id": MISSION_ID}),
             ),
             (

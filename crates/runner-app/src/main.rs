@@ -55,6 +55,8 @@ use runner_backend::AppCore;
 use runner_terminal::terminal::{TerminalSession, TerminalView};
 
 use app_settings::{settings_path, AppSettings};
+#[cfg(not(test))]
+use app_store::CommandInstallSupport;
 use app_store::{global_app_store, AppStore, GlobalAppStore, StoreRefreshKind, StoreRevisions};
 use assets::{Assets, INTER_FONTS, JETBRAINS_MONO_FONTS};
 use chat_icon::ChatIcon;
@@ -1226,13 +1228,22 @@ fn run() -> Result<()> {
             Err(error) => (AppSettings::default(), Some(error.to_string())),
         };
         #[cfg(not(test))]
-        let skill_home = paths.home_dir.clone();
+        let home_dir = paths.home_dir.clone();
         #[cfg(test)]
-        let skill_home = None;
+        let home_dir = None;
+        #[cfg(all(not(test), not(windows)))]
+        let command_install_support = Some(CommandInstallSupport::system(PathBuf::from(
+            "/usr/local/bin",
+        )));
+        #[cfg(all(not(test), windows))]
+        let command_install_support = Some(CommandInstallSupport::system(PathBuf::new()));
+        #[cfg(test)]
+        let command_install_support = None;
         let app_store = cx.new(|cx| {
             AppStore::new(
                 core.clone(),
-                skill_home,
+                home_dir,
+                command_install_support,
                 ui_settings_path.clone(),
                 settings,
                 settings_error,

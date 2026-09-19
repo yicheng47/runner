@@ -283,6 +283,8 @@ pub struct AppSettings {
     pub enabled_agents: BTreeSet<String>,
     pub initialized_mcp_clients: BTreeSet<String>,
     pub initialized_skill_roots: BTreeSet<String>,
+    pub initialized_command_install: bool,
+    pub runner_skill_enabled: bool,
     #[serde(default, deserialize_with = "keymap::deserialize_overrides")]
     pub keymap_overrides: KeymapOverrides,
 }
@@ -322,6 +324,8 @@ impl Default for AppSettings {
             enabled_agents: BTreeSet::new(),
             initialized_mcp_clients: BTreeSet::new(),
             initialized_skill_roots: BTreeSet::new(),
+            initialized_command_install: false,
+            runner_skill_enabled: true,
             keymap_overrides: KeymapOverrides::new(),
         }
     }
@@ -645,6 +649,8 @@ mod tests {
         assert_eq!(value["resumeOnLaunch"], false);
         assert_eq!(value["automaticallyCheckForUpdates"], true);
         assert_eq!(value["defaultRuntime"], "");
+        assert_eq!(value["initializedCommandInstall"], false);
+        assert_eq!(value["runnerSkillEnabled"], true);
         assert_eq!(value["keymapOverrides"], serde_json::json!({}));
     }
 
@@ -971,6 +977,7 @@ mod tests {
             settings.initialized_skill_roots,
             [".agents/skills".to_owned()].into_iter().collect()
         );
+        assert!(settings.runner_skill_enabled);
     }
 
     #[cfg(windows)]

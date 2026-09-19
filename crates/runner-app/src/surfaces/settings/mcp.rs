@@ -1490,6 +1490,7 @@ mod tests {
             AppStore::new(
                 core,
                 None,
+                None,
                 path.join("settings.json"),
                 AppSettings::default(),
                 None,

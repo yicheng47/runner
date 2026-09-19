@@ -48,6 +48,17 @@ struct SkillBadge {
 
 fn skill_badges(entry: &SkillEntry) -> Vec<SkillBadge> {
     let mut badges = Vec::new();
+    if entry
+        .path
+        .join(runner_backend::agent_skill::SKILL_MARKER)
+        .is_file()
+    {
+        badges.push(SkillBadge {
+            label: "Managed by Runner".into(),
+            tone: Tone::Muted,
+            hint: None,
+        });
+    }
     for (show, label) in [(entry.manual, "manual"), (entry.hidden, "hidden")] {
         if show {
             badges.push(SkillBadge {
@@ -1272,6 +1283,7 @@ mod tests {
             AppStore::new(
                 core,
                 None,
+                None,
                 path.join("settings.json"),
                 crate::app_settings::AppSettings::default(),
                 Some("test settings".into()),
@@ -1592,6 +1604,23 @@ mod tests {
         assert_eq!(result[4].hint.as_deref(), Some("legacy skill.md"));
         entry.global = GlobalState::Other("user-invocable-only".into());
         assert_eq!(skill_badges(&entry)[3].label, "user-invocable-only");
+    }
+
+    #[test]
+    fn managed_badge_requires_the_runner_marker() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut entry = entry();
+        entry.path = temp.path().join("runner");
+        std::fs::create_dir_all(&entry.path).unwrap();
+        assert!(skill_badges(&entry).is_empty());
+        std::fs::write(
+            entry.path.join(runner_backend::agent_skill::SKILL_MARKER),
+            "managed",
+        )
+        .unwrap();
+        assert_eq!(skill_badges(&entry)[0].label, "Managed by Runner");
+        std::fs::remove_file(entry.path.join(runner_backend::agent_skill::SKILL_MARKER)).unwrap();
+        assert!(skill_badges(&entry).is_empty());
     }
 
     #[cfg(unix)]

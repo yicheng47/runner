@@ -2,6 +2,7 @@
 // app binary and the `runner` CLI.
 
 pub mod app_paths;
+pub mod command_install;
 pub mod error;
 pub mod event_log;
 pub mod model;

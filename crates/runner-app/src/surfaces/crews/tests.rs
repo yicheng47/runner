@@ -169,6 +169,7 @@ fn crew_editor_sections_stay_inside_the_centered_container() {
         AppStore::new(
             core.clone(),
             None,
+            None,
             temp.path().join("settings.json"),
             AppSettings::default(),
             None,
