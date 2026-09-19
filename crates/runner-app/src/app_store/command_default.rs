@@ -40,6 +40,7 @@ impl CommandInstallSupport {
     }
 
     #[cfg(test)]
+    #[cfg_attr(not(unix), allow(dead_code))]
     fn isolated(system_bin: PathBuf) -> Self {
         Self {
             system_bin,
@@ -274,6 +275,7 @@ fn initialize_command_default_with(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use gpui::{AppContext as _, TestAppContext};
     use runner_backend::cli_install::{EscalationOutcome, RegistryPathValue, RegistryValueKind};
     use runner_backend::{
@@ -282,6 +284,7 @@ mod tests {
     use std::path::Path;
     use std::sync::{Arc, Mutex, RwLock};
 
+    #[cfg_attr(not(unix), allow(dead_code))]
     fn test_core(temp: &Path, app_data_dir: PathBuf) -> AppCore {
         let runtime_shell_env = Arc::new(RwLock::new(shell_path::LoginShellEnv::default()));
         let runtime_discovery =

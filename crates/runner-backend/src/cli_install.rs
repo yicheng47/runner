@@ -873,6 +873,7 @@ mod tests {
         }
     }
 
+    #[cfg_attr(not(unix), allow(dead_code))]
     #[derive(Default)]
     struct FakeEscalation {
         scripts: Vec<String>,
