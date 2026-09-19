@@ -887,6 +887,7 @@ mod tests {
         }
     }
 
+    #[cfg_attr(not(unix), allow(dead_code))]
     fn unix_inputs(temp: &Path, login_path: String) -> CommandInstallInputs {
         CommandInstallInputs {
             home: temp.join("home"),
@@ -915,6 +916,8 @@ mod tests {
         }
     }
 
+    // A Unix PATH is split on ':', which a Windows temp path's drive letter would break.
+    #[cfg(unix)]
     #[test]
     fn default_target_prefers_local_then_writable_system_and_requires_path_entry() {
         let temp = tempfile::tempdir().unwrap();

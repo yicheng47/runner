@@ -501,18 +501,22 @@ mod tests {
         .unwrap());
         assert!(!settings.initialized_command_install);
 
-        let mut later = no_target.clone();
-        later.login_path = later.local_bin.display().to_string();
-        std::fs::create_dir_all(later.sidecar.parent().unwrap()).unwrap();
-        std::fs::write(&later.sidecar, "sidecar").unwrap();
-        assert!(initialize_command_default_with(
-            &mut settings,
-            Some(&later),
-            &mut registry,
-            &mut escalation
-        )
-        .unwrap());
-        assert!(settings.initialized_command_install);
+        // A Unix PATH is split on ':' and the install needs a symlink, so this half is Unix-only.
+        #[cfg(unix)]
+        {
+            let mut later = no_target.clone();
+            later.login_path = later.local_bin.display().to_string();
+            std::fs::create_dir_all(later.sidecar.parent().unwrap()).unwrap();
+            std::fs::write(&later.sidecar, "sidecar").unwrap();
+            assert!(initialize_command_default_with(
+                &mut settings,
+                Some(&later),
+                &mut registry,
+                &mut escalation
+            )
+            .unwrap());
+            assert!(settings.initialized_command_install);
+        }
 
         let mut settings = AppSettings::default();
         let mut windows = inputs(temp.path(), String::new());
