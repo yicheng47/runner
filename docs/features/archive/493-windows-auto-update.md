@@ -97,7 +97,7 @@ Nothing new is needed: the installer only touches `%LOCALAPPDATA%\Programs\Runne
 
 ## Design
 
-Sparkle draws its own windows on macOS; on Windows the whole update UI is the centered dialog component `cmp/UpdateDialog` in `design/windows-updates.pen`. The canvas holds the dialog in its four visible states, the main window with the dialog opened from the sidebar icon, the Updates page with the dialog open while downloading, the Updates page in the Ready state, the hero's status and button per state, and the sidebar icon states; frame ids are listed in `design/README.md`. No progress bar, extra confirm, or per-state buttons appear on the Settings page.
+Sparkle draws its own windows on macOS; on Windows the whole update UI is the centered dialog component `cmp/UpdateDialog` (drawn in `design/windows-updates.pen`; since 2026-09-19 the shipped screens and the dialog are in `design/runner.pen`'s WINDOWS band and the spec frames in `design/specs/archive/493-windows-updates.pen`, see `design/README.md`). The canvas holds the dialog in its four visible states, the main window with the dialog opened from the sidebar icon, the Updates page with the dialog open while downloading, the Updates page in the Ready state, the hero's status and button per state, and the sidebar icon states; frame ids are listed in `design/README.md`. No progress bar, extra confirm, or per-state buttons appear on the Settings page.
 
 ## Implementation Phases
 
