@@ -3811,7 +3811,9 @@ fn direct_chat_typing_stays_idle_until_submit() {
             .unwrap();
     });
     let wait_for_tickets = |expected| {
-        let deadline = Instant::now() + Duration::from_secs(1);
+        // Generous on purpose: a loaded Windows runner once took over a second to schedule
+        // the injecting thread. The loop leaves as soon as the ticket is issued.
+        let deadline = Instant::now() + Duration::from_secs(10);
         loop {
             let gate = mgr
                 .session_state(&spawned.id)
