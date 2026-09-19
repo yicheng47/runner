@@ -261,11 +261,12 @@ fn render_mission_list(value: &Value) -> Vec<String> {
                         == Some("running")
                 })
                 .count();
+            let status = displayed_mission_status(row.get("status"), running);
             vec![
                 cell(row.get("id")),
                 cell(row.get("title")),
                 cell(row.get("crew_name")),
-                cell(row.get("status")),
+                status,
                 format!("{running}/{}", statuses.len()),
                 cell(row.get("pending_ask_count")),
                 cell(row.get("project_id")),
@@ -288,7 +289,10 @@ fn render_mission(value: &Value) -> Vec<String> {
         ("ID", mission.get("id")),
         ("TITLE", mission.get("title")),
         ("STATUS", mission.get("status")),
-        ("CREW", mission.get("crew_id")),
+        (
+            "CREW",
+            mission.get("crew_name").or_else(|| mission.get("crew_id")),
+        ),
         ("PROJECT", mission.get("project_id")),
         ("CWD", mission.get("cwd")),
         ("STARTED", mission.get("started_at")),
@@ -298,10 +302,17 @@ fn render_mission(value: &Value) -> Vec<String> {
 fn render_mission_show(value: &Value) -> Vec<String> {
     let mission = mission_value(value);
     let crew = value.get("crew").unwrap_or(&Value::Null);
+    let status = Value::String(displayed_mission_status(
+        mission.get("status"),
+        value
+            .get("live_session_count")
+            .and_then(Value::as_u64)
+            .unwrap_or_default() as usize,
+    ));
     let mut lines = key_values(&[
         ("ID", mission.get("id")),
         ("TITLE", mission.get("title")),
-        ("STATUS", mission.get("status")),
+        ("STATUS", Some(&status)),
         ("CREW", crew.get("name").or_else(|| mission.get("crew_id"))),
         ("PROJECT", mission.get("project_id")),
         ("CWD", mission.get("cwd")),
@@ -385,6 +396,14 @@ fn render_mission_show(value: &Value) -> Vec<String> {
         }
     }
     lines
+}
+
+fn displayed_mission_status(status: Option<&Value>, live_sessions: usize) -> String {
+    if status.and_then(Value::as_str) == Some("running") && live_sessions == 0 {
+        "stopped".into()
+    } else {
+        cell(status)
+    }
 }
 
 fn render_mission_feed(value: &Value) -> Vec<String> {
@@ -569,6 +588,24 @@ fn render_status(value: &Value) -> Vec<String> {
         ("SIDECAR PRESENT", value.get("sidecar_present")),
         ("MODE", value.get("mode")),
     ]);
+    if let Some(command) = value.get("command") {
+        lines.push(String::new());
+        lines.push("COMMAND".into());
+        lines.push(format!(
+            "{}  {}",
+            cell_width(command.get("state"), 12),
+            cell_width(
+                command.get("path").or_else(|| command.get("shadowed_by")),
+                MAX_KEY_VALUE_WIDTH,
+            ),
+        ));
+        if let Some(shadowed_by) = command.get("shadowed_by") {
+            lines.push(format!(
+                "shadowed by  {}",
+                cell_width(Some(shadowed_by), MAX_KEY_VALUE_WIDTH)
+            ));
+        }
+    }
     if let Some(skills) = value.get("skills").and_then(Value::as_array) {
         lines.push(String::new());
         lines.push("SKILLS".into());
@@ -883,6 +920,7 @@ mod tests {
         let show = json!({
             "mission": {"id": "mission-id", "title": "CLI", "status": "running", "crew_id": "crew-id", "project_id": null, "cwd": "/repo", "started_at": "2026-09-18T10:20:30Z"},
             "crew": {"name": "Peer"},
+            "live_session_count": 1,
             "sessions": [{"id": "session-id", "handle": "coder", "lead": true, "runtime": "codex", "status": "running"}],
             "latest_session_status_by_handle": {"coder": {"state": "busy"}},
             "pending_asks": [{"question_id": "question-id", "asker": "coder", "prompt": "Ship\nnow?", "choices": ["yes", "no"]}],
@@ -912,10 +950,55 @@ mod tests {
     }
 
     #[test]
+    fn stopped_mission_and_command_status_are_rendered_for_humans() {
+        let show = json!({
+            "mission": {"id": "mission-id", "title": "CLI", "status": "running", "crew_id": "crew-id", "project_id": null, "cwd": "/repo", "started_at": "2026-09-18T10:20:30Z"},
+            "crew": {"name": "Peer"},
+            "live_session_count": 0,
+            "sessions": [],
+            "pending_asks": [],
+            "recent_warnings": []
+        });
+        assert!(render_default(View::MissionShow, &show)
+            .iter()
+            .any(|line| line == "STATUS   stopped"));
+
+        let status = json!({
+            "cli_version": "0.10.0",
+            "app_version": "0.10.0",
+            "socket": "/tmp/runner.sock",
+            "sidecar": "/Applications/Runner.app/Contents/MacOS/runner",
+            "sidecar_present": true,
+            "mode": "ipc",
+            "command": {
+                "state": "shadowed",
+                "path": "/Applications/Runner.app/Contents/MacOS/runner",
+                "shadowed_by": "/opt/homebrew/bin/runner"
+            }
+        });
+        assert_eq!(
+            render_default(View::Status, &status),
+            [
+                "CLI VERSION      0.10.0",
+                "APP VERSION      0.10.0",
+                "SOCKET           /tmp/runner.sock",
+                "SIDECAR          /Applications/Runner.app/Contents/MacOS/runner",
+                "SIDECAR PRESENT  true",
+                "MODE             ipc",
+                "",
+                "COMMAND",
+                "shadowed  /Applications/Runner.app/Contents/MacOS/runner",
+                "shadowed by  /opt/homebrew/bin/runner",
+            ]
+        );
+    }
+
+    #[test]
     fn mutation_and_fallback_views_are_pinned() {
         let mission = json!({
             "mission": {
                 "id": "mission-id", "title": "CLI", "status": "running", "crew_id": "crew-id",
+                "crew_name": "Peer",
                 "project_id": null, "cwd": "/repo", "started_at": "2026-09-18T10:20:30Z"
             },
             "goal": "multi\nline"
@@ -926,7 +1009,7 @@ mod tests {
                 "ID       mission-id",
                 "TITLE    CLI",
                 "STATUS   running",
-                "CREW     crew-id",
+                "CREW     Peer",
                 "PROJECT  -",
                 "CWD      /repo",
                 "STARTED  2026-09-18T10:20:30Z",

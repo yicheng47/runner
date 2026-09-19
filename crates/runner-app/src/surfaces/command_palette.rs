@@ -7,6 +7,7 @@ use gpui::{
     Render, ScrollHandle, SharedString, Subscription, WeakEntity, Window,
 };
 use runner_app::ui::TextField;
+use runner_backend::cli_install::{RunnerCommandState, RunnerCommandStatus};
 use runner_backend::model::Role;
 use runner_backend::ops::crew::CrewListItem;
 use runner_backend::ops::mission::MissionSummary;
@@ -54,6 +55,8 @@ impl PaletteKind {
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum PaletteDestination {
     NewTerminal,
+    InstallRunnerCommand,
+    UninstallRunnerCommand,
     Mission(String),
     Chat(String),
     Role(String),
@@ -118,9 +121,10 @@ fn palette_items(
     chats: &[DirectSessionEntry],
     roles: &[Role],
     crews: &[CrewListItem],
+    command_status: Option<&RunnerCommandStatus>,
 ) -> Vec<PaletteItem> {
     let mut items =
-        Vec::with_capacity(missions.len() + chats.len() + roles.len() + crews.len() + 2);
+        Vec::with_capacity(missions.len() + chats.len() + roles.len() + crews.len() + 3);
     items.push(PaletteItem {
         kind: PaletteKind::Command,
         runtime: None,
@@ -131,6 +135,33 @@ fn palette_items(
         search_text: "new terminal shell drawer".into(),
         order: 0,
     });
+    match command_status.map(|status| &status.state) {
+        Some(RunnerCommandState::Installed | RunnerCommandState::Shadowed) => {
+            items.push(PaletteItem {
+                kind: PaletteKind::Command,
+                runtime: None,
+                live: false,
+                id: "uninstall-runner-command".into(),
+                label: "Uninstall runner command".into(),
+                destination: PaletteDestination::UninstallRunnerCommand,
+                search_text: "uninstall runner command cli path".into(),
+                order: 1,
+            });
+        }
+        Some(RunnerCommandState::NotInstalled) => {
+            items.push(PaletteItem {
+                kind: PaletteKind::Command,
+                runtime: None,
+                live: false,
+                id: "install-runner-command".into(),
+                label: "Install runner command".into(),
+                destination: PaletteDestination::InstallRunnerCommand,
+                search_text: "install runner command cli path".into(),
+                order: 1,
+            });
+        }
+        _ => {}
+    }
     items.extend(
         missions
             .iter()
@@ -281,7 +312,13 @@ impl CommandPaletteState {
         }
         self.previous_focus = window.focused(cx);
         let store = self.app_store.read(cx);
-        self.items = palette_items(&store.missions, &store.sessions, &store.roles, &store.crews);
+        self.items = palette_items(
+            &store.missions,
+            &store.sessions,
+            &store.roles,
+            &store.crews,
+            store.runner_command_status(),
+        );
         self.query.clear();
         self.active_index = 0;
         self.list_scroll.set_offset(point(px(0.), px(0.)));
@@ -360,6 +397,14 @@ impl CommandPaletteState {
             shell.update(cx, |shell, shell_cx| match destination {
                 PaletteDestination::NewTerminal => {
                     shell.new_terminal(window, shell_cx);
+                    true
+                }
+                PaletteDestination::InstallRunnerCommand => {
+                    shell.install_runner_command(shell_cx);
+                    true
+                }
+                PaletteDestination::UninstallRunnerCommand => {
+                    shell.uninstall_runner_command(shell_cx);
                     true
                 }
                 PaletteDestination::Mission(mission_id) => {
@@ -660,7 +705,7 @@ mod tests {
 
     #[test]
     fn palette_always_offers_new_terminal_as_a_command() {
-        let items = palette_items(&[], &[], &[], &[]);
+        let items = palette_items(&[], &[], &[], &[], None);
         assert_eq!(items[0].label, "New terminal");
         assert_eq!(items[0].kind, PaletteKind::Command);
         assert_eq!(items[0].destination, PaletteDestination::NewTerminal);
@@ -668,6 +713,44 @@ mod tests {
             filtered_palette_items(&items, "shell")[0].id,
             "new-terminal"
         );
+    }
+
+    #[test]
+    fn palette_offers_exactly_one_command_install_action_by_state() {
+        let not_installed = RunnerCommandStatus::not_installed();
+        let items = palette_items(&[], &[], &[], &[], Some(&not_installed));
+        assert!(items.iter().any(|item| {
+            item.label == "Install runner command"
+                && item.destination == PaletteDestination::InstallRunnerCommand
+        }));
+        assert!(!items
+            .iter()
+            .any(|item| item.label == "Uninstall runner command"));
+
+        let installed = RunnerCommandStatus {
+            state: RunnerCommandState::Installed,
+            path: Some("/tmp/runner".into()),
+            shadowed_by: None,
+        };
+        let items = palette_items(&[], &[], &[], &[], Some(&installed));
+        assert!(items.iter().any(|item| {
+            item.label == "Uninstall runner command"
+                && item.destination == PaletteDestination::UninstallRunnerCommand
+        }));
+        assert!(!items
+            .iter()
+            .any(|item| item.label == "Install runner command"));
+
+        let foreign = RunnerCommandStatus {
+            state: RunnerCommandState::Foreign,
+            path: Some("/tmp/runner".into()),
+            shadowed_by: None,
+        };
+        let items = palette_items(&[], &[], &[], &[], Some(&foreign));
+        assert!(!items.iter().any(|item| matches!(
+            item.destination,
+            PaletteDestination::InstallRunnerCommand | PaletteDestination::UninstallRunnerCommand
+        )));
     }
 
     #[test]
@@ -751,7 +834,7 @@ mod tests {
                 SessionStatus::Crashed,
             ] {
                 chat.status = status;
-                let items = palette_items(&[], std::slice::from_ref(&chat), &[], &[]);
+                let items = palette_items(&[], std::slice::from_ref(&chat), &[], &[], None);
                 let result = items.iter().find(|item| item.id == "session").unwrap();
                 assert_eq!(result.icon().path, path);
                 assert_eq!(result.runtime.as_deref(), Some(runtime));

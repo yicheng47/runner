@@ -5042,6 +5042,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "ulid",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

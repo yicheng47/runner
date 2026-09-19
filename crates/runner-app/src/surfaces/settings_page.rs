@@ -1,3 +1,4 @@
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -7,10 +8,11 @@ use gpui::{
     KeyDownEvent, PathPromptOptions, Pixels, ScrollHandle, SharedString, Subscription, Window,
 };
 use runner_app::ui::{
-    working_dir_text_field, Button, ButtonSize, IconButton, IconButtonSize, PaneHeader, Scrollbar,
-    SelectHandler, SelectOption, SettingsCard, SettingsRow, StepHandler, Stepper, StyledSelect,
-    TextField, Toggle, WorkingDirField,
+    working_dir_text_field, Button, ButtonSize, ButtonVariant, IconButton, IconButtonSize,
+    PaneHeader, Scrollbar, SelectHandler, SelectOption, SettingsCard, SettingsRow, StepHandler,
+    Stepper, StyledSelect, TextField, Toggle, WorkingDirField,
 };
+use runner_backend::cli_install::{CommandActionOutcome, RunnerCommandState, RunnerCommandStatus};
 
 use super::*;
 use crate::app_settings::{
@@ -27,6 +29,12 @@ const SETTINGS_SAVE_DELAY_MS: u64 = 300;
 /// The four palette selects in Appearance share one trigger width, so the
 /// app and terminal rows of each mode line up.
 const SETTINGS_SELECT_WIDTH: Pixels = px(176.);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CommandInstallActivity {
+    Install,
+    Uninstall,
+}
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) enum SettingsPane {
@@ -212,6 +220,8 @@ pub(crate) struct SettingsState {
     nav_scrollbar: Entity<Scrollbar>,
     content_scroll: ScrollHandle,
     content_scrollbar: Entity<Scrollbar>,
+    command_install_activity: Option<CommandInstallActivity>,
+    command_install_error: Option<(CommandInstallActivity, PathBuf, String)>,
     save_generation: u64,
     _subscriptions: Vec<Subscription>,
 }
@@ -404,6 +414,8 @@ impl SettingsState {
             nav_scrollbar,
             content_scroll,
             content_scrollbar,
+            command_install_activity: None,
+            command_install_error: None,
             save_generation: 0,
             _subscriptions: vec![
                 search_subscription,
@@ -472,6 +484,107 @@ fn settings_content_column(
                         .child(scrollbar),
                 ),
         )
+}
+
+fn settings_section_heading(label: &'static str) -> AnyElement {
+    div()
+        .px_1()
+        .text_size(theme::text_meta())
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(theme::faint())
+        .child(label)
+        .into_any_element()
+}
+
+fn command_line_settings_row(
+    title: AnyElement,
+    description: &'static str,
+    status_lines: Vec<AnyElement>,
+    control: Option<AnyElement>,
+) -> AnyElement {
+    div()
+        .flex()
+        .items_center()
+        .justify_between()
+        .gap(rems(24. / 16.))
+        .px_4()
+        .py_3()
+        .child(
+            div()
+                .min_w(px(0.))
+                .flex()
+                .flex_col()
+                .gap(rems(2. / 16.))
+                .child(title)
+                .child(
+                    div()
+                        .text_size(theme::text_meta())
+                        .text_color(theme::muted())
+                        .child(description),
+                )
+                .children(status_lines),
+        )
+        .children(control.map(|control| div().flex_none().child(control)))
+        .into_any_element()
+}
+
+fn command_status_text(
+    text: impl Into<SharedString>,
+    color: gpui::Hsla,
+    icon: Option<&'static str>,
+) -> AnyElement {
+    div()
+        .flex()
+        .items_center()
+        .gap_1()
+        .text_size(theme::text_caption())
+        .text_color(color)
+        .children(icon.map(|icon| svg().path(icon).size(px(12.)).text_color(color)))
+        .child(text.into())
+        .into_any_element()
+}
+
+fn command_installed_line(path: &Path) -> AnyElement {
+    div()
+        .flex()
+        .items_center()
+        .gap_1()
+        .text_size(theme::text_caption())
+        .text_color(theme::accent())
+        .child(
+            svg()
+                .path("check.svg")
+                .size(px(12.))
+                .text_color(theme::accent()),
+        )
+        .child("Installed at")
+        .child(
+            div()
+                .font_family(theme::SYSTEM_MONOSPACE_FONT)
+                .child(path.display().to_string()),
+        )
+        .into_any_element()
+}
+
+fn runner_skill_status_line(
+    enabled: bool,
+    status: &crate::app_store::RunnerSkillStatus,
+) -> Option<(String, bool)> {
+    if let Some(folder) = &status.foreign {
+        return Some((
+            format!(
+                "{} was not installed by Runner and is left alone.",
+                folder.display()
+            ),
+            true,
+        ));
+    }
+    (enabled && !status.detected).then(|| {
+        (
+            "No supported agent detected yet. The skill is added when one is installed.".into(),
+            false,
+        )
+    })
 }
 
 fn missions_settings_pane(
@@ -701,6 +814,10 @@ impl NativeRoot {
                 .update(cx, |input, input_cx| input.reset("", input_cx));
         }
         if self.route != AppRoute::Settings {
+            self.app_store.update(cx, |store, _| {
+                store.refresh_runner_command_status();
+                store.refresh_runner_skill_status();
+            });
             self.settings_return_route = self.route.clone();
             self.settings_page.search_query.clear();
             self.settings_page
@@ -871,6 +988,82 @@ impl NativeRoot {
         }) {
             cx.notify();
         }
+    }
+
+    fn set_runner_skill_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        if !self.update_app_settings(cx, true, |settings| {
+            update_if_changed(&mut settings.runner_skill_enabled, enabled)
+        }) {
+            return;
+        }
+        self.app_store
+            .update(cx, |store, _| store.initialize_skill_defaults());
+        cx.notify();
+    }
+
+    pub(crate) fn install_runner_command(&mut self, cx: &mut Context<Self>) {
+        self.run_runner_command_action(CommandInstallActivity::Install, cx);
+    }
+
+    pub(crate) fn uninstall_runner_command(&mut self, cx: &mut Context<Self>) {
+        self.run_runner_command_action(CommandInstallActivity::Uninstall, cx);
+    }
+
+    fn run_runner_command_action(
+        &mut self,
+        activity: CommandInstallActivity,
+        cx: &mut Context<Self>,
+    ) {
+        if self.settings_page.command_install_activity.is_some() {
+            return;
+        }
+        let (inputs, integration, target) = {
+            let store = self.app_store.read(cx);
+            let Some(inputs) = store.command_install_inputs(false) else {
+                return;
+            };
+            let Some(integration) = store.command_install_integration() else {
+                return;
+            };
+            let target = if activity == CommandInstallActivity::Uninstall {
+                store
+                    .runner_command_status()
+                    .and_then(|status| status.path.clone())
+            } else {
+                store.command_action_target().cloned()
+            }
+            .unwrap_or_else(|| inputs.sidecar.clone());
+            (inputs, integration, target)
+        };
+        self.update_app_settings(cx, true, crate::app_store::mark_command_install_initialized);
+        self.settings_page.command_install_activity = Some(activity);
+        self.settings_page.command_install_error = None;
+        let action = match activity {
+            CommandInstallActivity::Install => crate::app_store::UserCommandAction::Install,
+            CommandInstallActivity::Uninstall => crate::app_store::UserCommandAction::Uninstall,
+        };
+        let task = cx.background_spawn(async move {
+            crate::app_store::run_user_command_action(&inputs, action, integration)
+        });
+        cx.spawn(async move |weak, cx| {
+            let result = task.await;
+            let _ = weak.update(cx, |this, cx| {
+                this.settings_page.command_install_activity = None;
+                this.app_store
+                    .update(cx, |store, _| store.refresh_runner_command_status());
+                match result {
+                    Ok(CommandActionOutcome::Cancelled) => {}
+                    Ok(_) => this.settings_page.command_install_error = None,
+                    Err(error) => {
+                        this.settings_page.command_install_error =
+                            Some((activity, target, error.to_string()));
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
     }
 
     pub(crate) fn apply_terminal_settings(&self, cx: &mut Context<Self>) {
@@ -1719,6 +1912,51 @@ impl NativeRoot {
             file_link_row
         };
         let toggle_root = cx.entity();
+        let (command_status, command_requires_escalation, command_action_target, skill_status) = {
+            let store = self.app_store.read(cx);
+            (
+                store.runner_command_status().cloned(),
+                store.command_install_requires_escalation(),
+                store.command_action_target().cloned(),
+                store.runner_skill_status().clone(),
+            )
+        };
+        let skill_enabled = self.settings(cx).runner_skill_enabled;
+        let command_row = self.render_command_install_row(
+            command_status.as_ref(),
+            command_requires_escalation,
+            command_action_target.as_deref(),
+            cx,
+        );
+        let skill_toggle_root = cx.entity();
+        let skill_row = command_line_settings_row(
+            div()
+                .text_size(theme::text_body())
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(theme::text())
+                .child("Runner skill for agents")
+                .into_any_element(),
+            "Installs a skill for every detected agent, so it can find Runner and drive it through the runner command.",
+            runner_skill_status_line(skill_enabled, &skill_status)
+                .into_iter()
+                .map(|(text, warning)| {
+                    div()
+                        .text_size(theme::text_caption())
+                        .text_color(if warning { theme::warning() } else { theme::faint() })
+                        .child(text)
+                        .into_any_element()
+                })
+                .collect(),
+            Some(
+                Toggle::new("settings-runner-skill", skill_enabled)
+                    .on_change(move |enabled, _, cx| {
+                        skill_toggle_root.update(cx, |this, root_cx| {
+                            this.set_runner_skill_enabled(enabled, root_cx)
+                        });
+                    })
+                    .into_any_element(),
+            ),
+        );
 
         div()
             .flex()
@@ -1739,6 +1977,14 @@ impl NativeRoot {
                     )
                     .into_any_element(),
             ]))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .child(settings_section_heading("Command line"))
+                    .child(SettingsCard::new(vec![command_row, skill_row])),
+            )
             .child(
                 div()
                     .flex()
@@ -1770,6 +2016,159 @@ impl NativeRoot {
                     .into_any_element()])),
             )
             .into_any_element()
+    }
+
+    fn render_command_install_row(
+        &self,
+        status: Option<&RunnerCommandStatus>,
+        requires_escalation: bool,
+        action_target: Option<&Path>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let busy = self.settings_page.command_install_activity;
+        let install_root = cx.entity();
+        let uninstall_root = install_root.clone();
+        let mut lines = Vec::new();
+        let mut control = None;
+        match status.map(|status| &status.state) {
+            Some(RunnerCommandState::Installed | RunnerCommandState::Shadowed) => {
+                if cfg!(windows) {
+                    lines.push(command_status_text(
+                        "On your PATH. New terminals pick it up.",
+                        theme::accent(),
+                        Some("check.svg"),
+                    ));
+                } else if let Some(path) = status.and_then(|status| status.path.as_ref()) {
+                    lines.push(command_installed_line(path));
+                }
+                if let Some(path) = status.and_then(|status| status.shadowed_by.as_ref()) {
+                    let command_name =
+                        runner_backend::cli_install::runner_command_name(cfg!(debug_assertions));
+                    lines.push(command_status_text(
+                        format!(
+                            "{} comes first on your PATH, so typing {} starts that one.",
+                            path.display(),
+                            command_name,
+                        ),
+                        theme::warning(),
+                        Some("triangle-alert.svg"),
+                    ));
+                }
+                let label = if busy == Some(CommandInstallActivity::Uninstall) {
+                    "Uninstalling…"
+                } else {
+                    "Uninstall"
+                };
+                control = Some(
+                    Button::new("settings-uninstall-runner-command", label)
+                        .size(ButtonSize::Sm)
+                        .variant(ButtonVariant::Secondary)
+                        .disabled(busy.is_some())
+                        .on_press(move |_, cx| {
+                            uninstall_root
+                                .update(cx, |this, root_cx| this.uninstall_runner_command(root_cx));
+                        })
+                        .into_any_element(),
+                );
+            }
+            Some(RunnerCommandState::Foreign) => {
+                if let Some(path) = status.and_then(|status| status.path.as_ref()) {
+                    lines.push(command_status_text(
+                        format!(
+                            "{} belongs to another program. Runner will not replace it.",
+                            path.display()
+                        ),
+                        theme::warning(),
+                        Some("triangle-alert.svg"),
+                    ));
+                }
+            }
+            Some(RunnerCommandState::Unsupported) => {
+                lines.push(command_status_text(
+                    "The development build does not install a command on Windows.",
+                    theme::faint(),
+                    None,
+                ));
+            }
+            Some(RunnerCommandState::NotInstalled) | None => {
+                let text = if requires_escalation && busy == Some(CommandInstallActivity::Install) {
+                    "Waiting for your password…".to_owned()
+                } else if requires_escalation {
+                    let target = action_target
+                        .map(|path| path.display().to_string())
+                        .unwrap_or_else(|| {
+                            format!(
+                                "/usr/local/bin/{}",
+                                runner_backend::cli_install::runner_command_name(cfg!(
+                                    debug_assertions
+                                ))
+                            )
+                        });
+                    if runner_backend::cli_install::force_escalated_command_install() {
+                        format!(
+                            "Not installed. Install links {target} and asks for your password once."
+                        )
+                    } else {
+                        format!(
+                            "Not installed. ~/.local/bin is not on your PATH, so Install links {target} and asks for your password once."
+                        )
+                    }
+                } else {
+                    "Not installed".to_owned()
+                };
+                lines.push(command_status_text(text, theme::faint(), None));
+                let label = if busy == Some(CommandInstallActivity::Install) {
+                    "Installing…"
+                } else if requires_escalation {
+                    "Install…"
+                } else {
+                    "Install"
+                };
+                control = Some(
+                    Button::new("settings-install-runner-command", label)
+                        .size(ButtonSize::Sm)
+                        .variant(ButtonVariant::Secondary)
+                        .disabled(busy.is_some())
+                        .on_press(move |_, cx| {
+                            install_root
+                                .update(cx, |this, root_cx| this.install_runner_command(root_cx));
+                        })
+                        .into_any_element(),
+                );
+            }
+        }
+        if let Some((activity, path, reason)) = &self.settings_page.command_install_error {
+            let verb = match activity {
+                CommandInstallActivity::Install => "link",
+                CommandInstallActivity::Uninstall => "remove",
+            };
+            lines.push(command_status_text(
+                format!(
+                    "Could not {verb} {}: {}.",
+                    path.display(),
+                    reason.trim_end_matches('.')
+                ),
+                theme::danger(),
+                None,
+            ));
+        }
+        command_line_settings_row(
+            div()
+                .flex()
+                .items_baseline()
+                .gap_1()
+                .text_size(theme::text_body())
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(theme::text())
+                .child(div().font_family(theme::SYSTEM_MONOSPACE_FONT).child(
+                    runner_backend::cli_install::runner_command_name(cfg!(debug_assertions)),
+                ))
+                .child(" command")
+                .into_any_element(),
+            "Use Runner from any terminal or script.",
+            lines,
+            control,
+        )
     }
 
     fn render_missions_settings(&self, _cx: &mut Context<Self>) -> AnyElement {
@@ -2206,6 +2605,39 @@ mod tests {
     use super::*;
 
     #[test]
+    fn runner_skill_row_only_reports_exception_states() {
+        let healthy = crate::app_store::RunnerSkillStatus {
+            detected: true,
+            foreign: None,
+        };
+        assert_eq!(runner_skill_status_line(true, &healthy), None);
+        assert_eq!(runner_skill_status_line(false, &healthy), None);
+
+        let missing_agent = crate::app_store::RunnerSkillStatus::default();
+        assert_eq!(
+            runner_skill_status_line(true, &missing_agent),
+            Some((
+                "No supported agent detected yet. The skill is added when one is installed.".into(),
+                false,
+            ))
+        );
+        assert_eq!(runner_skill_status_line(false, &missing_agent), None);
+
+        let foreign = crate::app_store::RunnerSkillStatus {
+            detected: false,
+            foreign: Some(PathBuf::from("/tmp/home/.agents/skills/runner-dev")),
+        };
+        assert_eq!(
+            runner_skill_status_line(false, &foreign),
+            Some((
+                "/tmp/home/.agents/skills/runner-dev was not installed by Runner and is left alone."
+                    .into(),
+                true,
+            ))
+        );
+    }
+
+    #[test]
     fn theme_selects_have_the_signed_off_options_in_order() {
         let light = light_theme_options();
         assert_eq!(
@@ -2309,6 +2741,7 @@ mod tests {
         let store = cx.new(|cx| {
             AppStore::new(
                 core,
+                None,
                 None,
                 temp.path().join("settings.json"),
                 AppSettings {

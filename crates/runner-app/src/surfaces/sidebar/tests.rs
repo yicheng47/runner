@@ -88,6 +88,7 @@ fn mission_rename_commits_when_the_field_loses_focus() {
         AppStore::new(
             core,
             None,
+            None,
             temp.path().join("settings.json"),
             AppSettings::default(),
             None,

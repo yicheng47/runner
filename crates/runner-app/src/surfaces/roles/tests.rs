@@ -211,6 +211,7 @@ fn role_detail_columns_stay_inside_the_centered_container() {
         AppStore::new(
             core.clone(),
             None,
+            None,
             temp.path().join("settings.json"),
             AppSettings::default(),
             None,
