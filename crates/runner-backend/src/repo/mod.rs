@@ -4,6 +4,9 @@
 // storage byte formats are pinned by the helpers in `repo::serde` so old and
 // new rows are indistinguishable.
 //
+// See `repo/README.md` for the layer boundaries, a complete Role mapping, and
+// the checklist for adding or changing persistence.
+//
 // Conventions:
 //   - Functions take `&Connection` (or a `&Transaction` via `Deref`), never
 //     the pool — callers own connection acquisition and transaction
