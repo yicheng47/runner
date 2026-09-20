@@ -390,10 +390,8 @@ pub(super) fn tab_menu_entries(
 }
 
 pub(super) fn sidebar_tab_icon(pane_count: usize, single_runtime: Option<&str>) -> ChatIcon {
-    if pane_count >= 3 {
-        ChatIcon::generic("columns-3.svg")
-    } else if pane_count > 1 {
-        ChatIcon::generic("columns-2.svg")
+    if pane_count > 1 {
+        ChatIcon::split()
     } else {
         ChatIcon::for_runtime(single_runtime.unwrap_or_default())
     }

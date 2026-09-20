@@ -606,8 +606,9 @@ fn tab_and_mission_menus_have_the_trimmed_item_lists() {
         (None, "message-square.svg"),
     ] {
         assert_eq!(sidebar_tab_icon(1, runtime).path, path);
-        assert_eq!(sidebar_tab_icon(2, runtime).path, "columns-2.svg");
-        assert_eq!(sidebar_tab_icon(3, runtime).path, "columns-3.svg");
+        for panes in [2, 3, 4] {
+            assert_eq!(sidebar_tab_icon(panes, runtime).path, "columns-2.svg");
+        }
     }
 
     let mission_entries =
@@ -974,12 +975,24 @@ fn sidebar_icons_use_text_opacity_for_liveness_and_provider_tints_only_while_liv
         theme::ThemeVariant::RunnerLight,
     ] {
         theme::set_active_variant(variant);
-        let generic = ChatIcon::generic("flag.svg");
+        let generic = ChatIcon::generic("message-square.svg");
         assert_eq!(sidebar_icon_color(generic, true), theme::text());
         assert_eq!(
             sidebar_icon_color(generic, false),
             theme::with_alpha(theme::text(), 0.45)
         );
+
+        for accented in [
+            ChatIcon::mission(),
+            ChatIcon::split(),
+            ChatIcon::for_runtime("shell"),
+        ] {
+            assert_eq!(sidebar_icon_color(accented, true), theme::accent());
+            assert_eq!(
+                sidebar_icon_color(accented, false),
+                theme::with_alpha(theme::text(), 0.45)
+            );
+        }
 
         let provider = ChatIcon::for_runtime("claude-code");
         let tint = gpui::rgb(0xd97757).into();

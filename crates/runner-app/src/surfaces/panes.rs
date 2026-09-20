@@ -2733,7 +2733,7 @@ fn workspace_header_icon(
     focused_runtime: Option<&str>,
 ) -> ChatIcon {
     if grouped {
-        ChatIcon::generic("square-split-horizontal.svg")
+        ChatIcon::split()
     } else if focused_session_id.is_none() {
         ChatIcon::generic("square-dashed.svg")
     } else {
@@ -3167,7 +3167,7 @@ mod tests {
         ] {
             assert_eq!(
                 workspace_header_icon(true, Some("session"), runtime).path,
-                "square-split-horizontal.svg"
+                "columns-2.svg"
             );
             assert_eq!(
                 workspace_header_icon(false, Some("session"), runtime).path,
@@ -3180,7 +3180,7 @@ mod tests {
         );
         assert_eq!(
             workspace_header_icon(true, None, None).path,
-            "square-split-horizontal.svg"
+            "columns-2.svg"
         );
     }
 
