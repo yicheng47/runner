@@ -25,7 +25,7 @@ name = "runner-mcp"
 path = "src/mcp_main.rs"
 
 [dependencies]
-runner-core = { path = "../crates/runner-core" }
+runner-core = { path = "../runner-core" }
 clap = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

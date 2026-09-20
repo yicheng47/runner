@@ -240,7 +240,7 @@ class NightlyTests(unittest.TestCase):
             ('runner-backend', 'crates/runner-backend'),
             ('runner-terminal', 'crates/runner-terminal'),
             ('runner-core', 'crates/runner-core'),
-            ('runner-cli', 'cli'),
+            ('runner-cli', 'crates/runner-cli'),
         ]:
             manifest = tomllib.loads((ROOT / path / 'Cargo.toml').read_text())
             self.assertEqual(manifest['package']['version'], {'workspace': True}, name)

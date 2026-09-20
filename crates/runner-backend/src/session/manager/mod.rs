@@ -207,7 +207,7 @@ impl ForwarderEmitCtx {
     /// transition; it must not block (it shares the mpsc receiver
     /// with the terminal output stream and the exit-event reap, so
     /// a stuck flock would freeze them too). Wire shape mirrors
-    /// `cli/src/signal.rs::run_status` so router / UI projections
+    /// `crates/runner-cli/src/signal.rs::run_status` so router / UI projections
     /// can't tell the two apart except by `payload.source`.
     fn try_append_session_status(
         &self,

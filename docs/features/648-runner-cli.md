@@ -8,7 +8,7 @@
 
 ## Motivation
 
-`runner` today is only the command agents use inside a mission (`cli/src/main.rs`): `signal`, `msg post`, `msg read`, the deprecated `status`, and `help`. It needs the four `RUNNER_*` variables a mission session gets (`cli/src/env.rs`); an agent direct chat has only `RUNNER_HANDLE` and therefore exits 2 as a partial environment, while a plain off-bus shell prints a notice and exits 0. `cli_install` puts it in `$APPDATA/runner/bin/`, which is on PATH only inside terminals Runner spawns.
+`runner` today is only the command agents use inside a mission (`crates/runner-cli/src/main.rs`): `signal`, `msg post`, `msg read`, the deprecated `status`, and `help`. It needs the four `RUNNER_*` variables a mission session gets (`crates/runner-cli/src/env.rs`); an agent direct chat has only `RUNNER_HANDLE` and therefore exits 2 as a partial environment, while a plain off-bus shell prints a notice and exits 0. `cli_install` puts it in `$APPDATA/runner/bin/`, which is on PATH only inside terminals Runner spawns.
 
 Everything else is MCP-only: 39 tools over projects, crews, roles, slots, missions, and sessions (`crates/runner-backend/src/mcp/tools/`), reached through the `runner-mcp` stdio proxy to the app's `mcp.sock`. That has four costs:
 
@@ -23,7 +23,7 @@ Orca's coordinator surface is a CLI plus a skill (`orca orchestration …`, with
 
 - The CLI becomes the one external surface for agents, scripts, and people at a terminal. Every tool in the app's registry gets a command, and new capabilities land as commands.
 - **The MCP integration is removed in 0.11.0, the release that ships the CLI** (Jason, 2026-09-18: two ways in at once would be confusing). Removed: the `runner-mcp` stdio bridge, Runner's registration of itself in each agent's config (the first-run default and the toggles), and the pinned Runner row in Settings → MCP. On the first launch of 0.11.0, Runner removes the `runner` entry it wrote from every client's config. Settings → MCP stays as the catalog of the user's other servers.
-- **Transport.** The socket and its tool registry stay: they are the CLI's transport, an implementation detail no agent is configured to talk to. The CLI is an MCP client of `mcp.sock`, as `runner-mcp`'s `proxy_call_tool` was (`cli/src/mcp.rs`). It connects per command, calls one tool, prints the result, and exits. There is no new protocol, and the socket's tool registry stays the single source of truth. Because every command fetches from the running app, a CLI call never sees stale schemas.
+- **Transport.** The socket and its tool registry stay: they are the CLI's transport, an implementation detail no agent is configured to talk to. The CLI is an MCP client of `mcp.sock`, as `runner-mcp`'s `proxy_call_tool` was (`crates/runner-cli/src/mcp.rs`). It connects per command, calls one tool, prints the result, and exits. There is no new protocol, and the socket's tool registry stays the single source of truth. Because every command fetches from the running app, a CLI call never sees stale schemas.
 - **Discovery.** Agents learn that the CLI exists from a `runner` skill embedded in the app, installed by default for every available agent. All five runtimes read a skills root: TRAE CLI documents user-level skills at `~/.trae/skills/<name>/SKILL.md` (its manual, `traecli doc skills`, 0.120.52), which Runner had not recorded, so TRAE gains a `skills_dirs` entry and the Skills pane gains its catalog.
 - **Trust.** There is no new boundary: anything that can reach `mcp.sock` today can already do all of this.
 
@@ -200,8 +200,8 @@ What each command calls:
 
 ### Phase 1 — the command tree over the socket
 
-- Move `endpoint`, `connect_app`, and the call-tool path out of `cli/src/mcp.rs` into code both binaries use. `runner-mcp` keeps working until Phase 4 removes it.
-- `cli/src/main.rs`: the clap tree beside the in-mission commands, the mode switch on `env::resolve()`, the caller handle (`RUNNER_HANDLE` inside a mission, `--as` outside, else none), reference resolution, `runner call`, `status`, table, `--json` and `-q` output, and the exit codes. Remove the `status busy|idle` alias and its help text.
+- Move `endpoint`, `connect_app`, and the call-tool path out of `crates/runner-cli/src/mcp.rs` into code both binaries use. `runner-mcp` keeps working until Phase 4 removes it.
+- `crates/runner-cli/src/main.rs`: the clap tree beside the in-mission commands, the mode switch on `env::resolve()`, the caller handle (`RUNNER_HANDLE` inside a mission, `--as` outside, else none), reference resolution, `runner call`, `status`, table, `--json` and `-q` output, and the exit codes. Remove the `status busy|idle` alias and its help text.
 - Backend: `mission_post` and `mission_signal` with the `from` handle, renamed from the `_human_` tools, `mission_resume`, `session_list`, and runtime-only `session_start_direct`, each with its tool test, and the registry list in `mcp/server.rs` updated.
 - Tests:
   - every command builds the right tool name and argument JSON, checked without a socket;
@@ -235,7 +235,7 @@ What each command calls:
 
 - `app_store/mcp_defaults.rs`: `initialize_mcp_defaults` goes; one upgrade step unregisters the `runner` entry from every client in `initialized_mcp_clients` through `ops::mcp::mcp_set_integration(client, false)`, records that it ran, and logs a config it could not parse without touching it.
 - `surfaces/settings/mcp.rs` and `ops/mcp.rs`: the pinned Runner row, `mcp_integration_status`, `mcp_set_integration`'s UI callers and `mcp_config_snippet` go; the catalog of the user's other servers stays.
-- `cli/`: the `runner-mcp` bin target, `mcp_main.rs` and the stdio proxy in `mcp.rs` go, keeping the shared socket client; `cli_install::install_mcp_cli` goes and startup deletes a stale `<app data>/bin/runner-mcp`; the bundle scripts and workflows stop packaging and signing it.
+- `crates/runner-cli/`: the `runner-mcp` bin target, `mcp_main.rs` and the stdio proxy in `mcp.rs` go, keeping the shared socket client; `cli_install::install_mcp_cli` goes and startup deletes a stale `<app data>/bin/runner-mcp`; the bundle scripts and workflows stop packaging and signing it.
 - Tests: the upgrade step removes exactly the entries Runner wrote, runs once, and leaves a hand-written entry and an unparseable config alone; a fresh settings file registers nothing; the Settings catalog renders without the Runner row; the stale sidecar is deleted.
 
 ### Phase 5 — design, then the install actions

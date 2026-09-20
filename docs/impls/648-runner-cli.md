@@ -29,7 +29,7 @@ The spec's decisions 1–8 and its principles. The ones a crew is most likely to
 - **A clean rename, no aliases.** `mission_post_human_message` and `mission_post_human_signal` become `mission_post` and `mission_signal`, as the `role_*` cutover did (#604). With decision 8 the CLI is the socket's only client.
 - **The order inside 0.11.0 is fixed (decision 8).** Command tree, then the skill on all five runtimes and Jason's smoke of an agent driving a mission with no MCP entry, then the removal. `runner-mcp` keeps working until mission 3, because it is how missions 1 and 2 are launched and watched.
 - **One binary.** The control commands live in the same `runner` the mission sessions already have on PATH. No second binary, no scoping by packaging.
-- **No new dependencies without a reason in the handoff.** `clap`, `tokio` and `rmcp` are already in `cli/Cargo.toml`; tables are hand-rolled.
+- **No new dependencies without a reason in the handoff.** `clap`, `tokio` and `rmcp` are already in `crates/runner-cli/Cargo.toml`; tables are hand-rolled.
 
 ## What reading the code changed (2026-09-18)
 

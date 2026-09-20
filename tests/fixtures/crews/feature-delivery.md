@@ -54,9 +54,9 @@ human_response, runner_status, inbox_read
 ## Suggested first mission
 
 - **Title:** Smoke: dual-impl handoff
-- **Goal:** Add a `--dry-run` flag to `cli/src/main.rs::msg_post` that
+- **Goal:** Add a `--dry-run` flag to `crates/runner-cli/src/main.rs::msg_post` that
   prints the envelope it would append and exits 0 without touching the
-  log. Cover with a unit test in `cli/tests/roundtrip.rs`.
+  log. Cover with a unit test in `crates/runner-cli/tests/roundtrip.rs`.
 - **Working directory:** the repo root.
 
 Expected coordination shape:
