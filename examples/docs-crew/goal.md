@@ -26,7 +26,7 @@ shape:
 
 - *"Document the runner backend end-to-end — one page per top-level
   module in `src-tauri/src/`, plus an index. Output under `docs/code/`."*
-- *"Write a contributor guide for the `cli/` crate: every public command,
+- *"Write a contributor guide for the `crates/runner-cli/` crate: every public command,
   every flag, with worked examples."*
 - *"Audit and rewrite the existing docs under `docs/impls/` to match the
   current code — flag any doc whose claims have drifted from the

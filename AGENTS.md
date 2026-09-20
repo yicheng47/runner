@@ -31,13 +31,13 @@ Surface hierarchy (strict — do not blur these in code, docs, or UI copy):
 - Application core: Rust, SQLite via `rusqlite`, exposed by `crates/runner-backend`.
 - PTY runtime: `portable-pty`.
 - Event transport: append-only NDJSON logs watched through `notify`.
-- Bundled CLI: `runner`, built from the `cli/` workspace member.
+- Bundled CLI: `runner`, built from the `crates/runner-cli/` workspace member.
 
 ## Project Map
 
 - `crates/runner-app/`: GPUI application, terminal renderer, and terminal fixture corpus.
 - `crates/runner-backend/`: UI-agnostic application core, including SQLite, session manager, event bus, router, and MCP server.
-- `cli/`: bundled `runner` CLI used by spawned agents.
+- `crates/runner-cli/`: the bundled `runner` CLI, used by spawned agents inside a mission and by people, scripts and agents outside one.
 - `crates/runner-core/`: shared event-log primitives.
 - `design/`: Pencil source files.
 - `docs/arch/`: architecture references (how it works).
