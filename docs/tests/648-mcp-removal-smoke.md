@@ -29,6 +29,12 @@ The live development check below deliberately proves that the development app le
 
 On the first nightly carrying this change, start a Claude Code session before launching the new app, then launch the nightly. Confirm a production `runner` entry pointing at the production bridge is removed once while the already-started Claude Code session keeps its bridge process until that session ends. Relaunch and confirm no second removal pass runs.
 
+## Results
+
+**`make run`, 2026-09-20, on the PR branch.** Items 1 to 7 passed. The Claude Code and Codex entries, which pointed at the production bridge, were left byte-identical; the Codex file had not been touched since 2026-09-18, and the `runner` entry in `~/.claude.json` was intact although Claude Code itself rewrites that file continually. The Copilot entry was removed and its file rewritten to an empty `mcpServers`: the dev app had registered Copilot on 2026-09-16 while #540 was built, a day before 0.10.0 shipped the runtime, so the entry pointed at the dev bridge and production never overwrote it. The stale dev bridge was gone from `bin/`, `mcpRegistrationsRemoved` was recorded with nothing deferred, and a throwaway mission on a codex crew started, spawned its slot, stopped and archived through `runner-dev`, printing `STATUS stopped` on stop.
+
+**First nightly, `a61af39`, 2026-09-20.** Installed over `5b6030a` with ten Claude Code bridge processes alive. On first launch the `runner` entries pointing at the production bridge were removed from `~/.claude.json` (the `quill` and `pencil` servers untouched) and `~/.codex/config.toml`; Copilot's file was already empty; `mcpRegistrationsRemoved` was recorded; the bridge was gone from app data, which held only `runner`; and the ten bridge processes kept running for their sessions. The same launch linked `~/.local/bin/runner` with no click and installed the skill into all three roots, TRAE's by detection. The relaunch check for a second removal pass was not run; the record's early return is unit-tested.
+
 ## Release note
 
 Runner 0.11.0 replaces the agent MCP bridge with the `runner` CLI and removes registrations created by this Runner installation on first launch. A hand-written `runner` entry is left unchanged; if it still points at the removed bridge, the agent will show it as a failed server until the user removes or updates that entry.

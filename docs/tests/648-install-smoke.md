@@ -36,6 +36,10 @@ Run these checks against `make run`. They intentionally change the development c
 
 Jason ran the checklist against `make run` on the PR branch and it passed. Windows CI needed two follow-ups before [#654](https://github.com/yicheng47/runner/pull/654) merged, both in tests only: helpers used solely by Unix tests were dead code under `-D warnings`, and two tests built a colon-separated login PATH from a temp folder, which a Windows drive letter splits.
 
+### Result on a real install, 2026-09-20
+
+The first nightly carrying mission 4, `a61af39`, installed over `5b6030a` on Jason's Mac: the first launch linked `~/.local/bin/runner` to the production sidecar with no click, `runner status` from a plain shell reported the command as installed and all three skill roots as managed, and `~/.trae/skills/runner` was installed by detection alone with TRAE still switched off in Settings → Agents. The three remaining gate legs of [`648-skill-smoke.md`](./648-skill-smoke.md) then ran against that bare `runner` on PATH.
+
 ## JASONPC checklist for mission 5
 
 - From a fresh release install, confirm the sidecar directory appears exactly once in the current user's `Path` and retains the registry value's original type.

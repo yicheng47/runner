@@ -46,12 +46,12 @@ Run this gate against a nightly or release build, not `make run`, because the re
 
 | Runtime | Skill fired unprompted | Read guide | Started mission | Followed feed | Notes |
 | --- | --- | --- | --- | --- | --- |
-| Claude Code | [ ] | [ ] | [ ] | [ ] | Not run fresh. A session that already knew the CLI drove the production app through the skill on 2026-09-19 (mechanics only, not the unprompted trigger); `/skills` lists `runner` as on. |
-| Codex | [x] | [x] | [ ] | [ ] | 2026-09-19 on `nightly.5b6030a`, Ghostty: read the skill unprompted, recovered by itself from running the absolute path unquoted, read `help agents`; then `status` exited 3 although Runner was open, because Codex's default sandbox (`workspace-write`, network off) denies the socket connection with `EPERM`. Fixed by exit code 5 and its rule; re-run on the next nightly. |
+| Claude Code | [x] | [x] | [x] | [x] | 2026-09-20 on `nightly.a61af39`, with `runner` on PATH by default and no MCP entry anywhere: passed (Jason). On 2026-09-19 a session that already knew the CLI had driven the production app through the skill, mechanics only. |
+| Codex | [x] | [x] | [x] | [x] | 2026-09-20 on `nightly.a61af39`: passed (Jason), the first run with the exit-5 rule from #655. On 2026-09-19 on `nightly.5b6030a`, Ghostty: read the skill unprompted, recovered by itself from running the absolute path unquoted, read `help agents`; then `status` exited 3 although Runner was open, because Codex's default sandbox (`workspace-write`, network off) denies the socket connection with `EPERM`. |
 | pi | [x] | [x] | [x] | [x] | 2026-09-19 on `nightly.5b6030a`, Ghostty: passed; pi has no command sandbox. |
-| TRAE CLI | [ ] | [ ] | [ ] | [ ] | Not run. On `nightly.5b6030a` TRAE's root is skipped while TRAE is switched off in Settings → Agents; from mission 4's build detection alone decides. |
+| TRAE CLI | [x] | [x] | [x] | [x] | 2026-09-20 on `nightly.a61af39`: passed (Jason). The skill root was installed by detection alone, with TRAE still switched off in Settings → Agents, as mission 4 specified. |
 
-Mission 3 does not start until all four rows pass.
+All four rows passed. Mission 3 started ahead of the last three legs by Jason's call on 2026-09-20 (mission slots were never affected by the sandbox finding) and had landed in [PR #664](https://github.com/yicheng47/runner/pull/664) before they ran; the nightly that carried it, `a61af39`, is the build they ran on. Jason reported the three legs as passed without a per-column transcript, so the columns record his verdict, not a captured session.
 
 ### The sandbox finding (2026-09-19)
 
