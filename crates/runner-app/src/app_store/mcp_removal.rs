@@ -285,9 +285,12 @@ mod tests {
             std::fs::read_to_string(&trae).unwrap(),
             "[mcp_servers.other]\ncommand = 'other'\n"
         );
-        assert!(std::fs::read_to_string(&copilot)
-            .unwrap()
-            .contains(&*bridge_text));
+        let copilot_value: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&copilot).unwrap()).unwrap();
+        assert_eq!(
+            copilot_value["mcpServers"]["runner"]["command"],
+            bridge_text.as_ref()
+        );
         assert_eq!(report.logs.len(), 3);
         for path in [&claude, &codex, &copilot] {
             assert!(report
