@@ -4,15 +4,21 @@
 
 ## 1. The problem
 
-Coding agents like Claude Code, Codex, and aider are each powerful alone, but there's no good way to run several of them *together* on one machine with different roles, a shared view of what's happening, and a sane way to pull the human in when they disagree or hit a wall.
+Coding agents — Claude Code, Codex, Copilot, pi, TRAE — are each powerful alone, and most people who use them seriously now hold subscriptions to more than one. Running several at once is already solved: give each its own terminal, window, or worktree and they work in parallel, isolated from one another. What is not solved is running several of them *together* — on one task, with different roles, a shared view of what's happening, and a sane way to pull the human in when they disagree or hit a wall.
 
-Today, coordinating two agents means juggling terminal windows, eyeballing logs, and manually relaying messages. It breaks down past one agent, and doesn't scale as people start combining specialists (coder + reviewer + tester + fixer).
+Coordinating two agents by hand means juggling terminal windows, eyeballing logs, and relaying messages between them yourself. It breaks down past one agent, and it doesn't scale as people start combining specialists (coder + reviewer + tester + fixer).
+
+The vendors are closing this gap, but only inside their own walls: a team or teammate mode spawns more of the same agent from the same provider. Nobody's coder can hand work to somebody else's reviewer. Filling that gap requires being neutral about whose agent sits in which seat, which is exactly what a vendor cannot be.
 
 ## 2. The vision
 
+Runner is a **working environment for agent crews**: the place several coding agents share while they work on one task. It is opinionated about the workflow — roles, crews, exactly one lead, signals and messages, a pull-based inbox — and neutral about the provider. Any provider, one workflow.
+
+That neutrality is the product, and it is cheap to honor, because everything an agent needs in order to take part is something every CLI agent already has: a shell, a PTY, and a binary on PATH. Runner supplies the place (a mission), the identity (a handle in a roster), the channel (an append-only bus), and the escalation path (the lead, then the human). It does not wrap editing, diffing, or review surfaces around an agent — the agent brings its own tools. Runner is what sits *between* agents.
+
 A local desktop app where one person can:
 
-1. Assemble a **crew** of CLI coding agents on their own machine.
+1. Assemble a **crew** of CLI coding agents on their own machine, each slot filled by whichever provider suits it.
 2. Define each **role** with a runtime and a brief (its system prompt).
 3. **Launch a mission** — one activation of the whole crew — and watch every session's live output in one window.
 4. Let crew members **coordinate** through two channels: **signals** (typed, router-visible) and **messages** (prose, between crew members or addressed to the human).
@@ -94,7 +100,10 @@ The user-facing surfaces, described by the value they deliver, not by their impl
 
 ### 4.9 External control
 
-- **MCP** — external Claude Code, Codex, and TRAE sessions can inspect and operate Runner through the bundled `runner-mcp` bridge: project discovery, crew/role/slot CRUD, project-aware mission/direct-chat creation, and mission lifecycle, feed, and status tools. Runner.app remains the state owner; MCP is a local control surface, not a remote server.
+- **The `runner` CLI** — one bundled binary is the external surface for agents, scripts, and people at a terminal: projects, roles, crews and slots, mission and chat lifecycle, the feed (with `--follow`), signals and messages. Inside a mission the caller's mission and handle come from the environment; outside, `--mission` is a flag and the caller acts for the person unless `--as <handle>` names a seat they hold. `--json` is what agents read; the default output is shaped for people.
+- **Discovery through a skill, not configuration.** No agent is set up to reach Runner. Each one finds the CLI through a `runner` skill the app installs into that runtime's skills root — three folders cover all five runtimes (`~/.claude/skills/`, `~/.agents/skills/` for Codex, Copilot and pi, `~/.trae/skills/`). A provider Runner has never heard of only needs the binary on PATH.
+- **One way in.** The MCP integration — the `runner-mcp` bridge and the entries Runner wrote into each agent's config — is removed in 0.11.0, the release that ships the CLI; two ways in at once would be confusing, and pi has no MCP client at all. The `mcp.sock` tool registry stays as the CLI's transport, an implementation detail no agent is configured to talk to. Settings → MCP remains as the catalog of the user's own servers.
+- Runner.app remains the state owner. This is a local control surface, not a remote server.
 
 ## 5. The demo loop
 
@@ -120,6 +129,7 @@ If this loop doesn't work end-to-end without the user touching a terminal outsid
 
 These are intentionally out of scope — they belong to a different product or a later phase.
 
+- **An agent development environment.** Editing, diffing, and review surfaces wrapped around a single agent belong to the agent's own tools or to an IDE. Runner is the environment agents work *in*, not a workbench for building them. The project tree with git status and a read-only diff viewer ([#634](https://github.com/yicheng47/runner/issues/634), 0.14) exists to orient the human between sessions; it is not an editing surface and does not grow into one.
 - Cross-mission memory / persistent crew brain.
 - A multi-host coordination bus. Sessions on other machines come through the session host ([#645](https://github.com/yicheng47/runner/issues/645), 0.13), which runs the process half of the backend next to the agent; the bus itself stays local.
 - Sandboxing beyond the child process's own permissions.
