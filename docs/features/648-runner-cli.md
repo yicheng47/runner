@@ -148,7 +148,7 @@ What each command calls:
 5. **Shortcut commands over signals.** `ask` and `mission answer` build the signal payloads (`ask_lead`, `ask_human`, `human_response`), and #562 adds `done` and `spawn` the same way. `signal` stays for everything else.
 6. **One `mission show`**, backed by `mission_status`.
 7. **The socket carries the caller.** `mission_post_human_message` and `mission_post_human_signal` become `mission_post` and `mission_signal` with an optional `from` handle, validated against the mission's roster; absent, the caller is `human`. It is a clean rename with no aliases, as the `role_*` cutover was (#604): with decision 8 the CLI is the socket's only client.
-8. **The MCP integration goes in the same release.** The order inside 0.11.0 is fixed: the command tree, then the skill on all five runtimes with Jason's smoke of an agent finding and using the CLI with no MCP entry, and only then the removal. The removal is one upgrade step (unregister the `runner` entry from each client Runner registered, through the existing `mcp_set_integration(client, false)` path, once, recorded in settings), the end of `initialize_mcp_defaults`, the Runner row and its config snippet out of Settings → MCP, and the `runner-mcp` bin target, `install_mcp_cli` and the stale sidecar file gone. An entry a user wrote by hand is not Runner's to remove; a config Runner cannot parse is left alone and reported in the log. A running agent session keeps its already-started bridge process until it ends, so nothing breaks mid-session.
+8. **The MCP integration goes in the same release.** The order inside 0.11.0 is fixed: the command tree, then the skill on all five runtimes with Jason's smoke of an agent finding and using the CLI with no MCP entry, and only then the removal. The removal is one upgrade step: for each client in the legacy `initializedMcpClients` set, unregister the `runner` entry only when its command is this installation's `<app data>/bin/runner-mcp` path and it has no arguments, then record completion once every client was removed, absent, not initialized by Runner, or safely skipped because its command points elsewhere. The end of `initialize_mcp_defaults`, the Runner row and its config snippet out of Settings → MCP, and the `runner-mcp` bin target, installer and stale sidecar file are gone. Another installation's entry and a hand edit are left alone and reported in the log. A config Runner cannot read or parse is left untouched for that launch and reported as deferred; a second-read race and a write failure also leave the step pending for retry. A running agent session keeps its already-started bridge process until it ends, so nothing breaks mid-session.
 
 ## Scope
 
@@ -233,10 +233,10 @@ What each command calls:
 
 ### Phase 4 — remove the MCP integration
 
-- `app_store/mcp_defaults.rs`: `initialize_mcp_defaults` goes; one upgrade step unregisters the `runner` entry from every client in `initialized_mcp_clients` through `ops::mcp::mcp_set_integration(client, false)`, records that it ran, and logs a config it could not parse without touching it.
-- `surfaces/settings/mcp.rs` and `ops/mcp.rs`: the pinned Runner row, `mcp_integration_status`, `mcp_set_integration`'s UI callers and `mcp_config_snippet` go; the catalog of the user's other servers stays.
+- `app_store/mcp_defaults.rs`: `initialize_mcp_defaults` goes; one upgrade step checks only clients in `initialized_mcp_clients`, unregisters only a `runner` entry that matches this installation's bridge path with no arguments through the existing per-client write path, records completion after every client reaches a final outcome, and logs a mismatched command without touching it. A config that cannot be read or parsed is left untouched for that launch and logged as deferred; a second-read race or write failure leaves completion unset so the next launch retries.
+- `surfaces/settings/mcp.rs` and `ops/mcp.rs`: the pinned Runner row, `mcp_integration_status`, `mcp_set_integration`'s UI callers and `mcp_config_snippet` go; the remaining removal-only backend operation is named `remove_runner_entry`, and the catalog of the user's other servers stays.
 - `crates/runner-cli/`: the `runner-mcp` bin target, `mcp_main.rs` and the stdio proxy in `mcp.rs` go, keeping the shared socket client; `cli_install::install_mcp_cli` goes and startup deletes a stale `<app data>/bin/runner-mcp`; the bundle scripts and workflows stop packaging and signing it.
-- Tests: the upgrade step removes exactly the entries Runner wrote, runs once, and leaves a hand-written entry and an unparseable config alone; a fresh settings file registers nothing; the Settings catalog renders without the Runner row; the stale sidecar is deleted.
+- Tests: the upgrade step removes exactly the entries Runner wrote, runs once after only final outcomes, leaves a hand-written entry alone, and leaves an unparseable config untouched for the current launch while keeping the step pending for retry; a fresh settings file registers nothing; the Settings catalog renders without the Runner row; the stale sidecar is deleted.
 
 ### Phase 5 — design, then the install actions
 
@@ -268,7 +268,7 @@ What each command calls:
 - [ ] `mission feed --follow` prints every new event once, in order, and exits on archive, on Ctrl-C, and when the app quits.
 - [ ] `runner help agents` prints the guide for the installed version.
 - [ ] A fresh install puts the skill in the three roots for the available agents and registers no MCP entry anywhere.
-- [ ] The first launch of 0.11.0 on an existing install removes the `runner` entry Runner wrote from each client's config, once, and leaves hand-written entries and unparseable configs alone.
+- [ ] The first launch of 0.11.0 on an existing install removes the `runner` entry Runner wrote from each client's config, once, leaves hand-written entries alone, and retries a config it could not read or parse on the next launch.
 - [ ] Settings → MCP shows the user's other servers and no Runner row; `runner-mcp` is absent from the bundle and from `<app data>/bin/`.
 - [ ] TRAE's skills appear in the Skills pane from `~/.trae/skills`.
 - [ ] Claude Code, Codex, pi, and TRAE sessions with no Runner MCP entry find and use the CLI through the skill.

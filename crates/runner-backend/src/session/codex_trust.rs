@@ -9,14 +9,10 @@ static CONFIG_LOCK: Mutex<()> = Mutex::new(());
 
 #[cfg(not(test))]
 pub(crate) fn seed_project_trust(cwd: &Path) -> Result<()> {
-    let config_path = crate::ops::mcp::codex_path()?;
-    let home = config_path.parent().and_then(Path::parent).ok_or_else(|| {
-        Error::msg(format!(
-            "invalid codex config path: {}",
-            config_path.display()
-        ))
-    })?;
-    seed_project_trust_at_with_home(cwd, &config_path, Some(home))
+    let home = runner_core::app_paths::home_dir()
+        .ok_or_else(|| Error::msg("home directory is not available"))?;
+    let config_path = crate::runtime_defaults::codex_config_path(&home);
+    seed_project_trust_at_with_home(cwd, &config_path, Some(&home))
 }
 
 #[cfg(test)]

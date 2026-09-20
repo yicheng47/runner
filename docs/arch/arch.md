@@ -41,7 +41,7 @@ Runner is a local desktop app for macOS and Windows. A user configures a **crew*
 │          │                                └───────┬────────────────────┘     │
 │          └────────────────────────────────────────┘ runs `runner` CLI        │
 │                                                                              │
-│   MCP server (rmcp, Unix socket $APPDATA/mcp.sock) ◄── runner CLI / temporary runner-mcp bridge │
+│   MCP server (rmcp, Unix socket $APPDATA/mcp.sock) ◄── runner CLI transport                    │
 │   SQLite runner.db (rusqlite + r2d2, WAL) — config + session lifecycle, off the hot path │
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -98,7 +98,7 @@ Crate boundaries are in [`AGENTS.md`](../../AGENTS.md); this is the shape *insid
 | Event transport | **Append-only NDJSON per mission** | Tailable, crash-durable, replayable; `flock(LOCK_EX)` for cross-process append atomicity. |
 | File watching | **`notify`** | The bus tails the NDJSON file and republishes lines. |
 | Bundled CLI | **`runner`** (`crates/runner-cli/`) | Agents talk to the bus through it — `runner signal …`, `runner msg post …`, `runner msg read`. Dropped at `$APPDATA/bin/runner` on first run, PATH-prepended per spawn. |
-| MCP | **`rmcp`** server over local IPC + `runner-mcp` stdio bridge | Runner.app owns stateful tool execution (crews, roles, slots, projects, missions, direct sessions); external clients spawn `runner-mcp`, which bridges stdio to `$APPDATA/mcp.sock` on Unix or `\\.\pipe\com.wycstudios.runner[-dev]` on Windows. |
+| MCP | **`rmcp`** server over local IPC | Runner.app owns stateful tool execution (crews, roles, slots, projects, missions, direct sessions); the bundled CLI uses `$APPDATA/mcp.sock` on Unix or `\\.\pipe\com.wycstudios.runner[-dev]` on Windows as its transport. |
 | Logging | **`tracing`** + rotating file layer + panic hook | `~/Library/Logs/com.wycstudios.runner/runner.log`; release filter `info`, debug builds `debug`, `RUST_LOG` overrides. |
 | Updater | **Sparkle 2.9.5** via `objc2` (`updater` feature) | `SPUStandardUpdaterController`, EdDSA-signed appcasts on GitHub Releases, with separate production and nightly feeds — see §14. |
 | Packaging | `script/bundle-mac` | `.app` assembly, Developer ID codesign, notarization, DMG; `CFBundleVersion` is the build stamp. |
@@ -228,11 +228,11 @@ The mission workspace's per-slot terminal switcher predates this hierarchy and i
 
 ### 3.7 Settings surface
 
-Settings is a full-window route rendered in place of the app shell, with its own grouped sidebar and card-grouped panes: Appearance (zoom, theme), Terminal (font, cursor, theme palette), Agents (runtime discovery and overrides, the login-shell probe outcome, model and effort), Skills (global skill visibility and editing), MCP (the global server catalog and Runner registration), Keyboard shortcuts (a view over the registry in `runner-app/src/keymap.rs`), Updates, Diagnostics (log path, open-log), About, and Archived. Entry points — the sidebar Settings row, the command palette, and `⌘,` — navigate to the route and return to the caller's location.
+Settings is a full-window route rendered in place of the app shell, with its own grouped sidebar and card-grouped panes: Appearance (zoom, theme), Terminal (font, cursor, theme palette), Agents (runtime discovery and overrides, the login-shell probe outcome, model and effort), Skills (global skill visibility and editing), MCP (the global server catalog), Keyboard shortcuts (a view over the registry in `runner-app/src/keymap.rs`), Updates, Diagnostics (log path, open-log), About, and Archived. Entry points — the sidebar Settings row, the command palette, and `⌘,` — navigate to the route and return to the caller's location.
 
 Settings → Skills reads each runtime's declared user roots. TRAE CLI contributes only `~/.trae/skills` (not its `.coco` or `.trae-cn` compatibility roots); its pane is a read/edit catalog with no Runner toggle, and its caption points to the skill frontmatter's `disable-model-invocation` switch.
 
-Settings → MCP reads the union of Claude Code, Codex, TRAE CLI, and GitHub Copilot CLI's global server entries directly from their config files, with no Runner-side server store. A runtime dropdown selects a detected, enabled agent; toggles register or unregister the named server for that agent, copying the first registered entry in agent order when turning it on. Runner's own server is pinned first, and a manual registration choice persists in `initialized_mcp_clients` so the default pass respects an opt-out. The detail modal shows each agent's native entry and any conflicting definition; its JSON/TOML editor can also translate the change to the other registered agents while preserving their unmodelled keys. Each write changes only the named entry and preserves the rest of the file, including formatting and comments; adding servers and auth flows stay with the agents' own tooling. Reads refresh on entry, Refresh, and after writes; running sessions pick up changes on their next launch. Copilot's registration is `~/.copilot/mcp-config.json` under `mcpServers`, with a `local` entry containing `command`, empty `args`, and `tools: ["*"]`; the file is created when absent. See [#555](../features/archive/555-mcp-settings.md).
+Settings → MCP reads the union of Claude Code, Codex, TRAE CLI, and GitHub Copilot CLI's global server entries directly from their config files, with no Runner-side server store. A runtime dropdown selects a detected, enabled agent; toggles register or unregister the named server for that agent, copying the first registered entry in agent order when turning it on. A server named `runner` is an ordinary user-configured row with the same toggle and editor as every other server. The detail modal shows each agent's native entry and any conflicting definition; its JSON/TOML editor can also translate the change to the other registered agents while preserving their unmodelled keys. Each write changes only the named entry and preserves the rest of the file, including formatting and comments; adding servers and auth flows stay with the agents' own tooling. Reads refresh on entry, Refresh, and after writes; running sessions pick up changes on their next launch. Copilot's registration is `~/.copilot/mcp-config.json` under `mcpServers`, with a `local` entry containing `command`, empty `args`, and `tools: ["*"]`; the file is created when absent. The 0.11 upgrade step consults the legacy `initializedMcpClients` set once and removes only a `runner` entry with no arguments whose command is this installation's legacy bridge executable under `<app data>/bin`; another installation's entry and a hand edit are logged and left unchanged. A config that cannot be read or parsed is left untouched for that launch and logged as deferred; a second-read race or write failure leaves the step pending for the next launch. See [#555](../features/archive/555-mcp-settings.md).
 
 Preferences persist in `$APPDATA/ui-settings.json`, read by the app at launch; a first launch starts from defaults (resume-on-launch off).
 
@@ -646,9 +646,9 @@ Outside a mission, mission-scoped writes require `--mission`; `msg read` is insi
 
 Direct chats remain off the mission bus, so they have no implicit mission, mission identity, event log, router, or inbox. Agent direct chats export `RUNNER_HANDLE` as their process label, but the CLI treats that handle-only environment as off-bus; it does not turn the label into a caller identity. Every chat, terminal, resume, and fork gets `<app data>/bin` first on PATH, so bare `runner` is the sidecar belonging to the app that spawned it even if the runtime loads a skill installed by another build; a mission slot's identity shim remains ahead of that folder. PATH does not select or suppress skills. The socket endpoint remains selected at compile time, with no environment override. Workspace commands go through the socket, mission-scoped writes name `--mission`, calls without `--as` act for the user, and `msg read` is unavailable. Until #562 adds outside seats, direct chats and terminals must not use `--as` to speak as a mission slot.
 
-### 9.5 Socket transport and the compatibility bridge
+### 9.5 Socket transport
 
-Each outside command opens `$APPDATA/mcp.sock`, bounds connection establishment to 500 ms and the MCP handshake separately to 3 s, performs the reference-list calls and one requested operation, prints the result, and exits. The backend registry and the tools reached by the CLI's exhaustive recorder test assert against one shared list of tool names. `runner-mcp` uses the same socket client and remains as a temporary stdio compatibility bridge; it is removed later in 0.11 after the CLI skill is proven across all supported runtimes.
+Each outside command opens `$APPDATA/mcp.sock`, bounds connection establishment to 500 ms and the MCP handshake separately to 3 s, performs the reference-list calls and one requested operation, prints the result, and exits. The backend registry and the tools reached by the CLI's exhaustive recorder test assert against one shared list of tool names. The stdio bridge is gone; the once-only upgrade step removes only the exact bridge registrations this installation wrote, leaves mismatched entries unchanged as final skips, and defers unreadable, unparseable, or concurrently changed configs for retry without changing them.
 
 ### 9.6 Agent discovery skill
 
@@ -780,15 +780,14 @@ Migrations live in `crates/runner-backend/migrations/` (`0001_init.sql` … `002
 ├── ui-settings.json                        # preferences (§3.7)
 ├── mcp.sock                                # MCP server socket while the app runs
 ├── bin/
-│   ├── runner                              # general CLI + direct mission-bus verbs
-│   └── runner-mcp                          # temporary stdio compatibility bridge
+│   └── runner                              # general CLI + direct mission-bus verbs
 └── crews/{crew_id}/missions/{mission_id}/
     └── events.ndjson                       # per-mission event log (+ roster sidecar)
 
 ~/Library/Logs/com.wycstudios.runner/runner.log   # rotating app log + panic backtraces
 ```
 
-The data directory has been the same since the Tauri app, so every upgrade finds its roles, crews, missions and sessions in place. Direct chats are off-disk beyond their row in `sessions`; mission sessions share their mission's directory and the only durable artifact is `events.ndjson`. Screen state lives in memory (§5.8).
+The data directory has been the same since the Tauri app, so every upgrade finds its roles, crews, missions and sessions in place. Startup removes the stale legacy bridge executable from `bin/` best-effort. Direct chats are off-disk beyond their row in `sessions`; mission sessions share their mission's directory and the only durable artifact is `events.ndjson`. Screen state lives in memory (§5.8).
 
 ## 11. Process and thread model
 

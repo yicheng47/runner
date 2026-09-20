@@ -1,16 +1,14 @@
-// Install Runner's bundled CLI sidecars under `$APPDATA/runner/bin/`.
-// Child PTYs get `runner` on PATH for mission coordination, while MCP
-// clients launch `runner-mcp` directly from their config files.
+// Install Runner's bundled CLI under `$APPDATA/runner/bin/` so child PTYs
+// get `runner` on PATH for mission coordination and socket-backed commands.
 //
 // Naming. The source-side agent binary remains `runner-agent-cli`; this
 // installer renames it to `runner` in app data so spawned PTYs get the
 // intended user-facing command without colliding with another `runner`
-// artifact in a shared target directory. The GPUI binary is `Runner`. The
-// MCP proxy is a separate `runner-mcp` binary and is installed as-is.
+// artifact in a shared target directory. The GPUI binary is `Runner`.
 //
 // Source resolution. Development builds and release packaging leave
-// `runner-agent-cli` and `runner-mcp` next to the `Runner` executable;
-// `locate_source` resolves them from that directory by name.
+// `runner-agent-cli` next to the `Runner` executable; `locate_source`
+// resolves it from that directory by name.
 //
 // Skip-if-current optimization. Compare (size, mtime) — if the source
 // file's mtime is `<=` the destination's AND sizes match, skip the
@@ -32,13 +30,6 @@ const AGENT_SOURCE_BIN_NAME: &str = if cfg!(windows) {
     "runner-agent-cli"
 };
 
-/// Source-side MCP proxy artifact. Installed into app data as `runner-mcp`.
-const MCP_SOURCE_BIN_NAME: &str = if cfg!(windows) {
-    "runner-mcp.exe"
-} else {
-    "runner-mcp"
-};
-
 /// Name of the agent CLI we drop into `$APPDATA/runner/bin/`. Must match what
 /// `SessionManager::spawn` puts on PATH — arch §5.3 Layer 2 has the
 /// CLI being invoked as bare `runner` from inside spawned PTYs.
@@ -48,7 +39,7 @@ const AGENT_DEST_BIN_NAME: &str = if cfg!(windows) {
     "runner"
 };
 
-/// Name of the MCP proxy binary registered with Claude Code, Codex, TRAE, and GitHub Copilot CLI.
+/// Legacy MCP bridge name, retained only for upgrade cleanup and registration matching.
 pub const MCP_DEST_BIN_NAME: &str = if cfg!(windows) {
     "runner-mcp.exe"
 } else {
@@ -56,14 +47,18 @@ pub const MCP_DEST_BIN_NAME: &str = if cfg!(windows) {
 };
 
 // Called from the app's `boot_core` on every launch, before any session can
-// spawn or MCP config is written. Mission shims, spawned PATHs, and MCP
-// configs all consume the destinations.
+// spawn. Mission shims and spawned PATHs consume the destination.
 pub fn install_runner_cli(app_data_dir: &Path) -> Result<()> {
     install_binary(app_data_dir, AGENT_SOURCE_BIN_NAME, AGENT_DEST_BIN_NAME)
 }
 
-pub fn install_mcp_cli(app_data_dir: &Path) -> Result<()> {
-    install_binary(app_data_dir, MCP_SOURCE_BIN_NAME, MCP_DEST_BIN_NAME)
+pub fn remove_stale_mcp_cli(app_data_dir: &Path) -> Result<()> {
+    let path = app_data_dir.join("bin").join(MCP_DEST_BIN_NAME);
+    match std::fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(Error::msg(format!("remove {}: {error}", path.display()))),
+    }
 }
 
 fn install_binary(app_data_dir: &Path, source_name: &str, dest_name: &str) -> Result<()> {

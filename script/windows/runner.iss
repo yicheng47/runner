@@ -55,7 +55,6 @@ SignedUninstaller=yes
 ; Nightlies share file versions; every upgrade must replace the payload.
 Source: "{#SourceDir}\Runner.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceDir}\runner-agent-cli.exe"; DestDir: "{app}"; Flags: ignoreversion
-Source: "{#SourceDir}\runner-mcp.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceDir}\conpty.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceDir}\OpenConsole.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
@@ -64,6 +63,9 @@ Source: "..\..\crates\runner-app\LICENSE.conpty"; DestDir: "{app}"; Flags: ignor
 Source: "..\..\assets\fonts\JetBrainsMono-NF-LICENSE.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\assets\fonts\JetBrainsMono-NF-NOTICE.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\assets\fonts\OFL.txt"; DestDir: "{app}"; Flags: ignoreversion
+
+[InstallDelete]
+Type: files; Name: "{app}\runner-mcp.exe"
 
 [Icons]
 Name: "{userprograms}\{#AppName}"; Filename: "{app}\Runner.exe"; WorkingDir: "{%USERPROFILE}"; AppUserModelID: "{#AppId}"
@@ -162,7 +164,7 @@ var
   Path: String;
 begin
   Result := '';
-  Names := ['Runner.exe', 'runner-agent-cli.exe', 'runner-mcp.exe', 'conpty.dll', 'OpenConsole.exe'];
+  Names := ['Runner.exe', 'runner-agent-cli.exe', 'conpty.dll', 'OpenConsole.exe'];
   for I := 0 to GetArrayLength(Names) - 1 do begin
     Path := AddBackslash(ExpandConstant('{app}')) + Names[I];
     if FileExists(Path) then begin

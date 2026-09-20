@@ -31,7 +31,7 @@ pub struct NativeMcpServer {
 impl NativeMcpServer {
     pub fn start(core: &AppCore) -> Result<Self> {
         let runtime = tokio::runtime::Builder::new_multi_thread()
-            .thread_name("runner-mcp")
+            .thread_name("runner-ipc")
             .enable_all()
             .build()
             .context("create native MCP runtime")?;
@@ -91,15 +91,14 @@ pub fn boot_core(
 ) -> Result<AppCore> {
     std::fs::create_dir_all(&paths.app_data_dir)
         .with_context(|| format!("create {}", paths.app_data_dir.display()))?;
-    // Mission shims exec `$APPDATA/bin/runner` and the MCP configs point at
-    // `$APPDATA/bin/runner-mcp`, so both sidecars must be in place before any
-    // session spawns or config is written. Best-effort: a copy failure is
-    // reported and the app keeps running (#480).
+    // Mission shims exec `$APPDATA/bin/runner`, so the CLI must be in place
+    // before any session spawns. Best-effort: a copy failure is reported and
+    // the app keeps running (#480).
     if let Err(error) = cli_install::install_runner_cli(&paths.app_data_dir) {
         eprintln!("Runner bundled agent CLI install failed: {error}");
     }
-    if let Err(error) = cli_install::install_mcp_cli(&paths.app_data_dir) {
-        eprintln!("Runner bundled MCP CLI install failed: {error}");
+    if let Err(error) = cli_install::remove_stale_mcp_cli(&paths.app_data_dir) {
+        eprintln!("Runner stale MCP bridge cleanup failed: {error}");
     }
     let pool = Arc::new(
         db::open_pool(&paths.app_data_dir.join("runner.db")).context("open Runner database")?,
@@ -343,6 +342,28 @@ mod tests {
             assert_eq!(paths.app_data_dir, base.join(segment));
             assert_eq!(paths.log_dir, paths.app_data_dir.join("logs"));
         }
+    }
+
+    #[test]
+    fn startup_removes_stale_mcp_bridge_and_tolerates_a_missing_one() {
+        let temp = tempfile::tempdir().unwrap();
+        let first = NativePaths::new(temp.path().join("first"), temp.path().join("first-logs"));
+        let bridge = first
+            .app_data_dir
+            .join("bin")
+            .join(runner_backend::cli_install::MCP_DEST_BIN_NAME);
+        std::fs::create_dir_all(bridge.parent().unwrap()).unwrap();
+        std::fs::write(&bridge, "stale bridge").unwrap();
+        let _core = boot_core(&first, Vec::new()).unwrap();
+        assert!(!bridge.exists());
+
+        let second = NativePaths::new(temp.path().join("second"), temp.path().join("second-logs"));
+        let _core = boot_core(&second, Vec::new()).unwrap();
+        assert!(!second
+            .app_data_dir
+            .join("bin")
+            .join(runner_backend::cli_install::MCP_DEST_BIN_NAME)
+            .exists());
     }
 
     #[cfg(unix)]

@@ -5,28 +5,8 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
-use crate::AppCore;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-
-#[derive(Debug, Serialize)]
-pub struct McpConfigSnippet {
-    pub claude_code: String,
-    pub codex: String,
-    pub trae: String,
-    pub copilot: String,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct McpIntegrationStatus {
-    pub environment: String,
-    pub binary_path: String,
-    pub endpoint: String,
-    pub claude_code: McpClientStatus,
-    pub codex: McpClientStatus,
-    pub trae: McpClientStatus,
-    pub copilot: McpClientStatus,
-}
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct McpClientStatus {
@@ -34,26 +14,15 @@ pub struct McpClientStatus {
     pub matches_current: bool,
     pub command: Option<String>,
     pub args: Vec<String>,
-    pub config_path: String,
-    pub error: Option<String>,
 }
 
 impl McpClientStatus {
-    fn empty(path: &Path) -> Self {
+    fn empty() -> Self {
         Self {
             registered: false,
             matches_current: false,
             command: None,
             args: Vec::new(),
-            config_path: path.to_string_lossy().to_string(),
-            error: None,
-        }
-    }
-
-    fn error(path: &Path, error: String) -> Self {
-        Self {
-            error: Some(error),
-            ..Self::empty(path)
         }
     }
 }
@@ -87,74 +56,16 @@ impl McpClientId {
     }
 }
 
-fn home_dir() -> Result<PathBuf> {
-    runner_core::app_paths::home_dir().ok_or_else(|| Error::msg("home directory is not available"))
-}
-
-fn claude_code_path() -> Result<PathBuf> {
-    Ok(home_dir()?.join(".claude.json"))
-}
-
-pub(crate) fn codex_path() -> Result<PathBuf> {
-    Ok(crate::runtime_defaults::codex_config_path(&home_dir()?))
-}
-
-fn trae_path() -> Result<PathBuf> {
-    Ok(crate::runtime_defaults::trae_config_path(&home_dir()?))
-}
-
-fn copilot_path() -> Result<PathBuf> {
-    Ok(home_dir()?.join(".copilot/mcp-config.json"))
-}
-
-fn mcp_binary_path(state: &AppCore) -> String {
-    state
-        .app_data_dir
-        .join("bin")
-        .join(crate::cli_install::MCP_DEST_BIN_NAME)
-        .to_string_lossy()
-        .to_string()
-}
-
-fn endpoint(state: &AppCore) -> String {
-    runner_core::app_paths::mcp_endpoint(&state.app_data_dir, cfg!(debug_assertions)).to_string()
-}
-
-fn environment_label() -> String {
-    if cfg!(debug_assertions) {
-        "Development".to_string()
-    } else {
-        "Production".to_string()
-    }
-}
-
 fn args_match_current(args: &[String]) -> bool {
     args.is_empty()
 }
 
-fn json_mcp_entry(binary_path: &str) -> serde_json::Value {
-    json!({
-        "type": "stdio",
-        "command": binary_path
-    })
-}
-
-fn copilot_mcp_entry(binary_path: &str) -> serde_json::Value {
-    json!({"type":"local", "command":binary_path, "args":[], "tools":["*"]})
-}
-
-pub(crate) fn copilot_status_at(path: &Path, binary_path: &str) -> Result<McpClientStatus> {
+pub fn copilot_status_at(path: &Path, binary_path: &str) -> Result<McpClientStatus> {
     claude_code_status_at(path, binary_path)
 }
 
-pub(crate) fn copilot_write_at(path: &Path, enabled: bool, binary_path: &str) -> Result<()> {
-    write_entry_at(
-        path,
-        McpClientId::Copilot,
-        "runner",
-        enabled.then(|| NativeEntry::Claude(copilot_mcp_entry(binary_path))),
-        false,
-    )
+fn copilot_write_at(path: &Path) -> Result<()> {
+    write_entry_at(path, McpClientId::Copilot, "runner", None, false)
 }
 
 fn json_args(value: Option<&serde_json::Value>) -> Vec<String> {
@@ -168,14 +79,14 @@ fn json_args(value: Option<&serde_json::Value>) -> Vec<String> {
         .unwrap_or_default()
 }
 
-pub(crate) fn claude_code_status_at(path: &Path, binary_path: &str) -> Result<McpClientStatus> {
+pub fn claude_code_status_at(path: &Path, binary_path: &str) -> Result<McpClientStatus> {
     if !path.exists() {
-        return Ok(McpClientStatus::empty(path));
+        return Ok(McpClientStatus::empty());
     }
     let raw = std::fs::read_to_string(path)
         .map_err(|e| Error::msg(format!("read {}: {e}", path.display())))?;
     if raw.trim().is_empty() {
-        return Ok(McpClientStatus::empty(path));
+        return Ok(McpClientStatus::empty());
     }
     let val: serde_json::Value = serde_json::from_str(&raw)
         .map_err(|e| Error::msg(format!("parse {}: {e}", path.display())))?;
@@ -183,7 +94,7 @@ pub(crate) fn claude_code_status_at(path: &Path, binary_path: &str) -> Result<Mc
         .get("mcpServers")
         .and_then(|servers| servers.get("runner"));
     let Some(entry) = entry else {
-        return Ok(McpClientStatus::empty(path));
+        return Ok(McpClientStatus::empty());
     };
     let command = entry
         .get("command")
@@ -196,23 +107,11 @@ pub(crate) fn claude_code_status_at(path: &Path, binary_path: &str) -> Result<Mc
         matches_current,
         command,
         args,
-        config_path: path.to_string_lossy().to_string(),
-        error: None,
     })
 }
 
-pub(crate) fn claude_code_write_at(path: &Path, enabled: bool, binary_path: &str) -> Result<()> {
-    write_entry_at(
-        path,
-        McpClientId::ClaudeCode,
-        "runner",
-        if enabled {
-            Some(NativeEntry::Claude(json_mcp_entry(binary_path)))
-        } else {
-            None
-        },
-        false,
-    )
+fn claude_code_write_at(path: &Path) -> Result<()> {
+    write_entry_at(path, McpClientId::ClaudeCode, "runner", None, false)
 }
 
 fn toml_args(item: Option<&toml_edit::Item>) -> Vec<String> {
@@ -225,9 +124,9 @@ fn toml_args(item: Option<&toml_edit::Item>) -> Vec<String> {
         .unwrap_or_default()
 }
 
-pub(crate) fn codex_status_at(path: &Path, binary_path: &str) -> Result<McpClientStatus> {
+pub fn codex_status_at(path: &Path, binary_path: &str) -> Result<McpClientStatus> {
     if !path.exists() {
-        return Ok(McpClientStatus::empty(path));
+        return Ok(McpClientStatus::empty());
     }
     let raw = std::fs::read_to_string(path)
         .map_err(|e| Error::msg(format!("read {}: {e}", path.display())))?;
@@ -239,7 +138,7 @@ pub(crate) fn codex_status_at(path: &Path, binary_path: &str) -> Result<McpClien
         .and_then(|item| item.as_table_like())
         .and_then(|servers| servers.get("runner"));
     let Some(entry) = entry else {
-        return Ok(McpClientStatus::empty(path));
+        return Ok(McpClientStatus::empty());
     };
     let entry_table = entry
         .as_table_like()
@@ -255,78 +154,28 @@ pub(crate) fn codex_status_at(path: &Path, binary_path: &str) -> Result<McpClien
         matches_current,
         command,
         args,
-        config_path: path.to_string_lossy().to_string(),
-        error: None,
     })
 }
 
-pub(crate) fn codex_write_at(path: &Path, enabled: bool, binary_path: &str) -> Result<()> {
-    let entry = enabled.then(|| {
-        let mut table = toml_edit::Table::new();
-        table["command"] = toml_edit::value(binary_path);
-        NativeEntry::Toml(table)
-    });
-    write_entry_at(path, McpClientId::Codex, "runner", entry, false)
+fn codex_write_at(path: &Path) -> Result<()> {
+    write_entry_at(path, McpClientId::Codex, "runner", None, false)
 }
 
-pub fn mcp_integration_status(state: &AppCore) -> Result<McpIntegrationStatus> {
-    let binary_path = mcp_binary_path(state);
-    let claude_code_path = claude_code_path()?;
-    let codex_path = codex_path()?;
-    let trae_path = trae_path()?;
-    let copilot_path = copilot_path()?;
-    let claude_code = claude_code_status_at(&claude_code_path, &binary_path)
-        .unwrap_or_else(|e| McpClientStatus::error(&claude_code_path, e.to_string()));
-    let codex = codex_status_at(&codex_path, &binary_path)
-        .unwrap_or_else(|e| McpClientStatus::error(&codex_path, e.to_string()));
-    let trae = codex_status_at(&trae_path, &binary_path)
-        .unwrap_or_else(|e| McpClientStatus::error(&trae_path, e.to_string()));
-    let copilot = copilot_status_at(&copilot_path, &binary_path)
-        .unwrap_or_else(|error| McpClientStatus::error(&copilot_path, error.to_string()));
-    Ok(McpIntegrationStatus {
-        environment: environment_label(),
-        endpoint: endpoint(state),
-        binary_path,
-        claude_code,
-        codex,
-        trae,
-        copilot,
-    })
-}
-
-pub fn mcp_set_integration(state: &AppCore, client: &str, enabled: bool) -> Result<()> {
-    let binary_path = mcp_binary_path(state);
-    match McpClientId::parse(client)? {
-        McpClientId::ClaudeCode => {
-            claude_code_write_at(&claude_code_path()?, enabled, &binary_path)
-        }
-        McpClientId::Codex => codex_write_at(&codex_path()?, enabled, &binary_path),
-        McpClientId::Trae => codex_write_at(&trae_path()?, enabled, &binary_path),
-        McpClientId::Copilot => copilot_write_at(&copilot_path()?, enabled, &binary_path),
+pub fn remove_runner_entry(client: McpClientId, path: &Path, binary_path: &str) -> Result<bool> {
+    let status = match client {
+        McpClientId::ClaudeCode => claude_code_status_at(path, binary_path),
+        McpClientId::Codex | McpClientId::Trae => codex_status_at(path, binary_path),
+        McpClientId::Copilot => copilot_status_at(path, binary_path),
+    }?;
+    if !status.registered || !status.matches_current {
+        return Ok(false);
     }
-}
-
-pub fn mcp_config_snippet(state: &AppCore) -> Result<McpConfigSnippet> {
-    let runner_bin = mcp_binary_path(state);
-
-    let claude_code = json!({
-        "mcpServers": {
-            "runner": json_mcp_entry(&runner_bin)
-        }
-    });
-
-    let codex = format!("[mcp_servers.runner]\ncommand = \"{runner_bin}\"\n");
-    let trae = codex.clone();
-
-    Ok(McpConfigSnippet {
-        claude_code: serde_json::to_string_pretty(&claude_code).unwrap_or_default(),
-        codex,
-        trae,
-        copilot: serde_json::to_string_pretty(
-            &json!({"mcpServers":{"runner":copilot_mcp_entry(&runner_bin)}}),
-        )
-        .unwrap_or_default(),
-    })
+    match client {
+        McpClientId::ClaudeCode => claude_code_write_at(path),
+        McpClientId::Codex | McpClientId::Trae => codex_write_at(path),
+        McpClientId::Copilot => copilot_write_at(path),
+    }?;
+    Ok(true)
 }
 
 impl McpClientId {
@@ -389,21 +238,12 @@ impl McpClientId {
         )
     }
 
-    pub fn status(self, status: &McpIntegrationStatus) -> &McpClientStatus {
+    pub fn config_path(self, home: &Path) -> PathBuf {
         match self {
-            Self::ClaudeCode => &status.claude_code,
-            Self::Codex => &status.codex,
-            Self::Trae => &status.trae,
-            Self::Copilot => &status.copilot,
-        }
-    }
-
-    fn path(self) -> Result<PathBuf> {
-        match self {
-            Self::ClaudeCode => claude_code_path(),
-            Self::Codex => codex_path(),
-            Self::Trae => trae_path(),
-            Self::Copilot => copilot_path(),
+            Self::ClaudeCode => home.join(".claude.json"),
+            Self::Codex => crate::runtime_defaults::codex_config_path(home),
+            Self::Trae => crate::runtime_defaults::trae_config_path(home),
+            Self::Copilot => home.join(".copilot/mcp-config.json"),
         }
     }
 }
@@ -548,8 +388,6 @@ pub struct McpServerEntry {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpCatalog {
-    pub runner: McpIntegrationStatus,
-    pub runner_server: McpServerEntry,
     pub servers: Vec<McpServerEntry>,
 }
 
@@ -641,19 +479,12 @@ fn read_entries_at(path: &Path, client: McpClientId) -> Result<BTreeMap<String, 
     }
 }
 
-fn catalog_at(runner: McpIntegrationStatus, paths: &BTreeMap<McpClientId, PathBuf>) -> McpCatalog {
+fn catalog_at(paths: &BTreeMap<McpClientId, PathBuf>) -> McpCatalog {
     let sources: BTreeMap<_, _> = paths
         .iter()
         .map(|(&client, path)| (client, read_entries_at(path, client)))
         .collect();
     let mut entries = BTreeMap::<String, McpServerEntry>::new();
-    entries.insert(
-        "runner".into(),
-        McpServerEntry {
-            name: "runner".into(),
-            clients: BTreeMap::new(),
-        },
-    );
     for (&client, source) in &sources {
         if let Ok(servers) = source {
             for (name, native) in servers {
@@ -690,23 +521,19 @@ fn catalog_at(runner: McpIntegrationStatus, paths: &BTreeMap<McpClientId, PathBu
         }
     }
     McpCatalog {
-        runner,
-        runner_server: entries
-            .remove("runner")
-            .expect("the runner entry is seeded before this loop"),
         servers: entries.into_values().collect(),
     }
 }
 
-fn client_paths() -> Result<BTreeMap<McpClientId, PathBuf>> {
+fn client_paths(home: &Path) -> BTreeMap<McpClientId, PathBuf> {
     McpClientId::ALL
         .into_iter()
-        .map(|client| Ok((client, client.path()?)))
+        .map(|client| (client, client.config_path(home)))
         .collect()
 }
 
-pub fn mcp_catalog(state: &AppCore) -> Result<McpCatalog> {
-    Ok(catalog_at(mcp_integration_status(state)?, &client_paths()?))
+pub fn mcp_catalog(home: &Path) -> Result<McpCatalog> {
+    Ok(catalog_at(&client_paths(home)))
 }
 
 // Every toml_edit node here comes out of the parser, which records a span on each one.
@@ -1101,28 +928,12 @@ fn copy_at(
     )
 }
 
-pub fn mcp_copy_server(
-    _state: &AppCore,
-    from: McpClientId,
-    to: McpClientId,
-    name: &str,
-) -> Result<()> {
-    check_server_name(name)?;
-    copy_at(&client_paths()?, from, to, name)
+pub fn mcp_copy_server(home: &Path, from: McpClientId, to: McpClientId, name: &str) -> Result<()> {
+    copy_at(&client_paths(home), from, to, name)
 }
 
-pub fn mcp_remove_server(_state: &AppCore, client: McpClientId, name: &str) -> Result<()> {
-    check_server_name(name)?;
-    write_entry_at(&client.path()?, client, name, None, false)
-}
-
-fn check_server_name(name: &str) -> Result<()> {
-    if name == "runner" {
-        return Err(Error::msg(
-            "Use Runner MCP registration to change the built-in server",
-        ));
-    }
-    Ok(())
+pub fn mcp_remove_server(home: &Path, client: McpClientId, name: &str) -> Result<()> {
+    write_entry_at(&client.config_path(home), client, name, None, false)
 }
 
 fn parse_native(client: McpClientId, name: &str, text: &str) -> Result<NativeEntry> {
@@ -1211,14 +1022,13 @@ fn edit_at(
 }
 
 pub fn mcp_edit_server(
-    _state: &AppCore,
+    home: &Path,
     client: McpClientId,
     name: &str,
     native_text: &str,
     also: &[McpClientId],
 ) -> Result<()> {
-    check_server_name(name)?;
-    edit_at(&client_paths()?, client, name, native_text, also)
+    edit_at(&client_paths(home), client, name, native_text, also)
 }
 
 #[cfg(test)]
@@ -1234,18 +1044,7 @@ mod tests {
     }
 
     fn catalog(paths: &BTreeMap<McpClientId, PathBuf>) -> McpCatalog {
-        catalog_at(
-            McpIntegrationStatus {
-                environment: "test".into(),
-                binary_path: "/runner".into(),
-                endpoint: String::new(),
-                claude_code: McpClientStatus::empty(&paths[&McpClientId::ClaudeCode]),
-                codex: McpClientStatus::empty(&paths[&McpClientId::Codex]),
-                trae: McpClientStatus::empty(&paths[&McpClientId::Trae]),
-                copilot: McpClientStatus::empty(&paths[&McpClientId::Copilot]),
-            },
-            paths,
-        )
+        catalog_at(paths)
     }
 
     #[test]
@@ -1327,10 +1126,6 @@ mod tests {
         write_entry_at(&paths[&Codex], Codex, "github", None, false).unwrap();
         let removed = std::fs::read_to_string(&paths[&Codex]).unwrap();
         assert_eq!(removed, format!("{prefix}{middle}{suffix}"));
-        codex_write_at(&paths[&Codex], true, "/runner").unwrap();
-        assert!(std::fs::read_to_string(&paths[&Codex])
-            .unwrap()
-            .starts_with(&removed));
     }
 
     #[test]
@@ -1406,6 +1201,12 @@ mod tests {
     }
 
     #[test]
+    fn empty_catalog_does_not_seed_a_runner_server() {
+        let dir = TempDir::new().unwrap();
+        assert!(catalog(&paths(&dir)).servers.is_empty());
+    }
+
+    #[test]
     fn catalog_copies_conflicts_and_edits_without_touching_other_entries() {
         use McpClientId::*;
         let dir = TempDir::new().unwrap();
@@ -1421,13 +1222,13 @@ mod tests {
                 .iter()
                 .map(|s| s.name.as_str())
                 .collect::<Vec<_>>(),
-            ["github", "other"]
+            ["github", "other", "runner"]
         );
         let github = &first.servers[0];
         assert!(github.clients[&ClaudeCode].registered);
         assert!(!github.clients[&Codex].registered);
         assert!(!github.clients[&Trae].registered);
-        assert!(first.runner_server.clients[&ClaudeCode].registered);
+        assert!(first.servers[2].clients[&ClaudeCode].registered);
         copy_at(&paths, ClaudeCode, Codex, "github").unwrap();
         let copied = std::fs::read_to_string(&paths[&Codex]).unwrap();
         assert!(copied.starts_with(rest), "{copied}");
@@ -1470,12 +1271,12 @@ mod tests {
                 .iter()
                 .map(|s| s.name.as_str())
                 .collect::<Vec<_>>(),
-            ["other"]
+            ["other", "runner"]
         );
         assert!(std::fs::read_to_string(&paths[&Codex])
             .unwrap()
             .starts_with(rest));
-        assert!(catalog(&paths).runner_server.clients[&ClaudeCode].registered);
+        assert!(catalog(&paths).servers[1].clients[&ClaudeCode].registered);
     }
 
     #[test]
@@ -1556,7 +1357,6 @@ mod tests {
             .as_ref()
             .unwrap()
             .contains(paths[&ClaudeCode].to_str().unwrap())));
-        assert!(catalog.runner_server.clients[&ClaudeCode].error.is_some());
         let error = edit_at(
             &paths,
             ClaudeCode,
@@ -1591,14 +1391,14 @@ mod tests {
         let paths = paths(&dir);
         let json = "{ \"before\":1e2, \"mcpServers\" : {  \"runner\" : {\"command\":\"old\"}  }, \"after\":\"\\u0061\" }\n";
         std::fs::write(&paths[&ClaudeCode], json).unwrap();
-        claude_code_write_at(&paths[&ClaudeCode], false, "new").unwrap();
+        claude_code_write_at(&paths[&ClaudeCode]).unwrap();
         assert_eq!(
             std::fs::read_to_string(&paths[&ClaudeCode]).unwrap(),
             json.replace("\"runner\" : {\"command\":\"old\"}", "")
         );
         let toml = "# before\nmodel = 'gpt-5'\n\n# parent comment\n[mcp_servers] # keep parent\n\n[mcp_servers.runner]\ncommand = 'old'\n\n[after]\nflag = true\n";
         std::fs::write(&paths[&Codex], toml).unwrap();
-        codex_write_at(&paths[&Codex], false, "new").unwrap();
+        codex_write_at(&paths[&Codex]).unwrap();
         assert_eq!(
             std::fs::read_to_string(&paths[&Codex]).unwrap(),
             toml.replace("\n[mcp_servers.runner]\ncommand = 'old'\n", "")
@@ -1639,33 +1439,19 @@ mod tests {
     }
 
     #[test]
-    fn copilot_registration_creates_local_entry_and_preserves_other_servers_and_formatting() {
+    fn copilot_status_and_removal_preserve_other_servers_and_formatting() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join(".copilot/mcp-config.json");
-        assert!(!copilot_status_at(&path, "/runner-mcp").unwrap().registered);
-        copilot_write_at(&path, true, "/runner-mcp").unwrap();
-        let raw = std::fs::read_to_string(&path).unwrap();
-        let value: serde_json::Value = serde_json::from_str(&raw).unwrap();
-        assert_eq!(
-            value["mcpServers"]["runner"],
-            json!({"type":"local", "command":"/runner-mcp", "args":[], "tools":["*"]})
-        );
+        let existing = "{ \"before\":1e2, \"mcpServers\" : { \"runner\" : {\"type\":\"local\",\"command\":\"/runner-mcp\",\"args\":[],\"tools\":[\"*\"]}, \"other\" : {\"type\":\"local\",\"command\":\"other-mcp\",\"tools\":[\"read\"]} }, \"after\":\"\\u0061\" }\n";
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, existing).unwrap();
         assert!(
             copilot_status_at(&path, "/runner-mcp")
                 .unwrap()
                 .matches_current
         );
         assert!(!copilot_status_at(&path, "/other").unwrap().matches_current);
-        let existing = "{ \"before\":1e2, \"mcpServers\" : { \"other\" : {\"type\":\"local\",\"command\":\"other-mcp\",\"tools\":[\"read\"]} }, \"after\":\"\\u0061\" }\n";
-        std::fs::write(&path, existing).unwrap();
-        copilot_write_at(&path, true, "/runner-mcp").unwrap();
-        let written = std::fs::read_to_string(&path).unwrap();
-        assert!(written.starts_with("{ \"before\":1e2,"));
-        assert!(written.ends_with(", \"after\":\"\\u0061\" }\n"));
-        assert!(written.contains(
-            "\"other\" : {\"type\":\"local\",\"command\":\"other-mcp\",\"tools\":[\"read\"]}"
-        ));
-        copilot_write_at(&path, false, "/runner-mcp").unwrap();
+        copilot_write_at(&path).unwrap();
         let value: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert!(value["mcpServers"].get("runner").is_none());
@@ -1705,7 +1491,7 @@ mod tests {
             read_entries_at(&paths[&Codex], Codex).unwrap()["other"].definition(),
             entry.definition()
         );
-        assert_eq!(catalog(&paths).runner_server.clients.len(), 4);
+        assert_eq!(catalog(&paths).servers[0].clients.len(), 4);
     }
 
     #[test]
@@ -1720,70 +1506,81 @@ mod tests {
     }
 
     #[test]
-    fn claude_code_write_creates_runner_entry() {
-        let dir = TempDir::new().unwrap();
-        let path = dir.path().join(".claude.json");
-
-        claude_code_write_at(&path, true, "/test/runner-mcp").unwrap();
-
-        let value: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(value["mcpServers"]["runner"]["type"], json!("stdio"));
-        assert_eq!(
-            value["mcpServers"]["runner"]["command"],
-            json!("/test/runner-mcp")
-        );
-        assert!(value["mcpServers"]["runner"].get("args").is_none());
-        let status = claude_code_status_at(&path, "/test/runner-mcp").unwrap();
-        assert!(status.registered);
-        assert!(status.matches_current);
-        let other_status = claude_code_status_at(&path, "/other/runner-mcp").unwrap();
-        assert!(other_status.registered);
-        assert!(!other_status.matches_current);
-    }
-
-    #[test]
-    fn claude_code_write_preserves_other_servers_and_top_level_keys() {
+    fn claude_code_status_and_removal_preserve_other_servers_and_top_level_keys() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join(".claude.json");
         std::fs::write(
             &path,
-            r#"{"mcpServers":{"github":{"command":"gh-mcp","args":[]}},"theme":"dark"}"#,
+            r#"{"mcpServers":{"runner":{"command":"/test/runner-mcp"},"github":{"command":"gh-mcp","args":[]}},"theme":"dark"}"#,
         )
         .unwrap();
+        let status = claude_code_status_at(&path, "/test/runner-mcp").unwrap();
+        assert!(status.registered && status.matches_current);
+        assert!(
+            !claude_code_status_at(&path, "/other/runner-mcp")
+                .unwrap()
+                .matches_current
+        );
 
-        claude_code_write_at(&path, true, "/test/runner-mcp").unwrap();
-        let after_enable: serde_json::Value =
+        claude_code_write_at(&path).unwrap();
+        let after: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(
-            after_enable["mcpServers"]["runner"]["command"],
-            json!("/test/runner-mcp")
-        );
-        assert_eq!(
-            after_enable["mcpServers"]["github"]["command"],
-            json!("gh-mcp")
-        );
-        assert_eq!(after_enable["theme"], json!("dark"));
-
-        claude_code_write_at(&path, false, "/test/runner-mcp").unwrap();
-        let after_disable: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert!(after_disable["mcpServers"].get("runner").is_none());
-        assert_eq!(
-            after_disable["mcpServers"]["github"]["command"],
-            json!("gh-mcp")
-        );
-        assert_eq!(after_disable["theme"], json!("dark"));
+        assert!(after["mcpServers"].get("runner").is_none());
+        assert_eq!(after["mcpServers"]["github"]["command"], "gh-mcp");
+        assert_eq!(after["theme"], "dark");
     }
 
     #[test]
-    fn claude_code_write_errors_on_malformed_json_without_overwriting() {
+    fn integration_removal_requires_an_exact_command_without_arguments() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join(".claude.json");
+        let original =
+            r#"{"mcpServers":{"runner":{"command":"/test/runner-mcp","args":["--stdio"]}}}"#;
+        std::fs::write(&path, original).unwrap();
+
+        assert!(!remove_runner_entry(McpClientId::ClaudeCode, &path, "/test/runner-mcp").unwrap());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_bridge_path_matches_json_and_toml_registrations() {
+        let dir = TempDir::new().unwrap();
+        let binary = PathBuf::from(r"C:\Users\Agent User\AppData\Roaming\com.wycstudios.runner")
+            .join("bin")
+            .join(crate::cli_install::MCP_DEST_BIN_NAME);
+        let binary = binary.to_str().unwrap();
+
+        let claude = dir.path().join(".claude.json");
+        std::fs::write(
+            &claude,
+            serde_json::to_string(&json!({
+                "mcpServers": {"runner": {"command": binary}}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(
+            claude_code_status_at(&claude, binary)
+                .unwrap()
+                .matches_current
+        );
+
+        let codex = dir.path().join("config.toml");
+        std::fs::write(
+            &codex,
+            format!("[mcp_servers.runner]\ncommand = '{binary}'\n"),
+        )
+        .unwrap();
+        assert!(codex_status_at(&codex, binary).unwrap().matches_current);
+    }
+
+    #[test]
+    fn claude_code_removal_errors_on_malformed_json_without_overwriting() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join(".claude.json");
         std::fs::write(&path, "{ not valid json").unwrap();
-
-        let err = claude_code_write_at(&path, true, "/test/runner-mcp").unwrap_err();
-
+        let err = claude_code_write_at(&path).unwrap_err();
         assert!(err.to_string().contains("parse"));
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "{ not valid json");
     }
@@ -1800,83 +1597,31 @@ mod tests {
     }
 
     #[test]
-    fn codex_write_creates_dir_and_runner_entry() {
-        let dir = TempDir::new().unwrap();
-        let path = dir.path().join(".codex").join("config.toml");
-
-        codex_write_at(&path, true, "/test/runner-mcp").unwrap();
-
-        let doc: toml_edit::DocumentMut = std::fs::read_to_string(&path).unwrap().parse().unwrap();
-        assert_eq!(
-            doc["mcp_servers"]["runner"]["command"].as_str(),
-            Some("/test/runner-mcp")
-        );
-        assert!(doc["mcp_servers"]["runner"].get("args").is_none());
-        let status = codex_status_at(&path, "/test/runner-mcp").unwrap();
-        assert!(status.registered);
-        assert!(status.matches_current);
-        let other_status = codex_status_at(&path, "/other/runner-mcp").unwrap();
-        assert!(other_status.registered);
-        assert!(!other_status.matches_current);
-    }
-
-    #[test]
-    fn codex_write_preserves_other_tables_and_top_level_keys() {
+    fn codex_status_and_removal_preserve_other_tables_and_top_level_keys() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("config.toml");
         std::fs::write(
             &path,
-            "model = \"gpt-5\"\n\n[mcp_servers.github]\ncommand = \"gh-mcp\"\nargs = []\n",
+            "model = \"gpt-5\"\n\n[mcp_servers.runner]\ncommand = \"/test/runner-mcp\"\n\n[mcp_servers.github]\ncommand = \"gh-mcp\"\nargs = []\n",
         )
         .unwrap();
+        let status = codex_status_at(&path, "/test/runner-mcp").unwrap();
+        assert!(status.registered && status.matches_current);
+        assert!(
+            !codex_status_at(&path, "/other/runner-mcp")
+                .unwrap()
+                .matches_current
+        );
 
-        codex_write_at(&path, true, "/test/runner-mcp").unwrap();
+        codex_write_at(&path).unwrap();
         let after: toml_edit::DocumentMut =
             std::fs::read_to_string(&path).unwrap().parse().unwrap();
-        assert_eq!(after["model"].as_str(), Some("gpt-5"));
+        assert!(after["mcp_servers"].get("runner").is_none());
         assert_eq!(
             after["mcp_servers"]["github"]["command"].as_str(),
             Some("gh-mcp")
         );
-        assert_eq!(
-            after["mcp_servers"]["runner"]["command"].as_str(),
-            Some("/test/runner-mcp")
-        );
-
-        codex_write_at(&path, false, "/test/runner-mcp").unwrap();
-        let after_disable: toml_edit::DocumentMut =
-            std::fs::read_to_string(&path).unwrap().parse().unwrap();
-        assert!(after_disable["mcp_servers"].get("runner").is_none());
-        assert_eq!(
-            after_disable["mcp_servers"]["github"]["command"].as_str(),
-            Some("gh-mcp")
-        );
-        assert_eq!(after_disable["model"].as_str(), Some("gpt-5"));
-    }
-
-    #[test]
-    fn trae_write_creates_dir_and_runner_entry() {
-        #[cfg(unix)]
-        use std::os::unix::fs::PermissionsExt;
-
-        let dir = TempDir::new().unwrap();
-        let path = dir.path().join(".trae").join("traecli.toml");
-
-        codex_write_at(&path, true, "/test/runner-mcp").unwrap();
-
-        #[cfg(unix)]
-        assert_eq!(
-            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
-            0o600,
-        );
-        let doc: toml_edit::DocumentMut = std::fs::read_to_string(&path).unwrap().parse().unwrap();
-        assert_eq!(
-            doc["mcp_servers"]["runner"]["command"].as_str(),
-            Some("/test/runner-mcp")
-        );
-        let status = codex_status_at(&path, "/test/runner-mcp").unwrap();
-        assert!(status.registered);
-        assert!(status.matches_current);
+        assert_eq!(after["model"].as_str(), Some("gpt-5"));
     }
 
     #[test]
@@ -1888,13 +1633,13 @@ mod tests {
         let path = dir.path().join("traecli.toml");
         std::fs::write(
             &path,
-            "auth_token = \"secret\"\n\n[hooks.state]\nstop = \"trusted\"\n\n[mcp_servers.github]\ncommand = \"gh-mcp\"\nargs = []\n",
+            "auth_token = \"secret\"\n\n[hooks.state]\nstop = \"trusted\"\n\n[mcp_servers.runner]\ncommand = \"/test/runner-mcp\"\n\n[mcp_servers.github]\ncommand = \"gh-mcp\"\nargs = []\n",
         )
         .unwrap();
         #[cfg(unix)]
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
 
-        codex_write_at(&path, true, "/test/runner-mcp").unwrap();
+        codex_write_at(&path).unwrap();
         #[cfg(unix)]
         assert_eq!(
             std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
@@ -1908,29 +1653,7 @@ mod tests {
             after["mcp_servers"]["github"]["command"].as_str(),
             Some("gh-mcp")
         );
-        assert_eq!(
-            after["mcp_servers"]["runner"]["command"].as_str(),
-            Some("/test/runner-mcp")
-        );
-
-        codex_write_at(&path, false, "/test/runner-mcp").unwrap();
-        #[cfg(unix)]
-        assert_eq!(
-            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
-            0o640,
-        );
-        let after_disable: toml_edit::DocumentMut =
-            std::fs::read_to_string(&path).unwrap().parse().unwrap();
-        assert!(after_disable["mcp_servers"].get("runner").is_none());
-        assert_eq!(after_disable["auth_token"].as_str(), Some("secret"));
-        assert_eq!(
-            after_disable["hooks"]["state"]["stop"].as_str(),
-            Some("trusted")
-        );
-        assert_eq!(
-            after_disable["mcp_servers"]["github"]["command"].as_str(),
-            Some("gh-mcp")
-        );
+        assert!(after["mcp_servers"].get("runner").is_none());
     }
 
     #[test]
@@ -1939,7 +1662,7 @@ mod tests {
         let path = dir.path().join("config.toml");
         std::fs::write(&path, "[unclosed-table").unwrap();
 
-        let err = codex_write_at(&path, true, "/test/runner-mcp").unwrap_err();
+        let err = codex_write_at(&path).unwrap_err();
 
         assert!(err.to_string().contains("parse"));
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "[unclosed-table");
@@ -1951,41 +1674,12 @@ mod tests {
         let path = dir.path().join("config.toml");
         std::fs::write(&path, "mcp_servers = \"bad\"\n").unwrap();
 
-        let err = codex_write_at(&path, true, "/test/runner-mcp").unwrap_err();
+        let err = codex_write_at(&path).unwrap_err();
 
         assert!(err.to_string().contains("mcp_servers is not a table"));
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
             "mcp_servers = \"bad\"\n"
-        );
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn agent_configs_preserve_windows_mcp_image_path() {
-        let dir = tempfile::tempdir().unwrap();
-        let binary = PathBuf::from(r"C:\Users\Agent User\AppData\Roaming\com.wycstudios.runner")
-            .join("bin")
-            .join(crate::cli_install::MCP_DEST_BIN_NAME);
-        let binary = binary.to_str().unwrap();
-        assert_eq!(
-            binary,
-            r"C:\Users\Agent User\AppData\Roaming\com.wycstudios.runner\bin\runner-mcp.exe"
-        );
-        let claude_path = dir.path().join(".claude.json");
-        claude_code_write_at(&claude_path, true, binary).unwrap();
-        let json: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(&claude_path).unwrap()).unwrap();
-        assert_eq!(json["mcpServers"]["runner"]["command"], binary);
-        let codex_path = dir.path().join(".codex").join("config.toml");
-        codex_write_at(&codex_path, true, binary).unwrap();
-        let toml: toml_edit::DocumentMut = std::fs::read_to_string(&codex_path)
-            .unwrap()
-            .parse()
-            .unwrap();
-        assert_eq!(
-            toml["mcp_servers"]["runner"]["command"].as_str(),
-            Some(binary)
         );
     }
 }

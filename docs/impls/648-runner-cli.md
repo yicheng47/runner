@@ -71,7 +71,7 @@ Proposed after mission 1's smoke and taken into the mission 2 brief when Jason s
 ## Risks
 
 - **The skill is the only way an agent finds Runner once MCP is gone.** MCP tools sit in an agent's tool list; a skill fires only when its description matches what the user said. Mission 2's smoke across four runtimes is the gate for mission 3, and the skill's description is tuned there, not after release.
-- **The upgrade step edits three or four user config files.** It goes through the writer Settings → MCP already uses, touches only the `runner` entry of clients in `initialized_mcp_clients`, runs once, and leaves a config it cannot parse alone. A hand-written entry pointing at the deleted bridge will show as a failed server in that agent; the release notes say so.
+- **The upgrade step edits three or four user config files.** It goes through the writer Settings → MCP already uses, touches only the `runner` entry of clients in `initialized_mcp_clients`, and completes once after final outcomes. It leaves a config it cannot read or parse untouched for that launch and retries on the next launch. A hand-written entry pointing at the deleted bridge will show as a failed server in that agent; the release notes say so.
 - **Windows is unproven for the skill path.** The skill carries an absolute sidecar path with spaces and agents there run it under PowerShell or Git Bash; JASONPC proves it in mission 5, which is after the removal lands on `main` but before 0.11.0 is cut.
 - **TRAE's skills root comes from its own manual** (`traecli doc skills`, 0.120.52: `~/.trae/skills/<name>/SKILL.md`), not from a live run; mission 2 proves a TRAE session loads the Runner skill.
 

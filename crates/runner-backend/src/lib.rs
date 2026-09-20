@@ -67,8 +67,8 @@ pub struct AppCore {
     /// Most recent mission-pane grid measured by the frontend. Backend-only
     /// mission starts use it when their caller cannot provide a size.
     pub mission_grid_hint: Arc<Mutex<Option<(u16, u16)>>>,
-    /// MCP server lifecycle handle (impl 0013). Unix socket listener
-    /// that external clients connect to via the `runner-mcp` bridge.
+    /// MCP server lifecycle handle (impl 0013). Local IPC listener used by
+    /// the bundled `runner` CLI for workspace and lifecycle commands.
     pub mcp: Arc<mcp::McpHandle>,
     /// Cross-window coordination map (impl 0018). Tracks which subject
     /// (mission / direct chat) each window is looking at + when it

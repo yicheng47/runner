@@ -1,5 +1,4 @@
 use std::collections::BTreeSet;
-use std::path::PathBuf;
 use std::rc::Rc;
 
 use super::SaveNotice;
@@ -14,8 +13,7 @@ use runner_app::ui::{
     Toggle, Tone,
 };
 use runner_backend::ops::mcp::{
-    self, McpCatalog, McpClientId, McpClientStatus, McpIntegrationStatus, McpServerDefinition,
-    McpServerEntry,
+    self, McpCatalog, McpClientId, McpServerDefinition, McpServerEntry,
 };
 use runner_backend::ops::runtime::RuntimeCatalogEntry;
 
@@ -23,8 +21,7 @@ use crate::app_settings::AppSettings;
 use crate::app_store::AppStore;
 use crate::theme;
 
-const CAPTION: &str = "Toggles register or unregister a server in this runtime's config. Runner writes only the named entry. Runner's own server is pinned first; add new servers with the agent's own tooling. Running sessions see changes on their next launch.";
-const RUNNER_DESCRIPTION: &str = "Coordinate crews, missions, and messages from your agent.";
+const CAPTION: &str = "Toggles register or unregister a server in this runtime's config. Runner writes only the named entry. Add new servers with the agent's own tooling. Running sessions see changes on their next launch.";
 const EDIT_FOOTER: &str = "Only the named entry changes in each file. Invalid JSON or TOML cannot be saved. To rename a server, remove and re-add it through the agent's CLI.";
 
 fn registered_clients(entry: &McpServerEntry) -> Vec<McpClientId> {
@@ -38,19 +35,11 @@ fn source_client(entry: &McpServerEntry) -> Option<McpClientId> {
     registered_clients(entry).first().copied()
 }
 
-fn server_toggle_on(
-    entry: &McpServerEntry,
-    client: McpClientId,
-    runner: &McpIntegrationStatus,
-) -> bool {
-    if entry.name == "runner" {
-        client.status(runner).matches_current
-    } else {
-        entry
-            .clients
-            .get(&client)
-            .is_some_and(|slot| slot.registered)
-    }
+fn server_toggle_on(entry: &McpServerEntry, client: McpClientId) -> bool {
+    entry
+        .clients
+        .get(&client)
+        .is_some_and(|slot| slot.registered)
 }
 
 fn definition_for(entry: &McpServerEntry, client: McpClientId) -> Option<&McpServerDefinition> {
@@ -63,9 +52,6 @@ fn definition_for(entry: &McpServerEntry, client: McpClientId) -> Option<&McpSer
 }
 
 fn transport_badge(entry: &McpServerEntry, client: McpClientId) -> &'static str {
-    if entry.name == "runner" {
-        return "built-in";
-    }
     match definition_for(entry, client) {
         Some(McpServerDefinition::Stdio { .. }) => "stdio",
         Some(McpServerDefinition::Http { .. }) => "http",
@@ -136,7 +122,7 @@ fn conflict_caption(entry: &McpServerEntry, selected: McpClientId) -> Option<Str
 }
 
 fn copy_hint(entry: &McpServerEntry, client: McpClientId) -> Option<String> {
-    if entry.name == "runner" || entry.clients.get(&client).is_some_and(|s| s.registered) {
+    if entry.clients.get(&client).is_some_and(|s| s.registered) {
         return None;
     }
     let source = source_client(entry)?;
@@ -163,13 +149,10 @@ fn available_clients(catalog: &[RuntimeCatalogEntry], settings: &AppSettings) ->
 
 fn catalog_rows<'a>(catalog: &'a McpCatalog, query: &str) -> Vec<&'a McpServerEntry> {
     let query = query.trim().to_lowercase();
-    std::iter::once(&catalog.runner_server)
-        .chain(
-            catalog
-                .servers
-                .iter()
-                .filter(|entry| entry.name.to_lowercase().contains(&query)),
-        )
+    catalog
+        .servers
+        .iter()
+        .filter(|entry| entry.name.to_lowercase().contains(&query))
         .collect()
 }
 
@@ -262,26 +245,10 @@ impl McpPane {
         cx: &Context<Self>,
     ) -> AnyElement {
         let state = self.detail.read(cx);
-        let built_in = entry.name == "runner";
-        let registered = state
-            .catalog
-            .as_ref()
-            .is_some_and(|catalog| server_toggle_on(entry, client, &catalog.runner));
-        let presentation = state.catalog.as_ref().filter(|_| built_in).map(|catalog| {
-            mcp_row_presentation(
-                client,
-                Some(client.status(&catalog.runner)),
-                state.busy,
-                true,
-            )
-        });
+        let registered = server_toggle_on(entry, client);
         let conflict = conflict_caption(entry, client);
         let hint = copy_hint(entry, client);
-        let error = entry
-            .clients
-            .get(&client)
-            .and_then(|s| s.error.clone())
-            .or_else(|| presentation.as_ref().and_then(|p| p.error.clone()));
+        let error = entry.clients.get(&client).and_then(|s| s.error.clone());
         let open = self.detail.clone();
         let toggle = open.clone();
         let name = entry.name.clone();
@@ -320,34 +287,17 @@ impl McpPane {
                                 div()
                                     .text_size(theme::text_body())
                                     .font_weight(FontWeight::MEDIUM)
-                                    .child(if built_in {
-                                        "Runner".into()
-                                    } else {
-                                        entry.name.clone()
-                                    }),
+                                    .child(entry.name.clone()),
                             )
-                            .child(Badge::new(
-                                transport_badge(entry, client),
-                                if built_in { Tone::Accent } else { Tone::Muted },
-                            )),
+                            .child(Badge::new(transport_badge(entry, client), Tone::Muted)),
                     )
                     .child(
                         div()
                             .text_size(theme::text_meta())
                             .text_color(theme::faint())
-                            .when(!built_in, |d| d.font_family(theme::UI_MONOSPACE_FONT))
-                            .child(if built_in {
-                                RUNNER_DESCRIPTION.into()
-                            } else {
-                                definition_summary(definition_for(entry, client))
-                            }),
+                            .font_family(theme::UI_MONOSPACE_FONT)
+                            .child(definition_summary(definition_for(entry, client))),
                     )
-                    .children(presentation.as_ref().map(|p| {
-                        div()
-                            .text_size(theme::text_caption())
-                            .text_color(row_color(p.tone))
-                            .child(p.status.clone())
-                    }))
                     .children(conflict.map(|text| {
                         div()
                             .text_size(theme::text_caption())
@@ -369,9 +319,7 @@ impl McpPane {
             )
             .child(
                 Toggle::new(("mcp-toggle", index), registered)
-                    .disabled(
-                        state.busy || hint.is_some() || presentation.is_some_and(|p| p.disabled),
-                    )
+                    .disabled(state.busy || hint.is_some())
                     .on_change(move |enabled, _, cx| {
                         cx.stop_propagation();
                         toggle.update(cx, |detail, cx| {
@@ -395,14 +343,15 @@ impl Render for McpPane {
                 .enumerate()
                 .map(|(i, entry)| self.row(entry, client, i, cx))
                 .collect();
-            let off = std::iter::once(&catalog.runner_server)
-                .chain(&catalog.servers)
-                .filter(|entry| !server_toggle_on(entry, client, &catalog.runner))
+            let off = catalog
+                .servers
+                .iter()
+                .filter(|entry| !server_toggle_on(entry, client))
                 .count();
             meta = Some(format!(
                 "{} · {} servers · {off} off",
                 client.config_file(),
-                catalog.servers.len() + 1
+                catalog.servers.len()
             ));
             if self.search.read(cx).text().trim().is_empty()
                 && !catalog
@@ -411,9 +360,9 @@ impl Render for McpPane {
                     .any(|s| s.clients[&client].registered)
             {
                 rows.push(div().px_4().py_4().flex().flex_col().gap_2().text_size(theme::text_ui()).text_color(theme::faint())
-                    .child(format!("No other servers in {} yet.", client.config_file()))
+                    .child(format!("No servers in {} yet.", client.config_file()))
                     .child(format!("Add servers with {}'s CLI, or switch runtime to copy a server another agent already has.", client.label())).into_any_element());
-            } else if rows.len() == 1 && !self.search.read(cx).text().trim().is_empty() {
+            } else if rows.is_empty() && !self.search.read(cx).text().trim().is_empty() {
                 rows.push(
                     div()
                         .p_4()
@@ -511,7 +460,6 @@ pub(crate) struct McpDetail {
     loading: bool,
     refresh_pending: bool,
     generation: u64,
-    initialized: BTreeSet<String>,
     error: Option<String>,
     _subscriptions: Vec<Subscription>,
 }
@@ -527,17 +475,7 @@ impl McpDetail {
         let scroll = ScrollHandle::new();
         let owner = cx.entity_id();
         let scrollbar = cx.new(|_| Scrollbar::app(scroll.clone(), owner));
-        let initialized = app_store.read(cx).settings.initialized_mcp_clients.clone();
-        let subscriptions = vec![
-            cx.observe(&editor, |_, _, cx| cx.notify()),
-            cx.observe(&app_store, |this, store, cx| {
-                let initialized = &store.read(cx).settings.initialized_mcp_clients;
-                if this.initialized != *initialized {
-                    this.initialized = initialized.clone();
-                    this.refresh(cx);
-                }
-            }),
-        ];
+        let subscriptions = vec![cx.observe(&editor, |_, _, cx| cx.notify())];
         Self {
             app_store,
             catalog: None,
@@ -559,7 +497,6 @@ impl McpDetail {
             loading: false,
             refresh_pending: false,
             generation: 0,
-            initialized,
             error: None,
             _subscriptions: subscriptions,
         }
@@ -573,10 +510,12 @@ impl McpDetail {
         self.loading = true;
         self.generation += 1;
         let generation = self.generation;
+        let home = self.app_store.read(cx).home_dir.clone();
         let core = self.app_store.read(cx).core.clone();
         let task = cx.background_spawn(async move {
+            let home = home.ok_or_else(|| "Home directory is not available".to_owned())?;
             Ok::<_, String>((
-                mcp::mcp_catalog(&core).map_err(|e| e.to_string())?,
+                mcp::mcp_catalog(&home).map_err(|e| e.to_string())?,
                 runner_backend::ops::runtime::runtime_catalog(&core).map_err(|e| e.to_string())?,
             ))
         });
@@ -624,12 +563,11 @@ impl McpDetail {
     }
 
     fn find_entry(&self, name: &str) -> Option<&McpServerEntry> {
-        let catalog = self.catalog.as_ref()?;
-        if name == "runner" {
-            Some(&catalog.runner_server)
-        } else {
-            catalog.servers.iter().find(|e| e.name == name)
-        }
+        self.catalog
+            .as_ref()?
+            .servers
+            .iter()
+            .find(|entry| entry.name == name)
     }
 
     fn open(
@@ -673,9 +611,7 @@ impl McpDetail {
             return;
         }
         let source = self.find_entry(&name).and_then(source_client);
-        if name == "runner" {
-            self.record_manual_choice(client, cx);
-        } else if enabled
+        if enabled
             && self
                 .find_entry(&name)
                 .is_none_or(|entry| copy_hint(entry, client).is_some())
@@ -683,12 +619,10 @@ impl McpDetail {
             return;
         }
         self.write(
-            move |core| {
-                if name == "runner" {
-                    mcp::mcp_set_integration(core, client.key(), enabled)
-                } else if enabled {
+            move |home| {
+                if enabled {
                     mcp::mcp_copy_server(
-                        core,
+                        home,
                         source.ok_or_else(|| {
                             runner_backend::error::Error::msg("Server is no longer registered")
                         })?,
@@ -696,7 +630,7 @@ impl McpDetail {
                         &name,
                     )
                 } else {
-                    mcp::mcp_remove_server(core, client, &name)
+                    mcp::mcp_remove_server(home, client, &name)
                 }
             },
             None,
@@ -704,22 +638,9 @@ impl McpDetail {
         );
     }
 
-    fn record_manual_choice(&mut self, client: McpClientId, cx: &mut Context<Self>) {
-        self.initialized.insert(client.key().into());
-        self.app_store.update(cx, |store, cx| {
-            store.update_settings(
-                |settings| settings.initialized_mcp_clients.insert(client.key().into()),
-                true,
-                cx,
-            );
-        });
-    }
-
     fn write(
         &mut self,
-        operation: impl FnOnce(&runner_backend::AppCore) -> runner_backend::error::Result<()>
-            + Send
-            + 'static,
+        operation: impl FnOnce(&std::path::Path) -> runner_backend::error::Result<()> + Send + 'static,
         saved: Option<String>,
         cx: &mut Context<Self>,
     ) {
@@ -728,10 +649,14 @@ impl McpDetail {
         self.generation += 1;
         let generation = self.generation;
         self.editor.update(cx, |e, cx| e.set_disabled(true, cx));
-        let core = self.app_store.read(cx).core.clone();
+        let home = self.app_store.read(cx).home_dir.clone();
         let task = cx.background_spawn(async move {
-            let result = operation(&core).map_err(|e| e.to_string());
-            (result, mcp::mcp_catalog(&core).map_err(|e| e.to_string()))
+            let Some(home) = home else {
+                let error = "Home directory is not available".to_owned();
+                return (Err(error.clone()), Err(error));
+            };
+            let result = operation(&home).map_err(|e| e.to_string());
+            (result, mcp::mcp_catalog(&home).map_err(|e| e.to_string()))
         });
         cx.spawn(async move |weak, cx| {
             let (result, catalog) = task.await;
@@ -785,9 +710,6 @@ impl McpDetail {
         let Some(entry) = self.entry() else {
             return;
         };
-        if entry.name == "runner" {
-            return;
-        }
         let Some(slot) = entry.clients.get(&self.viewing).filter(|e| e.registered) else {
             return;
         };
@@ -847,7 +769,7 @@ impl McpDetail {
             .join(" and ");
         let saved = format!("Saved {name} to {files}");
         self.write(
-            move |core| mcp::mcp_edit_server(core, client, &name, &text, &also),
+            move |home| mcp::mcp_edit_server(home, client, &name, &text, &also),
             Some(saved),
             cx,
         );
@@ -897,25 +819,17 @@ impl McpDetail {
         let backdrop_owner = owner.clone();
         let toggle_owner = owner.clone();
         let name = entry.name.clone();
-        let built_in = name == "runner";
         let title = div()
             .flex()
             .items_center()
             .gap_2()
-            .child(div().min_w_0().truncate().child(if built_in {
-                "Runner".into()
-            } else {
-                name.clone()
-            }))
-            .child(Badge::new(
-                transport_badge(entry, client),
-                if built_in { Tone::Accent } else { Tone::Muted },
-            ))
+            .child(div().min_w_0().truncate().child(name.clone()))
+            .child(Badge::new(transport_badge(entry, client), Tone::Muted))
             .when(self.editing, |d| {
                 d.child(Badge::new("editing", Tone::Accent))
             })
             .child(div().flex_1())
-            .when(!self.editing && !built_in, |d| {
+            .when(!self.editing, |d| {
                 d.child(
                     Button::new("mcp-modal-edit", "Edit")
                         .icon("square-pen.svg")
@@ -934,18 +848,14 @@ impl McpDetail {
                         close_owner.update(cx, |this, cx| this.request_dismiss(window, cx))
                     }),
             );
-        let path = PathBuf::from(&client.status(&self.catalog.as_ref()?.runner).config_path);
-        let description = if built_in {
-            RUNNER_DESCRIPTION
-        } else {
-            match definition_for(entry, client) {
-                Some(McpServerDefinition::Stdio { .. }) => "The agent launches this command and communicates with the server over standard input and output.",
-                Some(McpServerDefinition::Http { .. }) => "The agent connects to this server over HTTP using the configured URL and headers.",
-                None => "This transport is managed by the agent's own tooling and cannot be copied to another agent.",
-            }
+        let path = client.config_path(self.app_store.read(cx).home_dir.as_deref()?);
+        let description = match definition_for(entry, client) {
+            Some(McpServerDefinition::Stdio { .. }) => "The agent launches this command and communicates with the server over standard input and output.",
+            Some(McpServerDefinition::Http { .. }) => "The agent connects to this server over HTTP using the configured URL and headers.",
+            None => "This transport is managed by the agent's own tooling and cannot be copied to another agent.",
         };
         let clients = registered_clients(entry);
-        let registered = server_toggle_on(entry, runtime, &self.catalog.as_ref()?.runner);
+        let registered = server_toggle_on(entry, runtime);
         let copy_hint = copy_hint(entry, runtime);
         let overview =
             div()
@@ -1335,125 +1245,6 @@ impl Render for McpDetail {
             .into_any_element()
     }
 }
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum McpRowTone {
-    Muted,
-    Accent,
-    Warning,
-    Danger,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct McpRowPresentation {
-    tone: McpRowTone,
-    status: String,
-    disabled: bool,
-    error: Option<String>,
-}
-
-fn mcp_row_presentation(
-    client: McpClientId,
-    status: Option<&McpClientStatus>,
-    busy: bool,
-    installed: bool,
-) -> McpRowPresentation {
-    let mut presentation = mcp_status_presentation(client, status, busy);
-    // Nothing to register for an agent that is not on this machine.
-    presentation.disabled |= !installed;
-    presentation
-}
-
-fn mcp_status_presentation(
-    client: McpClientId,
-    status: Option<&McpClientStatus>,
-    busy: bool,
-) -> McpRowPresentation {
-    let Some(status) = status else {
-        return McpRowPresentation {
-            tone: McpRowTone::Muted,
-            status: "Checking".into(),
-
-            disabled: true,
-            error: None,
-        };
-    };
-    if busy {
-        return McpRowPresentation {
-            tone: if status.error.is_some() {
-                McpRowTone::Danger
-            } else if status.matches_current {
-                McpRowTone::Accent
-            } else if status.registered {
-                McpRowTone::Warning
-            } else {
-                McpRowTone::Muted
-            },
-            status: "Updating".into(),
-
-            disabled: true,
-            error: status.error.clone(),
-        };
-    }
-    if let Some(error) = status.error.clone() {
-        return McpRowPresentation {
-            tone: McpRowTone::Danger,
-            status: "Config error".into(),
-
-            disabled: false,
-            error: Some(error),
-        };
-    }
-    if !status.registered {
-        return McpRowPresentation {
-            tone: McpRowTone::Muted,
-            status: "Not registered".into(),
-
-            disabled: false,
-            error: None,
-        };
-    }
-    if status.matches_current {
-        return McpRowPresentation {
-            tone: McpRowTone::Accent,
-            status: format!("Registered in {}", client.config_file()),
-
-            disabled: false,
-            error: None,
-        };
-    }
-    McpRowPresentation {
-        tone: McpRowTone::Warning,
-        status: format!(
-            "Registered to another Runner · {}",
-            configured_command(status)
-        ),
-
-        disabled: false,
-        error: None,
-    }
-}
-
-fn configured_command(status: &McpClientStatus) -> String {
-    let mut command = status
-        .command
-        .clone()
-        .unwrap_or_else(|| "(missing command)".into());
-    for arg in &status.args {
-        command.push(' ');
-        command.push_str(arg);
-    }
-    command
-}
-
-fn row_color(tone: McpRowTone) -> gpui::Hsla {
-    match tone {
-        McpRowTone::Muted => theme::faint(),
-        McpRowTone::Accent => theme::accent(),
-        McpRowTone::Warning => theme::warning(),
-        McpRowTone::Danger => theme::danger(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1489,7 +1280,7 @@ mod tests {
         cx.new(|cx| {
             AppStore::new(
                 core,
-                None,
+                Some(path.join("home")),
                 None,
                 path.join("settings.json"),
                 AppSettings::default(),
@@ -1497,111 +1288,6 @@ mod tests {
                 cx,
             )
         })
-    }
-
-    fn mcp_status(registered: bool, matches_current: bool, error: Option<&str>) -> McpClientStatus {
-        McpClientStatus {
-            registered,
-            matches_current,
-            command: Some("/other/runner-mcp".into()),
-            args: vec!["--stdio".into()],
-            config_path: "/tmp/config".into(),
-            error: error.map(str::to_owned),
-        }
-    }
-
-    #[test]
-    fn derives_each_mcp_row_state() {
-        let checking = mcp_row_presentation(McpClientId::Codex, None, false, true);
-        assert_eq!(checking.status, "Checking");
-        assert_eq!(checking.tone, McpRowTone::Muted);
-        assert!(checking.disabled);
-
-        let missing = mcp_row_presentation(
-            McpClientId::Codex,
-            Some(&mcp_status(false, false, None)),
-            false,
-            true,
-        );
-        assert_eq!(missing.status, "Not registered");
-        assert_eq!(missing.tone, McpRowTone::Muted);
-
-        assert!(!missing.disabled);
-        assert_eq!(missing.error, None);
-
-        let current = mcp_row_presentation(
-            McpClientId::ClaudeCode,
-            Some(&mcp_status(true, true, None)),
-            false,
-            true,
-        );
-        assert_eq!(current.status, "Registered in ~/.claude.json");
-        assert_eq!(current.tone, McpRowTone::Accent);
-
-        assert!(!current.disabled);
-        assert_eq!(
-            mcp_row_presentation(
-                McpClientId::Trae,
-                Some(&mcp_status(true, true, None)),
-                false,
-                true
-            )
-            .status,
-            "Registered in ~/.trae/traecli.toml"
-        );
-
-        let other = mcp_row_presentation(
-            McpClientId::Codex,
-            Some(&mcp_status(true, false, None)),
-            false,
-            true,
-        );
-        assert_eq!(
-            other.status,
-            "Registered to another Runner · /other/runner-mcp --stdio"
-        );
-        assert_eq!(other.tone, McpRowTone::Warning);
-
-        let broken = mcp_row_presentation(
-            McpClientId::Codex,
-            Some(&mcp_status(false, false, Some("bad config"))),
-            false,
-            true,
-        );
-        assert_eq!(broken.status, "Config error");
-        assert_eq!(broken.tone, McpRowTone::Danger);
-
-        assert!(!broken.disabled);
-        assert_eq!(broken.error.as_deref(), Some("bad config"));
-
-        let updating = mcp_row_presentation(
-            McpClientId::Codex,
-            Some(&mcp_status(true, true, None)),
-            true,
-            true,
-        );
-        assert_eq!(updating.status, "Updating");
-        assert_eq!(updating.tone, McpRowTone::Accent);
-
-        assert!(updating.disabled);
-        let updating_error = mcp_row_presentation(
-            McpClientId::Codex,
-            Some(&mcp_status(false, false, Some("bad config"))),
-            true,
-            true,
-        );
-        assert_eq!(updating_error.tone, McpRowTone::Danger);
-        assert_eq!(updating_error.error.as_deref(), Some("bad config"));
-
-        let not_installed = mcp_row_presentation(
-            McpClientId::Codex,
-            Some(&mcp_status(false, false, None)),
-            false,
-            false,
-        );
-        assert_eq!(not_installed.status, "Not registered");
-
-        assert!(not_installed.disabled);
     }
 
     fn entry(name: &str, conflict: bool) -> McpServerEntry {
@@ -1646,17 +1332,11 @@ mod tests {
 
     fn catalog() -> McpCatalog {
         McpCatalog {
-            runner: McpIntegrationStatus {
-                environment: "test".into(),
-                binary_path: "runner".into(),
-                endpoint: String::new(),
-                claude_code: mcp_status(true, true, None),
-                codex: mcp_status(true, true, None),
-                trae: mcp_status(false, false, None),
-                copilot: mcp_status(false, false, None),
-            },
-            runner_server: entry("runner", false),
-            servers: vec![entry("aaa", false), entry("github", true)],
+            servers: vec![
+                entry("aaa", false),
+                entry("github", true),
+                entry("runner", false),
+            ],
         }
     }
 
@@ -1690,21 +1370,59 @@ mod tests {
     }
 
     #[test]
-    fn catalog_rows_pin_runner_and_reflect_each_clients_registration_and_conflict() {
+    fn pane_has_no_pinned_runner_row_and_renders_configured_runner_normally() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut cx = gpui::TestAppContext::single();
+        let store = test_store(temp.path(), &mut cx);
+        let host = cx.add_window(|_, cx| Host(cx.new(|cx| McpPane::new(store, cx))));
+        host.update(&mut cx, |host, _, cx| {
+            let detail = host.0.read(cx).detail.clone();
+            detail.update(cx, |detail, cx| {
+                let mut without_runner = catalog();
+                without_runner
+                    .servers
+                    .retain(|entry| entry.name != "runner");
+                detail.catalog = Some(without_runner);
+                detail.runtimes = runtimes();
+                cx.notify();
+            });
+        })
+        .unwrap();
+        let mut visual = gpui::VisualTestContext::from_window(host.into(), &cx);
+        visual.simulate_resize(gpui::size(px(900.), px(700.)));
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("MCP_ROW_runner").is_none());
+        assert!(visual.debug_bounds("MCP_ROW_github").is_some());
+
+        host.update(&mut visual, |host, _, cx| {
+            let detail = host.0.read(cx).detail.clone();
+            detail.update(cx, |detail, cx| {
+                detail.catalog = Some(catalog());
+                cx.notify();
+            });
+        })
+        .unwrap();
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("MCP_ROW_runner").is_some());
+        assert!(!CAPTION.contains("Runner's own server"));
+    }
+
+    #[test]
+    fn catalog_rows_filter_every_server_and_reflect_registration_and_conflict() {
         let catalog = catalog();
         assert_eq!(
             catalog_rows(&catalog, "")
                 .iter()
                 .map(|e| e.name.as_str())
                 .collect::<Vec<_>>(),
-            ["runner", "aaa", "github"]
+            ["aaa", "github", "runner"]
         );
         assert_eq!(
             catalog_rows(&catalog, "GITHUB")
                 .iter()
                 .map(|e| e.name.as_str())
                 .collect::<Vec<_>>(),
-            ["runner", "github"]
+            ["github"]
         );
         let github = &catalog.servers[1];
         assert_eq!(
@@ -1739,51 +1457,24 @@ mod tests {
     }
 
     #[test]
-    fn runner_toggle_offers_repoint_when_another_installation_is_registered() {
+    fn runner_is_an_ordinary_editable_server() {
         let mut catalog = catalog();
         let client = McpClientId::Codex;
-        catalog.runner.codex = mcp_status(true, false, None);
-        assert!(catalog.runner_server.clients[&client].registered);
-        assert!(!server_toggle_on(
-            &catalog.runner_server,
-            client,
-            &catalog.runner
-        ));
-        assert!(
-            mcp_row_presentation(client, Some(&catalog.runner.codex), false, true)
-                .status
-                .starts_with("Registered to another Runner")
-        );
-        assert!(server_toggle_on(
-            &catalog.servers[0],
-            client,
-            &catalog.runner
-        ));
-        catalog.runner.codex = mcp_status(true, true, None);
-        assert!(server_toggle_on(
-            &catalog.runner_server,
-            client,
-            &catalog.runner
-        ));
-        catalog.runner.codex = mcp_status(false, false, None);
-        assert!(!server_toggle_on(
-            &catalog.runner_server,
-            client,
-            &catalog.runner
-        ));
-        catalog
-            .runner_server
-            .clients
-            .get_mut(&client)
-            .unwrap()
-            .registered = false;
-        catalog
-            .runner_server
+        let runner = catalog
+            .servers
+            .iter_mut()
+            .find(|entry| entry.name == "runner")
+            .unwrap();
+        assert!(server_toggle_on(runner, client));
+        runner.clients.get_mut(&client).unwrap().registered = false;
+        runner
             .clients
             .get_mut(&McpClientId::ClaudeCode)
             .unwrap()
             .definition = None;
-        assert!(copy_hint(&catalog.runner_server, client).is_none());
+        assert!(!server_toggle_on(runner, client));
+        assert!(copy_hint(runner, client).is_some());
+        assert_eq!(transport_badge(runner, McpClientId::ClaudeCode), "other");
     }
 
     #[test]
@@ -1864,7 +1555,7 @@ mod tests {
     }
 
     #[test]
-    fn cancel_edit_confirms_before_discard_and_runner_cannot_be_edited() {
+    fn cancel_edit_confirms_before_discard_and_runner_can_be_edited() {
         let temp = tempfile::tempdir().unwrap();
         let mut cx = gpui::TestAppContext::single();
         let store = test_store(temp.path(), &mut cx);
@@ -1893,7 +1584,7 @@ mod tests {
                 assert!(detail.name.is_none());
                 detail.open(McpClientId::ClaudeCode, "runner", window, cx);
                 detail.edit(window, cx);
-                assert!(!detail.editing);
+                assert!(detail.editing);
             });
         })
         .unwrap();
@@ -1929,27 +1620,6 @@ mod tests {
             });
         })
         .unwrap();
-    }
-
-    #[test]
-    fn manual_runner_choice_persists_default_registration_marker() {
-        let temp = tempfile::tempdir().unwrap();
-        let mut cx = gpui::TestAppContext::single();
-        let store = test_store(temp.path(), &mut cx);
-        let detail = cx.new(|cx| McpDetail::new(store.clone(), cx));
-        detail.update(&mut cx, |detail, cx| {
-            detail.record_manual_choice(McpClientId::Codex, cx)
-        });
-        cx.run_until_parked();
-        assert!(store.read_with(&cx, |store, _| store
-            .settings
-            .initialized_mcp_clients
-            .contains("codex")));
-        assert!(AppSettings::load(&temp.path().join("settings.json"))
-            .unwrap()
-            .initialized_mcp_clients
-            .contains("codex"));
-        detail.read_with(&cx, |detail, _| assert!(!detail.loading));
     }
 
     #[test]
