@@ -2256,9 +2256,25 @@ impl NativeRoot {
             self.split_sizes_dirty = true;
             cx.notify();
         }
+        // A drag suppresses hover, so the gutter needs the drag itself to stay lit.
+        if self.resizing_split.as_deref() != Some(split_id) {
+            self.resizing_split = Some(split_id.to_owned());
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn finish_chat_panel_resize(&mut self, cx: &mut Context<Self>) {
+        if !self.chat_panel_resizing {
+            return;
+        }
+        self.chat_panel_resizing = false;
+        cx.notify();
     }
 
     pub(crate) fn finish_split_resize(&mut self, cx: &mut Context<Self>) {
+        if self.resizing_split.take().is_some() {
+            cx.notify();
+        }
         if !self.split_sizes_dirty {
             return;
         }

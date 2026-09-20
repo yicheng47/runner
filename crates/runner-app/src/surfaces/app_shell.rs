@@ -3,6 +3,7 @@ use gpui::{deferred, svg, BoxShadow, FontWeight, WindowAppearance, WindowControl
 use crate::app_settings::{clamp_sidebar_width, nudge_zoom};
 use crate::toast::ToastTone;
 use crate::*;
+use runner_app::ui::resize::{resize_strip, resize_strip_inset, ResizeAxis};
 
 pub(crate) const TITLEBAR_DRAG_HEIGHT: f32 = 28.;
 #[cfg(target_os = "macos")]
@@ -81,7 +82,9 @@ impl NativeRoot {
         }
 
         let workspace = self.render_entity_surface(window, cx);
-        let sidebar = self.render_app_sidebar(window, cx);
+        let (sidebar, sidebar_divider) = self.render_app_sidebar(window, cx);
+        let sidebar_resize =
+            sidebar_divider.map(|divider| self.render_sidebar_resize_handle(divider, cx));
         let preview_trigger = self.render_sidebar_preview_trigger(cx);
         let modal = self
             .start_chat_modal
@@ -129,6 +132,7 @@ impl NativeRoot {
                     .child(workspace)
                     .children(self.render_entity_sidebar_toggle(window, cx)),
             )
+            .children(sidebar_resize)
             .children(preview_trigger)
             .children(chat_rename_modal)
             .children(terminal_close_confirm)
@@ -186,6 +190,11 @@ impl NativeRoot {
                     let width = f32::from(event.event.position.x - event.bounds.left())
                         / this.settings(cx).app_zoom;
                     let width = clamp_sidebar_width(width);
+                    // A drag suppresses hover, so the bar needs the drag's own state to stay lit.
+                    if !this.sidebar_resizing {
+                        this.sidebar_resizing = true;
+                        cx.notify();
+                    }
                     this.update_app_settings(cx, false, |settings| {
                         if settings.sidebar_width == width {
                             return false;
@@ -196,11 +205,13 @@ impl NativeRoot {
                 },
             ))
             .on_drop(cx.listener(|this, _: &SidebarResizeDrag, _, cx| {
+                this.finish_sidebar_resize(cx);
                 this.save_settings(cx);
             }))
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(|this, _, _, cx| {
+                    this.finish_sidebar_resize(cx);
                     this.clear_sidebar_drag("root-up", cx);
                     this.clear_crew_slot_drag(cx);
                 }),
@@ -208,6 +219,7 @@ impl NativeRoot {
             .on_mouse_up_out(
                 MouseButton::Left,
                 cx.listener(|this, _, _, cx| {
+                    this.finish_sidebar_resize(cx);
                     this.clear_sidebar_drag("root-up-out", cx);
                     this.clear_crew_slot_drag(cx);
                 }),
@@ -244,7 +256,7 @@ impl NativeRoot {
         &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> Option<AnyElement> {
+    ) -> (Option<AnyElement>, Option<f32>) {
         let visible = !self.sidebar_collapsed || self.sidebar_preview_open;
         let visibility_target = if visible { 1. } else { 0. };
         let (visibility, animating) = self.sidebar_visibility.animate_to(
@@ -259,15 +271,18 @@ impl NativeRoot {
         let full_width = self.settings(cx).sidebar_width * self.settings(cx).app_zoom;
         let width = full_width * visibility;
         if !show_panel {
-            return Some(
-                div()
-                    .id("app-sidebar")
-                    .relative()
-                    .w(px(width))
-                    .h_full()
-                    .flex_none()
-                    .overflow_hidden()
-                    .into_any_element(),
+            return (
+                Some(
+                    div()
+                        .id("app-sidebar")
+                        .relative()
+                        .w(px(width))
+                        .h_full()
+                        .flex_none()
+                        .overflow_hidden()
+                        .into_any_element(),
+                ),
+                None,
             );
         }
         let preview =
@@ -447,7 +462,6 @@ impl NativeRoot {
                     )
                     .children(update_hint),
             );
-        let resize_handle = visible.then(|| self.render_sidebar_resize_handle(cx));
         // The content keeps its full width while the wrapper animates, so the
         // transition clips instead of squashing every row; a squashed row
         // shrinks its icons to zero and gpui refuses to paint them (#512).
@@ -478,8 +492,9 @@ impl NativeRoot {
             })
             .border_r_1()
             .border_color(theme::border())
-            .child(content)
-            .children(resize_handle);
+            .child(content);
+        // The 1px right border is the divider; the handle centres on it.
+        let divider = visible.then_some(width - 0.5);
         if preview {
             sidebar = sidebar
                 .absolute()
@@ -494,31 +509,45 @@ impl NativeRoot {
                         cx.notify();
                     }
                 }));
-            return Some(deferred(sidebar).with_priority(1).into_any_element());
+            return (
+                Some(deferred(sidebar).with_priority(1).into_any_element()),
+                divider,
+            );
         }
-        Some(sidebar.into_any_element())
+        (Some(sidebar.into_any_element()), divider)
     }
 
-    pub(crate) fn render_sidebar_resize_handle(&self, cx: &App) -> AnyElement {
-        div()
-            .id("sidebar-resize")
-            .map(|handle| {
-                #[cfg(windows)]
-                let handle = handle.occlude();
-                handle
-            })
-            .absolute()
-            .right_0()
-            .top_0()
-            .w(px(4. * self.settings(cx).app_zoom))
-            .h_full()
-            .cursor(CursorStyle::ResizeLeftRight)
-            .hover(|handle| handle.bg(alpha(theme::accent(), 0.4)))
-            .on_drag(
-                SidebarResizeDrag,
-                |drag: &SidebarResizeDrag, _, _, cx: &mut App| cx.new(|_| drag.clone()),
-            )
-            .into_any_element()
+    fn finish_sidebar_resize(&mut self, cx: &mut Context<Self>) {
+        if !self.sidebar_resizing {
+            return;
+        }
+        self.sidebar_resizing = false;
+        cx.notify();
+    }
+
+    pub(crate) fn render_sidebar_resize_handle(&self, divider: f32, cx: &App) -> AnyElement {
+        let zoom = self.settings(cx).app_zoom;
+        resize_strip(
+            "sidebar-resize",
+            ResizeAxis::Columns,
+            self.sidebar_resizing,
+            zoom,
+            None,
+        )
+        .id("sidebar-resize")
+        .map(|handle| {
+            #[cfg(windows)]
+            let handle = handle.occlude();
+            handle
+        })
+        .absolute()
+        .top_0()
+        .left(px(divider - resize_strip_inset(zoom)))
+        .on_drag(
+            SidebarResizeDrag,
+            |drag: &SidebarResizeDrag, _, _, cx: &mut App| cx.new(|_| drag.clone()),
+        )
+        .into_any_element()
     }
 
     fn render_sidebar_preview_trigger(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -1096,6 +1125,91 @@ impl NativeRoot {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sidebar_resize_bar_rides_the_divider() {
+        use crate::theme_snapshot::ThemeGuard;
+        use gpui::{px, size, TestAppContext, VisualTestContext};
+        use runner_backend::{db, event_bus, events, mcp, router, session, shell_path, windows};
+        use std::sync::{Arc, Mutex, RwLock};
+
+        let _theme = ThemeGuard::new();
+        theme::set_active_variant(theme::ThemeVariant::Carbon);
+        let temp = tempfile::tempdir().unwrap();
+        let runtime_shell_env = Arc::new(RwLock::new(shell_path::LoginShellEnv::default()));
+        let runtime_discovery =
+            Arc::new(RwLock::new(shell_path::DiscoveryState::startup(None, None)));
+        let core = AppCore {
+            db: Arc::new(db::open_pool(&temp.path().join("runner.db")).unwrap()),
+            app_data_dir: temp.path().to_owned(),
+            sessions: session::SessionManager::new(
+                runtime_shell_env.clone(),
+                runtime_discovery.clone(),
+                Arc::new(session::pty_runtime::PtyRuntime::new()),
+            ),
+            runtime_shell_env,
+            runtime_discovery,
+            buses: event_bus::BusRegistry::new(),
+            routers: router::RouterRegistry::new(),
+            mission_grid_hint: Arc::new(Mutex::new(None)),
+            mcp: Arc::new(mcp::McpHandle::new()),
+            windows: Arc::new(windows::WindowRegistry::new()),
+            events: events::EventChannel::new(),
+            session_event_observer: Default::default(),
+            app_version: "0.0.0-test".into(),
+        };
+        let mut cx = TestAppContext::single();
+        let store = cx.new(|cx| {
+            AppStore::new(
+                core.clone(),
+                None,
+                None,
+                temp.path().join("settings.json"),
+                AppSettings::default(),
+                None,
+                cx,
+            )
+        });
+        cx.update(|cx| {
+            cx.set_global(crate::GlobalAppStore(store.clone()));
+            cx.set_global(crate::WindowLayoutCheckpoint::default());
+            #[cfg(not(windows))]
+            let updater = cx.new(|cx| crate::Updater::new(false, cx));
+            #[cfg(windows)]
+            let updater = cx.new(|cx| crate::Updater::new(false, temp.path().join("updates"), cx));
+            cx.set_global(crate::GlobalUpdater(updater));
+        });
+        let host = cx.add_window(|window, cx| {
+            NativeRoot::new(
+                "sidebar-resize".into(),
+                temp.path().join("logs"),
+                None,
+                None,
+                store.clone(),
+                window,
+                cx,
+            )
+        });
+        let mut visual = VisualTestContext::from_window(host.into(), &cx);
+        visual.simulate_resize(size(px(1200.), px(900.)));
+        visual.run_until_parked();
+        let sidebar = visual.debug_bounds("APP_SIDEBAR").expect("sidebar");
+        let bar = visual
+            .debug_bounds("sidebar-resize-bar")
+            .expect("resize bar");
+        // The divider is the sidebar's own 1px right border.
+        let inside = (sidebar.right() - px(1.)) - bar.left();
+        let outside = bar.right() - sidebar.right();
+        assert_eq!(
+            bar.size.width,
+            px(runner_app::ui::resize::RESIZE_BAR),
+            "{bar:?}"
+        );
+        assert!(
+            inside > px(0.) && (inside - outside).abs() <= px(0.01),
+            "the bar must ride the divider, not sit beside it: {inside:?} inside against {outside:?} outside, bar {bar:?}, sidebar {sidebar:?}"
+        );
+    }
 
     #[test]
     fn archived_mission_only_leaves_its_open_route() {
