@@ -59,7 +59,7 @@ Runner 是一个原生桌面应用，用来同时运行多个命令行编码 age
 - **Crew** — 把若干角色组合成有名字的槽位，指定一个 lead，再加上每个 mission 都会继承的团队约定。
 - **Mission** — 一个 crew 围绕一个目标干活：每个槽位一个实时终端，通过一条可持久化、可回放的事件 feed 协作，需要你拍板时用 `ask_human` 提问。
 - **Chat** — 单个 agent 跑在一个真实终端里，不需要 mission；标签页可以一直分栏到窗口放不下为止。
-- **MCP** — 上面的一切也都是 MCP 工具，你的 agent 可以自己操作 Runner。
+- **CLI** — 上面的一切也都有对应命令，agent、脚本和终端前的人都可以自己驱动 Runner。
 
 用 Rust 写成，基于 [gpui-ce](https://github.com/gpui-ce/gpui-ce)（[Zed](https://zed.dev) GPUI 的社区分支），终端网格用 `alacritty_terminal`，状态存在 SQLite。没有 webview。一切都在你自己的机器上运行和保存。
 
@@ -154,7 +154,7 @@ macOS 上按 `⇧⌘N`、Windows 上按 `Ctrl+Shift+N` 可以打开更多系统�
 </tr>
 <tr>
 <td width="50%">
-  <img src="assets/mcp_settings.png" alt="Settings → MCP — 每个 agent 的所有 MCP 服务，Runner 自己的置顶" width="100%" />
+  <img src="assets/mcp_settings.png" alt="Settings → MCP — 每个 agent 的所有 MCP 服务" width="100%" />
   <img src="assets/skills.png" alt="Settings → Skills — agent 能加载的所有技能，每个都有开关" width="100%" />
 </td>
 <td width="50%" valign="middle">
@@ -165,7 +165,22 @@ macOS 上按 `⇧⌘N`、Windows 上按 `Ctrl+Shift+N` 可以打开更多系统�
 
 ### 让你的 agent 来驱动 Runner
 
-Runner 本身也是一个 MCP 服务。**Settings → Agents** 把它注册到 Claude Code、Codex、TRAE CLI 和 GitHub Copilot CLI，此后它们中的任何一个都可以创建 crew 和项目、启动 mission、读取 feed、回答问题或开一个 chat。真正能复利的地方在于：你日常用的 agent 规划好一个修复，派出一个 coder 加 reviewer 的 crew 去实现，然后继续干自己的事，而它拉起的每个会话仍然是一个你随时可以打开查看的真实终端。
+内置的 `runner` 命令是 agent、脚本和终端前的人驱动应用的唯一入口：创建项目、角色和 crew，启动 mission 和 chat，跟随 feed、回答问题，以及管理它们的生命周期。在 macOS 上，如果登录 `PATH` 已包含 `~/.local/bin`，Runner 会在首次启动时把命令安装到那里；如果 `PATH` 中的 `/usr/local/bin` 可写，则安装到后者；否则去 **Settings → General → Command line** 点一下即可。在 Windows 上，Runner 会把 sidecar 目录加入用户 `PATH`。
+
+agent 不需要额外设置。Runner 会为每个检测到的 agent 安装 `runner` skill，三个根目录覆盖五种运行时：Claude Code 用 `~/.claude/skills/`，Codex、GitHub Copilot CLI 和 pi 共用 `~/.agents/skills/`，TRAE CLI 用 `~/.trae/skills/`。skill 会让 agent 读取与当前版本一致的 `runner help agents` 指南。同一个 **Command line** 区域里还有 `runner` 命令这一行，以及 **Runner skill for agents** 开关。
+
+```sh
+runner crew list --json
+mission=$(runner mission start --crew <crew> --goal-file - -q < brief.md)
+runner mission feed "$mission" --follow --json
+runner mission show "$mission" --json
+runner msg post --mission "$mission" --to <lead_handle> "message"
+runner mission answer "$mission" <question_id> <choice>
+runner mission stop "$mission"
+runner mission archive "$mission"
+```
+
+agent 使用 `--json`；不加时，列表和详情命令会为人显示表格和可读摘要。退出状态 0 表示成功，1 表示 Runner 拒绝了操作，2 表示用法或引用解析错误，3 表示应用未运行，5 表示沙箱拦住了本地连接。在 mission 内，同一个二进制从环境中取得 mission 和 handle，crew 成员也用它互发消息和信号。真正能复利的地方在于：你日常用的 agent 可以规划好一个修复，派出一个 coder 加 reviewer 的 crew 去实现，然后继续干自己的事，而它拉起的每个会话仍然是一个你随时可以打开查看的真实终端。
 
 </td>
 </tr>
@@ -190,11 +205,11 @@ Carbon 和 Runner Light 是 Runner 自己的主题，Catppuccin Mocha 和 Latte 
 
 ### 还有这些
 
-- **项目** — 绑定一次工作目录；在项目里发起的 chat 和 mission 都会继承它的 cwd，并归在侧边栏里自己的分组下。agent 也可以通过 MCP 创建、重命名、归档和删除项目。
+- **项目** — 绑定一次工作目录；在项目里发起的 chat 和 mission 都会继承它的 cwd，并归在侧边栏里自己的分组下。agent 也可以通过 CLI 创建、重命名、归档和删除项目。
 - **Mission 控制** — 停止、恢复或重启单个槽位，不用重启整个 mission；重启的会话会带着最初的任务简报重新开始。mission 默认以 Bypass 权限模式运行，Accept-edits 和 Default 在设置里一步可达，也不会卡在 agent 的首次授权对话框上。
 - **会话不随应用退出而结束** — 退出或崩溃不会杀掉你的 agent；下次启动会重新接上仍在运行的会话，工作进行中时退出会先询问。
 - **真实终端** — 每一栏都是跑在 GPU 绘制的 `alacritty_terminal` 网格上的真实 PTY：agent 自己的配色、鼠标上报、输入法（包括拼音）、复制、文件路径粘贴、10,000 行回滚。点击文件路径可在编辑器里打开；选中一段输出可以在侧线程里追问；⌘+ 和 ⌘− 把整个应用从 60% 缩放到 200%。
-- **内置 `runner` CLI** — 被拉起的 agent 可以在自己的 PTY 里互发消息、查看 crew 名册、发送信号。
+- **内置 `runner` CLI** — agent、脚本和终端前的人可以从任意终端驱动项目、角色、crew、mission、chat 和会话；在 mission 内，crew 成员用同一个二进制在各自的 PTY 里互发消息、查看名册、发送信号。
 
 ## 支持的 Agent
 
@@ -208,7 +223,7 @@ Carbon 和 Runner Light 是 Runner 自己的主题，Catppuccin Mocha 和 Latte 
 | 从 CLI 读取模型列表 | ✓ | ✓ | — | ✓ | — |
 | 权限模式 | Default · Accept edits · Auto · Bypass | Default · Auto · Bypass | Default · Accept edits · Bypass | — | Default · Bypass |
 | Skills 面板 | 目录 + 开关 | 目录 + 开关 | 目录 + 开关 | 目录 | 目录 |
-| 把 Runner 注册为 MCP 服务 | ✓ | ✓ | ✓ | — | ✓ |
+| 已安装 Runner skill | ✓ | ✓ | ✓ | ✓ | ✓ |
 | 终端渲染有夹具测试覆盖 | ✓ | ✓ | — | — | — |
 
 ¹ GitHub Copilot CLI 在 Windows 上原生运行，但尚未在 Windows 上做过冒烟测试。
