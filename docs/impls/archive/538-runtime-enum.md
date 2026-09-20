@@ -66,4 +66,4 @@ Per commit: `cargo test --workspace`, `make clippy`, `make fmt`, all green. Afte
 
 ## Non-goals
 
-Adding a variant: feature [539](../../features/539-pi-runtime.md) adds `pi` and is sequenced after this lands precisely so the compiler, not grep, finds every arm it must cover. An `Error` enum (the audit's sibling item), file splits, renaming `runtime_override` columns, changing the MCP tool schemas beyond what the enum's `JsonSchema` derive produces, adding a runtime, a `Default` runtime, README or product-doc edits, and anything in `docs/impls/archive/` or `docs/features/archive/`.
+Adding a variant: feature [539](../../features/archive/539-pi-runtime.md) adds `pi` and is sequenced after this lands precisely so the compiler, not grep, finds every arm it must cover. An `Error` enum (the audit's sibling item), file splits, renaming `runtime_override` columns, changing the MCP tool schemas beyond what the enum's `JsonSchema` derive produces, adding a runtime, a `Default` runtime, README or product-doc edits, and anything in `docs/impls/archive/` or `docs/features/archive/`.

@@ -1,0 +1,21 @@
+# pi runtime — program record
+
+Archived after 0.11.0 was tagged on 2026-09-20 (`e9d59aa`, [v0.11.0](https://github.com/yicheng47/runner/releases/tag/v0.11.0)). pi is a first-class runtime beside Claude Code, Codex, GitHub Copilot CLI and TRAE CLI: chats, missions, resume, fork, model discovery, and hook status through a Runner-owned extension.
+
+Implementation record for [feature 539](../../../features/archive/539-pi-runtime.md) ([#539](https://github.com/yicheng47/runner/issues/539)). The spec says *what*, with the per-site inventory and the probe evidence; this directory says *how, in what order, and what has landed*: this file is the condensed state and the decisions that bind, [plan.md](plan.md) is the mission table and the risks, [impl_log.md](impl_log.md) is the dated log, and the two briefs stay in [`../../briefs/`](../../briefs/).
+
+## Status (2026-09-20)
+
+Mission 0 drew the pi mark and the spec frame in `design/specs/539-pi-runtime.pen`, the first spec in its own file, on 2026-09-18. Mission 1 ([PR #646](https://github.com/yicheng47/runner/pull/646), 2026-09-18, codex peer) shipped the runtime: the split prompt composer with the other four runtimes' bodies pinned byte-identical, the system-prompt file on `--append-system-prompt`, caller-assigned session keys with resume and fork, the conversation probe, model discovery from `pi --list-models`, `--approve` for mission slots, the provider mark, the README columns. Mission 2 ([PR #649](https://github.com/yicheng47/runner/pull/649), 2026-09-18, codex peer) shipped hook status: an embedded `-e` extension installed from app data, Working and Idle from pi's own events, the rekey drop file for `/new` and `/resume`. Mission 3 split on 2026-09-20: Jason's macOS phase 3 checklist passed, pi passed the CLI's four-runtime gate on nightly `5b6030a`, and `crates/runner-app/tests/pi_runtime_smoke.rs` landed with #648's mission 5 ([PR #667](https://github.com/yicheng47/runner/pull/667)), proven once against the real pi in 2.8 s on `deepseek/deepseek-v4-flash`. Smoke record: [`539-pi-hooks-smoke.md`](../../../tests/archive/539-pi-hooks-smoke.md).
+
+## Decisions that bind
+
+The spec's decisions 1–10. For mission 1: the three prompt layers go on `--append-system-prompt <file>` for every spawn and only the lead's goal is a first turn, with the other four runtimes' bodies pinned byte-identical (1); keys are caller-assigned with no capture thread, a missing conversation keeps its key, and the probe reads pi's default session directory only (2); fork is one direct spawn with its own prompt file (3); `--approve` goes on mission slots only, never chats (6); every permission function is empty for pi (7); quiet start is the env var, not `--offline` (8); the mark is the pixel-π silhouette in `theme::text()`, one path, no colour variant (11). For mission 2: hooks load through `-e` from app data and nothing is written into `~/.pi` (4); Idle comes only from `agent_settled`, `session_shutdown` clears waits, and pi older than 0.84.4 gets estimated status (5); the rekey drop file reuses `ClaudeSessionKeyWatcher` with no new Rust (10).
+
+## Open
+
+- The `pi-first-turn.ndjson` terminal fixture and the JASONPC pass of the phase 3 checklist (the npm `.cmd` shim on the batch first-turn path, Git Bash for the bash tool, Node's `appendFileSync` beside Runner's feed handle): [#668](https://github.com/yicheng47/runner/issues/668).
+- The resume probe globs the real `~/.pi/agent/sessions` and ignores a role's `PI_CODING_AGENT_DIR`, so a relocated pi takes the degraded resume path and the smoke test exercises only that leg: [#666](https://github.com/yicheng47/runner/issues/666).
+- Mission 1's follow-ups, still open: `split_session_prompt` keeps an unreachable pi lead arm; the fast resume-failure heuristic clears pi keys on auth or model errors; forking an untouched pi chat fails inside pi until a source file exists.
+- A pi from before the npm scope rename (`@mariozechner/pi-coding-agent`) cannot resolve the version import and is treated as current.
+- Per-skill on/off for pi, `PI_CODING_AGENT_SESSION_DIR`, `sessionDir` and a role's own `--session-dir` are not honoured anywhere in Runner; the spec's non-goals.

@@ -4,16 +4,16 @@ Snapshot as of 2026-09-20. The live source is the [GitHub milestones page](https
 
 ## Where the project is
 
-- **Latest release:** 0.10.0 on 2026-09-17. Hook-based status on Windows, status detail in the label (`Working · Using tools`, `Idle · Interrupted`), the Runners menu renamed to Roles, a new icon. The nightly feed builds from `main`.
-- **Landed on `main` since 0.10.0:** the pi runtime and its hook-based status ([#646](https://github.com/yicheng47/runner/pull/646), [#649](https://github.com/yicheng47/runner/pull/649)); missions 1 through 4 of the general `runner` CLI ([#650](https://github.com/yicheng47/runner/pull/650), [#652](https://github.com/yicheng47/runner/pull/652), [#664](https://github.com/yicheng47/runner/pull/664), [#654](https://github.com/yicheng47/runner/pull/654)), whose third mission removed Runner's MCP integration; the CLI crate moved to `crates/runner-cli` in [#660](https://github.com/yicheng47/runner/pull/660); and the removal's Windows test fix landed in [#665](https://github.com/yicheng47/runner/pull/665).
-- **In flight:** #648 mission 5, which wraps both READMEs and the roadmap and adds pi's real-runtime smoke test; the remaining nightly gate legs; and the JASONPC session that finishes the Windows checks for #539 and #648. The missions-as-containers spec ([`features/562-mission-spawn.md`](./features/562-mission-spawn.md)) is written and waits for 0.12.
+- **Latest release:** 0.11.0 on 2026-09-20. pi as a first-class runtime with hook status, and the `runner` CLI as Runner's external control surface: on PATH after the first launch, a `runner` skill installed for every detected agent, `mission feed --follow`, and the MCP integration removed with a once-only cleanup of the entries Runner wrote. The nightly feed builds from `main`.
+- **Landed on `main` since 0.11.0:** nothing yet.
+- **In flight:** the 0.11.0 follow-through ([#668](https://github.com/yicheng47/runner/issues/668)): the JASONPC session for the CLI and pi, the pi first-turn fixture, and the Settings → MCP screenshot. The missions-as-containers spec ([`features/562-mission-spawn.md`](./features/562-mission-spawn.md)) is next.
 
 ## Releases
 
 | Release | Content | Issues |
 | --- | --- | --- |
-| 0.11.0 | pi runtime, and the general `runner` CLI with its agent skill as Runner's external control surface | #539, #648 |
-| 0.11.x | The rest of the 0.11 milestone as it lands, plus fixes | #647, #651, #653, #617, #592 |
+| 0.11.0 | Shipped 2026-09-20: pi runtime, and the general `runner` CLI with its agent skill as Runner's external control surface; the MCP integration removed | #539, #648 |
+| 0.11.x | The 0.11.0 follow-through, the rest of the milestone as it lands, plus fixes | #668, #647, #651, #653, #617, #592 |
 | 0.12 | Missions as containers: the mission owns its roster, role-seeded missions, the lead or an outside agent spawns, lists, waits on and stops slots through the CLI | #562 |
 | 0.13 | Session host: sessions outlive the app, then remote hosts over ssh, then a Windows host so a JASONPC slot can be a crew's tester | #645 |
 | 0.14 | Git worktrees under projects, and the project tree with git status and a read-only diff viewer | #403, #634 |
@@ -24,8 +24,8 @@ A minor is a change to the model or a new surface; a patch is fixes and follow-t
 
 | Issue | Priority | State on 2026-09-20 |
 | --- | --- | --- |
-| [#539](https://github.com/yicheng47/runner/issues/539) pi runtime | P1 | Missions 1 and 2 merged; `pi_runtime_smoke.rs` is in flight with #648 mission 5, while the fixture recording, JASONPC pass and archive stay with Jason and the driver |
-| [#648](https://github.com/yicheng47/runner/issues/648) general `runner` CLI | P1 | Missions 1 through 4 merged; mission 5's README, roadmap and pi-smoke work is in flight, with the remaining nightly gate legs and JASONPC session still to run |
+| [#539](https://github.com/yicheng47/runner/issues/539) pi runtime | P1 | Shipped in 0.11.0; the first-turn fixture and the JASONPC pass continue as [#668](https://github.com/yicheng47/runner/issues/668) |
+| [#648](https://github.com/yicheng47/runner/issues/648) general `runner` CLI | P1 | Shipped in 0.11.0 through five missions; the Windows checks and the README screenshot continue as [#668](https://github.com/yicheng47/runner/issues/668) |
 | [#647](https://github.com/yicheng47/runner/issues/647) terminal tab goes black after toggling the sidebar | P1 | Open; not started |
 | [#651](https://github.com/yicheng47/runner/issues/651) position the READMEs as a cockpit for agent crews | P2 | Open; copy drafted, implementation and the hero reshoot not started |
 | [#653](https://github.com/yicheng47/runner/issues/653) a live mission's flag draws in the accent | P2 | Open; not started |

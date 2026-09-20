@@ -6,13 +6,13 @@ A plan stays here while its work is in flight and moves to [`archive/`](./archiv
 
 ## Active
 
-- [648 — general `runner` CLI](./648-runner-cli.md) — feature [648](../features/648-runner-cli.md) ([#648](https://github.com/yicheng47/runner/issues/648), 0.11): five missions, ending with the MCP integration removed in the same release; mission 1 (the command tree over the socket, the caller handle, the backend tools) shipped in [#650](https://github.com/yicheng47/runner/pull/650); mission 2 (feed follow, the agent guide, the embedded skill, TRAE's skills root, three session commands) shipped in [#652](https://github.com/yicheng47/runner/pull/652); a nightly carries the four-runtime gate that decides when mission 3 (MCP removal) starts.
-- [539 — pi runtime](./539-pi-runtime.md) — feature [539](../features/539-pi-runtime.md) ([#539](https://github.com/yicheng47/runner/issues/539), 0.11): missions 1 and 2 shipped in [#646](https://github.com/yicheng47/runner/pull/646) and [#649](https://github.com/yicheng47/runner/pull/649); mission 3 (fixture, smoke test, JASONPC, archive) remains.
 
 ## Archive
 
 Shipped plans are in [`archive/`](./archive/) in number order, and each names its PR. Multi-mission programs keep a folder with a condensed README:
 
+- [`648-runner-cli/`](./archive/648-runner-cli/README.md) — the general `runner` CLI, its agent skill and the MCP removal ([#648](https://github.com/yicheng47/runner/issues/648), shipped 2026-09-20 in 0.11.0 through five missions, [#650](https://github.com/yicheng47/runner/pull/650) to [#667](https://github.com/yicheng47/runner/pull/667)); the Windows checks continue as [#668](https://github.com/yicheng47/runner/issues/668).
+- [`539-pi-runtime/`](./archive/539-pi-runtime/README.md) — pi as a runtime with hook status ([#539](https://github.com/yicheng47/runner/issues/539), shipped 2026-09-20 in 0.11.0 in [#646](https://github.com/yicheng47/runner/pull/646) and [#649](https://github.com/yicheng47/runner/pull/649)); the fixture and the JASONPC pass continue as [#668](https://github.com/yicheng47/runner/issues/668).
 - [`347-hook-status/`](./archive/347-hook-status/README.md) — hook-based agent status on macOS ([#347](https://github.com/yicheng47/runner/issues/347), closed 2026-09-16); Windows followed as [610](./archive/610-windows-hook-status.md), shipped in 0.10.0.
 - [`604-role-rename/`](./archive/604-role-rename/README.md) — the runner entity became role ([#604](https://github.com/yicheng47/runner/issues/604), shipped 2026-09-16 in [#618](https://github.com/yicheng47/runner/pull/618)).
 - [`local-skills/`](./archive/local-skills/README.md) — the Skills pane program ([#73](https://github.com/yicheng47/runner/issues/73), closed 2026-09-13; per-role picks continue as [#577](https://github.com/yicheng47/runner/issues/577)).

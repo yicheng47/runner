@@ -1,9 +1,10 @@
 # 648 — A general `runner` CLI
 
 > Tracking issue: [#648](https://github.com/yicheng47/runner/issues/648)
+> Status: shipped 2026-09-20 in [v0.11.0](https://github.com/yicheng47/runner/releases/tag/v0.11.0) (PRs [#650](https://github.com/yicheng47/runner/pull/650), [#652](https://github.com/yicheng47/runner/pull/652), [#654](https://github.com/yicheng47/runner/pull/654), [#664](https://github.com/yicheng47/runner/pull/664), [#665](https://github.com/yicheng47/runner/pull/665), [#667](https://github.com/yicheng47/runner/pull/667); record [`648-runner-cli/`](../../impls/archive/648-runner-cli/README.md); missions `01M2SW0NRV9W8PTFWR673JZH8S`, `01M2T4KVFBTP3MG9SMVJRG6433`, `01M2W85MNTBMWMTBPXMZJQBQQN`, `01M2YAW36SAP7B8QT8E01J9Q3Y`, `01M2YMFE6BK849GNR1GH3TC682`). The Windows checks and the README screenshot continue as [#668](https://github.com/yicheng47/runner/issues/668).
 > Priority: P1, milestone 0.11. With pi ([539](./539-pi-runtime.md)) it makes 0.11.0; the rest of the milestone ships in 0.11.0 if ready, otherwise in 0.11.x. Platforms: macOS and Windows.
 > Design: `design/specs/648-runner-cli.pen`: `Spec 648 — Settings · General · Command line` (`TPSwV`, the section in place) and `Spec 648 — Command line · row states` (`dJlVA`, every state of both rows, the Skills pane badge and the two command palette items). Drawn 2026-09-19 before Phase 5.
-> Related: [562](./562-mission-spawn.md) (missions as containers, milestone 0.12) builds its coordinator commands (`spawn`, `ps`, `wait`, `stop`, `done`) and the seats an outside agent takes on this CLI. The two stay separate issues: this one is a surface over tools that exist, 562 changes the mission model.
+> Related: [562](../562-mission-spawn.md) (missions as containers, milestone 0.12) builds its coordinator commands (`spawn`, `ps`, `wait`, `stop`, `done`) and the seats an outside agent takes on this CLI. The two stay separate issues: this one is a surface over tools that exist, 562 changes the mission model.
 > Command set designed with Jason on 2026-09-18: the principles, the command tree and eight decisions below. The identity model (decision 7), the release plan, and the removal of the MCP integration in the same release (decision 8, with TRAE gaining a skills root so no runtime is cut off) were decided the same day, after 539's mission 2 merged.
 
 ## Motivation
