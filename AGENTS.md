@@ -62,6 +62,16 @@ On Windows, use `.\make.cmd run` to build and start the app with its CLI sidecar
 
 Prefer the smallest check that covers the change. For native UI changes, run the `runner-app` tests plus workspace clippy; for core behavior, run the relevant crate tests.
 
+## Worktrees
+
+The checkout at the repository root stays on `main`. Every branch of work gets its own linked worktree under `.worktrees/`, named after the branch with its slashes flattened: `fix/659-session-start-status` lives in `.worktrees/fix-659-session-start-status`. Create it with `git worktree add .worktrees/<flattened-branch> -b <branch> origin/main` and remove it with `git worktree remove` once the branch has merged. Because the directory name is the branch name, an editor window's title says which work it holds, and either name can be derived from the other.
+
+`.worktrees/` is ignored, and nesting is safe in the ways that matter: `git clean -xfd` skips a nested worktree and reports it as a skipped repository, so removing one takes a deliberate `-ff`; the workspace members in `Cargo.toml` are explicit paths, so a nested checkout is never part of a build; and ripgrep honours the ignore, so a search from the root checkout does not cross into another branch's copy.
+
+Each worktree carries its own `target/` and pays for its own build. Do not point them at a shared `CARGO_TARGET_DIR`: Cargo takes an exclusive lock on the target directory, so concurrent worktrees would queue behind each other instead of building in parallel.
+
+Work stays inside its own worktree. When several are live at once, treat the others as another machine's checkout.
+
 ## Engineering Conventions
 
 - Follow existing local patterns before adding new abstractions.
