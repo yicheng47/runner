@@ -221,6 +221,14 @@ mod tests {
             fs::write(folder.join(agent_skill::SKILL_MARKER), "managed").unwrap();
             fs::write(folder.join("SKILL.md"), "stale canary").unwrap();
         }
+        let config_canaries: Vec<_> = runner_backend::ops::mcp::McpClientId::ALL
+            .into_iter()
+            .map(|client| client.config_path(&home))
+            .collect();
+        for path in &config_canaries {
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, "config canary").unwrap();
+        }
 
         let core = test_core(temp.path(), app_data.clone());
         db::set_runtime_override(&core.db, Runtime::Codex.key(), executable.to_str()).unwrap();
@@ -248,6 +256,10 @@ mod tests {
             fs::read_to_string(untouched_home.join(".agents/skills/runner-dev/SKILL.md")).unwrap(),
             "stale canary"
         );
+        for path in &config_canaries {
+            assert_eq!(fs::read_to_string(path).unwrap(), "config canary");
+        }
+        assert!(store.read_with(&cx, |store, _| store.settings.mcp_registrations_removed));
         assert!(store.read_with(&cx, |store, _| store.runner_skill_status().detected));
 
         fs::remove_dir_all(home.join(".agents/skills/runner-dev")).unwrap();

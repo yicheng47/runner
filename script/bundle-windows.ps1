@@ -58,7 +58,7 @@ try {
     $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
     $dumpbin = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -find 'VC/Tools/MSVC/**/bin/Hostx64/x64/dumpbin.exe' | Select-Object -First 1
     if (-not $dumpbin) { throw 'Cannot find dumpbin in the MSVC build tools' }
-    foreach ($binary in 'Runner.exe', 'runner-agent-cli.exe', 'runner-mcp.exe') {
+    foreach ($binary in 'Runner.exe', 'runner-agent-cli.exe') {
         $binaryPath = Join-Path $release $binary
         $imports = & $dumpbin /dependents $binaryPath
         if ($LASTEXITCODE -ne 0) { throw "Cannot inspect $binary dependencies" }
@@ -72,7 +72,7 @@ try {
     }
     $signing = @()
     if ($SigningThumbprint) {
-        foreach ($binary in 'Runner.exe', 'runner-agent-cli.exe', 'runner-mcp.exe') {
+        foreach ($binary in 'Runner.exe', 'runner-agent-cli.exe') {
             & $signtool sign /sha1 $SigningThumbprint /fd sha256 /tr $timestampUrl /td sha256 (Join-Path $release $binary)
             if ($LASTEXITCODE -ne 0) { throw "Signing $binary failed" }
         }

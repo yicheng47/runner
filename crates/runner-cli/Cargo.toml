@@ -17,13 +17,6 @@ path = "src/lib.rs"
 name = "runner-agent-cli"
 path = "src/main.rs"
 
-# Source-side MCP proxy binary. AI clients launch the installed
-# `$APPDATA/runner/bin/runner-mcp` directly; mission agents should not
-# see MCP as a `runner` subcommand.
-[[bin]]
-name = "runner-mcp"
-path = "src/mcp_main.rs"
-
 [dependencies]
 runner-core = { path = "../runner-core" }
 clap = { workspace = true }
@@ -32,10 +25,11 @@ serde_json = { workspace = true }
 chrono = { workspace = true }
 ulid = { workspace = true }
 tokio = { version = "1", features = ["macros", "net", "rt", "time", "io-util", "io-std", "signal"] }
-rmcp = { version = "1.7", features = ["server", "client"] }
+rmcp = { version = "1.7", features = ["client"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Registry"] }
 
 [dev-dependencies]
+rmcp = { version = "1.7", features = ["server"] }
 tempfile = "3"

@@ -33,8 +33,7 @@ tempfile = "3"
 # `macos_fsevent` backend is the default on macOS; on Linux it falls back to
 # inotify, on Windows to ReadDirectoryChangesW.
 notify = "6"
-# MCP server (impl 0013): Unix socket listener for external clients.
-# The `runner-mcp` sidecar bridges stdio ↔ this socket.
+# MCP server (impl 0013): local IPC transport for the bundled Runner CLI.
 rmcp = { version = "1.7", features = ["server"] }
 schemars = "1"
 tokio = { version = "1", features = ["net", "rt", "io-util", "sync"] }

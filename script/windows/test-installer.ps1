@@ -16,7 +16,7 @@ $testRoot = Join-Path ([IO.Path]::GetTempPath()) "runner installer % # $id"
 $installDir = Join-Path $testRoot 'installed'
 $registryKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\${appId}_is1"
 $shortcutPath = Join-Path ([Environment]::GetFolderPath('Programs')) "$appName.lnk"
-$binaries = @('Runner.exe', 'runner-agent-cli.exe', 'runner-mcp.exe')
+$binaries = @('Runner.exe', 'runner-agent-cli.exe')
 $payload = $binaries + @('conpty.dll', 'OpenConsole.exe')
 $csc = Join-Path $env:WINDIR 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'
 New-Item -ItemType Directory -Path $testRoot | Out-Null

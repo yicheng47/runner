@@ -22,7 +22,7 @@ use crate::app_settings::{
 };
 
 mod command_default;
-mod mcp_defaults;
+mod mcp_removal;
 mod skill_defaults;
 pub(crate) use command_default::{
     mark_command_install_initialized, run_user_command_action, CommandInstallSupport,
@@ -384,7 +384,7 @@ impl AppStore {
         if let Some(error) = settings_error {
             store.record_error(error);
         } else {
-            store.initialize_mcp_defaults();
+            store.initialize_mcp_removal();
             store.initialize_skill_defaults();
             store.initialize_command_default();
         }
@@ -405,7 +405,7 @@ impl AppStore {
 
     pub(crate) fn refresh(&mut self, refresh: StoreRefreshKind, cx: &mut Context<Self>) {
         if matches!(refresh, StoreRefreshKind::Runtimes | StoreRefreshKind::All) {
-            self.initialize_mcp_defaults();
+            self.initialize_mcp_removal();
             self.initialize_skill_defaults();
             self.initialize_command_default();
         }
@@ -551,7 +551,7 @@ impl AppStore {
                 self.settings.disabled_agents.clone(),
             )
         {
-            self.initialize_mcp_defaults();
+            self.initialize_mcp_removal();
             self.initialize_skill_defaults();
             self.initialize_command_default();
         }

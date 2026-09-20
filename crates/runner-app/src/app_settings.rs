@@ -282,6 +282,7 @@ pub struct AppSettings {
     pub disabled_agents: BTreeSet<String>,
     pub enabled_agents: BTreeSet<String>,
     pub initialized_mcp_clients: BTreeSet<String>,
+    pub mcp_registrations_removed: bool,
     pub initialized_skill_roots: BTreeSet<String>,
     pub initialized_command_install: bool,
     pub runner_skill_enabled: bool,
@@ -323,6 +324,7 @@ impl Default for AppSettings {
             disabled_agents: BTreeSet::new(),
             enabled_agents: BTreeSet::new(),
             initialized_mcp_clients: BTreeSet::new(),
+            mcp_registrations_removed: false,
             initialized_skill_roots: BTreeSet::new(),
             initialized_command_install: false,
             runner_skill_enabled: true,
@@ -965,6 +967,7 @@ mod tests {
             settings.initialized_mcp_clients,
             ["codex".to_owned()].into_iter().collect()
         );
+        assert!(!settings.mcp_registrations_removed);
     }
 
     #[test]

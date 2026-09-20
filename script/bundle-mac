@@ -245,7 +245,7 @@ export RUSTFLAGS="${RUSTFLAGS:-} -Lframework=$SPARKLE_WORK_DIR -Clink-arg=-Wl,-r
 cargo build --manifest-path "$ROOT_DIR/Cargo.toml" --locked --release --package runner-app --features updater --target "$TARGET_TRIPLE"
 cargo build --manifest-path "$ROOT_DIR/Cargo.toml" --locked --release --package runner-cli --bins --target "$TARGET_TRIPLE"
 
-for binary in Runner runner-agent-cli runner-mcp; do
+for binary in Runner runner-agent-cli; do
     binary_path="$ROOT_DIR/target/$TARGET_TRIPLE/release/$binary"
     if [[ ! -x "$binary_path" ]]; then
         echo "error: release binary not found: $binary_path" >&2
@@ -283,7 +283,7 @@ codesign --force "${CODESIGN_OPTIONS[@]}" --sign "$SIGNING_IDENTITY" "$SPARKLE_R
 codesign --force "${CODESIGN_OPTIONS[@]}" --sign "$SIGNING_IDENTITY" "$SPARKLE_ROOT/Updater.app"
 codesign --force "${CODESIGN_OPTIONS[@]}" --sign "$SIGNING_IDENTITY" "$APP_BUNDLE/Contents/Frameworks/Sparkle.framework"
 # Sign sidecars first so the enclosing bundle seals their final signatures.
-for binary in runner-agent-cli runner-mcp Runner; do
+for binary in runner-agent-cli Runner; do
     codesign --force "${CODESIGN_OPTIONS[@]}" --sign "$SIGNING_IDENTITY" "$APP_BUNDLE/Contents/MacOS/$binary"
 done
 codesign --force "${CODESIGN_OPTIONS[@]}" --sign "$SIGNING_IDENTITY" "$APP_BUNDLE"
