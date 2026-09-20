@@ -8,6 +8,7 @@ pub mod list;
 pub mod menu;
 pub mod model_field;
 pub mod overlay;
+pub mod resize;
 pub mod scrollbar;
 pub mod select;
 pub mod session_control;

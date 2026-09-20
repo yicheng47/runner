@@ -2,6 +2,7 @@
 use super::*;
 use crate::*;
 use gpui::{canvas, quad, svg, BorderStyle, FontWeight, Pixels, Point, Size};
+use runner_app::ui::resize::{resize_strip, resize_strip_inset, ResizeAxis};
 use runner_app::ui::{
     ButtonVariant, Modal, OverlayWidth, SessionControlVariant, SessionOverlay, SessionOverlayKind,
 };
@@ -556,6 +557,7 @@ impl NativeRoot {
         let drawer_height = layout.drawer_height();
         let drawer_drag = DrawerResizeDrag;
         let drawer_resizing = self.drawer_resizing;
+        let zoom = self.settings(cx).app_zoom;
         let tab_body = div()
             .id("chat-tab-body")
             .relative()
@@ -573,26 +575,18 @@ impl NativeRoot {
                     .flex()
                     .flex_col()
                     .child(
-                        div()
-                            .id("terminal-drawer-resize")
-                            .flex_none()
-                            .h(rems(5. / 16.))
-                            .w_full()
-                            .flex()
-                            .items_center()
-                            .cursor(CursorStyle::ResizeUpDown)
-                            .child(
-                                div()
-                                    .h(rems(if drawer_resizing { 2. / 16. } else { 1. / 16. }))
-                                    .w_full()
-                                    .bg(theme::border_strong()),
-                            )
-                            .on_drag(
-                                drawer_drag,
-                                |drag: &DrawerResizeDrag, _, _, cx: &mut App| {
-                                    cx.new(|_| drag.clone())
-                                },
-                            ),
+                        resize_strip(
+                            "terminal-drawer-resize",
+                            ResizeAxis::Rows,
+                            drawer_resizing,
+                            zoom,
+                            Some(theme::border_strong()),
+                        )
+                        .id("terminal-drawer-resize")
+                        .on_drag(
+                            drawer_drag,
+                            |drag: &DrawerResizeDrag, _, _, cx: &mut App| cx.new(|_| drag.clone()),
+                        ),
                     )
                     .child(drawer)
             }))
@@ -635,6 +629,32 @@ impl NativeRoot {
             panel_open && !panel_animating,
             cx,
         );
+        // The panel clips its own content, so its splitter sits out here and
+        // centres on the border the panel draws.
+        let panel_resize = (panel_open || panel_animating).then(|| {
+            let zoom = self.settings(cx).app_zoom;
+            let divider = self.settings(cx).chat_panel_width * panel_visibility * zoom - 0.5;
+            resize_strip(
+                "chat-panel-resize",
+                ResizeAxis::Columns,
+                self.chat_panel_resizing,
+                zoom,
+                None,
+            )
+            .id("chat-panel-resize")
+            .map(|handle| {
+                #[cfg(windows)]
+                let handle = handle.occlude();
+                handle
+            })
+            .absolute()
+            .top_0()
+            .right(px(divider - resize_strip_inset(zoom)))
+            .on_drag(
+                ChatPanelResizeDrag,
+                |drag: &ChatPanelResizeDrag, _, _, cx: &mut App| cx.new(|_| drag.clone()),
+            )
+        });
 
         div()
             .relative()
@@ -646,11 +666,13 @@ impl NativeRoot {
             .flex()
             .child(chat_column)
             .child(side_panel)
+            .children(panel_resize)
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(|this, _, _, cx| {
                     this.finish_split_resize(cx);
                     this.finish_terminal_drawer_resize(cx);
+                    this.finish_chat_panel_resize(cx);
                 }),
             )
             .on_mouse_up_out(
@@ -658,6 +680,7 @@ impl NativeRoot {
                 cx.listener(|this, _, _, cx| {
                     this.finish_split_resize(cx);
                     this.finish_terminal_drawer_resize(cx);
+                    this.finish_chat_panel_resize(cx);
                 }),
             )
             .on_drag_move::<ChatPanelResizeDrag>(cx.listener(
@@ -665,6 +688,10 @@ impl NativeRoot {
                     let width = f32::from(event.bounds.right() - event.event.position.x)
                         / this.settings(cx).app_zoom;
                     let width = app_settings::clamp_chat_panel_width(width);
+                    if !this.chat_panel_resizing {
+                        this.chat_panel_resizing = true;
+                        cx.notify();
+                    }
                     this.update_app_settings(cx, false, |settings| {
                         if settings.chat_panel_width == width {
                             return false;
@@ -675,6 +702,7 @@ impl NativeRoot {
                 },
             ))
             .on_drop(cx.listener(|this, _: &ChatPanelResizeDrag, _, cx| {
+                this.finish_chat_panel_resize(cx);
                 this.save_settings(cx);
             }))
             .into_any_element()
@@ -1086,7 +1114,6 @@ impl NativeRoot {
                 .child("Loading chat…")
                 .into_any_element()
         };
-        let drag = ChatPanelResizeDrag;
         let panel = div()
             .relative()
             .w(rems(width / 16.))
@@ -1105,25 +1132,6 @@ impl NativeRoot {
                     .overflow_y_scroll()
                     .p_5()
                     .child(content),
-            )
-            .child(
-                div()
-                    .id("chat-panel-resize")
-                    .map(|handle| {
-                        #[cfg(windows)]
-                        let handle = handle.occlude();
-                        handle
-                    })
-                    .absolute()
-                    .left_0()
-                    .top_0()
-                    .h_full()
-                    .w(rems(4. / 16.))
-                    .cursor(CursorStyle::ResizeLeftRight)
-                    .hover(|strip| strip.bg(theme::with_alpha(theme::accent(), 0.4)))
-                    .on_drag(drag, |drag: &ChatPanelResizeDrag, _, _, cx: &mut App| {
-                        cx.new(|_| drag.clone())
-                    }),
             );
         div()
             .id("chat-side-panel")
@@ -1480,37 +1488,20 @@ impl NativeRoot {
                         pane.h(relative(second)).w_full()
                     })
                     .child(b);
-                let gutter = div()
-                    .id(SharedString::from(format!("gutter-{}", split.id)))
-                    .flex_none()
-                    .when(orientation == SplitOrientation::Row, |gutter| {
-                        gutter
-                            .w(rems(5. / 16.))
-                            .h_full()
-                            .cursor(CursorStyle::ResizeLeftRight)
-                    })
-                    .when(orientation == SplitOrientation::Column, |gutter| {
-                        gutter
-                            .h(rems(5. / 16.))
-                            .w_full()
-                            .cursor(CursorStyle::ResizeUpDown)
-                    })
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(
-                        div()
-                            .when(orientation == SplitOrientation::Row, |line| {
-                                line.w(rems(1. / 16.)).h_full()
-                            })
-                            .when(orientation == SplitOrientation::Column, |line| {
-                                line.h(rems(1. / 16.)).w_full()
-                            })
-                            .bg(theme::border_strong()),
-                    )
-                    .on_drag(drag, |drag: &SplitResizeDrag, _, _, cx: &mut App| {
-                        cx.new(|_| drag.clone())
-                    });
+                let gutter = resize_strip(
+                    "pane-gutter",
+                    match orientation {
+                        SplitOrientation::Row => ResizeAxis::Columns,
+                        SplitOrientation::Column => ResizeAxis::Rows,
+                    },
+                    self.resizing_split.as_deref() == Some(split.id.as_str()),
+                    self.settings(cx).app_zoom,
+                    Some(theme::border_strong()),
+                )
+                .id(SharedString::from(format!("gutter-{}", split.id)))
+                .on_drag(drag, |drag: &SplitResizeDrag, _, _, cx: &mut App| {
+                    cx.new(|_| drag.clone())
+                });
                 div()
                     .id(SharedString::from(format!("split-{}", split.id)))
                     .size_full()

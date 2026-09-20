@@ -1208,8 +1208,7 @@ impl NativeRoot {
                                     .children(nav),
                             )
                             .child(self.settings_page.nav_scrollbar.clone()),
-                    )
-                    .child(self.render_sidebar_resize_handle(cx)),
+                    ),
             )
             .child(settings_content_column(
                 self.render_titlebar_drag_area(
@@ -1227,6 +1226,7 @@ impl NativeRoot {
                 self.settings_page.content_scrollbar.clone(),
                 zoom,
             ))
+            .child(self.render_sidebar_resize_handle(width - 0.5, cx))
             .when(active == SettingsPane::Skills, |takeover| {
                 takeover.children(
                     self.settings_page
