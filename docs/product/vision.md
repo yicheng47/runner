@@ -12,7 +12,7 @@ The vendors are closing this gap, but only inside their own walls: a team or tea
 
 ## 2. The vision
 
-Runner is a **working environment for agent crews**: the place several coding agents share while they work on one task. It is opinionated about the workflow — roles, crews, exactly one lead, signals and messages, a pull-based inbox — and neutral about the provider. Any provider, one workflow.
+Runner is a **working environment for terminal agents**: the place several coding agents share while they work on one task. It is opinionated about the workflow — roles, crews, exactly one lead, signals and messages, a pull-based inbox — and neutral about the provider. Any provider, one workflow.
 
 That neutrality is the product, and it is cheap to honor, because everything an agent needs in order to take part is something every CLI agent already has: a shell, a PTY, and a binary on PATH. Runner supplies the place (a mission), the identity (a handle in a roster), the channel (an append-only bus), and the escalation path (the lead, then the human). It does not wrap editing, diffing, or review surfaces around an agent — the agent brings its own tools. Runner is what sits *between* agents.
 
@@ -102,7 +102,7 @@ The user-facing surfaces, described by the value they deliver, not by their impl
 
 - **The `runner` CLI** — one bundled binary is the external surface for agents, scripts, and people at a terminal: projects, roles, crews and slots, mission and chat lifecycle, the feed (with `--follow`), signals and messages. Inside a mission the caller's mission and handle come from the environment; outside, `--mission` is a flag and the caller acts for the person unless `--as <handle>` names a seat they hold. `--json` is what agents read; the default output is shaped for people.
 - **Discovery through a skill, not configuration.** No agent is set up to reach Runner. Each one finds the CLI through a `runner` skill the app installs into that runtime's skills root — three folders cover all five runtimes (`~/.claude/skills/`, `~/.agents/skills/` for Codex, Copilot and pi, `~/.trae/skills/`). A provider Runner has never heard of only needs the binary on PATH.
-- **One way in.** The MCP integration — the `runner-mcp` bridge and the entries Runner wrote into each agent's config — is removed in 0.11.0, the release that ships the CLI; two ways in at once would be confusing, and pi has no MCP client at all. The `mcp.sock` tool registry stays as the CLI's transport, an implementation detail no agent is configured to talk to. Settings → MCP remains as the catalog of the user's own servers.
+- **One way in.** The MCP integration — the `runner-mcp` bridge and the entries Runner wrote into each agent's config — was removed in 0.11.0, the release that shipped the CLI; two ways in at once would be confusing, and pi has no MCP client at all. The `mcp.sock` tool registry stays as the CLI's transport, an implementation detail no agent is configured to talk to. Settings → MCP remains as the catalog of the user's own servers.
 - Runner.app remains the state owner. This is a local control surface, not a remote server.
 
 ## 5. The demo loop

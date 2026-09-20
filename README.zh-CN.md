@@ -18,9 +18,9 @@
 </p>
 
 <p align="center">
-  <strong>编写角色，组建 crew，交付功能。</strong>
+  <strong>让终端 agent 协同工作。</strong>
   <br />
-  一个专为编排编码 agent 而生的原生终端。Claude Code 和 Codex 保留各自的 TUI，Runner 在它们之上加上会话、技能和 crew。
+  Claude Code、Codex、Copilot CLI、pi 和 TRAE 在同一个 mission 里做同一件事。每个 agent 在真实终端里保留自己的 TUI，Runner 是夹在它们中间的那一层。
 </p>
 
 <p align="center">
@@ -53,7 +53,7 @@
 
 ## 关于
 
-Runner 是一个原生桌面应用，用来同时运行多个命令行编码 agent。Claude Code 和 Codex 在真实终端里保留自己的 TUI，Runner 是包在它们外面的那一层。
+Runner 是一个原生桌面应用，用来让命令行编码 agent **一起**干活。同时跑多个 agent 本来就不难——一人一个终端，它们就能并行，各干各的。Runner 要解决的是另一件事：同一个任务、不同的角色、一条共享的 feed，以及一个在该你拍板时把你叫进来的 lead。对工作流有主张，对厂商保持中立：coder 可以是 Claude Code，reviewer 可以是 Codex。
 
 - **角色（role）** — 一份可复用的 agent 配置：运行时、系统提示词、工作目录。
 - **Crew** — 把若干角色组合成有名字的槽位，指定一个 lead，再加上每个 mission 都会继承的团队约定。
@@ -205,9 +205,9 @@ Carbon 和 Runner Light 是 Runner 自己的主题，Catppuccin Mocha 和 Latte 
 
 ### 还有这些
 
+- **会话不随应用退出而结束** — 退出或崩溃不会杀掉你的 agent；下次启动会重新接上仍在运行的会话，工作进行中时退出会先询问。
 - **项目** — 绑定一次工作目录；在项目里发起的 chat 和 mission 都会继承它的 cwd，并归在侧边栏里自己的分组下。agent 也可以通过 CLI 创建、重命名、归档和删除项目。
 - **Mission 控制** — 停止、恢复或重启单个槽位，不用重启整个 mission；重启的会话会带着最初的任务简报重新开始。mission 默认以 Bypass 权限模式运行，Accept-edits 和 Default 在设置里一步可达，也不会卡在 agent 的首次授权对话框上。
-- **会话不随应用退出而结束** — 退出或崩溃不会杀掉你的 agent；下次启动会重新接上仍在运行的会话，工作进行中时退出会先询问。
 - **真实终端** — 每一栏都是跑在 GPU 绘制的 `alacritty_terminal` 网格上的真实 PTY：agent 自己的配色、鼠标上报、输入法（包括拼音）、复制、文件路径粘贴、10,000 行回滚。点击文件路径可在编辑器里打开；选中一段输出可以在侧线程里追问；⌘+ 和 ⌘− 把整个应用从 60% 缩放到 200%。
 - **内置 `runner` CLI** — agent、脚本和终端前的人可以从任意终端驱动项目、角色、crew、mission、chat 和会话；在 mission 内，crew 成员用同一个二进制在各自的 PTY 里互发消息、查看名册、发送信号。
 

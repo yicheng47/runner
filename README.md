@@ -18,9 +18,9 @@
 </p>
 
 <p align="center">
-  <strong>Write a role. Create your crew. Ship the feature.</strong>
+  <strong>Where terminal agents work together.</strong>
   <br />
-  A native terminal that orchestrates coding agents. Claude Code and Codex keep their own TUI; Runner adds sessions, skills, and crews.
+  Claude Code, Codex, Copilot CLI, pi and TRAE on the same task, in one mission. Each agent keeps its own TUI in a real terminal; Runner is what sits between them.
 </p>
 
 <p align="center">
@@ -53,7 +53,7 @@
 
 ## About
 
-Runner is a native desktop app for running several CLI coding agents at once. Claude Code and Codex keep their own TUI in a real terminal; Runner is the layer around them.
+Runner is a native desktop app for running CLI coding agents **together**. Running several at once is already easy — give each one a terminal and they work in parallel, isolated from one another. Runner is for the other thing: one task, different roles, a shared feed, and one lead who pulls you in when the decision is yours. It is opinionated about the workflow and neutral about the provider, so your coder can be Claude Code and your reviewer Codex.
 
 - **Role** — a reusable agent configuration: runtime, system prompt, working directory.
 - **Crew** — roles composed into named slots with one lead, plus the team conventions every mission inherits.
@@ -205,9 +205,9 @@ Carbon and Runner Light are Runner's own themes; Catppuccin Mocha and Latte ride
 
 ### Also in the box
 
+- **Sessions that outlive the app** — quitting or crashing does not kill your agents; the next launch reattaches to the sessions still running, and a quit while work is in flight asks first.
 - **Projects** — bind a working directory once; chats and missions started inside a project inherit its cwd and stay grouped in their own sidebar section. Agents can create, rename, file into, and delete projects through the CLI too.
 - **Mission controls** — stop, resume, or restart a single slot without restarting the mission; a restarted session comes back fresh with its original brief. Missions run in Bypass permission mode by default, with Accept-edits and Default a setting away, and never stall on an agent's first-run consent dialog.
-- **Sessions that outlive the app** — quitting or crashing does not kill your agents; the next launch reattaches to the sessions still running, and a quit while work is in flight asks first.
 - **Real terminals** — every pane is a real PTY on an `alacritty_terminal` grid drawn on the GPU: the agents' own colours, mouse reporting, IME input (Pinyin included), copy, file-path paste, 10,000 lines of scrollback. Click a file path to open it in your editor; select some output and ask about it in a side thread; ⌘+ and ⌘− zoom the app from 60% to 200%.
 - **Bundled `runner` CLI** — agents, scripts, and people drive projects, roles, crews, missions, chats, and sessions from any terminal; inside a mission, crew members use the same binary to message each other, check the roster, and post signals from their own PTYs.
 
