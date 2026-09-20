@@ -59,7 +59,7 @@ Runner is a native desktop app for running several CLI coding agents at once. Cl
 - **Crew** — roles composed into named slots with one lead, plus the team conventions every mission inherits.
 - **Mission** — a crew working one goal: one live terminal per slot, coordinating over an event feed that persists and replays, with `ask_human` when a decision is yours.
 - **Chat** — a single agent in a real terminal, no mission required; split a tab as far as the window allows.
-- **MCP** — everything above is also a tool, so your agents can run Runner themselves.
+- **CLI** — everything above is a command too, so agents, scripts, and people at a terminal can drive Runner themselves.
 
 Written in Rust on [gpui-ce](https://github.com/gpui-ce/gpui-ce), the community fork of [Zed](https://zed.dev)'s GPUI, with `alacritty_terminal` for the grid and SQLite for state. No webview. Everything runs and persists on your machine.
 
@@ -154,7 +154,7 @@ Every chat and every mission has a shell beneath it, one shortcut away, opened i
 </tr>
 <tr>
 <td width="50%">
-  <img src="assets/mcp_settings.png" alt="Settings → MCP — every MCP server each agent has, with Runner's own pinned first" width="100%" />
+  <img src="assets/mcp_settings.png" alt="Settings → MCP — every MCP server each agent has" width="100%" />
   <img src="assets/skills.png" alt="Settings → Skills — every skill an agent can load, with a toggle per skill" width="100%" />
 </td>
 <td width="50%" valign="middle">
@@ -165,7 +165,22 @@ Each agent keeps its MCP servers and its skills in its own config files. **Setti
 
 ### Drive Runner from your agents
 
-Runner is an MCP server too. **Settings → Agents** registers it with Claude Code, Codex, TRAE CLI, and GitHub Copilot CLI, and from then on any of them can create crews and projects, start a mission, read its feed, answer its questions, or open a chat. The part that compounds: your daily agent plans a fix, dispatches a coder and reviewer crew to build it, and keeps working, while every session it spawned is still a real terminal you can open and watch.
+The bundled `runner` command is the one way agents, scripts, and people at a terminal drive the app: create projects, roles, and crews; start missions and chats; follow the feed; answer questions; and manage their lifecycle. On macOS, the first launch installs it to `~/.local/bin`, or a writable `/usr/local/bin`, when that directory is already on the login `PATH`; otherwise it is one click in **Settings → General → Command line**. On Windows, Runner adds its sidecar directory to the user `PATH`.
+
+Agents need no setup. Runner installs a `runner` skill for every detected agent into three roots that cover all five runtimes: `~/.claude/skills/` for Claude Code, `~/.agents/skills/` for Codex, GitHub Copilot CLI, and pi, and `~/.trae/skills/` for TRAE CLI. The skill points the agent at the version-matched `runner help agents` guide. The same **Command line** section has the `runner` command row and the **Runner skill for agents** switch.
+
+```sh
+runner crew list --json
+mission=$(runner mission start --crew <crew> --goal-file - -q < brief.md)
+runner mission feed "$mission" --follow --json
+runner mission show "$mission" --json
+runner msg post --mission "$mission" --to <lead_handle> "message"
+runner mission answer "$mission" <question_id> <choice>
+runner mission stop "$mission"
+runner mission archive "$mission"
+```
+
+Agents use `--json`; without it, list and show commands render tables and readable summaries for people. Exit status 0 is success, 1 means Runner refused the operation, 2 is a usage or reference error, 3 means the app is not running, and 5 means a sandbox blocked the local connection. Inside a mission, the same binary takes its mission and handle from the environment and is how crew members message and signal each other. The part that compounds: your daily agent can plan a fix, dispatch a coder and reviewer crew to build it, and keep working, while every session it spawned is still a real terminal you can open and watch.
 
 </td>
 </tr>
@@ -190,11 +205,11 @@ Carbon and Runner Light are Runner's own themes; Catppuccin Mocha and Latte ride
 
 ### Also in the box
 
-- **Projects** — bind a working directory once; chats and missions started inside a project inherit its cwd and stay grouped in their own sidebar section. Agents can create, rename, file into, and delete projects over MCP too.
+- **Projects** — bind a working directory once; chats and missions started inside a project inherit its cwd and stay grouped in their own sidebar section. Agents can create, rename, file into, and delete projects through the CLI too.
 - **Mission controls** — stop, resume, or restart a single slot without restarting the mission; a restarted session comes back fresh with its original brief. Missions run in Bypass permission mode by default, with Accept-edits and Default a setting away, and never stall on an agent's first-run consent dialog.
 - **Sessions that outlive the app** — quitting or crashing does not kill your agents; the next launch reattaches to the sessions still running, and a quit while work is in flight asks first.
 - **Real terminals** — every pane is a real PTY on an `alacritty_terminal` grid drawn on the GPU: the agents' own colours, mouse reporting, IME input (Pinyin included), copy, file-path paste, 10,000 lines of scrollback. Click a file path to open it in your editor; select some output and ask about it in a side thread; ⌘+ and ⌘− zoom the app from 60% to 200%.
-- **Bundled `runner` CLI** — spawned agents message each other, check the crew roster, and post signals from inside their own PTYs.
+- **Bundled `runner` CLI** — agents, scripts, and people drive projects, roles, crews, missions, chats, and sessions from any terminal; inside a mission, crew members use the same binary to message each other, check the roster, and post signals from their own PTYs.
 
 ## Supported agents
 
@@ -208,7 +223,7 @@ Carbon and Runner Light are Runner's own themes; Catppuccin Mocha and Latte ride
 | Model list read from the CLI | ✓ | ✓ | — | ✓ | — |
 | Permission modes | Default · Accept edits · Auto · Bypass | Default · Auto · Bypass | Default · Accept edits · Bypass | — | Default · Bypass |
 | Skills pane | catalog + on/off | catalog + on/off | catalog + on/off | catalog | catalog |
-| Runner registered as an MCP server | ✓ | ✓ | ✓ | — | ✓ |
+| Runner skill installed | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Terminal rendering covered by fixtures | ✓ | ✓ | — | — | — |
 
 ¹ GitHub Copilot CLI runs natively on Windows but has not been smoke-tested there yet.
