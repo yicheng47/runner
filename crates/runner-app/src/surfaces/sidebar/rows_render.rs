@@ -214,7 +214,7 @@ impl Sidebar {
                 NodeType::Mission,
                 &summary.mission.id,
                 None,
-                (ChatIcon::generic("flag.svg"), summary.any_session_live),
+                (ChatIcon::mission(), summary.any_session_live),
                 attention,
                 shortcut_index,
                 active,
@@ -261,10 +261,7 @@ impl Sidebar {
                 false,
             )
             .children(node.pinned_position.is_some().then(pin_indicator))
-            .child(sidebar_icon(
-                ChatIcon::generic("flag.svg"),
-                summary.any_session_live,
-            ))
+            .child(sidebar_icon(ChatIcon::mission(), summary.any_session_live))
             .child(sidebar_row_label(label.clone(), active, false))
             .child(self.render_rollup_attention(
                 self.mission_status_rollup(&summary),

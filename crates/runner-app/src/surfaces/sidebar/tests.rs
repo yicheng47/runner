@@ -974,10 +974,17 @@ fn sidebar_icons_use_text_opacity_for_liveness_and_provider_tints_only_while_liv
         theme::ThemeVariant::RunnerLight,
     ] {
         theme::set_active_variant(variant);
-        let generic = ChatIcon::generic("flag.svg");
+        let generic = ChatIcon::generic("square-terminal.svg");
         assert_eq!(sidebar_icon_color(generic, true), theme::text());
         assert_eq!(
             sidebar_icon_color(generic, false),
+            theme::with_alpha(theme::text(), 0.45)
+        );
+
+        let mission = ChatIcon::mission();
+        assert_eq!(sidebar_icon_color(mission, true), theme::accent());
+        assert_eq!(
+            sidebar_icon_color(mission, false),
             theme::with_alpha(theme::text(), 0.45)
         );
 

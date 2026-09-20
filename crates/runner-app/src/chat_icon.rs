@@ -14,6 +14,13 @@ impl ChatIcon {
         Self { path, tint: None }
     }
 
+    pub fn mission() -> Self {
+        Self {
+            path: "flag.svg",
+            tint: Some(theme::accent()),
+        }
+    }
+
     pub fn for_runtime(runtime: &str) -> Self {
         let (path, tint) = match Runtime::parse(runtime) {
             Some(Runtime::ClaudeCode) => ("claude.svg", gpui::rgb(0xd97757).into()),
@@ -44,7 +51,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn provider_marks_keep_their_tint_only_while_live() {
+    fn provider_and_mission_marks_keep_their_tint_only_while_live() {
         let _theme = crate::theme_snapshot::ThemeGuard::new();
         for variant in [
             theme::ThemeVariant::Carbon,
@@ -67,6 +74,16 @@ mod tests {
                         theme::with_alpha(theme::text(), 0.45)
                     );
                 }
+            }
+
+            let icon = ChatIcon::mission();
+            assert_eq!(icon.path, "flag.svg");
+            for fallback in [theme::text(), theme::muted(), theme::faint()] {
+                assert_eq!(icon.color(fallback, true), theme::accent());
+                assert_eq!(
+                    icon.color(fallback, false),
+                    theme::with_alpha(theme::text(), 0.45)
+                );
             }
         }
     }
