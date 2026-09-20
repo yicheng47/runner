@@ -14,11 +14,21 @@ impl ChatIcon {
         Self { path, tint: None }
     }
 
-    pub fn mission() -> Self {
+    /// The app's own marks — mission, split, terminal — share the accent and
+    /// so follow the same live-or-dim rule as a provider's mark.
+    fn accented(path: &'static str) -> Self {
         Self {
-            path: "flag.svg",
+            path,
             tint: Some(theme::accent()),
         }
+    }
+
+    pub fn mission() -> Self {
+        Self::accented("flag.svg")
+    }
+
+    pub fn split() -> Self {
+        Self::accented("columns-2.svg")
     }
 
     pub fn for_runtime(runtime: &str) -> Self {
@@ -28,7 +38,7 @@ impl ChatIcon {
             Some(Runtime::Trae) => ("trae.svg", gpui::rgb(0x32f08c).into()),
             Some(Runtime::Copilot) => ("copilot.svg", gpui::rgb(0x8534f3).into()),
             Some(Runtime::Pi) => ("pi.svg", theme::text()),
-            Some(Runtime::Shell) => return Self::generic("square-terminal.svg"),
+            Some(Runtime::Shell) => return Self::accented("square-terminal.svg"),
             None => return Self::generic("message-square.svg"),
         };
         Self {
@@ -76,23 +86,27 @@ mod tests {
                 }
             }
 
-            let icon = ChatIcon::mission();
-            assert_eq!(icon.path, "flag.svg");
-            for fallback in [theme::text(), theme::muted(), theme::faint()] {
-                assert_eq!(icon.color(fallback, true), theme::accent());
-                assert_eq!(
-                    icon.color(fallback, false),
-                    theme::with_alpha(theme::text(), 0.45)
-                );
+            for (icon, path) in [
+                (ChatIcon::mission(), "flag.svg"),
+                (ChatIcon::split(), "columns-2.svg"),
+                (ChatIcon::for_runtime("shell"), "square-terminal.svg"),
+            ] {
+                assert_eq!(icon.path, path);
+                for fallback in [theme::text(), theme::muted(), theme::faint()] {
+                    assert_eq!(icon.color(fallback, true), theme::accent());
+                    assert_eq!(
+                        icon.color(fallback, false),
+                        theme::with_alpha(theme::text(), 0.45)
+                    );
+                }
             }
         }
     }
 
     #[test]
-    fn shell_and_unknown_runtimes_preserve_the_surface_color() {
+    fn unknown_runtimes_preserve_the_surface_color() {
         let _theme = crate::theme_snapshot::ThemeGuard::new();
         for (runtime, path) in [
-            ("shell", "square-terminal.svg"),
             ("unknown", "message-square.svg"),
             ("", "message-square.svg"),
         ] {
