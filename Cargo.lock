@@ -4968,7 +4968,7 @@ checksum = "6c20b6793b5c2fa6553b250154b78d6d0db37e72700ae35fad9387a46f487c97"
 
 [[package]]
 name = "runner-app"
-version = "0.11.1"
+version = "0.11.2"
 dependencies = [
  "alacritty_terminal",
  "anyhow",
@@ -4997,7 +4997,7 @@ dependencies = [
 
 [[package]]
 name = "runner-backend"
-version = "0.11.1"
+version = "0.11.2"
 dependencies = [
  "base64",
  "block2",
@@ -5031,7 +5031,7 @@ dependencies = [
 
 [[package]]
 name = "runner-cli"
-version = "0.11.1"
+version = "0.11.2"
 dependencies = [
  "chrono",
  "clap",
@@ -5047,7 +5047,7 @@ dependencies = [
 
 [[package]]
 name = "runner-core"
-version = "0.11.1"
+version = "0.11.2"
 dependencies = [
  "chrono",
  "fs2",
@@ -5060,7 +5060,7 @@ dependencies = [
 
 [[package]]
 name = "runner-terminal"
-version = "0.11.1"
+version = "0.11.2"
 dependencies = [
  "alacritty_terminal",
  "anyhow",
