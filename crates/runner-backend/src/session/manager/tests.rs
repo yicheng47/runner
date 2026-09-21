@@ -2042,6 +2042,61 @@ fn mission_spawn_converges_trae_row_to_the_app_wide_permission_mode() {
 }
 
 #[test]
+fn trae_mission_resume_strips_conflicting_permission_mode() {
+    let pool = pool_with_schema();
+    let mut role = role(
+        "trae-custom",
+        &["--permission-mode", "bypass_permissions", "--debug"],
+    );
+    role.runtime = "trae".into();
+    role.handle = "trae-resume".into();
+    let (mission, slot) = seed_mission_rows(&pool, &role);
+    let app_data = tempfile::tempdir().unwrap();
+    let events_log_path =
+        runner_core::event_log::path::events_path(app_data.path(), &mission.crew_id, &mission.id);
+    let fake = fake_runtime();
+    let mgr = mgr_with_fake(None, Arc::clone(&fake));
+    let spawned = mgr
+        .spawn(
+            &mission,
+            &role,
+            &slot,
+            app_data.path(),
+            events_log_path,
+            Arc::clone(&pool),
+            capture(),
+            Some("first turn".into()),
+        )
+        .unwrap();
+    fake.close_spawn(0);
+    wait_for_session_exit(&mgr, &pool, &spawned.id);
+
+    let agent_session_key = "019fa1b9-a133-7841-b4dd-730d376ab1d1";
+    pool.get()
+        .unwrap()
+        .execute(
+            "UPDATE sessions SET agent_session_key = ?2 WHERE id = ?1",
+            params![spawned.id, agent_session_key],
+        )
+        .unwrap();
+
+    mgr.resume(
+        &spawned.id,
+        None,
+        None,
+        app_data.path(),
+        Arc::clone(&pool),
+        capture(),
+    )
+    .unwrap();
+    assert_eq!(
+        fake.last_spawn_spec().unwrap().args,
+        ["resume", agent_session_key, "--debug"]
+    );
+    mgr.kill(&spawned.id).unwrap();
+}
+
+#[test]
 fn mission_spawn_with_shell_runtime_ignores_the_permission_mode() {
     let role = role("/bin/sh", &["-c", "cat"]);
     let baseline = mission_spawn_args(&role, MissionPermissionMode::RoleDefault);

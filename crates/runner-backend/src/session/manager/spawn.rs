@@ -2400,6 +2400,11 @@ impl SessionManager {
                 "session {session_id} cannot resume its prior conversation; resume it manually to start fresh"
             )));
         }
+        if mission_ctx.is_some() && runtime == Some(Runtime::Trae) && plan.resuming {
+            // A restored Trae thread already supplies its approvals reviewer.
+            // Adding permission_mode makes thread/resume reject the config.
+            role.args = router::runtime::strip_permission_flags(runtime, &role.args);
+        }
 
         // Direct chats keep `spawn_direct`'s hard error for an explicitly
         // missing cwd; mission slots retain their existing resume behavior.
