@@ -20,7 +20,7 @@
 <p align="center">
   <strong>让终端 agent 协同工作。</strong>
   <br />
-  Claude Code、Codex、Copilot CLI、pi 和 TRAE 在同一个 mission 里做同一件事。每个 agent 在真实终端里保留自己的 TUI，Runner 是夹在它们中间的那一层。
+  Claude Code、Codex、Copilot CLI 和 pi 在同一个 mission 里做同一件事。每个 agent 在真实终端里保留自己的 TUI，Runner 是夹在它们中间的那一层。
 </p>
 
 <p align="center">

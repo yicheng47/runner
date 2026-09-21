@@ -20,7 +20,7 @@
 <p align="center">
   <strong>Where terminal agents work together.</strong>
   <br />
-  Claude Code, Codex, Copilot CLI, pi and TRAE on the same task, in one mission. Each agent keeps its own TUI in a real terminal; Runner is what sits between them.
+  Claude Code, Codex, Copilot CLI and pi on the same task, in one mission. Each agent keeps its own TUI in a real terminal; Runner is what sits between them.
 </p>
 
 <p align="center">
