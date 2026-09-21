@@ -18351,50 +18351,6 @@
                   "fontFamily": "$font-ui",
                   "fontSize": 12,
                   "fontWeight": "normal"
-                },
-                {
-                  "type": "frame",
-                  "id": "rcKyA",
-                  "name": "Default agent summary",
-                  "width": "fill_container",
-                  "gap": 12,
-                  "alignItems": "center",
-                  "children": [
-                    {
-                      "type": "text",
-                      "id": "i4NaL8",
-                      "name": "Default for new chats",
-                      "fill": "$text-2",
-                      "content": "Default for new chats: Codex",
-                      "fontFamily": "$font-ui",
-                      "fontSize": 12,
-                      "fontWeight": "normal"
-                    },
-                    {
-                      "type": "frame",
-                      "id": "GvcMl",
-                      "name": "Default summary spacer",
-                      "width": "fill_container",
-                      "height": 1
-                    },
-                    {
-                      "id": "p0CrNF",
-                      "type": "ref",
-                      "ref": "IelRd",
-                      "name": "Use first available",
-                      "fill": [],
-                      "padding": [
-                        4,
-                        0
-                      ],
-                      "descendants": {
-                        "wUh0u": {
-                          "content": "Use first available",
-                          "fill": "$text-2"
-                        }
-                      }
-                    }
-                  ]
                 }
               ]
             },
@@ -18463,11 +18419,11 @@
                         },
                         {
                           "type": "frame",
-                          "id": "mO1YS",
-                          "name": "badge",
-                          "fill": "#DCDCE014",
+                          "id": "YoIyw",
+                          "name": "Default pill",
+                          "fill": "#00FF9C1A",
                           "cornerRadius": 10,
-                          "gap": 6,
+                          "gap": 5,
                           "padding": [
                             3,
                             9
@@ -18475,19 +18431,21 @@
                           "alignItems": "center",
                           "children": [
                             {
-                              "type": "ellipse",
-                              "id": "pRIzc",
-                              "name": "dot",
-                              "fill": "$text-1",
-                              "width": 5,
-                              "height": 5
+                              "type": "icon",
+                              "id": "xdyYe",
+                              "name": "Default check",
+                              "width": 11,
+                              "height": 11,
+                              "icon": "check",
+                              "library": "lucide",
+                              "fill": "$accent"
                             },
                             {
                               "type": "text",
-                              "id": "HjLWw",
-                              "name": "badge_t",
-                              "fill": "$text-1",
-                              "content": "Override",
+                              "id": "SVzB4",
+                              "name": "Default label",
+                              "fill": "$accent",
+                              "content": "Default",
                               "fontFamily": "$font-ui",
                               "fontSize": 11,
                               "fontWeight": "500"
@@ -18500,39 +18458,6 @@
                           "name": "flex",
                           "width": "fill_container",
                           "height": 1
-                        },
-                        {
-                          "type": "frame",
-                          "id": "YoIyw",
-                          "name": "Current default agent",
-                          "gap": 5,
-                          "padding": [
-                            5,
-                            0
-                          ],
-                          "alignItems": "center",
-                          "children": [
-                            {
-                              "type": "icon",
-                              "id": "xdyYe",
-                              "name": "Default check",
-                              "width": 12,
-                              "height": 12,
-                              "icon": "check",
-                              "library": "lucide",
-                              "fill": "$accent"
-                            },
-                            {
-                              "type": "text",
-                              "id": "SVzB4",
-                              "name": "Default label",
-                              "fill": "$text-2",
-                              "content": "Default",
-                              "fontFamily": "$font-ui",
-                              "fontSize": 12,
-                              "fontWeight": "500"
-                            }
-                          ]
                         },
                         {
                           "type": "text",
@@ -18791,46 +18716,6 @@
                           "fontWeight": "500"
                         },
                         {
-                          "type": "frame",
-                          "id": "of6d9",
-                          "name": "badge",
-                          "fill": "#00FF9C1A",
-                          "cornerRadius": 10,
-                          "gap": 6,
-                          "padding": [
-                            3,
-                            9
-                          ],
-                          "alignItems": "center",
-                          "children": [
-                            {
-                              "type": "ellipse",
-                              "id": "w2YrJg",
-                              "name": "dot",
-                              "fill": "$accent",
-                              "width": 5,
-                              "height": 5
-                            },
-                            {
-                              "type": "text",
-                              "id": "Fu1r1",
-                              "name": "badge_t",
-                              "fill": "$accent",
-                              "content": "Detected",
-                              "fontFamily": "$font-ui",
-                              "fontSize": 11,
-                              "fontWeight": "500"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "frame",
-                          "id": "RkotY",
-                          "name": "flex",
-                          "width": "fill_container",
-                          "height": 1
-                        },
-                        {
                           "id": "t34HgG",
                           "type": "ref",
                           "ref": "IelRd",
@@ -18844,6 +18729,13 @@
                               "content": "Set as default"
                             }
                           }
+                        },
+                        {
+                          "type": "frame",
+                          "id": "RkotY",
+                          "name": "flex",
+                          "width": "fill_container",
+                          "height": 1
                         },
                         {
                           "type": "text",
@@ -19069,46 +18961,6 @@
                           "fontWeight": "500"
                         },
                         {
-                          "type": "frame",
-                          "id": "jkVNn",
-                          "name": "badge",
-                          "fill": "#00FF9C1A",
-                          "cornerRadius": 10,
-                          "gap": 6,
-                          "padding": [
-                            3,
-                            9
-                          ],
-                          "alignItems": "center",
-                          "children": [
-                            {
-                              "type": "ellipse",
-                              "id": "BzcCH",
-                              "name": "dot",
-                              "fill": "$accent",
-                              "width": 5,
-                              "height": 5
-                            },
-                            {
-                              "type": "text",
-                              "id": "mKL1X",
-                              "name": "badge_t",
-                              "fill": "$accent",
-                              "content": "Detected",
-                              "fontFamily": "$font-ui",
-                              "fontSize": 11,
-                              "fontWeight": "500"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "frame",
-                          "id": "NMjcm",
-                          "name": "flex",
-                          "width": "fill_container",
-                          "height": 1
-                        },
-                        {
                           "id": "y0RXl",
                           "type": "ref",
                           "ref": "IelRd",
@@ -19122,6 +18974,13 @@
                               "content": "Set as default"
                             }
                           }
+                        },
+                        {
+                          "type": "frame",
+                          "id": "NMjcm",
+                          "name": "flex",
+                          "width": "fill_container",
+                          "height": 1
                         },
                         {
                           "type": "text",
