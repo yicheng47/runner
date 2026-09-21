@@ -104,7 +104,6 @@ https://github.com/user-attachments/assets/fb3669a4-010d-42d0-9555-2a3ba3223c75
 </tr>
 <tr>
 <td width="60%">
-  <img src="assets/mission_feed.png" alt="Mission 工作区 — crew 与人之间的事件 feed" width="100%" />
   <img src="assets/mission_terminal.png" alt="Mission 工作区 — coder 的槽位，一个正在工作的 Codex 终端" width="100%" />
 </td>
 <td width="40%" valign="middle">
@@ -194,9 +193,39 @@ Carbon 和 Runner Light 是 Runner 自己的主题，Catppuccin Mocha 和 Latte 
 
 ## 让你的 agent 来驱动 Runner
 
-内置的 `runner` 命令是 agent、脚本和终端前的人驱动应用的唯一入口：创建项目、角色和 crew，启动 mission 和 chat，跟随 feed、回答问题，以及管理它们的生命周期。在 macOS 上，如果登录 `PATH` 已包含 `~/.local/bin`，Runner 会在首次启动时把命令安装到那里；如果 `PATH` 中的 `/usr/local/bin` 可写，则安装到后者；否则去 **Settings → General → Command line** 点一下即可。在 Windows 上，Runner 会把 sidecar 目录加入用户 `PATH`。
+内置的 `runner` 命令是 agent、脚本和终端前的人驱动应用的唯一入口，整个命令面一屏就能看完：
+
+```sh
+$ runner help
+runner — operate Runner from a shell or a mission session
+
+USAGE
+  runner status
+  runner project list|show|create|rename|delete
+  runner role list|show|create|update|delete
+  runner crew list|show|create|update|delete|add|set|remove|lead|order
+  runner mission list|show|start|stop|resume|archive|unarchive|rename|pin|unpin|move|feed|answer
+  runner chat start
+  runner session list|show|stop|archive|resume|restart
+  runner msg post|read
+  runner signal <type>
+  runner ask <question> | runner ask --human <prompt> --choices <a,b,...>
+  runner call <tool> [<json>]
+
+OUTPUT
+  --json   print the JSON result
+  -q       print only result ids
+
+CONTEXT
+  Inside a mission, msg post/read, signal, and ask use the event log directly.
+  Outside, mission-scoped writes require --mission; --as names a roster handle.
+```
+
+在 macOS 上，如果登录 `PATH` 已包含 `~/.local/bin`，Runner 会在首次启动时把命令安装到那里；如果 `PATH` 中的 `/usr/local/bin` 可写，则安装到后者；否则去 **Settings → General → Command line** 点一下即可。在 Windows 上，Runner 会把 sidecar 目录加入用户 `PATH`。
 
 agent 不需要额外设置。Runner 会为每个检测到的 agent 安装 `runner` skill，三个根目录覆盖五种运行时：Claude Code 用 `~/.claude/skills/`，Codex、GitHub Copilot CLI 和 pi 共用 `~/.agents/skills/`，TRAE CLI 用 `~/.trae/skills/`。skill 会让 agent 读取与当前版本一致的 `runner help agents` 指南。同一个 **Command line** 区域里还有 `runner` 命令这一行，以及 **Runner skill for agents** 开关。
+
+在应用之外驱动一整个 mission：
 
 ```sh
 runner crew list --json

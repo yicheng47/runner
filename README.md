@@ -104,7 +104,6 @@ A **role** is a reusable agent configuration: runtime, system prompt, working di
 </tr>
 <tr>
 <td width="60%">
-  <img src="assets/mission_feed.png" alt="Mission workspace — the event feed between crew and human" width="100%" />
   <img src="assets/mission_terminal.png" alt="Mission workspace — the coder's slot, a live Codex terminal mid-task" width="100%" />
 </td>
 <td width="40%" valign="middle">
@@ -194,9 +193,39 @@ Carbon and Runner Light are Runner's own themes; Catppuccin Mocha and Latte ride
 
 ## Drive Runner from your agents
 
-The bundled `runner` command is the one way agents, scripts, and people at a terminal drive the app: create projects, roles, and crews; start missions and chats; follow the feed; answer questions; and manage their lifecycle. On macOS, the first launch installs it to `~/.local/bin`, or a writable `/usr/local/bin`, when that directory is already on the login `PATH`; otherwise it is one click in **Settings → General → Command line**. On Windows, Runner adds its sidecar directory to the user `PATH`.
+The bundled `runner` command is the one way agents, scripts, and people at a terminal drive the app. Its whole surface fits on a screen:
+
+```sh
+$ runner help
+runner — operate Runner from a shell or a mission session
+
+USAGE
+  runner status
+  runner project list|show|create|rename|delete
+  runner role list|show|create|update|delete
+  runner crew list|show|create|update|delete|add|set|remove|lead|order
+  runner mission list|show|start|stop|resume|archive|unarchive|rename|pin|unpin|move|feed|answer
+  runner chat start
+  runner session list|show|stop|archive|resume|restart
+  runner msg post|read
+  runner signal <type>
+  runner ask <question> | runner ask --human <prompt> --choices <a,b,...>
+  runner call <tool> [<json>]
+
+OUTPUT
+  --json   print the JSON result
+  -q       print only result ids
+
+CONTEXT
+  Inside a mission, msg post/read, signal, and ask use the event log directly.
+  Outside, mission-scoped writes require --mission; --as names a roster handle.
+```
+
+On macOS, the first launch installs it to `~/.local/bin`, or a writable `/usr/local/bin`, when that directory is already on the login `PATH`; otherwise it is one click in **Settings → General → Command line**. On Windows, Runner adds its sidecar directory to the user `PATH`.
 
 Agents need no setup. Runner installs a `runner` skill for every detected agent into three roots that cover all five runtimes: `~/.claude/skills/` for Claude Code, `~/.agents/skills/` for Codex, GitHub Copilot CLI, and pi, and `~/.trae/skills/` for TRAE CLI. The skill points the agent at the version-matched `runner help agents` guide. The same **Command line** section has the `runner` command row and the **Runner skill for agents** switch.
+
+A whole mission, driven from outside the app:
 
 ```sh
 runner crew list --json
