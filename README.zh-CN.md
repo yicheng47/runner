@@ -140,18 +140,6 @@ macOS 上按 `⇧⌘N`、Windows 上按 `Ctrl+Shift+N` 可以打开更多系统�
 </tr>
 <tr>
 <td width="60%">
-  <img src="assets/terminal_drawer.png" alt="Claude Code 和 Codex 并排的标签页下方展开的 zsh 抽屉，在同一个目录里" width="100%" />
-</td>
-<td width="40%" valign="middle">
-
-### 终端抽屉
-
-每个 chat 和每个 mission 下方都有一个 shell，一个快捷键就能打开，工作目录和上面的 agent 相同。跑一下 agent 刚写的测试、看看 `git status`、tail 一个日志，都不用离开这一栏，也不用再开一个终端应用。抽屉里可以开任意多个 shell，回来时还在你离开的地方。
-
-</td>
-</tr>
-<tr>
-<td width="60%">
   <img src="assets/skills.png" alt="Settings → Skills — agent 能加载的所有技能，每个都有开关" width="100%" />
 </td>
 <td width="40%" valign="middle">
@@ -187,6 +175,7 @@ Carbon 和 Runner Light 是 Runner 自己的主题，Catppuccin Mocha 和 Latte 
 - **项目** — 绑定一次工作目录；在项目里发起的 chat 和 mission 都会继承它的 cwd，并归在侧边栏里自己的分组下。agent 也可以通过 CLI 创建、重命名、归档和删除项目。
 - **Mission 控制** — 停止、恢复或重启单个槽位，不用重启整个 mission；重启的会话会带着最初的任务简报重新开始。mission 默认以 Bypass 权限模式运行，Accept-edits 和 Default 在设置里一步可达，也不会卡在 agent 的首次授权对话框上。
 - **真实终端** — 每一栏都是跑在 GPU 绘制的 `alacritty_terminal` 网格上的真实 PTY：agent 自己的配色、鼠标上报、输入法（包括拼音）、复制、文件路径粘贴、10,000 行回滚。点击文件路径可在编辑器里打开；选中一段输出可以在侧线程里追问；⌘+ 和 ⌘− 把整个应用从 60% 缩放到 200%。
+- **终端抽屉** — 每个 chat 和每个 mission 下面都有一个 shell，一个快捷键就能打开，工作目录和上面的 agent 相同：跑一下 agent 刚写的测试、看看 `git status`、tail 一个日志，不用离开当前面板，也不用另开一个终端应用。抽屉里想开几个 shell 都行，下次回来还在原处。
 
 ## 让你的 agent 来驱动 Runner
 

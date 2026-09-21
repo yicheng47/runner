@@ -140,18 +140,6 @@ Every chat is a real 1:1 PTY with a role, no mission required. Split a tab as fa
 </tr>
 <tr>
 <td width="60%">
-  <img src="assets/terminal_drawer.png" alt="A zsh drawer open beneath a tab with Claude Code and Codex side by side, in the same directory" width="100%" />
-</td>
-<td width="40%" valign="middle">
-
-### Terminal drawer
-
-Every chat and every mission has a shell beneath it, one shortcut away, opened in the same directory as the agent above. Run the tests the agent just wrote, check `git status`, tail a log, without leaving the pane or opening another terminal app. Drawers hold as many shells as you need and come back where you left them.
-
-</td>
-</tr>
-<tr>
-<td width="60%">
   <img src="assets/skills.png" alt="Settings → Skills — every skill an agent can load, with a toggle per skill" width="100%" />
 </td>
 <td width="40%" valign="middle">
@@ -187,6 +175,7 @@ Carbon and Runner Light are Runner's own themes; Catppuccin Mocha and Latte ride
 - **Projects** — bind a working directory once; chats and missions started inside a project inherit its cwd and stay grouped in their own sidebar section. Agents can create, rename, file into, and delete projects through the CLI too.
 - **Mission controls** — stop, resume, or restart a single slot without restarting the mission; a restarted session comes back fresh with its original brief. Missions run in Bypass permission mode by default, with Accept-edits and Default a setting away, and never stall on an agent's first-run consent dialog.
 - **Real terminals** — every pane is a real PTY on an `alacritty_terminal` grid drawn on the GPU: the agents' own colours, mouse reporting, IME input (Pinyin included), copy, file-path paste, 10,000 lines of scrollback. Click a file path to open it in your editor; select some output and ask about it in a side thread; ⌘+ and ⌘− zoom the app from 60% to 200%.
+- **Terminal drawer** — every chat and every mission has a shell beneath it, one shortcut away, opened in the same directory as the agent above: run the tests the agent just wrote, check `git status`, tail a log, without leaving the pane or opening another terminal app. Drawers hold as many shells as you need and come back where you left them.
 
 ## Drive Runner from your agents
 
