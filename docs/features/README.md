@@ -6,6 +6,7 @@ Since 2026-09-01 a spec's number **is** its tracking issue number: file the issu
 
 ## Active
 
+- [647 — Terminal runtime integration](./647-terminal-runtime-integration.md) — evaluate Alacritty's PTY/event loop first, preserve Runner's session contracts, and validate the black pane with Codex over SSH ([#647](https://github.com/yicheng47/runner/issues/647), P1).
 - [562 — Missions as containers](./562-mission-spawn.md) — the mission owns its roster, a mission starts from a crew or a role, and the lead or an outside seat spawns, lists, waits on and stops slots ([#562](https://github.com/yicheng47/runner/issues/562), P2, 0.12).
 - [403 — Opt-in worktree isolation per mission](./403-mission-worktree-isolation.md) — a mission runs in its own `git worktree` so crews and the human's checkout never collide ([#403](https://github.com/yicheng47/runner/issues/403), P1, 0.14).
 - [393 — Role and crew detail redesign](./393-runner-crew-detail-redesign.md) — Pencil-first redesign of both detail pages ([#393](https://github.com/yicheng47/runner/issues/393), P1).
