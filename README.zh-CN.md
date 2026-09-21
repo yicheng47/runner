@@ -28,7 +28,7 @@
 </p>
 
 <p align="center">
-  <img src="assets/hero.png" alt="Runner — 一个标签页分成四个窗格，分别是 Claude Code、GitHub Copilot CLI、TRAE CLI 和 Codex，侧边栏是项目和对话" width="100%" />
+  <img src="assets/hero.png" alt="Runner — mission 的事件 feed 里，coder 和 reviewer 围绕同一个目标协作，右侧名册显示两个会话都在运行" width="100%" />
 </p>
 
 <p align="center">
@@ -39,6 +39,8 @@
   <a href="#支持的-agent">Agent</a>
   ·
   <a href="#在一个地方管理-mcp-服务与技能">MCP</a>
+  ·
+  <a href="#让你的-agent-来驱动-runner">CLI</a>
   ·
   <a href="#示例-crew">Crew 示例</a>
   ·
@@ -88,11 +90,11 @@ https://github.com/user-attachments/assets/fb3669a4-010d-42d0-9555-2a3ba3223c75
 
 <table>
 <tr>
-<td width="50%">
+<td width="60%">
   <img src="assets/roles.png" alt="角色列表 — 可复用的 agent 配置，每个都列出运行时、命令，以及用到它的 crew 和会话" width="100%" />
   <img src="assets/crews.png" alt="Crew 列表 — codex-crew 和 claude crew，各由一个 coder lead 和一个 reviewer 组成，都取自角色" width="100%" />
 </td>
-<td width="50%" valign="middle">
+<td width="40%" valign="middle">
 
 ### Crew — 角色、提示词、一个 lead
 
@@ -101,11 +103,11 @@ https://github.com/user-attachments/assets/fb3669a4-010d-42d0-9555-2a3ba3223c75
 </td>
 </tr>
 <tr>
-<td width="50%">
+<td width="60%">
   <img src="assets/mission_feed.png" alt="Mission 工作区 — crew 与人之间的事件 feed" width="100%" />
-  <img src="assets/mission_terminal.png" alt="Mission 工作区 — 某个槽位的实时终端" width="100%" />
+  <img src="assets/mission_terminal.png" alt="Mission 工作区 — coder 的槽位，一个正在工作的 Codex 终端" width="100%" />
 </td>
-<td width="50%" valign="middle">
+<td width="40%" valign="middle">
 
 ### Mission — 一个 crew 围绕一个目标
 
@@ -116,11 +118,11 @@ https://github.com/user-attachments/assets/fb3669a4-010d-42d0-9555-2a3ba3223c75
 </td>
 </tr>
 <tr>
-<td width="50%">
+<td width="60%">
   <img src="assets/chat_split.png" alt="四个分栏的对话标签页和整理好的侧边栏" width="100%" />
   <img src="assets/chat_drag.png" alt="拖动窗格的把手——目标窗格高亮的那一半就是它落下的位置" width="100%" />
 </td>
-<td width="50%" valign="middle">
+<td width="40%" valign="middle">
 
 ### Chat — 标签页、分栏、文件夹
 
@@ -129,10 +131,10 @@ https://github.com/user-attachments/assets/fb3669a4-010d-42d0-9555-2a3ba3223c75
 </td>
 </tr>
 <tr>
-<td width="50%">
+<td width="60%">
   <img src="assets/terminal_drawer.png" alt="Claude Code 和 Codex 并排的标签页下方展开的 zsh 抽屉，在同一个目录里" width="100%" />
 </td>
-<td width="50%" valign="middle">
+<td width="40%" valign="middle">
 
 ### 终端抽屉
 
@@ -141,10 +143,10 @@ https://github.com/user-attachments/assets/fb3669a4-010d-42d0-9555-2a3ba3223c75
 </td>
 </tr>
 <tr>
-<td width="50%">
+<td width="60%">
   <img src="assets/multi_window.png" alt="两个 Runner 窗口，前面是 Claude Code 对话，后面是 Codex 对话" width="100%" />
 </td>
-<td width="50%" valign="middle">
+<td width="40%" valign="middle">
 
 ### 多窗口
 
@@ -153,43 +155,23 @@ macOS 上按 `⇧⌘N`、Windows 上按 `Ctrl+Shift+N` 可以打开更多系统�
 </td>
 </tr>
 <tr>
-<td width="50%">
-  <img src="assets/mcp_settings.png" alt="Settings → MCP — 每个 agent 的所有 MCP 服务" width="100%" />
+<td width="60%">
   <img src="assets/skills.png" alt="Settings → Skills — agent 能加载的所有技能，每个都有开关" width="100%" />
 </td>
-<td width="50%" valign="middle">
+<td width="40%" valign="middle">
 
 ### 在一个地方管理 MCP 服务与技能
 
 每个 agent 都把自己的 MCP 服务和技能放在各自的配置文件里。**Settings → MCP** 和 **Settings → Skills** 读取这些文件，按 agent 各显示为一个列表：选 Claude Code 或 Codex，看到它拥有的一切，拨一下开关就能在该 agent 的新会话里关掉某个服务或技能，点一下技能就能阅读或编辑。Runner 只改动你碰过的那一条，文件的其余部分原样保留。
 
-### 让你的 agent 来驱动 Runner
-
-内置的 `runner` 命令是 agent、脚本和终端前的人驱动应用的唯一入口：创建项目、角色和 crew，启动 mission 和 chat，跟随 feed、回答问题，以及管理它们的生命周期。在 macOS 上，如果登录 `PATH` 已包含 `~/.local/bin`，Runner 会在首次启动时把命令安装到那里；如果 `PATH` 中的 `/usr/local/bin` 可写，则安装到后者；否则去 **Settings → General → Command line** 点一下即可。在 Windows 上，Runner 会把 sidecar 目录加入用户 `PATH`。
-
-agent 不需要额外设置。Runner 会为每个检测到的 agent 安装 `runner` skill，三个根目录覆盖五种运行时：Claude Code 用 `~/.claude/skills/`，Codex、GitHub Copilot CLI 和 pi 共用 `~/.agents/skills/`，TRAE CLI 用 `~/.trae/skills/`。skill 会让 agent 读取与当前版本一致的 `runner help agents` 指南。同一个 **Command line** 区域里还有 `runner` 命令这一行，以及 **Runner skill for agents** 开关。
-
-```sh
-runner crew list --json
-mission=$(runner mission start --crew <crew> --goal-file - -q < brief.md)
-runner mission feed "$mission" --follow --json
-runner mission show "$mission" --json
-runner msg post --mission "$mission" --to <lead_handle> "message"
-runner mission answer "$mission" <question_id> <choice>
-runner mission stop "$mission"
-runner mission archive "$mission"
-```
-
-agent 使用 `--json`；不加时，列表和详情命令会为人显示表格和可读摘要。退出状态 0 表示成功，1 表示 Runner 拒绝了操作，2 表示用法或引用解析错误，3 表示应用未运行，5 表示沙箱拦住了本地连接。在 mission 内，同一个二进制从环境中取得 mission 和 handle，crew 成员也用它互发消息和信号。真正能复利的地方在于：你日常用的 agent 可以规划好一个修复，派出一个 coder 加 reviewer 的 crew 去实现，然后继续干自己的事，而它拉起的每个会话仍然是一个你随时可以打开查看的真实终端。
-
 </td>
 </tr>
 <tr>
-<td width="50%">
+<td width="60%">
   <img src="assets/light.png" alt="Runner Light 主题下的 Runner — 浅色主题里的 Claude Code 对话" width="100%" />
   <img src="assets/appearance.png" alt="Settings → Appearance — 浅色与深色预览，每种模式各有应用配色和终端配色" width="100%" />
 </td>
-<td width="50%" valign="middle">
+<td width="40%" valign="middle">
 
 ### 专为 Runner 设计的浅色与深色
 
@@ -209,7 +191,25 @@ Carbon 和 Runner Light 是 Runner 自己的主题，Catppuccin Mocha 和 Latte 
 - **项目** — 绑定一次工作目录；在项目里发起的 chat 和 mission 都会继承它的 cwd，并归在侧边栏里自己的分组下。agent 也可以通过 CLI 创建、重命名、归档和删除项目。
 - **Mission 控制** — 停止、恢复或重启单个槽位，不用重启整个 mission；重启的会话会带着最初的任务简报重新开始。mission 默认以 Bypass 权限模式运行，Accept-edits 和 Default 在设置里一步可达，也不会卡在 agent 的首次授权对话框上。
 - **真实终端** — 每一栏都是跑在 GPU 绘制的 `alacritty_terminal` 网格上的真实 PTY：agent 自己的配色、鼠标上报、输入法（包括拼音）、复制、文件路径粘贴、10,000 行回滚。点击文件路径可在编辑器里打开；选中一段输出可以在侧线程里追问；⌘+ 和 ⌘− 把整个应用从 60% 缩放到 200%。
-- **内置 `runner` CLI** — agent、脚本和终端前的人可以从任意终端驱动项目、角色、crew、mission、chat 和会话；在 mission 内，crew 成员用同一个二进制在各自的 PTY 里互发消息、查看名册、发送信号。
+
+## 让你的 agent 来驱动 Runner
+
+内置的 `runner` 命令是 agent、脚本和终端前的人驱动应用的唯一入口：创建项目、角色和 crew，启动 mission 和 chat，跟随 feed、回答问题，以及管理它们的生命周期。在 macOS 上，如果登录 `PATH` 已包含 `~/.local/bin`，Runner 会在首次启动时把命令安装到那里；如果 `PATH` 中的 `/usr/local/bin` 可写，则安装到后者；否则去 **Settings → General → Command line** 点一下即可。在 Windows 上，Runner 会把 sidecar 目录加入用户 `PATH`。
+
+agent 不需要额外设置。Runner 会为每个检测到的 agent 安装 `runner` skill，三个根目录覆盖五种运行时：Claude Code 用 `~/.claude/skills/`，Codex、GitHub Copilot CLI 和 pi 共用 `~/.agents/skills/`，TRAE CLI 用 `~/.trae/skills/`。skill 会让 agent 读取与当前版本一致的 `runner help agents` 指南。同一个 **Command line** 区域里还有 `runner` 命令这一行，以及 **Runner skill for agents** 开关。
+
+```sh
+runner crew list --json
+mission=$(runner mission start --crew <crew> --goal-file - -q < brief.md)
+runner mission feed "$mission" --follow --json
+runner mission show "$mission" --json
+runner msg post --mission "$mission" --to <lead_handle> "message"
+runner mission answer "$mission" <question_id> <choice>
+runner mission stop "$mission"
+runner mission archive "$mission"
+```
+
+agent 使用 `--json`；不加时，列表和详情命令会为人显示表格和可读摘要。退出状态 0 表示成功，1 表示 Runner 拒绝了操作，2 表示用法或引用解析错误，3 表示应用未运行，5 表示沙箱拦住了本地连接。在 mission 内，同一个二进制从环境中取得 mission 和 handle，crew 成员也用它互发消息和信号。真正能复利的地方在于：你日常用的 agent 可以规划好一个修复，派出一个 coder 加 reviewer 的 crew 去实现，然后继续干自己的事，而它拉起的每个会话仍然是一个你随时可以打开查看的真实终端。
 
 ## 支持的 Agent
 
