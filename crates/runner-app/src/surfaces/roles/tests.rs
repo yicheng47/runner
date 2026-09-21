@@ -32,6 +32,7 @@ fn runtime_with_defaults(
         command: "codex".into(),
         native_fork: true,
         description: "OpenAI Codex CLI".into(),
+        install_url: String::new(),
         default_enabled: true,
         available: true,
         default_model: default_model.map(str::to_owned),

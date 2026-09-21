@@ -1349,6 +1349,7 @@ mod tests {
                 command: r.command,
                 native_fork: r.native_fork,
                 description: String::new(),
+                install_url: String::new(),
                 default_enabled: true,
                 available: r.name != runner_backend::model::Runtime::Trae,
                 default_model: None,

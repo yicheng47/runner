@@ -2181,6 +2181,7 @@ mod tests {
             command: name.into(),
             native_fork: matches!(name, "codex" | "claude-code" | "pi"),
             description: name.into(),
+            install_url: String::new(),
             default_enabled: true,
             available: true,
             default_model: None,

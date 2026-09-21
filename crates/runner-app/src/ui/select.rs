@@ -828,6 +828,7 @@ mod tests {
             command: "codex".into(),
             native_fork: true,
             description: "OpenAI Codex CLI".into(),
+            install_url: String::new(),
             default_enabled: true,
             available: false,
             default_model: None,
