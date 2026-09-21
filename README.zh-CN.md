@@ -28,7 +28,7 @@
 </p>
 
 <p align="center">
-  <img src="assets/hero.png" alt="Runner — mission 的事件 feed 里，coder 和 reviewer 围绕同一个目标协作，右侧名册显示两个会话都在运行" width="100%" />
+  <img src="assets/hero.png" alt="Runner — mission 的事件 feed 里三个 agent 围绕同一个目标协作，另一个窗口用分栏并排跑着四个实时 agent 终端" width="100%" />
 </p>
 
 <p align="center">
@@ -100,6 +100,7 @@ https://github.com/user-attachments/assets/fb3669a4-010d-42d0-9555-2a3ba3223c75
 </tr>
 <tr>
 <td width="60%">
+  <img src="assets/mission_feed.png" alt="Mission 工作区 — feed 里三个 agent 和人围绕同一个目标协作" width="100%" />
   <img src="assets/mission_terminal.png" alt="Mission 工作区 — coder 的槽位，一个正在工作的 Codex 终端" width="100%" />
 </td>
 <td width="40%" valign="middle">

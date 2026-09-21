@@ -28,7 +28,7 @@
 </p>
 
 <p align="center">
-  <img src="assets/hero.png" alt="Runner — a mission feed where a coder and a reviewer work one goal together, both sessions live in the roster" width="100%" />
+  <img src="assets/hero.png" alt="Runner — a mission feed with three agents on one goal, and a second window splitting four live agent terminals" width="100%" />
 </p>
 
 <p align="center">
@@ -100,6 +100,7 @@ A **role** is a reusable agent configuration: runtime, system prompt, working di
 </tr>
 <tr>
 <td width="60%">
+  <img src="assets/mission_feed.png" alt="Mission workspace — the feed, where three agents and the human coordinate one goal" width="100%" />
   <img src="assets/mission_terminal.png" alt="Mission workspace — the coder's slot, a live Codex terminal mid-task" width="100%" />
 </td>
 <td width="40%" valign="middle">
