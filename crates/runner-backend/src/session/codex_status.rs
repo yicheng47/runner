@@ -115,10 +115,11 @@ impl CodexObservation {
                 return None;
             }
             self.transcript_path = report.transcript_path;
-            self.value.activity = Activity::Unavailable;
+            self.value.activity = Activity::Idle;
+            self.value.source = ObservationSource::Hook;
             self.value.outcome = None;
             self.value.detail = None;
-            return (self.value.source == ObservationSource::Hook).then(|| self.value.clone());
+            return Some(self.value.clone());
         }
         if self.ended {
             return None;
@@ -354,13 +355,41 @@ mod tests {
     }
 
     #[test]
+    fn session_start_publishes_hook_idle_and_preserves_turn_guards() {
+        let mut state = CodexObservation::default();
+        let mut start = report("SessionStart", "");
+        start["source"] = json!("startup");
+        let started = observe(&mut state, start.clone()).unwrap();
+        assert_eq!(started.activity, Activity::Idle);
+        assert_eq!(started.source, ObservationSource::Hook);
+        assert_eq!(started.outcome, None);
+        assert_eq!(started.detail, None);
+
+        let restarted = observe(&mut state, start.clone()).unwrap();
+        assert_eq!(restarted.activity, Activity::Idle);
+        assert_eq!(restarted.source, ObservationSource::Hook);
+
+        observe(&mut state, report("UserPromptSubmit", "one"));
+        let working = state.value.clone();
+        assert!(observe(&mut state, start.clone()).is_none());
+        assert_eq!(state.value, working);
+
+        observe(&mut state, report("PreCompact", "one"));
+        let compacting = state.value.clone();
+        start["source"] = json!("compact");
+        assert!(observe(&mut state, start).is_none());
+        assert_eq!(state.value, compacting);
+    }
+
+    #[test]
     fn launch_resume_completion_continuation_and_late_results() {
         for source in ["startup", "resume"] {
             let mut state = CodexObservation::default();
             let mut start = report("SessionStart", "");
             start["source"] = json!(source);
-            assert!(observe(&mut state, start.clone()).is_none());
-            assert_eq!(state.value.source, ObservationSource::Unavailable);
+            let started = observe(&mut state, start.clone()).unwrap();
+            assert_eq!(started.activity, Activity::Idle);
+            assert_eq!(started.source, ObservationSource::Hook);
             assert_eq!(
                 observe(&mut state, report("UserPromptSubmit", "one"))
                     .unwrap()
@@ -529,7 +558,7 @@ mod tests {
             start["session_id"] = json!("new");
             start["source"] = json!(source);
             let handed_over = observe(&mut state, start).unwrap();
-            assert_eq!(handed_over.activity, Activity::Unavailable);
+            assert_eq!(handed_over.activity, Activity::Idle);
             assert_eq!(handed_over.outcome, None);
             assert_eq!(handed_over.source, ObservationSource::Hook);
             for event in ["UserPromptSubmit", "Stop", "Interrupt", "SessionEnd"] {
