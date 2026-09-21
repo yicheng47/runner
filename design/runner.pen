@@ -557,7 +557,7 @@
       "type": "frame",
       "id": "w3kaW",
       "x": 1460,
-      "y": 360,
+      "y": 1093,
       "name": "cmp/InboxBlockedPill",
       "reusable": true,
       "fill": "#1D1E23",
@@ -1381,7 +1381,7 @@
       "type": "frame",
       "id": "O6x3J",
       "x": 2400,
-      "y": 60,
+      "y": 793,
       "name": "DS · Option 3 — Carbon & Plasma",
       "width": 780,
       "height": 1320,
@@ -4025,7 +4025,7 @@
       "type": "frame",
       "id": "aNdWb",
       "x": 840,
-      "y": 360,
+      "y": 1093,
       "name": "cmp/SearchField",
       "reusable": true,
       "width": 320,
@@ -4116,7 +4116,7 @@
       "type": "frame",
       "id": "dTxCR",
       "x": 1200,
-      "y": 360,
+      "y": 1093,
       "name": "cmp/Pager",
       "reusable": true,
       "gap": 4,
@@ -4358,7 +4358,7 @@
       "type": "frame",
       "id": "N4yXC",
       "x": 0,
-      "y": 60,
+      "y": 793,
       "name": "cmp/SidebarC",
       "reusable": true,
       "width": 240,
@@ -5093,7 +5093,7 @@
       "type": "frame",
       "id": "W2CPm5",
       "x": 840,
-      "y": 60,
+      "y": 793,
       "name": "cmp/RunnerCardC",
       "reusable": true,
       "width": 1136,
@@ -5233,7 +5233,7 @@
       "type": "frame",
       "id": "K2d61r",
       "x": 840,
-      "y": 193,
+      "y": 926,
       "name": "cmp/CrewCardC",
       "reusable": true,
       "width": 1136,
@@ -17851,7 +17851,7 @@
       "type": "frame",
       "id": "tK5Xb",
       "x": 840,
-      "y": 440,
+      "y": 1173,
       "name": "cmp/ConfirmDialog",
       "reusable": true,
       "width": 420,
@@ -18351,6 +18351,50 @@
                   "fontFamily": "$font-ui",
                   "fontSize": 12,
                   "fontWeight": "normal"
+                },
+                {
+                  "type": "frame",
+                  "id": "rcKyA",
+                  "name": "Default agent summary",
+                  "width": "fill_container",
+                  "gap": 12,
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "i4NaL8",
+                      "name": "Default for new chats",
+                      "fill": "$text-2",
+                      "content": "Default for new chats: Codex",
+                      "fontFamily": "$font-ui",
+                      "fontSize": 12,
+                      "fontWeight": "normal"
+                    },
+                    {
+                      "type": "frame",
+                      "id": "GvcMl",
+                      "name": "Default summary spacer",
+                      "width": "fill_container",
+                      "height": 1
+                    },
+                    {
+                      "id": "p0CrNF",
+                      "type": "ref",
+                      "ref": "IelRd",
+                      "name": "Use first available",
+                      "fill": [],
+                      "padding": [
+                        4,
+                        0
+                      ],
+                      "descendants": {
+                        "wUh0u": {
+                          "content": "Use first available",
+                          "fill": "$text-2"
+                        }
+                      }
+                    }
+                  ]
                 }
               ]
             },
@@ -18458,9 +18502,45 @@
                           "height": 1
                         },
                         {
+                          "type": "frame",
+                          "id": "YoIyw",
+                          "name": "Current default agent",
+                          "gap": 5,
+                          "padding": [
+                            5,
+                            0
+                          ],
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "icon",
+                              "id": "xdyYe",
+                              "name": "Default check",
+                              "width": 12,
+                              "height": 12,
+                              "icon": "check",
+                              "library": "lucide",
+                              "fill": "$accent"
+                            },
+                            {
+                              "type": "text",
+                              "id": "SVzB4",
+                              "name": "Default label",
+                              "fill": "$text-2",
+                              "content": "Default",
+                              "fontFamily": "$font-ui",
+                              "fontSize": 12,
+                              "fontWeight": "500"
+                            }
+                          ]
+                        },
+                        {
                           "type": "text",
                           "id": "OGDvG",
+                          "x": 744,
+                          "y": 5,
                           "name": "state_t",
+                          "enabled": false,
                           "fill": "$text-3",
                           "content": "Enabled",
                           "fontFamily": "$font-ui",
@@ -18751,9 +18831,27 @@
                           "height": 1
                         },
                         {
+                          "id": "t34HgG",
+                          "type": "ref",
+                          "ref": "IelRd",
+                          "name": "Set Claude Code as default",
+                          "padding": [
+                            5,
+                            9
+                          ],
+                          "descendants": {
+                            "wUh0u": {
+                              "content": "Set as default"
+                            }
+                          }
+                        },
+                        {
                           "type": "text",
                           "id": "qSP08",
+                          "x": 744,
+                          "y": 5,
                           "name": "state_t",
+                          "enabled": false,
                           "fill": "$text-3",
                           "content": "Enabled",
                           "fontFamily": "$font-ui",
@@ -19011,9 +19109,27 @@
                           "height": 1
                         },
                         {
+                          "id": "y0RXl",
+                          "type": "ref",
+                          "ref": "IelRd",
+                          "name": "Set GitHub Copilot as default",
+                          "padding": [
+                            5,
+                            9
+                          ],
+                          "descendants": {
+                            "wUh0u": {
+                              "content": "Set as default"
+                            }
+                          }
+                        },
+                        {
                           "type": "text",
                           "id": "RR7VU",
+                          "x": 744,
+                          "y": 5,
                           "name": "state_t",
+                          "enabled": false,
                           "fill": "$text-3",
                           "content": "Enabled",
                           "fontFamily": "$font-ui",
@@ -20799,7 +20915,7 @@
       "type": "text",
       "id": "VqywL",
       "x": 0,
-      "y": 0,
+      "y": 733,
       "name": "componentsLbl",
       "fill": "#00FF9C",
       "content": "COMPONENTS",
@@ -20812,7 +20928,7 @@
       "type": "frame",
       "id": "EWVdH",
       "x": 400,
-      "y": 60,
+      "y": 793,
       "name": "cmp/SettingsNav",
       "reusable": true,
       "width": 280,
@@ -21495,7 +21611,7 @@
       "type": "frame",
       "id": "Yiy9o",
       "x": 2204,
-      "y": 360,
+      "y": 1093,
       "name": "cmp/TrafficLights",
       "reusable": true,
       "gap": 8,
@@ -21531,7 +21647,7 @@
       "type": "frame",
       "id": "oes1c",
       "x": 1948,
-      "y": 360,
+      "y": 1093,
       "name": "cmp/SidebarNewChat",
       "reusable": true,
       "width": 216,
@@ -21586,7 +21702,7 @@
       "type": "frame",
       "id": "gpQTy",
       "x": 2296,
-      "y": 360,
+      "y": 1093,
       "name": "cmp/TabShortcutPill",
       "reusable": true,
       "width": 16,
@@ -33313,7 +33429,7 @@
       "type": "frame",
       "id": "N0ip6X",
       "x": 1300,
-      "y": 460,
+      "y": 1193,
       "name": "cmp/PanelBottomHidden",
       "reusable": true,
       "width": 14,
@@ -33345,7 +33461,7 @@
       "type": "frame",
       "id": "PaUtp",
       "x": 1340,
-      "y": 460,
+      "y": 1193,
       "name": "cmp/PanelRightHidden",
       "reusable": true,
       "width": 14,
@@ -33377,7 +33493,7 @@
       "type": "frame",
       "id": "U5QcYc",
       "x": 1380,
-      "y": 460,
+      "y": 1193,
       "name": "cmp/PanelLeftHidden",
       "reusable": true,
       "width": 14,
@@ -58458,7 +58574,7 @@
       "type": "frame",
       "id": "CMrAZ",
       "x": 1600,
-      "y": 460,
+      "y": 1193,
       "name": "cmp/Toast",
       "reusable": true,
       "fill": "$panel",
@@ -61824,7 +61940,7 @@
       "type": "frame",
       "id": "WFqT1",
       "x": 3340,
-      "y": 60,
+      "y": 793,
       "name": "DS · Option 4 — Runner Light",
       "width": 780,
       "height": 1320,
@@ -64804,7 +64920,7 @@
       "type": "frame",
       "id": "p3FGY5",
       "x": 1420,
-      "y": 460,
+      "y": 1193,
       "name": "cmp/MarkClaude",
       "reusable": true,
       "width": 12,
@@ -64833,7 +64949,7 @@
       "type": "frame",
       "id": "Y8rOW",
       "x": 1460,
-      "y": 460,
+      "y": 1193,
       "name": "cmp/MarkCodex",
       "reusable": true,
       "width": 12,
@@ -64863,7 +64979,7 @@
       "type": "frame",
       "id": "XEOQU",
       "x": 1500,
-      "y": 460,
+      "y": 1193,
       "name": "cmp/MarkTrae",
       "reusable": true,
       "width": 12,
@@ -64892,7 +65008,7 @@
       "type": "frame",
       "id": "QGeFI",
       "x": 1540,
-      "y": 460,
+      "y": 1193,
       "name": "cmp/MarkCopilot",
       "reusable": true,
       "width": 12,
@@ -64946,7 +65062,7 @@
       "type": "frame",
       "id": "nag6Z",
       "x": 1580,
-      "y": 460,
+      "y": 1193,
       "name": "cmp/MarkPi",
       "reusable": true,
       "width": 12,
@@ -64987,7 +65103,7 @@
       "type": "text",
       "id": "W44Oaa",
       "x": 840,
-      "y": 630,
+      "y": 1363,
       "name": "settingsControlsLbl",
       "fill": "#00FF9C",
       "content": "settings controls — toggle · button · row with a control slot",
@@ -65000,7 +65116,7 @@
       "type": "frame",
       "id": "BUCWv",
       "x": 840,
-      "y": 660,
+      "y": 1393,
       "name": "cmp/ToggleOn",
       "reusable": true,
       "width": 40,
@@ -65025,7 +65141,7 @@
       "type": "frame",
       "id": "dkqPP",
       "x": 920,
-      "y": 660,
+      "y": 1393,
       "name": "cmp/ToggleOff",
       "reusable": true,
       "width": 40,
@@ -65052,7 +65168,7 @@
       "type": "frame",
       "id": "IelRd",
       "x": 1000,
-      "y": 660,
+      "y": 1393,
       "name": "cmp/Button",
       "reusable": true,
       "fill": "$raised",
@@ -65093,7 +65209,7 @@
       "type": "frame",
       "id": "O75mx",
       "x": 1200,
-      "y": 660,
+      "y": 1393,
       "name": "cmp/SettingsRow",
       "reusable": true,
       "width": 880,
@@ -65163,7 +65279,7 @@
       "type": "text",
       "id": "qSclK",
       "x": 840,
-      "y": 756,
+      "y": 1489,
       "name": "windowsCmpLbl",
       "fill": "#00FF9C",
       "content": "windows — title bar (32 px, 46 px caption buttons, 28 px toggle) · update dialog (493)",
@@ -65176,7 +65292,7 @@
       "type": "frame",
       "id": "C1YbSg",
       "x": 840,
-      "y": 784,
+      "y": 1517,
       "name": "cmp/WinTitlebar",
       "reusable": true,
       "width": 1440,
@@ -65352,7 +65468,7 @@
       "type": "frame",
       "id": "oUZ6u",
       "x": 840,
-      "y": 860,
+      "y": 1593,
       "name": "cmp/UpdateDialog",
       "reusable": true,
       "width": 420,
