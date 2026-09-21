@@ -277,6 +277,7 @@ mod tests {
     #[cfg(unix)]
     use gpui::{AppContext as _, TestAppContext};
     use runner_backend::cli_install::{EscalationOutcome, RegistryPathValue, RegistryValueKind};
+    #[cfg(unix)]
     use runner_backend::shell_path::DiscoveryOutcome;
     use runner_backend::{
         db, event_bus, events, mcp, router, session, shell_path, windows, AppCore,
