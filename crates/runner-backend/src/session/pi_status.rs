@@ -208,13 +208,11 @@ impl PiObservation {
                 self.compacting = false;
                 self.compaction_resume = None;
                 self.pending_outcome = None;
-                self.value.activity = Activity::Ready;
+                self.value.activity = Activity::Idle;
                 self.value.outcome = None;
                 self.value.interactions.clear();
                 self.value.detail = None;
-                if self.value.source != ObservationSource::Hook {
-                    return None;
-                }
+                self.value.source = ObservationSource::Hook;
             }
             "agent_start" => {
                 self.open_tools.clear();
@@ -379,6 +377,37 @@ mod tests {
     }
 
     #[test]
+    fn session_start_publishes_hook_idle_and_preserves_reload_guard() {
+        let mut state = PiObservation::default();
+        let startup = json!({
+            "hook_event_name":"session_start",
+            "reason":"startup",
+            "session_id":"11111111-1111-4111-8111-111111111111",
+        });
+        let started = observe(&mut state, startup.clone()).unwrap();
+        assert_eq!(started.activity, Activity::Idle);
+        assert_eq!(started.source, ObservationSource::Hook);
+        assert_eq!(started.outcome, None);
+        assert_eq!(started.detail, None);
+
+        let restarted = observe(&mut state, startup).unwrap();
+        assert_eq!(restarted.activity, Activity::Idle);
+        assert_eq!(restarted.source, ObservationSource::Hook);
+
+        let before = state.value.clone();
+        assert!(observe(
+            &mut state,
+            json!({
+                "hook_event_name":"session_start",
+                "reason":"reload",
+                "session_id":"11111111-1111-4111-8111-111111111111",
+            }),
+        )
+        .is_none());
+        assert_eq!(state.value, before);
+    }
+
+    #[test]
     fn extension_install_is_atomic_idempotent_and_available() {
         let root = tempfile::tempdir().unwrap();
         assert!(!extension_available(root.path()));
@@ -400,7 +429,7 @@ mod tests {
     #[test]
     fn lifecycle_tools_compaction_outcomes_and_boundaries_follow_pi_events() {
         let mut state = PiObservation::default();
-        assert!(observe(
+        let started = observe(
             &mut state,
             json!({
                 "hook_event_name":"session_start",
@@ -408,7 +437,9 @@ mod tests {
                 "session_id":"11111111-1111-4111-8111-111111111111",
             }),
         )
-        .is_none());
+        .unwrap();
+        assert_eq!(started.activity, Activity::Idle);
+        assert_eq!(started.source, ObservationSource::Hook);
         assert_eq!(
             observe(&mut state, report("agent_start")).unwrap().activity,
             Activity::Working
@@ -462,7 +493,7 @@ mod tests {
                 }),
             )
             .unwrap();
-            assert_eq!(value.activity, Activity::Ready);
+            assert_eq!(value.activity, Activity::Idle);
             assert_eq!(value.outcome, None);
         }
         for (stop_reason, outcome) in [
@@ -583,9 +614,11 @@ mod tests {
         watcher
             .drain_observations(|value, _| values.push(value))
             .unwrap();
-        assert_eq!(values.len(), 2);
-        assert_eq!(values[0].activity, Activity::Working);
-        assert_eq!(values[1].outcome, Some(TurnOutcome::Failed));
+        assert_eq!(values.len(), 3);
+        assert_eq!(values[0].activity, Activity::Idle);
+        assert_eq!(values[0].source, ObservationSource::Hook);
+        assert_eq!(values[1].activity, Activity::Working);
+        assert_eq!(values[2].outcome, Some(TurnOutcome::Failed));
         fs::remove_file(extension_path(root.path())).unwrap();
         watcher.feed.dirty.store(true, Ordering::Release);
         assert!(watcher.drain_observations(|_, _| {}).is_err());
@@ -705,11 +738,13 @@ if (process.env.RETURN_SESSION_ID) {
         watcher
             .drain_observations(|value, _| values.push(value))
             .unwrap();
-        assert_eq!(values.first().unwrap().activity, Activity::Working);
+        assert_eq!(values.first().unwrap().activity, Activity::Idle);
+        assert_eq!(values.first().unwrap().source, ObservationSource::Hook);
+        assert_eq!(values[1].activity, Activity::Working);
         assert!(values
             .iter()
             .any(|value| value.outcome == Some(TurnOutcome::Failed)));
-        assert_eq!(values.last().unwrap().activity, Activity::Ready);
+        assert_eq!(values.last().unwrap().activity, Activity::Idle);
         assert_eq!(values.last().unwrap().outcome, None);
 
         fs::remove_file(&drop_path).unwrap();

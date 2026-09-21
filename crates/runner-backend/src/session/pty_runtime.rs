@@ -1755,7 +1755,7 @@ mod tests {
         }
         let deadline = Instant::now() + Duration::from_secs(3);
         let mut values = Vec::new();
-        while values.len() < 2 && Instant::now() < deadline {
+        while values.len() < 3 && Instant::now() < deadline {
             if let Ok(RuntimeOutput::AgentObservation(value)) =
                 stream.recv_timeout(Duration::from_millis(50))
             {
@@ -1787,9 +1787,9 @@ mod tests {
                 .iter()
                 .map(|value| value.activity)
                 .collect::<Vec<_>>(),
-            [Activity::Working, Activity::Ready]
+            [Activity::Idle, Activity::Working, Activity::Ready]
         );
-        assert_eq!(values[1].outcome, Some(TurnOutcome::Completed));
+        assert_eq!(values[2].outcome, Some(TurnOutcome::Completed));
         assert_eq!(
             std::fs::read_dir(path.parent().unwrap()).unwrap().count(),
             0

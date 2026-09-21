@@ -8601,6 +8601,75 @@ fn bridge_loss_and_unavailable_observations_never_manufacture_a_completion() {
 }
 
 #[test]
+fn hook_session_start_does_not_consume_completion_arming() {
+    let core = crate::test_support::test_core();
+    core.db.get().unwrap().execute("INSERT INTO sessions(id, status, agent_runtime) VALUES ('status', 'running', 'claude-code'), ('pi-status', 'running', 'pi')", []).unwrap();
+    for session_id in ["status", "pi-status"] {
+        install_test_session_handle(&core.sessions, session_id);
+        core.sessions.arm_completion(session_id);
+    }
+    let events = core.session_events();
+
+    core.sessions.publish_observation(
+        "status",
+        AgentObservation {
+            activity: Activity::Idle,
+            source: ObservationSource::Hook,
+            ..Default::default()
+        },
+        &events,
+    );
+    assert!(core.sessions.agent_status("status").unread_since.is_none());
+
+    core.sessions.publish_observation(
+        "status",
+        AgentObservation {
+            activity: Activity::Working,
+            source: ObservationSource::Hook,
+            ..Default::default()
+        },
+        &events,
+    );
+    core.sessions.publish_observation(
+        "status",
+        AgentObservation {
+            activity: Activity::Ready,
+            source: ObservationSource::Hook,
+            outcome: Some(TurnOutcome::Completed),
+            ..Default::default()
+        },
+        &events,
+    );
+    assert!(core.sessions.agent_status("status").unread_since.is_some());
+    assert!(!core.sessions.take_completion_armed(&["status".into()]));
+
+    core.sessions.publish_observation(
+        "pi-status",
+        AgentObservation {
+            activity: Activity::Working,
+            source: ObservationSource::Hook,
+            ..Default::default()
+        },
+        &events,
+    );
+    core.sessions.publish_observation(
+        "pi-status",
+        AgentObservation {
+            activity: Activity::Ready,
+            source: ObservationSource::Hook,
+            ..Default::default()
+        },
+        &events,
+    );
+    assert!(core
+        .sessions
+        .agent_status("pi-status")
+        .unread_since
+        .is_some());
+    assert!(!core.sessions.take_completion_armed(&["pi-status".into()]));
+}
+
+#[test]
 fn reserved_write_backpressure_does_not_block_status_observation() {
     let runtime = fake_runtime();
     let manager = mgr_with_fake(None, Arc::clone(&runtime));

@@ -393,25 +393,27 @@ impl SessionEvents for CoreSessionEvents {
     }
     fn status(&self, ev: &SessionActivityEvent) {
         if ev.state == SessionActivityState::Idle
-            && matches!(
-                ev.status.observation.activity,
-                Activity::Idle | Activity::Ready
-            )
             && ev.status.observation.outcome != Some(TurnOutcome::Interrupted)
             && ev.status.observation.outcome != Some(TurnOutcome::Failed)
         {
             if let Some(sessions) = self.sessions.upgrade() {
-                if let Err(error) = crate::ops::node::record_session_completion(
-                    &self.db,
-                    &sessions,
-                    &self.windows,
-                    &self.events,
-                    &ev.session_id,
-                ) {
-                    log::warn!(
-                        "record direct-chat completion for {} failed: {error}",
-                        ev.session_id
-                    );
+                let completion_eligible = matches!(
+                    (ev.status.observation.activity, ev.status.observation.source),
+                    (Activity::Idle, ObservationSource::Baseline) | (Activity::Ready, _)
+                );
+                if completion_eligible {
+                    if let Err(error) = crate::ops::node::record_session_completion(
+                        &self.db,
+                        &sessions,
+                        &self.windows,
+                        &self.events,
+                        &ev.session_id,
+                    ) {
+                        log::warn!(
+                            "record direct-chat completion for {} failed: {error}",
+                            ev.session_id
+                        );
+                    }
                 }
             }
         }

@@ -101,14 +101,14 @@ impl ClaudeObservation {
                 }
                 return None;
             }
-            let owned = self.value.source == ObservationSource::Hook;
             self.session_id = report.session_id;
             self.transcript_path = report.transcript_path;
             self.prompt_id = None;
             self.clear_turn();
-            self.value.activity = Activity::Unavailable;
+            self.value.activity = Activity::Idle;
+            self.value.source = ObservationSource::Hook;
             self.value.outcome = None;
-            return owned.then(|| self.value.clone());
+            return Some(self.value.clone());
         }
         if self.session_id.is_some()
             && report.session_id.is_some()
@@ -616,6 +616,56 @@ mod tests {
         let mut fields = fields;
         fields["hook_event_name"] = event.into();
         model.observe(serde_json::from_value(fields).unwrap())
+    }
+
+    #[test]
+    fn session_start_publishes_hook_idle_and_preserves_compaction() {
+        let mut model = ClaudeObservation::default();
+        let started = observe(
+            &mut model,
+            "SessionStart",
+            serde_json::json!({"session_id":"main","source":"startup"}),
+        )
+        .unwrap();
+        assert_eq!(started.activity, Activity::Idle);
+        assert_eq!(started.source, ObservationSource::Hook);
+        assert_eq!(started.outcome, None);
+        assert_eq!(started.detail, None);
+
+        observe(
+            &mut model,
+            "UserPromptSubmit",
+            serde_json::json!({"prompt_id":"first"}),
+        );
+        let stopped =
+            observe(&mut model, "Stop", serde_json::json!({"prompt_id":"first"})).unwrap();
+        assert_eq!(stopped.activity, Activity::Ready);
+        assert_eq!(stopped.outcome, Some(TurnOutcome::Completed));
+
+        let cleared = observe(
+            &mut model,
+            "SessionStart",
+            serde_json::json!({"session_id":"main","source":"clear"}),
+        )
+        .unwrap();
+        assert_eq!(cleared.activity, Activity::Idle);
+        assert_eq!(cleared.source, ObservationSource::Hook);
+        assert_eq!(cleared.outcome, None);
+
+        observe(
+            &mut model,
+            "UserPromptSubmit",
+            serde_json::json!({"prompt_id":"turn"}),
+        );
+        observe(&mut model, "PreCompact", serde_json::json!({}));
+        let compacting = model.value.clone();
+        assert!(observe(
+            &mut model,
+            "SessionStart",
+            serde_json::json!({"session_id":"main","source":"compact"}),
+        )
+        .is_none());
+        assert_eq!(model.value, compacting);
     }
 
     #[test]
@@ -1539,7 +1589,7 @@ mod tests {
             ("Stop", None, Some(SessionActivityState::Idle)),
             ("StopFailure", None, Some(SessionActivityState::Idle)),
             ("SubagentStop", None, None),
-            ("SessionStart", None, None),
+            ("SessionStart", None, Some(SessionActivityState::Idle)),
             ("unknown", None, None),
         ] {
             assert_eq!(

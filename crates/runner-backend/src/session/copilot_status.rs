@@ -199,13 +199,13 @@ impl CopilotObservation {
             {
                 return None;
             }
-            let owned = self.value.source == ObservationSource::Hook;
             self.session_id = Some(session_id);
             self.ended = false;
             self.clear_turn();
-            self.value.activity = Activity::Unavailable;
+            self.value.activity = Activity::Idle;
+            self.value.source = ObservationSource::Hook;
             self.value.outcome = None;
-            return owned.then(|| self.value.clone());
+            return Some(self.value.clone());
         }
         if self
             .session_id
@@ -715,6 +715,43 @@ mod tests {
         value["tool_name"] = json!(name);
         value["tool_input"] = input;
         value
+    }
+
+    #[test]
+    fn session_start_publishes_hook_idle_and_preserves_session_guards() {
+        let mut state = CopilotObservation::default();
+        let mut start = report("SessionStart");
+        start["source"] = json!("startup");
+        let started = observe(&mut state, start.clone()).unwrap();
+        assert_eq!(started.activity, Activity::Idle);
+        assert_eq!(started.source, ObservationSource::Hook);
+        assert_eq!(started.outcome, None);
+        assert_eq!(started.detail, None);
+
+        let mut handover = start.clone();
+        handover["session_id"] = json!("next");
+        let handed_over = observe(&mut state, handover).unwrap();
+        assert_eq!(handed_over.activity, Activity::Idle);
+        assert_eq!(handed_over.source, ObservationSource::Hook);
+
+        let mut next_prompt = report("UserPromptSubmit");
+        next_prompt["session_id"] = json!("next");
+        observe(&mut state, next_prompt);
+        let working = state.value.clone();
+        let mut delayed = start.clone();
+        delayed["session_id"] = json!("next");
+        assert!(observe(&mut state, delayed).is_none());
+        assert_eq!(state.value, working);
+
+        let mut pre_compact = report("PreCompact");
+        pre_compact["session_id"] = json!("next");
+        observe(&mut state, pre_compact);
+        let compacting = state.value.clone();
+        let mut compact_start = start;
+        compact_start["session_id"] = json!("next");
+        compact_start["source"] = json!("compact");
+        assert!(observe(&mut state, compact_start).is_none());
+        assert_eq!(state.value, compacting);
     }
 
     #[test]
