@@ -3494,6 +3494,22 @@ fn hook_status_owns_activity_until_teardown_without_changing_submit_or_wake() {
 }
 
 #[test]
+fn healthy_hook_owned_work_ignores_title_fallback_transitions() {
+    let manager = mgr_with_fake(None, fake_runtime());
+    install_test_session_handle(&manager, "hooks");
+    assert!(manager.note_forwarder_transition("hooks", SessionActivityState::Busy, "hook"));
+    assert!(!manager.note_forwarder_transition("hooks", SessionActivityState::Idle, "forwarder"));
+    assert_eq!(
+        manager.agent_status("hooks").observation.activity,
+        Activity::Working
+    );
+    assert_eq!(
+        manager.agent_status("hooks").observation.source,
+        ObservationSource::Hook
+    );
+}
+
+#[test]
 fn hook_status_uses_existing_direct_and_mission_consumers() {
     assert_status_uses_existing_direct_and_mission_consumers("hook");
 }
