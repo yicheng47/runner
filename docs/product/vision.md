@@ -10,6 +10,8 @@ Coordinating two agents by hand means juggling terminal windows, eyeballing logs
 
 The vendors are closing this gap, but only inside their own walls: a team or teammate mode spawns more of the same agent from the same provider. Nobody's coder can hand work to somebody else's reviewer. Filling that gap requires being neutral about whose agent sits in which seat, which is exactly what a vendor cannot be.
 
+There is a second ceiling underneath the coordination one, and it is the person. Running more agents is cheap; holding more of them in your head is not. Past a handful of live sessions nobody can reliably track what each one is doing, which is blocked on which, and which one is waiting on an answer — so the binding constraint on this whole category is human attention, not compute and not how many subscriptions you hold. That is why the unit of work has to be the mission rather than the session: you supervise one task through a roster and a feed, and you drill into a terminal when something there needs you, instead of managing terminals as the primary act.
+
 ## 2. The vision
 
 Runner is a **working environment for terminal agents**: the place several coding agents share while they work on one task. It is opinionated about the workflow — roles, crews, exactly one lead, signals and messages, a pull-based inbox — and neutral about the provider. Any provider, one workflow.

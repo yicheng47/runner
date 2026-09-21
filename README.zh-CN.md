@@ -128,18 +128,6 @@ https://github.com/user-attachments/assets/fb3669a4-010d-42d0-9555-2a3ba3223c75
 </tr>
 <tr>
 <td width="60%">
-  <img src="assets/terminal_drawer.png" alt="Claude Code 和 Codex 并排的标签页下方展开的 zsh 抽屉，在同一个目录里" width="100%" />
-</td>
-<td width="40%" valign="middle">
-
-### 终端抽屉
-
-每个 chat 和每个 mission 下方都有一个 shell，一个快捷键就能打开，工作目录和上面的 agent 相同。跑一下 agent 刚写的测试、看看 `git status`、tail 一个日志，都不用离开这一栏，也不用再开一个终端应用。抽屉里可以开任意多个 shell，回来时还在你离开的地方。
-
-</td>
-</tr>
-<tr>
-<td width="60%">
   <img src="assets/multi_window.png" alt="两个 Runner 窗口，前面是 Claude Code 对话，后面是 Codex 对话" width="100%" />
 </td>
 <td width="40%" valign="middle">
@@ -147,6 +135,18 @@ https://github.com/user-attachments/assets/fb3669a4-010d-42d0-9555-2a3ba3223c75
 ### 多窗口
 
 macOS 上按 `⇧⌘N`、Windows 上按 `Ctrl+Shift+N` 可以打开更多系统窗口，比如一块屏幕放 mission，另一块放一整墙的 chat。窗口之间会协调共享会话的归属：主窗口持有 PTY，其他显示同一会话的窗口会看到一个接管浮层，而不是一个错乱的终端。
+
+</td>
+</tr>
+<tr>
+<td width="60%">
+  <img src="assets/terminal_drawer.png" alt="Claude Code 和 Codex 并排的标签页下方展开的 zsh 抽屉，在同一个目录里" width="100%" />
+</td>
+<td width="40%" valign="middle">
+
+### 终端抽屉
+
+每个 chat 和每个 mission 下方都有一个 shell，一个快捷键就能打开，工作目录和上面的 agent 相同。跑一下 agent 刚写的测试、看看 `git status`、tail 一个日志，都不用离开这一栏，也不用再开一个终端应用。抽屉里可以开任意多个 shell，回来时还在你离开的地方。
 
 </td>
 </tr>

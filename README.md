@@ -128,18 +128,6 @@ Every chat is a real 1:1 PTY with a role, no mission required. Split a tab as fa
 </tr>
 <tr>
 <td width="60%">
-  <img src="assets/terminal_drawer.png" alt="A zsh drawer open beneath a tab with Claude Code and Codex side by side, in the same directory" width="100%" />
-</td>
-<td width="40%" valign="middle">
-
-### Terminal drawer
-
-Every chat and every mission has a shell beneath it, one shortcut away, opened in the same directory as the agent above. Run the tests the agent just wrote, check `git status`, tail a log, without leaving the pane or opening another terminal app. Drawers hold as many shells as you need and come back where you left them.
-
-</td>
-</tr>
-<tr>
-<td width="60%">
   <img src="assets/multi_window.png" alt="Two Runner windows, a Claude Code chat in front and a Codex chat behind" width="100%" />
 </td>
 <td width="40%" valign="middle">
@@ -147,6 +135,18 @@ Every chat and every mission has a shell beneath it, one shortcut away, opened i
 ### Multi-window
 
 `⇧⌘N` on macOS or `Ctrl+Shift+N` on Windows opens additional OS windows — a mission on one screen, a wall of chats on the other. Windows coordinate ownership of shared sessions: the primary owns the PTY, and any other window showing the same session gets a hand-off overlay instead of a corrupted terminal.
+
+</td>
+</tr>
+<tr>
+<td width="60%">
+  <img src="assets/terminal_drawer.png" alt="A zsh drawer open beneath a tab with Claude Code and Codex side by side, in the same directory" width="100%" />
+</td>
+<td width="40%" valign="middle">
+
+### Terminal drawer
+
+Every chat and every mission has a shell beneath it, one shortcut away, opened in the same directory as the agent above. Run the tests the agent just wrote, check `git status`, tail a log, without leaving the pane or opening another terminal app. Drawers hold as many shells as you need and come back where you left them.
 
 </td>
 </tr>
