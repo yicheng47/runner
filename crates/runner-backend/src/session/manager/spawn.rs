@@ -470,6 +470,7 @@ impl SessionManager {
             .any(|var| std::env::var_os(var).is_some());
         ensure_utf8_locale(&mut env, process_has_locale);
         SpawnSpec {
+            codex_pending_turn: None,
             session_id,
             cwd: cwd.map(PathBuf::from),
             command: role.command.clone(),
@@ -505,6 +506,8 @@ impl SessionManager {
         first_turn: Option<&str>,
         mission_bus_dir: Option<&Path>,
     ) -> bool {
+        spec.codex_pending_turn = (Runtime::parse(&role.runtime) == Some(Runtime::Codex))
+            .then_some(!plan.resuming && first_turn.is_some_and(|body| !body.trim().is_empty()));
         #[cfg(windows)]
         let first_turn = if crate::session::launch::is_windows_batch(&role.command) {
             None
@@ -1654,7 +1657,7 @@ impl SessionManager {
                     handle.pending_first_turn = Some(PendingFirstTurn {
                         body: body.to_owned(),
                         deadline,
-                        output_tail: Vec::new(),
+                        readiness: Default::default(),
                     });
                 } else {
                     log::warn!(

@@ -17,6 +17,10 @@ use serde::{Deserialize, Serialize};
 /// commands) gather the inputs and hand them in.
 #[derive(Debug, Clone, Default)]
 pub struct SpawnSpec {
+    /// Codex starts without a hook handshake. Some(true) includes an automatic
+    /// first turn (also when Windows will paste it); Some(false) awaits input.
+    /// None keeps the output-based fallback used by other runtimes.
+    pub codex_pending_turn: Option<bool>,
     /// ULID of the `sessions` row that will own this runtime session.
     /// The runtime uses this for deterministic naming
     /// (`runner-<session_id>`), and persists nothing else about the
@@ -58,6 +62,25 @@ pub struct SpawnSpec {
     /// the right size before the first paint. `None` falls back to
     /// the runner config's `default-size`.
     pub initial_size: Option<(u16, u16)>,
+}
+
+#[derive(Default)]
+pub(crate) struct TuiReadiness {
+    tail: Vec<u8>,
+}
+
+impl TuiReadiness {
+    pub(crate) fn observe(&mut self, bytes: &[u8]) -> [bool; 3] {
+        self.tail.extend_from_slice(bytes);
+        let seen = [b"\x1b[?2004h".as_slice(), b"\x1b[?1049h", b"\x1b[?47h"].map(|signal| {
+            self.tail
+                .windows(signal.len())
+                .any(|window| window == signal)
+        });
+        let keep_from = self.tail.len().saturating_sub(7);
+        self.tail.drain(..keep_from);
+        seen
+    }
 }
 
 /// What `spawn` returns: the runtime-side identity persisted on the

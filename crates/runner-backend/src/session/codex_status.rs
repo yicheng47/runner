@@ -151,6 +151,10 @@ impl CodexObservation {
             self.value.activity = Activity::Working;
             self.value.detail = None;
         } else {
+            // Esc can abort startup before UserPromptSubmit runs.
+            if self.turn_id.is_none() && report.hook_event_name == "Interrupt" {
+                self.turn_id = Some(turn_id.clone());
+            }
             if self.turn_id.as_ref() != Some(&turn_id) {
                 return None;
             }
@@ -575,6 +579,44 @@ mod tests {
             observe(&mut state, resume);
             observe(&mut state, report("UserPromptSubmit", "three"));
             assert_eq!(state.session_id.as_deref(), Some("main"));
+            assert_eq!(state.value.activity, Activity::Working);
+            assert_eq!(state.value.outcome, None);
+        }
+    }
+
+    #[test]
+    fn first_interrupt_does_not_require_a_prompt_hook() {
+        for source in [None, Some("startup"), Some("resume")] {
+            let mut state = CodexObservation::default();
+            let mut child = report("Interrupt", "child");
+            child["agent_id"] = json!("child");
+            assert!(observe(&mut state, child).is_none());
+            if let Some(source) = source {
+                let mut start = report("SessionStart", "");
+                start["source"] = json!(source);
+                observe(&mut state, start);
+            }
+            for event in ["Stop", "PreToolUse", "Interrupt"] {
+                assert!(observe(&mut state, report(event, "")).is_none());
+            }
+            let interrupted = observe(&mut state, report("Interrupt", "one")).unwrap();
+            assert_eq!(interrupted.activity, Activity::Unavailable);
+            assert_eq!(interrupted.source, ObservationSource::Hook);
+            assert_eq!(interrupted.outcome, Some(TurnOutcome::Interrupted));
+            assert_eq!(state.turn_id.as_deref(), Some("one"));
+            state.observe_transcript(&abort("old"));
+            assert_eq!(state.value.activity, Activity::Unavailable);
+            state.observe_transcript(&abort("one"));
+            assert_eq!(state.value.activity, Activity::Ready);
+            assert_eq!(state.value.outcome, Some(TurnOutcome::Interrupted));
+            for event in ["SessionStart", "UserPromptSubmit", "Stop", "Interrupt"] {
+                assert!(observe(&mut state, report(event, "one")).is_none());
+            }
+            observe(&mut state, report("UserPromptSubmit", "two"));
+            for turn in ["one", "unknown"] {
+                assert!(observe(&mut state, report("Interrupt", turn)).is_none());
+                state.observe_transcript(&abort(turn));
+            }
             assert_eq!(state.value.activity, Activity::Working);
             assert_eq!(state.value.outcome, None);
         }

@@ -47,6 +47,8 @@ mod lifecycle;
 mod output;
 mod spawn;
 
+pub(crate) use output::{classify_local_input, LocalInputClass};
+
 #[cfg(test)]
 mod tests;
 
@@ -538,7 +540,7 @@ struct SessionHandle {
 struct PendingFirstTurn {
     body: String,
     deadline: Instant,
-    output_tail: Vec<u8>,
+    readiness: super::runtime::TuiReadiness,
 }
 
 #[cfg(all(windows, not(test)))]
