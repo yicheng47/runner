@@ -9105,16 +9105,21 @@ fn copilot_missing_worker_conversation_keeps_id_and_delivers_first_turn() {
 }
 
 #[test]
-fn pi_direct_spawn_persists_key_uses_live_prompt_file_and_never_approves() {
+fn pi_direct_spawn_and_relocated_agent_dir_resume_use_live_prompt_file_and_never_approve() {
     let pool = pool_with_schema();
     let app_data = tempfile::tempdir().unwrap();
     crate::session::pi_status::install_extension(app_data.path()).unwrap();
     let cwd = app_data.path().to_string_lossy().into_owned();
+    let pi_agent_dir = app_data.path().join("pi-agent");
     let mut role = role("pi-custom", &["--role-flag"]);
     role.runtime = "pi".into();
     role.system_prompt = Some("PERSONA_V1".into());
     role.model = Some("deepseek/deepseek-v4-pro".into());
     role.effort = Some("High".into());
+    role.env.insert(
+        "PI_CODING_AGENT_DIR".into(),
+        pi_agent_dir.to_string_lossy().into_owned(),
+    );
     insert_role_row(&pool.get().unwrap(), &role);
 
     let fake = fake_runtime();
@@ -9149,7 +9154,18 @@ fn pi_direct_spawn_persists_key_uses_live_prompt_file_and_never_approves() {
     let row = crate::repo::session::get_row(&pool.get().unwrap(), &spawned.id)
         .unwrap()
         .unwrap();
-    let key = row.agent_session_key.unwrap();
+    let key = row.agent_session_key.clone().unwrap();
+    let started_at = row.started_at.unwrap().to_rfc3339();
+    assert_eq!(
+        crate::repo::session::set_live_title(
+            &pool.get().unwrap(),
+            &spawned.id,
+            Some("PI_RESUME_TITLE"),
+            Some(&started_at),
+        )
+        .unwrap(),
+        1
+    );
     let prompt_path = crate::session::system_prompt::path(app_data.path(), &spawned.id);
     let fresh = fake.last_spawn_spec().unwrap();
     let extension_path = crate::session::pi_status::extension_path(app_data.path());
@@ -9200,7 +9216,7 @@ fn pi_direct_spawn_persists_key_uses_live_prompt_file_and_never_approves() {
     role.system_prompt = Some("PERSONA_V2".into());
     update_role_row(&pool.get().unwrap(), &role);
     let slug = router::runtime::pi_project_slug(&cwd);
-    let pi_sessions = app_data.path().join(".pi/agent/sessions").join(slug);
+    let pi_sessions = pi_agent_dir.join("sessions").join(slug);
     std::fs::create_dir_all(&pi_sessions).unwrap();
     std::fs::write(pi_sessions.join(format!("resume_{key}.jsonl")), "").unwrap();
     let stale_rekey = crate::session::claude_rekey::drop_path(app_data.path(), &spawned.id);
@@ -9247,6 +9263,15 @@ fn pi_direct_spawn_persists_key_uses_live_prompt_file_and_never_approves() {
     assert!(!resumed.args.iter().any(|arg| arg == "--"));
     assert!(!resumed.args.iter().any(|arg| arg == "--approve"));
     assert_eq!(std::fs::read_to_string(&prompt_path).unwrap(), "PERSONA_V2");
+    assert_eq!(
+        crate::repo::session::get_row(&pool.get().unwrap(), &spawned.id)
+            .unwrap()
+            .unwrap()
+            .live_title
+            .as_deref(),
+        Some("PI_RESUME_TITLE"),
+        "the relocated conversation must resolve as a genuine resume",
+    );
     mgr.kill(&spawned.id).unwrap();
 }
 

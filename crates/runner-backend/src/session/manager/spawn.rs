@@ -2369,9 +2369,11 @@ impl SessionManager {
                     role.env.get("COPILOT_HOME").map(String::as_str),
                 )
             }
-            (Some(Runtime::Pi), Some(key)) => {
-                !router::runtime::pi_conversation_exists(resolved_cwd_for_check.as_deref(), key)
-            }
+            (Some(Runtime::Pi), Some(key)) => !router::runtime::pi_conversation_exists(
+                resolved_cwd_for_check.as_deref(),
+                key,
+                &role.env,
+            ),
             (Some(Runtime::ClaudeCode | Runtime::Copilot | Runtime::Pi), None)
             | (Some(Runtime::Codex | Runtime::Trae | Runtime::Shell) | None, _) => false,
         };

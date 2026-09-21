@@ -5003,7 +5003,6 @@ dependencies = [
  "block2",
  "chrono",
  "fs2",
- "glob",
  "libc",
  "log",
  "notify",
