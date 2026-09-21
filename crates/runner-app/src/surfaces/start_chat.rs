@@ -1231,16 +1231,19 @@ impl NativeRoot {
                     model,
                     effort,
                     cwd,
-                } => runner_backend::ops::session::session_start_runtime(
-                    self.core(cx),
-                    &runtime,
-                    project_id,
-                    cwd,
-                    Some(initial_size.0),
-                    Some(initial_size.1),
-                    model,
-                    effort,
-                )?,
+                } => {
+                    runner_backend::ops::session::session_start_runtime(
+                        self.core(cx),
+                        &runtime,
+                        project_id,
+                        cwd,
+                        Some(initial_size.0),
+                        Some(initial_size.1),
+                        model,
+                        effort,
+                    )?
+                    .session
+                }
             };
             spawned_id = Some(spawned.id.clone());
             if let Some(title) = title {

@@ -71,6 +71,7 @@ OUTPUT AND EXITS
 REFERENCES
   Roles use their unique handle. Crews and projects accept an id or exact name.
   Missions and direct-chat sessions accept an id or unique id prefix.
+  A mission or chat started inside a project's directory belongs to it; --project overrides.
 
 COMMON FLOW
   runner crew list --json

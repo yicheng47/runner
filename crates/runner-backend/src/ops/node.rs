@@ -105,6 +105,12 @@ pub fn node_tab_upsert(state: &AppCore, input: NodeTabUpsertInput) -> Result<Nod
     };
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     repo::node::upsert_move_not_copy(&tx, &row)?;
+    let project_id = repo::node::effective_project(&tx, row.parent_id.as_deref())?;
+    repo::node::write_layout_project(
+        &tx,
+        row.layout.as_deref().expect("tab layout is present"),
+        project_id.as_deref(),
+    )?;
     tx.commit()?;
     emit_layout_changed(state);
     Ok(row)
@@ -119,9 +125,17 @@ pub fn node_mission_layout_set(state: &AppCore, node_id: &str, layout: String) -
         return Err(Error::msg(format!("node {node_id} is not a mission")));
     }
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let mission_id = node
+        .ref_id
+        .as_deref()
+        .ok_or_else(|| Error::msg(format!("mission node {node_id} has no mission")))?;
+    let project_id = repo::mission::get(&tx, mission_id)?
+        .ok_or_else(|| Error::msg(format!("mission not found: {mission_id}")))?
+        .project_id;
     for session_id in repo::node::session_ids_from_layout(&layout) {
         repo::node::remove_session_except(&tx, &session_id, Some(node_id))?;
     }
+    repo::node::write_layout_project(&tx, &layout, project_id.as_deref())?;
     tx.execute(
         "UPDATE nodes SET layout = ?2 WHERE id = ?1",
         rusqlite::params![node_id, layout],
@@ -585,6 +599,75 @@ mod tests {
             .block_on(future)
     }
 
+    #[test]
+    fn tab_upsert_writes_its_parent_project_to_every_member_session() {
+        let state = test_core();
+        let (project, project_node) = {
+            let conn = state.db.get().unwrap();
+            let project = repo::project::create(&conn, "P", "/tmp/p").unwrap();
+            let project_node = repo::node::ensure_project_node(&conn, &project.id).unwrap();
+            for id in ["root-pane", "root-drawer"] {
+                conn.execute(
+                    "INSERT INTO sessions (id, status, project_id) VALUES (?1, 'stopped', ?2)",
+                    rusqlite::params![id, project.id],
+                )
+                .unwrap();
+            }
+            for id in ["project-pane", "project-drawer"] {
+                conn.execute(
+                    "INSERT INTO sessions (id, status) VALUES (?1, 'stopped')",
+                    [id],
+                )
+                .unwrap();
+            }
+            (project, project_node)
+        };
+
+        node_tab_upsert(
+            &state,
+            NodeTabUpsertInput {
+                id: ulid::Ulid::new().to_string(),
+                parent_id: None,
+                name: "root".into(),
+                layout: r#"{"slots":["root-pane"],"drawer":{"shells":["root-drawer"]}}"#.into(),
+            },
+        )
+        .unwrap();
+        node_tab_upsert(
+            &state,
+            NodeTabUpsertInput {
+                id: ulid::Ulid::new().to_string(),
+                parent_id: Some(project_node.id),
+                name: "project".into(),
+                layout: r#"{"slots":["project-pane"],"drawer":{"shells":["project-drawer"]}}"#
+                    .into(),
+            },
+        )
+        .unwrap();
+
+        let conn = state.db.get().unwrap();
+        for id in ["root-pane", "root-drawer"] {
+            let project_id: Option<String> = conn
+                .query_row(
+                    "SELECT project_id FROM sessions WHERE id = ?1",
+                    [id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(project_id, None);
+        }
+        for id in ["project-pane", "project-drawer"] {
+            let project_id: Option<String> = conn
+                .query_row(
+                    "SELECT project_id FROM sessions WHERE id = ?1",
+                    [id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(project_id.as_deref(), Some(project.id.as_str()));
+        }
+    }
+
     fn seed_mission_with_status(state: &AppCore, id: &str, project_id: Option<&str>, status: &str) {
         let conn = state.db.get().unwrap();
         conn.execute(
@@ -608,13 +691,17 @@ mod tests {
     #[test]
     fn mission_layout_set_requires_a_mission_and_moves_shells_out_of_tabs() {
         let state = test_core();
+        let project = {
+            let conn = state.db.get().unwrap();
+            repo::project::create(&conn, "P", "/tmp/p").unwrap()
+        };
         seed_mission(&state, "m1", None);
         let (mission_node, tab) = {
             let conn = state.db.get().unwrap();
             conn.execute(
-                "INSERT INTO sessions (id, status, agent_runtime, agent_command)
-                 VALUES ('drawer-shell', 'stopped', 'shell', '/bin/zsh')",
-                [],
+                "INSERT INTO sessions (id, status, agent_runtime, agent_command, project_id)
+                 VALUES ('drawer-shell', 'stopped', 'shell', '/bin/zsh', ?1)",
+                [&project.id],
             )
             .unwrap();
             let mission_node = repo::node::ensure_mission_node(&conn, "m1", None).unwrap();
@@ -638,6 +725,14 @@ mod tests {
         let conn = state.db.get().unwrap();
         assert!(repo::node::get(&conn, &tab.id).unwrap().is_none());
         assert_eq!(repo::node::session_ids(&row), ["drawer-shell"]);
+        let project_id: Option<String> = conn
+            .query_row(
+                "SELECT project_id FROM sessions WHERE id = 'drawer-shell'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(project_id, None);
         assert_eq!(events.try_recv().unwrap().name, LAYOUT_CHANGED_EVENT);
 
         let tab = repo::node::create_tab(

@@ -188,7 +188,7 @@ impl RunnerMcpHandler {
     }
 
     #[tool(
-        description = "Start a direct chat for a role, an optional role runtime override, or a role-free runtime. A project's cwd is used unless cwd is explicitly provided."
+        description = "Start a direct chat for a role, an optional role runtime override, or a role-free runtime. A project's cwd is used unless cwd is explicitly provided; without project_id, a cwd inside a project infers membership."
     )]
     pub async fn session_start_direct(
         &self,
@@ -208,33 +208,17 @@ impl RunnerMcpHandler {
                 None,
             )
             .map_err(command_error)?,
-            (None, Some(runtime)) => {
-                let cwd = {
-                    let conn = self
-                        .state
-                        .db
-                        .get()
-                        .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
-                    crate::ops::project::resolve_cwd(&conn, args.project_id.as_deref(), args.cwd)
-                        .map_err(command_error)?
-                };
-                let session = session::session_start_runtime(
-                    &self.state,
-                    runtime.key(),
-                    args.project_id.clone(),
-                    cwd.clone(),
-                    None,
-                    None,
-                    args.model,
-                    args.effort,
-                )
-                .map_err(command_error)?;
-                session::StartDirectSessionOutput {
-                    session,
-                    project_id: args.project_id,
-                    cwd,
-                }
-            }
+            (None, Some(runtime)) => session::session_start_runtime(
+                &self.state,
+                runtime.key(),
+                args.project_id,
+                args.cwd,
+                None,
+                None,
+                args.model,
+                args.effort,
+            )
+            .map_err(command_error)?,
             (None, None) => unreachable!(),
         };
         Ok(CallToolResult::success(vec![Content::json(&output)?]))
@@ -331,12 +315,154 @@ mod tests {
         serde_json::from_str(&result.content[0].as_text().unwrap().text).unwrap()
     }
 
+    fn tracking_handler(app_data_dir: std::path::PathBuf) -> RunnerMcpHandler {
+        let mut core = crate::test_support::test_core_in(app_data_dir);
+        core.sessions = crate::session::SessionManager::new(
+            std::sync::Arc::clone(&core.runtime_shell_env),
+            std::sync::Arc::clone(&core.runtime_discovery),
+            std::sync::Arc::new(TrackingRuntime::default()),
+        );
+        RunnerMcpHandler::new(core)
+    }
+
+    fn assert_project_row_and_tab(handler: &RunnerMcpHandler, session_id: &str, project_id: &str) {
+        let mut conn = handler.state.db.get().unwrap();
+        let row = crate::repo::session::get_row(&conn, session_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.project_id.as_deref(), Some(project_id));
+
+        let nodes = crate::repo::node::list_with_repair(&mut conn).unwrap();
+        let project_node = nodes
+            .iter()
+            .find(|node| {
+                node.node_type == crate::repo::node::NodeType::Project
+                    && node.ref_id.as_deref() == Some(project_id)
+            })
+            .unwrap();
+        let tab = nodes
+            .iter()
+            .find(|node| crate::repo::node::session_ids(node) == [session_id])
+            .unwrap();
+        assert_eq!(tab.parent_id.as_deref(), Some(project_node.id.as_str()));
+    }
+
     #[test]
     fn direct_start_requires_a_role_or_runtime_and_allows_an_override() {
         assert!(validate_start_source(Some("role"), None).is_ok());
         assert!(validate_start_source(None, Some(crate::model::Runtime::Codex)).is_ok());
         assert!(validate_start_source(Some("role"), Some(crate::model::Runtime::Codex)).is_ok());
         assert!(validate_start_source(None, None).is_err());
+    }
+
+    #[tokio::test]
+    async fn role_direct_start_infers_project_from_working_dir_for_the_row_and_tab() {
+        let temp = tempfile::tempdir().unwrap();
+        let app_data_dir = temp.path().join("app-data");
+        let project_cwd = temp.path().join("runner");
+        let cwd = project_cwd.join(".worktrees/role-chat");
+        std::fs::create_dir_all(&app_data_dir).unwrap();
+        std::fs::create_dir_all(&cwd).unwrap();
+        let handler = tracking_handler(app_data_dir);
+        let project = {
+            let conn = handler.state.db.get().unwrap();
+            crate::test_support::insert_test_role(
+                &conn,
+                "role",
+                "coder",
+                "test",
+                std::env::current_exe().unwrap().to_string_lossy().as_ref(),
+            );
+            conn.execute(
+                "UPDATE roles SET working_dir = ?2 WHERE id = ?1",
+                rusqlite::params!["role", cwd.to_string_lossy().as_ref()],
+            )
+            .unwrap();
+            crate::repo::project::create(&conn, "Runner", project_cwd.to_string_lossy().as_ref())
+                .unwrap()
+        };
+
+        let output = result_json(
+            handler
+                .session_start_direct(Parameters(StartDirectSessionArgs {
+                    role_id: Some("role".into()),
+                    runtime: None,
+                    model: None,
+                    effort: None,
+                    project_id: None,
+                    cwd: None,
+                }))
+                .await
+                .unwrap(),
+        );
+        let session_id = output["id"].as_str().unwrap();
+
+        assert_eq!(output["project_id"], project.id);
+        assert_project_row_and_tab(&handler, session_id, &project.id);
+        session::session_kill(&handler.state, session_id).unwrap();
+    }
+
+    #[tokio::test]
+    async fn runtime_direct_tool_infers_project_for_the_session_row_and_tab() {
+        let temp = tempfile::tempdir().unwrap();
+        let app_data_dir = temp.path().join("app-data");
+        let project_cwd = temp.path().join("runner");
+        let cwd = project_cwd.join(".worktrees/runtime-chat");
+        std::fs::create_dir_all(&app_data_dir).unwrap();
+        std::fs::create_dir_all(&cwd).unwrap();
+        let handler = tracking_handler(app_data_dir);
+        let project = {
+            let conn = handler.state.db.get().unwrap();
+            crate::repo::project::create(&conn, "Runner", project_cwd.to_string_lossy().as_ref())
+                .unwrap()
+        };
+
+        let output = result_json(
+            handler
+                .session_start_direct(Parameters(StartDirectSessionArgs {
+                    role_id: None,
+                    runtime: Some(crate::model::Runtime::Codex),
+                    model: None,
+                    effort: None,
+                    project_id: None,
+                    cwd: Some(cwd.to_string_lossy().into_owned()),
+                }))
+                .await
+                .unwrap(),
+        );
+        let session_id = output["id"].as_str().unwrap();
+
+        assert_eq!(output["project_id"], project.id);
+        assert_project_row_and_tab(&handler, session_id, &project.id);
+        session::session_kill(&handler.state, session_id).unwrap();
+    }
+
+    #[test]
+    fn shell_start_infers_project_for_the_session_row_and_tab() {
+        let temp = tempfile::tempdir().unwrap();
+        let app_data_dir = temp.path().join("app-data");
+        let project_cwd = temp.path().join("runner");
+        let cwd = project_cwd.join(".worktrees/shell");
+        std::fs::create_dir_all(&app_data_dir).unwrap();
+        std::fs::create_dir_all(&cwd).unwrap();
+        let handler = tracking_handler(app_data_dir);
+        let project = {
+            let conn = handler.state.db.get().unwrap();
+            crate::repo::project::create(&conn, "Runner", project_cwd.to_string_lossy().as_ref())
+                .unwrap()
+        };
+
+        let spawned = session::session_start_shell(
+            &handler.state,
+            None,
+            Some(cwd.to_string_lossy().into_owned()),
+            None,
+            None,
+        )
+        .unwrap();
+
+        assert_project_row_and_tab(&handler, &spawned.id, &project.id);
+        session::session_kill(&handler.state, &spawned.id).unwrap();
     }
 
     #[tokio::test]

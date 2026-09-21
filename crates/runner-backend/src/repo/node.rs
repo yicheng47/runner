@@ -430,7 +430,7 @@ pub fn move_and_reorder(
 
 /// The project a node belongs to by placement: its parent when the
 /// parent is a project node.
-fn effective_project(
+pub fn effective_project(
     conn: &Connection,
     parent_id: Option<&str>,
 ) -> rusqlite::Result<Option<String>> {
@@ -449,17 +449,8 @@ fn write_project_through(
 ) -> rusqlite::Result<()> {
     match node.node_type {
         NodeType::Tab => {
-            for session_id in node
-                .layout
-                .as_deref()
-                .map(session_ids_from_layout)
-                .unwrap_or_default()
-            {
-                conn.execute(
-                    "UPDATE sessions SET project_id = ?2
-                     WHERE id = ?1 AND mission_id IS NULL AND slot_id IS NULL",
-                    rusqlite::params![session_id, project_id],
-                )?;
+            if let Some(layout) = node.layout.as_deref() {
+                write_layout_project(conn, layout, project_id)?;
             }
         }
         NodeType::Mission => {
@@ -474,8 +465,26 @@ fn write_project_through(
                 "UPDATE sessions SET project_id = ?2 WHERE mission_id = ?1",
                 rusqlite::params![mission_id, project_id],
             )?;
+            if let Some(layout) = node.layout.as_deref() {
+                write_layout_project(conn, layout, project_id)?;
+            }
         }
         NodeType::Project => {}
+    }
+    Ok(())
+}
+
+pub fn write_layout_project(
+    conn: &Connection,
+    layout: &str,
+    project_id: Option<&str>,
+) -> rusqlite::Result<()> {
+    for session_id in session_ids_from_layout(layout) {
+        conn.execute(
+            "UPDATE sessions SET project_id = ?2
+             WHERE id = ?1 AND mission_id IS NULL AND slot_id IS NULL",
+            rusqlite::params![session_id, project_id],
+        )?;
     }
     Ok(())
 }
