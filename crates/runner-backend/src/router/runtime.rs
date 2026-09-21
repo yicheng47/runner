@@ -2477,13 +2477,15 @@ mod tests {
         assert_eq!(pi_project_slug(r"C:\Users\x"), "--C--Users-x--");
 
         let home = tempfile::tempdir().unwrap();
+        let cwd = home.path().join("project");
+        let cwd = cwd.to_string_lossy();
         let key = uuid::Uuid::new_v4().to_string();
         let agent_dir = home.path().join("custom-agent");
-        let sessions = agent_dir.join("sessions/--Users-jason--");
+        let sessions = agent_dir.join("sessions").join(pi_project_slug(&cwd));
         std::fs::create_dir_all(&sessions).unwrap();
         assert!(!pi_conversation_exists_at(
             Some(home.path()),
-            "/Users/jason",
+            cwd.as_ref(),
             &key,
             None,
             Some(agent_dir.as_os_str()),
@@ -2495,7 +2497,7 @@ mod tests {
         .unwrap();
         assert!(pi_conversation_exists_at(
             Some(home.path()),
-            "/Users/jason",
+            cwd.as_ref(),
             &key,
             None,
             Some(agent_dir.as_os_str()),
@@ -2505,9 +2507,11 @@ mod tests {
     #[test]
     fn pi_conversation_probe_session_dir_wins_and_holds_files_flat() {
         let home = tempfile::tempdir().unwrap();
+        let cwd = home.path().join("project");
+        let cwd = cwd.to_string_lossy();
         let key = uuid::Uuid::new_v4().to_string();
         let agent_dir = home.path().join("agent");
-        let nested = agent_dir.join("sessions/--Users-jason--");
+        let nested = agent_dir.join("sessions").join(pi_project_slug(&cwd));
         std::fs::create_dir_all(&nested).unwrap();
         std::fs::write(nested.join(format!("agent_{key}.jsonl")), "").unwrap();
         let session_dir = home.path().join("flat-sessions");
@@ -2515,7 +2519,7 @@ mod tests {
 
         assert!(!pi_conversation_exists_at(
             Some(home.path()),
-            "/Users/jason",
+            cwd.as_ref(),
             &key,
             Some(session_dir.as_os_str()),
             Some(agent_dir.as_os_str()),
@@ -2523,7 +2527,7 @@ mod tests {
         std::fs::write(session_dir.join(format!("flat_{key}.jsonl")), "").unwrap();
         assert!(pi_conversation_exists_at(
             Some(home.path()),
-            "/Users/jason",
+            cwd.as_ref(),
             &key,
             Some(session_dir.as_os_str()),
             Some(agent_dir.as_os_str()),
@@ -2533,14 +2537,19 @@ mod tests {
     #[test]
     fn pi_conversation_probe_without_env_uses_the_default_directory() {
         let home = tempfile::tempdir().unwrap();
+        let cwd = home.path().join("project");
+        let cwd = cwd.to_string_lossy();
         let key = uuid::Uuid::new_v4().to_string();
-        let sessions = home.path().join(".pi/agent/sessions/--Users-jason--");
+        let sessions = home
+            .path()
+            .join(".pi/agent/sessions")
+            .join(pi_project_slug(&cwd));
         std::fs::create_dir_all(&sessions).unwrap();
         std::fs::write(sessions.join(format!("default_{key}.jsonl")), "").unwrap();
 
         assert!(pi_conversation_exists_at(
             Some(home.path()),
-            "/Users/jason",
+            cwd.as_ref(),
             &key,
             None,
             None,
@@ -2550,8 +2559,13 @@ mod tests {
     #[test]
     fn pi_conversation_probe_does_not_fall_back_from_an_empty_configured_directory() {
         let home = tempfile::tempdir().unwrap();
+        let cwd = home.path().join("project");
+        let cwd = cwd.to_string_lossy();
         let key = uuid::Uuid::new_v4().to_string();
-        let default_sessions = home.path().join(".pi/agent/sessions/--Users-jason--");
+        let default_sessions = home
+            .path()
+            .join(".pi/agent/sessions")
+            .join(pi_project_slug(&cwd));
         std::fs::create_dir_all(&default_sessions).unwrap();
         std::fs::write(default_sessions.join(format!("default_{key}.jsonl")), "").unwrap();
         let agent_dir = home.path().join("empty-agent");
@@ -2559,7 +2573,7 @@ mod tests {
 
         assert!(!pi_conversation_exists_at(
             Some(home.path()),
-            "/Users/jason",
+            cwd.as_ref(),
             &key,
             None,
             Some(agent_dir.as_os_str()),
