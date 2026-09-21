@@ -102,13 +102,7 @@ pub fn status_list(
     let path = direct_chat_path(&shell_env);
     let home = runner_core::app_paths::home_dir();
     let result = discovery.result.as_ref();
-    let failed = result.is_some_and(|result| {
-        #[cfg(windows)]
-        if result.outcome == DiscoveryOutcome::NoShell {
-            return false;
-        }
-        result.outcome != DiscoveryOutcome::Ok
-    });
+    let failed = result.is_some_and(|result| !result.outcome.is_success());
 
     let runtimes = runtime_definitions()
         .iter()
@@ -366,7 +360,7 @@ pub fn apply_discovery_result(
     result: DiscoveryResult,
 ) -> Result<()> {
     let mut persistence_error = None;
-    let captured_at = if result.outcome == DiscoveryOutcome::Ok {
+    let captured_at = if result.outcome.is_success() {
         let captured_at = chrono::Utc::now().to_rfc3339();
         *shell_env
             .write()
@@ -389,7 +383,11 @@ pub fn apply_discovery_result(
         .write()
         .map_err(|_| Error::msg("runtime discovery lock poisoned"))?;
     state.checking = false;
-    state.seeded_shell = result.shell.clone().or_else(|| state.seeded_shell.clone());
+    state.seeded_shell = if result.outcome.is_success() {
+        result.shell.clone()
+    } else {
+        result.shell.clone().or_else(|| state.seeded_shell.clone())
+    };
     state.result = Some(result);
     if let Some(captured_at) = captured_at {
         state.last_known_good_captured_at = Some(captured_at);
@@ -543,7 +541,7 @@ mod tests {
     }
 
     #[test]
-    fn no_shell_classification_preserves_inherited_windows_environment() {
+    fn no_shell_classification_reports_failed_discovery() {
         let pool = crate::db::open_in_memory().unwrap();
         let shell_env = Arc::new(RwLock::new(LoginShellEnv::default()));
         let discovery = completed_discovery();
@@ -551,15 +549,29 @@ mod tests {
         let success = status_list(&pool, &shell_env, &discovery).unwrap();
         discovery.write().unwrap().result.as_mut().unwrap().outcome = DiscoveryOutcome::NoShell;
         let no_shell = status_list(&pool, &shell_env, &discovery).unwrap();
-        assert_eq!(no_shell.shell.using_last_known_good, !cfg!(windows));
-        for (expected, actual) in success.runtimes.iter().zip(&no_shell.runtimes) {
-            #[cfg(windows)]
-            assert_eq!(actual.state, expected.state);
-            #[cfg(not(windows))]
+        assert!(no_shell.shell.using_last_known_good);
+        for actual in &no_shell.runtimes {
             assert_eq!(actual.state, RuntimeRowState::ProbeTimedOut);
+        }
+        for (expected, actual) in success.runtimes.iter().zip(&no_shell.runtimes) {
             assert_eq!(actual.detected_path, expected.detected_path);
             assert_eq!(actual.effective_command, expected.effective_command);
         }
+    }
+
+    #[test]
+    fn windows_registry_classification_is_successful() {
+        let pool = crate::db::open_in_memory().unwrap();
+        let shell_env = Arc::new(RwLock::new(LoginShellEnv::default()));
+        let discovery = completed_discovery();
+        discovery.write().unwrap().result.as_mut().unwrap().outcome =
+            DiscoveryOutcome::WindowsRegistry;
+        let status = status_list(&pool, &shell_env, &discovery).unwrap();
+        assert!(!status.shell.using_last_known_good);
+        assert!(status
+            .runtimes
+            .iter()
+            .all(|runtime| runtime.state != RuntimeRowState::ProbeTimedOut));
     }
 
     #[cfg(windows)]
@@ -731,5 +743,52 @@ mod tests {
             discovery.read().unwrap().result.as_ref().unwrap().outcome,
             DiscoveryOutcome::Timeout
         );
+    }
+
+    #[test]
+    fn registry_refresh_replaces_stale_environment_and_persisted_snapshot() {
+        let pool = crate::db::open_in_memory().unwrap();
+        let stale = LoginShellEnv {
+            path: Some(r"C:\stale".into()),
+            vars: Default::default(),
+        };
+        db::set_login_shell_env_lkg(
+            &pool,
+            &LoginShellEnvLkg {
+                env: stale.clone(),
+                shell: String::new(),
+                captured_at: "2026-09-20T00:00:00Z".into(),
+            },
+        )
+        .unwrap();
+        let shell_env = Arc::new(RwLock::new(stale));
+        let discovery = Arc::new(RwLock::new(DiscoveryState::startup(
+            Some("/bin/stale-shell".into()),
+            Some("2026-09-20T00:00:00Z".into()),
+        )));
+        let refreshed = LoginShellEnv {
+            path: Some(r"C:\Windows\System32;C:\Users\Jason\bin".into()),
+            vars: Default::default(),
+        };
+
+        apply_discovery_result(
+            &pool,
+            &shell_env,
+            &discovery,
+            DiscoveryResult {
+                shell: None,
+                outcome: DiscoveryOutcome::WindowsRegistry,
+                duration_ms: 1,
+                env: refreshed.clone(),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(*shell_env.read().unwrap(), refreshed);
+        assert_eq!(discovery.read().unwrap().seeded_shell, None);
+        let snapshot = db::login_shell_env_lkg(&pool).unwrap().unwrap();
+        assert_eq!(snapshot.env, refreshed);
+        assert!(snapshot.shell.is_empty());
+        assert_ne!(snapshot.captured_at, "2026-09-20T00:00:00Z");
     }
 }

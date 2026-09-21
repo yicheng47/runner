@@ -18,6 +18,9 @@ use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 
+#[cfg(any(windows, test))]
+use crate::cli_install::{RegistryPathValue, RegistryValueKind};
+
 #[cfg(unix)]
 const RESOLVE_TIMEOUT: Duration = Duration::from_secs(5);
 #[cfg(unix)]
@@ -48,10 +51,18 @@ pub struct LoginShellEnv {
 #[serde(rename_all = "snake_case")]
 pub enum DiscoveryOutcome {
     Ok,
+    WindowsRegistry,
+    WindowsRegistryError,
     Timeout,
     SpawnError,
     EmptyCapture,
     NoShell,
+}
+
+impl DiscoveryOutcome {
+    pub fn is_success(self) -> bool {
+        matches!(self, Self::Ok | Self::WindowsRegistry)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -254,7 +265,20 @@ fn shell_probe_args(shell: &str) -> Option<&'static [&'static str]> {
     }
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+pub fn resolve_login_shell_env() -> DiscoveryResult {
+    use crate::cli_install::{SystemUserPathRegistry, UserPathRegistry as _};
+
+    let started = Instant::now();
+    let registry = SystemUserPathRegistry;
+    let (outcome, env) =
+        registry_discovery(registry.read_machine_path(), registry.read_path(), |name| {
+            std::env::var(name).ok()
+        });
+    finish_discovery(None, outcome, started, env)
+}
+
+#[cfg(all(not(unix), not(windows)))]
 pub fn resolve_login_shell_env() -> DiscoveryResult {
     finish_discovery(
         None,
@@ -262,6 +286,105 @@ pub fn resolve_login_shell_env() -> DiscoveryResult {
         Instant::now(),
         LoginShellEnv::default(),
     )
+}
+
+#[cfg(any(windows, test))]
+fn registry_discovery(
+    machine: crate::error::Result<Option<RegistryPathValue>>,
+    user: crate::error::Result<Option<RegistryPathValue>>,
+    environment: impl FnMut(&str) -> Option<String>,
+) -> (DiscoveryOutcome, LoginShellEnv) {
+    let machine = match machine {
+        Ok(value) => {
+            if value.is_none() {
+                log::warn!("runtime discovery: Windows machine PATH is missing from the registry");
+            }
+            Some(value)
+        }
+        Err(error) => {
+            log::warn!("runtime discovery: Windows machine PATH read failed: {error}");
+            None
+        }
+    };
+    let user = match user {
+        Ok(value) => {
+            if value.is_none() {
+                log::warn!("runtime discovery: Windows user PATH is missing from the registry");
+            }
+            Some(value)
+        }
+        Err(error) => {
+            log::warn!("runtime discovery: Windows user PATH read failed: {error}");
+            None
+        }
+    };
+    if machine.is_none() && user.is_none() {
+        return (
+            DiscoveryOutcome::WindowsRegistryError,
+            LoginShellEnv::default(),
+        );
+    }
+    (
+        DiscoveryOutcome::WindowsRegistry,
+        registry_login_shell_env(machine.flatten(), user.flatten(), environment),
+    )
+}
+
+#[cfg(any(windows, test))]
+fn registry_login_shell_env(
+    machine: Option<RegistryPathValue>,
+    user: Option<RegistryPathValue>,
+    mut environment: impl FnMut(&str) -> Option<String>,
+) -> LoginShellEnv {
+    let mut entries = Vec::<String>::new();
+    for value in [machine, user].into_iter().flatten() {
+        let value = match value.kind {
+            RegistryValueKind::String => value.value,
+            RegistryValueKind::ExpandString => {
+                expand_windows_environment(&value.value, &mut environment)
+            }
+        };
+        for entry in value.split(';').filter(|entry| !entry.is_empty()) {
+            if !entries
+                .iter()
+                .any(|existing| existing.eq_ignore_ascii_case(entry))
+            {
+                entries.push(entry.to_string());
+            }
+        }
+    }
+    LoginShellEnv {
+        path: (!entries.is_empty()).then(|| entries.join(";")),
+        vars: BTreeMap::new(),
+    }
+}
+
+#[cfg(any(windows, test))]
+fn expand_windows_environment(
+    value: &str,
+    environment: &mut impl FnMut(&str) -> Option<String>,
+) -> String {
+    let mut expanded = String::new();
+    let mut remaining = value;
+    while let Some(start) = remaining.find('%') {
+        expanded.push_str(&remaining[..start]);
+        let after_start = &remaining[start + 1..];
+        let Some(end) = after_start.find('%') else {
+            expanded.push_str(&remaining[start..]);
+            return expanded;
+        };
+        let name = &after_start[..end];
+        if let Some(replacement) = environment(name) {
+            expanded.push_str(&replacement);
+        } else {
+            expanded.push('%');
+            expanded.push_str(name);
+            expanded.push('%');
+        }
+        remaining = &after_start[end + 1..];
+    }
+    expanded.push_str(remaining);
+    expanded
 }
 
 fn finish_discovery(
@@ -367,6 +490,91 @@ mod tests {
         ] {
             assert_eq!(parse_login_shell_env(stdout), LoginShellEnv::default());
         }
+    }
+
+    #[test]
+    fn registry_discovery_expands_values_orders_machine_first_and_dedupes() {
+        let machine = RegistryPathValue {
+            value: r"%SystemRoot%\System32;C:\Tools".into(),
+            kind: RegistryValueKind::ExpandString,
+        };
+        let user = RegistryPathValue {
+            value: r"c:\tools;%Unexpanded%\bin;C:\Users\Jason\bin".into(),
+            kind: RegistryValueKind::String,
+        };
+        let (outcome, env) = registry_discovery(Ok(Some(machine)), Ok(Some(user)), |name| {
+            name.eq_ignore_ascii_case("SystemRoot")
+                .then(|| r"C:\Windows".to_string())
+        });
+        assert_eq!(outcome, DiscoveryOutcome::WindowsRegistry);
+        assert_eq!(
+            env.path.as_deref(),
+            Some(r"C:\Windows\System32;C:\Tools;%Unexpanded%\bin;C:\Users\Jason\bin")
+        );
+        assert!(env.vars.is_empty());
+    }
+
+    #[test]
+    fn absent_registry_paths_are_a_successful_empty_refresh() {
+        let (outcome, env) = registry_discovery(Ok(None), Ok(None), |_| None);
+        assert_eq!(outcome, DiscoveryOutcome::WindowsRegistry);
+        assert_eq!(env, LoginShellEnv::default());
+    }
+
+    #[test]
+    fn registry_discovery_keeps_user_path_when_machine_read_fails() {
+        let user = RegistryPathValue {
+            value: r"C:\Users\Jason\bin".into(),
+            kind: RegistryValueKind::String,
+        };
+        let (outcome, env) = registry_discovery(
+            Err(crate::error::Error::msg("machine denied")),
+            Ok(Some(user)),
+            |_| None,
+        );
+        assert_eq!(outcome, DiscoveryOutcome::WindowsRegistry);
+        assert_eq!(env.path.as_deref(), Some(r"C:\Users\Jason\bin"));
+    }
+
+    #[test]
+    fn registry_discovery_keeps_machine_path_when_user_read_fails() {
+        let machine = RegistryPathValue {
+            value: r"C:\Windows\System32".into(),
+            kind: RegistryValueKind::String,
+        };
+        let (outcome, env) = registry_discovery(
+            Ok(Some(machine)),
+            Err(crate::error::Error::msg("user denied")),
+            |_| None,
+        );
+        assert_eq!(outcome, DiscoveryOutcome::WindowsRegistry);
+        assert_eq!(env.path.as_deref(), Some(r"C:\Windows\System32"));
+    }
+
+    #[test]
+    fn registry_discovery_fails_only_when_both_reads_fail() {
+        let (outcome, env) = registry_discovery(
+            Err(crate::error::Error::msg("machine denied")),
+            Err(crate::error::Error::msg("user denied")),
+            |_| None,
+        );
+        assert_eq!(outcome, DiscoveryOutcome::WindowsRegistryError);
+        assert_eq!(env, LoginShellEnv::default());
+    }
+
+    #[test]
+    fn empty_registry_values_produce_no_path() {
+        assert_eq!(
+            registry_discovery(
+                Ok(Some(RegistryPathValue {
+                    value: ";;".into(),
+                    kind: RegistryValueKind::String,
+                })),
+                Ok(None),
+                |_| None,
+            ),
+            (DiscoveryOutcome::WindowsRegistry, LoginShellEnv::default())
+        );
     }
 
     #[cfg(unix)]

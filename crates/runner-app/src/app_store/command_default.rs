@@ -8,7 +8,6 @@ use runner_backend::cli_install::{
     self, CommandActionOutcome, CommandEscalation, CommandInstallInputs, CommandPlatform,
     NoEscalation, RunnerCommandStatus, UserPathRegistry,
 };
-use runner_backend::shell_path::DiscoveryOutcome;
 
 use super::AppStore;
 use crate::app_settings::AppSettings;
@@ -103,7 +102,7 @@ impl AppStore {
                 && !matches!(
                     discovery.result.as_ref(),
                     Some(result)
-                        if result.outcome == DiscoveryOutcome::Ok && result.env.path.is_some()
+                        if result.outcome.is_success() && result.env.path.is_some()
                 )
             {
                 return None;
@@ -278,6 +277,7 @@ mod tests {
     #[cfg(unix)]
     use gpui::{AppContext as _, TestAppContext};
     use runner_backend::cli_install::{EscalationOutcome, RegistryPathValue, RegistryValueKind};
+    use runner_backend::shell_path::DiscoveryOutcome;
     use runner_backend::{
         db, event_bus, events, mcp, router, session, shell_path, windows, AppCore,
     };
@@ -319,6 +319,10 @@ mod tests {
     impl UserPathRegistry for FakeRegistry {
         fn read_path(&self) -> runner_backend::error::Result<Option<RegistryPathValue>> {
             Ok(self.value.clone())
+        }
+
+        fn read_machine_path(&self) -> runner_backend::error::Result<Option<RegistryPathValue>> {
+            Ok(None)
         }
 
         fn write_path(&mut self, value: &RegistryPathValue) -> runner_backend::error::Result<()> {

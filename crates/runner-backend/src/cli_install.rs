@@ -286,6 +286,7 @@ pub struct RegistryPathValue {
 
 pub trait UserPathRegistry {
     fn read_path(&self) -> Result<Option<RegistryPathValue>>;
+    fn read_machine_path(&self) -> Result<Option<RegistryPathValue>>;
     fn write_path(&mut self, value: &RegistryPathValue) -> Result<()>;
     fn broadcast_environment_change(&mut self) -> Result<()>;
 }
@@ -294,6 +295,10 @@ pub struct NoUserPathRegistry;
 
 impl UserPathRegistry for NoUserPathRegistry {
     fn read_path(&self) -> Result<Option<RegistryPathValue>> {
+        Ok(None)
+    }
+
+    fn read_machine_path(&self) -> Result<Option<RegistryPathValue>> {
         Ok(None)
     }
 
@@ -702,6 +707,10 @@ impl UserPathRegistry for SystemUserPathRegistry {
         windows_registry::read_user_path()
     }
 
+    fn read_machine_path(&self) -> Result<Option<RegistryPathValue>> {
+        windows_registry::read_machine_path()
+    }
+
     fn write_path(&mut self, value: &RegistryPathValue) -> Result<()> {
         windows_registry::write_user_path(value)
     }
@@ -717,14 +726,28 @@ mod windows_registry {
     use windows_sys::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_SUCCESS};
     use windows_sys::Win32::System::Registry::{
         RegCloseKey, RegOpenKeyExW, RegQueryValueExW, RegSetValueExW, HKEY, HKEY_CURRENT_USER,
-        KEY_QUERY_VALUE, KEY_SET_VALUE, REG_EXPAND_SZ, REG_SZ,
+        HKEY_LOCAL_MACHINE, KEY_QUERY_VALUE, KEY_SET_VALUE, REG_EXPAND_SZ, REG_SZ,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         SendMessageTimeoutW, HWND_BROADCAST, SMTO_ABORTIFHUNG, WM_SETTINGCHANGE,
     };
 
     pub(super) fn read_user_path() -> Result<Option<RegistryPathValue>> {
-        let key = open_environment(KEY_QUERY_VALUE)?;
+        read_path(HKEY_CURRENT_USER, "Environment", "HKCU\\Environment")
+    }
+
+    pub(super) fn read_machine_path() -> Result<Option<RegistryPathValue>> {
+        read_path(
+            HKEY_LOCAL_MACHINE,
+            r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment",
+            r"HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment",
+        )
+    }
+
+    fn read_path(root: HKEY, subkey: &str, location: &str) -> Result<Option<RegistryPathValue>> {
+        let Some(key) = open_environment(root, subkey, location, KEY_QUERY_VALUE)? else {
+            return Ok(None);
+        };
         let name = wide("Path");
         let mut kind = 0;
         let mut bytes = 0;
@@ -743,7 +766,7 @@ mod windows_registry {
             return Ok(None);
         }
         if status != ERROR_SUCCESS {
-            let result = check(status, "read HKCU\\Environment Path size");
+            let result = check(status, &format!("read {location} Path size"));
             unsafe { RegCloseKey(key) };
             result?;
         }
@@ -759,14 +782,18 @@ mod windows_registry {
             )
         };
         unsafe { RegCloseKey(key) };
-        check(status, "read HKCU\\Environment Path")?;
+        check(status, &format!("read {location} Path"))?;
         while data.last() == Some(&0) {
             data.pop();
         }
         let kind = match kind {
             REG_SZ => RegistryValueKind::String,
             REG_EXPAND_SZ => RegistryValueKind::ExpandString,
-            other => return Err(Error::msg(format!("unsupported user Path type {other}"))),
+            other => {
+                return Err(Error::msg(format!(
+                    "unsupported {location} Path type {other}"
+                )))
+            }
         };
         Ok(Some(RegistryPathValue {
             value: String::from_utf16_lossy(&data),
@@ -775,7 +802,13 @@ mod windows_registry {
     }
 
     pub(super) fn write_user_path(value: &RegistryPathValue) -> Result<()> {
-        let key = open_environment(KEY_SET_VALUE)?;
+        let key = open_environment(
+            HKEY_CURRENT_USER,
+            "Environment",
+            "HKCU\\Environment",
+            KEY_SET_VALUE,
+        )?
+        .ok_or_else(|| Error::msg("open HKCU\\Environment failed: key not found"))?;
         let name = wide("Path");
         let data = wide(&value.value);
         let kind = match value.kind {
@@ -816,13 +849,20 @@ mod windows_registry {
         Ok(())
     }
 
-    fn open_environment(access: u32) -> Result<HKEY> {
-        let subkey = wide("Environment");
+    fn open_environment(
+        root: HKEY,
+        subkey: &str,
+        location: &str,
+        access: u32,
+    ) -> Result<Option<HKEY>> {
+        let subkey = wide(subkey);
         let mut key = std::ptr::null_mut();
-        let status =
-            unsafe { RegOpenKeyExW(HKEY_CURRENT_USER, subkey.as_ptr(), 0, access, &mut key) };
-        check(status, "open HKCU\\Environment")?;
-        Ok(key)
+        let status = unsafe { RegOpenKeyExW(root, subkey.as_ptr(), 0, access, &mut key) };
+        if status == ERROR_FILE_NOT_FOUND {
+            return Ok(None);
+        }
+        check(status, &format!("open {location}"))?;
+        Ok(Some(key))
     }
 
     fn wide(value: &str) -> Vec<u16> {
@@ -847,6 +887,7 @@ mod tests {
     #[derive(Default)]
     struct FakeRegistry {
         value: Option<RegistryPathValue>,
+        machine_value: Option<RegistryPathValue>,
         writes: Vec<RegistryPathValue>,
         broadcasts: usize,
     }
@@ -854,6 +895,10 @@ mod tests {
     impl UserPathRegistry for FakeRegistry {
         fn read_path(&self) -> Result<Option<RegistryPathValue>> {
             Ok(self.value.clone())
+        }
+
+        fn read_machine_path(&self) -> Result<Option<RegistryPathValue>> {
+            Ok(self.machine_value.clone())
         }
 
         fn write_path(&mut self, value: &RegistryPathValue) -> Result<()> {

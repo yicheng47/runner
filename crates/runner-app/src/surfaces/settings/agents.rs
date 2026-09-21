@@ -991,10 +991,10 @@ fn runtime_presentation(
                 runtime.display_name
             )),
             RuntimeRowState::ProbeTimedOut => {
-                let failure = if probe_outcome == Some(DiscoveryOutcome::Timeout) {
-                    "Login shell timed out"
-                } else {
-                    "Shell detection failed"
+                let failure = match probe_outcome {
+                    Some(DiscoveryOutcome::Timeout) => "Login shell timed out",
+                    Some(DiscoveryOutcome::WindowsRegistryError) => "Windows PATH refresh failed",
+                    _ => "Shell detection failed",
                 };
                 Some(runtime.detected_path.as_ref().map_or_else(
                     || format!("{failure}. Refresh or set an explicit executable path."),
@@ -1071,6 +1071,14 @@ fn shell_description(shell: Option<&ShellDiscoveryStatus>) -> String {
         .map(|duration| format!(" in {:.1} s", duration as f64 / 1_000.))
         .unwrap_or_default();
     if shell.checking {
+        #[cfg(windows)]
+        if selected.is_none() {
+            return if shell.using_last_known_good {
+                "Refreshing Windows PATH; agents keep using the last saved environment.".into()
+            } else {
+                "Checking the Windows registry for PATH…".into()
+            };
+        }
         let Some(selected) = selected else {
             return "Checking login shell for PATH and proxy settings…".into();
         };
@@ -1085,6 +1093,13 @@ fn shell_description(shell: Option<&ShellDiscoveryStatus>) -> String {
             "PATH captured from your login shell ({}){duration}. Spawned agents inherit it.",
             selected.unwrap_or("")
         ),
+        Some(DiscoveryOutcome::WindowsRegistry) => format!(
+            "PATH refreshed from the Windows registry{duration}. Spawned agents inherit it."
+        ),
+        Some(DiscoveryOutcome::WindowsRegistryError) => {
+            "Could not read Windows PATH from the registry; refresh or set an override below."
+                .into()
+        }
         Some(DiscoveryOutcome::Timeout) => format!(
             "{} did not respond{duration}; agents keep using the last saved environment.",
             selected.unwrap_or("")
@@ -1097,11 +1112,6 @@ fn shell_description(shell: Option<&ShellDiscoveryStatus>) -> String {
             "{} returned no usable environment; refresh or set an override below.",
             selected.unwrap_or("")
         ),
-        #[cfg(windows)]
-        Some(DiscoveryOutcome::NoShell) => {
-            "Inherited environment. Spawned agents use your Windows PATH and proxy settings.".into()
-        }
-        #[cfg(not(windows))]
         Some(DiscoveryOutcome::NoShell) => {
             "No supported login shell was configured; set an executable override below.".into()
         }
@@ -1118,7 +1128,7 @@ mod tests {
     use runner_backend::runtime_status::ShellDiscoveryStatus;
 
     #[test]
-    fn no_shell_description_matches_the_platform_environment() {
+    fn no_shell_description_reports_missing_login_shell() {
         let shell = ShellDiscoveryStatus {
             shell: None,
             outcome: Some(DiscoveryOutcome::NoShell),
@@ -1127,12 +1137,42 @@ mod tests {
             using_last_known_good: false,
             last_known_good_captured_at: None,
         };
-        let expected = if cfg!(windows) {
-            "Inherited environment. Spawned agents use your Windows PATH and proxy settings."
-        } else {
+        assert_eq!(
+            shell_description(Some(&shell)),
             "No supported login shell was configured; set an executable override below."
+        );
+    }
+
+    #[test]
+    fn windows_registry_description_does_not_claim_a_shell_probe() {
+        let shell = ShellDiscoveryStatus {
+            shell: None,
+            outcome: Some(DiscoveryOutcome::WindowsRegistry),
+            duration_ms: Some(25),
+            checking: false,
+            using_last_known_good: false,
+            last_known_good_captured_at: None,
         };
-        assert_eq!(shell_description(Some(&shell)), expected);
+        assert_eq!(
+            shell_description(Some(&shell)),
+            "PATH refreshed from the Windows registry in 0.0 s. Spawned agents inherit it."
+        );
+    }
+
+    #[test]
+    fn windows_registry_error_description_does_not_claim_a_shell_failure() {
+        let shell = ShellDiscoveryStatus {
+            shell: None,
+            outcome: Some(DiscoveryOutcome::WindowsRegistryError),
+            duration_ms: Some(25),
+            checking: false,
+            using_last_known_good: true,
+            last_known_good_captured_at: Some("saved".into()),
+        };
+        assert_eq!(
+            shell_description(Some(&shell)),
+            "Could not read Windows PATH from the registry; refresh or set an override below."
+        );
     }
 
     fn runtime(state: RuntimeRowState) -> RuntimeExecutableStatus {
@@ -1194,6 +1234,17 @@ mod tests {
             )
             .badge,
             "Invalid"
+        );
+        assert_eq!(
+            runtime_presentation(
+                &runtime(RuntimeRowState::ProbeTimedOut),
+                Some(DiscoveryOutcome::WindowsRegistryError),
+                None,
+                false,
+            )
+            .caption
+            .as_deref(),
+            Some("Windows PATH refresh failed. Refresh or set an explicit executable path.")
         );
     }
 
