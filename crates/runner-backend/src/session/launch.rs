@@ -561,6 +561,37 @@ mod tests {
         assert_eq!(local_count, 1, "local bin should appear once: {path}");
     }
 
+    #[test]
+    fn compose_path_keeps_refreshed_entries_before_deduped_process_path() {
+        let refreshed = std::env::join_paths(["/machine", "/shared", "/user"]).unwrap();
+        let process = std::env::join_paths(["/machine", "/shared", "/launch"]).unwrap();
+        let path = compose_path(None, None, refreshed.to_str(), None, process.to_str());
+        let parts = std::env::split_paths(&path).collect::<Vec<_>>();
+        for entry in ["/machine", "/shared"] {
+            assert_eq!(
+                parts
+                    .iter()
+                    .filter(|part| part.as_path() == Path::new(entry))
+                    .count(),
+                1,
+                "{entry} should appear once: {path}"
+            );
+        }
+        let machine = parts
+            .iter()
+            .position(|part| part.as_path() == Path::new("/machine"))
+            .unwrap();
+        let user = parts
+            .iter()
+            .position(|part| part.as_path() == Path::new("/user"))
+            .unwrap();
+        let launch = parts
+            .iter()
+            .position(|part| part.as_path() == Path::new("/launch"))
+            .unwrap();
+        assert!(machine < user && user < launch, "path = {path}");
+    }
+
     #[cfg(unix)]
     #[test]
     fn compose_path_keeps_literal_colons_as_unix_path_separators() {

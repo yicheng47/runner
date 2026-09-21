@@ -119,7 +119,8 @@ pub fn boot_core(
     let runtime_discovery = Arc::new(RwLock::new(shell_path::DiscoveryState::startup(
         login_shell_lkg
             .as_ref()
-            .map(|snapshot| snapshot.shell.clone()),
+            .map(|snapshot| snapshot.shell.clone())
+            .filter(|shell| !shell.is_empty()),
         login_shell_lkg
             .as_ref()
             .map(|snapshot| snapshot.captured_at.clone()),
