@@ -935,11 +935,15 @@ pub(crate) fn resolve_direct_start(
     role_id: &str,
     project_id: Option<&str>,
     cwd: Option<String>,
-) -> Result<(Role, Option<String>)> {
-    let cwd = project::resolve_cwd(conn, project_id, cwd)?;
+) -> Result<(Role, Option<String>, Option<String>)> {
     let role = role::get(conn, role_id)?;
-    let effective_cwd = cwd.or_else(|| role.working_dir.clone());
-    Ok((role, effective_cwd))
+    let cwd = if project_id.is_none() {
+        cwd.or_else(|| role.working_dir.clone())
+    } else {
+        cwd
+    };
+    let (project_id, cwd) = project::resolve_cwd(conn, project_id, cwd)?;
+    Ok((role, project_id, cwd))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -954,7 +958,7 @@ pub fn session_start_direct_impl(
     cols: Option<u16>,
     rows: Option<u16>,
 ) -> Result<StartDirectSessionOutput> {
-    let (role, effective_cwd) = {
+    let (role, project_id, effective_cwd) = {
         let conn = state.db.get()?;
         resolve_direct_start(&conn, &role_id, project_id.as_deref(), cwd)?
     };
@@ -1013,7 +1017,11 @@ pub fn session_start_runtime(
     rows: Option<u16>,
     model: Option<String>,
     effort: Option<String>,
-) -> Result<SpawnedSession> {
+) -> Result<StartDirectSessionOutput> {
+    let (project_id, cwd) = {
+        let conn = state.db.get()?;
+        project::resolve_cwd(&conn, project_id.as_deref(), cwd)?
+    };
     let role = runtime_direct_role(runtime, None, model.as_deref(), effort.as_deref())?;
     let emitter: Arc<dyn SessionEvents> = Arc::new(state.session_events());
     let spawned = state
@@ -1033,7 +1041,11 @@ pub fn session_start_runtime(
         "session/updated",
         &serde_json::json!({ "session_id": spawned.id }),
     );
-    Ok(spawned)
+    Ok(StartDirectSessionOutput {
+        session: spawned,
+        project_id,
+        cwd,
+    })
 }
 
 fn resolve_shell_command(shell: Option<String>) -> String {
@@ -1071,7 +1083,7 @@ pub fn session_start_shell(
     cols: Option<u16>,
     rows: Option<u16>,
 ) -> Result<SpawnedSession> {
-    let cwd = {
+    let (project_id, cwd) = {
         let conn = state.db.get()?;
         project::resolve_cwd(&conn, project_id.as_deref(), cwd)?
     };
@@ -1351,9 +1363,11 @@ mod tests {
         let role_id = seed_role(&conn);
         let project = repo::project::create(&conn, "Runner", "/project").unwrap();
 
-        let (role, cwd) = resolve_direct_start(&conn, &role_id, Some(&project.id), None).unwrap();
+        let (role, project_id, cwd) =
+            resolve_direct_start(&conn, &role_id, Some(&project.id), None).unwrap();
 
         assert_eq!(role.id, role_id);
+        assert_eq!(project_id.as_deref(), Some(project.id.as_str()));
         assert_eq!(cwd.as_deref(), Some("/project"));
     }
 
@@ -1364,11 +1378,31 @@ mod tests {
         let role_id = seed_role(&conn);
         let project = repo::project::create(&conn, "Runner", "/project").unwrap();
 
-        let (_, cwd) =
+        let (_, project_id, cwd) =
             resolve_direct_start(&conn, &role_id, Some(&project.id), Some("/override".into()))
                 .unwrap();
 
+        assert_eq!(project_id.as_deref(), Some(project.id.as_str()));
         assert_eq!(cwd.as_deref(), Some("/override"));
+    }
+
+    #[test]
+    fn resolve_direct_start_explicit_project_beats_role_working_dir() {
+        let pool = db::open_in_memory().unwrap();
+        let conn = pool.get().unwrap();
+        let role_id = seed_role(&conn);
+        conn.execute(
+            "UPDATE roles SET working_dir = '/role' WHERE id = ?1",
+            [&role_id],
+        )
+        .unwrap();
+        let project = repo::project::create(&conn, "Runner", "/project").unwrap();
+
+        let (_, project_id, cwd) =
+            resolve_direct_start(&conn, &role_id, Some(&project.id), None).unwrap();
+
+        assert_eq!(project_id.as_deref(), Some(project.id.as_str()));
+        assert_eq!(cwd.as_deref(), Some("/project"));
     }
 
     #[test]

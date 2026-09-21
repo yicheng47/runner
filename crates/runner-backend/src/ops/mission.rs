@@ -193,7 +193,8 @@ pub fn start(
     if let Some(g) = input.goal_override.as_deref() {
         validate_mission_goal(g)?;
     }
-    input.cwd = project::resolve_cwd(conn, input.project_id.as_deref(), input.cwd)?;
+    (input.project_id, input.cwd) =
+        project::resolve_cwd(conn, input.project_id.as_deref(), input.cwd)?;
 
     // Validate crew exists and is launchable.
     let crew = crew::get(conn, &input.crew_id)?;
@@ -2277,6 +2278,46 @@ mod tests {
             !stale_sidecar.exists(),
             "mission_start must not write the legacy signal_types.json sidecar"
         );
+    }
+
+    #[test]
+    fn start_infers_project_from_cwd_for_the_row_and_sidebar_node() {
+        let pool = pool();
+        let mut conn = pool.get().unwrap();
+        let crew_id = seed_crew(&conn, "Alpha", None);
+        add_role(&mut conn, &crew_id, "lead");
+        let tmp = tempfile::tempdir().unwrap();
+        let project_cwd = tmp.path().join("runner");
+        let cwd = project_cwd.join(".worktrees/feat-680");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let project =
+            repo::project::create(&conn, "Runner", project_cwd.to_string_lossy().as_ref()).unwrap();
+
+        let out = start(
+            &mut conn,
+            tmp.path(),
+            StartMissionInput {
+                project_id: None,
+                crew_id,
+                title: "inferred project".into(),
+                goal_override: None,
+                cwd: Some(cwd.to_string_lossy().into_owned()),
+            },
+            MissionPermissionMode::Bypass,
+        )
+        .unwrap();
+
+        let stored = repo::mission::get(&conn, &out.mission.id).unwrap().unwrap();
+        assert_eq!(stored.project_id.as_deref(), Some(project.id.as_str()));
+        let project_node =
+            repo::node::find_by_ref(&conn, repo::node::NodeType::Project, &project.id)
+                .unwrap()
+                .unwrap();
+        let mission_node =
+            repo::node::find_by_ref(&conn, repo::node::NodeType::Mission, &out.mission.id)
+                .unwrap()
+                .unwrap();
+        assert_eq!(mission_node.parent_id, Some(project_node.id));
     }
 
     #[test]

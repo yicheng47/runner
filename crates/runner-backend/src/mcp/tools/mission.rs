@@ -442,7 +442,7 @@ impl RunnerMcpHandler {
     }
 
     #[tool(
-        description = "Start a mission for a crew. A project's cwd is used unless cwd is explicitly provided."
+        description = "Start a mission for a crew. A project's cwd is used unless cwd is explicitly provided; without project_id, a cwd inside a project infers membership."
     )]
     pub async fn mission_start(
         &self,

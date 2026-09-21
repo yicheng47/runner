@@ -67,12 +67,18 @@ pub(crate) fn resolve_cwd(
     conn: &rusqlite::Connection,
     project_id: Option<&str>,
     cwd: Option<String>,
-) -> Result<Option<String>> {
-    let Some(project_id) = project_id else {
-        return Ok(cwd);
-    };
-    let project = get(conn, project_id)?;
-    Ok(cwd.or(Some(project.cwd)))
+) -> Result<(Option<String>, Option<String>)> {
+    if let Some(project_id) = project_id {
+        let project = get(conn, project_id)?;
+        return Ok((Some(project.id), cwd.or(Some(project.cwd))));
+    }
+    let project_id = cwd
+        .as_deref()
+        .map(|cwd| repo::project::find_for_path(conn, cwd))
+        .transpose()?
+        .flatten()
+        .map(|project| project.id);
+    Ok((project_id, cwd))
 }
 
 pub fn project_list(state: &AppCore) -> Result<Vec<ProjectRow>> {
@@ -188,6 +194,12 @@ mod tests {
     use super::{clean_value, resolve_cwd};
     use crate::{db, repo};
 
+    fn create_dir(root: &std::path::Path, relative: &str) -> String {
+        let path = root.join(relative);
+        std::fs::create_dir_all(&path).unwrap();
+        path.to_string_lossy().into_owned()
+    }
+
     #[test]
     fn clean_value_trims_and_rejects_blank() {
         assert_eq!(clean_value("  Runner  ".into(), "name").unwrap(), "Runner");
@@ -195,18 +207,146 @@ mod tests {
     }
 
     #[test]
-    fn resolve_cwd_defaults_from_project_and_preserves_override() {
+    fn resolve_cwd_defaults_from_project() {
         let pool = db::open_in_memory().unwrap();
         let conn = pool.get().unwrap();
         let project = repo::project::create(&conn, "Runner", "/project").unwrap();
 
         assert_eq!(
             resolve_cwd(&conn, Some(&project.id), None).unwrap(),
-            Some("/project".into())
+            (Some(project.id), Some("/project".into()))
+        );
+    }
+
+    #[test]
+    fn resolve_cwd_infers_an_exact_project_path() {
+        let pool = db::open_in_memory().unwrap();
+        let conn = pool.get().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let cwd = create_dir(temp.path(), "runner");
+        let project = repo::project::create(&conn, "Runner", &cwd).unwrap();
+
+        assert_eq!(
+            resolve_cwd(&conn, None, Some(cwd.clone())).unwrap(),
+            (Some(project.id), Some(cwd))
+        );
+    }
+
+    #[test]
+    fn resolve_cwd_infers_a_project_from_a_deep_descendant() {
+        let pool = db::open_in_memory().unwrap();
+        let conn = pool.get().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let project_cwd = create_dir(temp.path(), "runner");
+        let cwd = create_dir(temp.path(), "runner/.worktrees/feat-680/src");
+        let project = repo::project::create(&conn, "Runner", &project_cwd).unwrap();
+
+        assert_eq!(
+            resolve_cwd(&conn, None, Some(cwd.clone())).unwrap(),
+            (Some(project.id), Some(cwd))
+        );
+    }
+
+    #[test]
+    fn resolve_cwd_picks_the_longest_project_ancestor() {
+        let pool = db::open_in_memory().unwrap();
+        let conn = pool.get().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let parent_cwd = create_dir(temp.path(), "yicheng47");
+        let project_cwd = create_dir(temp.path(), "yicheng47/runner");
+        let cwd = create_dir(temp.path(), "yicheng47/runner/.worktrees/feat-680");
+        repo::project::create(&conn, "All repos", &parent_cwd).unwrap();
+        let runner = repo::project::create(&conn, "Runner", &project_cwd).unwrap();
+
+        assert_eq!(
+            resolve_cwd(&conn, None, Some(cwd.clone())).unwrap(),
+            (Some(runner.id), Some(cwd))
+        );
+    }
+
+    #[test]
+    fn resolve_cwd_does_not_match_a_string_prefix_sibling() {
+        let pool = db::open_in_memory().unwrap();
+        let conn = pool.get().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let project_cwd = create_dir(temp.path(), "yicheng47/runner");
+        let cwd = create_dir(temp.path(), "yicheng47/runner-wt");
+        repo::project::create(&conn, "Runner", &project_cwd).unwrap();
+
+        assert_eq!(
+            resolve_cwd(&conn, None, Some(cwd.clone())).unwrap(),
+            (None, Some(cwd))
+        );
+    }
+
+    #[test]
+    fn resolve_cwd_lexical_fallback_uses_path_components() {
+        let pool = db::open_in_memory().unwrap();
+        let conn = pool.get().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let project_cwd = temp.path().join("missing/runner");
+        let descendant = project_cwd.join(".worktrees/feat-680");
+        let sibling = temp.path().join("missing/runner-wt");
+        let project =
+            repo::project::create(&conn, "Runner", project_cwd.to_string_lossy().as_ref()).unwrap();
+
+        assert_eq!(
+            resolve_cwd(&conn, None, Some(descendant.to_string_lossy().into_owned()))
+                .unwrap()
+                .0,
+            Some(project.id)
         );
         assert_eq!(
-            resolve_cwd(&conn, Some(&project.id), Some("/override".into())).unwrap(),
-            Some("/override".into())
+            resolve_cwd(&conn, None, Some(sibling.to_string_lossy().into_owned()))
+                .unwrap()
+                .0,
+            None
+        );
+    }
+
+    #[test]
+    fn resolve_cwd_leaves_an_unbound_path_unfiled() {
+        let pool = db::open_in_memory().unwrap();
+        let conn = pool.get().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let cwd = create_dir(temp.path(), "unbound");
+
+        assert_eq!(
+            resolve_cwd(&conn, None, Some(cwd.clone())).unwrap(),
+            (None, Some(cwd))
+        );
+        assert_eq!(resolve_cwd(&conn, None, None).unwrap(), (None, None));
+    }
+
+    #[test]
+    fn resolve_cwd_explicit_project_beats_an_inferable_cwd() {
+        let pool = db::open_in_memory().unwrap();
+        let conn = pool.get().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let explicit_cwd = create_dir(temp.path(), "explicit");
+        let inferred_cwd = create_dir(temp.path(), "inferred");
+        let cwd = create_dir(temp.path(), "inferred/worktree");
+        let explicit = repo::project::create(&conn, "Explicit", &explicit_cwd).unwrap();
+        repo::project::create(&conn, "Inferred", &inferred_cwd).unwrap();
+
+        assert_eq!(
+            resolve_cwd(&conn, Some(&explicit.id), Some(cwd.clone())).unwrap(),
+            (Some(explicit.id), Some(cwd))
+        );
+    }
+
+    #[test]
+    fn resolve_cwd_explicit_cwd_beats_the_projects_bound_cwd() {
+        let pool = db::open_in_memory().unwrap();
+        let conn = pool.get().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let project_cwd = create_dir(temp.path(), "project");
+        let cwd = create_dir(temp.path(), "override");
+        let project = repo::project::create(&conn, "Runner", &project_cwd).unwrap();
+
+        assert_eq!(
+            resolve_cwd(&conn, Some(&project.id), Some(cwd.clone())).unwrap(),
+            (Some(project.id), Some(cwd))
         );
     }
 
