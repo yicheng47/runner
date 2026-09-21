@@ -40,12 +40,16 @@ Jason ran the checklist against `make run` on the PR branch and it passed. Windo
 
 The first nightly carrying mission 4, `a61af39`, installed over `5b6030a` on Jason's Mac: the first launch linked `~/.local/bin/runner` to the production sidecar with no click, `runner status` from a plain shell reported the command as installed and all three skill roots as managed, and `~/.trae/skills/runner` was installed by detection alone with TRAE still switched off in Settings → Agents. The three remaining gate legs of [`648-skill-smoke.md`](./648-skill-smoke.md) then ran against that bare `runner` on PATH.
 
-## JASONPC checklist for mission 5
+## JASONPC checklist (run 2026-09-21)
+
+Jason ran this on JASONPC against a 0.11.0 install and reported it passing. Per-item results were not captured at the time, so this records that the session happened and its verdict, not the evidence for each line; treat a future regression here as unmeasured rather than contradicted.
 
 - From a fresh release install, confirm the sidecar directory appears exactly once in the current user's `Path` and retains the registry value's original type.
 - Open a new PowerShell window and confirm `runner status` finds the release command.
 - Uninstall from Settings and confirm only Runner's sidecar-directory entry is removed and a new PowerShell window no longer finds `runner`.
 
+pi's phase 3 checklist ran in the same session with the same caveat. The Windows-specific gap that outlived it is [#672](https://github.com/yicheng47/runner/issues/672): Refresh in Settings → Agents does not rediscover a CLI installed since launch, because discovery reads the process `PATH` and Windows has no login-shell probe to re-run.
+
 ## Still unproven by automation
 
-Automation does not prove the native macOS administrator sheet, Finder-launched login-shell timing, Windows registry APIs or `WM_SETTINGCHANGE` delivery, propagation into a newly opened terminal, final packaged sidecar locations, or palette dispatch from a live non-Settings route. The checklist above owns the macOS and palette-dispatch proof; mission 5 on JASONPC owns the Windows proof.
+Automation does not prove the native macOS administrator sheet, Finder-launched login-shell timing, Windows registry APIs or `WM_SETTINGCHANGE` delivery, propagation into a newly opened terminal, final packaged sidecar locations, or palette dispatch from a live non-Settings route. The checklist above owns the macOS and palette-dispatch proof; the JASONPC session of 2026-09-21 owns the Windows proof, to the extent recorded there.
