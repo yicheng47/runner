@@ -4,13 +4,13 @@ use super::*;
 const MAX_OUTPUT_BURST: usize = 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum LocalInputClass {
+pub(crate) enum LocalInputClass {
     SetPending,
     ClearPending,
     ActivityOnly,
 }
 
-pub(super) fn classify_local_input(bytes: &[u8]) -> Option<LocalInputClass> {
+pub(crate) fn classify_local_input(bytes: &[u8]) -> Option<LocalInputClass> {
     if bytes.is_empty() {
         return None;
     }
@@ -317,19 +317,10 @@ impl SessionManager {
             let Some(pending) = handle.pending_first_turn.as_mut() else {
                 return false;
             };
-            pending.output_tail.extend_from_slice(bytes);
-            let signals = [b"\x1b[?2004h".as_slice(), b"\x1b[?1049h", b"\x1b[?47h"];
-            let seen = signals.map(|signal| {
-                pending
-                    .output_tail
-                    .windows(signal.len())
-                    .any(|window| window == signal)
-            });
+            let seen = pending.readiness.observe(bytes);
             let ready = seen.into_iter().any(|seen| seen);
             let timed_out = Instant::now() >= pending.deadline;
             if !ready && !timed_out {
-                let keep_from = pending.output_tail.len().saturating_sub(7);
-                pending.output_tail.drain(..keep_from);
                 return true;
             }
             (

@@ -374,6 +374,10 @@ impl SessionRuntime for PtyRuntime {
         let child_slot: Arc<Mutex<Option<Box<dyn Child + Send + Sync>>>> =
             Arc::new(Mutex::new(Some(child)));
 
+        let mut idle_detector = IdleDetector::new(DEFAULT_IDLE_THRESHOLD, spec.codex_pending_turn);
+        if hook_status.is_none() {
+            idle_detector.hooks_unavailable();
+        }
         let handle = Arc::new(SessionHandle {
             #[cfg(unix)]
             master: Mutex::new(pair.master),
@@ -386,7 +390,7 @@ impl SessionRuntime for PtyRuntime {
             exit_code: AtomicI32::new(EXIT_UNSET),
             alive: AtomicBool::new(true),
             last_resize: Mutex::new(None),
-            idle_detector: Arc::new(Mutex::new(IdleDetector::new(DEFAULT_IDLE_THRESHOLD))),
+            idle_detector: Arc::new(Mutex::new(idle_detector)),
             hook_interrupt: hook_status
                 .as_ref()
                 .and_then(HookStatusWatcher::interrupt_signal),
@@ -808,11 +812,32 @@ struct IdleDetector {
     last_byte: Instant,
     current: SessionActivityState,
     threshold: Duration,
+    codex_startup: Option<CodexStartup>,
+    input_transition: bool,
+}
+
+struct CodexStartup {
+    pending_turn: bool,
+    input_pending: bool,
+    submitted_input: bool,
+    hooks_available: bool,
+    ready: bool,
+    readiness: super::runtime::TuiReadiness,
 }
 
 impl IdleDetector {
-    fn new(threshold: Duration) -> Self {
-        Self::new_at(threshold, Instant::now())
+    fn new(threshold: Duration, codex_pending_turn: Option<bool>) -> Self {
+        let mut detector = Self::new_at(threshold, Instant::now());
+        detector.codex_startup = codex_pending_turn.map(|pending_turn| CodexStartup {
+            pending_turn,
+            input_pending: false,
+            submitted_input: false,
+            hooks_available: true,
+            ready: false,
+            readiness: Default::default(),
+        });
+        detector.input_transition = codex_pending_turn == Some(true);
+        detector
     }
 
     fn new_at(threshold: Duration, now: Instant) -> Self {
@@ -820,11 +845,83 @@ impl IdleDetector {
             last_byte: now,
             current: SessionActivityState::Busy,
             threshold,
+            codex_startup: None,
+            input_transition: false,
         }
     }
 
-    fn on_bytes(&mut self, n: usize) -> Option<SessionActivityState> {
-        self.on_bytes_at(n, Instant::now())
+    fn on_output(&mut self, bytes: &[u8], in_resize_grace: bool) -> Option<SessionActivityState> {
+        if let Some(startup) = self.codex_startup.as_mut() {
+            startup.ready |= startup.readiness.observe(bytes)[0];
+            if !startup.submitted_input && (startup.pending_turn || startup.ready) {
+                self.last_byte = Instant::now();
+                return self.tick();
+            }
+        }
+        if in_resize_grace {
+            self.on_bytes_quiet_at(bytes.len(), Instant::now());
+            None
+        } else {
+            self.on_bytes_at(bytes.len(), Instant::now())
+        }
+    }
+
+    fn on_input(&mut self, bytes: &[u8]) {
+        if let Some(startup) = self.codex_startup.as_mut() {
+            if bytes == b"\r" {
+                // A local submission can be a native command, not a model turn.
+                if startup.input_pending && !startup.pending_turn {
+                    startup.submitted_input = true;
+                    self.current = SessionActivityState::Busy;
+                    self.last_byte = Instant::now();
+                }
+                startup.input_pending = false;
+                self.input_transition = true;
+                if (startup.pending_turn || startup.submitted_input) && !startup.hooks_available {
+                    self.codex_startup = None;
+                    self.current = SessionActivityState::Busy;
+                    self.last_byte = Instant::now();
+                }
+            } else {
+                use super::manager::{classify_local_input, LocalInputClass};
+                let input = if matches!(bytes, b"\x1b[A" | b"\x1b[B" | b"\x1bOA" | b"\x1bOB") {
+                    Some(LocalInputClass::SetPending)
+                } else {
+                    classify_local_input(bytes)
+                };
+                match input {
+                    Some(LocalInputClass::SetPending) => startup.input_pending = true,
+                    Some(LocalInputClass::ClearPending) => startup.input_pending = false,
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    fn hooks_unavailable(&mut self) {
+        if let Some(startup) = self.codex_startup.as_mut() {
+            startup.hooks_available = false;
+            if startup.pending_turn || startup.submitted_input {
+                self.codex_startup = None;
+            }
+        }
+    }
+
+    fn accept_hook(&mut self, observation: &super::status::AgentObservation) -> bool {
+        // SessionStart can arrive during the first turn. It cannot cancel an
+        // argv/paste prompt already queued for execution.
+        if self
+            .codex_startup
+            .as_ref()
+            .is_some_and(|startup| startup.pending_turn || startup.submitted_input)
+            && observation.activity == super::status::Activity::Idle
+            && observation.outcome.is_none()
+        {
+            return false;
+        }
+        self.codex_startup = None;
+        self.input_transition = false;
+        true
     }
 
     fn on_bytes_at(&mut self, n: usize, now: Instant) -> Option<SessionActivityState> {
@@ -856,6 +953,26 @@ impl IdleDetector {
     }
 
     fn tick_at(&mut self, now: Instant) -> Option<SessionActivityState> {
+        if let Some(startup) = self
+            .codex_startup
+            .as_ref()
+            .filter(|startup| !startup.submitted_input && (startup.pending_turn || startup.ready))
+        {
+            let state = if startup.pending_turn {
+                SessionActivityState::Busy
+            } else {
+                SessionActivityState::Idle
+            };
+            let input_transition = std::mem::take(&mut self.input_transition);
+            if self.current != state || input_transition {
+                self.current = state;
+                return Some(state);
+            }
+            return None;
+        }
+        if std::mem::take(&mut self.input_transition) {
+            return Some(self.current);
+        }
         if self.current == SessionActivityState::Busy
             && now.duration_since(self.last_byte) >= self.threshold
         {
@@ -892,9 +1009,16 @@ fn idle_monitor_thread(
         }
         if let Some(watcher) = hook_status.as_mut() {
             if let Err(error) = watcher.drain_observations(|observation, _source| {
-                let _ = tx.send(RuntimeOutput::AgentObservation(observation));
+                let mut detector = detector.lock().expect("idle detector poisoned");
+                if detector.accept_hook(&observation) {
+                    let _ = tx.send(RuntimeOutput::AgentObservation(observation));
+                }
             }) {
                 log::warn!("read agent status: {error}");
+                detector
+                    .lock()
+                    .expect("idle detector poisoned")
+                    .hooks_unavailable();
                 let _ = tx.send(RuntimeOutput::StatusBridgeFailed);
                 hook_status = None;
             }
@@ -972,12 +1096,7 @@ fn reader_thread(
                     .is_some_and(|t| t.elapsed() < RESIZE_GRACE);
                 let transition = {
                     let mut detector = detector.lock().expect("idle detector poisoned");
-                    if in_resize_grace {
-                        detector.on_bytes_quiet_at(n, Instant::now());
-                        None
-                    } else {
-                        detector.on_bytes(n)
-                    }
+                    detector.on_output(&buf[..n], in_resize_grace)
                 };
                 if let Some(state) = transition {
                     if tx
@@ -1044,6 +1163,11 @@ fn write_to(runtime: &PtyRuntime, session_id: &str, bytes: &[u8]) -> RuntimeResu
     let mut writer = handle.writer.lock().expect("writer poisoned");
     writer.write_all(bytes)?;
     writer.flush()?;
+    handle
+        .idle_detector
+        .lock()
+        .expect("idle detector poisoned")
+        .on_input(bytes);
     if bytes == b"\x03" || bytes == b"\x1b" {
         if let Some(interrupt) = &handle.hook_interrupt {
             let kind = if bytes == b"\x03" {
@@ -1286,6 +1410,7 @@ mod tests {
     fn spec(session_id: &str, command: &str, args: &[&str]) -> SpawnSpec {
         let env: BTreeMap<String, String> = BTreeMap::new();
         SpawnSpec {
+            codex_pending_turn: None,
             session_id: session_id.to_string(),
             command: command.to_string(),
             args: args.iter().map(|s| s.to_string()).collect(),
@@ -1414,6 +1539,114 @@ mod tests {
             detector.on_bytes_at(1, start + threshold + Duration::from_millis(2)),
             None
         );
+    }
+
+    #[test]
+    fn codex_startup_without_readiness_retains_output_fallback() {
+        let mut detector = IdleDetector::new(DEFAULT_IDLE_THRESHOLD, Some(false));
+        assert_eq!(
+            detector.on_output(b"startup without terminal modes", false),
+            None
+        );
+        assert_eq!(
+            detector.tick_at(Instant::now() + DEFAULT_IDLE_THRESHOLD),
+            Some(SessionActivityState::Idle)
+        );
+        assert_eq!(
+            detector.on_output(b"more output", false),
+            Some(SessionActivityState::Busy)
+        );
+        assert_eq!(
+            detector.on_output(b"\x1b[?2004h", false),
+            Some(SessionActivityState::Idle)
+        );
+        assert_eq!(detector.on_output(b"idle redraw", false), None);
+    }
+
+    #[test]
+    fn codex_startup_history_recall_submits_with_or_without_hooks() {
+        for hooks_available in [false, true] {
+            for arrow in [b"\x1b[A", b"\x1b[B", b"\x1bOA", b"\x1bOB"] {
+                let mut detector = IdleDetector::new(DEFAULT_IDLE_THRESHOLD, Some(false));
+                if !hooks_available {
+                    detector.hooks_unavailable();
+                }
+                assert_eq!(
+                    detector.on_output(b"\x1b[?2004h", false),
+                    Some(SessionActivityState::Idle)
+                );
+                detector.on_input(arrow);
+                assert_eq!(detector.on_output(b"recalled draft", false), None);
+                detector.on_input(b"\r");
+                assert_eq!(detector.tick(), Some(SessionActivityState::Busy));
+                assert_eq!(
+                    detector.tick_at(Instant::now() + DEFAULT_IDLE_THRESHOLD),
+                    Some(SessionActivityState::Idle)
+                );
+                assert_eq!(
+                    detector.on_output(b"working output", false),
+                    Some(SessionActivityState::Busy)
+                );
+                if !hooks_available {
+                    assert!(detector.codex_startup.is_none());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn codex_startup_readiness_input_and_missing_hooks_are_baseline_only() {
+        let frame: serde_json::Value =
+            serde_json::from_str(include_str!("fixtures/codex-0.155.1-idle.json")).unwrap();
+        let ready = frame["readiness"].as_str().unwrap().as_bytes();
+        let redraw = frame["redraw"].as_str().unwrap().as_bytes();
+        for split in 1..b"\x1b[?2004h".len() {
+            let mut detector = IdleDetector::new(DEFAULT_IDLE_THRESHOLD, Some(false));
+            assert_eq!(detector.on_output(&ready[..split], false), None);
+            assert_eq!(
+                detector.on_output(&ready[split..], true),
+                Some(SessionActivityState::Idle)
+            );
+            for _ in 0..100 {
+                assert_eq!(detector.on_output(redraw, false), None);
+            }
+            detector.on_input(b"\r");
+            assert_eq!(detector.tick(), Some(SessionActivityState::Idle));
+            detector.on_input(b"draft");
+            assert_eq!(detector.on_output(redraw, false), None);
+            detector.on_input(b"\r");
+            assert_eq!(detector.tick(), Some(SessionActivityState::Busy));
+            assert_eq!(
+                detector.tick_at(Instant::now() + Duration::from_secs(60)),
+                Some(SessionActivityState::Idle)
+            );
+            detector.hooks_unavailable();
+            assert!(detector.codex_startup.is_none());
+        }
+        let mut detector = IdleDetector::new(DEFAULT_IDLE_THRESHOLD, Some(false));
+        detector.on_input(b"early submission");
+        detector.on_input(b"\r");
+        assert_eq!(detector.tick(), Some(SessionActivityState::Busy));
+        assert_eq!(detector.on_output(ready, false), None);
+        assert_eq!(detector.current, SessionActivityState::Busy);
+        assert!(
+            !detector.accept_hook(&super::super::status::AgentObservation {
+                activity: super::super::status::Activity::Idle,
+                source: super::super::status::ObservationSource::Hook,
+                ..Default::default()
+            })
+        );
+        assert!(
+            detector.accept_hook(&super::super::status::AgentObservation {
+                activity: super::super::status::Activity::Working,
+                source: super::super::status::ObservationSource::Hook,
+                ..Default::default()
+            })
+        );
+        assert!(detector.codex_startup.is_none());
+        let mut detector = IdleDetector::new(DEFAULT_IDLE_THRESHOLD, Some(true));
+        assert_eq!(detector.tick(), Some(SessionActivityState::Busy));
+        assert_eq!(detector.on_output(ready, false), None);
     }
 
     #[test]
