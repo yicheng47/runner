@@ -11,16 +11,16 @@ This mission is unit-test driven. Do not start a live Trae agent session or spen
 - Runner v0.11.2 maps Trae mission Bypass to `--permission-mode bypass_permissions`.
 - Mission resume reapplies the app-wide permission mode before composing argv.
 - Trae `thread/resume` rejects the resumed configuration because `approvals_reviewer` and `permission_mode` overrides cannot both be set. Its TUI stays alive without a valid thread, so the next input fails with `turn/start ... thread not found`.
-- `resume_plan` currently groups Trae with Codex and emits the positional prefix `resume <uuid>`.
-- The installed Trae CLI 0.120.52 help and `traecli doc session-management` document `--resume <uuid>`, not a `resume` subcommand. Its bundled non-interactive examples explicitly combine `--resume "$SESSION"` with `-y`, so inspect the local help/manual to select the documented bypass form without launching a session.
+- The reporter uses the Trae Next Codex-derived runtime. Its existing positional `resume <uuid>` prefix reached `thread/resume` with the captured UUID, so that resume form is not the reported failure and must remain unchanged.
+- This machine's `traecli` 0.120.52 is the separate Go-based [TraeCode CLI 2.0](https://docs.trae.cn/cli_get-started-with-trae-cli). Its bundled `--resume` and `--yolo` documentation does not establish argv compatibility with the reporter's runtime; its optional-value `--resume` flag also requires `--resume=<uuid>` to bind a UUID under pflag rather than the documented separated form.
 - Existing tests independently pin fresh Trae mission permission args and the old resume plan, but no test composes the two through `SessionManager::resume`.
 
 ## Required implementation
 
 1. Add a regression test at the session-manager/fake-runtime level that starts or seeds a Trae mission session with a captured UUID, resumes it under the default mission Bypass posture, and asserts the complete effective argv. The test must fail on v0.11.2 for the reporter's condition.
-2. Correct Trae's resume argv to the documented `--resume <uuid>` flag form. Do not change Codex's `resume <uuid>` subcommand behavior.
-3. Ensure a resumed Trae mission uses a Trae-documented bypass form that does not send the conflicting `permission_mode` override. Prefer the CLI's documented `--yolo`/`-y` resume combination if the local manual confirms it. Preserve the intended unattended Bypass posture rather than silently downgrading the mission to prompting.
-4. Keep fresh Trae missions working and canonicalize legacy stored `--permission-mode bypass_permissions` rows so the final argv has one permission posture. Update `strip_permission_flags`, inference, and UI description/tests only where required by the chosen canonical form.
+2. Preserve Trae's existing `resume <uuid>` prefix exactly. Do not apply the local Go CLI's `--resume` flag contract to the Trae Next adapter, and do not change Codex's resume behavior.
+3. When resuming an existing Trae mission thread, strip Trae `--permission-mode` args after resolving the resume plan so `thread/resume` can use the approvals reviewer already carried by the restored thread without the conflicting override.
+4. Keep fresh Trae mission Bypass unchanged as `--permission-mode bypass_permissions`; do not canonicalize it to the Go CLI's `--yolo` form or widen its sandbox posture.
 5. Keep direct chats, Claude Code, Codex, Copilot, Pi, shell, model/effort args, first-turn suppression, mission identity/env, and app-wide permission modes unchanged outside this Trae-specific correction.
 6. Do not add output-text scraping for this known argument conflict unless the argv correction cannot solve it. The current fast-exit fallback is a separate generic limitation.
 
@@ -30,12 +30,12 @@ This mission is unit-test driven. Do not start a live Trae agent session or spen
 - Run all `runner-backend` tests.
 - Run workspace Clippy with warnings denied, or `make clippy` if it is the repository's equivalent current command.
 - Run formatting checks.
-- Review the working-tree diff through the crew reviewer. Leave implementation changes uncommitted; do not push or open a PR.
+- Review the working-tree diff through the crew reviewer before committing. After a clean review, follow the human-authorized PR, CI, and merge workflow.
 
 ## Definition of done
 
-- The fake-runtime regression proves a resumed Trae mission composes documented resume argv and no conflicting `--permission-mode` override.
-- Fresh and resumed Trae mission Bypass remain non-interactive.
+- The fake-runtime regression proves a resumed Trae mission keeps `resume <uuid>`, preserves unrelated args, suppresses the first turn, and sends no conflicting `--permission-mode` override.
+- Fresh Trae mission Bypass remains `--permission-mode bypass_permissions`; resumed threads rely on their restored approvals reviewer.
 - Relevant tests and checks pass.
 - The reviewer reports no remaining must-fix findings through Runner.
-- No live Trae request, commit, push, PR, or merge is performed.
+- No live Trae request is performed. The PR records the target correction and the absence of a live end-to-end smoke test; CI is green before merge.
