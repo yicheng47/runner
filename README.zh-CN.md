@@ -46,8 +46,6 @@
   ·
   <a href="#下载">下载</a>
   ·
-  <a href="#文档">文档</a>
-  ·
   <a href="./AGENTS.md">参与贡献</a>
 </p>
 
@@ -70,8 +68,6 @@ Runner 是一个原生桌面应用，用来让命令行编码 agent **一起**�
 在[发布页](https://github.com/yicheng47/runner/releases/latest)获取最新版本：macOS（Apple Silicon）是已签名并完成公证的 `.dmg`，Windows 10 1809 或更高版本是已签名的 `Runner-Setup-…-x64.exe` 安装包。Intel Mac、Windows ARM64 和 Linux 暂不支持。
 
 两个平台都支持原地更新，macOS 走 Sparkle，Windows 走 Settings 旁边的更新图标，设置、对话和 mission 都会保留。在 Windows 上，证书积累信誉之前，新版本可能仍会触发 SmartScreen 警告，点 **更多信息 → 仍要运行** 即可继续。
-
-想用今天刚合并的东西？[`nightly` 预发布版](https://github.com/yicheng47/runner/releases/tag/nightly)从 `main` 构建，两个平台都有，签名方式相同，并在自己的渠道里更新。
 
 ## 社区
 
@@ -288,12 +284,6 @@ agent 的命令行工具需要单独安装。Runner 会在 `PATH` 上检测它�
 - [`tomb-raid/`](./examples/tomb-raid/) — 一支四人盗宝小队，由 DM 主持
 
 每一个都是一套可以直接复制的 handle 加系统提示词，新建一个 Crew 粘进去，点 Start 就能跑。
-
-## 文档
-
-架构、运行时契约、产品愿景和各功能的规格都在 [`docs/`](./docs/)。想看底层协议从 [`docs/arch/arch.md`](./docs/arch/arch.md) 开始，想看产品方向读 [`docs/product/vision.md`](./docs/product/vision.md)。
-
-macOS 和 Windows 在 `main` 上一起开发。开发环境、前置依赖和贡献者约定见 [AGENTS.md](./AGENTS.md)。
 
 ## 致谢
 

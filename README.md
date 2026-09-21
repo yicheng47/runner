@@ -46,8 +46,6 @@
   ·
   <a href="#download">Download</a>
   ·
-  <a href="#documentation">Documentation</a>
-  ·
   <a href="./AGENTS.md">Contributing</a>
 </p>
 
@@ -70,8 +68,6 @@ Written in Rust on [gpui-ce](https://github.com/gpui-ce/gpui-ce), the community 
 Grab the latest build from the [releases page](https://github.com/yicheng47/runner/releases/latest): a signed and notarized `.dmg` for macOS on Apple Silicon, and a signed `Runner-Setup-…-x64.exe` installer for Windows 10 version 1809 or later. Intel Macs, Windows ARM64, and Linux are not supported.
 
 Both platforms update in place, macOS through Sparkle and Windows through the update icon beside Settings, and keep your settings, chats, and missions. On Windows, SmartScreen may still warn on a fresh release while the certificate builds reputation; **More info → Run anyway** continues.
-
-Want what landed today instead? The [`nightly` prerelease](https://github.com/yicheng47/runner/releases/tag/nightly) is built from `main` for both platforms, signed the same way, and updates on its own channel.
 
 ## Community
 
@@ -288,12 +284,6 @@ For weirder, more fun crew shapes, peek at [`examples/`](./examples/):
 - [`tomb-raid/`](./examples/tomb-raid/) — a 4-person heist crew run by a DM
 
 Each is a copy-pasteable handle + system-prompt set you can spawn into a new Crew and hit Start.
-
-## Documentation
-
-Architecture, runtime contracts, product vision, and per-feature specs live in [`docs/`](./docs/) — start with [`docs/arch/arch.md`](./docs/arch/arch.md) for the wire-level overview, or [`docs/product/vision.md`](./docs/product/vision.md) for the product direction.
-
-macOS and Windows are developed together on `main`. For dev setup, prereqs, and contributor conventions see [AGENTS.md](./AGENTS.md).
 
 ## Acknowledgements
 
