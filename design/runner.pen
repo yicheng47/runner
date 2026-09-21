@@ -5266,7 +5266,7 @@
                   "id": "tb67r",
                   "name": "ccName",
                   "fill": "$text-hi",
-                  "content": "Peer coding crew",
+                  "content": "Pair coding crew",
                   "fontFamily": "$font-ui",
                   "fontSize": 16,
                   "fontWeight": "600"
@@ -9779,7 +9779,7 @@
                 {
                   "type": "frame",
                   "id": "D5A1ZL",
-                  "name": "Card Peer coding crew",
+                  "name": "Card Pair coding crew",
                   "width": "fill_container",
                   "fill": "$panel",
                   "cornerRadius": 8,
@@ -9810,7 +9810,7 @@
                               "id": "I0ZSqU",
                               "name": "ccName",
                               "fill": "$text-hi",
-                              "content": "Peer coding crew",
+                              "content": "Pair coding crew",
                               "fontFamily": "$font-ui",
                               "fontSize": 16,
                               "fontWeight": "600"
@@ -10004,7 +10004,7 @@
                 {
                   "type": "frame",
                   "id": "OQ1xs",
-                  "name": "Card Peer coding crew (Claude coder)",
+                  "name": "Card Pair coding crew (Claude coder)",
                   "width": "fill_container",
                   "fill": "$panel",
                   "cornerRadius": 8,
@@ -10035,7 +10035,7 @@
                               "id": "y1lKbx",
                               "name": "ccName",
                               "fill": "$text-hi",
-                              "content": "Peer coding crew (Claude coder)",
+                              "content": "Pair coding crew (Claude coder)",
                               "fontFamily": "$font-ui",
                               "fontSize": 16,
                               "fontWeight": "600"
@@ -41316,7 +41316,7 @@
                           "id": "TgOGZ",
                           "name": "pill_t",
                           "fill": "$text-1",
-                          "content": "Peer coding crew",
+                          "content": "Pair coding crew",
                           "fontFamily": "$font-ui",
                           "fontSize": 13,
                           "fontWeight": "normal"

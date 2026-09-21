@@ -1,4 +1,4 @@
-# Peer Coding — Mission Goal
+# Pair Coding — Mission Goal
 
 A two-role coder/reviewer loop for a single implementation task. The coder ships the change; the reviewer audits it; the coder fixes findings until the review is clean. No architect, no dispatch overhead — just the tightest loop that still has a second pair of eyes.
 
