@@ -56,7 +56,7 @@ Keep the per-card copy to *what the agent is* plus *where to get it*. The generi
 - **The footnote at `agents.rs:818` stays as it is.** It talks about disabled agents and overrides, which is still true of the Installed section.
 - **Windows and macOS share this pane.** Nothing here is platform-specific, and the Windows registry work in `#672` is untouched.
 
-Out of this mission: the row redesign sketched in the issue's Reference section — segmented Enabled/Disabled, per-row `Set default`, the chevron expander — which was explicitly **not** chosen; `runtime_status.rs` detection; the catalog's runtime list; `#533`; `docs/`.
+Out of this mission: segmented Enabled/Disabled and the chevron expander; `runtime_status.rs` detection; the catalog's runtime list; `#533`; unrelated `docs/`. The per-card default action is now in scope through Jason's follow-up below.
 
 ## Ownership and authorization
 
@@ -73,3 +73,25 @@ Unit tests for the partition over all six `RuntimeRowState` values, and for both
 ## Handoff
 
 Final Runner handoff on the feed: branch and base commit; every file and function changed; the partition function and where it is called; the install-hint field, its values and the source of each; how the empty states render; the tests and what each would catch; checks with results; the reviewer's no-remaining-must-fix verdict; and the PR number.
+
+## Follow-up: per-card default action (2026-09-21)
+
+Jason requested this during live UI testing and selected the existing design frame `n1krgH`, then called out too many status pills on Codex card `N67UH`. This section supersedes the earlier instruction to keep Installed cards exactly unchanged and the earlier authorization to commit this iteration. Preserve existing PR #684 and its commits. Implement and review this follow-up as uncommitted working-tree changes; wait for Jason to confirm the UI works before committing or pushing the implementation. Jason separately authorized the coordinator to commit and push this documentation update; that does not authorize committing the UI changes. No merge.
+
+The updated design is in the root checkout's `design/runner.pen`, frame `n1krgH`; use this written handoff as the implementation contract. The exported reference cards are `/tmp/runner-617-default-agent/N67UH.png` and `/tmp/runner-617-default-agent/AConK.png`. Do not copy or modify the root checkout or its design file. Existing model, path and install-link sample values on the canvas are illustrative; keep actual runtime values and the already verified install links.
+
+Remove the standalone Default agent selector card and dropdown. Below the Installed header's shell caption, add a compact summary line: `Default for new chats: Codex` when explicitly selected, using the actual display name. At the right of this line, a quiet `Use first available` action clears the explicit preference through the existing settings update path. This is a caption row, not another settings card.
+
+On an eligible Installed card, show a small `Set as default` button at the right of the header, immediately before the enable toggle. The explicitly selected card replaces that button with a plain check icon and `Default` label: no pill background, border or clickable appearance. Selection must persist and immediately refresh all card actions, the summary, and any open Start Chat modal using existing synchronization. Keep the enable toggle separate from default selection.
+
+Jason's latest correction preserves the existing `Detected` and `Override` pills beside the agent name, including their dot and color. Default is a separate selection, not a third detection state: an agent can be both Override and Default. Reduce competing decoration by rendering `Default` as plain secondary text with a small accent check, without a pill. Remove the visible redundant Enabled/Disabled label; keep the toggle and its accessible name/tooltip so its purpose remains clear. Preserve informative error/timeout messaging and the Checking spinner; detection states and partitioning remain unchanged. The Not installed cards gain no default action or enable toggle.
+
+Preserve current selection semantics: eligibility is enabled plus effective source Detected or Override, not mere membership in Installed. Checking and ProbeTimedOut remain in Installed but must not become newly selectable defaults. Keep the current reconciliation behavior, including preserving a configured default while the shell check is in flight and returning to automatic mode when the configured default becomes invalid or is disabled. Do not add new settings or alter crew/role runtime selection.
+
+Jason clarified that `Set as default` stays visible but disabled while its row is Checking; the existing explicit Default marker remains. ProbeTimedOut continues to use the existing source-based eligibility rule.
+
+Automatic mode still stores the existing empty preference. Its summary reads `Default for new chats: First available (currently Codex)`, deriving the current agent from the same eligible catalog order as Start Chat. No card carries the explicit `Default` marker in automatic mode; all eligible cards offer `Set as default`, including the agent currently chosen automatically, so it can be pinned. Hide `Use first available` when already automatic. If no agent is selectable, show `Default for new chats: No available agent` and no default buttons. Preserve the existing empty-section copy and Refresh access.
+
+Verify selecting another agent, pinning the automatic choice, returning to first available, disabling or invalidating the explicit default, a refresh in flight, zero available agents, and an already-open Start Chat modal. Reuse existing coverage where it verifies these behaviors; add focused tests only for meaningful new derived state. Run runner-app tests, workspace clippy, formatting and diff checks for this follow-up; do not repeat broader checks unless failures or changed scope justify them. Check that the header does not overlap or clip at supported window widths. Do not launch or restart Jason's app. Coder hands the uncommitted diff to reviewer through Runner; reviewer checks these selection and visual-state requirements and reports remaining must-fix findings.
+
+Jason subsequently authorized publishing this follow-up so he can continue on another computer. After checks and a clean working-tree review, commit and push the iteration to existing PR #684 and drive both macOS and Windows CI green. This supersedes the earlier requirement to wait for live UI confirmation before committing or pushing. Do not merge.
