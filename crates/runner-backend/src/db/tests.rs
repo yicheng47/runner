@@ -1249,7 +1249,7 @@ fn stored_runtime_names_remain_readable_and_unchanged_without_a_migration() {
     let version: i64 = conn
         .query_row("SELECT MAX(version) FROM _migrations", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, MIGRATIONS.last().unwrap().0);
+    assert_eq!(version, 23);
 }
 
 #[test]
@@ -1288,36 +1288,4 @@ fn sessions_has_runtime_size_and_resume_columns_after_migration() {
             "sessions.{required} missing; columns = {columns:?}"
         );
     }
-}
-
-#[test]
-fn migration_0024_renames_only_the_untouched_default_crew() {
-    fn crew_name_after_0024(seeded_name: &str) -> String {
-        let mut conn = Connection::open_in_memory().unwrap();
-        run_migrations_up_to(&mut conn, 23).unwrap();
-        conn.execute(
-            "INSERT INTO crews (id, name, created_at, updated_at)
-             VALUES (?1, ?2, '2026-08-01T00:00:00Z', '2026-08-01T00:00:00Z')",
-            params![SEED_CREW_ID, seeded_name],
-        )
-        .unwrap();
-        run_migrations_up_to(&mut conn, 24).unwrap();
-        conn.query_row(
-            "SELECT name FROM crews WHERE id = ?1",
-            params![SEED_CREW_ID],
-            |row| row.get(0),
-        )
-        .unwrap()
-    }
-
-    assert_eq!(
-        crew_name_after_0024("Peer coding crew"),
-        "Pair coding crew",
-        "the untouched default must pick up the new name",
-    );
-    assert_eq!(
-        crew_name_after_0024("My loop"),
-        "My loop",
-        "a crew the user renamed keeps their name",
-    );
 }

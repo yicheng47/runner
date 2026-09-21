@@ -762,7 +762,7 @@ mod tests {
                 "coder release /users/jason/runner",
                 0,
             ),
-            item(PaletteKind::Crew, "crew", "pair coding reviews", 0),
+            item(PaletteKind::Crew, "crew", "peer coding reviews", 0),
         ];
         assert_eq!(filtered_palette_items(&items, "  RUNNER ")[0].id, "chat");
         assert_eq!(filtered_palette_items(&items, "reviews")[0].id, "crew");
