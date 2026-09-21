@@ -546,37 +546,6 @@ impl AgentsPane {
             .child(runtime_section_caption(shell_description(
                 self.status.as_ref().map(|status| &status.shell),
             )))
-            .children(self.status.as_ref().map(|status| {
-                let settings = &self.app_store.read(cx).settings;
-                let summary = default_runtime_summary(status, &self.catalog, settings);
-                let explicit = !settings.default_runtime.is_empty();
-                let pane = cx.entity();
-                div()
-                    .debug_selector(|| "AGENTS_DEFAULT_SUMMARY".into())
-                    .flex()
-                    .flex_wrap()
-                    .items_center()
-                    .justify_between()
-                    .gap_2()
-                    .child(runtime_section_caption(summary))
-                    .when(explicit, |row| {
-                        row.child(
-                            div()
-                                .debug_selector(|| "AGENTS_DEFAULT_RESET".into())
-                                .ml_auto()
-                                .child(
-                                    Button::new("agents-default-auto", "Use first available")
-                                        .size(ButtonSize::Sm)
-                                        .variant(ButtonVariant::Ghost)
-                                        .on_press(move |_, cx| {
-                                            pane.update(cx, |this, pane_cx| {
-                                                this.set_default_runtime(None, pane_cx)
-                                            });
-                                        }),
-                                ),
-                        )
-                    })
-            }))
             .into_any_element()
     }
 
@@ -592,14 +561,20 @@ impl AgentsPane {
                 div()
                     .debug_selector(|| format!("AGENT_DEFAULT_{runtime}"))
                     .flex()
+                    .flex_none()
                     .items_center()
-                    .gap(rems(6. / 16.))
+                    .gap(rems(5. / 16.))
+                    .rounded(rems(10. / 16.))
+                    .bg(theme::with_alpha(theme::accent(), 0.1))
+                    .px(rems(9. / 16.))
+                    .py(rems(3. / 16.))
                     .text_size(theme::text_meta())
-                    .text_color(theme::muted())
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(theme::accent())
                     .child(
                         svg()
                             .path("check.svg")
-                            .size(rems(14. / 16.))
+                            .size(rems(11. / 16.))
                             .text_color(theme::accent()),
                     )
                     .child("Default")
@@ -780,7 +755,16 @@ impl AgentsPane {
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .child(runtime.display_name.clone()),
                             )
-                            .child(runtime_badge(runtime.name, &presentation)),
+                            .children(default_action)
+                            .when(
+                                !matches!(
+                                    presentation.tone,
+                                    BadgeTone::Accent | BadgeTone::Neutral
+                                ),
+                                |identity| {
+                                    identity.child(runtime_badge(runtime.name, &presentation))
+                                },
+                            ),
                     )
                     .child(
                         div()
@@ -790,7 +774,6 @@ impl AgentsPane {
                             .flex_none()
                             .items_center()
                             .gap(rems(10. / 16.))
-                            .children(default_action)
                             .child(
                                 div()
                                     .debug_selector(|| format!("AGENT_TOGGLE_{}", runtime.name))
@@ -1070,31 +1053,6 @@ fn runtime_default_eligible(
         Some(RuntimeCommandSource::Detected | RuntimeCommandSource::Override)
     ) && runtime_default_enabled(catalog, runtime.name)
         .is_some_and(|default| settings.is_agent_enabled(runtime.name, default))
-}
-
-fn default_runtime_summary(
-    status: &RuntimeStatusResponse,
-    catalog: &[RuntimeCatalogEntry],
-    settings: &AppSettings,
-) -> String {
-    let selection = catalog
-        .iter()
-        .find(|entry| entry.name.key() == settings.default_runtime)
-        .map(|entry| entry.display_name.clone())
-        .or_else(|| {
-            catalog.iter().find_map(|entry| {
-                status
-                    .runtimes
-                    .iter()
-                    .find(|runtime| {
-                        runtime.name == entry.name
-                            && runtime_default_eligible(runtime, catalog, settings)
-                    })
-                    .map(|_| format!("First available (currently {})", entry.display_name))
-            })
-        })
-        .unwrap_or_else(|| "No available agent".into());
-    format!("Default for new chats: {selection}")
 }
 
 fn reconcile_default_runtime(
@@ -1730,7 +1688,7 @@ mod tests {
         assert!(window.debug_bounds("AGENT_MODEL_LINE_codex").is_some());
         assert!(window.debug_bounds("AGENT_TOGGLE_codex").is_some());
         assert!(window.debug_bounds("AGENT_SET_DEFAULT_codex").is_some());
-        assert!(window.debug_bounds("AGENT_BADGE_codex").is_some());
+        assert!(window.debug_bounds("AGENT_BADGE_codex").is_none());
         assert!(window.debug_bounds("AGENTS_NOT_INSTALLED_EMPTY").is_some());
         let installed = window.debug_bounds("AGENTS_INSTALLED").unwrap();
         let card = window.debug_bounds("AGENT_CARD_codex").unwrap();
@@ -1814,36 +1772,10 @@ mod tests {
     }
 
     #[test]
-    fn default_summary_uses_enabled_sources_in_catalog_order() {
+    fn default_eligibility_requires_enabled_sources() {
         let catalog = test_catalog();
-        let mut codex = runtime(RuntimeRowState::Detected);
-        codex.effective_source = Some(RuntimeCommandSource::Detected);
-        let mut claude = codex.clone();
-        claude.name = Runtime::ClaudeCode;
-        claude.effective_source = Some(RuntimeCommandSource::Override);
-        let mut snapshot = status(claude, false);
-        snapshot.runtimes.push(codex);
         let mut settings = AppSettings::default();
-        assert_eq!(
-            default_runtime_summary(&snapshot, &catalog, &settings),
-            "Default for new chats: First available (currently Codex)"
-        );
         settings.disabled_agents.insert("codex".into());
-        assert_eq!(
-            default_runtime_summary(&snapshot, &catalog, &settings),
-            "Default for new chats: First available (currently Claude Code)"
-        );
-        settings.default_runtime = "claude-code".into();
-        assert_eq!(
-            default_runtime_summary(&snapshot, &catalog, &settings),
-            "Default for new chats: Claude Code"
-        );
-        settings.default_runtime.clear();
-        snapshot.runtimes[0].effective_source = Some(RuntimeCommandSource::Catalog);
-        assert_eq!(
-            default_runtime_summary(&snapshot, &catalog, &settings),
-            "Default for new chats: No available agent"
-        );
         for state in [
             RuntimeRowState::Detected,
             RuntimeRowState::Override,
@@ -1869,7 +1801,7 @@ mod tests {
     }
 
     #[test]
-    fn card_actions_pin_switch_and_reset_persisted_default() {
+    fn card_actions_pin_and_switch_persisted_default() {
         let mut codex = runtime(RuntimeRowState::Detected);
         codex.effective_source = Some(RuntimeCommandSource::Detected);
         let mut claude = codex.clone();
@@ -1879,12 +1811,12 @@ mod tests {
         let (temp, pane) = test_pane(vec![codex, claude], false, &mut cx);
         let mut window = gpui::VisualTestContext::from_window(pane.into(), &cx);
         assert!(window.debug_bounds("AGENT_DEFAULT_codex").is_none());
-        assert!(window.debug_bounds("AGENTS_DEFAULT_RESET").is_none());
         assert!(window.debug_bounds("AGENT_ENABLED_codex").is_none());
+        assert!(window.debug_bounds("AGENT_BADGE_codex").is_none());
+        assert!(window.debug_bounds("AGENT_BADGE_claude-code").is_none());
         for (selector, expected) in [
             ("AGENT_SET_DEFAULT_codex", "codex"),
             ("AGENT_SET_DEFAULT_claude-code", "claude-code"),
-            ("AGENTS_DEFAULT_RESET", ""),
         ] {
             let button = window.debug_bounds(selector).unwrap();
             window.simulate_click(button.center(), gpui::Modifiers::default());
@@ -1899,16 +1831,19 @@ mod tests {
                     .default_runtime,
                 expected
             );
-            if !expected.is_empty() {
-                assert!(window
-                    .debug_bounds(if expected == "codex" {
-                        "AGENT_DEFAULT_codex"
-                    } else {
-                        "AGENT_DEFAULT_claude-code"
-                    })
-                    .is_some());
-                assert!(window.debug_bounds("AGENTS_DEFAULT_RESET").is_some());
-            }
+            let (marker_selector, identity_selector) = if expected == "codex" {
+                ("AGENT_DEFAULT_codex", "AGENT_IDENTITY_codex")
+            } else {
+                ("AGENT_DEFAULT_claude-code", "AGENT_IDENTITY_claude-code")
+            };
+            let marker = window.debug_bounds(marker_selector).unwrap();
+            let identity = window.debug_bounds(identity_selector).unwrap();
+            assert!(
+                identity.left() <= marker.left()
+                    && identity.right() >= marker.right()
+                    && identity.top() <= marker.top()
+                    && identity.bottom() >= marker.bottom()
+            );
         }
     }
 
@@ -1999,7 +1934,7 @@ mod tests {
     fn installed_header_wraps_without_overlapping_actions() {
         let mut row = runtime(RuntimeRowState::Override);
         row.name = Runtime::Copilot;
-        row.display_name = "GitHub Copilot".into();
+        row.display_name = "GitHub Copilot CLI".into();
         row.effective_source = Some(RuntimeCommandSource::Override);
         let mut cx = gpui::TestAppContext::single();
         let (_temp, pane) = test_pane(vec![row], false, &mut cx);
@@ -2031,7 +1966,13 @@ mod tests {
                 );
                 let button = window.debug_bounds("AGENT_SET_DEFAULT_copilot").unwrap();
                 let toggle = window.debug_bounds("AGENT_TOGGLE_copilot").unwrap();
-                assert!(button.right() < toggle.left());
+                assert!(
+                    identity.left() <= button.left()
+                        && identity.right() >= button.right()
+                        && identity.top() <= button.top()
+                        && identity.bottom() >= button.bottom()
+                );
+                assert!(button.right() < toggle.left() || button.bottom() <= toggle.top());
             }
         }
     }
