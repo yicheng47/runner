@@ -45,8 +45,8 @@ pub mod rfc3339_opt {
 }
 
 // Every JSON TEXT column today is nullable, so production rows go through
-// `json_text_opt`; this non-optional twin is spike-proven (repo::spike_tests)
-// and waiting for the first NOT NULL JSON column.
+// `json_text_opt`; this non-optional twin is covered by
+// `repo::row_mapping_contract_tests` and waiting for the first NOT NULL JSON column.
 pub mod json_text {
     use serde::{de, ser, Deserialize, Deserializer, Serialize, Serializer};
 
