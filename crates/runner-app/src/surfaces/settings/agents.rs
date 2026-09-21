@@ -9,8 +9,8 @@ use gpui::{
 };
 use runner_app::ui::button::spinner;
 use runner_app::ui::{
-    BrowseField, Button, ButtonSize, ButtonVariant, FieldValidation, PaneHeader, SelectHandler,
-    SelectOption, SettingsCard, SettingsRow, StyledSelect, TextField, Toggle,
+    Badge, BrowseField, Button, ButtonSize, ButtonVariant, FieldValidation, PaneHeader,
+    SelectHandler, SelectOption, SettingsCard, SettingsRow, StyledSelect, TextField, Toggle, Tone,
 };
 use runner_backend::ops::runtime::RuntimeCatalogEntry;
 use runner_backend::runtime_status::{
@@ -24,6 +24,12 @@ use crate::app_store::AppStore;
 use crate::chat_icon::ChatIcon;
 use crate::theme;
 use crate::NativeRoot;
+
+const NO_INSTALLED_AGENTS: &str =
+    "No agents installed. Install one of the agents below to get started.";
+const ALL_AGENTS_INSTALLED: &str = "All supported agents are installed.";
+const BROWSE_EXECUTABLE_HINT: &str =
+    "Use Browse to select an executable Runner did not find on PATH.";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum BadgeTone {
@@ -540,7 +546,7 @@ impl AgentsPane {
         self.commit_override(runtime, cx);
     }
 
-    fn render_shell_card(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_installed_header(&self, count: Option<usize>, cx: &mut Context<Self>) -> AnyElement {
         let checking = self.refreshing
             || self
                 .status
@@ -548,51 +554,108 @@ impl AgentsPane {
                 .is_some_and(|status| status.shell.checking);
         let pane = cx.entity();
         div()
-            .rounded(rems(12. / 16.))
-            .border_1()
-            .border_color(theme::border())
-            .bg(theme::panel())
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(
+                runtime_section_header("Installed", count)
+                    .debug_selector(|| "AGENTS_INSTALLED_HEADER".into())
+                    .child(div().flex_1())
+                    .child(
+                        Button::new(
+                            "agents-refresh",
+                            if checking { "Checking…" } else { "Refresh" },
+                        )
+                        .icon("refresh-cw.svg")
+                        .size(ButtonSize::Sm)
+                        .variant(ButtonVariant::Secondary)
+                        .loading(checking)
+                        .on_press(move |_, cx| {
+                            pane.update(cx, |this, pane_cx| this.refresh_discovery(pane_cx));
+                        }),
+                    ),
+            )
+            .child(runtime_section_caption(shell_description(
+                self.status.as_ref().map(|status| &status.shell),
+            )))
+            .into_any_element()
+    }
+
+    fn render_browse_field(&self, runtime: Runtime, cx: &mut Context<Self>) -> Option<BrowseField> {
+        let pane = cx.entity();
+        self.overrides.get(&runtime).cloned().map(|field| {
+            BrowseField::new(
+                field,
+                self.saving.contains(&runtime),
+                Rc::new(move |_, cx| {
+                    pane.update(cx, |this, pane_cx| this.browse_override(runtime, pane_cx));
+                }),
+            )
+            .browse_id(SharedString::from(format!("agent-browse-{runtime}")))
+            .browse_label("Browse")
+        })
+    }
+
+    fn render_not_installed_row(
+        &self,
+        runtime: &RuntimeExecutableStatus,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let mark = ChatIcon::for_runtime(runtime.name.key());
+        let catalog = self.catalog.iter().find(|entry| entry.name == runtime.name);
+        let validation = self.validation.get(&runtime.name).map(String::as_str);
+        div()
+            .debug_selector(|| format!("AGENT_CARD_{}", runtime.name))
+            .flex()
+            .flex_col()
+            .gap_3()
             .px_5()
             .py_4()
-            .flex()
-            .items_center()
-            .justify_between()
-            .gap_8()
             .child(
                 div()
-                    .min_w(px(0.))
                     .flex()
-                    .flex_col()
+                    .items_center()
+                    .gap(rems(10. / 16.))
+                    .child(
+                        svg()
+                            .path(mark.path)
+                            .size(rems(1.))
+                            .flex_none()
+                            .text_color(mark.color(theme::text(), true)),
+                    )
                     .child(
                         div()
                             .text_size(theme::text_body())
                             .font_weight(FontWeight::SEMIBOLD)
-                            .child("Shell environment"),
-                    )
-                    .child(
-                        div()
-                            .mt(rems(2. / 16.))
-                            .text_size(theme::text_ui())
-                            .line_height(rems(17.4 / 16.))
-                            .text_color(theme::muted())
-                            .child(shell_description(
-                                self.status.as_ref().map(|status| &status.shell),
-                            )),
+                            .child(runtime.display_name.clone()),
                     ),
             )
-            .child(
-                Button::new(
-                    "agents-refresh",
-                    if checking { "Checking…" } else { "Refresh" },
-                )
-                .icon("refresh-cw.svg")
-                .size(ButtonSize::Sm)
-                .variant(ButtonVariant::Secondary)
-                .loading(checking)
-                .on_press(move |_, cx| {
-                    pane.update(cx, |this, pane_cx| this.refresh_discovery(pane_cx));
-                }),
-            )
+            .children(catalog.map(|entry| {
+                let url = entry.install_url.clone();
+                div()
+                    .debug_selector(|| format!("AGENT_INSTALL_{}", runtime.name))
+                    .flex()
+                    .flex_col()
+                    .items_start()
+                    .gap_2()
+                    .child(runtime_section_caption(entry.description.clone()))
+                    .child(
+                        Button::new(
+                            SharedString::from(format!("agent-install-{}", runtime.name)),
+                            "Install instructions",
+                        )
+                        .icon("external-link.svg")
+                        .size(ButtonSize::Sm)
+                        .variant(ButtonVariant::Ghost)
+                        .tooltip(entry.install_url.clone())
+                        .on_press(move |_, cx| cx.open_url(&url)),
+                    )
+            }))
+            .children(self.render_browse_field(runtime.name, cx))
+            .children(validation.map(|message| {
+                runtime_caption(message.to_owned(), true)
+                    .debug_selector(|| format!("AGENT_VALIDATION_{}", runtime.name))
+            }))
             .into_any_element()
     }
 
@@ -618,26 +681,11 @@ impl AgentsPane {
             });
         let pane = cx.entity();
         let toggle_pane = pane.clone();
-        let browse_pane = pane.clone();
         let reset_pane = pane;
         let toggle_runtime = runtime.name;
-        let browse_runtime = runtime.name;
         let reset_runtime = runtime.name;
         let field = self.overrides.get(&runtime.name).cloned();
-        let browse_id = SharedString::from(format!("agent-browse-{}", runtime.name));
-        let browse_field = field.clone().map(|field| {
-            BrowseField::new(
-                field,
-                saving,
-                Rc::new(move |_, cx| {
-                    browse_pane.update(cx, |this, pane_cx| {
-                        this.browse_override(browse_runtime, pane_cx)
-                    });
-                }),
-            )
-            .browse_id(browse_id)
-            .browse_label("Browse")
-        });
+        let browse_field = self.render_browse_field(runtime.name, cx);
         presentation.show_reset |= field
             .as_ref()
             .is_some_and(|field| !field.read(cx).text().trim().is_empty());
@@ -672,6 +720,7 @@ impl AgentsPane {
                     .child(div().min_w(px(0.)).flex_1())
                     .child(
                         div()
+                            .debug_selector(|| format!("AGENT_ENABLED_{}", runtime.name))
                             .text_size(theme::text_meta())
                             .text_color(theme::faint())
                             .child(if enabled { "Enabled" } else { "Disabled" }),
@@ -728,6 +777,25 @@ impl AgentsPane {
     }
 }
 
+fn runtime_section_header(label: &'static str, count: Option<usize>) -> Div {
+    div()
+        .flex()
+        .items_center()
+        .gap_2()
+        .text_size(theme::text_body())
+        .font_weight(FontWeight::SEMIBOLD)
+        .child(label)
+        .children(count.map(|count| Badge::new(count.to_string(), Tone::Muted)))
+}
+
+fn runtime_section_caption(caption: impl Into<SharedString>) -> Div {
+    div()
+        .text_size(theme::text_ui())
+        .line_height(rems(17.4 / 16.))
+        .text_color(theme::muted())
+        .child(caption.into())
+}
+
 fn runtime_property_line(runtime: Runtime, key: &'static str, label: &'static str) -> Div {
     let line_selector = format!("AGENT_{key}_LINE_{runtime}");
     let label_selector = format!("AGENT_{key}_LABEL_{runtime}");
@@ -769,30 +837,77 @@ fn runtime_caption(caption: String, danger: bool) -> Div {
 
 impl Render for AgentsPane {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let cards = self
-            .status
-            .as_ref()
-            .map(|status| {
-                status
-                    .runtimes
-                    .iter()
-                    .map(|runtime| {
-                        SettingsCard::new([self.render_runtime_row(runtime, cx)]).into_any_element()
+        let sections = if let Some(status) = &self.status {
+            let (installed, not_installed) = partition_runtimes(&status.runtimes);
+            div()
+                .flex()
+                .flex_col()
+                .gap_5()
+                .child(
+                    div()
+                        .debug_selector(|| "AGENTS_INSTALLED".into())
+                        .flex()
+                        .flex_col()
+                        .gap_4()
+                        .child(self.render_installed_header(Some(installed.len()), cx))
+                        .when(installed.is_empty(), |section| {
+                            section.child(
+                                runtime_section_caption(NO_INSTALLED_AGENTS)
+                                    .debug_selector(|| "AGENTS_INSTALLED_EMPTY".into()),
+                            )
+                        })
+                        .children(installed.into_iter().map(|runtime| {
+                            SettingsCard::new([self.render_runtime_row(runtime, cx)])
+                        })),
+                )
+                .children(if not_installed.is_empty() {
+                    (!status.shell.checking).then(|| {
+                        runtime_section_caption(ALL_AGENTS_INSTALLED)
+                            .debug_selector(|| "AGENTS_NOT_INSTALLED_EMPTY".into())
                     })
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_else(|| {
-                runner_backend::ops::runtime::runtime_list()
-                    .into_iter()
-                    .map(|_| {
-                        SettingsCard::new([div()
-                            .h(rems(160. / 16.))
-                            .bg(theme::with_alpha(theme::raised(), 0.2))
-                            .into_any_element()])
-                        .into_any_element()
-                    })
-                    .collect()
-            });
+                } else {
+                    Some(
+                        div()
+                            .debug_selector(|| "AGENTS_NOT_INSTALLED".into())
+                            .flex()
+                            .flex_col()
+                            .gap_4()
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .gap_2()
+                                    .child(
+                                        runtime_section_header(
+                                            "Not installed",
+                                            Some(not_installed.len()),
+                                        )
+                                        .debug_selector(|| "AGENTS_NOT_INSTALLED_HEADER".into()),
+                                    )
+                                    .child(runtime_section_caption(BROWSE_EXECUTABLE_HINT)),
+                            )
+                            .children(not_installed.into_iter().map(|runtime| {
+                                SettingsCard::new([self.render_not_installed_row(runtime, cx)])
+                            })),
+                    )
+                })
+        } else {
+            div()
+                .flex()
+                .flex_col()
+                .gap_4()
+                .child(self.render_installed_header(None, cx))
+                .children(
+                    runner_backend::ops::runtime::runtime_list()
+                        .into_iter()
+                        .map(|_| {
+                            SettingsCard::new([div()
+                                .h(rems(160. / 16.))
+                                .bg(theme::with_alpha(theme::raised(), 0.2))
+                                .into_any_element()])
+                        }),
+                )
+        };
         let retry = cx.entity();
         div()
             .flex()
@@ -808,8 +923,7 @@ impl Render for AgentsPane {
             )
             .subtitle("Pre-selected when starting a direct chat in Direct mode.")
             .into_any_element()]))
-            .child(self.render_shell_card(cx))
-            .child(div().flex().flex_col().gap_4().children(cards))
+            .child(sections)
             .child(
                 div()
                     .text_size(theme::text_ui())
@@ -842,6 +956,18 @@ impl Render for AgentsPane {
                     )
             }))
     }
+}
+
+fn partition_runtimes(
+    runtimes: &[RuntimeExecutableStatus],
+) -> (Vec<&RuntimeExecutableStatus>, Vec<&RuntimeExecutableStatus>) {
+    runtimes.iter().partition(|runtime| match runtime.state {
+        RuntimeRowState::Detected
+        | RuntimeRowState::Override
+        | RuntimeRowState::Checking
+        | RuntimeRowState::ProbeTimedOut => true,
+        RuntimeRowState::NotFound | RuntimeRowState::InvalidOverride => false,
+    })
 }
 
 fn runtime_default_enabled(catalog: &[RuntimeCatalogEntry], name: Runtime) -> Option<bool> {
@@ -1034,6 +1160,7 @@ fn runtime_badge(runtime: Runtime, presentation: &RuntimePresentation) -> AnyEle
         BadgeTone::Muted => (theme::with_alpha(theme::faint(), 0.1), theme::faint()),
     };
     div()
+        .debug_selector(|| format!("AGENT_BADGE_{runtime}"))
         .flex()
         .items_center()
         .gap(rems(6. / 16.))
@@ -1206,6 +1333,61 @@ mod tests {
     }
 
     #[test]
+    fn partitions_all_six_states_in_catalog_order() {
+        let rows = [
+            RuntimeRowState::NotFound,
+            RuntimeRowState::Detected,
+            RuntimeRowState::InvalidOverride,
+            RuntimeRowState::Override,
+            RuntimeRowState::Checking,
+            RuntimeRowState::ProbeTimedOut,
+        ]
+        .map(runtime);
+        let (installed, not_installed) = partition_runtimes(&rows);
+        assert_eq!(
+            installed.iter().map(|row| row.state).collect::<Vec<_>>(),
+            [
+                RuntimeRowState::Detected,
+                RuntimeRowState::Override,
+                RuntimeRowState::Checking,
+                RuntimeRowState::ProbeTimedOut,
+            ]
+        );
+        assert_eq!(
+            not_installed
+                .iter()
+                .map(|row| row.state)
+                .collect::<Vec<_>>(),
+            [RuntimeRowState::NotFound, RuntimeRowState::InvalidOverride]
+        );
+    }
+
+    #[test]
+    fn partition_tracks_probe_and_override_transitions_without_stored_state() {
+        let mut rows = [runtime(RuntimeRowState::NotFound)];
+        for (state, installed_count) in [
+            (RuntimeRowState::NotFound, 0),
+            (RuntimeRowState::Checking, 1),
+            (RuntimeRowState::Detected, 1),
+            (RuntimeRowState::Checking, 1),
+            (RuntimeRowState::ProbeTimedOut, 1),
+            (RuntimeRowState::NotFound, 0),
+            (RuntimeRowState::Override, 1),
+            (RuntimeRowState::InvalidOverride, 0),
+            (RuntimeRowState::NotFound, 0),
+        ] {
+            rows[0].state = state;
+            let (installed, not_installed) = partition_runtimes(&rows);
+            assert_eq!(installed.len(), installed_count, "{state:?}");
+            assert_eq!(not_installed.len(), 1 - installed_count, "{state:?}");
+            assert_eq!(
+                runtime_presentation(&rows[0], None, None, false).spinning,
+                state == RuntimeRowState::Checking,
+            );
+        }
+    }
+
+    #[test]
     fn derives_every_runtime_row_state() {
         let cases = [
             (RuntimeRowState::Detected, None, "Detected"),
@@ -1309,6 +1491,144 @@ mod tests {
         })
     }
 
+    fn test_pane(
+        rows: Vec<RuntimeExecutableStatus>,
+        checking: bool,
+        cx: &mut gpui::TestAppContext,
+    ) -> (tempfile::TempDir, gpui::WindowHandle<AgentsPane>) {
+        let temp = tempfile::tempdir().unwrap();
+        let store = test_store(temp.path(), cx);
+        let pane = cx.add_window(|window, cx| {
+            window.resize(gpui::size(px(1200.), px(1200.)));
+            let mut pane = AgentsPane::new(WeakEntity::new_invalid(), store, window, cx);
+            pane.catalog = runner_backend::ops::runtime::runtime_list()
+                .into_iter()
+                .map(|entry| RuntimeCatalogEntry {
+                    name: entry.name,
+                    display_name: entry.display_name,
+                    command: entry.command,
+                    native_fork: entry.native_fork,
+                    description: "Test agent description".into(),
+                    install_url: "https://example.com/install".into(),
+                    default_enabled: true,
+                    available: false,
+                    default_model: None,
+                    default_effort: None,
+                    models: Vec::new(),
+                    efforts: Vec::new(),
+                })
+                .collect();
+            let mut snapshot = status(runtime(RuntimeRowState::NotFound), checking);
+            snapshot.runtimes = rows;
+            pane.apply_status(snapshot, cx);
+            pane
+        });
+        cx.run_until_parked();
+        (temp, pane)
+    }
+
+    #[test]
+    fn all_installed_collapses_not_installed_to_one_line() {
+        let mut cx = gpui::TestAppContext::single();
+        let (_temp, pane) = test_pane(vec![runtime(RuntimeRowState::Detected)], false, &mut cx);
+        let mut window = gpui::VisualTestContext::from_window(pane.into(), &cx);
+        assert!(window.debug_bounds("AGENTS_INSTALLED_EMPTY").is_none());
+        assert!(window.debug_bounds("AGENTS_NOT_INSTALLED_HEADER").is_none());
+        let empty = window.debug_bounds("AGENTS_NOT_INSTALLED_EMPTY").unwrap();
+        assert!(empty.size.height <= px(18.));
+        let installed = window.debug_bounds("AGENTS_INSTALLED").unwrap();
+        let card = window.debug_bounds("AGENT_CARD_codex").unwrap();
+        assert!(installed.top() <= card.top() && installed.bottom() >= card.bottom());
+        assert!(empty.top() >= installed.bottom());
+    }
+
+    #[test]
+    fn checking_does_not_claim_all_agents_are_installed() {
+        let mut cx = gpui::TestAppContext::single();
+        let (_temp, pane) = test_pane(vec![runtime(RuntimeRowState::Checking)], true, &mut cx);
+        let mut window = gpui::VisualTestContext::from_window(pane.into(), &cx);
+        assert!(window.debug_bounds("AGENTS_NOT_INSTALLED_EMPTY").is_none());
+        assert!(window.debug_bounds("AGENTS_NOT_INSTALLED_HEADER").is_none());
+        let installed = window.debug_bounds("AGENTS_INSTALLED").unwrap();
+        let card = window.debug_bounds("AGENT_CARD_codex").unwrap();
+        assert!(installed.top() <= card.top() && installed.bottom() >= card.bottom());
+        assert!(window.debug_bounds("AGENT_BADGE_codex").is_some());
+    }
+
+    #[test]
+    fn none_installed_invites_installation_above_all_missing_cards() {
+        let mut cx = gpui::TestAppContext::single();
+        let rows = runner_backend::ops::runtime::runtime_list()
+            .into_iter()
+            .map(|entry| {
+                let mut row = runtime(RuntimeRowState::NotFound);
+                row.name = entry.name;
+                row.display_name = entry.display_name;
+                row.command = entry.command;
+                row
+            })
+            .collect();
+        let (_temp, pane) = test_pane(rows, false, &mut cx);
+        let mut window = gpui::VisualTestContext::from_window(pane.into(), &cx);
+        let invitation = window.debug_bounds("AGENTS_INSTALLED_EMPTY").unwrap();
+        let header = window.debug_bounds("AGENTS_NOT_INSTALLED_HEADER").unwrap();
+        assert!(invitation.bottom() < header.top());
+        assert!(window.debug_bounds("AGENTS_NOT_INSTALLED_EMPTY").is_none());
+        let mut previous_bottom = header.bottom();
+        for selector in [
+            "AGENT_CARD_codex",
+            "AGENT_CARD_claude-code",
+            "AGENT_CARD_copilot",
+            "AGENT_CARD_pi",
+            "AGENT_CARD_trae",
+        ] {
+            let card = window.debug_bounds(selector).unwrap();
+            assert!(card.top() > previous_bottom, "{selector}");
+            previous_bottom = card.bottom();
+        }
+    }
+
+    #[test]
+    fn invalid_override_keeps_validation_and_moves_after_a_valid_override() {
+        let mut row = runtime(RuntimeRowState::InvalidOverride);
+        row.override_path = Some("/missing/codex".into());
+        row.invalid_reason = Some("Codex executable does not exist: /missing/codex".into());
+        let mut cx = gpui::TestAppContext::single();
+        let (_temp, pane) = test_pane(vec![row], false, &mut cx);
+        let mut window = gpui::VisualTestContext::from_window(pane.into(), &cx);
+        assert!(window.debug_bounds("AGENT_VALIDATION_codex").is_some());
+        assert!(window.debug_bounds("AGENT_INSTALL_codex").is_some());
+        assert!(window.debug_bounds("AGENT_MODEL_LINE_codex").is_none());
+        assert!(window.debug_bounds("AGENT_ENABLED_codex").is_none());
+        assert!(window.debug_bounds("AGENT_BADGE_codex").is_none());
+        pane.update(&mut window, |pane, _, cx| {
+            let mut row = runtime(RuntimeRowState::Override);
+            row.override_path = Some("/valid/codex".into());
+            row.effective_source = Some(RuntimeCommandSource::Override);
+            pane.apply_status(status(row, false), cx);
+            assert!(pane.validation.is_empty());
+            cx.notify();
+        })
+        .unwrap();
+        window.run_until_parked();
+        assert!(window.debug_bounds("AGENT_MODEL_LINE_codex").is_some());
+        assert!(window.debug_bounds("AGENT_ENABLED_codex").is_some());
+        assert!(window.debug_bounds("AGENT_BADGE_codex").is_some());
+        assert!(window.debug_bounds("AGENTS_NOT_INSTALLED_EMPTY").is_some());
+        let installed = window.debug_bounds("AGENTS_INSTALLED").unwrap();
+        let card = window.debug_bounds("AGENT_CARD_codex").unwrap();
+        assert!(installed.top() <= card.top() && installed.bottom() >= card.bottom());
+        pane.update(&mut window, |pane, _, cx| {
+            pane.apply_status(status(runtime(RuntimeRowState::NotFound), false), cx);
+            cx.notify();
+        })
+        .unwrap();
+        window.run_until_parked();
+        let not_installed = window.debug_bounds("AGENTS_NOT_INSTALLED").unwrap();
+        let card = window.debug_bounds("AGENT_CARD_codex").unwrap();
+        assert!(not_installed.top() <= card.top() && not_installed.bottom() >= card.bottom());
+    }
+
     #[test]
     fn runtime_cards_show_model_effort_without_mcp_at_two_rem_sizes() {
         use gpui::{size, TestAppContext, VisualTestContext};
@@ -1410,6 +1730,7 @@ mod tests {
             command: "codex".into(),
             native_fork: true,
             description: String::new(),
+            install_url: String::new(),
             default_enabled: true,
             available: false,
             default_model: None,
