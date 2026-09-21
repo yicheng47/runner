@@ -188,7 +188,7 @@ fn crew_editor_sections_stay_inside_the_centered_container() {
     let now = Utc::now();
     let crew = Crew {
         id: "crew".into(),
-        name: "Peer coding crew".into(),
+        name: "Pair coding crew".into(),
         purpose: Some("Run a focused coder/reviewer loop for a single implementation task.".into()),
         goal: Some(
             "Definition of done = the requested task is implemented and reviewed clean.".repeat(3),
@@ -208,14 +208,14 @@ fn crew_editor_sections_stay_inside_the_centered_container() {
             cx,
         );
         root.route = AppRoute::CrewEditor("crew".into());
-        let name = cx.new(|cx| TextField::new(cx.focus_handle(), "Peer coding crew", "", false));
+        let name = cx.new(|cx| TextField::new(cx.focus_handle(), "Pair coding crew", "", false));
         root.crew_surfaces.editor = CrewEditorState {
             crew_id: "crew".into(),
             crew: Some(crew),
             slots: vec![slot_with_role(None, None, None)],
             loaded: true,
             name: Some(name),
-            original_name: "Peer coding crew".into(),
+            original_name: "Pair coding crew".into(),
             ..Default::default()
         };
         root

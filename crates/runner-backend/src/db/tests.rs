@@ -399,7 +399,7 @@ fn deleting_crew_cascades_slot_rows_only() {
 }
 
 #[test]
-fn seed_defaults_inserts_peer_coding_crew_on_empty_db() {
+fn seed_defaults_inserts_pair_coding_crew_on_empty_db() {
     let pool = open_in_memory().unwrap();
     let mut conn = pool.get().unwrap();
     seed_defaults(&mut conn).unwrap();
@@ -429,7 +429,7 @@ fn seed_defaults_inserts_peer_coding_crew_on_empty_db() {
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .unwrap();
-    assert_eq!(name, "Peer coding crew");
+    assert_eq!(name, "Pair coding crew");
     assert_eq!(
         addendum.as_deref(),
         Some(SEED_CREW_ADDENDUM.trim_end_matches('\n'))
@@ -617,7 +617,7 @@ fn seeded_personas_contain_no_bus_verbs() {
     // (RUNNER_CREW_ID / RUNNER_MISSION_ID / RUNNER_EVENT_LOG are
     // unset off-bus, the bundled `runner` CLI is not on PATH).
     //
-    // The seed reads the copyable peer-coding example via
+    // The seed reads the copyable pair-coding example via
     // `include_str!`, so checking these sources checks the stored
     // role prompts too. Mission verbs belong in the crew addendum.
     let banned_substrings = [
@@ -678,7 +678,7 @@ fn seed_defaults_skips_when_user_has_a_role_but_no_crew() {
         .query_row("SELECT COUNT(*) FROM crews", [], |r| r.get(0))
         .unwrap();
     let role_count = crate::repo::role::count(&conn).unwrap();
-    assert_eq!(crew_count, 0, "should not create Peer coding crew");
+    assert_eq!(crew_count, 0, "should not create Pair coding crew");
     assert_eq!(role_count, 1, "user's runner stays untouched");
 }
 
@@ -1249,7 +1249,7 @@ fn stored_runtime_names_remain_readable_and_unchanged_without_a_migration() {
     let version: i64 = conn
         .query_row("SELECT MAX(version) FROM _migrations", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 23);
+    assert_eq!(version, MIGRATIONS.last().unwrap().0);
 }
 
 #[test]
@@ -1288,4 +1288,36 @@ fn sessions_has_runtime_size_and_resume_columns_after_migration() {
             "sessions.{required} missing; columns = {columns:?}"
         );
     }
+}
+
+#[test]
+fn migration_0024_renames_only_the_untouched_default_crew() {
+    fn crew_name_after_0024(seeded_name: &str) -> String {
+        let mut conn = Connection::open_in_memory().unwrap();
+        run_migrations_up_to(&mut conn, 23).unwrap();
+        conn.execute(
+            "INSERT INTO crews (id, name, created_at, updated_at)
+             VALUES (?1, ?2, '2026-08-01T00:00:00Z', '2026-08-01T00:00:00Z')",
+            params![SEED_CREW_ID, seeded_name],
+        )
+        .unwrap();
+        run_migrations_up_to(&mut conn, 24).unwrap();
+        conn.query_row(
+            "SELECT name FROM crews WHERE id = ?1",
+            params![SEED_CREW_ID],
+            |row| row.get(0),
+        )
+        .unwrap()
+    }
+
+    assert_eq!(
+        crew_name_after_0024("Peer coding crew"),
+        "Pair coding crew",
+        "the untouched default must pick up the new name",
+    );
+    assert_eq!(
+        crew_name_after_0024("My loop"),
+        "My loop",
+        "a crew the user renamed keeps their name",
+    );
 }

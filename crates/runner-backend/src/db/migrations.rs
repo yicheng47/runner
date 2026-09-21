@@ -67,6 +67,9 @@ use crate::error::Result;
 // override thinking effort independently of its runtime and model.
 // 0023: renames the stored runner entity and its foreign-key columns to
 // `roles` / `role_id`; direct sessions have referenced it since 0007.
+// 0024: renames the seeded crew to "Pair coding crew" (#676). UPDATE-only
+// on the seed's pinned crew ID and the old name, so a crew the user
+// renamed is left alone.
 pub(super) const MIGRATIONS: &[(i64, &str)] = &[
     (1, include_str!("../../migrations/0001_init.sql")),
     (
@@ -136,6 +139,10 @@ pub(super) const MIGRATIONS: &[(i64, &str)] = &[
         include_str!("../../migrations/0022_session_live_title.sql"),
     ),
     (23, include_str!("../../migrations/0023_roles.sql")),
+    (
+        24,
+        include_str!("../../migrations/0024_pair_coding_crew_name.sql"),
+    ),
 ];
 
 pub(super) fn run_migrations(conn: &mut Connection) -> Result<()> {

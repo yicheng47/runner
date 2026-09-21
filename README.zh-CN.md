@@ -238,20 +238,20 @@ agent 的命令行工具需要单独安装。Runner 会在 `PATH` 上检测它�
 
 ## 示例 Crew
 
-**Runner 的默认形态**是一个双角色的结对编程循环：一个实现，一个审查，循环基于工作树 diff 一直跑到审查通过为止。没有架构师，没有派发开销，只有一个仍然保留第二双眼睛的最紧凑的循环。Runner 首次启动时会预置这个 crew，源文件在 [`examples/peer-coding/`](./examples/peer-coding/)。
+**Runner 的默认形态**是一个双角色的结对编程循环：一个实现，一个审查，循环基于工作树 diff 一直跑到审查通过为止。没有架构师，没有派发开销，只有一个仍然保留第二双眼睛的最紧凑的循环。Runner 首次启动时会预置这个 crew，源文件在 [`examples/pair-coding/`](./examples/pair-coding/)。
 
 | 角色（role） | 运行时 | 职责 | 系统提示词 |
 | --- | --- | --- | --- |
-| **@coder**（lead） | `codex` | 开分支、实现、跑检查，把 diff 交给 reviewer，修复发现的问题。 | [`coder.md`](./examples/peer-coding/coder.md) |
-| **@reviewer** | `codex` | 阅读工作树 diff，用 file:line 指出必须修复的问题，从不改代码。 | [`reviewer.md`](./examples/peer-coding/reviewer.md) |
+| **@coder**（lead） | `codex` | 开分支、实现、跑检查，把 diff 交给 reviewer，修复发现的问题。 | [`coder.md`](./examples/pair-coding/coder.md) |
+| **@reviewer** | `codex` | 阅读工作树 diff，用 file:line 指出必须修复的问题，从不改代码。 | [`reviewer.md`](./examples/pair-coding/reviewer.md) |
 
-这个 crew 的团队约定（先开功能分支、提交前必须审查、没有人的指示不合并）写在 [`team-conventions.md`](./examples/peer-coding/team-conventions.md)。两个槽位默认都用 `codex`；把 `@coder` 换成 `claude-code` 就成了跨厂商的搭档，各自能抓住对方训练里忽略的东西。
+这个 crew 的团队约定（先开功能分支、提交前必须审查、没有人的指示不合并）写在 [`team-conventions.md`](./examples/pair-coding/team-conventions.md)。两个槽位默认都用 `codex`；把 `@coder` 换成 `claude-code` 就成了跨厂商的搭档，各自能抓住对方训练里忽略的东西。
 
 ### 更多 Crew
 
 想看更奇特、更有趣的 crew 形态，去 [`examples/`](./examples/) 逛逛：
 
-- [`peer-coding/`](./examples/peer-coding/) — 上面默认的 coder / reviewer 搭档
+- [`pair-coding/`](./examples/pair-coding/) — 上面默认的 coder / reviewer 搭档
 - [`dev-crew/`](./examples/dev-crew/) — 架构师 / 实现者 / 审查者三人组：一个拆解，一个构建，一个审计
 - [`docs-crew/`](./examples/docs-crew/) — 架构师划分一个复杂仓库，两个以上的写手并行起草各模块文档，编辑统一风格
 - [`tic-tac-toe/`](./examples/tic-tac-toe/) — 两个 agent 加一个裁判，真的在互相下棋

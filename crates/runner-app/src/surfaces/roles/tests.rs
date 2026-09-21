@@ -239,7 +239,7 @@ fn role_detail_columns_stay_inside_the_centered_container() {
             .to_vec(),
         working_dir: None,
         system_prompt: Some(
-            "You are a reviewer in a two-person peer coding loop. Your job is to read the task, inspect the coder's local working-tree diff, and push back when something is wrong, missing, risky, or out of scope.\n\n"
+            "You are a reviewer in a two-person pair coding loop. Your job is to read the task, inspect the coder's local working-tree diff, and push back when something is wrong, missing, risky, or out of scope.\n\n"
                 .repeat(4),
         ),
         env: Default::default(),

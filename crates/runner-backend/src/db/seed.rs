@@ -3,11 +3,11 @@ use rusqlite::{params, Connection};
 use super::app_state::SEED_MARKER_KEY;
 use crate::error::Result;
 
-// Default-data seed: ships the Peer coding starter crew on first launch.
+// Default-data seed: ships the Pair coding starter crew on first launch.
 //
 // Runs at most once per database. The marker
 // `_app_state.default_crew_seeded` records that the seed step has been
-// considered for this DB so we don't recreate Peer coding if the user
+// considered for this DB so we don't recreate Pair coding if the user
 // later deletes everything ("first launch" must mean *first* launch,
 // not "any future launch where you happen to have zero crews").
 //
@@ -16,7 +16,7 @@ use crate::error::Result;
 // they loaded another fixture into this DB before
 // opening the app — we skip cleanly and still set the marker. This
 // avoids the partial-crew failure mode where a colliding role
-// handle would leave Peer coding missing its lead, while the start-
+// handle would leave Pair coding missing its lead, while the start-
 // mission UI still treated it as launchable.
 //
 // Tests skip this entire path so command tests can assume an empty
@@ -24,7 +24,7 @@ use crate::error::Result;
 
 // Pinned IDs keep first-launch fixtures deterministic. Migration 0002
 // still owns the legacy Build squad IDs for historical upgrades; fresh
-// databases run migrations before this peer-coding seed is inserted.
+// databases run migrations before this pair-coding seed is inserted.
 pub(super) const SEED_CREW_ID: &str = "01K000DEFAULT000PEERCODING01";
 const SEED_CODER_ROLE_ID: &str = "01K000DEFAULT000RUNNERCODER01";
 const SEED_REVIEWER_ROLE_ID: &str = "01K000DEFAULT000RUNNERREVW01";
@@ -41,11 +41,11 @@ pub(super) const SEED_ROLE_ARGS_JSON: &str =
 // Runner prompts stay persona-only so the templates also work in direct
 // chat; mission workflow and channel guidance live in the crew addendum.
 pub(super) const SEED_CODER_PROMPT: &str =
-    include_str!("../../../../examples/peer-coding/coder.md");
+    include_str!("../../../../examples/pair-coding/coder.md");
 pub(super) const SEED_REVIEWER_PROMPT: &str =
-    include_str!("../../../../examples/peer-coding/reviewer.md");
+    include_str!("../../../../examples/pair-coding/reviewer.md");
 pub(super) const SEED_CREW_ADDENDUM: &str =
-    include_str!("../../../../examples/peer-coding/team-conventions.md");
+    include_str!("../../../../examples/pair-coding/team-conventions.md");
 
 pub(super) fn seed_defaults(conn: &mut Connection) -> Result<()> {
     conn.execute_batch(
@@ -80,7 +80,7 @@ pub(super) fn seed_defaults(conn: &mut Connection) -> Result<()> {
     Ok(())
 }
 
-/// Insert the two-role Peer coding example inside the caller's
+/// Insert the two-role Pair coding example inside the caller's
 /// transaction. The Rust seed owns the same fields as user-driven
 /// creates and reads the copyable example prompts directly.
 fn seed_default_crew(tx: &rusqlite::Transaction) -> Result<()> {
@@ -91,7 +91,7 @@ fn seed_default_crew(tx: &rusqlite::Transaction) -> Result<()> {
          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
         params![
             SEED_CREW_ID,
-            "Peer coding crew",
+            "Pair coding crew",
             "A two-role coder/reviewer loop for a single implementation task. \
              The coder ships the change; the reviewer audits it; the coder fixes \
              findings until review is clean.",
