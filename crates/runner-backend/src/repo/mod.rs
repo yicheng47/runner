@@ -69,10 +69,10 @@ pub(crate) fn insert_sql(table: &str, columns: &[&str]) -> String {
 }
 
 #[cfg(test)]
-mod spike_tests {
-    // Step 0 spike: prove every risky mapping against an in-memory DB
-    // before any table is migrated. Each test pins a byte format or a
-    // type-bridge behavior the per-table modules will rely on.
+mod row_mapping_contract_tests {
+    // Permanent row-mapping contracts against an in-memory DB. Each test
+    // pins a storage byte format or type-bridge behavior that the per-table
+    // modules rely on.
 
     use std::collections::HashMap;
 
@@ -84,7 +84,7 @@ mod spike_tests {
     use crate::model::{MissionStatus, SessionStatus, Timestamp};
 
     #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-    struct SpikeRow {
+    struct MappingRow {
         id: String,
         flag: bool,
         mission_status: MissionStatus,
@@ -102,7 +102,7 @@ mod spike_tests {
         note: Option<String>,
     }
 
-    const SPIKE_COLUMNS: &[&str] = &[
+    const MAPPING_COLUMNS: &[&str] = &[
         "id",
         "flag",
         "mission_status",
@@ -118,7 +118,7 @@ mod spike_tests {
     fn conn() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(
-            "CREATE TABLE spike (
+            "CREATE TABLE mapping_contract (
                 id TEXT PRIMARY KEY,
                 flag INTEGER NOT NULL,
                 mission_status TEXT NOT NULL,
@@ -135,31 +135,31 @@ mod spike_tests {
         conn
     }
 
-    fn insert(conn: &Connection, row: &SpikeRow) {
+    fn insert(conn: &Connection, row: &MappingRow) {
         conn.execute(
-            &super::insert_sql("spike", SPIKE_COLUMNS),
+            &super::insert_sql("mapping_contract", MAPPING_COLUMNS),
             to_params_named(row).unwrap().to_slice().as_slice(),
         )
         .unwrap();
     }
 
-    fn get(conn: &Connection, id: &str) -> SpikeRow {
+    fn get(conn: &Connection, id: &str) -> MappingRow {
         let sql = format!(
-            "SELECT {} FROM spike WHERE id = ?1",
-            super::select_list(SPIKE_COLUMNS)
+            "SELECT {} FROM mapping_contract WHERE id = ?1",
+            super::select_list(MAPPING_COLUMNS)
         );
         conn.query_row(&sql, rusqlite::params![id], |row| {
-            from_row::<SpikeRow>(row).map_err(super::de_err)
+            from_row::<MappingRow>(row).map_err(super::de_err)
         })
         .unwrap()
     }
 
-    fn full_row() -> SpikeRow {
+    fn full_row() -> MappingRow {
         let now = Utc::now();
         let mut env = HashMap::new();
         env.insert("FOO".to_string(), "bar".to_string());
         env.insert("BAZ".to_string(), "qux".to_string());
-        SpikeRow {
+        MappingRow {
             id: "full".into(),
             flag: true,
             mission_status: MissionStatus::Running,
@@ -175,8 +175,8 @@ mod spike_tests {
         }
     }
 
-    fn minimal_row() -> SpikeRow {
-        SpikeRow {
+    fn minimal_row() -> MappingRow {
+        MappingRow {
             id: "minimal".into(),
             flag: false,
             mission_status: MissionStatus::Aborted,
@@ -212,7 +212,7 @@ mod spike_tests {
         insert(&conn, &full_row());
         let (type_of, raw): (String, i64) = conn
             .query_row(
-                "SELECT typeof(flag), flag FROM spike WHERE id = 'full'",
+                "SELECT typeof(flag), flag FROM mapping_contract WHERE id = 'full'",
                 [],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
@@ -228,7 +228,7 @@ mod spike_tests {
         insert(&conn, &minimal_row());
         let (m, s): (String, String) = conn
             .query_row(
-                "SELECT mission_status, session_status FROM spike WHERE id = 'full'",
+                "SELECT mission_status, session_status FROM mapping_contract WHERE id = 'full'",
                 [],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
@@ -237,7 +237,7 @@ mod spike_tests {
         assert_eq!(s, "crashed");
         let (m, s): (String, String) = conn
             .query_row(
-                "SELECT mission_status, session_status FROM spike WHERE id = 'minimal'",
+                "SELECT mission_status, session_status FROM mapping_contract WHERE id = 'minimal'",
                 [],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
@@ -252,9 +252,11 @@ mod spike_tests {
         let row = full_row();
         insert(&conn, &row);
         let (ts_raw, ts_opt_raw): (String, String) = conn
-            .query_row("SELECT ts, ts_opt FROM spike WHERE id = 'full'", [], |r| {
-                Ok((r.get(0)?, r.get(1)?))
-            })
+            .query_row(
+                "SELECT ts, ts_opt FROM mapping_contract WHERE id = 'full'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
             .unwrap();
         assert_eq!(ts_raw, row.ts.to_rfc3339());
         assert_eq!(ts_opt_raw, row.ts_opt.unwrap().to_rfc3339());
@@ -267,7 +269,7 @@ mod spike_tests {
         // `+00:00` form every `to_rfc3339()` write produced, and the `Z`
         // form used by fixed seed/test timestamps.
         conn.execute(
-            "INSERT INTO spike
+            "INSERT INTO mapping_contract
                 (id, flag, mission_status, session_status, ts, ts_opt, args, env, policy, note)
              VALUES ('offset', 0, 'completed', 'running',
                      '2026-04-22T01:02:03.456789+00:00', '2026-04-22T01:02:03+00:00',
@@ -276,7 +278,7 @@ mod spike_tests {
         )
         .unwrap();
         conn.execute(
-            "INSERT INTO spike
+            "INSERT INTO mapping_contract
                 (id, flag, mission_status, session_status, ts, ts_opt, args, env, policy, note)
              VALUES ('zulu', 0, 'completed', 'running',
                      '2026-04-22T01:02:03.456789Z', '2026-04-22T01:02:03Z',
@@ -310,7 +312,7 @@ mod spike_tests {
 
         let (args_raw, env_raw, policy_raw): (String, String, String) = conn
             .query_row(
-                "SELECT args, env, policy FROM spike WHERE id = 'json'",
+                "SELECT args, env, policy FROM mapping_contract WHERE id = 'json'",
                 [],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
@@ -325,9 +327,11 @@ mod spike_tests {
         // Empty collections still serialize (as "[]" / "{}"), matching the
         // legacy create path that always wrote `serde_json::to_string`.
         let (args_raw, env_raw): (String, String) = conn
-            .query_row("SELECT args, env FROM spike WHERE id = 'json'", [], |r| {
-                Ok((r.get(0)?, r.get(1)?))
-            })
+            .query_row(
+                "SELECT args, env FROM mapping_contract WHERE id = 'json'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
             .unwrap();
         assert_eq!(args_raw, serde_json::to_string(&row.args).unwrap());
         assert_eq!(env_raw, serde_json::to_string(&row.env).unwrap());
@@ -339,7 +343,7 @@ mod spike_tests {
         // Raw-SQL insert mirroring today's stored JSON TEXT shapes,
         // including the seed's args_json literal.
         conn.execute(
-            r#"INSERT INTO spike
+            r#"INSERT INTO mapping_contract
                 (id, flag, mission_status, session_status, ts, ts_opt, args, env, policy, note)
              VALUES ('legacy', 1, 'running', 'running',
                      '2026-04-22T00:00:00+00:00', NULL,
@@ -383,7 +387,7 @@ mod spike_tests {
         updated.session_status = SessionStatus::Stopped;
         updated.ts_opt = None;
         conn.execute(
-            "UPDATE spike
+            "UPDATE mapping_contract
                 SET note = :note, session_status = :session_status, ts_opt = :ts_opt
               WHERE id = :id",
             to_params_named_with_fields(&updated, &["note", "session_status", "ts_opt", "id"])
