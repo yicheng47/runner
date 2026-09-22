@@ -248,6 +248,8 @@ impl MissionWorkspace {
                     }
                 }),
             )
+            .on_action(cx.listener(Self::stop_focused_session))
+            .on_action(cx.listener(Self::resume_focused_session))
             .on_action(cx.listener(Self::focus_previous_mission_tab))
             .on_action(cx.listener(Self::focus_next_mission_tab))
             .on_drag_move::<MissionRailResizeDrag>(cx.listener(
@@ -268,6 +270,45 @@ impl MissionWorkspace {
                 this.save_settings(cx);
             }))
             .into_any_element()
+    }
+
+    fn stop_focused_session(
+        &mut self,
+        _: &StopFocusedSession,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.act_on_focused_session(SessionControlKind::Stop, window, cx);
+    }
+
+    fn resume_focused_session(
+        &mut self,
+        _: &ResumeFocusedSession,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.act_on_focused_session(SessionControlKind::Resume, window, cx);
+    }
+
+    fn act_on_focused_session(
+        &mut self,
+        action: SessionControlKind,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let status = match &self.active_tab {
+            MissionTab::Session(session_id) => self
+                .sessions
+                .iter()
+                .find(|session| session.session.id == *session_id)
+                .map(|session| session.session.status),
+            MissionTab::Feed => None,
+        };
+        let Some(session_id) = focused_slot_action_target(&self.active_tab, status, action) else {
+            return;
+        };
+        let session_id = session_id.to_owned();
+        self.act_on_slot(&session_id, action, window, cx);
     }
 
     fn focus_previous_mission_tab(

@@ -566,9 +566,25 @@ impl NativeRoot {
         if self
             .session_entry(&session_id, cx)
             .is_some_and(|entry| entry.status == SessionStatus::Running)
+            && !self.session_lifecycle_disabled(&session_id, cx)
         {
             self.stop_chat(&session_id, window, cx);
         }
+    }
+
+    pub(crate) fn resume_focused_session(
+        &mut self,
+        _: &ResumeFocusedSession,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.route != AppRoute::Chat {
+            return;
+        }
+        let Some(session_id) = self.active_focused_session_id() else {
+            return;
+        };
+        self.resume_chats(vec![session_id], window, cx);
     }
 
     pub(crate) fn stop_chats(
@@ -613,6 +629,7 @@ impl NativeRoot {
             let resumable = self
                 .session_entry(&session_id, cx)
                 .is_some_and(|entry| entry.status != SessionStatus::Running)
+                && !self.session_lifecycle_disabled(&session_id, cx)
                 && !self.chat_transitions.contains_key(&session_id);
             if resumable {
                 if let Some(pane_id) = pane_ids.get(&session_id) {

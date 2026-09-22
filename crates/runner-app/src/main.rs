@@ -96,6 +96,7 @@ actions!(
         ShowAll,
         SplitPaneDown,
         SplitPaneRight,
+        ResumeFocusedSession,
         StopFocusedSession,
         ToggleFullscreen,
         ToggleTerminalDrawer,

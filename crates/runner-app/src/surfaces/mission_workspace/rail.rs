@@ -235,6 +235,10 @@ impl MissionWorkspace {
                                 action,
                             )
                             .variant(SessionControlVariant::Header)
+                            .title(slot_control_title(
+                                action,
+                                &self.settings(cx).keymap_overrides,
+                            ))
                             .header_size(24.)
                             .restarting(
                                 self.transition_kind(&session_id)

@@ -9,9 +9,10 @@ use crate::{Hide, HideOthers, Quit};
 use crate::{
     CloseWindowOrPane, CommandPalette, Copy, FocusNextPane, FocusPreviousPane, Minimize,
     MissionTabNext, MissionTabPrevious, NavigateNextPage, NavigatePreviousPage, NewTab, NewWindow,
-    OpenSettings, Paste, SelectTab1, SelectTab2, SelectTab3, SelectTab4, SelectTab5, SelectTab6,
-    SelectTab7, SelectTab8, SelectTab9, SplitPaneDown, SplitPaneRight, StopFocusedSession,
-    ToggleFullscreen, ToggleSidebar, ToggleTerminalDrawer, ZoomIn, ZoomOut, ZoomReset,
+    OpenSettings, Paste, ResumeFocusedSession, SelectTab1, SelectTab2, SelectTab3, SelectTab4,
+    SelectTab5, SelectTab6, SelectTab7, SelectTab8, SelectTab9, SplitPaneDown, SplitPaneRight,
+    StopFocusedSession, ToggleFullscreen, ToggleSidebar, ToggleTerminalDrawer, ZoomIn, ZoomOut,
+    ZoomReset,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -217,7 +218,7 @@ pub(crate) fn entries() -> &'static [KeymapEntry] {
                 description: "Open the first visible sidebar tab or mission.",
                 scope: KeymapScope::Global,
                 default: default_combo("cmd-1", None, false),
-                fixed: false,
+                fixed: true,
             },
             KeymapEntry {
                 id: "select-tab-2",
@@ -225,7 +226,7 @@ pub(crate) fn entries() -> &'static [KeymapEntry] {
                 description: "Open the second visible sidebar tab or mission.",
                 scope: KeymapScope::Global,
                 default: default_combo("cmd-2", None, false),
-                fixed: false,
+                fixed: true,
             },
             KeymapEntry {
                 id: "select-tab-3",
@@ -233,7 +234,7 @@ pub(crate) fn entries() -> &'static [KeymapEntry] {
                 description: "Open the third visible sidebar tab or mission.",
                 scope: KeymapScope::Global,
                 default: default_combo("cmd-3", None, false),
-                fixed: false,
+                fixed: true,
             },
             KeymapEntry {
                 id: "select-tab-4",
@@ -241,7 +242,7 @@ pub(crate) fn entries() -> &'static [KeymapEntry] {
                 description: "Open the fourth visible sidebar tab or mission.",
                 scope: KeymapScope::Global,
                 default: default_combo("cmd-4", None, false),
-                fixed: false,
+                fixed: true,
             },
             KeymapEntry {
                 id: "select-tab-5",
@@ -249,7 +250,7 @@ pub(crate) fn entries() -> &'static [KeymapEntry] {
                 description: "Open the fifth visible sidebar tab or mission.",
                 scope: KeymapScope::Global,
                 default: default_combo("cmd-5", None, false),
-                fixed: false,
+                fixed: true,
             },
             KeymapEntry {
                 id: "select-tab-6",
@@ -257,7 +258,7 @@ pub(crate) fn entries() -> &'static [KeymapEntry] {
                 description: "Open the sixth visible sidebar tab or mission.",
                 scope: KeymapScope::Global,
                 default: default_combo("cmd-6", None, false),
-                fixed: false,
+                fixed: true,
             },
             KeymapEntry {
                 id: "select-tab-7",
@@ -265,7 +266,7 @@ pub(crate) fn entries() -> &'static [KeymapEntry] {
                 description: "Open the seventh visible sidebar tab or mission.",
                 scope: KeymapScope::Global,
                 default: default_combo("cmd-7", None, false),
-                fixed: false,
+                fixed: true,
             },
             KeymapEntry {
                 id: "select-tab-8",
@@ -273,7 +274,7 @@ pub(crate) fn entries() -> &'static [KeymapEntry] {
                 description: "Open the eighth visible sidebar tab or mission.",
                 scope: KeymapScope::Global,
                 default: default_combo("cmd-8", None, false),
-                fixed: false,
+                fixed: true,
             },
             KeymapEntry {
                 id: "select-tab-9",
@@ -281,7 +282,7 @@ pub(crate) fn entries() -> &'static [KeymapEntry] {
                 description: "Open the ninth visible sidebar tab or mission.",
                 scope: KeymapScope::Global,
                 default: default_combo("cmd-9", None, false),
-                fixed: false,
+                fixed: true,
             },
             KeymapEntry {
                 id: "pane-previous",
@@ -326,18 +327,19 @@ pub(crate) fn entries() -> &'static [KeymapEntry] {
             KeymapEntry {
                 id: "stop-session",
                 title: "Stop focused session",
-                description: "Stop the chat or terminal in the focused pane.",
+                description: "Stop the chat, terminal or mission slot in focus.",
                 scope: KeymapScope::Global,
-                default: default_combo("cmd-.", None, false),
+                default: default_combo("shift-cmd-x", None, false),
                 fixed: false,
             },
             KeymapEntry {
-                id: "copy",
-                title: "Copy",
-                description: "Copy the current terminal selection.",
-                scope: KeymapScope::Terminal,
-                default: default_combo("cmd-c", None, false),
-                fixed: true,
+                id: "resume-session",
+                title: "Resume focused session",
+                description:
+                    "Resume or restart the stopped chat, terminal or mission slot in focus.",
+                scope: KeymapScope::Global,
+                default: default_combo("shift-cmd-r", None, false),
+                fixed: false,
             },
             KeymapEntry {
                 id: "mission-tab-previous",
@@ -361,6 +363,16 @@ pub(crate) fn entries() -> &'static [KeymapEntry] {
 
 pub(crate) fn entry(id: &str) -> Option<&'static KeymapEntry> {
     entries().iter().find(|entry| entry.id == id)
+}
+
+pub(crate) fn is_tab_selection_entry(entry: &KeymapEntry) -> bool {
+    entry.id.starts_with("select-tab-")
+}
+
+pub(crate) fn tab_selection_entries() -> impl Iterator<Item = &'static KeymapEntry> {
+    entries()
+        .iter()
+        .filter(|entry| is_tab_selection_entry(entry))
 }
 
 fn reserved_entries() -> &'static [KeymapEntry] {
@@ -416,6 +428,14 @@ fn reserved_entries() -> &'static [KeymapEntry] {
                 description: "",
                 scope: KeymapScope::Global,
                 default: default_combo("ctrl-cmd-f", None, false),
+                fixed: true,
+            },
+            KeymapEntry {
+                id: "copy",
+                title: "Copy",
+                description: "Copy the current terminal selection.",
+                scope: KeymapScope::Terminal,
+                default: default_combo("cmd-c", None, false),
                 fixed: true,
             },
             KeymapEntry {
@@ -904,7 +924,10 @@ pub(crate) fn install_bindings(
         KeyBinding::new(&platform_default("shift-cmd-n"), NewWindow, None),
         KeyBinding::new(&platform_default("ctrl-cmd-f"), ToggleFullscreen, None),
     ]);
-    for entry in entries().iter().filter(|entry| !entry.fixed) {
+    for entry in entries()
+        .iter()
+        .filter(|entry| !entry.fixed || is_tab_selection_entry(entry))
+    {
         let Some(combo) = effective_binding(entry.id, overrides) else {
             continue;
         };
@@ -937,6 +960,7 @@ pub(crate) fn install_bindings(
                 "split-pane-right" => KeyBinding::new(&binding, SplitPaneRight, context),
                 "split-pane-down" => KeyBinding::new(&binding, SplitPaneDown, context),
                 "stop-session" => KeyBinding::new(&binding, StopFocusedSession, context),
+                "resume-session" => KeyBinding::new(&binding, ResumeFocusedSession, context),
                 "mission-tab-previous" => KeyBinding::new(&binding, MissionTabPrevious, context),
                 "mission-tab-next" => KeyBinding::new(&binding, MissionTabNext, context),
                 _ => continue,
@@ -956,19 +980,23 @@ mod tests {
 
     #[test]
     #[cfg(not(windows))]
-    fn registry_matches_the_shipped_defaults_and_fixed_entry() {
+    fn registry_matches_the_shipped_defaults_and_fixed_entries() {
         assert_eq!(entries().len(), 29);
-        assert_eq!(entries().iter().filter(|entry| entry.fixed).count(), 3);
+        assert_eq!(entries().iter().filter(|entry| entry.fixed).count(), 11);
         assert!(entry("new-window").unwrap().fixed);
         assert!(entry("close-pane").unwrap().fixed);
-        assert!(entry("copy").unwrap().fixed);
+        assert!(entry("copy").is_none());
         assert_eq!(format_combo(&entry("new-window").unwrap().default), "⇧⌘N");
         assert_eq!(
             format_combo(&entry("page-previous").unwrap().default),
             "⇧⌘["
         );
         assert_eq!(format_combo(&entry("zoom-in").unwrap().default), "⌘+");
-        assert_eq!(format_combo(&entry("stop-session").unwrap().default), "⌘.");
+        assert_eq!(format_combo(&entry("stop-session").unwrap().default), "⇧⌘X");
+        assert_eq!(
+            format_combo(&entry("resume-session").unwrap().default),
+            "⇧⌘R"
+        );
         assert_eq!(
             format_combo(&entry("split-pane-right").unwrap().default),
             "⌘D"
@@ -985,14 +1013,11 @@ mod tests {
     }
 
     #[test]
-    fn tab_shortcuts_are_global_rebindable_and_have_no_dispatch_context() {
+    fn tab_shortcuts_are_global_fixed_and_ignore_overrides() {
         let ids = (1..=9)
             .map(|index| format!("select-tab-{index}"))
             .collect::<Vec<_>>();
-        let tab_entries = entries()
-            .iter()
-            .filter(|entry| entry.id.starts_with("select-tab-"))
-            .collect::<Vec<_>>();
+        let tab_entries = tab_selection_entries().collect::<Vec<_>>();
         assert_eq!(
             tab_entries.iter().map(|entry| entry.id).collect::<Vec<_>>(),
             ids.iter().map(String::as_str).collect::<Vec<_>>()
@@ -1000,12 +1025,18 @@ mod tests {
         for (index, entry) in (1..=9).zip(tab_entries) {
             assert_eq!(entry.title, format!("Go to tab {index}"));
             assert_eq!(entry.scope, KeymapScope::Global);
-            assert!(!entry.fixed);
+            assert!(entry.fixed);
             assert_eq!(
                 binding_strings(&entry.default),
                 [platform_default(&format!("cmd-{index}"))]
             );
             assert_eq!(binding_context(entry, &entry.default), None);
+            let overrides =
+                KeymapOverrides::from([(entry.id.to_owned(), Some(combo_for("KeyP", false)))]);
+            assert_eq!(
+                effective_binding(entry.id, &overrides),
+                Some(entry.default.clone())
+            );
         }
     }
 
@@ -1083,7 +1114,29 @@ mod tests {
             .unwrap();
         let conflict = find_conflict(&reserved.default, "new-chat", &overrides).unwrap();
         assert_eq!(conflict.id, "system-minimize");
+        let copy = reserved_entries()
+            .iter()
+            .find(|entry| entry.id == "copy")
+            .unwrap();
+        assert_eq!(
+            find_conflict(&copy.default, "new-chat", &overrides)
+                .unwrap()
+                .id,
+            "copy"
+        );
         assert!(find_conflict(&combo_for("KeyW", false), "close-pane", &overrides).is_none());
+    }
+
+    #[test]
+    fn stop_and_resume_defaults_have_no_conflicts() {
+        let overrides = KeymapOverrides::new();
+        for id in ["stop-session", "resume-session"] {
+            let entry = entry(id).unwrap();
+            assert!(
+                find_conflict(&entry.default, id, &overrides).is_none(),
+                "{id}"
+            );
+        }
     }
 
     #[test]
@@ -1218,8 +1271,14 @@ mod tests {
                 &[("shift-cmd-d", "d", true, false, false, true)],
             ),
             ("close-pane", &[("cmd-w", "w", true, false, false, false)]),
-            ("stop-session", &[("cmd-.", ".", true, false, false, false)]),
-            ("copy", &[("cmd-c", "c", true, false, false, false)]),
+            (
+                "stop-session",
+                &[("shift-cmd-x", "x", true, false, false, true)],
+            ),
+            (
+                "resume-session",
+                &[("shift-cmd-r", "r", true, false, false, true)],
+            ),
             (
                 "mission-tab-previous",
                 &[("cmd-[", "[", true, false, false, false)],
@@ -1283,7 +1342,7 @@ mod tests {
     }
     #[test]
     #[cfg(target_os = "macos")]
-    fn macos_defaults_are_byte_identical_to_phase_zero() {
+    fn macos_registry_defaults_match_expected_combos() {
         let expected = [
             (
                 "new-window",
@@ -1387,11 +1446,11 @@ mod tests {
             ),
             (
                 "stop-session",
-                key_combo("Period", true, false, false, false, None, false),
+                key_combo("KeyX", true, false, false, true, None, false),
             ),
             (
-                "copy",
-                key_combo("KeyC", true, false, false, false, None, false),
+                "resume-session",
+                key_combo("KeyR", true, false, false, true, None, false),
             ),
             (
                 "mission-tab-previous",
@@ -1426,6 +1485,10 @@ mod tests {
                 key_combo("KeyF", true, true, false, false, None, false),
             ),
             (
+                "copy",
+                key_combo("KeyC", true, false, false, false, None, false),
+            ),
+            (
                 "system-paste",
                 key_combo("KeyV", true, false, false, false, None, false),
             ),
@@ -1450,6 +1513,8 @@ mod tests {
             ("shift-cmd-d", "shift-ctrl-d"),
             ("cmd-k", "ctrl-k"),
             ("shift-cmd-k", "shift-ctrl-k"),
+            ("shift-cmd-r", "shift-ctrl-r"),
+            ("shift-cmd-x", "shift-ctrl-x"),
             ("shift-cmd-z", "shift-ctrl-z"),
             ("cmd-c", "ctrl-c"),
             ("cmd-v", "ctrl-v"),
@@ -1560,7 +1625,7 @@ mod tests {
                 assert!(!binding.contains("cmd-"), "{}: {binding}", entry.id);
                 assert!(!Keystroke::parse(&binding).unwrap().modifiers.platform);
             }
-            if !entry.id.starts_with("system-") {
+            if entries().iter().any(|candidate| candidate.id == entry.id) {
                 assert!(
                     find_conflict(&entry.default, entry.id, &KeymapOverrides::new()).is_none(),
                     "{}",
@@ -1575,8 +1640,9 @@ mod tests {
             ("toggle-sidebar", "Ctrl+S"),
             ("split-pane-right", "Ctrl+D"),
             ("split-pane-down", "Ctrl+Shift+D"),
-            ("copy", "Ctrl+C"),
             ("close-pane", "Ctrl+W"),
+            ("stop-session", "Ctrl+Shift+X"),
+            ("resume-session", "Ctrl+Shift+R"),
             ("pane-previous", "Ctrl+["),
             ("pane-next", "Ctrl+]"),
             ("mission-tab-previous", "Ctrl+["),
@@ -1588,6 +1654,11 @@ mod tests {
         ] {
             assert_eq!(format_combo(&entry(id).unwrap().default), hint);
         }
+        let copy = reserved_entries()
+            .iter()
+            .find(|entry| entry.id == "copy")
+            .unwrap();
+        assert_eq!(format_combo(&copy.default), "Ctrl+C");
         assert!(find_conflict(
             &key_combo("KeyQ", false, true, false, true, None, false),
             "new-chat",
