@@ -14,6 +14,7 @@ Since 2026-09-01 a spec's number **is** its tracking issue number: file the issu
 - [565 — i18n, 简体中文 first](./565-i18n.md) — a language setting, a compile-time catalog, a live switch ([#565](https://github.com/yicheng47/runner/issues/565), P2, 0.14).
 - [586 — Shell status: process detection first](./586-shell-status-detection.md) — foreground-process detection for shell panes before semantic shell integration ([#586](https://github.com/yicheng47/runner/issues/586), P2, 0.13).
 - [533 — Update agent CLIs from Settings → Agents](./533-agent-cli-updates.md) — installed versions, an Update button that runs the CLI's own updater in a pane, an update-available badge ([#533](https://github.com/yicheng47/runner/issues/533), P2, 0.11.x).
+- [697 — Keyboard shortcut tidy](./697-shortcut-tidy.md) — one fixed "Go to tab 1–9" row, built-in keys grouped in a Fixed card at the bottom, and stop (⇧⌘X) and resume (⇧⌘R) of the focused session in chats and on the mission view ([#697](https://github.com/yicheng47/runner/issues/697), P2, 0.11).
 - [701 — Desktop notifications](./701-desktop-notifications.md) — a popup Runner draws itself, following Zed's agent notification, when a session off screen waits on you, finishes or fails ([#701](https://github.com/yicheng47/runner/issues/701), P2, 0.12).
 - [468 — Landing page](./468-landing-page.md) — one dark responsive page in `site/`, deployed by GitHub Pages ([#468](https://github.com/yicheng47/runner/issues/468), P2, 0.12).
 
