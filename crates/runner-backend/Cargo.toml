@@ -43,6 +43,7 @@ tokio-util = { version = "0.7", features = ["rt"] }
 toml_edit = "0.25"
 portable-pty = "0.9"
 glob = "0.3"
+vte = "0.15"
 
 # Unix-only deps:
 #  - libc: process-group signals, descendant discovery, and process-argv reads
