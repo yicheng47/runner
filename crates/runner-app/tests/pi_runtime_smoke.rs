@@ -193,11 +193,10 @@ fn pi_real_binary_direct_mission_and_relaunch_resume() {
     let bridge = TerminalBridge::new(core.clone(), Arc::new(|| {})).unwrap();
     let direct = core.sessions.spawn_direct(&role, None, None, None, None, None, Some(100), Some(30), &core.app_data_dir, db.clone(), Arc::new(core.session_events()), Some("When the user asks for the smoke result, reply with exactly RUNNER_PI_DIRECT_OK. Do not call tools or change files.".into())).unwrap();
     cleanup.0.push((core.sessions.clone(), direct.id.clone()));
-    let key = runner_backend::repo::session::get_row(&db.get().unwrap(), &direct.id)
+    let direct_row = runner_backend::repo::session::get_row(&db.get().unwrap(), &direct.id)
         .unwrap()
-        .unwrap()
-        .agent_session_key
         .unwrap();
+    let key = direct_row.agent_session_key.unwrap();
     println!("Direct key persisted: {key}");
     let terminal = bridge.session(&direct.id).unwrap();
     let view = terminal.view();
@@ -334,9 +333,50 @@ fn pi_real_binary_direct_mission_and_relaunch_resume() {
         .agent_session_key
         .unwrap();
     let terminal = resumed_bridge.session(&spawned_id).unwrap();
-    let _view = terminal.view();
+    let mission_view = terminal.view();
     wait_for_turn(&terminal, &agent_dir, &mission_key, "RUNNER_PI_MISSION_OK");
     println!(
         "Observed mission slot under Bypass with temporary PI_CODING_AGENT_DIR; model={model}; thinking=off"
     );
+    relaunched.sessions.kill(&spawned_id).unwrap();
+    cleanup.0.clear();
+    drop(mission_view);
+    drop(terminal);
+
+    relaunched
+        .sessions
+        .resume(
+            &spawned_id,
+            Some(100),
+            Some(30),
+            &relaunched.app_data_dir,
+            db.clone(),
+            Arc::new(relaunched.session_events()),
+        )
+        .unwrap();
+    cleanup
+        .0
+        .push((relaunched.sessions.clone(), spawned_id.clone()));
+    let resumed_mission = resumed_bridge.session(&spawned_id).unwrap();
+    let _resumed_mission_view = resumed_mission.view();
+    wait_for_ready(&resumed_mission);
+    let history_deadline = Instant::now() + Duration::from_secs(30);
+    while !grid_text(&resumed_mission).contains("RUNNER_PI_MISSION_OK") {
+        assert!(
+            Instant::now() < history_deadline,
+            "mission resume did not paint history: {}",
+            grid_text(&resumed_mission),
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let no_replay_deadline = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < no_replay_deadline {
+        assert_eq!(
+            user_message_count(&transcript(&agent_dir, &mission_key)),
+            1,
+            "a genuine mission resume must not replay the lead goal",
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    println!("Observed genuine mission resume by {mission_key} with no lead-goal replay");
 }

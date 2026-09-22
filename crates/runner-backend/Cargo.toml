@@ -42,7 +42,6 @@ tokio-util = { version = "0.7", features = ["rt"] }
 # user-authored comments + formatting on round-trip writes.
 toml_edit = "0.25"
 portable-pty = "0.9"
-glob = "0.3"
 vte = "0.15"
 
 # Unix-only deps:

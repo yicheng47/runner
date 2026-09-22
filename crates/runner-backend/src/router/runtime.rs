@@ -26,7 +26,9 @@
 // related "how do we hand prompts and identity to a real CLI" piece.
 
 use crate::model::Runtime;
-use std::path::Path;
+use std::collections::HashMap;
+use std::ffi::{OsStr, OsString};
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Copy, serde::Serialize)]
 pub struct RuntimeDefinition {
@@ -1335,30 +1337,96 @@ pub(crate) fn pi_project_slug(cwd: &str) -> String {
     format!("--{encoded}--")
 }
 
-pub fn pi_conversation_exists(cwd: Option<&str>, key: &str) -> bool {
+const PI_AGENT_DIR_ENV: &str = "PI_CODING_AGENT_DIR";
+const PI_SESSION_DIR_ENV: &str = "PI_CODING_AGENT_SESSION_DIR";
+
+pub fn pi_conversation_exists(
+    cwd: Option<&str>,
+    key: &str,
+    role_env: &HashMap<String, String>,
+) -> bool {
     let Some(cwd) = cwd else {
         return true;
     };
+    let session_dir = pi_effective_env(role_env, PI_SESSION_DIR_ENV);
+    let agent_dir = pi_effective_env(role_env, PI_AGENT_DIR_ENV);
     #[cfg(test)]
     let home = CONVERSATION_HOME.with_borrow(|home| home.clone());
     #[cfg(not(test))]
     let home = runner_core::app_paths::home_dir();
-    let Some(home) = home else {
-        return true;
-    };
-    pi_conversation_exists_at(&home, cwd, key)
+    pi_conversation_exists_at(
+        home.as_deref(),
+        cwd,
+        key,
+        session_dir.as_deref(),
+        agent_dir.as_deref(),
+    )
 }
 
-fn pi_conversation_exists_at(home: &Path, cwd: &str, key: &str) -> bool {
-    let directory = home.join(".pi/agent/sessions").join(pi_project_slug(cwd));
-    let pattern = format!(
-        "{}/*_{}.jsonl",
-        glob::Pattern::escape(&directory.to_string_lossy()),
-        glob::Pattern::escape(key),
-    );
-    glob::glob(&pattern)
-        .ok()
-        .is_some_and(|matches| matches.flatten().next().is_some())
+fn pi_effective_env(role_env: &HashMap<String, String>, name: &str) -> Option<OsString> {
+    if let Some(value) = role_env.get(name) {
+        return Some(OsString::from(value));
+    }
+    #[cfg(test)]
+    return None;
+    #[cfg(not(test))]
+    std::env::var_os(name)
+}
+
+fn pi_conversation_exists_at(
+    home: Option<&Path>,
+    cwd: &str,
+    key: &str,
+    session_dir: Option<&OsStr>,
+    agent_dir: Option<&OsStr>,
+) -> bool {
+    let Some(directory) = pi_session_directory(home, cwd, session_dir, agent_dir) else {
+        return true;
+    };
+    let suffix = format!("_{key}.jsonl");
+    std::fs::read_dir(directory).ok().is_some_and(|entries| {
+        entries.filter_map(Result::ok).any(|entry| {
+            entry.path().is_file() && entry.file_name().to_string_lossy().ends_with(&suffix)
+        })
+    })
+}
+
+fn pi_session_directory(
+    home: Option<&Path>,
+    cwd: &str,
+    session_dir: Option<&OsStr>,
+    agent_dir: Option<&OsStr>,
+) -> Option<PathBuf> {
+    let cwd = pi_resolve_path(OsStr::new(cwd), None, home)?;
+    if let Some(session_dir) = session_dir.filter(|path| !path.is_empty()) {
+        return pi_resolve_path(session_dir, Some(&cwd), home);
+    }
+    let sessions_root = if let Some(agent_dir) = agent_dir.filter(|path| !path.is_empty()) {
+        pi_resolve_path(agent_dir, Some(&cwd), home)?.join("sessions")
+    } else {
+        home?.join(".pi").join("agent").join("sessions")
+    };
+    Some(sessions_root.join(pi_project_slug(&cwd.to_string_lossy())))
+}
+
+fn pi_resolve_path(path: &OsStr, cwd: Option<&Path>, home: Option<&Path>) -> Option<PathBuf> {
+    let path = Path::new(path);
+    let expanded = if path == Path::new("~") {
+        home?.to_path_buf()
+    } else if let Ok(rest) = path.strip_prefix("~") {
+        home?.join(rest)
+    } else {
+        path.to_path_buf()
+    };
+    if expanded.is_absolute() {
+        Some(expanded)
+    } else {
+        Some(
+            cwd.map(Path::to_path_buf)
+                .or_else(|| std::env::current_dir().ok())?
+                .join(expanded),
+        )
+    }
 }
 
 #[cfg(test)]
@@ -2404,25 +2472,136 @@ mod tests {
     }
 
     #[test]
-    fn pi_conversation_probe_uses_one_glob_under_the_encoded_project_slug() {
+    fn pi_conversation_probe_uses_agent_dir_and_the_encoded_project_slug() {
         assert_eq!(pi_project_slug("/Users/jason"), "--Users-jason--");
         assert_eq!(pi_project_slug(r"C:\Users\x"), "--C--Users-x--");
 
         let home = tempfile::tempdir().unwrap();
+        let cwd = home.path().join("project");
+        let cwd = cwd.to_string_lossy();
         let key = uuid::Uuid::new_v4().to_string();
-        let sessions = home.path().join(".pi/agent/sessions/--Users-jason--");
+        let agent_dir = home.path().join("custom-agent");
+        let sessions = agent_dir.join("sessions").join(pi_project_slug(&cwd));
         std::fs::create_dir_all(&sessions).unwrap();
         assert!(!pi_conversation_exists_at(
-            home.path(),
-            "/Users/jason",
-            &key
+            Some(home.path()),
+            cwd.as_ref(),
+            &key,
+            None,
+            Some(agent_dir.as_os_str()),
         ));
         std::fs::write(
             sessions.join(format!("2026-09-18T00-00-00_{key}.jsonl")),
             "",
         )
         .unwrap();
-        assert!(pi_conversation_exists_at(home.path(), "/Users/jason", &key));
+        assert!(pi_conversation_exists_at(
+            Some(home.path()),
+            cwd.as_ref(),
+            &key,
+            None,
+            Some(agent_dir.as_os_str()),
+        ));
+    }
+
+    #[test]
+    fn pi_conversation_probe_session_dir_wins_and_holds_files_flat() {
+        let home = tempfile::tempdir().unwrap();
+        let cwd = home.path().join("project");
+        let cwd = cwd.to_string_lossy();
+        let key = uuid::Uuid::new_v4().to_string();
+        let agent_dir = home.path().join("agent");
+        let nested = agent_dir.join("sessions").join(pi_project_slug(&cwd));
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(nested.join(format!("agent_{key}.jsonl")), "").unwrap();
+        let session_dir = home.path().join("flat-sessions");
+        std::fs::create_dir_all(&session_dir).unwrap();
+
+        assert!(!pi_conversation_exists_at(
+            Some(home.path()),
+            cwd.as_ref(),
+            &key,
+            Some(session_dir.as_os_str()),
+            Some(agent_dir.as_os_str()),
+        ));
+        std::fs::write(session_dir.join(format!("flat_{key}.jsonl")), "").unwrap();
+        assert!(pi_conversation_exists_at(
+            Some(home.path()),
+            cwd.as_ref(),
+            &key,
+            Some(session_dir.as_os_str()),
+            Some(agent_dir.as_os_str()),
+        ));
+    }
+
+    #[test]
+    fn pi_conversation_probe_without_env_uses_the_default_directory() {
+        let home = tempfile::tempdir().unwrap();
+        let cwd = home.path().join("project");
+        let cwd = cwd.to_string_lossy();
+        let key = uuid::Uuid::new_v4().to_string();
+        let sessions = home
+            .path()
+            .join(".pi/agent/sessions")
+            .join(pi_project_slug(&cwd));
+        std::fs::create_dir_all(&sessions).unwrap();
+        std::fs::write(sessions.join(format!("default_{key}.jsonl")), "").unwrap();
+
+        assert!(pi_conversation_exists_at(
+            Some(home.path()),
+            cwd.as_ref(),
+            &key,
+            None,
+            None,
+        ));
+    }
+
+    #[test]
+    fn pi_conversation_probe_does_not_fall_back_from_an_empty_configured_directory() {
+        let home = tempfile::tempdir().unwrap();
+        let cwd = home.path().join("project");
+        let cwd = cwd.to_string_lossy();
+        let key = uuid::Uuid::new_v4().to_string();
+        let default_sessions = home
+            .path()
+            .join(".pi/agent/sessions")
+            .join(pi_project_slug(&cwd));
+        std::fs::create_dir_all(&default_sessions).unwrap();
+        std::fs::write(default_sessions.join(format!("default_{key}.jsonl")), "").unwrap();
+        let agent_dir = home.path().join("empty-agent");
+        std::fs::create_dir_all(&agent_dir).unwrap();
+
+        assert!(!pi_conversation_exists_at(
+            Some(home.path()),
+            cwd.as_ref(),
+            &key,
+            None,
+            Some(agent_dir.as_os_str()),
+        ));
+    }
+
+    #[test]
+    fn pi_session_directory_expands_tilde_and_resolves_relative_overrides_from_cwd() {
+        let home = tempfile::tempdir().unwrap();
+        let cwd = home.path().join("project");
+        assert_eq!(
+            pi_session_directory(
+                Some(home.path()),
+                cwd.to_str().unwrap(),
+                Some(OsStr::new("~/flat-sessions")),
+                None,
+            ),
+            Some(home.path().join("flat-sessions"))
+        );
+        assert_eq!(
+            pi_session_directory(
+                Some(home.path()),
+                cwd.to_str().unwrap(),
+                Some(OsStr::new("relative-sessions")),
+                None,
+            ),
+            Some(cwd.join("relative-sessions"))
+        );
     }
 
     #[test]
