@@ -70,7 +70,7 @@ The checkout at the repository root stays on `main`. Every branch of work gets i
 
 Each worktree carries its own `target/` and pays for its own build. Do not point them at a shared `CARGO_TARGET_DIR`: Cargo takes an exclusive lock on the target directory, so concurrent worktrees would queue behind each other instead of building in parallel.
 
-Work stays inside its own worktree. When several are live at once, treat the others as another machine's checkout.
+Work stays inside its own worktree. When several are live at once, treat the others as another machine's checkout. Design files are the exception: `.pen` files are opened and edited only in the root checkout on `main`, even when the code they describe is on a branch.
 
 ## Engineering Conventions
 
@@ -82,7 +82,7 @@ Work stays inside its own worktree. When several are live at once, treat the oth
 - Use structured APIs and parsers when available instead of ad hoc string
   manipulation.
 - Keep comments rare and useful. Explain non-obvious intent, not mechanics.
-- Treat `design/runner-mvp-design.pen` as the historical MVP canvas. Put new product work in a feature-scoped `.pen` file and keep UI aligned with the file and node referenced by the user or feature spec. The active canvas is `design/runner.pen`, the product canvas of screens and `cmp/` components; feature specs go in `design/specs/<issue>-<slug>.pen`, one file per spec, since 2026-09-18. The gpui-rewrite's parity exception (plan decision 1) ended at the `v0.6.0` cutover on 2026-08-23.
+- Treat `design/runner-mvp-design.pen` as the historical MVP canvas. Put new product work in a feature-scoped `.pen` file and keep UI aligned with the file and node referenced by the user or feature spec. The active canvas is `design/runner.pen`, the product canvas of screens and `cmp/` components; feature specs go in `design/specs/<issue>-<slug>.pen`, one file per spec, since 2026-09-18. A spec file holds only the frames that spec needs, plus the `cmp/` components they reference; it is never a full copy of `runner.pen`. Design files live in the root checkout on `main`, never in a worktree: design and spec are settled on `main` first, and a branch's code follows them. The gpui-rewrite's parity exception (plan decision 1) ended at the `v0.6.0` cutover on 2026-08-23.
 - `README.md` and `README.zh-CN.md` change together: a PR that edits one edits the other, and a paragraph that cannot be translated yet is marked `<!-- TODO zh-CN -->` rather than left silently behind.
 - Do not add repo conventions only to an agent-specific file. Update this file
   and leave tool-specific files as pointers if needed.
