@@ -61,7 +61,7 @@ DISCOVER
 
 OUTPUT AND EXITS
   Add --json for structured output. Add -q when only the changed object's id is needed.
-  0 success; 1 Runner refused; 2 usage or reference error; 3 Runner is not running;
+  0 success; 1 Runner refused or watch failed; 2 usage or reference error; 3 Runner is not running;
   5 a sandbox kept this command from reaching Runner.
   On exit 3, ask the user to open Runner. On exit 5, nothing is known about Runner yet:
   run the same command again outside the sandbox (in Codex, request escalated permissions
@@ -83,6 +83,43 @@ COMMON FLOW
   runner msg post --mission "$mission" --to <lead_handle> "message"
   runner mission stop "$mission"
   runner mission archive "$mission"
+
+START AND WATCH (REQUIRED)
+  After every successful runner mission start, arm runner mission feed <id> --follow --json
+  for the exact returned ID in your host's supported background/watch facility before
+  reporting delegation complete. Keep exactly one watcher per mission; reuse it on later
+  turns. Events, stderr diagnostics and process exit must reach you during later work and
+  while idle. An unread background log or a completion-only notification is not a watch.
+  Plain mission start still returns its result and exits; it does not block on watching.
+  Surface handoffs, human questions, completion, stop/crash and lost connections promptly.
+  Polling is every 3 seconds; each event is flushed immediately, without notification batching.
+  Routine busy/idle and inbox noise stays hidden by default; do not add --all for a watch.
+  The follower ends on archive, completed/aborted mission state, or all sessions exiting.
+  Busy/idle and a crew message saying "done" do not end a live mission. Resume needs a new watch.
+  A watch request timeout after 30 seconds exits 1; Runner may still be running.
+  Clean up on exit. On host expiry or unexpected exit, report the gap, check mission show,
+  and re-arm one watch if still active. Use the recovery --since cursor when available;
+  otherwise re-arm with --since 0 --oldest-first and deduplicate event IDs.
+  Never silently abandon a watch. Stop any undeliverable follower before ending your turn.
+  If your host cannot deliver background events, tell the user plainly:
+    "Mission <id> started, but this host cannot notify me of later events;
+     automatic watching is unavailable. Follow with: runner mission feed <id> --follow --json"
+  Do not claim monitoring is active without a verified delivery path.
+
+HOST NOTES (installed documentation checked 2026-09-22; availability varies by session)
+  Claude Code 2.1.278: the embedded Monitor tool documentation says each stdout line becomes
+  a notification and exit ends the watch. When Monitor is available, run the feed command
+  with 2>&1 so stderr failures also notify you. Handle Monitor expiry by re-arming as above.
+  Bash run_in_background only notifies on completion and is insufficient for a live feed.
+  Codex CLI 0.155.1: embedded exec_command/write_stdin tool help documents a running session
+  and explicit output reads. These alone establish active-turn consumption, not idle delivery.
+  Copilot CLI 1.0.87: copilot help commands documents /tasks for subagents and shell commands;
+  it does not establish per-line delivery to an idle agent. Do not infer it from /tasks.
+  pi 0.85.1: installed README.md says no background bash. docs/extensions.md documents
+  pi.sendMessage with triggerTurn: true and deliverAs: "followUp" or "steer"; only an already
+  available extension that forwards feed output, errors and exit can provide that watch.
+  For Codex, Copilot or pi without a verified event-delivery facility, use the explicit
+  limitation path above. Do not install extensions or change agent configuration to claim support.
 
 IDENTITY
   Inside a mission, mission commands carry the caller's own handle.
@@ -119,5 +156,21 @@ mod tests {
         assert!(AGENT_GUIDE
             .contains("runner msg post --mission \"$mission\" --to <lead_handle> \"message\""));
         assert!(!AGENT_GUIDE.contains("--as <roster_handle>"));
+    }
+
+    #[test]
+    fn agent_guide_requires_a_delivering_watch_after_start() {
+        for rule in [
+            "After every successful runner mission start",
+            "runner mission feed <id> --follow --json",
+            "exactly one watcher per mission",
+            "while idle",
+            "An unread background log or a completion-only notification is not a watch",
+            "automatic watching is unavailable",
+            "On host expiry or unexpected exit",
+            "stderr diagnostics and process exit",
+        ] {
+            assert!(AGENT_GUIDE.contains(rule), "missing watch rule: {rule}");
+        }
     }
 }

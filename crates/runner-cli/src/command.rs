@@ -9,10 +9,16 @@ use serde_json::{json, Value};
 use crate::env::{BusContext, MissionEnv};
 use crate::{env, help, msg, output, signal};
 
+const DEFAULT_FEED_POLL_INTERVAL: Duration = Duration::from_secs(3);
 #[cfg(not(test))]
-const FEED_POLL_INTERVAL: Duration = Duration::from_millis(500);
+const FEED_POLL_INTERVAL: Duration = DEFAULT_FEED_POLL_INTERVAL;
 #[cfg(test)]
 const FEED_POLL_INTERVAL: Duration = Duration::from_millis(1);
+const DEFAULT_FEED_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+#[cfg(not(test))]
+const FEED_REQUEST_TIMEOUT: Duration = DEFAULT_FEED_REQUEST_TIMEOUT;
+#[cfg(test)]
+const FEED_REQUEST_TIMEOUT: Duration = Duration::from_millis(50);
 
 #[derive(Parser, Debug)]
 #[command(
@@ -330,7 +336,7 @@ enum MissionCommand {
     /// Print a window from the mission event feed.
     Feed {
         mission: Option<String>,
-        /// Keep polling and print new events as they arrive.
+        /// Poll every 3 seconds until the mission ends or all its sessions exit.
         #[arg(long)]
         follow: bool,
         /// Start after this byte offset.
@@ -763,9 +769,20 @@ fn validate_remote(cli: &Cli, context: &BusContext) -> Result<(), CliError> {
             Ok(())
         }
         Command::Mission {
-            command: MissionCommand::Feed { types, .. },
+            command:
+                MissionCommand::Feed {
+                    types,
+                    follow,
+                    limit,
+                    ..
+                },
         } => {
             parse_feed_types(types.as_deref())?;
+            if *follow && *limit == Some(0) {
+                return Err(CliError::usage(
+                    "runner mission feed: --follow requires a positive --limit",
+                ));
+            }
             Ok(())
         }
         Command::Mission {
@@ -836,6 +853,7 @@ async fn run_remote(cli: &Cli, context: &BusContext) -> Result<Option<ToolRespon
             cli.json,
             cli.quiet,
             &mut stdout,
+            &mut std::io::stderr(),
         )
         .await?;
         return Ok(None);
@@ -1485,6 +1503,14 @@ impl FeedFilter {
             return event_type.is_some_and(|kind| types.contains(kind));
         }
         self.all
+            || event
+                .pointer("/payload/status/lifecycle")
+                .and_then(Value::as_str)
+                == Some("error")
+            || event
+                .pointer("/payload/status/observation/outcome")
+                .and_then(Value::as_str)
+                == Some("failed")
             || !event_type.is_some_and(|kind| {
                 matches!(kind, "session_status" | "runner_status" | "inbox_read")
             })
@@ -1554,84 +1580,152 @@ async fn follow_feed(
     json: bool,
     quiet: bool,
     writer: &mut impl std::io::Write,
+    diagnostics: &mut impl std::io::Write,
 ) -> Result<(), CliError> {
-    let ctrl_c = tokio::signal::ctrl_c();
-    tokio::pin!(ctrl_c);
-    let initial = tokio::select! {
-        signal = &mut ctrl_c => {
-            handle_ctrl_c(signal)?;
-            return Ok(());
-        }
-        response = call(
-            client,
-            "mission_feed",
-            json!({
-                "mission_id": mission_id,
-                "since_offset": since,
-                "limit": limit,
-                "order": if oldest_first { "oldest_first" } else { "newest_first" },
-            }),
-        ) => response?,
-    };
-    let mut cursor = initial
-        .value
-        .get("next_offset")
-        .and_then(Value::as_u64)
-        .or(since)
-        .unwrap_or(0);
-    let mut seen = HashSet::new();
-    write_follow_events(&initial, filter, json, quiet, &mut seen, writer)?;
-    let archived = tokio::select! {
-        signal = &mut ctrl_c => {
-            handle_ctrl_c(signal)?;
-            return Ok(());
-        }
-        archived = mission_is_archived(client, mission_id) => archived?,
-    };
-    if archived {
-        return Ok(());
-    }
-
-    let mut polls = 0_u64;
-    loop {
-        let response = tokio::select! {
-            signal = &mut ctrl_c => {
-                handle_ctrl_c(signal)?;
-                return Ok(());
-            }
-            response = async {
-                tokio::time::sleep(FEED_POLL_INTERVAL).await;
-                call(
+    let mut cursor = since.unwrap_or(0);
+    let follow = async {
+        let mut initial = true;
+        let mut seen = HashSet::new();
+        let mut session_states = BTreeMap::new();
+        loop {
+            // Snapshot before reading so a terminal transition cannot skip its final events.
+            let snapshot = follow_call(client, "mission_status", json!({"id": mission_id})).await?;
+            let end_offset = snapshot.value["last_event_offset"].as_u64().unwrap_or(0);
+            loop {
+                let response = follow_call(
                     client,
                     "mission_feed",
                     json!({
                         "mission_id": mission_id,
-                        "since_offset": cursor,
+                        "since_offset": if initial { since } else { Some(cursor) },
                         "limit": limit,
-                        "order": "oldest_first",
+                        "order": if initial && !oldest_first { "newest_first" } else { "oldest_first" },
                     }),
                 )
-                .await
-            } => response?,
-        };
-        if let Some(next) = response.value.get("next_offset").and_then(Value::as_u64) {
-            cursor = cursor.max(next);
-        }
-        write_follow_events(&response, filter, json, quiet, &mut seen, writer)?;
-        polls += 1;
-        if polls.is_multiple_of(4) {
-            let archived = tokio::select! {
-                signal = &mut ctrl_c => {
-                    handle_ctrl_c(signal)?;
-                    return Ok(());
+                .await?;
+                let previous = cursor;
+                write_follow_events(&response, filter, json, quiet, &mut seen, writer)?;
+                if let Some(next) = response.value["next_offset"].as_u64() {
+                    cursor = cursor.max(next);
                 }
-                archived = mission_is_archived(client, mission_id) => archived?,
-            };
-            if archived {
+                initial = false;
+                if cursor >= end_offset {
+                    break;
+                }
+                if cursor == previous {
+                    return Err(CliError {
+                        code: 1,
+                        message: "feed cursor did not advance to the mission snapshot".into(),
+                    });
+                }
+            }
+            if let Some(sessions) = snapshot.value["sessions"].as_array() {
+                for session in sessions {
+                    let id = field(session, "id").unwrap_or_default();
+                    let status = field(session, "status").unwrap_or_default();
+                    let previous = session_states.insert(id.to_owned(), status.to_owned());
+                    if matches!(status, "stopped" | "crashed")
+                        && previous.as_deref() != Some(status)
+                    {
+                        let label = field(session, "handle")
+                            .map(|handle| format!("@{handle}"))
+                            .unwrap_or_else(|| id.to_owned());
+                        write_watch_notice(
+                            diagnostics,
+                            mission_id,
+                            &format!("session {label} {status}"),
+                        )?;
+                    }
+                }
+            }
+            if let Some((reason, failed)) = feed_end_reason(&snapshot.value) {
+                if failed {
+                    return Err(CliError {
+                        code: 1,
+                        message: reason.into(),
+                    });
+                }
+                write_watch_notice(diagnostics, mission_id, reason)?;
                 return Ok(());
             }
+            tokio::time::sleep(FEED_POLL_INTERVAL).await;
         }
+    };
+    let result = tokio::select! {
+        signal = tokio::signal::ctrl_c() => handle_ctrl_c(signal),
+        result = follow => result,
+    };
+    result.map_err(|error| CliError {
+        code: error.code,
+        message: format!(
+            "runner mission feed {mission_id}: watch ended: {}. Use the same Runner executable for `mission show {mission_id} --json`; if still active, resume with `mission feed {mission_id} --since {cursor} --oldest-first --follow --json`.",
+            error.message
+        ),
+    })
+}
+
+async fn follow_call(
+    client: &impl ToolCaller,
+    tool: &str,
+    args: Value,
+) -> Result<ToolResponse, CliError> {
+    tokio::time::timeout(FEED_REQUEST_TIMEOUT, call(client, tool, args))
+        .await
+        .map_err(|_| CliError {
+            code: 1,
+            message: "watch request timed out; Runner may still be running".into(),
+        })?
+}
+
+fn feed_end_reason(snapshot: &Value) -> Option<(&'static str, bool)> {
+    let mission = &snapshot["mission"];
+    if field(mission, "status") == Some("aborted") {
+        return Some(("mission aborted", true));
     }
+    let sessions = snapshot["sessions"].as_array();
+    let all_exited = sessions.is_some_and(|sessions| {
+        !sessions.is_empty()
+            && sessions
+                .iter()
+                .all(|session| matches!(field(session, "status"), Some("stopped" | "crashed")))
+    });
+    let archived = mission
+        .get("archived_at")
+        .is_some_and(|value| !value.is_null());
+    let completed = field(mission, "status") == Some("completed");
+    if (archived || completed || all_exited)
+        && sessions.is_some_and(|sessions| {
+            sessions
+                .iter()
+                .any(|session| field(session, "status") == Some("crashed"))
+        })
+    {
+        Some(("mission watch ended with crashed sessions", true))
+    } else if archived {
+        Some(("mission archived; watch ended", false))
+    } else if completed {
+        Some(("mission completed; watch ended", false))
+    } else if all_exited {
+        Some((
+            "all mission sessions exited; watch ended (arm a new watch if resumed)",
+            false,
+        ))
+    } else {
+        None
+    }
+}
+
+fn write_watch_notice(
+    writer: &mut impl std::io::Write,
+    mission_id: &str,
+    message: &str,
+) -> Result<(), CliError> {
+    writeln!(writer, "runner mission feed {mission_id}: {message}")
+        .and_then(|()| writer.flush())
+        .map_err(|error| CliError {
+            code: 1,
+            message: format!("watch diagnostic write failed: {error}"),
+        })
 }
 
 fn handle_ctrl_c(result: std::io::Result<()>) -> Result<(), CliError> {
@@ -1668,14 +1762,6 @@ fn write_follow_events(
         code: 1,
         message: format!("runner mission feed: write failed: {error}"),
     })
-}
-
-async fn mission_is_archived(client: &impl ToolCaller, mission_id: &str) -> Result<bool, CliError> {
-    let mission = call(client, "mission_get", json!({"id": mission_id})).await?;
-    Ok(mission
-        .value
-        .get("archived_at")
-        .is_some_and(|value| !value.is_null()))
 }
 
 async fn run_chat(
@@ -2392,40 +2478,79 @@ mod tests {
         })
     }
 
+    fn feed_snapshot(status: &str, sessions: &[(&str, &str)], offset: u64) -> Value {
+        json!({
+            "mission": {"status": status, "archived_at": null},
+            "sessions": sessions.iter().enumerate().map(|(index, (handle, status))| json!({
+                "id": format!("{:026}", index + 1), "handle": handle, "status": status,
+            })).collect::<Vec<_>>(),
+            "last_event_offset": offset,
+        })
+    }
+
+    #[test]
+    fn feed_poll_interval_is_three_seconds_with_a_fast_test_seam() {
+        assert_eq!(DEFAULT_FEED_POLL_INTERVAL, Duration::from_secs(3));
+        assert_eq!(FEED_POLL_INTERVAL, Duration::from_millis(1));
+        assert_eq!(DEFAULT_FEED_REQUEST_TIMEOUT, Duration::from_secs(30));
+        assert!(DEFAULT_FEED_REQUEST_TIMEOUT > DEFAULT_FEED_POLL_INTERVAL);
+    }
+
+    #[test]
+    fn follow_rejects_zero_limit_without_changing_one_shot_feed() {
+        let args = ["runner", "mission", "feed", "mission", "--limit", "0"];
+        let one_shot = Cli::try_parse_from(args).unwrap();
+        validate_remote(&one_shot, &BusContext::OffBus).unwrap();
+        let follow = Cli::try_parse_from(args.into_iter().chain(["--follow"])).unwrap();
+        let error = validate_remote(&follow, &BusContext::OffBus).unwrap_err();
+        assert_eq!(error.code, 2);
+        assert!(error.message.contains("positive --limit"));
+    }
+
     #[tokio::test]
     async fn follow_prints_each_event_once_across_empty_and_multi_event_polls() {
         let e1 = feed_event("01", 10, "message", "human");
         let e2 = feed_event("02", 20, "ask_lead", "coder");
         let e3 = feed_event("03", 30, "message", "reviewer");
-        let e4 = feed_event("04", 40, "human_response", "human");
+        let e4 = feed_event("04", 40, "human_question", "human");
+        let running = feed_snapshot("running", &[("coder", "running")], 10);
+        let mut archived = feed_snapshot("completed", &[("coder", "stopped")], 40);
+        archived["mission"]["archived_at"] = json!("2026-09-18T10:21:00Z");
         let client = SequenceClient::new(vec![
+            ("mission_status", Ok(running.clone())),
             (
                 "mission_feed",
-                Ok(json!({"events": [e1.clone()], "next_offset": 10, "skipped": []})),
+                Ok(json!({"events": [e1.clone()], "next_offset": 10})),
             ),
-            ("mission_get", Ok(json!({"archived_at": null}))),
+            ("mission_status", Ok(running.clone())),
             (
                 "mission_feed",
-                Ok(json!({"events": [], "next_offset": null, "skipped": []})),
-            ),
-            (
-                "mission_feed",
-                Ok(json!({"events": [e1, e2], "next_offset": 20, "skipped": []})),
+                Ok(json!({"events": [], "next_offset": null})),
             ),
             (
-                "mission_feed",
-                Ok(json!({"events": [e3, e4], "next_offset": 40, "skipped": []})),
+                "mission_status",
+                Ok(feed_snapshot("running", &[("coder", "running")], 20)),
             ),
             (
                 "mission_feed",
-                Ok(json!({"events": [], "next_offset": null, "skipped": []})),
+                Ok(json!({"events": [e1, e2], "next_offset": 20})),
             ),
             (
-                "mission_get",
-                Ok(json!({"archived_at": "2026-09-18T10:21:00Z"})),
+                "mission_status",
+                Ok(feed_snapshot("running", &[("coder", "running")], 40)),
+            ),
+            (
+                "mission_feed",
+                Ok(json!({"events": [e3, e4], "next_offset": 40})),
+            ),
+            ("mission_status", Ok(archived)),
+            (
+                "mission_feed",
+                Ok(json!({"events": [], "next_offset": null})),
             ),
         ]);
         let mut output = Vec::new();
+        let mut diagnostics = Vec::new();
         follow_feed(
             &client,
             "mission",
@@ -2436,6 +2561,7 @@ mod tests {
             true,
             false,
             &mut output,
+            &mut diagnostics,
         )
         .await
         .unwrap();
@@ -2450,30 +2576,240 @@ mod tests {
             })
             .collect::<Vec<_>>();
         assert_eq!(ids, ["01", "02", "03", "04"]);
+        assert!(String::from_utf8(diagnostics)
+            .unwrap()
+            .contains("mission archived; watch ended"));
         let calls = client.calls.into_inner().unwrap();
         let cursors = calls
             .iter()
             .filter(|(name, _)| name == "mission_feed")
             .skip(1)
-            .map(|(_, arguments)| arguments["since_offset"].as_u64().unwrap())
+            .map(|(_, args)| args["since_offset"].as_u64().unwrap())
             .collect::<Vec<_>>();
         assert_eq!(cursors, [10, 10, 20, 40]);
     }
 
     #[tokio::test]
-    async fn follow_returns_exit_three_when_the_app_goes_away() {
+    async fn follow_drains_terminal_snapshot_pages_before_exiting() {
         let client = SequenceClient::new(vec![
+            ("mission_status", Ok(feed_snapshot("completed", &[], 30))),
             (
                 "mission_feed",
-                Ok(json!({"events": [], "next_offset": null, "skipped": []})),
+                Ok(
+                    json!({"events": [feed_event("01", 10, "message", "coder")], "next_offset": 10}),
+                ),
             ),
-            ("mission_get", Ok(json!({"archived_at": null}))),
             (
                 "mission_feed",
+                Ok(
+                    json!({"events": [feed_event("02", 20, "human_question", "coder")], "next_offset": 20}),
+                ),
+            ),
+            (
+                "mission_feed",
+                Ok(
+                    json!({"events": [feed_event("03", 30, "mission_stopped", "system")], "next_offset": 30}),
+                ),
+            ),
+        ]);
+        let mut output = Vec::new();
+        follow_feed(
+            &client,
+            "mission",
+            Some(0),
+            Some(1),
+            true,
+            &FeedFilter::new(None, None, false).unwrap(),
+            true,
+            false,
+            &mut output,
+            &mut Vec::new(),
+        )
+        .await
+        .unwrap();
+        let lines = String::from_utf8(output).unwrap();
+        assert_eq!(lines.lines().count(), 3);
+        assert!(lines.contains("human_question"));
+        assert!(lines.contains("mission_stopped"));
+        let calls = client.calls.into_inner().unwrap();
+        assert_eq!(calls.len(), 4);
+        assert_eq!(calls[3].1["since_offset"], 20);
+    }
+
+    #[tokio::test]
+    async fn follow_reports_partial_crash_once_then_stops_when_all_sessions_exit() {
+        let running = feed_snapshot(
+            "running",
+            &[("coder", "crashed"), ("reviewer", "running")],
+            0,
+        );
+        let ended = feed_snapshot(
+            "running",
+            &[("coder", "crashed"), ("reviewer", "stopped")],
+            0,
+        );
+        let client = SequenceClient::new(vec![
+            ("mission_status", Ok(running.clone())),
+            ("mission_feed", Ok(json!({"events": []}))),
+            ("mission_status", Ok(running)),
+            ("mission_feed", Ok(json!({"events": []}))),
+            ("mission_status", Ok(ended)),
+            ("mission_feed", Ok(json!({"events": []}))),
+        ]);
+        let mut diagnostics = Vec::new();
+        let error = follow_feed(
+            &client,
+            "mission",
+            None,
+            None,
+            false,
+            &FeedFilter::new(Some("message"), Some("reviewer"), false).unwrap(),
+            true,
+            false,
+            &mut Vec::new(),
+            &mut diagnostics,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.code, 1);
+        assert!(error.message.contains("crashed sessions"));
+        let notices = String::from_utf8(diagnostics).unwrap();
+        assert_eq!(notices.matches("session @coder crashed").count(), 1);
+        assert!(notices.contains("session @reviewer stopped"));
+    }
+
+    #[tokio::test]
+    async fn follow_exits_on_stop_completion_and_abort_without_archive() {
+        for (status, sessions, reason, code) in [
+            (
+                "running",
+                vec![("coder", "stopped")],
+                "all mission sessions exited",
+                0,
+            ),
+            ("completed", vec![], "mission completed", 0),
+            ("aborted", vec![], "mission aborted", 1),
+        ] {
+            let client = SequenceClient::new(vec![
+                ("mission_status", Ok(feed_snapshot(status, &sessions, 0))),
+                ("mission_feed", Ok(json!({"events": []}))),
+            ]);
+            let mut diagnostics = Vec::new();
+            let result = follow_feed(
+                &client,
+                "mission",
+                None,
+                None,
+                false,
+                &FeedFilter::new(None, None, false).unwrap(),
+                true,
+                false,
+                &mut Vec::new(),
+                &mut diagnostics,
+            )
+            .await;
+            if code == 0 {
+                result.unwrap();
+                assert!(String::from_utf8(diagnostics).unwrap().contains(reason));
+            } else {
+                let error = result.unwrap_err();
+                assert_eq!(error.code, code);
+                assert!(error.message.contains(reason));
+            }
+        }
+        assert_eq!(feed_end_reason(&feed_snapshot("running", &[], 0)), None);
+        assert_eq!(
+            feed_end_reason(&feed_snapshot("running", &[("coder", "running")], 0)),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn follow_reports_app_disconnect_and_missing_mission_with_recovery_cursor() {
+        for (tool, code, message) in [
+            ("mission_status", 3, runner_cli::client::NOT_RUNNING_MESSAGE),
+            ("mission_status", 1, "mission does not exist"),
+            ("mission_feed", 3, runner_cli::client::NOT_RUNNING_MESSAGE),
+            ("mission_feed", 1, "mission does not exist"),
+        ] {
+            let mut responses = vec![
+                ("mission_status", Ok(feed_snapshot("running", &[], 10))),
+                (
+                    "mission_feed",
+                    Ok(
+                        json!({"events": [feed_event("01", 10, "message", "coder")], "next_offset": 10}),
+                    ),
+                ),
+            ];
+            if tool == "mission_feed" {
+                responses.push(("mission_status", Ok(feed_snapshot("running", &[], 10))));
+            }
+            responses.push((
+                tool,
                 Err(CliError {
-                    code: 3,
-                    message: runner_cli::client::NOT_RUNNING_MESSAGE.into(),
+                    code,
+                    message: message.into(),
                 }),
+            ));
+            let client = SequenceClient::new(responses);
+            let error = follow_feed(
+                &client,
+                "mission",
+                None,
+                None,
+                false,
+                &FeedFilter::new(None, None, false).unwrap(),
+                false,
+                false,
+                &mut Vec::new(),
+                &mut Vec::new(),
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(error.code, code);
+            assert!(error.message.contains(message));
+            assert!(error.message.contains("watch ended"));
+            assert!(error.message.contains("Use the same Runner executable"));
+            assert!(error
+                .message
+                .contains("mission feed mission --since 10 --oldest-first --follow --json"));
+        }
+    }
+
+    #[tokio::test]
+    async fn follow_reports_an_unresponsive_app() {
+        struct UnresponsiveClient;
+        impl ToolCaller for UnresponsiveClient {
+            async fn call(&self, _name: &str, _arguments: Value) -> Result<ToolResponse, CliError> {
+                std::future::pending().await
+            }
+        }
+        let error = follow_feed(
+            &UnresponsiveClient,
+            "mission",
+            None,
+            None,
+            false,
+            &FeedFilter::new(None, None, false).unwrap(),
+            true,
+            false,
+            &mut Vec::new(),
+            &mut Vec::new(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.code, 1);
+        assert!(error.message.contains("timed out"));
+        assert!(error.message.contains("Runner may still be running"));
+    }
+
+    #[tokio::test]
+    async fn follow_reports_a_broken_cursor_instead_of_spinning() {
+        let client = SequenceClient::new(vec![
+            ("mission_status", Ok(feed_snapshot("completed", &[], 10))),
+            (
+                "mission_feed",
+                Ok(json!({"events": [], "next_offset": null})),
             ),
         ]);
         let error = follow_feed(
@@ -2481,16 +2817,84 @@ mod tests {
             "mission",
             None,
             None,
-            false,
+            true,
             &FeedFilter::new(None, None, false).unwrap(),
+            true,
             false,
-            false,
+            &mut Vec::new(),
             &mut Vec::new(),
         )
         .await
         .unwrap_err();
-        assert_eq!(error.code, 3);
-        assert_eq!(error.message, runner_cli::client::NOT_RUNNING_MESSAGE);
+        assert_eq!(error.code, 1);
+        assert!(error.message.contains("cursor did not advance"));
+    }
+
+    #[test]
+    fn default_feed_filter_preserves_real_failed_status_payloads() {
+        for kind in ["session_status", "runner_status"] {
+            for state in ["busy", "idle"] {
+                for (lifecycle, outcome, visible) in [
+                    ("running", "failed", true),
+                    ("error", "completed", true),
+                    ("running", "completed", false),
+                    ("running", "interrupted", false),
+                ] {
+                    let mut event = feed_event("01", 10, kind, "coder");
+                    event["event"]["payload"] = json!({
+                        "state": state,
+                        "source": "hook",
+                        "status": {
+                            "lifecycle": lifecycle,
+                            "observation": {
+                                "activity": if state == "busy" { "working" } else { "idle" },
+                                "source": "hook",
+                                "outcome": outcome,
+                                "interactions": [],
+                                "detail": null,
+                            },
+                            "exit_code": null,
+                            "error_since": null,
+                            "failed_since": null,
+                            "unread_since": null,
+                        },
+                    });
+                    assert_eq!(
+                        FeedFilter::new(None, None, false).unwrap().matches(&event),
+                        visible
+                    );
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn follow_allows_a_response_slower_than_the_poll_interval() {
+        struct SlowClient;
+        impl ToolCaller for SlowClient {
+            async fn call(&self, name: &str, _arguments: Value) -> Result<ToolResponse, CliError> {
+                tokio::time::sleep(FEED_POLL_INTERVAL * 2).await;
+                match name {
+                    "mission_status" => response(feed_snapshot("completed", &[], 0)),
+                    "mission_feed" => response(json!({"events": []})),
+                    _ => panic!("unexpected tool {name}"),
+                }
+            }
+        }
+        follow_feed(
+            &SlowClient,
+            "mission",
+            None,
+            None,
+            false,
+            &FeedFilter::new(None, None, false).unwrap(),
+            true,
+            false,
+            &mut Vec::new(),
+            &mut Vec::new(),
+        )
+        .await
+        .unwrap();
     }
 
     #[test]

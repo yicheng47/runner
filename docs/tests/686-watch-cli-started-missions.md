@@ -1,0 +1,69 @@
+# 686 — agents watch the missions they start
+
+## Decisions and coverage boundary
+
+The shipped `runner` and `runner-dev` skills and compiled `runner help agents` make start-and-watch mandatory. Plain `mission start` still prints its existing result and exits; no start-and-follow flag is needed because only the host can arrange delivery into a later agent turn. A CLI process alone cannot promise that delivery.
+
+The follower polls every 3 seconds: six times less often than the former 500 ms interval, with questions and terminal events handled on the next poll and every event flushed immediately. Every poll checks the existing `mission_status` snapshot instead of checking only archive state every fourth poll. This keeps lifecycle detection at 3 seconds rather than stretching the old archive check to 12 seconds, and includes slot stop/crash state (`mission stop` intentionally leaves the mission row running). The snapshot reads the mission log; this change uses the existing endpoint instead of introducing a separate lifecycle transport.
+
+The follower drains through the snapshot's last event offset before ending on archive, completion, abort or all sessions exiting. A partial crash is reported while remaining sessions stay watched. Busy/idle, an empty startup roster and a conversational “done” are not terminal. Successful lifecycle exits report the reason on stderr; abort/terminal crash exits 1, missing mission exits 1, and app disconnect exits 3. A request times out after 30 seconds, independently of polling, and exits 1 with an explicit warning that Runner may still be running. This tolerates slow replies without confusing them with a closed socket. Errors include a recovery cursor and arguments to use with the same Runner executable; slot notices use roster handles. stdout stays event NDJSON. Host monitors must forward stderr and exit too; merging streams for a host monitor produces a mixture of NDJSON and diagnostic text, not a new CLI JSON contract.
+
+No interactive agents were launched to establish host capabilities, and no model quota was used for capability discovery. No installed skill or agent configuration was edited. No Runner app was launched, stopped, restarted or driven; no throwaway mission was created. Native Windows is unavailable. The live agent smoke below remains for Jason after an app build refreshes the shipped skills.
+
+## Installed host evidence (2026-09-22)
+
+These claims describe the installed versions, not every distribution or session. Tool availability still has to be checked in the initiating session. Source text was read from the CLI's own help, bundled tool descriptions or installed package docs; background process support alone is not proof of an idle agent receiving each event.
+
+| Host | Verified source | What it establishes | Watch decision |
+| --- | --- | --- | --- |
+| Claude Code 2.1.278 | `claude --version`, `claude --help`; bundled Monitor and Bash tool descriptions in the executable resolved from `~/.local/bin/claude` to `~/.local/share/claude/versions/2.1.278` | Monitor says each stdout line becomes a notification, process exit ends the watch, stderr alone does not notify, and timeout/expiry needs re-arming. Bash `run_in_background` documents completion notification. | Use Monitor when available, with `runner mission feed <id> --follow --json 2>&1`. Follow the installed Monitor schema for lifetime/expiry; no unconditional persistent/timeout parameter is assumed. Completion-only Bash is insufficient. |
+| Codex CLI 0.155.1 | `codex --version`, `codex --help`; embedded `exec_command` and `write_stdin` tool descriptions in `~/.codex/packages/standalone/current/bin/codex` (the target of `~/.local/bin/codex`) | `exec_command` returns output or a session ID; `write_stdin` returns recent output from that session. This establishes active-turn output retrieval, not an idle wake-up guarantee. | Use an already available, verified event-delivery facility if the host exposes one. Otherwise report the limitation and give the foreground command. Do not label a parked PTY or unread log as monitoring. |
+| GitHub Copilot CLI 1.0.87 | `copilot --version`, `copilot --help`, `copilot help commands`, from `~/.local/bin/copilot` | `/tasks` manages subagents and shell commands. The checked help does not establish per-line delivery into an idle agent. | Same explicit limitation path unless the actual host exposes a verified delivering watch. No undocumented async tool or wake-up behavior is claimed. |
+| pi 0.85.1 | `pi --version`, `pi --help`; `README.md` (“No background bash”) and `docs/extensions.md` (`pi.sendMessage(message, options?)`) under the installed `@earendil-works/pi-coding-agent` package | The README suggests tmux for background work; this does not establish automatic delivery. The extension API supports `pi.sendMessage` with `triggerTurn: true` and `deliverAs: "followUp"` or `"steer"`; `"nextTurn"` does not trigger a turn. | An already installed extension forwarding the feed, errors and exit can satisfy the rule. No such extension was exercised or installed here; stock pi takes the explicit limitation path. |
+
+The pi package on this Mac is `/Users/jason/.nvm/versions/node/v24.19.0/lib/node_modules/@earendil-works/pi-coding-agent`; locate it from `command -v pi` on another machine. The embedded Claude descriptions were read as printable ASCII and UTF-16LE strings without executing a session. Useful exact source search anchors are `Start a background monitor that streams events from a long-running script`, `Only stdout is the event stream`, and `You can use the` followed by `run_in_background`. Codex anchors are `Runs a command in a PTY, returning output or a session ID for ongoing interaction` and `Writes characters to an existing unified exec session and returns recent output`. These are bundled tool documentation, not inferences from internal implementation symbols. Help and extracted evidence captured during implementation are in `/tmp/runner-686/` on this machine; that directory is not required by the shipped behavior.
+
+## Automated regression proof
+
+- CLI tests keep the 1 ms test interval seam and pin the 3-second production default; cover empty/multiple-event polls, deduplication and recovery cursors; drain paginated terminal events; preserve human questions; exit on stop, completion, archive and abort; report partial crash once without ending surviving work; report app disconnect, unresponsive app and missing mission; preserve production-shaped status events with `payload.status.lifecycle = "error"` or `payload.status.observation.outcome = "failed"` through the default noise filter. The fixture mirrors `ForwarderEmitCtx::session_status_draft` and the serialized `AgentStatus`; ordinary completed/interrupted outcomes stay hidden. A persistent failed outcome can appear on several distinct busy/idle events and each is intentionally visible; overlapping event IDs are still deduplicated. Responses slower than one polling interval succeed within the separate request timeout.
+- The skill test checks both release and development renders, the matching feed executable, the mandatory watch rule, exactly one watcher, later/idle delivery, errors/exit delivery, expiry handling, and honest fallback. Existing installation tests use temporary homes only.
+- The help test pins the same mandatory delivery and fallback rules; the command-tree test continues to cover the compiled guide.
+- Existing one-shot start and feed JSON tests remain the scripting-contract gate. `--follow --limit 0` is refused because it cannot consume a backlog.
+
+Required local gates after review fixes (macOS, 2026-09-22; 990 tests passed on the final combined run):
+
+| Command | Exit code |
+| --- | --- |
+| `cargo test --locked -p runner-cli -p runner-backend --profile ci --no-fail-fast` | 0 |
+| `cargo clippy --locked --workspace --all-targets --profile ci -- -D warnings` | 0 |
+| `cargo fmt --all --check` | 0 |
+| `git diff --check` | 0 |
+
+The first combined run after review fixes exited 101: the unchanged `session::manager::tests::codex_pre_hook_automatic_mission_turn_stays_working` test hit its two-second “session output never arrived” assertion (`session/manager/tests.rs:759`). The focused retry exited 0, then the same required combined command exited 0 with all 990 tests passing; no backend test or session behavior was changed. Evidence: `tests-r2.log` (failure), `backend-retry-r2.log` (focused pass), `tests-r2-retry.log` (full pass), and `clippy-r2.log`, `fmt-check-r2.log`, `diff-check-r2.log`. This transient PTY timing failure remains a validation limitation.
+
+Each gate writes its own log under `/tmp/runner-686/` and captures `$?` directly, without piping the gate through a log filter. These checks do not install a sidecar or refresh skills in a real home.
+
+## Jason's installed-skill-only smoke
+
+Run after Jason installs/starts an app build containing this diff so Runner refreshes its managed skill. Do not manually patch agent-home skills. Use a fresh session with the installed Runner skill only, without the personal mission-watch skill, a Runner MCP shortcut or prior conversation instructions to watch. Cover Claude Code, Codex, Copilot and pi individually. For development-build coverage, use `runner-dev` and the absolute development sidecar throughout; Jason chooses when to run that app.
+
+Ask only: “Start a mission with the peer coding crew to post a review handoff, ask me a yes/no question, then finish after I answer.” Do not say “watch”, “follow” or “monitor”, and do not provide CLI commands.
+
+- [ ] Record host/version, app build and skill variant; confirm the agent loads the installed skill and reads `help agents` unprompted.
+- [ ] Confirm plain `mission start --json` returns its mission ID and exits. The agent binds exactly one watch to that returned ID before reporting delegation complete. For `runner-dev`, confirm it invokes the same absolute sidecar for the feed.
+- [ ] In a host with a delivering watch, let the initiating turn end or start unrelated work. Confirm the later crew handoff and human question reach the initiating agent without asking it for status. A process writing only to a log, or a notification only when the mission ends, fails this check.
+- [ ] In a host without a verified delivery facility, confirm it explicitly says automatic watching is unavailable and supplies `runner mission feed <id> --follow --json`. Record this as the supported limitation outcome, not a passed automatic-watch test. Confirm it does not leave an unread follower running or change agent configuration.
+- [ ] Answer the human question. Confirm the final crew message is surfaced but does not prematurely end a live mission. Then stop all slots or archive the throwaway mission and confirm the follower exits, reports why, and the host removes its watch. Archive every throwaway mission after the smoke and record its ID.
+- [ ] Resume a stopped throwaway mission and confirm it gets a new single watcher; start a second mission and confirm each watch stays bound to its own ID with no duplicate notices.
+- [ ] Exercise a host watch expiry: confirm the agent reports the gap, checks mission state and re-arms one watcher if active, using a recovery cursor if available or catching up oldest-first and deduplicating event IDs otherwise.
+- [ ] In a disposable environment, exercise a slot crash, missing mission and app disconnect. Confirm errors reach the agent even with routine noise hidden, and a broken watch is reported rather than mistaken for quiet progress. Do not close Jason's running app or disrupt unrelated sessions to do this test.
+
+| Host/platform | Automatic watch armed | Handoff/question delivered while idle | Lifecycle cleanup | Limitation path | Status |
+| --- | --- | --- | --- | --- | --- |
+| Claude Code / macOS | Unverified | Unverified | Unverified | Unverified if Monitor unavailable | Installed documentation verified; live smoke pending |
+| Codex / macOS | Unverified | Unverified | Unverified | Required unless a verified delivery facility is present | Installed documentation verified; live smoke pending |
+| Copilot / macOS | Unverified | Unverified | Unverified | Required unless a verified delivery facility is present | Installed help verified; live smoke pending |
+| pi / macOS | Unverified with extension | Unverified | Unverified | Required for stock pi | Installed documentation verified; live smoke pending |
+| Native Windows / all four hosts | Unverified | Unverified | Unverified | Unverified | No native Windows host available |
+
+The earlier [#648 smoke](archive/648-skill-smoke.md) explicitly asked to follow and therefore does not prove this regression scenario. Its four-poll/500 ms archive observation is historical; this plan records the replacement contract.

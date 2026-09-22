@@ -62,6 +62,11 @@ pub fn render(debug: bool, sidecar: &Path) -> String {
             sidecar.display()
         )
     };
+    let command = if debug {
+        format!("\"{}\"", sidecar.display())
+    } else {
+        "runner".to_owned()
+    };
     format!(
         r#"---
 name: {name}
@@ -80,6 +85,9 @@ Rules:
 2. Exit code 3 means Runner is not running; ask the user to open Runner. Exit code 5 means a sandbox kept the command from reaching Runner, so nothing is known about Runner yet: run the same command again outside the sandbox (in Codex, request escalated permissions for it) before telling the user anything.
 3. Use `--help` rather than guessing commands.
 4. Inside a mission, mission commands carry your own handle. Outside a mission you act for the user: your posts and answers appear as the person. Never pass `--as` to speak as a slot you were not given.
+5. Start means start and watch: after every successful `{command} mission start`, use the returned mission ID to arm `{command} mission feed <id> --follow --json` in your host's supported background/watch facility before reporting delegation complete. Keep exactly one watcher per mission, bound to that exact ID; reuse it on later turns. Its events, stderr diagnostics and exit must reach you during later work and while idle. An unread background log or a completion-only notification is not a watch. Plain `mission start` still returns and exits.
+6. Surface crew handoffs, human questions, completion, stop/crash and lost connections promptly; the follower polls every 3 seconds and flushes events immediately. Keep routine noise hidden (do not add `--all`). Clean up the watcher when the mission ends or all sessions exit; a resumed mission needs a new watch. A watch request timeout exits 1 and does not mean Runner is closed. On host expiry or unexpected exit, check `{command} mission show <id> --json`, report the gap, and re-arm exactly one watch if still active, using the recovery `--since` cursor when available; otherwise re-arm with `--since 0 --oldest-first` and deduplicate event IDs.
+7. If your host cannot deliver background events, say plainly: "Mission <id> started, but this host cannot notify me of later events; automatic watching is unavailable." Give `{command} mission feed <id> --follow --json` as the foreground follow-up command. Never claim an active watch without a delivery path; stop any undeliverable follower before ending your turn. Read the host notes in `help agents`: Claude Code's Monitor can deliver each stdout line (merge stderr with `2>&1`); Codex's exec_command/write_stdin only establish active-turn output consumption, Copilot's `/tasks` only establishes task management, and pi documents no built-in background bash. Do not assume those last three provide idle notifications; use an already available verified event-delivery facility or the explicit limitation path.
 "#
     )
 }
@@ -235,6 +243,30 @@ mod tests {
                 "Inside a mission, mission commands carry your own handle. Outside a mission you act for the user: your posts and answers appear as the person. Never pass `--as` to speak as a slot you were not given."
             ));
             assert!(!rendered.contains("takes a seat"));
+        }
+    }
+
+    #[test]
+    fn both_skills_require_start_and_watch_with_the_matching_executable() {
+        for debug in [false, true] {
+            let skill = render(debug, Path::new("/Runner Dev/bin/runner"));
+            let command = if debug {
+                "\"/Runner Dev/bin/runner\""
+            } else {
+                "runner"
+            };
+            assert!(skill.contains(&format!("after every successful `{command} mission start`")));
+            assert!(skill.contains(&format!("`{command} mission feed <id> --follow --json`")));
+            for rule in [
+                "exactly one watcher per mission",
+                "while idle",
+                "An unread background log or a completion-only notification is not a watch",
+                "automatic watching is unavailable",
+                "On host expiry or unexpected exit",
+                "stderr diagnostics and exit",
+            ] {
+                assert!(skill.contains(rule), "missing watch rule: {rule}");
+            }
         }
     }
 
