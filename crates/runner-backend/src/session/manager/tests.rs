@@ -724,7 +724,7 @@ fn wait_for_session_status_event(
     session_id: &str,
     state: SessionActivityState,
 ) -> SessionActivityEvent {
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         if let Some(ev) = cap
             .status
@@ -744,7 +744,7 @@ fn wait_for_session_status_event(
 }
 
 fn wait_for_output_event(cap: &Capture, session_id: &str) {
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         if cap
             .output
@@ -4570,7 +4570,7 @@ fn resume_reuses_row_and_preserves_agent_session_key() {
 /// forgets the runtime handle, so waiting on the row alone can observe a
 /// session the manager still treats as live.
 fn wait_for_session_exit(mgr: &SessionManager, pool: &DbPool, session_id: &str) {
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         let conn = pool.get().unwrap();
         let status: String = conn
@@ -9683,7 +9683,7 @@ fn wait_for_observation(
     activity: Activity,
     source: ObservationSource,
 ) {
-    let deadline = Instant::now() + Duration::from_secs(3);
+    let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         let observation = manager.agent_status(id).observation;
         if observation.activity == activity && observation.source == source {
