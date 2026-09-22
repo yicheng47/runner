@@ -156,8 +156,13 @@ pub(super) fn role_edit_runtime_options(
                     || runtime.name.key() == current_runtime
             })
             .map(|runtime| {
-                SelectOption::new(runtime.name.to_string(), runtime.display_name.clone())
-                    .description(runtime.description.clone())
+                let option =
+                    SelectOption::new(runtime.name.to_string(), runtime.display_name.clone());
+                if runtime.description.is_empty() {
+                    option
+                } else {
+                    option.description(runtime.description.clone())
+                }
             }),
     );
     options
