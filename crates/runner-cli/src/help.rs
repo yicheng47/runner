@@ -97,29 +97,24 @@ START AND WATCH (REQUIRED)
   The follower ends on archive, completed/aborted mission state, or all sessions exiting.
   Busy/idle and a crew message saying "done" do not end a live mission. Resume needs a new watch.
   A watch request timeout after 30 seconds exits 1; Runner may still be running.
+  Each JSON event line carries next_offset, the cursor that resumes after that event.
   Clean up on exit. On host expiry or unexpected exit, report the gap, check mission show,
-  and re-arm one watch if still active. Use the recovery --since cursor when available;
-  otherwise re-arm with --since 0 --oldest-first and deduplicate event IDs.
+  and re-arm one watch if still active with --since <next_offset of the last event line
+  you received> --oldest-first; a watch error prints its own resume command. Only when no event
+  line arrived, re-arm with --since 0 --oldest-first and skip event IDs already seen.
   Never silently abandon a watch. Stop any undeliverable follower before ending your turn.
   If your host cannot deliver background events, tell the user plainly:
     "Mission <id> started, but this host cannot notify me of later events;
      automatic watching is unavailable. Follow with: runner mission feed <id> --follow --json"
   Do not claim monitoring is active without a verified delivery path.
 
-HOST NOTES (installed documentation checked 2026-09-22; availability varies by session)
-  Claude Code 2.1.278: the embedded Monitor tool documentation says each stdout line becomes
-  a notification and exit ends the watch. When Monitor is available, run the feed command
-  with 2>&1 so stderr failures also notify you. Handle Monitor expiry by re-arming as above.
-  Bash run_in_background only notifies on completion and is insufficient for a live feed.
-  Codex CLI 0.155.1: embedded exec_command/write_stdin tool help documents a running session
-  and explicit output reads. These alone establish active-turn consumption, not idle delivery.
-  Copilot CLI 1.0.87: copilot help commands documents /tasks for subagents and shell commands;
-  it does not establish per-line delivery to an idle agent. Do not infer it from /tasks.
-  pi 0.85.1: installed README.md says no background bash. docs/extensions.md documents
-  pi.sendMessage with triggerTurn: true and deliverAs: "followUp" or "steer"; only an already
-  available extension that forwards feed output, errors and exit can provide that watch.
-  For Codex, Copilot or pi without a verified event-delivery facility, use the explicit
-  limitation path above. Do not install extensions or change agent configuration to claim support.
+WATCH FACILITIES
+  A facility qualifies only if its own documentation says each output line and the exit
+  reach you while idle. Claude Code's Monitor does: run the feed command with 2>&1 so stderr
+  diagnostics notify you too, set timeout_ms to its maximum, and re-arm on expiry as above.
+  A completion-only background command, a PTY session you must poll, a task list or a log
+  file does not qualify. Without a qualifying facility, take the limitation path above.
+  Do not install extensions or change agent configuration to create one.
 
 IDENTITY
   Inside a mission, mission commands carry the caller's own handle.
@@ -169,6 +164,8 @@ mod tests {
             "automatic watching is unavailable",
             "On host expiry or unexpected exit",
             "stderr diagnostics and process exit",
+            "--since <next_offset of the last event line",
+            "set timeout_ms to its maximum",
         ] {
             assert!(AGENT_GUIDE.contains(rule), "missing watch rule: {rule}");
         }

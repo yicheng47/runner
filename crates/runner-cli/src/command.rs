@@ -2565,17 +2565,21 @@ mod tests {
         )
         .await
         .unwrap();
-        let lines = String::from_utf8(output).unwrap();
-        let ids = lines
+        let lines = String::from_utf8(output)
+            .unwrap()
             .lines()
-            .map(|line| {
-                serde_json::from_str::<Value>(line).unwrap()["id"]
-                    .as_str()
-                    .unwrap()
-                    .to_owned()
-            })
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        let ids = lines
+            .iter()
+            .map(|line| line["id"].as_str().unwrap())
             .collect::<Vec<_>>();
         assert_eq!(ids, ["01", "02", "03", "04"]);
+        let resume_offsets = lines
+            .iter()
+            .map(|line| line["next_offset"].as_u64().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(resume_offsets, [10, 20, 30, 40]);
         assert!(String::from_utf8(diagnostics)
             .unwrap()
             .contains("mission archived; watch ended"));
