@@ -6,13 +6,14 @@ Since 2026-09-01 a spec's number **is** its tracking issue number: file the issu
 
 ## Active
 
-- [562 — Missions as containers](./562-mission-spawn.md) — the mission owns its roster, a mission starts from a crew or a role, and the lead or an outside seat spawns, lists, waits on and stops slots ([#562](https://github.com/yicheng47/runner/issues/562), P3 on the issue, 0.12; plan under review).
+- [562 — Missions as containers](./562-mission-spawn.md) — the mission owns its roster, a mission starts from a crew or a role, and the lead or an outside seat spawns, lists, waits on and stops slots ([#562](https://github.com/yicheng47/runner/issues/562), P1, 0.12; plan under review).
 - [403 — Opt-in worktree isolation per mission](./403-mission-worktree-isolation.md) — a mission runs in its own `git worktree` so crews and the human's checkout never collide ([#403](https://github.com/yicheng47/runner/issues/403), P1, 0.14).
 - [393 — Role and crew detail redesign](./393-runner-crew-detail-redesign.md) — Pencil-first redesign of both detail pages, split on 2026-09-22 into the role page ([#393](https://github.com/yicheng47/runner/issues/393)) and then the crew page ([#699](https://github.com/yicheng47/runner/issues/699)); both P1, 0.12 release blockers.
 - [559 — Command palette on ⌘⇧P](./559-command-palette.md) — the ⌘K overlay in command mode over the keymap ([#559](https://github.com/yicheng47/runner/issues/559), P2, 0.12).
 - [565 — i18n, 简体中文 first](./565-i18n.md) — a language setting, a compile-time catalog, a live switch ([#565](https://github.com/yicheng47/runner/issues/565), P2, 0.14).
 - [586 — Shell status: process detection first](./586-shell-status-detection.md) — foreground-process detection for shell panes before semantic shell integration ([#586](https://github.com/yicheng47/runner/issues/586), P2, 0.13).
 - [533 — Update agent CLIs from Settings → Agents](./533-agent-cli-updates.md) — installed versions, an Update button that runs the CLI's own updater in a pane, an update-available badge ([#533](https://github.com/yicheng47/runner/issues/533), P2, 0.11.x).
+- [701 — Desktop notifications](./701-desktop-notifications.md) — a popup Runner draws itself, following Zed's agent notification, when a session off screen waits on you, finishes or fails ([#701](https://github.com/yicheng47/runner/issues/701), P2, 0.12).
 - [468 — Landing page](./468-landing-page.md) — one dark responsive page in `site/`, deployed by GitHub Pages ([#468](https://github.com/yicheng47/runner/issues/468), P2, 0.12).
 
 ## Dropped
