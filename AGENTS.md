@@ -96,6 +96,10 @@ Work stays inside its own worktree. When several are live at once, treat the oth
 - For validation branches, keep PR descriptions current when scope changes.
 - Do not add tool-specific co-author trailers unless the user explicitly asks.
 
+## Crew Missions
+
+A crew mission ends in an open pull request, never a merge. The crew works on its own branch in its own worktree, commits, pushes, opens the PR against `main`, and drives CI green on both platforms; then it stops. It does not merge the PR, delete its branch or worktree, or cut a nightly or release. Jason reviews the PR and does the final merge. Every mission brief states this in its authorization section, and a crew whose brief is silent on it follows this rule anyway.
+
 ## Notes For Agent Runtimes
 
 This repository is intentionally agent-agnostic. Claude Code, Codex, or any
