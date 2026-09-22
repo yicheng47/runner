@@ -1799,33 +1799,9 @@ impl NativeRoot {
             let chip_root = cx.entity();
             let edit_root = chip_root.clone();
             let restore_root = chip_root.clone();
-            let mut controls = div()
-                .min_w(px(0.))
-                .flex_1()
-                .flex()
-                .items_center()
-                .gap(rems(6. / 16.))
-                .child(
-                    shortcut_chip(binding_label, true)
-                        .id(SharedString::from(format!("binding-shortcut-{}", entry.id)))
-                        .on_click(move |_, window, cx| {
-                            chip_root.update(cx, |this, root_cx| {
-                                this.start_shortcut_recording(entry.id, window, root_cx)
-                            });
-                        }),
-                )
-                .child(
-                    IconButton::new(format!("edit-shortcut-{}", entry.id), "pencil.svg")
-                        .size(IconButtonSize::Sm)
-                        .tooltip("Edit shortcut")
-                        .on_press(move |window, cx| {
-                            edit_root.update(cx, |this, root_cx| {
-                                this.start_shortcut_recording(entry.id, window, root_cx)
-                            });
-                        }),
-                );
+            let mut edit_controls = div().flex().items_center().gap(rems(6. / 16.));
             if overridden {
-                controls = controls.child(
+                edit_controls = edit_controls.child(
                     IconButton::new(format!("restore-shortcut-{}", entry.id), "rotate-ccw.svg")
                         .size(IconButtonSize::Sm)
                         .tooltip("Restore default")
@@ -1836,7 +1812,34 @@ impl NativeRoot {
                         }),
                 );
             }
-            controls.into_any_element()
+            edit_controls = edit_controls.child(
+                IconButton::new(format!("edit-shortcut-{}", entry.id), "pencil.svg")
+                    .size(IconButtonSize::Sm)
+                    .tooltip("Edit shortcut")
+                    .on_press(move |window, cx| {
+                        edit_root.update(cx, |this, root_cx| {
+                            this.start_shortcut_recording(entry.id, window, root_cx)
+                        });
+                    }),
+            );
+            div()
+                .min_w(px(0.))
+                .flex_1()
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap(rems(6. / 16.))
+                .child(
+                    shortcut_chip(binding_label, true)
+                        .id(SharedString::from(format!("binding-shortcut-{}", entry.id)))
+                        .on_click(move |_, window, cx| {
+                            chip_root.update(cx, |this, root_cx| {
+                                this.start_shortcut_recording(entry.id, window, root_cx)
+                            });
+                        }),
+                )
+                .child(edit_controls)
+                .into_any_element()
         };
         let unbind = if entry.fixed {
             div().w_6().flex_none().into_any_element()
