@@ -67,12 +67,16 @@ impl ShortcutRow {
                 .unwrap_or_else(|| "Unassigned".into()),
             Self::TabSelection => {
                 let entries = keymap::tab_selection_entries().collect::<Vec<_>>();
-                let first = keymap::effective_binding(entries[0].id, overrides)
-                    .map(|combo| keymap::format_combo(&combo))
-                    .expect("fixed tab shortcut");
-                let last = keymap::effective_binding(entries[8].id, overrides)
-                    .map(|combo| keymap::format_combo(&combo))
-                    .expect("fixed tab shortcut");
+                let first = keymap::effective_binding(
+                    entries.first().expect("tab shortcuts").id,
+                    overrides,
+                )
+                .map(|combo| keymap::format_combo(&combo))
+                .expect("fixed tab shortcut");
+                let last =
+                    keymap::effective_binding(entries.last().expect("tab shortcuts").id, overrides)
+                        .map(|combo| keymap::format_combo(&combo))
+                        .expect("fixed tab shortcut");
                 format!("{first}–{last}")
             }
         }
@@ -1573,7 +1577,9 @@ impl NativeRoot {
             .into_iter()
             .map(|row| self.render_shortcut_row_kind(row, &overrides, cx))
             .collect::<Vec<_>>();
-        let has_overrides = !overrides.is_empty();
+        let has_overrides = overrides
+            .keys()
+            .any(|id| keymap::entry(id).is_some_and(|entry| !entry.fixed));
         let reset_root = cx.entity();
         let reset = Button::new("reset-keymap", "Reset all to defaults")
             .icon("rotate-ccw.svg")
