@@ -45,7 +45,7 @@ struct ShortcutSections {
 }
 
 impl ShortcutRow {
-    #[cfg(test)]
+    #[cfg(all(test, not(windows)))]
     fn title(self) -> &'static str {
         match self {
             Self::Entry(entry) => entry.title,
