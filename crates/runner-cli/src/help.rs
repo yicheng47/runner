@@ -61,7 +61,7 @@ DISCOVER
 
 OUTPUT AND EXITS
   Add --json for structured output. Add -q when only the changed object's id is needed.
-  0 success; 1 Runner refused; 2 usage or reference error; 3 Runner is not running;
+  0 success; 1 Runner refused or watch failed; 2 usage or reference error; 3 Runner is not running;
   5 a sandbox kept this command from reaching Runner.
   On exit 3, ask the user to open Runner. On exit 5, nothing is known about Runner yet:
   run the same command again outside the sandbox (in Codex, request escalated permissions
@@ -83,6 +83,38 @@ COMMON FLOW
   runner msg post --mission "$mission" --to <lead_handle> "message"
   runner mission stop "$mission"
   runner mission archive "$mission"
+
+START AND WATCH (REQUIRED)
+  After every successful runner mission start, arm runner mission feed <id> --follow --json
+  for the exact returned ID in your host's supported background/watch facility before
+  reporting delegation complete. Keep exactly one watcher per mission; reuse it on later
+  turns. Events, stderr diagnostics and process exit must reach you during later work and
+  while idle. An unread background log or a completion-only notification is not a watch.
+  Plain mission start still returns its result and exits; it does not block on watching.
+  Surface handoffs, human questions, completion, stop/crash and lost connections promptly.
+  Polling is every 3 seconds; each event is flushed immediately, without notification batching.
+  Routine busy/idle and inbox noise stays hidden by default; do not add --all for a watch.
+  The follower ends on archive, completed/aborted mission state, or all sessions exiting.
+  Busy/idle and a crew message saying "done" do not end a live mission. Resume needs a new watch.
+  A watch request timeout after 30 seconds exits 1; Runner may still be running.
+  Each JSON event line carries next_offset, the cursor that resumes after that event.
+  Clean up on exit. On host expiry or unexpected exit, report the gap, check mission show,
+  and re-arm one watch if still active with --since <next_offset of the last event line
+  you received> --oldest-first; a watch error prints its own resume command. Only when no event
+  line arrived, re-arm with --since 0 --oldest-first and skip event IDs already seen.
+  Never silently abandon a watch. Stop any undeliverable follower before ending your turn.
+  If your host cannot deliver background events, tell the user plainly:
+    "Mission <id> started, but this host cannot notify me of later events;
+     automatic watching is unavailable. Follow with: runner mission feed <id> --follow --json"
+  Do not claim monitoring is active without a verified delivery path.
+
+WATCH FACILITIES
+  A facility qualifies only if its own documentation says each output line and the exit
+  reach you while idle. Claude Code's Monitor does: run the feed command with 2>&1 so stderr
+  diagnostics notify you too, set timeout_ms to its maximum, and re-arm on expiry as above.
+  A completion-only background command, a PTY session you must poll, a task list or a log
+  file does not qualify. Without a qualifying facility, take the limitation path above.
+  Do not install extensions or change agent configuration to create one.
 
 IDENTITY
   Inside a mission, mission commands carry the caller's own handle.
@@ -119,5 +151,23 @@ mod tests {
         assert!(AGENT_GUIDE
             .contains("runner msg post --mission \"$mission\" --to <lead_handle> \"message\""));
         assert!(!AGENT_GUIDE.contains("--as <roster_handle>"));
+    }
+
+    #[test]
+    fn agent_guide_requires_a_delivering_watch_after_start() {
+        for rule in [
+            "After every successful runner mission start",
+            "runner mission feed <id> --follow --json",
+            "exactly one watcher per mission",
+            "while idle",
+            "An unread background log or a completion-only notification is not a watch",
+            "automatic watching is unavailable",
+            "On host expiry or unexpected exit",
+            "stderr diagnostics and process exit",
+            "--since <next_offset of the last event line",
+            "set timeout_ms to its maximum",
+        ] {
+            assert!(AGENT_GUIDE.contains(rule), "missing watch rule: {rule}");
+        }
     }
 }

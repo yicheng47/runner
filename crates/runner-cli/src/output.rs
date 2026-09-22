@@ -476,7 +476,12 @@ pub fn write_feed_events(
     for (index, entry) in events.into_iter().enumerate() {
         let event = entry.get("event").unwrap_or(entry);
         if json {
-            writeln!(writer, "{}", serde_json::to_string(event).unwrap())?;
+            // The line's own cursor lets a watcher killed by its host resume without a replay.
+            let mut line = event.clone();
+            if let (Some(object), Some(offset)) = (line.as_object_mut(), entry.get("next_offset")) {
+                object.insert("next_offset".to_owned(), offset.clone());
+            }
+            writeln!(writer, "{}", serde_json::to_string(&line).unwrap())?;
         } else if quiet {
             writeln!(writer, "{}", text(event.get("id")))?;
         } else {
@@ -1060,7 +1065,7 @@ mod tests {
     }
 
     #[test]
-    fn follow_json_is_flushed_ndjson_without_cursor_lines() {
+    fn follow_json_lines_carry_their_own_resume_offset() {
         let feed = json!({
             "events": [
                 {"next_offset": 20, "event": {"id": "2", "ts": "2026-09-18T10:20:31Z", "kind": "signal", "from": "coder", "type": "ask_lead", "payload": {}}},
@@ -1078,8 +1083,9 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(parsed.len(), 2);
         assert_eq!(parsed[0]["id"], "1");
+        assert_eq!(parsed[0]["next_offset"], 10);
         assert_eq!(parsed[1]["id"], "2");
-        assert!(!lines.contains("next_offset"));
+        assert_eq!(parsed[1]["next_offset"], 20);
     }
 
     #[test]
