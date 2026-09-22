@@ -16,19 +16,20 @@ Snapshot as of 2026-09-22. The live source is the [GitHub milestones page](https
 | 0.11.1 | Shipped 2026-09-21: session status, Windows agent discovery, splitter feedback, mission accents, project inference, and default crew naming | #659, #670, #672, #673, #653, #680, #676 |
 | 0.11.2 | Shipped 2026-09-21: Settings → Agents Installed / Not installed split, Codex stuck on Working at an untouched prompt | #617, #687 |
 | 0.11.3 | Shipped 2026-09-22: title-aware Codex status fallback, pi resume with custom session directories, Not installed card layout | #688, #666, #695 |
-| [0.11.x](https://github.com/yicheng47/runner/milestone/1) | Agent maintenance and focused follow-through; #686 and #694 have landed for the next patch | #533, #697, #700 |
-| [0.12](https://github.com/yicheng47/runner/milestone/2) | Mission ownership and delegation, the role and crew pages, navigation, desktop notifications, and the terminal black-pane fix | #562, #619, #393, #699, #577, #559, #701, #468, #647 |
+| [0.11.x](https://github.com/yicheng47/runner/milestone/1) | Agent maintenance, the Antigravity runtime, and focused follow-through; #686 and #694 have landed for the next patch | #644, #533, #697, #700 |
+| [0.12](https://github.com/yicheng47/runner/milestone/2) | Mission ownership and delegation, the role and crew pages, navigation, desktop notifications, and the terminal black-pane fix | #562, #619, #393, #699, #577, #559, #701, #647 |
 | [0.13](https://github.com/yicheng47/runner/milestone/3) | Session hosting and visibility: local/remote hosts, Activity, shell process status | #645, #552, #586 |
-| [0.14](https://github.com/yicheng47/runner/milestone/4) | Workspace features and localization: worktrees, project tree/diff, live shell cwd, 简体中文 | #403, #634, #575, #565 |
+| [0.14](https://github.com/yicheng47/runner/milestone/4) | Localization and terminal follow-through: live shell cwd, 简体中文 | #575, #565 |
 
 A minor is a change to the model or a new surface; a patch is fixes and follow-through. Patch releases have carried features before (0.8.4 to 0.8.8), which is fine for small ones, but #562 migrates every mission's roster and gets its own minor.
 
 ## Open work by release
 
-There are 23 open issues: 19 assigned to the four milestones and four deliberately unscheduled. Milestone placement is the release track, not a promise that every issue gates its first release. The `release-blocker` label marks the issues that gate the milestone's .0 release; everything else in the milestone may ship in a patch. [#393](https://github.com/yicheng47/runner/issues/393) (role page) and [#699](https://github.com/yicheng47/runner/issues/699) (crew page) explicitly gate 0.12.0. Priority labels are unchanged by the scheduling pass, except [#562](https://github.com/yicheng47/runner/issues/562), raised from P3 to P1 on 2026-09-22 because it changes how crews work.
+There are 20 open issues: 17 assigned to the four milestones and three deliberately unscheduled. Milestone placement is the release track, not a promise that every issue gates its first release. The `release-blocker` label marks the issues that gate the milestone's .0 release; everything else in the milestone may ship in a patch. [#393](https://github.com/yicheng47/runner/issues/393) (role page) and [#699](https://github.com/yicheng47/runner/issues/699) (crew page) explicitly gate 0.12.0. Priority labels are unchanged by the scheduling pass, except [#562](https://github.com/yicheng47/runner/issues/562), raised from P3 to P1 on 2026-09-22 because it changes how crews work.
 
 | Release | Issue | Reason and ordering |
 | --- | --- | --- |
+| 0.11.x | [#644](https://github.com/yicheng47/runner/issues/644) Antigravity CLI runtime | P1; moved from the backlog on 2026-09-22 once Jason could use the CLI |
 | 0.11.x | [#533](https://github.com/yicheng47/runner/issues/533) update agent CLIs from Settings | Builds on the Installed cards that shipped in 0.11.2 (#617) |
 | 0.11.x | [#697](https://github.com/yicheng47/runner/issues/697) tidy keyboard shortcuts | One row for tab numbers; stop and resume the focused session |
 | 0.11.x | [#700](https://github.com/yicheng47/runner/issues/700) tab archive wording and the split-tab Archiving pill | Label and overlay only; what gets archived is already right |
@@ -39,18 +40,17 @@ There are 23 open issues: 19 assigned to the four milestones and four deliberate
 | 0.12 | [#577](https://github.com/yicheng47/runner/issues/577) per-role skills and MCP picks | Role setup and spawn behavior; coordinate with #393's layout |
 | 0.12 | [#559](https://github.com/yicheng47/runner/issues/559) command palette | Expose the settled mission and role actions through the keyboard |
 | 0.12 | [#701](https://github.com/yicheng47/runner/issues/701) desktop notifications | A popup Runner draws itself, after Zed's agent notification; app-side, no backend changes |
-| 0.12 | [#468](https://github.com/yicheng47/runner/issues/468) landing page | Copy and screenshots should explain the new mission model |
 | 0.12 | [#647](https://github.com/yicheng47/runner/issues/647) terminal goes black after sidebar toggle | Moved from 0.11 at Jason's request because of the change's size |
 | 0.13 | [#645](https://github.com/yicheng47/runner/issues/645) session host | Local host first, then ssh remotes and the Windows host |
 | 0.13 | [#552](https://github.com/yicheng47/runner/issues/552) Activity / Needs you view | Consolidate the status of sessions across missions and hosts |
 | 0.13 | [#586](https://github.com/yicheng47/runner/issues/586) shell process status | Keep process observation on the host that owns the PTY |
-| 0.14 | [#403](https://github.com/yicheng47/runner/issues/403) git worktrees under projects | Workspace ownership and isolated working directories |
-| 0.14 | [#634](https://github.com/yicheng47/runner/issues/634) project tree and read-only diff/file viewer | Phases 1 and 2; remote file browsing remains out of scope |
-| 0.14 | [#575](https://github.com/yicheng47/runner/issues/575) inherit live shell cwd | Workspace and split behavior; reported cwd remains distinct from spawn cwd |
+| 0.14 | [#575](https://github.com/yicheng47/runner/issues/575) inherit live shell cwd | Split behavior; reported cwd remains distinct from spawn cwd |
 | 0.14 | [#565](https://github.com/yicheng47/runner/issues/565) i18n, 简体中文 first | Extract and translate after the mission and role/crew surfaces settle |
 
 ## Decisions that shape the next releases
 
+- **Runner is not an agent development environment.** Worktree isolation ([#403](https://github.com/yicheng47/runner/issues/403)) and the project tree with a read-only diff viewer ([#634](https://github.com/yicheng47/runner/issues/634)) were closed as not planned on 2026-09-22, which leaves 0.14 with localization and the live shell cwd. Checkouts, file trees and diffs belong to git, the agents and the editor; Runner stays what sits between agents.
+- **The README is the front door.** The landing page ([#468](https://github.com/yicheng47/runner/issues/468)) was closed as not planned the same day: visitors arrive on GitHub, and the README already explains roles, crews and missions in both languages.
 - **One `runner` binary, two modes.** Inside a mission the commands are unchanged and `--mission` defaults to the caller's own; outside, `--mission` is a flag. No second control binary, and no scoping by packaging: a mission agent's shell runs anything on `PATH`. A limit, if ever wanted, is an authorization check on the app side of `mcp.sock`.
 - **A caller is the person at the app or a roster handle, never a location.** `human` on the bus means only the person at the app UI. Inside a mission the handle comes from `RUNNER_HANDLE`; outside, `--as <handle>` names a seat the caller holds, and no handle means the person at a terminal. An outside agent that drives a mission takes a seat first. The socket's post and signal tools carry a `from` handle validated against the roster. Seats without a Runner-spawned session are #562's.
 - **Runner's MCP integration was removed for 0.11.0, the release that ships the CLI.** Two ways in at once would have been confusing. The `runner-mcp` bridge, the registrations Runner wrote, and the pinned row in Settings → MCP are gone; the socket stays as the CLI's implementation-detail transport, and Settings → MCP remains the catalog of the user's own servers.
@@ -59,7 +59,7 @@ There are 23 open issues: 19 assigned to the four milestones and four deliberate
 
 ## Backlog
 
-These four deferrals were explicitly preserved with Jason on 2026-09-21. They have no release date or milestone; they are scheduled by setting a milestone, not by editing this file.
+These deferrals were explicitly preserved with Jason on 2026-09-21; #644 left the list for 0.11 on 2026-09-22. They have no release date or milestone; they are scheduled by setting a milestone, not by editing this file.
 
-- **P2:** [#592](https://github.com/yicheng47/runner/issues/592) OpenCode runtime; [#644](https://github.com/yicheng47/runner/issues/644) Antigravity CLI runtime; [#630](https://github.com/yicheng47/runner/issues/630) token ledger and per-subscription quota.
+- **P2:** [#592](https://github.com/yicheng47/runner/issues/592) OpenCode runtime; [#630](https://github.com/yicheng47/runner/issues/630) token ledger and per-subscription quota.
 - **P3:** [#582](https://github.com/yicheng47/runner/issues/582) split the files that outgrew the 478 audit; time it around feature work on the affected files.

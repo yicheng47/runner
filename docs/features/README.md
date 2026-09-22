@@ -7,7 +7,6 @@ Since 2026-09-01 a spec's number **is** its tracking issue number: file the issu
 ## Active
 
 - [562 — Missions as containers](./562-mission-spawn.md) — the mission owns its roster, a mission starts from a crew or a role, and the lead or an outside seat spawns, lists, waits on and stops slots ([#562](https://github.com/yicheng47/runner/issues/562), P1, 0.12; plan under review).
-- [403 — Opt-in worktree isolation per mission](./403-mission-worktree-isolation.md) — a mission runs in its own `git worktree` so crews and the human's checkout never collide ([#403](https://github.com/yicheng47/runner/issues/403), P1, 0.14).
 - [393 — Role page redesign](./393-role-page.md) — a setup hero, a clamped prompt and the Chat now card folded into the header; first of the two page redesigns ([#393](https://github.com/yicheng47/runner/issues/393), P1, 0.12 release blocker).
 - [699 — Crew page redesign](./699-crew-page.md) — slots first, prose collapsed, slot rows that read at a glance; after 393, against #562's roster model ([#699](https://github.com/yicheng47/runner/issues/699), P1, 0.12 release blocker).
 - [559 — Command palette on ⌘⇧P](./559-command-palette.md) — the ⌘K overlay in command mode over the keymap ([#559](https://github.com/yicheng47/runner/issues/559), P2, 0.12).
@@ -16,7 +15,6 @@ Since 2026-09-01 a spec's number **is** its tracking issue number: file the issu
 - [533 — Update agent CLIs from Settings → Agents](./533-agent-cli-updates.md) — installed versions, an Update button that runs the CLI's own updater in a pane, an update-available badge ([#533](https://github.com/yicheng47/runner/issues/533), P2, 0.11.x).
 - [697 — Keyboard shortcut tidy](./697-shortcut-tidy.md) — one fixed "Go to tab 1–9" row, built-in keys grouped in a Fixed card at the bottom, and stop (⇧⌘X) and resume (⇧⌘R) of the focused session in chats and on the mission view ([#697](https://github.com/yicheng47/runner/issues/697), P2, 0.11).
 - [701 — Desktop notifications](./701-desktop-notifications.md) — a popup Runner draws itself, following Zed's agent notification, when a session off screen waits on you, finishes or fails ([#701](https://github.com/yicheng47/runner/issues/701), P2, 0.12).
-- [468 — Landing page](./468-landing-page.md) — one dark responsive page in `site/`, deployed by GitHub Pages ([#468](https://github.com/yicheng47/runner/issues/468), P2, 0.12).
 
 ## Dropped
 
@@ -30,3 +28,5 @@ Considered and deliberately not built; the spec stays in `archive/` as the recor
 - [491 — Confirm quit while work is running](./archive/491-confirm-quit-running-work.md) ([#491](https://github.com/yicheng47/runner/issues/491), 2026-09-07): a stopgap the session host makes obsolete.
 - [511 — Ask about a selection](./archive/511-ask-about-selection.md) ([#511](https://github.com/yicheng47/runner/issues/511), 2026-09-10): no side thread forked from a selection.
 - [557 — Translucent window backdrop](./archive/557-window-backdrop.md) ([#557](https://github.com/yicheng47/runner/issues/557), 2026-09-11): not important enough to carry.
+- [403 — Opt-in worktree isolation per mission](./archive/403-mission-worktree-isolation.md) ([#403](https://github.com/yicheng47/runner/issues/403), 2026-09-22): Runner is not an agent development environment; a crew that needs its own checkout makes one from its brief.
+- [468 — Landing page](./archive/468-landing-page.md) ([#468](https://github.com/yicheng47/runner/issues/468), 2026-09-22): visitors land on the README, which already explains the model; a short mission demo covers the rest.

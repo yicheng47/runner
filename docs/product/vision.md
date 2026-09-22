@@ -131,7 +131,7 @@ If this loop doesn't work end-to-end without the user touching a terminal outsid
 
 These are intentionally out of scope — they belong to a different product or a later phase.
 
-- **An agent development environment.** Editing, diffing, and review surfaces wrapped around a single agent belong to the agent's own tools or to an IDE. Runner is the environment agents work *in*, not a workbench for building them. The project tree with git status and a read-only diff viewer ([#634](https://github.com/yicheng47/runner/issues/634), 0.14) exists to orient the human between sessions; it is not an editing surface and does not grow into one.
+- **An agent development environment.** Editing, diffing, and review surfaces wrapped around a single agent belong to the agent's own tools or to an IDE. Runner is the environment agents work *in*, not a workbench for building them. The same goes for the workspace around them: Runner does not create git worktrees, show a project tree, or render diffs. Git, the agents and the editor already own those, and a crew that needs its own checkout makes one from its brief. Worktree isolation ([#403](https://github.com/yicheng47/runner/issues/403)) and a project tree with a read-only diff viewer ([#634](https://github.com/yicheng47/runner/issues/634)) were both closed as not planned on 2026-09-22 for this reason.
 - Cross-mission memory / persistent crew brain.
 - A multi-host coordination bus. Sessions on other machines come through the session host ([#645](https://github.com/yicheng47/runner/issues/645), 0.13), which runs the process half of the backend next to the agent; the bus itself stays local.
 - Sandboxing beyond the child process's own permissions.

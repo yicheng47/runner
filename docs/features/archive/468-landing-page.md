@@ -1,6 +1,6 @@
 # Landing page for Runner
 
-Tracking issue: [#468](https://github.com/yicheng47/runner/issues/468). Status: planned. Priority P2.
+Tracking issue: [#468](https://github.com/yicheng47/runner/issues/468). Status: dropped — closed as not planned on 2026-09-22; visitors land on the GitHub README, which already explains the model, and a short cross-vendor mission demo does the page's job in more places. Kept as a record. Priority was P2.
 
 ## Motivation
 
@@ -75,7 +75,7 @@ Copy rules carried over from the promotion playbook: concrete over hype, no "orc
 - Star counts and testimonials until they help.
 - Nightly builds. Nightly prereleases are public for updater access (#502), but stay off the landing page.
 - A comparison table against named competitors.
-- Parallelism claims until worktree isolation ([#403](https://github.com/yicheng47/runner/issues/403)) ships. Carried over from #465, closed as a duplicate of this spec on 2026-09-07.
+- Parallelism claims. Runner does not isolate checkouts ([#403](https://github.com/yicheng47/runner/issues/403) was closed as not planned on 2026-09-22), so the page does not promise parallel crews on one repo. Carried over from #465, closed as a duplicate of this spec on 2026-09-07.
 
 ## Decisions
 

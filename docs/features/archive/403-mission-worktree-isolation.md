@@ -1,6 +1,6 @@
 # Opt-in worktree isolation per mission
 
-Tracking issue: [#403](https://github.com/yicheng47/runner/issues/403). Status: planned.
+Tracking issue: [#403](https://github.com/yicheng47/runner/issues/403). Status: dropped — closed as not planned on 2026-09-22; Jason does not want Runner to become an agent development environment, and checkouts belong to git and the agents. Kept as a record. Priority was P1.
 
 ## Motivation
 
