@@ -209,7 +209,7 @@ CONTEXT
 
 在 macOS 上，如果登录 `PATH` 已包含 `~/.local/bin`，Runner 会在首次启动时把命令安装到那里；如果 `PATH` 中的 `/usr/local/bin` 可写，则安装到后者；否则去 **Settings → General → Command line** 点一下即可。在 Windows 上，Runner 会把 sidecar 目录加入用户 `PATH`。
 
-agent 不需要额外设置。Runner 会为每个检测到的 agent 安装 `runner` skill，三个根目录覆盖五种运行时：Claude Code 用 `~/.claude/skills/`，Codex、GitHub Copilot CLI 和 pi 共用 `~/.agents/skills/`，TRAE CLI 用 `~/.trae/skills/`。skill 会让 agent 读取与当前版本一致的 `runner help agents` 指南。同一个 **Command line** 区域里还有 `runner` 命令这一行，以及 **Runner skill for agents** 开关。
+agent 不需要额外设置。Runner 会为每个检测到的 agent 安装 `runner` skill，分两个根目录：Claude Code 用 `~/.claude/skills/`，Codex、GitHub Copilot CLI 和 pi 共用 `~/.agents/skills/`。skill 会让 agent 读取与当前版本一致的 `runner help agents` 指南。同一个 **Command line** 区域里还有 `runner` 命令这一行，以及 **Runner skill for agents** 开关。
 
 在应用之外驱动一整个 mission：
 
@@ -228,24 +228,23 @@ agent 使用 `--json`；不加时，列表和详情命令会为人显示表格�
 
 ## 支持的 Agent
 
-| | Claude Code | Codex | GitHub Copilot CLI | pi | TRAE CLI |
-| --- | :---: | :---: | :---: | :---: | :---: |
-| 聊天、mission、重启后恢复会话 | ✓ | ✓ | ✓ | ✓ | ✓ |
-| 在 Windows 上运行 | ✓ | ✓ | ✓ ¹ | ✓ ² | — ³ |
-| 分叉聊天 | ✓ | ✓ | — | ✓ | — |
-| 由 agent 自身的 hook 驱动 Working / Idle 状态 | ✓ | ✓ | ✓ | ✓ | — |
-| Needs you：显示审批和提问对话框 | ✓ | — | ✓ | 仅来自扩展 | — |
-| 从 CLI 读取模型列表 | ✓ | ✓ | — | ✓ | — |
-| 权限模式 | Default · Accept edits · Auto · Bypass | Default · Auto · Bypass | Default · Accept edits · Bypass | — | Default · Bypass |
-| Skills 面板 | 目录 + 开关 | 目录 + 开关 | 目录 + 开关 | 目录 | 目录 |
-| 已安装 Runner skill | ✓ | ✓ | ✓ | ✓ | ✓ |
-| 终端渲染有夹具测试覆盖 | ✓ | ✓ | — | — | — |
+| | Claude Code | Codex | GitHub Copilot CLI | pi |
+| --- | :---: | :---: | :---: | :---: |
+| 聊天、mission、重启后恢复会话 | ✓ | ✓ | ✓ | ✓ |
+| 在 Windows 上运行 | ✓ | ✓ | ✓ ¹ | ✓ ² |
+| 分叉聊天 | ✓ | ✓ | — | ✓ |
+| 由 agent 自身的 hook 驱动 Working / Idle 状态 | ✓ | ✓ | ✓ | ✓ |
+| Needs you：显示审批和提问对话框 | ✓ | — | ✓ | 仅来自扩展 |
+| 从 CLI 读取模型列表 | ✓ | ✓ | — | ✓ |
+| 权限模式 | Default · Accept edits · Auto · Bypass | Default · Auto · Bypass | Default · Accept edits · Bypass | — |
+| Skills 面板 | 目录 + 开关 | 目录 + 开关 | 目录 + 开关 | 目录 |
+| 已安装 Runner skill | ✓ | ✓ | ✓ | ✓ |
+| 终端渲染有夹具测试覆盖 | ✓ | ✓ | — | — |
 
 ¹ GitHub Copilot CLI 在 Windows 上原生运行，但尚未在 Windows 上做过冒烟测试。
 ² pi 在 Windows 上原生运行，但尚未在 Windows 上做过冒烟测试；它的 bash 工具需要 Git for Windows。
-³ TRAE CLI 在 Windows 上默认禁用，其集成尚未验证。
 
-Claude Code 和 Codex 是主要支持的 agent，启动和催促时序做过调优。GitHub Copilot CLI 需要 Copilot 订阅。pi 使用你已经配置好的模型提供商。TRAE CLI 用得较少，可能有粗糙之处。欢迎提 [issue](https://github.com/yicheng47/runner/issues)。
+Claude Code 和 Codex 是主要支持的 agent，启动和催促时序做过调优。GitHub Copilot CLI 需要 Copilot 订阅。pi 使用你已经配置好的模型提供商。欢迎提 [issue](https://github.com/yicheng47/runner/issues)。
 
 agent 的命令行工具需要单独安装。Runner 会在 `PATH` 上检测它们，也可以在 **Settings → Agents** 里为每个 agent 单独指定可执行文件。在 Windows 上，Claude Code 和 pi 的 bash 工具需要 Git for Windows；通过 npm 安装的 CLI 需要 Node.js。PowerShell 7 可选。agent 在 Windows 上原生运行，不需要 WSL。
 
