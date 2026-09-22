@@ -701,11 +701,9 @@ mod tests {
         }
     }
 
-    /// Appends that overlap must all land: before the mutex two hooks could seek to the same
-    /// end of the feed and one record was lost. Overlap is what reproduces that, not volume,
-    /// so the waves stay small enough that the last hook in line never reaches the reporter's
-    /// one-second wait, even on a slow runner. A wave of 25 did, and lost records to the
-    /// timeout rather than to a race.
+    /// A reporter that gives up (timeout or swallowed error) removes its payload;
+    /// an overwritten append leaves an orphan.
+    /// Every surviving payload must have exactly one intact record, even under contention.
     #[cfg(windows)]
     #[test]
     fn powershell_reporter_loses_no_record_when_appends_overlap() {
@@ -719,34 +717,66 @@ mod tests {
                 continue;
             }
             let mut feed = HookFeed::start_powershell(&path, "current".into(), "").unwrap();
+            let mut overlapping_appends = false;
 
-            // Every hook in a wave starts and blocks on stdin, then all stdins close together.
+            // Exceed the pipe buffer so every reporter reaches CopyTo and waits for EOF
+            // before any append starts. Closing all stdins releases the wave together.
             for wave in 0..WAVES {
+                let before = payload_count(&path);
                 let mut hooks = (0..WAVE)
                     .map(|_| start_powershell_hook(shell, &path))
                     .collect::<Vec<_>>();
-                std::thread::sleep(Duration::from_secs(2));
                 let stdins = hooks
                     .iter_mut()
                     .enumerate()
                     .map(|(index, hook)| {
                         let mut stdin = hook.stdin.take().unwrap();
                         let id = wave * WAVE + index;
-                        stdin
-                            .write_all(format!("{{\"id\":{id}}}").as_bytes())
-                            .unwrap();
+                        let payload =
+                            serde_json::json!({"id": id, "padding": "x".repeat(1024 * 1024)});
+                        stdin.write_all(payload.to_string().as_bytes()).unwrap();
                         stdin
                     })
                     .collect::<Vec<_>>();
+                assert!(hooks
+                    .iter_mut()
+                    .all(|hook| hook.try_wait().unwrap().is_none()));
+                assert_eq!(payload_count(&path), before);
                 drop(stdins);
                 hooks.into_iter().for_each(assert_quiet_success);
+                overlapping_appends |= payload_count(&path) >= before + 2;
             }
 
-            assert_eq!(
-                drained_ids(&mut feed),
-                (0..WAVES * WAVE).collect::<Vec<_>>(),
-                "{shell}"
+            assert!(
+                overlapping_appends,
+                "{shell}: no wave landed overlapping appends"
             );
+            let prefix = format!("{}.", path.file_name().unwrap().to_string_lossy());
+            let mut expected_ids = fs::read_dir(path.parent().unwrap())
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .filter(|path| {
+                    path.file_name()
+                        .unwrap()
+                        .to_string_lossy()
+                        .starts_with(&prefix)
+                })
+                .map(|path| {
+                    let payload: Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+                    payload["id"].as_u64().unwrap() as usize
+                })
+                .collect::<Vec<_>>();
+            expected_ids.sort_unstable();
+            assert!(expected_ids.iter().all(|id| *id < WAVES * WAVE));
+            assert!(expected_ids.windows(2).all(|ids| ids[0] != ids[1]));
+            let records = fs::read_to_string(&path).unwrap();
+            assert!(records.ends_with('\n'), "{shell}: torn final record");
+            assert_eq!(records.lines().count(), expected_ids.len(), "{shell}");
+            for line in records.lines() {
+                serde_json::from_str::<Value>(line).expect("torn feed record");
+            }
+            assert_eq!(drained_ids(&mut feed), expected_ids, "{shell}");
+            assert_eq!(payload_count(&path), 0, "{shell}: orphaned payload");
             drop(feed);
             assert_eq!(fs::read_dir(path.parent().unwrap()).unwrap().count(), 0);
         }

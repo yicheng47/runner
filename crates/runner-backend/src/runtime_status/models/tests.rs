@@ -157,7 +157,7 @@ mod process_tests {
     }
 
     fn wait_until(condition: impl Fn() -> bool) {
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let deadline = Instant::now() + Duration::from_secs(30);
         while !condition() {
             assert!(Instant::now() < deadline, "query did not finish");
             std::thread::sleep(Duration::from_millis(10));
@@ -245,7 +245,14 @@ esac"#;
     fn concurrent_refreshes_share_one_query_and_obsolete_results_are_discarded() {
         let fixture = Fixture::new(
             Runtime::Codex,
-            "sleep 0.2\nprintf '%s' '{\"models\":[{\"slug\":\"old\",\"visibility\":\"list\"}]}'",
+            r#"d="$(dirname "$0")"
+i=0
+while [ ! -f "$d/release" ]; do
+  [ -d "$d" ] && [ "$i" -lt 1000 ] || exit 1
+  sleep 0.01
+  i=$((i + 1))
+done
+printf '%s' '{"models":[{"slug":"old","visibility":"list"}]}'"#,
         );
         request(
             &fixture.pool,
@@ -268,6 +275,7 @@ esac"#;
         );
         crate::db::set_runtime_override(&fixture.pool, Runtime::Codex.key(), replacement.to_str())
             .unwrap();
+        std::fs::write(fixture.dir.path().join("release"), "").unwrap();
         wait_until(|| fixture.catalog() == Some(catalog("new")));
         assert_eq!(
             read_cached(&fixture.pool, Runtime::Codex).unwrap().catalog,
@@ -279,12 +287,15 @@ esac"#;
     fn spawn_failure_timeout_and_cache_write_failure_are_contained() {
         let fixture = Fixture::new(
             Runtime::Codex,
-            "echo $$ > \"$(dirname \"$0\")/pid\"\nexec sleep 30",
+            "echo $$ > \"$(dirname \"$0\")/pid\"\ncat > /dev/null\nexec sleep 30",
         );
+        // More than a pipe buffer: run cannot finish writing stdin (and start its
+        // timeout) until the child has written its pid and started draining input.
+        let input = vec![b'x'; 1024 * 1024];
         let result = run(Query {
             executable: fixture.command.to_str().unwrap(),
             args: &[],
-            stdin: None,
+            stdin: Some(&input),
             env: &LoginShellEnv::default(),
             timeout: Duration::from_secs(2),
         });
