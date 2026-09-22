@@ -15,7 +15,7 @@ Snapshot as of 2026-09-21. The live source is the [GitHub milestones page](https
 | 0.11.0 | Shipped 2026-09-20: pi runtime, and the general `runner` CLI with its agent skill as Runner's external control surface; the MCP integration removed | #539, #648 |
 | 0.11.1 | Shipped 2026-09-21: session status, Windows agent discovery, splitter feedback, mission accents, project inference, and default crew naming | #659, #670, #672, #673, #653, #680, #676 |
 | [0.11.x](https://github.com/yicheng47/runner/milestone/1) | Agent maintenance, mission monitoring, and focused follow-through | #617, #533, #666, #661, #686 |
-| [0.12](https://github.com/yicheng47/runner/milestone/2) | Mission ownership and delegation, role/crew workflows, navigation, and the terminal black-pane fix | #562, #619, #393, #577, #559, #468, #647 |
+| [0.12](https://github.com/yicheng47/runner/milestone/2) | Mission ownership and delegation, role/crew workflows, navigation, and the terminal black-pane fix | #562, #619, #393, #699, #577, #559, #468, #647 |
 | [0.13](https://github.com/yicheng47/runner/milestone/3) | Session hosting and visibility: local/remote hosts, Activity, shell process status | #645, #552, #586 |
 | [0.14](https://github.com/yicheng47/runner/milestone/4) | Workspace features and localization: worktrees, project tree/diff, live shell cwd, 简体中文 | #403, #634, #575, #565 |
 
@@ -23,7 +23,7 @@ A minor is a change to the model or a new surface; a patch is fixes and follow-t
 
 ## Open work by release
 
-There are 23 open issues: 19 assigned to the four milestones and four deliberately unscheduled. Milestone placement is the release track, not a promise that every issue gates its first release. The `release-blocker` label marks the issues that gate the milestone's .0 release; everything else in the milestone may ship in a patch. [#393](https://github.com/yicheng47/runner/issues/393) explicitly gates 0.12.0. Priority labels are unchanged by the scheduling pass; the subsequently filed [#686](https://github.com/yicheng47/runner/issues/686) is P1.
+There are 23 open issues: 19 assigned to the four milestones and four deliberately unscheduled. Milestone placement is the release track, not a promise that every issue gates its first release. The `release-blocker` label marks the issues that gate the milestone's .0 release; everything else in the milestone may ship in a patch. [#393](https://github.com/yicheng47/runner/issues/393) (role page) and [#699](https://github.com/yicheng47/runner/issues/699) (crew page) explicitly gate 0.12.0. Priority labels are unchanged by the scheduling pass; the subsequently filed [#686](https://github.com/yicheng47/runner/issues/686) is P1, and [#562](https://github.com/yicheng47/runner/issues/562) was raised from P3 to P1 on 2026-09-22 because it changes how crews work.
 
 | Release | Issue | Reason and ordering |
 | --- | --- | --- |
@@ -32,9 +32,10 @@ There are 23 open issues: 19 assigned to the four milestones and four deliberate
 | 0.11.x | [#666](https://github.com/yicheng47/runner/issues/666) pi resume with custom environment paths | Follow-through on the pi runtime |
 | 0.11.x | [#661](https://github.com/yicheng47/runner/issues/661) repository mapping-test naming | Small maintenance change |
 | 0.11.x | [#686](https://github.com/yicheng47/runner/issues/686) watch CLI-started missions by default | P1; reuse the existing CLI follower and slow its 500 ms polling cadence |
-| 0.12 | [#562](https://github.com/yicheng47/runner/issues/562) missions as containers | Settle the model and migration/lifecycle contracts before the dependent UI |
+| 0.12 | [#562](https://github.com/yicheng47/runner/issues/562) missions as containers | P1; settle the model and migration/lifecycle contracts before the dependent UI |
 | 0.12 | [#619](https://github.com/yicheng47/runner/issues/619) deletion integrity in application code | Coordinate ownership and deletion rules with #562; do not carry crew cascade assumptions into mission slots |
-| 0.12 | [#393](https://github.com/yicheng47/runner/issues/393) role and crew page redesign | **Release blocker**; implement against #562's settled model |
+| 0.12 | [#393](https://github.com/yicheng47/runner/issues/393) role page redesign | **Release blocker**; the first of the two page redesigns, split from the crew page on 2026-09-22 |
+| 0.12 | [#699](https://github.com/yicheng47/runner/issues/699) crew page redesign | **Release blocker**; after #393, against #562's settled roster model |
 | 0.12 | [#577](https://github.com/yicheng47/runner/issues/577) per-role skills and MCP picks | Role setup and spawn behavior; coordinate with #393's layout |
 | 0.12 | [#559](https://github.com/yicheng47/runner/issues/559) command palette | Expose the settled mission and role actions through the keyboard |
 | 0.12 | [#468](https://github.com/yicheng47/runner/issues/468) landing page | Copy and screenshots should explain the new mission model |
