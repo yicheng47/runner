@@ -653,27 +653,41 @@ impl AgentsPane {
                             .child(runtime.display_name.clone()),
                     ),
             )
-            .children(catalog.map(|entry| {
-                let url = entry.install_url.clone();
-                div()
-                    .debug_selector(|| format!("AGENT_INSTALL_{}", runtime.name))
-                    .flex()
-                    .flex_col()
-                    .items_start()
-                    .gap_2()
-                    .child(runtime_section_caption(entry.description.clone()))
-                    .child(
-                        Button::new(
-                            SharedString::from(format!("agent-install-{}", runtime.name)),
-                            "Install instructions",
-                        )
-                        .icon("external-link.svg")
-                        .size(ButtonSize::Sm)
-                        .variant(ButtonVariant::Ghost)
-                        .tooltip(entry.install_url.clone())
-                        .on_press(move |_, cx| cx.open_url(&url)),
-                    )
-            }))
+            .children(
+                catalog
+                    .filter(|entry| !entry.description.is_empty() || !entry.install_url.is_empty())
+                    .map(|entry| {
+                        let description = (!entry.description.is_empty()).then(|| {
+                            runtime_section_caption(entry.description.clone())
+                                .debug_selector(|| format!("AGENT_DESCRIPTION_{}", runtime.name))
+                        });
+                        let install = (!entry.install_url.is_empty()).then(|| {
+                            let url = entry.install_url.clone();
+                            div()
+                                .debug_selector(|| format!("AGENT_INSTALL_{}", runtime.name))
+                                .child(
+                                    Button::new(
+                                        SharedString::from(format!(
+                                            "agent-install-{}",
+                                            runtime.name
+                                        )),
+                                        "Install instructions",
+                                    )
+                                    .icon("external-link.svg")
+                                    .size(ButtonSize::Sm)
+                                    .variant(ButtonVariant::Ghost)
+                                    .tooltip(entry.install_url.clone())
+                                    .on_press(move |_, cx| cx.open_url(&url)),
+                                )
+                        });
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .children(description)
+                            .children(install)
+                    }),
+            )
             .children(self.render_browse_field(runtime.name, cx))
             .children(validation.map(|message| {
                 runtime_caption(message.to_owned(), true)
@@ -1566,8 +1580,16 @@ mod tests {
                 display_name: entry.display_name,
                 command: entry.command,
                 native_fork: entry.native_fork,
-                description: "Test agent description".into(),
-                install_url: "https://example.com/install".into(),
+                description: if entry.name == Runtime::Trae {
+                    String::new()
+                } else {
+                    "Test agent description".into()
+                },
+                install_url: if entry.name == Runtime::Trae {
+                    String::new()
+                } else {
+                    "https://example.com/install".into()
+                },
                 default_enabled: true,
                 available: false,
                 default_model: None,
@@ -1659,6 +1681,31 @@ mod tests {
             assert!(card.top() > previous_bottom, "{selector}");
             previous_bottom = card.bottom();
         }
+    }
+
+    #[test]
+    fn install_link_shares_the_description_line_and_both_are_omitted_when_empty() {
+        let mut cx = gpui::TestAppContext::single();
+        let rows = runner_backend::ops::runtime::runtime_list()
+            .into_iter()
+            .filter(|entry| matches!(entry.name, Runtime::Codex | Runtime::Trae))
+            .map(|entry| {
+                let mut row = runtime(RuntimeRowState::NotFound);
+                row.name = entry.name;
+                row.display_name = entry.display_name;
+                row.command = entry.command;
+                row
+            })
+            .collect();
+        let (_temp, pane) = test_pane(rows, false, &mut cx);
+        let mut window = gpui::VisualTestContext::from_window(pane.into(), &cx);
+        let description = window.debug_bounds("AGENT_DESCRIPTION_codex").unwrap();
+        let install = window.debug_bounds("AGENT_INSTALL_codex").unwrap();
+        assert!(install.left() > description.right());
+        assert!(install.top() < description.bottom() && install.bottom() > description.top());
+        assert!(window.debug_bounds("AGENT_CARD_trae").is_some());
+        assert!(window.debug_bounds("AGENT_DESCRIPTION_trae").is_none());
+        assert!(window.debug_bounds("AGENT_INSTALL_trae").is_none());
     }
 
     #[test]

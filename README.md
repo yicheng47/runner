@@ -209,7 +209,7 @@ CONTEXT
 
 On macOS, the first launch installs it to `~/.local/bin`, or a writable `/usr/local/bin`, when that directory is already on the login `PATH`; otherwise it is one click in **Settings → General → Command line**. On Windows, Runner adds its sidecar directory to the user `PATH`.
 
-Agents need no setup. Runner installs a `runner` skill for every detected agent into three roots that cover all five runtimes: `~/.claude/skills/` for Claude Code, `~/.agents/skills/` for Codex, GitHub Copilot CLI, and pi, and `~/.trae/skills/` for TRAE CLI. The skill points the agent at the version-matched `runner help agents` guide. The same **Command line** section has the `runner` command row and the **Runner skill for agents** switch.
+Agents need no setup. Runner installs a `runner` skill for every detected agent into two roots: `~/.claude/skills/` for Claude Code, and `~/.agents/skills/` for Codex, GitHub Copilot CLI, and pi. The skill points the agent at the version-matched `runner help agents` guide. The same **Command line** section has the `runner` command row and the **Runner skill for agents** switch.
 
 A whole mission, driven from outside the app:
 
@@ -228,24 +228,23 @@ Agents use `--json`; without it, list and show commands render tables and readab
 
 ## Supported agents
 
-| | Claude Code | Codex | GitHub Copilot CLI | pi | TRAE CLI |
-| --- | :---: | :---: | :---: | :---: | :---: |
-| Chats, missions, resume after relaunch | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Runs on Windows | ✓ | ✓ | ✓ ¹ | ✓ ² | — ³ |
-| Fork a chat | ✓ | ✓ | — | ✓ | — |
-| Working / Idle from the agent's hooks | ✓ | ✓ | ✓ | ✓ | — |
-| Needs you: approval and question dialogs shown | ✓ | — | ✓ | from extensions only | — |
-| Model list read from the CLI | ✓ | ✓ | — | ✓ | — |
-| Permission modes | Default · Accept edits · Auto · Bypass | Default · Auto · Bypass | Default · Accept edits · Bypass | — | Default · Bypass |
-| Skills pane | catalog + on/off | catalog + on/off | catalog + on/off | catalog | catalog |
-| Runner skill installed | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Terminal rendering covered by fixtures | ✓ | ✓ | — | — | — |
+| | Claude Code | Codex | GitHub Copilot CLI | pi |
+| --- | :---: | :---: | :---: | :---: |
+| Chats, missions, resume after relaunch | ✓ | ✓ | ✓ | ✓ |
+| Runs on Windows | ✓ | ✓ | ✓ ¹ | ✓ ² |
+| Fork a chat | ✓ | ✓ | — | ✓ |
+| Working / Idle from the agent's hooks | ✓ | ✓ | ✓ | ✓ |
+| Needs you: approval and question dialogs shown | ✓ | — | ✓ | from extensions only |
+| Model list read from the CLI | ✓ | ✓ | — | ✓ |
+| Permission modes | Default · Accept edits · Auto · Bypass | Default · Auto · Bypass | Default · Accept edits · Bypass | — |
+| Skills pane | catalog + on/off | catalog + on/off | catalog + on/off | catalog |
+| Runner skill installed | ✓ | ✓ | ✓ | ✓ |
+| Terminal rendering covered by fixtures | ✓ | ✓ | — | — |
 
 ¹ GitHub Copilot CLI runs natively on Windows but has not been smoke-tested there yet.
 ² pi runs natively on Windows but has not been smoke-tested there yet; its bash tool requires Git for Windows.
-³ TRAE CLI is disabled by default on Windows; its integration has not been validated.
 
-Claude Code and Codex are the primary agents, with tuned launch and nudge timing. GitHub Copilot CLI needs a Copilot subscription. pi brings your own configured model provider. TRAE CLI sees less use and may have rough edges. [Issues](https://github.com/yicheng47/runner/issues) are welcome.
+Claude Code and Codex are the primary agents, with tuned launch and nudge timing. GitHub Copilot CLI needs a Copilot subscription. pi brings your own configured model provider. [Issues](https://github.com/yicheng47/runner/issues) are welcome.
 
 Install the agent CLIs separately. Runner detects them on `PATH`, with per-agent executable overrides in **Settings → Agents**. On Windows, Claude Code and pi's bash tool require Git for Windows; npm-based CLI installations require Node.js. PowerShell 7 is optional. Agents run natively on Windows, without WSL.
 
