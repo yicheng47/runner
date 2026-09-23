@@ -174,8 +174,6 @@ impl AgyStatusWatcher {
 
 #[cfg(test)]
 mod tests {
-    use std::process::{Command, Stdio};
-
     use serde_json::{json, Value};
 
     use super::*;
@@ -270,6 +268,8 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn reporter_answers_empty_json_and_appends_a_payload_pointer() {
+        use std::process::{Command, Stdio};
+
         let root = tempfile::tempdir().unwrap();
         install_hooks(root.path()).unwrap();
         let feed = crate::session::hook_feed::status_path(root.path(), "agy");
