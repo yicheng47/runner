@@ -7,11 +7,11 @@ mod windows;
 pub(crate) use macos::{
     activate_update_hint, finish_window_close, other_shortcut_modifiers_held,
     primary_modifier_held, sidebar_row_wrapper, sidebar_section, update_hint_tooltip,
-    PRIMARY_MODIFIER, SHORTCUT_REQUIREMENTS,
+    AGENT_UPDATE_NEEDS_STOPPED_SESSIONS, PRIMARY_MODIFIER, SHORTCUT_REQUIREMENTS,
 };
 #[cfg(windows)]
 pub(crate) use windows::{
     activate_update_hint, finish_window_close, other_shortcut_modifiers_held,
     primary_modifier_held, sidebar_row_wrapper, sidebar_section, update_hint_tooltip,
-    PRIMARY_MODIFIER, SHORTCUT_REQUIREMENTS,
+    AGENT_UPDATE_NEEDS_STOPPED_SESSIONS, PRIMARY_MODIFIER, SHORTCUT_REQUIREMENTS,
 };

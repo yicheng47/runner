@@ -50,6 +50,14 @@ struct RuntimePresentation {
     show_reset: bool,
 }
 
+/// The Update button and its running-sessions caption, present only while
+/// npm has a newer version than the one installed.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct UpdateAction {
+    disabled: bool,
+    caption: Option<String>,
+}
+
 pub(crate) struct AgentsPane {
     shell: WeakEntity<NativeRoot>,
     app_store: Entity<AppStore>,
@@ -63,6 +71,7 @@ pub(crate) struct AgentsPane {
     validation_drafts: HashMap<Runtime, String>,
     saving: HashSet<Runtime>,
     focused: HashSet<Runtime>,
+    live_sessions: HashMap<Runtime, usize>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -159,6 +168,7 @@ impl AgentsPane {
             validation_drafts: HashMap::new(),
             saving: HashSet::new(),
             focused: HashSet::new(),
+            live_sessions: HashMap::new(),
             _subscriptions: subscriptions,
         }
     }
@@ -174,15 +184,17 @@ impl AgentsPane {
                 .map_err(|error| error.to_string())?;
             let catalog = runner_backend::ops::runtime::runtime_catalog(&core)
                 .map_err(|error| error.to_string())?;
-            Ok::<_, String>((status, catalog))
+            let live = runner_backend::ops::session::live_session_counts(&core).unwrap_or_default();
+            Ok::<_, String>((status, catalog, live))
         });
         cx.spawn(async move |weak, cx| {
             let result = task.await;
             let _ = weak.update(cx, |this, cx| {
                 this.loading = false;
                 match result {
-                    Ok((status, catalog)) => {
+                    Ok((status, catalog, live)) => {
                         this.catalog = catalog;
+                        this.live_sessions = live;
                         this.apply_status(status, cx);
                         this.error = None;
                     }
@@ -193,6 +205,54 @@ impl AgentsPane {
         })
         .detach();
         cx.notify();
+    }
+
+    /// Recounts live sessions per agent, which the Update guard reads, as
+    /// sessions start and stop while Settings is open.
+    pub(crate) fn refresh_live_sessions(&mut self, cx: &mut Context<Self>) {
+        let core = self.app_store.read(cx).core.clone();
+        let task =
+            cx.background_spawn(
+                async move { runner_backend::ops::session::live_session_counts(&core) },
+            );
+        cx.spawn(async move |weak, cx| {
+            if let Ok(live) = task.await {
+                let _ = weak.update(cx, |this, cx| {
+                    if this.live_sessions != live {
+                        this.live_sessions = live;
+                        cx.notify();
+                    }
+                });
+            }
+        })
+        .detach();
+    }
+
+    fn open_update(
+        &mut self,
+        runtime: &RuntimeExecutableStatus,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let (Some(installed), Some(available)) = (
+            runtime.installed_version.clone(),
+            runtime.available_version.clone(),
+        ) else {
+            return;
+        };
+        let request = crate::surfaces::agent_update::AgentUpdateRequest {
+            runtime: runtime.name,
+            display_name: runtime.display_name.clone(),
+            command: runtime.command.clone(),
+            installed,
+            available,
+        };
+        let shell = self.shell.clone();
+        window.defer(cx, move |window, cx| {
+            let _ = shell.update(cx, |root, root_cx| {
+                root.open_agent_update(request, window, root_cx)
+            });
+        });
     }
 
     fn refresh_discovery(&mut self, cx: &mut Context<Self>) {
@@ -734,6 +794,37 @@ impl AgentsPane {
             runtime.state == RuntimeRowState::Checking,
             cx,
         );
+        let update = update_action(
+            runtime,
+            self.live_sessions.get(&runtime.name).copied().unwrap_or(0),
+            crate::platform_ui::AGENT_UPDATE_NEEDS_STOPPED_SESSIONS,
+        );
+        let update_caption = update.as_ref().and_then(|update| {
+            update
+                .caption
+                .clone()
+                .map(|caption| (caption, update.disabled))
+        });
+        let update_button = update.map(|update| {
+            let pane = cx.entity();
+            let status = runtime.clone();
+            div()
+                .debug_selector(|| format!("AGENT_UPDATE_{}", runtime.name))
+                .child(
+                    Button::new(
+                        SharedString::from(format!("agent-update-{}", runtime.name)),
+                        "Update",
+                    )
+                    .size(ButtonSize::Sm)
+                    .variant(ButtonVariant::Secondary)
+                    .disabled(update.disabled)
+                    .on_press(move |window, cx| {
+                        pane.update(cx, |this, pane_cx| {
+                            this.open_update(&status, window, pane_cx)
+                        });
+                    }),
+                )
+        });
         div()
             .debug_selector(|| card_selector)
             .flex()
@@ -788,6 +879,7 @@ impl AgentsPane {
                             .flex_none()
                             .items_center()
                             .gap(rems(10. / 16.))
+                            .children(update_button)
                             .child(
                                 div()
                                     .debug_selector(|| format!("AGENT_TOGGLE_{}", runtime.name))
@@ -859,6 +951,11 @@ impl AgentsPane {
                     .caption
                     .map(|caption| runtime_caption(caption, validation.is_some())),
             )
+            .children(update_caption.map(|(caption, blocked)| {
+                runtime_caption(caption, false)
+                    .debug_selector(|| format!("AGENT_UPDATE_CAPTION_{}", runtime.name))
+                    .when(blocked, |caption| caption.text_color(theme::warning()))
+            }))
             .into_any_element()
     }
 }
@@ -1207,6 +1304,20 @@ fn runtime_presentation(
             _ => None,
         }
     };
+    let version = validation
+        .is_none()
+        .then(|| version_caption(runtime))
+        .flatten();
+    let caption = match (version, caption) {
+        (Some(version), Some(caption)) => Some(format!("{version} · {caption}")),
+        (Some(version), None) => Some(match &runtime.detected_path {
+            Some(path) if state == RuntimeRowState::Detected => {
+                format!("{version} · Detected: {path}")
+            }
+            _ => version,
+        }),
+        (None, caption) => caption,
+    };
     let auto_path = if runtime.state == RuntimeRowState::Checking {
         "Auto — detecting…".to_owned()
     } else if let Some(path) = &runtime.detected_path {
@@ -1222,6 +1333,44 @@ fn runtime_presentation(
         auto_path,
         show_reset: runtime.override_path.is_some(),
     }
+}
+
+/// `2.1.266`, or `0.153.4 → 0.155.0` while an update is available.
+fn version_caption(runtime: &RuntimeExecutableStatus) -> Option<String> {
+    let installed = runtime.installed_version.as_deref()?;
+    Some(match runtime.available_version.as_deref() {
+        Some(available) => format!("{installed} → {available}"),
+        None => installed.to_owned(),
+    })
+}
+
+/// Update is offered only while npm has a newer version, and never for a
+/// runtime without an update command. Where the platform locks running
+/// executables it is disabled while any session of the agent is alive;
+/// elsewhere running sessions only earn a caption.
+fn update_action(
+    runtime: &RuntimeExecutableStatus,
+    running: usize,
+    needs_stopped_sessions: bool,
+) -> Option<UpdateAction> {
+    let installed = runtime.installed_version.as_deref()?;
+    runtime.available_version.as_ref()?;
+    let name = &runtime.display_name;
+    let caption = match (running, needs_stopped_sessions) {
+        (0, _) => None,
+        (1, true) => Some(format!("Stop the running {name} session first.")),
+        (running, true) => Some(format!("Stop the {running} running {name} sessions first.")),
+        (1, false) => Some(format!(
+            "1 running {name} session keeps {installed} until it relaunches."
+        )),
+        (running, false) => Some(format!(
+            "{running} running {name} sessions keep {installed} until they relaunch."
+        )),
+    };
+    Some(UpdateAction {
+        disabled: needs_stopped_sessions && running > 0,
+        caption,
+    })
 }
 
 fn runtime_badge(runtime: Runtime, presentation: &RuntimePresentation) -> AnyElement {
@@ -1388,6 +1537,8 @@ mod tests {
             effective_source: None,
             state,
             invalid_reason: None,
+            installed_version: None,
+            available_version: None,
         }
     }
 
@@ -1501,6 +1652,144 @@ mod tests {
             .as_deref(),
             Some("Windows PATH refresh failed. Refresh or set an explicit executable path.")
         );
+    }
+
+    fn versioned(
+        state: RuntimeRowState,
+        installed: Option<&str>,
+        available: Option<&str>,
+    ) -> RuntimeExecutableStatus {
+        let mut row = runtime(state);
+        row.detected_path = Some("/Users/jason/.nvm/bin/codex".into());
+        row.installed_version = installed.map(str::to_owned);
+        row.available_version = available.map(str::to_owned);
+        row
+    }
+
+    #[test]
+    fn caption_leads_with_the_version_and_the_update_arrow() {
+        let caption = |row: &RuntimeExecutableStatus, validation: Option<&str>| {
+            runtime_presentation(row, Some(DiscoveryOutcome::Ok), validation, false).caption
+        };
+        assert_eq!(
+            caption(
+                &versioned(RuntimeRowState::Detected, Some("0.153.4"), None),
+                None
+            )
+            .as_deref(),
+            Some("0.153.4 · Detected: /Users/jason/.nvm/bin/codex")
+        );
+        assert_eq!(
+            caption(
+                &versioned(RuntimeRowState::Detected, Some("0.153.4"), Some("0.155.0")),
+                None
+            )
+            .as_deref(),
+            Some("0.153.4 → 0.155.0 · Detected: /Users/jason/.nvm/bin/codex")
+        );
+        assert_eq!(
+            caption(
+                &versioned(RuntimeRowState::Override, Some("0.155.1"), None),
+                None
+            )
+            .as_deref(),
+            Some("0.155.1 · Detected: /Users/jason/.nvm/bin/codex")
+        );
+        assert_eq!(
+            caption(&versioned(RuntimeRowState::Detected, None, None), None),
+            None
+        );
+        assert_eq!(
+            caption(
+                &versioned(RuntimeRowState::Detected, Some("0.153.4"), None),
+                Some("Not an executable file.")
+            )
+            .as_deref(),
+            Some("Not an executable file.")
+        );
+    }
+
+    #[test]
+    fn update_button_shows_only_with_a_newer_version_and_guards_by_platform() {
+        let current = versioned(RuntimeRowState::Detected, Some("0.155.0"), None);
+        assert_eq!(update_action(&current, 3, true), None);
+        assert_eq!(
+            update_action(&versioned(RuntimeRowState::Detected, None, None), 0, false),
+            None
+        );
+        let mut trae = versioned(RuntimeRowState::Detected, Some("0.1.0"), None);
+        trae.name = Runtime::Trae;
+        trae.display_name = "TRAE CLI".into();
+        assert_eq!(update_action(&trae, 0, false), None);
+
+        let stale = versioned(RuntimeRowState::Detected, Some("0.153.4"), Some("0.155.0"));
+        assert_eq!(
+            update_action(&stale, 0, false),
+            Some(UpdateAction {
+                disabled: false,
+                caption: None
+            })
+        );
+        assert_eq!(
+            update_action(&stale, 0, true),
+            Some(UpdateAction {
+                disabled: false,
+                caption: None
+            })
+        );
+        assert_eq!(
+            update_action(&stale, 3, false),
+            Some(UpdateAction {
+                disabled: false,
+                caption: Some("3 running Codex sessions keep 0.153.4 until they relaunch.".into()),
+            })
+        );
+        assert_eq!(
+            update_action(&stale, 1, false).and_then(|action| action.caption),
+            Some("1 running Codex session keeps 0.153.4 until it relaunches.".into())
+        );
+        assert_eq!(
+            update_action(&stale, 3, true),
+            Some(UpdateAction {
+                disabled: true,
+                caption: Some("Stop the 3 running Codex sessions first.".into()),
+            })
+        );
+        assert_eq!(
+            update_action(&stale, 1, true).and_then(|action| action.caption),
+            Some("Stop the running Codex session first.".into())
+        );
+    }
+
+    #[test]
+    fn update_button_sits_before_the_toggle_only_while_an_update_exists() {
+        let mut cx = gpui::TestAppContext::single();
+        let mut stale = versioned(RuntimeRowState::Detected, Some("0.153.4"), Some("0.155.0"));
+        stale.effective_source = Some(RuntimeCommandSource::Detected);
+        let (_temp, pane) = test_pane(vec![stale], false, &mut cx);
+        let mut window = gpui::VisualTestContext::from_window(pane.into(), &cx);
+        let update = window.debug_bounds("AGENT_UPDATE_codex").unwrap();
+        let toggle = window.debug_bounds("AGENT_TOGGLE_codex").unwrap();
+        assert!(update.right() <= toggle.left());
+        assert!(update.top() < toggle.bottom() && update.bottom() > toggle.top());
+        assert!(window.debug_bounds("AGENT_UPDATE_CAPTION_codex").is_none());
+
+        pane.update(&mut window, |pane, _, cx| {
+            pane.live_sessions.insert(Runtime::Codex, 2);
+            cx.notify();
+        })
+        .unwrap();
+        window.run_until_parked();
+        assert!(window.debug_bounds("AGENT_UPDATE_CAPTION_codex").is_some());
+
+        // A fresh window: gpui keeps debug bounds of elements no longer drawn.
+        let mut cx = gpui::TestAppContext::single();
+        let mut current = versioned(RuntimeRowState::Detected, Some("0.155.0"), None);
+        current.effective_source = Some(RuntimeCommandSource::Detected);
+        let (_temp, pane) = test_pane(vec![current], false, &mut cx);
+        let mut window = gpui::VisualTestContext::from_window(pane.into(), &cx);
+        assert!(window.debug_bounds("AGENT_TOGGLE_codex").is_some());
+        assert!(window.debug_bounds("AGENT_UPDATE_codex").is_none());
     }
 
     #[test]

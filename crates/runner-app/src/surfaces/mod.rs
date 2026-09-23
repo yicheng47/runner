@@ -1,5 +1,6 @@
 //! App surfaces and the pure helpers each product area owns.
 
+pub(crate) mod agent_update;
 pub(crate) mod app_shell;
 pub(crate) mod chat;
 pub(crate) mod chat_lifecycle;

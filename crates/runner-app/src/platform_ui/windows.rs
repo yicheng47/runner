@@ -10,6 +10,10 @@ pub(crate) const PRIMARY_MODIFIER: &str = "Ctrl";
 pub(crate) const SHORTCUT_REQUIREMENTS: &str =
     "Shortcuts must include Ctrl, Alt, or Win. Function keys can be used alone.";
 
+/// Windows keeps a running executable locked, so an agent CLI's update would
+/// fail or half-apply while any session of it is alive.
+pub(crate) const AGENT_UPDATE_NEEDS_STOPPED_SESSIONS: bool = true;
+
 pub(crate) fn primary_modifier_held(modifiers: gpui::Modifiers) -> bool {
     modifiers.control
 }
