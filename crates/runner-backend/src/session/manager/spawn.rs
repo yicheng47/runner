@@ -24,6 +24,40 @@ pub(super) fn ensure_utf8_locale(env: &mut BTreeMap<String, String>, process_has
     env.insert("LC_CTYPE".into(), "UTF-8".into());
 }
 
+/// The environment an agent process starts from. Login-shell vars (the
+/// proxy quartet, both cases) are the bottom layer; a role row can override
+/// any of them, being the most specific configuration surface. System vars
+/// layer on top so the user can't accidentally shadow them — PATH comes from
+/// the composed path and a role.env PATH is filtered by
+/// `launch::is_reserved_env_name` — then `extra_env`, the runtime's quiet
+/// flags (#475), and a UTF-8 locale when no layer supplies one.
+pub(super) fn agent_env(
+    shell_vars: BTreeMap<String, String>,
+    role_env: &HashMap<String, String>,
+    extra_env: BTreeMap<String, String>,
+    runtime: Option<Runtime>,
+) -> BTreeMap<String, String> {
+    let mut env = shell_vars;
+    for (k, v) in role_env {
+        env.insert(k.clone(), v.clone());
+    }
+    env.insert("TERM".into(), "xterm-256color".into());
+    env.insert("COLORTERM".into(), "truecolor".into());
+    env.extend(extra_env);
+    if runtime == Some(Runtime::ClaudeCode) {
+        env.insert("CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY".into(), "1".into());
+        env.insert("DISABLE_INSTALLATION_CHECKS".into(), "1".into());
+    }
+    if runtime == Some(Runtime::Pi) {
+        env.insert("PI_SKIP_VERSION_CHECK".into(), "1".into());
+    }
+    let process_has_locale = LOCALE_VARS
+        .iter()
+        .any(|var| std::env::var_os(var).is_some());
+    ensure_utf8_locale(&mut env, process_has_locale);
+    env
+}
+
 pub(super) fn run_headless_fork(
     spec: &SpawnSpec,
     plan: &router::runtime::ForkPlan,
@@ -440,48 +474,123 @@ impl SessionManager {
             .read()
             .expect("runtime shell environment lock poisoned")
             .clone();
-        // Bottom layer: login-shell vars (proxy quartet, both cases)
-        // captured at app start. A role row can override any of these
-        // by setting the same name in its own env map — the role row
-        // is the most specific configuration surface.
-        let mut env: BTreeMap<String, String> = shell_env.vars;
-        for (k, v) in &role.env {
-            env.insert(k.clone(), v.clone());
-        }
-        // System vars layer on top so the user can't accidentally
-        // shadow them. PATH is set by the launch script from the
-        // composed path; a role.env PATH would be filtered by
-        // `launch::is_reserved_env_name` but we layer system vars
-        // anyway for parity with the prior portable-pty path.
-        env.insert("TERM".into(), "xterm-256color".into());
-        env.insert("COLORTERM".into(), "truecolor".into());
-        for (k, v) in extra_env {
-            env.insert(k, v);
-        }
-        if Runtime::parse(&role.runtime) == Some(Runtime::ClaudeCode) {
-            env.insert("CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY".into(), "1".into());
-            env.insert("DISABLE_INSTALLATION_CHECKS".into(), "1".into());
-        }
-        if Runtime::parse(&role.runtime) == Some(Runtime::Pi) {
-            env.insert("PI_SKIP_VERSION_CHECK".into(), "1".into());
-        }
-        let process_has_locale = LOCALE_VARS
-            .iter()
-            .any(|var| std::env::var_os(var).is_some());
-        ensure_utf8_locale(&mut env, process_has_locale);
         SpawnSpec {
             codex_pending_turn: None,
             session_id,
             cwd: cwd.map(PathBuf::from),
             command: role.command.clone(),
             args: role.args.clone(),
-            env,
+            env: agent_env(
+                shell_env.vars,
+                &role.env,
+                extra_env,
+                Runtime::parse(&role.runtime),
+            ),
             mission,
             shim_dir,
             bundled_bin_dir,
             shell_path: shell_env.path,
             initial_size,
         }
+    }
+
+    /// The PTY for a CLI's own update command (#533): the agent
+    /// environment `base_spawn_spec` builds, without Runner's layers — no
+    /// role env, mission variables, bundled CLI, hooks or #475 quiet flags.
+    /// It has no `sessions` row; `spawn_unlisted` runs it.
+    pub fn update_spawn_spec(
+        &self,
+        command: String,
+        args: Vec<String>,
+        cwd: Option<PathBuf>,
+        initial_size: (u16, u16),
+    ) -> SpawnSpec {
+        let shell_env = self
+            .shell_env
+            .read()
+            .expect("runtime shell environment lock poisoned")
+            .clone();
+        SpawnSpec {
+            codex_pending_turn: None,
+            session_id: ulid::Ulid::new().to_string(),
+            cwd,
+            command,
+            args,
+            env: agent_env(shell_env.vars, &HashMap::new(), BTreeMap::new(), None),
+            mission: false,
+            shim_dir: None,
+            bundled_bin_dir: None,
+            shell_path: shell_env.path,
+            initial_size: Some(initial_size),
+        }
+    }
+
+    /// Runs a PTY that is not a session: no `sessions` row, no mission or
+    /// role, no busy/idle inference. Only `events` hears its output and exit,
+    /// so it never reaches the chat surface, the sidebar, the archive,
+    /// relaunch or any session list. Input, resize and kill work by id like
+    /// any live session until the process exits.
+    pub fn spawn_unlisted(
+        self: &Arc<Self>,
+        spec: SpawnSpec,
+        pool: &DbPool,
+        events: Arc<dyn SessionEvents>,
+    ) -> Result<()> {
+        let session_id = spec.session_id.clone();
+        let initial_size = spec.initial_size;
+        let (rt_session, output) = self.runtime.spawn(spec)?;
+        let stop = output.stop_flag();
+        self.install_handle(
+            &session_id,
+            SessionHandle {
+                #[cfg(windows)]
+                pending_first_turn: None,
+                id: session_id.clone(),
+                mission_id: None,
+                role_id: None,
+                runtime_session: rt_session.clone(),
+                codex_capture: None,
+                forwarder: None,
+                stop: Arc::clone(&stop),
+            },
+            None,
+            initial_size,
+            pool,
+            events.as_ref(),
+        );
+        let manager = Arc::clone(self);
+        let forwarder_id = session_id.clone();
+        let forwarder = thread::spawn(move || {
+            while !stop.load(Ordering::Relaxed) {
+                match output.recv_timeout(Duration::from_millis(500)) {
+                    Ok(RuntimeOutput::Stream(bytes)) => {
+                        manager.ingest_output_chunk(&forwarder_id, None, &bytes, events.as_ref())
+                    }
+                    Ok(_) | Err(RecvTimeoutError::Timeout) => {}
+                    Err(RecvTimeoutError::Disconnected) => break,
+                }
+            }
+            let exit_code = manager
+                .runtime
+                .status(&rt_session)
+                .ok()
+                .flatten()
+                .and_then(|status| status.exit_code);
+            let _ = manager.runtime.stop(&rt_session);
+            manager.take_killed(&forwarder_id);
+            let _ = manager.forget_runtime_handle(&forwarder_id, &rt_session);
+            // No row keeps this id's sequence alive for a respawn, so drop
+            // its state outright instead of leaving an entry per update.
+            manager.sessions.lock().unwrap().remove(&forwarder_id);
+            events.exit(&ExitEvent {
+                session_id: forwarder_id,
+                mission_id: None,
+                exit_code,
+                success: exit_code == Some(0),
+            });
+        });
+        self.install_forwarder(&session_id, forwarder);
+        Ok(())
     }
 
     /// Apply the runtime adapter's resume + trailing args to a

@@ -10,7 +10,7 @@
 // events continue over the app event channel.
 
 use crate::model::Runtime;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -131,6 +131,31 @@ pub fn session_status_snapshot(
 
 pub fn session_activity_snapshot(state: &AppCore) -> BTreeMap<String, SessionActivityState> {
     state.sessions.activity_snapshot()
+}
+
+/// Live agent processes per runtime, across direct chats, mission slots,
+/// drawers and forks: the session manager's attached processes, keyed by
+/// each session row's runtime. A process without a row, such as a CLI
+/// update in Settings → Agents, is not a session and is not counted.
+pub fn live_session_counts(state: &AppCore) -> Result<HashMap<Runtime, usize>> {
+    let conn = state.db.get()?;
+    count_by_runtime(&conn, &state.sessions.live_session_ids())
+}
+
+fn count_by_runtime(
+    conn: &rusqlite::Connection,
+    session_ids: &[String],
+) -> Result<HashMap<Runtime, usize>> {
+    let mut counts = HashMap::new();
+    for session_id in session_ids {
+        if let Some(runtime) = repo::session::effective_runtime(conn, session_id)?
+            .as_deref()
+            .and_then(Runtime::parse)
+        {
+            *counts.entry(runtime).or_default() += 1;
+        }
+    }
+    Ok(counts)
 }
 
 pub fn session_resize(state: &AppCore, session_id: &str, cols: u16, rows: u16) -> Result<()> {
@@ -1116,6 +1141,45 @@ mod tests {
     use crate::db;
     use chrono::Utc;
     use rusqlite::params;
+
+    #[test]
+    fn live_counts_group_direct_mission_and_fork_sessions_by_runtime() {
+        let conn = db::open_in_memory().unwrap().get().unwrap();
+        crate::test_support::insert_test_role(&conn, "r-codex", "coder", "codex", "codex");
+        conn.execute(
+            "INSERT INTO crews (id, name, created_at, updated_at)
+             VALUES ('c1', 'Crew', '2026-07-01T00:00:00Z', '2026-07-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO missions (id, crew_id, title, status, started_at)
+             VALUES ('m1', 'c1', 'M', 'running', '2026-07-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        let insert =
+            |id: &str, runtime: Option<&str>, role: Option<&str>, mission: Option<&str>| {
+                let mut row = crate::test_support::test_session_row(id, SessionStatus::Running);
+                row.agent_runtime = runtime.map(str::to_owned);
+                row.role_id = role.map(str::to_owned);
+                row.mission_id = mission.map(str::to_owned);
+                repo::session::insert(&conn, &row).unwrap();
+            };
+        insert("direct", Some("codex"), None, None);
+        insert("slot", None, Some("r-codex"), Some("m1"));
+        insert("fork", Some("codex"), Some("r-codex"), None);
+        insert("claude", Some("claude-code"), None, None);
+        insert("drawer", Some("shell"), None, None);
+        insert("stopped", Some("codex"), None, None);
+        let live = ["direct", "slot", "fork", "claude", "drawer", "agent-update"].map(String::from);
+        let counts = count_by_runtime(&conn, &live).unwrap();
+        assert_eq!(counts.get(&Runtime::Codex), Some(&3));
+        assert_eq!(counts.get(&Runtime::ClaudeCode), Some(&1));
+        assert_eq!(counts.get(&Runtime::Shell), Some(&1));
+        assert_eq!(counts.get(&Runtime::Copilot), None);
+        assert_eq!(counts.values().sum::<usize>(), 5);
+    }
 
     #[test]
     fn paste_image_format_maps_png_and_jpeg_to_pasteboard_classes() {
