@@ -2,6 +2,8 @@
 
 Tracking issue: [#533](https://github.com/yicheng47/runner/issues/533). Status: planned; Pencil frames pending. Priority P2.
 
+Related: [706](./706-agent-usage.md) (2026-09-23) puts each agent's version and this spec's "Update available" with an Update button in its usage popover, so the signal reaches the main window without a dot on Settings; this spec's non-goal on background polling stands.
+
 ## Motivation
 
 [#475](./archive/475-codex-auto-update.md) (0.8.2) made agent launches quiet. Codex gets `-c check_for_update_on_startup=false` from `trailing_runtime_args` (`crates/runner-backend/src/router/runtime.rs:602`), and Claude Code gets `DISABLE_INSTALLATION_CHECKS=1` and `CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1` from `base_spawn_spec` (`crates/runner-backend/src/session/manager/spawn.rs:410`). That was the right call: Codex's startup prompt installed the update and exited, leaving a direct chat on **Chat paused** and, inside a mission, sometimes taking sibling slots down with it. But the prompt was also the only place a Runner user learned that a CLI was stale. #475 recorded the trade explicitly — "CLI updates remain outside Runner" — and this spec is the other half of it.
