@@ -491,13 +491,35 @@ pub(crate) fn normalize_overrides(overrides: &mut KeymapOverrides) {
 
 pub(crate) fn effective_binding(id: &str, overrides: &KeymapOverrides) -> Option<KeyCombo> {
     let entry = entry(id)?;
-    if entry.fixed {
-        return Some(entry.default.clone());
+    if is_tab_selection_entry(entry) {
+        return (!tab_selection_unbound(overrides)).then(|| entry.default.clone());
     }
-    overrides
-        .get(id)
-        .cloned()
-        .unwrap_or_else(|| Some(entry.default.clone()))
+    match overrides.get(id) {
+        Some(None) => None,
+        Some(Some(combo)) if !entry.fixed => Some(combo.clone()),
+        _ => Some(entry.default.clone()),
+    }
+}
+
+/// The nine tab keys are turned off and on together, so a single digit
+/// unbound before they became fixed is ignored like any other per-digit
+/// override.
+pub(crate) fn tab_selection_unbound(overrides: &KeymapOverrides) -> bool {
+    tab_selection_entries().all(|entry| overrides.get(entry.id) == Some(&None))
+}
+
+pub(crate) fn is_overridden(id: &str, overrides: &KeymapOverrides) -> bool {
+    let Some(entry) = entry(id) else {
+        return false;
+    };
+    if is_tab_selection_entry(entry) {
+        return tab_selection_unbound(overrides);
+    }
+    match overrides.get(id) {
+        None => false,
+        Some(None) => true,
+        Some(Some(_)) => !entry.fixed,
+    }
 }
 
 fn combos_collide(left: &KeyCombo, right: &KeyCombo) -> bool {
@@ -517,11 +539,16 @@ pub(crate) fn find_conflict(
     entries()
         .iter()
         .find(|other| {
+            // A fixed key stays reserved while it is turned off, so turning
+            // it off never frees it for another shortcut.
+            let binding = if other.fixed {
+                Some(other.default.clone())
+            } else {
+                effective_binding(other.id, overrides)
+            };
             other.id != for_id
                 && other.scope.overlaps(target.scope)
-                && effective_binding(other.id, overrides)
-                    .as_ref()
-                    .is_some_and(|binding| combos_collide(binding, candidate))
+                && binding.is_some_and(|binding| combos_collide(&binding, candidate))
         })
         .or_else(|| {
             reserved_entries().iter().find(|other| {
@@ -920,10 +947,22 @@ pub(crate) fn install_bindings(
         #[cfg(not(windows))]
         KeyBinding::new(&platform_default("cmd-alt-h"), HideOthers, None),
         KeyBinding::new(&platform_default("cmd-m"), Minimize, None),
-        KeyBinding::new(&platform_default("cmd-w"), CloseWindowOrPane, None),
-        KeyBinding::new(&platform_default("shift-cmd-n"), NewWindow, None),
         KeyBinding::new(&platform_default("ctrl-cmd-f"), ToggleFullscreen, None),
     ]);
+    if effective_binding("close-pane", overrides).is_some() {
+        cx.bind_keys([KeyBinding::new(
+            &platform_default("cmd-w"),
+            CloseWindowOrPane,
+            None,
+        )]);
+    }
+    if effective_binding("new-window", overrides).is_some() {
+        cx.bind_keys([KeyBinding::new(
+            &platform_default("shift-cmd-n"),
+            NewWindow,
+            None,
+        )]);
+    }
     for entry in entries()
         .iter()
         .filter(|entry| !entry.fixed || is_tab_selection_entry(entry))
@@ -1038,6 +1077,40 @@ mod tests {
                 Some(entry.default.clone())
             );
         }
+    }
+
+    #[test]
+    fn fixed_shortcuts_turn_off_but_stay_reserved() {
+        let mut overrides = KeymapOverrides::from([
+            ("close-pane".to_owned(), None),
+            ("new-window".to_owned(), Some(combo_for("KeyP", false))),
+        ]);
+        assert_eq!(effective_binding("close-pane", &overrides), None);
+        assert!(is_overridden("close-pane", &overrides));
+        assert_eq!(
+            effective_binding("new-window", &overrides),
+            Some(entry("new-window").unwrap().default.clone())
+        );
+        assert!(!is_overridden("new-window", &overrides));
+
+        overrides.insert("select-tab-3".into(), None);
+        assert!(!tab_selection_unbound(&overrides));
+        assert!(effective_binding("select-tab-3", &overrides).is_some());
+        assert!(!is_overridden("select-tab-3", &overrides));
+        for entry in tab_selection_entries() {
+            overrides.insert(entry.id.into(), None);
+        }
+        assert!(tab_selection_unbound(&overrides));
+        assert!(
+            tab_selection_entries().all(|entry| effective_binding(entry.id, &overrides).is_none())
+        );
+        assert!(is_overridden("select-tab-1", &overrides));
+
+        let tab_one = entry("select-tab-1").unwrap().default.clone();
+        assert_eq!(
+            find_conflict(&tab_one, "new-chat", &overrides).unwrap().id,
+            "select-tab-1"
+        );
     }
 
     #[test]

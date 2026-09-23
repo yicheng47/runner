@@ -29,6 +29,7 @@ const SETTINGS_SAVE_DELAY_MS: u64 = 300;
 /// The four palette selects in Appearance share one trigger width, so the
 /// app and terminal rows of each mode line up.
 const SETTINGS_SELECT_WIDTH: Pixels = px(176.);
+const TAB_SHORTCUT_ID: &str = "select-tab";
 const TAB_SHORTCUT_TITLE: &str = "Go to tab 1–9";
 const TAB_SHORTCUT_DESCRIPTION: &str = "Open a visible sidebar tab or mission by its position.";
 
@@ -38,18 +39,25 @@ enum ShortcutRow {
     TabSelection,
 }
 
-#[derive(Debug, Eq, PartialEq)]
-struct ShortcutSections {
-    rebindable: Vec<ShortcutRow>,
-    fixed: Vec<ShortcutRow>,
-}
-
 impl ShortcutRow {
-    #[cfg(all(test, not(windows)))]
+    fn id(self) -> &'static str {
+        match self {
+            Self::Entry(entry) => entry.id,
+            Self::TabSelection => TAB_SHORTCUT_ID,
+        }
+    }
+
     fn title(self) -> &'static str {
         match self {
             Self::Entry(entry) => entry.title,
             Self::TabSelection => TAB_SHORTCUT_TITLE,
+        }
+    }
+
+    fn description(self) -> &'static str {
+        match self {
+            Self::Entry(entry) => entry.description,
+            Self::TabSelection => TAB_SHORTCUT_DESCRIPTION,
         }
     }
 
@@ -60,78 +68,63 @@ impl ShortcutRow {
         }
     }
 
-    fn binding_label(self, overrides: &keymap::KeymapOverrides) -> String {
+    fn entry_ids(self) -> Vec<&'static str> {
         match self {
-            Self::Entry(entry) => keymap::effective_binding(entry.id, overrides)
-                .map(|combo| keymap::format_combo(&combo))
-                .unwrap_or_else(|| "Unassigned".into()),
-            Self::TabSelection => {
-                let entries = keymap::tab_selection_entries().collect::<Vec<_>>();
-                let first = keymap::effective_binding(
-                    entries.first().expect("tab shortcuts").id,
-                    overrides,
-                )
-                .map(|combo| keymap::format_combo(&combo))
-                .expect("fixed tab shortcut");
-                let last =
-                    keymap::effective_binding(entries.last().expect("tab shortcuts").id, overrides)
-                        .map(|combo| keymap::format_combo(&combo))
-                        .expect("fixed tab shortcut");
-                format!("{first}–{last}")
-            }
+            Self::Entry(entry) => vec![entry.id],
+            Self::TabSelection => keymap::tab_selection_entries()
+                .map(|entry| entry.id)
+                .collect(),
+        }
+    }
+
+    fn overridden(self, overrides: &keymap::KeymapOverrides) -> bool {
+        self.entry_ids()
+            .into_iter()
+            .any(|id| keymap::is_overridden(id, overrides))
+    }
+
+    fn binding_label(self, overrides: &keymap::KeymapOverrides) -> String {
+        let label = |id: &str| {
+            keymap::effective_binding(id, overrides).map(|combo| keymap::format_combo(&combo))
+        };
+        let ids = self.entry_ids();
+        match (label(ids[0]), label(ids[ids.len() - 1])) {
+            (Some(first), Some(last)) if ids.len() > 1 => format!("{first}–{last}"),
+            (Some(first), _) => first,
+            _ => "Unassigned".into(),
         }
     }
 
     fn matches(self, query: &str, overrides: &keymap::KeymapOverrides) -> bool {
         let matches = |value: &str| value.to_lowercase().contains(query);
-        match self {
-            Self::Entry(entry) => {
-                matches(entry.title)
-                    || matches(entry.description)
-                    || matches(&self.binding_label(overrides))
-            }
-            Self::TabSelection => {
-                matches(TAB_SHORTCUT_TITLE)
-                    || matches(TAB_SHORTCUT_DESCRIPTION)
-                    || matches(&self.binding_label(overrides))
-                    || keymap::tab_selection_entries().any(|entry| {
-                        matches(entry.title)
-                            || matches(entry.description)
-                            || keymap::effective_binding(entry.id, overrides)
-                                .is_some_and(|combo| matches(&keymap::format_combo(&combo)))
-                    })
-            }
-        }
+        matches(self.title())
+            || matches(self.description())
+            || matches(&self.binding_label(overrides))
+            || (self == Self::TabSelection
+                && keymap::tab_selection_entries().any(|entry| {
+                    matches(entry.title)
+                        || matches(entry.description)
+                        || keymap::effective_binding(entry.id, overrides)
+                            .is_some_and(|combo| matches(&keymap::format_combo(&combo)))
+                }))
     }
 }
 
-fn shortcut_sections(query: &str, overrides: &keymap::KeymapOverrides) -> ShortcutSections {
+fn shortcut_rows(query: &str, overrides: &keymap::KeymapOverrides) -> Vec<ShortcutRow> {
     let query = query.trim().to_lowercase();
-    let mut sections = ShortcutSections {
-        rebindable: Vec::new(),
-        fixed: Vec::new(),
-    };
-    let mut tabs_added = false;
+    let mut rows = Vec::new();
     for entry in keymap::entries() {
         let row = if keymap::is_tab_selection_entry(entry) {
-            if tabs_added {
-                continue;
-            }
-            tabs_added = true;
             ShortcutRow::TabSelection
         } else {
             ShortcutRow::Entry(entry)
         };
-        if !query.is_empty() && !row.matches(&query, overrides) {
+        if rows.contains(&row) || (!query.is_empty() && !row.matches(&query, overrides)) {
             continue;
         }
-        if row.fixed() {
-            sections.fixed.push(row);
-        } else {
-            sections.rebindable.push(row);
-        }
+        rows.push(row);
     }
-    sections
+    rows
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1566,20 +1559,13 @@ impl NativeRoot {
 
     fn render_shortcuts_settings(&self, cx: &mut Context<Self>) -> AnyElement {
         let overrides = self.settings(cx).keymap_overrides.clone();
-        let sections = shortcut_sections(&self.settings_page.shortcut_query, &overrides);
-        let rebindable_rows = sections
-            .rebindable
+        let rows = shortcut_rows(&self.settings_page.shortcut_query, &overrides)
             .into_iter()
-            .map(|row| self.render_shortcut_row_kind(row, &overrides, cx))
+            .map(|row| self.render_shortcut_row(row, &overrides, cx))
             .collect::<Vec<_>>();
-        let fixed_rows = sections
-            .fixed
-            .into_iter()
-            .map(|row| self.render_shortcut_row_kind(row, &overrides, cx))
-            .collect::<Vec<_>>();
-        let has_overrides = overrides
-            .keys()
-            .any(|id| keymap::entry(id).is_some_and(|entry| !entry.fixed));
+        let has_overrides = keymap::entries()
+            .iter()
+            .any(|entry| keymap::is_overridden(entry.id, &overrides));
         let reset_root = cx.entity();
         let reset = Button::new("reset-keymap", "Reset all to defaults")
             .icon("rotate-ccw.svg")
@@ -1590,7 +1576,7 @@ impl NativeRoot {
                     this.reset_shortcut_overrides(window, root_cx)
                 });
             });
-        let content = if rebindable_rows.is_empty() && fixed_rows.is_empty() {
+        let content = if rows.is_empty() {
             div()
                 .text_size(theme::text_ui())
                 .text_color(theme::faint())
@@ -1600,42 +1586,7 @@ impl NativeRoot {
                 ))
                 .into_any_element()
         } else {
-            div()
-                .flex()
-                .flex_col()
-                .gap_5()
-                .children(
-                    (!rebindable_rows.is_empty())
-                        .then(|| SettingsCard::new(rebindable_rows).into_any_element()),
-                )
-                .children((!fixed_rows.is_empty()).then(|| {
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap_3()
-                        .child(
-                            div()
-                                .flex()
-                                .flex_col()
-                                .gap_1()
-                                .child(
-                                    div()
-                                        .text_size(theme::text_title())
-                                        .font_weight(FontWeight::SEMIBOLD)
-                                        .text_color(theme::text())
-                                        .child("Fixed"),
-                                )
-                                .child(
-                                    div()
-                                        .text_size(theme::text_ui())
-                                        .text_color(theme::muted())
-                                        .child("Runner's built-in keys. They can't be changed."),
-                                ),
-                        )
-                        .child(SettingsCard::new(fixed_rows))
-                        .into_any_element()
-                }))
-                .into_any_element()
+            SettingsCard::new(rows).into_any_element()
         };
 
         div()
@@ -1679,63 +1630,22 @@ impl NativeRoot {
             .into_any_element()
     }
 
-    fn render_shortcut_row_kind(
+    fn render_shortcut_row(
         &self,
         row: ShortcutRow,
         overrides: &keymap::KeymapOverrides,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        match row {
-            ShortcutRow::Entry(entry) => self.render_shortcut_row(entry, cx),
-            ShortcutRow::TabSelection => self.render_fixed_shortcut_row(
-                TAB_SHORTCUT_TITLE,
-                TAB_SHORTCUT_DESCRIPTION,
-                row.binding_label(overrides),
-            ),
-        }
-    }
-
-    fn render_fixed_shortcut_row(
-        &self,
-        title: &'static str,
-        description: &'static str,
-        binding_label: String,
-    ) -> AnyElement {
-        div()
-            .min_h(rems(58. / 16.))
-            .px_4()
-            .py_3()
-            .flex()
-            .items_center()
-            .gap_3()
-            .child(shortcut_row_label(title, description, None))
-            .child(
-                div()
-                    .min_w(px(0.))
-                    .flex_1()
-                    .flex()
-                    .items_center()
-                    .child(shortcut_chip(binding_label, false)),
-            )
-            .child(div().w_6().flex_none())
-            .into_any_element()
-    }
-
-    fn render_shortcut_row(
-        &self,
-        entry: &'static keymap::KeymapEntry,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let binding = keymap::effective_binding(entry.id, &self.settings(cx).keymap_overrides);
-        let overridden = self.settings(cx).keymap_overrides.contains_key(entry.id);
-        let recording = self.settings_page.shortcut_recording == Some(entry.id);
+        let id = row.id();
+        let overridden = row.overridden(overrides);
+        let recording = self.settings_page.shortcut_recording == Some(id);
         let conflict = self
             .settings_page
             .shortcut_conflict
             .as_ref()
-            .filter(|conflict| conflict.id == entry.id)
+            .filter(|conflict| conflict.id == id)
             .map(|conflict| conflict.message.clone());
-        let label = shortcut_row_label(entry.title, entry.description, conflict);
+        let label = shortcut_row_label(row.title(), row.description(), conflict);
 
         if recording {
             let key_root = cx.entity();
@@ -1750,10 +1660,7 @@ impl NativeRoot {
                 .child(label)
                 .child(
                     div()
-                        .id(SharedString::from(format!(
-                            "shortcut-recorder-{}",
-                            entry.id
-                        )))
+                        .id(SharedString::from(format!("shortcut-recorder-{}", id)))
                         .track_focus(&self.settings_page.shortcut_recording_focus)
                         .h_8()
                         .min_w(px(0.))
@@ -1770,7 +1677,7 @@ impl NativeRoot {
                         .child("Press keys…")
                         .on_key_down(move |event: &KeyDownEvent, window, cx| {
                             key_root.update(cx, |this, root_cx| {
-                                this.record_shortcut_key(entry.id, event, window, root_cx)
+                                this.record_shortcut_key(id, event, window, root_cx)
                             });
                         })
                         .on_mouse_down_out(move |_, window, cx| {
@@ -1783,78 +1690,70 @@ impl NativeRoot {
                 .into_any_element();
         }
 
-        let binding_label = binding
-            .as_ref()
-            .map(keymap::format_combo)
-            .unwrap_or_else(|| "Unassigned".into());
-        let controls = if entry.fixed {
-            div()
-                .min_w(px(0.))
-                .flex_1()
-                .flex()
-                .items_center()
-                .child(shortcut_chip(binding_label, false))
-                .into_any_element()
-        } else {
-            let chip_root = cx.entity();
-            let edit_root = chip_root.clone();
-            let restore_root = chip_root.clone();
-            let mut edit_controls = div().flex().items_center().gap(rems(6. / 16.));
-            if overridden {
-                edit_controls = edit_controls.child(
-                    IconButton::new(format!("restore-shortcut-{}", entry.id), "rotate-ccw.svg")
-                        .size(IconButtonSize::Sm)
-                        .tooltip("Restore default")
-                        .on_press(move |window, cx| {
-                            restore_root.update(cx, |this, root_cx| {
-                                this.restore_shortcut_default(entry.id, window, root_cx)
-                            });
-                        }),
-                );
-            }
-            edit_controls = edit_controls.child(
-                IconButton::new(format!("edit-shortcut-{}", entry.id), "pencil.svg")
-                    .size(IconButtonSize::Sm)
-                    .tooltip("Edit shortcut")
-                    .on_press(move |window, cx| {
-                        edit_root.update(cx, |this, root_cx| {
-                            this.start_shortcut_recording(entry.id, window, root_cx)
-                        });
-                    }),
-            );
-            div()
-                .min_w(px(0.))
-                .flex_1()
-                .flex()
-                .items_center()
-                .justify_between()
-                .gap(rems(6. / 16.))
-                .child(
-                    shortcut_chip(binding_label, true)
-                        .id(SharedString::from(format!("binding-shortcut-{}", entry.id)))
-                        .on_click(move |_, window, cx| {
-                            chip_root.update(cx, |this, root_cx| {
-                                this.start_shortcut_recording(entry.id, window, root_cx)
-                            });
-                        }),
-                )
-                .child(edit_controls)
-                .into_any_element()
-        };
-        let unbind = if entry.fixed {
+        let binding_label = row.binding_label(overrides);
+        let restore = overridden.then(|| {
+            let restore_root = cx.entity();
+            IconButton::new(format!("restore-shortcut-{id}"), "rotate-ccw.svg")
+                .size(IconButtonSize::Sm)
+                .tooltip("Restore default")
+                .on_press(move |window, cx| {
+                    restore_root.update(cx, |this, root_cx| {
+                        this.restore_shortcut_default(row, window, root_cx)
+                    });
+                })
+        });
+        let edit = if row.fixed() {
             div().w_6().flex_none().into_any_element()
         } else {
-            let root = cx.entity();
-            IconButton::new(format!("unbind-shortcut-{}", entry.id), "trash.svg")
+            let edit_root = cx.entity();
+            IconButton::new(format!("edit-shortcut-{id}"), "pencil.svg")
                 .size(IconButtonSize::Sm)
-                .tooltip("Unbind shortcut")
+                .tooltip("Edit shortcut")
                 .on_press(move |window, cx| {
-                    root.update(cx, |this, root_cx| {
-                        this.set_shortcut_override(entry.id, None, window, root_cx)
+                    edit_root.update(cx, |this, root_cx| {
+                        this.start_shortcut_recording(id, window, root_cx)
                     });
                 })
                 .into_any_element()
         };
+        let chip = if row.fixed() {
+            shortcut_chip(binding_label, false).into_any_element()
+        } else {
+            let chip_root = cx.entity();
+            shortcut_chip(binding_label, true)
+                .id(SharedString::from(format!("binding-shortcut-{id}")))
+                .on_click(move |_, window, cx| {
+                    chip_root.update(cx, |this, root_cx| {
+                        this.start_shortcut_recording(id, window, root_cx)
+                    });
+                })
+                .into_any_element()
+        };
+        let controls = div()
+            .min_w(px(0.))
+            .flex_1()
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap(rems(6. / 16.))
+            .child(chip)
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(rems(6. / 16.))
+                    .children(restore)
+                    .child(edit),
+            );
+        let unbind_root = cx.entity();
+        let unbind = IconButton::new(format!("unbind-shortcut-{id}"), "trash.svg")
+            .size(IconButtonSize::Sm)
+            .tooltip("Unbind shortcut")
+            .on_press(move |window, cx| {
+                unbind_root.update(cx, |this, root_cx| {
+                    this.set_shortcut_override(&row.entry_ids(), None, window, root_cx)
+                });
+            });
 
         div()
             .min_h(rems(58. / 16.))
@@ -1872,6 +1771,7 @@ impl NativeRoot {
     fn rebuild_key_bindings(&self, suspended: bool, cx: &mut Context<Self>) {
         let overrides = self.settings(cx).keymap_overrides.clone();
         keymap::install_bindings(cx, &overrides, suspended);
+        cx.set_menus(crate::app_menus());
     }
 
     fn start_shortcut_recording(
@@ -1929,25 +1829,33 @@ impl NativeRoot {
             cx.notify();
             return;
         }
-        self.set_shortcut_override(id, Some(combo), window, cx);
+        self.set_shortcut_override(&[id], Some(combo), window, cx);
     }
 
     fn set_shortcut_override(
         &mut self,
-        id: &'static str,
+        ids: &[&'static str],
         value: Option<keymap::KeyCombo>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if keymap::entry(id).is_none_or(|entry| entry.fixed) {
+        if ids
+            .iter()
+            .any(|id| keymap::entry(id).is_none_or(|entry| entry.fixed && value.is_some()))
+        {
             return;
         }
         self.update_app_settings(cx, true, |settings| {
-            if settings.keymap_overrides.get(id) == Some(&value) {
-                return false;
+            let mut changed = false;
+            for id in ids {
+                if settings.keymap_overrides.get(*id) != Some(&value) {
+                    settings
+                        .keymap_overrides
+                        .insert((*id).into(), value.clone());
+                    changed = true;
+                }
             }
-            settings.keymap_overrides.insert(id.into(), value);
-            true
+            changed
         });
         self.settings_page.shortcut_recording = None;
         self.settings_page.shortcut_conflict = None;
@@ -1958,31 +1866,36 @@ impl NativeRoot {
 
     fn restore_shortcut_default(
         &mut self,
-        id: &'static str,
+        row: ShortcutRow,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let mut overrides = self.settings(cx).keymap_overrides.clone();
-        match keymap::clear_override(id, &mut overrides) {
-            Err(conflict) => {
-                self.settings_page.shortcut_conflict = Some(ShortcutConflict {
-                    id,
-                    message: format!("Already used by {}", conflict.title),
-                });
-                cx.notify();
-            }
-            Ok(false) => {}
-            Ok(true) => {
-                self.update_app_settings(cx, true, |settings| {
-                    settings.keymap_overrides = overrides;
-                    true
-                });
-                self.settings_page.shortcut_conflict = None;
-                self.rebuild_key_bindings(false, cx);
-                self.settings_page.focus.focus(window);
-                cx.notify();
+        let mut changed = false;
+        for id in row.entry_ids() {
+            match keymap::clear_override(id, &mut overrides) {
+                Err(conflict) => {
+                    self.settings_page.shortcut_conflict = Some(ShortcutConflict {
+                        id: row.id(),
+                        message: format!("Already used by {}", conflict.title),
+                    });
+                    cx.notify();
+                    return;
+                }
+                Ok(cleared) => changed |= cleared,
             }
         }
+        if !changed {
+            return;
+        }
+        self.update_app_settings(cx, true, |settings| {
+            settings.keymap_overrides = overrides;
+            true
+        });
+        self.settings_page.shortcut_conflict = None;
+        self.rebuild_key_bindings(false, cx);
+        self.settings_page.focus.focus(window);
+        cx.notify();
     }
 
     fn reset_shortcut_overrides(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -2608,7 +2521,6 @@ fn shortcut_chip(label: String, editable: bool) -> gpui::Div {
         .border_1()
         .border_color(theme::border())
         .bg(theme::raised())
-        .font_family(theme::SYSTEM_MONOSPACE_FONT)
         .text_size(theme::text_meta())
         .line_height(rems(14. / 16.))
         .text_color(theme::muted())
@@ -2795,51 +2707,70 @@ mod tests {
 
     #[test]
     #[cfg(not(windows))]
-    fn shortcut_sections_group_fixed_rows_and_hide_copy() {
-        let sections = shortcut_sections("", &keymap::KeymapOverrides::new());
-        assert!(sections
-            .rebindable
-            .iter()
-            .all(|row| !row.fixed() && row.title() != "Copy"));
+    fn shortcut_rows_keep_registry_order_with_one_tab_row_and_no_copy() {
+        let overrides = keymap::KeymapOverrides::new();
+        let rows = shortcut_rows("", &overrides);
+        let titles = rows.iter().map(|row| row.title()).collect::<Vec<_>>();
+        assert_eq!(titles.len(), 21);
+        assert_eq!(titles[0], "New window");
+        assert!(!titles.contains(&"Copy"));
+        let after = |title: &str| titles[titles.iter().position(|t| *t == title).unwrap() + 1];
+        assert_eq!(after("Reset zoom"), "Go to tab 1–9");
+        assert_eq!(after("Split pane down"), "Close pane");
         assert_eq!(
-            sections
-                .fixed
-                .iter()
+            rows.iter()
+                .filter(|row| row.fixed())
                 .map(|row| row.title())
                 .collect::<Vec<_>>(),
             ["New window", "Go to tab 1–9", "Close pane"]
         );
-        assert_eq!(
-            sections.fixed[1].binding_label(&keymap::KeymapOverrides::new()),
-            "⌘1–⌘9"
-        );
-        assert!(sections.fixed.iter().all(|row| row.fixed()));
+        assert_eq!(ShortcutRow::TabSelection.binding_label(&overrides), "⌘1–⌘9");
     }
 
     #[test]
     #[cfg(not(windows))]
-    fn shortcut_search_filters_both_cards_and_matches_grouped_tab_terms() {
+    fn fixed_rows_turn_off_and_restore_without_taking_a_custom_key() {
+        let tabs = ShortcutRow::TabSelection;
+        let close = ShortcutRow::Entry(keymap::entry("close-pane").unwrap());
+        let mut overrides = keymap::KeymapOverrides::new();
+        overrides.insert("close-pane".into(), None);
+        for id in tabs.entry_ids() {
+            overrides.insert(id.into(), None);
+        }
+        assert_eq!(close.binding_label(&overrides), "Unassigned");
+        assert_eq!(tabs.binding_label(&overrides), "Unassigned");
+        assert!(close.overridden(&overrides) && tabs.overridden(&overrides));
+
+        let mut stale = keymap::KeymapOverrides::new();
+        stale.insert(
+            "close-pane".into(),
+            Some(keymap::entry("new-chat").unwrap().default.clone()),
+        );
+        stale.insert("select-tab-3".into(), None);
+        assert_eq!(close.binding_label(&stale), "⌘W");
+        assert_eq!(tabs.binding_label(&stale), "⌘1–⌘9");
+        assert!(!close.overridden(&stale) && !tabs.overridden(&stale));
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn shortcut_search_matches_grouped_tab_terms() {
         let overrides = keymap::KeymapOverrides::new();
         for query in ["tab 3", "⌘3", "go to tab"] {
-            let sections = shortcut_sections(query, &overrides);
-            assert!(sections.rebindable.is_empty(), "{query}");
-            assert_eq!(sections.fixed, [ShortcutRow::TabSelection], "{query}");
+            assert_eq!(
+                shortcut_rows(query, &overrides),
+                [ShortcutRow::TabSelection],
+                "{query}"
+            );
         }
-
-        let sections = shortcut_sections("resume focused", &overrides);
         assert_eq!(
-            sections
-                .rebindable
+            shortcut_rows("resume focused", &overrides)
                 .iter()
                 .map(|row| row.title())
                 .collect::<Vec<_>>(),
             ["Resume focused session"]
         );
-        assert!(sections.fixed.is_empty());
-
-        let sections = shortcut_sections("definitely missing", &overrides);
-        assert!(sections.rebindable.is_empty());
-        assert!(sections.fixed.is_empty());
+        assert!(shortcut_rows("definitely missing", &overrides).is_empty());
     }
 
     #[test]
