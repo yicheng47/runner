@@ -2643,21 +2643,26 @@ mod tests {
             .unwrap();
         let first = sync_deadline(&terminal).expect("the redraw is held");
         std::thread::sleep(Duration::from_millis(75));
-        terminal
-            .feed_output(&output(3, "\x1b[?2026h\r\n> \x1b[?25h"))
-            .unwrap();
+        const EXTENSION: &str = "\x1b[?2026h\r\n> \x1b[?25h";
+        terminal.feed_output(&output(3, EXTENSION)).unwrap();
         let extended = sync_deadline(&terminal).expect("the redraw is still held");
         assert!(extended > first);
+        // A stalled runner can oversleep past `first`, so the first update
+        // flushes on time and the extension opens a new one instead.
+        let extended_in_time =
+            terminal.parser.lock().unwrap().processor.sync_bytes_count() > EXTENSION.len();
 
         std::thread::sleep(
             first.saturating_duration_since(Instant::now()) + Duration::from_millis(20),
         );
         let after_first = screen(&terminal);
-        if Instant::now() < extended {
+        if extended_in_time && Instant::now() < extended {
             assert_eq!(after_first[..2], ["old prompt", "old output"]);
         }
 
-        assert!(wait_until(Duration::from_secs(2), || screen(&terminal)[0] == "redrawn"));
+        assert!(wait_until(Duration::from_secs(2), || screen(&terminal)
+            [..2]
+            == ["redrawn", ">"]));
         assert_eq!(screen(&terminal)[..2], ["redrawn", ">"]);
     }
 }
