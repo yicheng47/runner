@@ -236,6 +236,7 @@ Agents use `--json`; without it, list and show commands render tables and readab
 | Working / Idle from the agent's hooks | ✓ | ✓ | ✓ | ✓ |
 | Needs you: approval and question dialogs shown | ✓ | — | ✓ | from extensions only |
 | Model list read from the CLI | ✓ | ✓ | — | ✓ |
+| Update from Settings → Agents | ✓ | ✓ | ✓ | ✓ |
 | Permission modes | Default · Accept edits · Auto · Bypass | Default · Auto · Bypass | Default · Accept edits · Bypass | — |
 | Skills pane | catalog + on/off | catalog + on/off | catalog + on/off | catalog |
 | Runner skill installed | ✓ | ✓ | ✓ | ✓ |
@@ -246,7 +247,7 @@ Agents use `--json`; without it, list and show commands render tables and readab
 
 Claude Code and Codex are the primary agents, with tuned launch and nudge timing. GitHub Copilot CLI needs a Copilot subscription. pi brings your own configured model provider. [Issues](https://github.com/yicheng47/runner/issues) are welcome.
 
-Install the agent CLIs separately. Runner detects them on `PATH`, with per-agent executable overrides in **Settings → Agents**. On Windows, Claude Code and pi's bash tool require Git for Windows; npm-based CLI installations require Node.js. PowerShell 7 is optional. Agents run natively on Windows, without WSL.
+Install the agent CLIs separately. Runner detects them on `PATH`, with per-agent executable overrides in **Settings → Agents**, which also shows each CLI's version and, when a newer one is published, an **Update** button that runs the CLI's own updater in a terminal. On Windows, Claude Code and pi's bash tool require Git for Windows; npm-based CLI installations require Node.js. PowerShell 7 is optional. Agents run natively on Windows, without WSL.
 
 <img src="assets/agents.png" alt="Settings → Agents — each detected agent CLI with its executable, model, effort, and an enable toggle" width="100%" />
 
