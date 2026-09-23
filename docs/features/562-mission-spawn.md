@@ -1,10 +1,11 @@
 # 562 — Missions as containers: spawn roles into a running mission
 
 > Tracking issue: [#562](https://github.com/yicheng47/runner/issues/562)
-> Priority: P2, milestone 0.12: its own minor after 0.11 (pi and the CLI), because it migrates every mission's roster and adds a second way to start a mission.
+> Priority: P1 (raised from P3 on 2026-09-22), milestone 0.12: its own minor after 0.11 (pi and the CLI), because it migrates every mission's roster and adds a second way to start a mission. With [704](./704-session-send.md) it is the headline of 0.12 (Jason, 2026-09-23).
 > Status: planned, design first.
 > Design: `design/specs/562-mission-spawn.pen`, frames to draw before Phase 4.
 > Identity decided with Jason on 2026-09-18 ([648](./archive/648-runner-cli.md) decision 7): a caller is the person at the app or a roster handle, never a location. 648 owns the `from` handle on the socket; this spec owns the seats an outside agent takes.
+> Related: [704](./704-session-send.md) (2026-09-23), `runner session send` and `session wait`: the terminal layer beside this coordination layer, after Orca's split between `terminal send` and `orchestration`. Direct chats stay off the bus; 704 is typed input with no log, and a chat that needs a durable, attributed exchange uses this spec's missions and seats.
 > Rewritten 2026-09-18 from "Add runners to a running mission" (2026-09-11). The first draft grew a crew mission's roster from the rail or a lead signal. This version makes the mission the container that owns its roster, keeps the crew as one way to seed it, lets a mission start from a single role, and gives the lead the verbs to spawn roles and follow their state.
 
 ## Motivation

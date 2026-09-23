@@ -1,6 +1,7 @@
 # 697 — Keyboard shortcut tidy
 
 > Tracking issue: [#697](https://github.com/yicheng47/runner/issues/697)
+> Status: merged 2026-09-23 in [#702](https://github.com/yicheng47/runner/pull/702); ships in the next 0.11.x release.
 > Priority: P2, milestone 0.11. Platforms: macOS and Windows.
 > Design: `design/specs/697-shortcut-tidy.pen`, frame `ntV78` (Settings — Keyboard shortcuts).
 > Decisions, 2026-09-22:

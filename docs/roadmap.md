@@ -1,12 +1,12 @@
 # Runner roadmap
 
-Snapshot as of 2026-09-22. The live source is the [GitHub milestones page](https://github.com/yicheng47/runner/milestones); this file mirrors it so the state of the project is readable from the repo without a browser. Update it when an issue changes milestone, a release is cut, or a mission lands, and move the date.
+Snapshot as of 2026-09-23. The live source is the [GitHub milestones page](https://github.com/yicheng47/runner/milestones); this file mirrors it so the state of the project is readable from the repo without a browser. Update it when an issue changes milestone, a release is cut, or a mission lands, and move the date.
 
 ## Where the project is
 
 - **Latest release:** [0.11.3](https://github.com/yicheng47/runner/releases/tag/v0.11.3) on 2026-09-22: Codex settles to Idle from its terminal title when hooks are not reporting, pi resumes conversations from relocated session directories, and tidier Not installed cards. [0.11.2](https://github.com/yicheng47/runner/releases/tag/v0.11.2) the day before split Settings → Agents into Installed and Not installed and fixed Codex sessions stuck on Working. The nightly feed builds from `main`.
-- **Landed on `main` since 0.11.3:** deterministic backend process tests ([#694](https://github.com/yicheng47/runner/issues/694), [#696](https://github.com/yicheng47/runner/pull/696)) and agents watching the missions they start through the CLI ([#686](https://github.com/yicheng47/runner/issues/686), [#698](https://github.com/yicheng47/runner/pull/698)).
-- **In flight:** no open pull requests. The missions-as-containers plan ([`features/562-mission-spawn.md`](./features/562-mission-spawn.md)) is under review before implementation; the role page ([#393](https://github.com/yicheng47/runner/issues/393)) is next after it, then the crew page ([#699](https://github.com/yicheng47/runner/issues/699)).
+- **Landed on `main` since 0.11.3:** deterministic backend process tests ([#694](https://github.com/yicheng47/runner/issues/694), [#696](https://github.com/yicheng47/runner/pull/696)) agents watching the missions they start through the CLI ([#686](https://github.com/yicheng47/runner/issues/686), [#698](https://github.com/yicheng47/runner/pull/698)), and the keyboard shortcut tidy with fixed shortcuts that can be turned off and stop and resume of the focused session ([#697](https://github.com/yicheng47/runner/issues/697), [#702](https://github.com/yicheng47/runner/pull/702)).
+- **In flight:** no open pull requests. The two 0.12 headline specs are under review before implementation: missions as containers ([`features/562-mission-spawn.md`](./features/562-mission-spawn.md)) and session-to-session prompts ([`features/704-session-send.md`](./features/704-session-send.md)), specced together as the coordination layer and the terminal layer beside it; the role page ([#393](https://github.com/yicheng47/runner/issues/393)) is next after it, then the crew page ([#699](https://github.com/yicheng47/runner/issues/699)).
 
 ## Releases
 
@@ -16,8 +16,8 @@ Snapshot as of 2026-09-22. The live source is the [GitHub milestones page](https
 | 0.11.1 | Shipped 2026-09-21: session status, Windows agent discovery, splitter feedback, mission accents, project inference, and default crew naming | #659, #670, #672, #673, #653, #680, #676 |
 | 0.11.2 | Shipped 2026-09-21: Settings → Agents Installed / Not installed split, Codex stuck on Working at an untouched prompt | #617, #687 |
 | 0.11.3 | Shipped 2026-09-22: title-aware Codex status fallback, pi resume with custom session directories, Not installed card layout | #688, #666, #695 |
-| [0.11.x](https://github.com/yicheng47/runner/milestone/1) | Agent maintenance, the Antigravity runtime, and focused follow-through; #686 and #694 have landed for the next patch | #644, #533, #697, #700 |
-| [0.12](https://github.com/yicheng47/runner/milestone/2) | Mission ownership and delegation, the role and crew pages, navigation, desktop notifications, and the terminal black-pane fix | #562, #619, #393, #699, #577, #559, #701, #647 |
+| [0.11.x](https://github.com/yicheng47/runner/milestone/1) | Agent maintenance, the Antigravity runtime, and focused follow-through; #686, #694 and #697 have landed for the next patch | #644, #533, #700, #703 |
+| [0.12](https://github.com/yicheng47/runner/milestone/2) | Headline: missions as containers (#562) and session-to-session prompts (#704). Also the role and crew pages, navigation, desktop notifications, and the terminal black-pane fix | #562, #704, #619, #393, #699, #577, #559, #701, #647 |
 | [0.13](https://github.com/yicheng47/runner/milestone/3) | Session hosting and visibility: local/remote hosts, Activity, shell process status | #645, #552, #586 |
 | [0.14](https://github.com/yicheng47/runner/milestone/4) | Localization and terminal follow-through: live shell cwd, 简体中文 | #575, #565 |
 
@@ -25,15 +25,16 @@ A minor is a change to the model or a new surface; a patch is fixes and follow-t
 
 ## Open work by release
 
-There are 20 open issues: 17 assigned to the four milestones and three deliberately unscheduled. Milestone placement is the release track, not a promise that every issue gates its first release. The `release-blocker` label marks the issues that gate the milestone's .0 release; everything else in the milestone may ship in a patch. [#393](https://github.com/yicheng47/runner/issues/393) (role page) and [#699](https://github.com/yicheng47/runner/issues/699) (crew page) explicitly gate 0.12.0. Priority labels are unchanged by the scheduling pass, except [#562](https://github.com/yicheng47/runner/issues/562), raised from P3 to P1 on 2026-09-22 because it changes how crews work.
+There are 21 open issues: 18 assigned to the four milestones and three deliberately unscheduled. Milestone placement is the release track, not a promise that every issue gates its first release. The `release-blocker` label marks the issues that gate the milestone's .0 release; everything else in the milestone may ship in a patch. [#393](https://github.com/yicheng47/runner/issues/393) (role page) and [#699](https://github.com/yicheng47/runner/issues/699) (crew page) explicitly gate 0.12.0. Priority labels are unchanged by the scheduling pass, except [#562](https://github.com/yicheng47/runner/issues/562), raised from P3 to P1 on 2026-09-22 because it changes how crews work, and [#704](https://github.com/yicheng47/runner/issues/704), filed P2 and raised to P1 on 2026-09-23 when Jason made the two 0.12's headline.
 
 | Release | Issue | Reason and ordering |
 | --- | --- | --- |
 | 0.11.x | [#644](https://github.com/yicheng47/runner/issues/644) Antigravity CLI runtime | P1; moved from the backlog on 2026-09-22 once Jason could use the CLI |
 | 0.11.x | [#533](https://github.com/yicheng47/runner/issues/533) update agent CLIs from Settings | Builds on the Installed cards that shipped in 0.11.2 (#617) |
-| 0.11.x | [#697](https://github.com/yicheng47/runner/issues/697) tidy keyboard shortcuts | One row for tab numbers; stop and resume the focused session |
 | 0.11.x | [#700](https://github.com/yicheng47/runner/issues/700) tab archive wording and the split-tab Archiving pill | Label and overlay only; what gets archived is already right |
-| 0.12 | [#562](https://github.com/yicheng47/runner/issues/562) missions as containers | P1; settle the model and migration/lifecycle contracts before the dependent UI |
+| 0.11.x | [#703](https://github.com/yicheng47/runner/issues/703) one monospace font in the app | Found in #697: 20 places ask for Menlo; move them to the bundled JetBrains Mono, key hints to Inter |
+| 0.12 | [#562](https://github.com/yicheng47/runner/issues/562) missions as containers | P1, headline; settle the model and migration/lifecycle contracts before the dependent UI |
+| 0.12 | [#704](https://github.com/yicheng47/runner/issues/704) send a prompt from one session to another | P1, headline; the terminal layer beside #562, after Orca's split between `terminal send` and orchestration; no bus, no new tables |
 | 0.12 | [#619](https://github.com/yicheng47/runner/issues/619) deletion integrity in application code | Coordinate ownership and deletion rules with #562; do not carry crew cascade assumptions into mission slots |
 | 0.12 | [#393](https://github.com/yicheng47/runner/issues/393) role page redesign | **Release blocker**; the first of the two page redesigns, split from the crew page on 2026-09-22 |
 | 0.12 | [#699](https://github.com/yicheng47/runner/issues/699) crew page redesign | **Release blocker**; after #393, against #562's settled roster model |
