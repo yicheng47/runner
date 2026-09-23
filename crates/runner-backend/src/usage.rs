@@ -1,4 +1,4 @@
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", all(test, unix)))]
 use std::io::Read;
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
@@ -430,7 +430,7 @@ fn keychain_error_reason(code: Option<i32>, stderr: &[u8]) -> UnavailableReason 
     }
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", all(test, unix)))]
 fn read_claude_credentials_with(
     command: &std::path::Path,
     account: &str,
