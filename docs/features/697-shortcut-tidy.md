@@ -5,8 +5,12 @@
 > Design: `design/specs/697-shortcut-tidy.pen`, frame `ntV78` (Settings — Keyboard shortcuts).
 > Decisions, 2026-09-22:
 > - The nine tab rows become one fixed row, "Go to tab 1–9 · ⌘1–⌘9" (Ctrl+1–Ctrl+9 on Windows), like Copy and Close pane: not rebindable.
-> - Fixed shortcuts move to their own "Fixed" card at the bottom of the page, and Copy leaves the page for the hidden reserved list, next to Paste.
+> - Copy leaves the page for the hidden reserved list, next to Paste.
 > - Stop moves from ⌘. to ⇧⌘X, and Resume gets its own key, ⇧⌘R (Ctrl+Shift+X and Ctrl+Shift+R on Windows). No single key toggles between stop and resume.
+>
+> Decisions, 2026-09-23 (after the first smoke test):
+> - No separate "Fixed" card: the fixed rows stay in the one list, in registry order, without an Edit control.
+> - A fixed shortcut can be turned off with its delete icon and restored, but never given another key. A turned-off fixed key stays reserved.
 
 ## Motivation
 
@@ -24,12 +28,12 @@ The Keyboard shortcuts pane (`render_shortcuts_settings`, `surfaces/settings_pag
 
 - **Row**: titled "Go to tab 1–9", described as "Open a visible sidebar tab or mission by its position."
 - **Chip**: "⌘1–⌘9" (Ctrl+1–Ctrl+9 on Windows).
-- **Controls**: none, like the other fixed rows: the chip and the spacer that `render_shortcut_row` already draws for `fixed` entries.
-- **Place**: in the Fixed card (section 2), between New window and Close pane.
+- **Controls**: those of every fixed row (section 2): delete, and restore while turned off.
+- **Place**: where the nine rows were, after Reset zoom.
 
 **Data**: the nine entries keep their ids and become `fixed: true`, and the key-binding build (`install_bindings`) keeps installing nine bindings.
 
-**Custom keys are lost**: `effective_binding` returns the default for fixed entries, so an override of a `select-tab-N` saved before this change stops applying. This is a deliberate choice, made 2026-09-22 against the issue's "must keep working" line. The override stays in the settings file, ignored, and nothing migrates it. The release notes say it.
+**Custom keys are lost**: `effective_binding` returns the default for fixed entries, so an override of a `select-tab-N` saved before this change stops applying. This is a deliberate choice, made 2026-09-22 against the issue's "must keep working" line. The override stays in the settings file, ignored, and nothing migrates it. The release notes say it. A digit unbound before this change is ignored the same way: the nine keys are turned off and on together, and the row is off only when all nine are.
 
 **Conflicts**: other entries can no longer take ⌘1–⌘9, because `find_conflict` already counts fixed defaults.
 
@@ -37,22 +41,23 @@ The Keyboard shortcuts pane (`render_shortcuts_settings`, `surfaces/settings_pag
 
 **Where the grouping lives**: a small `keymap` helper names the group, and the settings pane skips the nine entries and renders the one row. It is not a new keymap entry.
 
-### 2. Fixed shortcuts in their own card, at the bottom
+### 2. Fixed shortcuts can be turned off, not changed
 
-The pane renders two cards.
+The pane renders one card, every row in registry order. The fixed rows are New window (⇧⌘N, first), Go to tab 1–9 (⌘1–⌘9, after Reset zoom) and Close pane (⌘W, after Split pane down). On Windows the chips read Ctrl in place of ⌘, as everywhere on the page.
 
-- **First card**: every rebindable entry, in registry order.
-- **Heading**: "Fixed", with the line "Runner's built-in keys. They can't be changed."
-- **Second card**: the fixed entries: New window (⇧⌘N), Go to tab 1–9 (⌘1–⌘9) and Close pane (⌘W).
-
-On Windows the chips read Ctrl in place of ⌘, as everywhere on the page.
+- **Controls**: a fixed row has no Edit control and its chip does not start recording. It keeps the delete icon, and shows restore while it is turned off, in the same places as on other rows.
+- **Turning off**: delete saves the fixed entry as unassigned (all nine entries for the tab row), and its chip reads "Unassigned". `effective_binding` honours that, while still ignoring a custom key saved for a fixed entry.
+- **Still reserved**: a turned-off fixed key is not freed for another shortcut: `find_conflict` counts a fixed entry by its default, whatever its override.
+- **Key bindings**: `install_bindings` installs ⌘W and ⇧⌘N only while Close pane and New window are on. Turning Close pane off drops ⌘W for both halves of its action, closing a split pane and closing the window.
+- **Menu bar**: the macOS menu reads its shortcuts from the key bindings when it is set, and a stale one still fires, so the menus are rebuilt whenever the bindings are. File → New Window and Window → Close Window stay, without their key once it is off.
+- **Reset all to defaults** counts a turned-off fixed row as a change, and clearing restores it.
 
 **Copy leaves the page.** The `copy` entry (⌘C, "Copy the current terminal selection.") is the system shortcut, which Runner wires so that a terminal, feed or field selection copies. It is the same kind of shortcut as Paste (⌘V), which is already a hidden reserved entry. Move `copy` from `entries()` to `reserved_entries()`:
 
 - The unconditional Copy bindings at the top of `install_bindings` do not change.
 - `find_conflict` still refuses ⌘C for any other entry, because it checks reserved entries.
 
-**Search** filters both cards. A card with no matching rows is hidden, heading included, and the existing "No shortcuts match" message shows only when both are empty.
+**Search** filters the one card, and the existing "No shortcuts match" message shows when no row matches.
 
 ### 3. Stop and resume the focused session from the keyboard
 
@@ -101,7 +106,7 @@ On Windows the chips read Ctrl in place of ⌘, as everywhere on the page.
 
 One mission, one PR:
 
-1. **Tab row and Fixed card**: the nine entries marked fixed and rendered as one row, the two-card layout with the Fixed card at the bottom, Copy moved to the reserved list, and search across both cards.
+1. **Tab row and fixed rows**: the nine entries marked fixed and rendered as one row, fixed rows that turn off but take no other key, Copy moved to the reserved list, and search across the one card.
 2. **Keys and routing**: the new Stop default, the `resume-session` entry and action, the mission-view handlers for both keys, and resume on the chat route.
 3. **Menus and tooltips**: the pane menu item that follows the session, and the rail tooltips.
 
@@ -109,14 +114,14 @@ One mission, one PR:
 
 - **Unit tests** (`keymap.rs`, `settings_page` or `surfaces` tests, `panes.rs` menu tests):
   - `stop-session` defaults to ⇧⌘X and `resume-session` to ⇧⌘R, mapped to Ctrl+Shift+X and Ctrl+Shift+R under `windows_default`, and neither conflicts with any entry or reserved shortcut.
-  - The nine `select-tab-N` entries are fixed, and `effective_binding` returns ⌘1–⌘9 (Ctrl+1–Ctrl+9 under `windows_default`) even with an override saved.
-  - The shortcuts pane renders one tab row with the chip "⌘1–⌘9" and no controls, not nine rows.
-  - The Fixed card holds exactly New window, Go to tab 1–9 and Close pane, after the rebindable card; Copy has no row, and `find_conflict` still refuses ⌘C for a rebindable entry.
-  - A search that matches only fixed rows hides the first card, and one that matches only rebindable rows hides the Fixed card and its heading.
+  - The nine `select-tab-N` entries are fixed, and `effective_binding` returns ⌘1–⌘9 (Ctrl+1–Ctrl+9 under `windows_default`) even with a custom key saved.
+  - A fixed entry saved as unassigned has no binding and counts as a change; the tab row is off only when all nine are; a turned-off fixed key still conflicts for another entry.
+  - The shortcuts pane renders one tab row with the chip "⌘1–⌘9", not nine rows, and one card in registry order whose fixed rows are exactly New window, Go to tab 1–9 and Close pane; Copy has no row, and `find_conflict` still refuses ⌘C for a rebindable entry.
   - Search for "tab 3", "⌘3" and "go to tab" each returns the one row.
   - `pane_action_items_for` gives Stop for a running session, Resume for a stopped agent and Restart for a stopped shell, each with its binding. Update the existing `["Stop", "Rename…", …]` assertions.
 - **Checks**: `runner-app` tests and workspace clippy.
 - **Manual pass** (Jason, macOS and Windows):
-  - The shortcuts page ends with the Fixed card, whose three rows match the design; ⌘1–⌘9 (Ctrl+1–9) still switch tabs, and ⌘C still copies a terminal selection.
+  - The shortcuts page is one card whose three fixed rows match the design; ⌘1–⌘9 (Ctrl+1–9) still switch tabs, and ⌘C still copies a terminal selection.
+  - After turning off Close pane, New window and the tab row, ⌘W, ⇧⌘N and ⌘1–⌘9 do nothing in Runner, the macOS menu bar included, and restore or Reset all brings them back.
   - Stop and resume work from the keyboard in turn on a focused chat, a terminal pane, and a mission slot open in the mission view.
   - The pane menu and the rail tooltips show both bindings.
