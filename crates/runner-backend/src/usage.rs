@@ -1,8 +1,10 @@
+#[cfg(any(target_os = "macos", test))]
+use std::io::Read;
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Condvar, Mutex, RwLock};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
 use serde_json::Value;
@@ -14,6 +16,9 @@ use crate::shell_path::LoginShellEnv;
 use crate::AppCore;
 
 const FETCH_TIMEOUT: Duration = Duration::from_secs(10);
+#[cfg(target_os = "macos")]
+const KEYCHAIN_TIMEOUT: Duration = Duration::from_secs(120);
+const MIN_REFRESH_VISIBLE: Duration = Duration::from_millis(400);
 const SCHEDULE_INTERVAL: Duration = Duration::from_secs(15 * 60);
 const OPEN_INTERVAL: Duration = Duration::from_secs(5 * 60);
 
@@ -62,6 +67,7 @@ pub enum RefreshReason {
 struct UsageState {
     snapshot: UsageSnapshot,
     last_attempt_at: Option<DateTime<Utc>>,
+    refresh_started_at: Option<Instant>,
     keychain_denied: bool,
 }
 
@@ -105,6 +111,7 @@ impl UsageService {
             return false;
         }
         state.last_attempt_at = Some(now);
+        state.refresh_started_at = Some(Instant::now());
         state.snapshot.refreshing = true;
         self.wake_scheduler.notify_one();
         true
@@ -114,6 +121,7 @@ impl UsageService {
         if !self.begin_refresh(reason, Utc::now()) {
             return;
         }
+        core.events.emit("usage/updated", &());
         let service = Arc::clone(self);
         thread::spawn(move || {
             service.fetch(&core);
@@ -187,6 +195,16 @@ impl UsageService {
                 }
             }
         }
+        let remaining = self
+            .state
+            .lock()
+            .unwrap()
+            .refresh_started_at
+            .map(|started| refresh_visible_remaining(started, Instant::now()))
+            .unwrap_or_default();
+        if !remaining.is_zero() {
+            thread::sleep(remaining);
+        }
         let now = Utc::now();
         let mut state = self.state.lock().unwrap();
         if let Some(result) = claude {
@@ -207,8 +225,13 @@ impl UsageService {
         }
         state.snapshot.last_fetch_at = Some(now);
         state.snapshot.refreshing = false;
+        state.refresh_started_at = None;
         self.wake_scheduler.notify_one();
     }
+}
+
+fn refresh_visible_remaining(started: Instant, now: Instant) -> Duration {
+    MIN_REFRESH_VISIBLE.saturating_sub(now.saturating_duration_since(started))
 }
 
 fn schedule_wait(last: Option<DateTime<Utc>>, now: DateTime<Utc>) -> Duration {
@@ -372,35 +395,91 @@ fn parse_credentials(bytes: &[u8]) -> Result<String, UnavailableReason> {
 
 #[cfg(target_os = "macos")]
 fn read_claude_credentials() -> Result<Vec<u8>, UnavailableReason> {
-    let account = std::env::var("USER")
-        .or_else(|_| std::env::var("LOGNAME"))
-        .unwrap_or_else(|_| {
-            runner_core::app_paths::home_dir()
-                .and_then(|home| {
-                    home.file_name()
-                        .map(|name| name.to_string_lossy().into_owned())
-                })
-                .unwrap_or_default()
-        });
-    let account = if !account.is_empty()
-        && account
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || "._-".contains(c))
-    {
-        account.as_str()
-    } else {
-        "claude-code-user"
-    };
-    security_framework::passwords::get_generic_password("Claude Code-credentials", account)
-        .map_err(|error| keychain_error_reason(error.code()))
+    let user = std::env::var("USER").ok();
+    read_claude_credentials_with(
+        std::path::Path::new("/usr/bin/security"),
+        keychain_account(user.as_deref()),
+        KEYCHAIN_TIMEOUT,
+    )
 }
 
 #[cfg(any(target_os = "macos", test))]
-fn keychain_error_reason(code: i32) -> UnavailableReason {
+fn keychain_account(user: Option<&str>) -> &str {
+    user.filter(|name| {
+        !name.is_empty()
+            && name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || "._-".contains(c))
+    })
+    .unwrap_or("claude-code-user")
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn keychain_error_reason(code: Option<i32>, stderr: &[u8]) -> UnavailableReason {
+    let message = String::from_utf8_lossy(stderr).to_ascii_lowercase();
     match code {
-        -25300 => UnavailableReason::SignIn,
-        -25293 | -128 => UnavailableReason::KeychainDenied,
+        Some(44) => UnavailableReason::SignIn,
+        Some(51 | 128) => UnavailableReason::KeychainDenied,
+        _ if message.contains("user canceled")
+            || message.contains("user cancelled")
+            || message.contains("user denied") =>
+        {
+            UnavailableReason::KeychainDenied
+        }
         _ => UnavailableReason::KeychainUnavailable,
+    }
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn read_claude_credentials_with(
+    command: &std::path::Path,
+    account: &str,
+    timeout: Duration,
+) -> Result<Vec<u8>, UnavailableReason> {
+    let mut child = Command::new(command)
+        .args([
+            "find-generic-password",
+            "-s",
+            "Claude Code-credentials",
+            "-a",
+            account,
+            "-w",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|_| UnavailableReason::KeychainUnavailable)?;
+    let mut stdout = child.stdout.take().unwrap();
+    let stdout_reader = thread::spawn(move || {
+        let mut bytes = Vec::new();
+        stdout.read_to_end(&mut bytes).map(|_| bytes)
+    });
+    let mut stderr = child.stderr.take().unwrap();
+    let stderr_reader = thread::spawn(move || {
+        let mut bytes = Vec::new();
+        stderr.read_to_end(&mut bytes).map(|_| bytes)
+    });
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(50)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break None;
+            }
+        }
+    };
+    let stdout = stdout_reader.join().ok().and_then(Result::ok);
+    let stderr = stderr_reader.join().ok().and_then(Result::ok);
+    let status = status.ok_or(UnavailableReason::KeychainUnavailable)?;
+    let stdout = stdout.ok_or(UnavailableReason::KeychainUnavailable)?;
+    if status.success() {
+        Ok(stdout)
+    } else {
+        let stderr = stderr.ok_or(UnavailableReason::KeychainUnavailable)?;
+        Err(keychain_error_reason(status.code(), &stderr))
     }
 }
 
@@ -646,17 +725,27 @@ mod tests {
 
     #[test]
     fn rejected_token_and_read_only_credentials() {
-        assert_eq!(keychain_error_reason(-25300), UnavailableReason::SignIn);
+        assert_eq!(keychain_account(Some("jason.wang-1")), "jason.wang-1");
+        assert_eq!(keychain_account(Some("bad account")), "claude-code-user");
+        assert_eq!(keychain_account(None), "claude-code-user");
         assert_eq!(
-            keychain_error_reason(-25293),
+            keychain_error_reason(Some(44), b""),
+            UnavailableReason::SignIn
+        );
+        assert_eq!(
+            keychain_error_reason(Some(128), b""),
             UnavailableReason::KeychainDenied
         );
         assert_eq!(
-            keychain_error_reason(-128),
+            keychain_error_reason(Some(51), b""),
             UnavailableReason::KeychainDenied
         );
         assert_eq!(
-            keychain_error_reason(-25308),
+            keychain_error_reason(Some(1), b"User canceled the request"),
+            UnavailableReason::KeychainDenied
+        );
+        assert_eq!(
+            keychain_error_reason(Some(1), b"unexpected error"),
             UnavailableReason::KeychainUnavailable
         );
         assert_eq!(
@@ -681,6 +770,55 @@ mod tests {
         let before = read_claude_credentials_file(&path).unwrap();
         parse_credentials(&before).unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), before);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn keychain_command_reads_only_and_times_out() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir().unwrap();
+        let command = temp.path().join("fake-security");
+        std::fs::write(
+            &command,
+            b"#!/bin/sh\n[ \"$#\" -eq 6 ] && [ \"$1\" = find-generic-password ] && [ \"$2\" = -s ] && [ \"$3\" = 'Claude Code-credentials' ] && [ \"$4\" = -a ] && [ \"$5\" = jason ] && [ \"$6\" = -w ] || exit 2\nprintf '{\"claudeAiOauth\":{\"accessToken\":\"fixture-token\"}}\\n'\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&command, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let credentials =
+            read_claude_credentials_with(&command, "jason", Duration::from_secs(10)).unwrap();
+        assert_eq!(parse_credentials(&credentials).unwrap(), "fixture-token");
+
+        std::fs::write(&command, b"#!/bin/sh\nexit 44\n").unwrap();
+        assert_eq!(
+            read_claude_credentials_with(&command, "jason", Duration::from_secs(10)),
+            Err(UnavailableReason::SignIn)
+        );
+        std::fs::write(&command, b"#!/bin/sh\nprintf 'User canceled' >&2\nexit 1\n").unwrap();
+        assert_eq!(
+            read_claude_credentials_with(&command, "jason", Duration::from_secs(10)),
+            Err(UnavailableReason::KeychainDenied)
+        );
+        std::fs::write(&command, b"#!/bin/sh\nexit 51\n").unwrap();
+        assert_eq!(
+            read_claude_credentials_with(&command, "jason", Duration::from_secs(10)),
+            Err(UnavailableReason::KeychainDenied)
+        );
+        std::fs::write(
+            &command,
+            b"#!/bin/sh\ndd if=/dev/zero bs=70000 count=1 2>/dev/null\ndd if=/dev/zero bs=70000 count=1 1>&2 2>/dev/null\n",
+        )
+        .unwrap();
+        assert_eq!(
+            read_claude_credentials_with(&command, "jason", Duration::from_secs(10))
+                .unwrap()
+                .len(),
+            70000
+        );
+        std::fs::write(&command, b"#!/bin/sh\nexec sleep 1\n").unwrap();
+        assert_eq!(
+            read_claude_credentials_with(&command, "jason", Duration::from_millis(10)),
+            Err(UnavailableReason::KeychainUnavailable)
+        );
     }
 
     #[cfg(unix)]
@@ -715,6 +853,19 @@ mod tests {
     #[test]
     fn refresh_clock_and_failed_fetch_keep_good_numbers() {
         let now = Utc::now();
+        let started = Instant::now();
+        assert_eq!(
+            refresh_visible_remaining(started, started),
+            Duration::from_millis(400)
+        );
+        assert_eq!(
+            refresh_visible_remaining(started, started + Duration::from_millis(250)),
+            Duration::from_millis(150)
+        );
+        assert_eq!(
+            refresh_visible_remaining(started, started + Duration::from_millis(400)),
+            Duration::ZERO
+        );
         assert!(refresh_due(None, RefreshReason::Launch, now));
         assert!(!refresh_due(
             Some(now),
