@@ -45,6 +45,8 @@ struct Probe {
 
 #[derive(Debug, Clone)]
 struct Latest {
+    /// The npm dist-tag this answer came from.
+    tag: &'static str,
     version: String,
     fetched_at: Instant,
 }
@@ -112,11 +114,18 @@ impl VersionDiscovery {
         self.installed.insert(runtime, probe.clone()) != Some(probe)
     }
 
-    fn begin_latest(&mut self, runtime: Runtime, force: bool, now: Instant) -> bool {
+    fn begin_latest(
+        &mut self,
+        runtime: Runtime,
+        tag: &'static str,
+        force: bool,
+        now: Instant,
+    ) -> bool {
         if self.checking.contains(&runtime)
             || (!force
                 && self.latest.get(&runtime).is_some_and(|latest| {
-                    now.saturating_duration_since(latest.fetched_at) < LATEST_TTL
+                    latest.tag == tag
+                        && now.saturating_duration_since(latest.fetched_at) < LATEST_TTL
                 }))
         {
             return false;
@@ -127,7 +136,13 @@ impl VersionDiscovery {
 
     /// A failed check forgets the previous answer, so the row falls back to
     /// its version alone: no Update button, no dot, and no error.
-    fn finish_latest(&mut self, runtime: Runtime, version: Option<String>, now: Instant) -> bool {
+    fn finish_latest(
+        &mut self,
+        runtime: Runtime,
+        tag: &'static str,
+        version: Option<String>,
+        now: Instant,
+    ) -> bool {
         self.checking.remove(&runtime);
         let Some(version) = version else {
             return self.latest.remove(&runtime).is_some();
@@ -135,6 +150,7 @@ impl VersionDiscovery {
         let previous = self.latest.insert(
             runtime,
             Latest {
+                tag,
                 version: version.clone(),
                 fetched_at: now,
             },
@@ -313,7 +329,7 @@ fn run_deferred_latest_with(
     shell_env: &SharedShellEnv,
     discovery: &SharedDiscoveryState,
     events: &EventChannel,
-    fetch: fn(&LoginShellEnv, &str) -> Option<String>,
+    fetch: fn(&LoginShellEnv, &str, &str) -> Option<String>,
 ) {
     let deferred = discovery
         .write()
@@ -330,7 +346,7 @@ fn request_latest_with(
     discovery: &SharedDiscoveryState,
     events: &EventChannel,
     force: bool,
-    fetch: fn(&LoginShellEnv, &str) -> Option<String>,
+    fetch: fn(&LoginShellEnv, &str, &str) -> Option<String>,
 ) {
     let deferred = discovery.write().is_ok_and(|mut state| {
         if !state.checking {
@@ -358,8 +374,9 @@ fn request_latest_with(
         let events = events.clone();
         std::thread::spawn(move || {
             let env = shell_env.read().map(|env| env.clone()).unwrap_or_default();
-            if check_latest(&discovery, runtime, force, Instant::now(), || {
-                fetch(&env, package)
+            let tag = dist_tag(runtime);
+            if check_latest(&discovery, runtime, tag, force, Instant::now(), || {
+                fetch(&env, package, tag)
             }) {
                 events.emit("runtime/changed", &());
             }
@@ -372,29 +389,56 @@ fn request_latest_with(
 fn check_latest(
     discovery: &SharedDiscoveryState,
     runtime: Runtime,
+    tag: &'static str,
     force: bool,
     now: Instant,
     fetch: impl FnOnce() -> Option<String>,
 ) -> bool {
     if !discovery
         .write()
-        .is_ok_and(|mut state| state.versions.begin_latest(runtime, force, now))
+        .is_ok_and(|mut state| state.versions.begin_latest(runtime, tag, force, now))
     {
         return false;
     }
     let version = fetch();
     if version.is_none() {
-        log::debug!("runtime latest check failed: runtime={runtime}");
+        log::debug!("runtime latest check failed: runtime={runtime} tag={tag}");
     }
     discovery
         .write()
-        .is_ok_and(|mut state| state.versions.finish_latest(runtime, version, now))
+        .is_ok_and(|mut state| state.versions.finish_latest(runtime, tag, version, now))
 }
 
-fn fetch_latest(env: &LoginShellEnv, package: &str) -> Option<String> {
+/// The npm dist-tag a runtime's own updater follows. Claude Code follows the
+/// release channel in its user settings, `autoUpdatesChannel`: `latest` by
+/// default, or `stable`, which npm publishes as its own tag. The others
+/// follow `latest`.
+fn dist_tag(runtime: Runtime) -> &'static str {
+    if runtime != Runtime::ClaudeCode {
+        return "latest";
+    }
+    std::env::var_os("CLAUDE_CONFIG_DIR")
+        .filter(|dir| !dir.is_empty())
+        .map(std::path::PathBuf::from)
+        .or_else(|| runner_core::app_paths::home_dir().map(|home| home.join(".claude")))
+        .and_then(|dir| claude_channel(&dir.join("settings.json")))
+        .unwrap_or("latest")
+}
+
+fn claude_channel(settings: &std::path::Path) -> Option<&'static str> {
+    let settings: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(settings).ok()?).ok()?;
+    match settings.get("autoUpdatesChannel")?.as_str()? {
+        "stable" => Some("stable"),
+        "latest" => Some("latest"),
+        _ => None,
+    }
+}
+
+fn fetch_latest(env: &LoginShellEnv, package: &str, tag: &str) -> Option<String> {
     let response = crate::usage::http_client(env)
         .ok()?
-        .get(format!("https://registry.npmjs.org/{package}/latest"))
+        .get(format!("https://registry.npmjs.org/{package}/{tag}"))
         .send()
         .ok()?;
     if !response.status().is_success() {
@@ -516,6 +560,7 @@ mod tests {
         assert!(check_latest(
             &discovery,
             Runtime::Codex,
+            "latest",
             false,
             start,
             || { fetch("0.155.0") }
@@ -527,6 +572,7 @@ mod tests {
         assert!(!check_latest(
             &discovery,
             Runtime::Codex,
+            "latest",
             false,
             later,
             || { fetch("0.156.0") }
@@ -536,6 +582,7 @@ mod tests {
         assert!(check_latest(
             &discovery,
             Runtime::Codex,
+            "latest",
             true,
             later,
             || { fetch("0.156.0") }
@@ -547,6 +594,7 @@ mod tests {
         assert!(!check_latest(
             &discovery,
             Runtime::Codex,
+            "latest",
             false,
             expired,
             || { fetch("0.156.0") }
@@ -561,6 +609,7 @@ mod tests {
         assert!(!check_latest(
             &discovery,
             Runtime::Codex,
+            "latest",
             false,
             now,
             || None
@@ -587,13 +636,23 @@ mod tests {
                 Some("0.153.4".into()),
             );
         }
-        assert!(check_latest(&discovery, Runtime::Codex, true, now, || {
-            Some("0.155.0".into())
-        }));
+        assert!(check_latest(
+            &discovery,
+            Runtime::Codex,
+            "latest",
+            true,
+            now,
+            || { Some("0.155.0".into()) }
+        ));
         assert_eq!(available(&discovery, "0.153.4").as_deref(), Some("0.155.0"));
-        assert!(check_latest(&discovery, Runtime::Codex, true, now, || {
-            None
-        }));
+        assert!(check_latest(
+            &discovery,
+            Runtime::Codex,
+            "latest",
+            true,
+            now,
+            || { None }
+        ));
         assert_eq!(available(&discovery, "0.153.4"), None);
         let state = discovery.read().unwrap();
         assert_eq!(
@@ -604,17 +663,92 @@ mod tests {
     }
 
     #[test]
+    fn claude_follows_the_release_channel_in_its_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings = dir.path().join("settings.json");
+        assert_eq!(claude_channel(&settings), None);
+        for (body, channel) in [
+            (r#"{"autoUpdatesChannel":"stable"}"#, Some("stable")),
+            (
+                r#"{"autoUpdatesChannel":"latest","model":"opus"}"#,
+                Some("latest"),
+            ),
+            (r#"{"autoUpdatesChannel":"nightly"}"#, None),
+            (r#"{"autoUpdatesChannel":1}"#, None),
+            (r#"{"model":"opus"}"#, None),
+            ("not json", None),
+        ] {
+            std::fs::write(&settings, body).unwrap();
+            assert_eq!(claude_channel(&settings), channel, "{body}");
+        }
+        assert_eq!(dist_tag(Runtime::Codex), "latest");
+        assert_eq!(dist_tag(Runtime::Copilot), "latest");
+    }
+
+    #[test]
+    fn a_stable_channel_compares_against_the_stable_tag() {
+        let discovery = discovery();
+        let now = Instant::now();
+        let available = |installed: &str| {
+            discovery
+                .read()
+                .unwrap()
+                .versions
+                .available(Runtime::ClaudeCode, Some(installed))
+                .map(str::to_owned)
+        };
+        assert!(check_latest(
+            &discovery,
+            Runtime::ClaudeCode,
+            "latest",
+            false,
+            now,
+            || Some("2.1.280".into())
+        ));
+        assert_eq!(available("2.1.267").as_deref(), Some("2.1.280"));
+
+        let fetched = std::cell::Cell::new(false);
+        assert!(check_latest(
+            &discovery,
+            Runtime::ClaudeCode,
+            "stable",
+            false,
+            now + Duration::from_secs(60),
+            || {
+                fetched.set(true);
+                Some("2.1.267".into())
+            }
+        ));
+        assert!(fetched.get(), "a new channel skips the cached answer");
+        assert_eq!(available("2.1.267"), None);
+        assert!(!check_latest(
+            &discovery,
+            Runtime::ClaudeCode,
+            "stable",
+            false,
+            now + Duration::from_secs(120),
+            || panic!("the stable answer is cached")
+        ));
+    }
+
+    #[test]
     fn a_check_in_flight_is_not_started_twice() {
         let discovery = discovery();
         let now = Instant::now();
-        assert!(discovery
-            .write()
-            .unwrap()
-            .versions
-            .begin_latest(Runtime::Codex, true, now));
-        assert!(!check_latest(&discovery, Runtime::Codex, true, now, || {
-            panic!("a second fetch must not start")
-        }));
+        assert!(discovery.write().unwrap().versions.begin_latest(
+            Runtime::Codex,
+            "latest",
+            true,
+            now
+        ));
+        assert!(!check_latest(
+            &discovery,
+            Runtime::Codex,
+            "latest",
+            true,
+            now,
+            || { panic!("a second fetch must not start") }
+        ));
     }
 
     #[test]
@@ -742,7 +876,7 @@ mod tests {
     static STUB_FETCHES: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
 
     #[cfg(unix)]
-    fn stub_fetch(_: &LoginShellEnv, package: &str) -> Option<String> {
+    fn stub_fetch(_: &LoginShellEnv, package: &str, _: &str) -> Option<String> {
         STUB_FETCHES.lock().unwrap().push(package.to_owned());
         Some("99.0.0".into())
     }
