@@ -1,4 +1,9 @@
-use gpui::{deferred, svg, BoxShadow, FontWeight, WindowAppearance, WindowControlArea};
+use gpui::{canvas, deferred, svg, BoxShadow, FontWeight, WindowAppearance, WindowControlArea};
+use runner_app::ui::menu::popup_layer;
+use runner_backend::model::Runtime;
+use runner_backend::usage::{
+    AgentUsage, RefreshReason, UnavailableReason, UsageSnapshot, UsageWindow,
+};
 
 use crate::app_settings::{clamp_sidebar_width, nudge_zoom};
 use crate::toast::ToastTone;
@@ -63,12 +68,350 @@ fn settings_update_hint_version(
     available.map(|update| update.version())
 }
 
+pub(crate) fn usage_installed(core: &AppCore) -> Vec<Runtime> {
+    runner_backend::runtime_status::status_list(
+        &core.db,
+        &core.runtime_shell_env,
+        &core.runtime_discovery,
+    )
+    .map(|status| {
+        status
+            .runtimes
+            .into_iter()
+            .filter(|runtime| {
+                matches!(runtime.name, Runtime::ClaudeCode | Runtime::Codex)
+                    && matches!(
+                        runtime.effective_source,
+                        Some(
+                            runner_backend::runtime_status::RuntimeCommandSource::Detected
+                                | runner_backend::runtime_status::RuntimeCommandSource::Override
+                        )
+                    )
+            })
+            .map(|runtime| runtime.name)
+            .collect()
+    })
+    .unwrap_or_default()
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum UsageTone {
+    Normal,
+    Warning,
+    Danger,
+}
+
+fn usage_tone(windows: impl IntoIterator<Item = f64>) -> UsageTone {
+    let max = windows.into_iter().fold(0.0_f64, f64::max);
+    if max >= 100. {
+        UsageTone::Danger
+    } else if max >= 80. {
+        UsageTone::Warning
+    } else {
+        UsageTone::Normal
+    }
+}
+
+fn usage_color(tone: UsageTone) -> gpui::Hsla {
+    match tone {
+        UsageTone::Normal => theme::muted(),
+        UsageTone::Warning => theme::warning(),
+        UsageTone::Danger => theme::danger(),
+    }
+}
+
+fn reset_label(
+    resets_at: Option<chrono::DateTime<chrono::Utc>>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> String {
+    let Some(reset) = resets_at else {
+        return "reset time unknown".into();
+    };
+    let seconds = reset.signed_duration_since(now).num_seconds().max(0);
+    if seconds < 60 {
+        return "resets <1m".into();
+    }
+    let minutes = (seconds + 59) / 60;
+    let days = minutes / 1440;
+    let hours = minutes % 1440 / 60;
+    let mins = minutes % 60;
+    if days > 0 {
+        format!("resets {days}d {hours}h")
+    } else if hours > 0 {
+        format!("resets {hours}h {mins}m")
+    } else {
+        format!("resets {mins}m")
+    }
+}
+
+fn unavailable_line(reason: Option<UnavailableReason>, runtime: Runtime) -> &'static str {
+    match reason {
+        Some(UnavailableReason::SignIn) => "Sign in to Claude Code to see usage.",
+        Some(UnavailableReason::KeychainDenied | UnavailableReason::KeychainUnavailable) => {
+            "Runner was not allowed to read Claude Code's sign-in from the Keychain."
+        }
+        Some(UnavailableReason::ClaudeUnreachable) => "Couldn't reach Anthropic.",
+        Some(UnavailableReason::CodexNoAnswer) => "Codex didn't answer.",
+        Some(UnavailableReason::InvalidResponse) if runtime == Runtime::Codex => {
+            "Codex didn't answer."
+        }
+        None => "Checking…",
+        _ => "Couldn't reach Anthropic.",
+    }
+}
+
+fn usage_tooltip(snapshot: &UsageSnapshot, enabled: &[Runtime]) -> String {
+    let mut parts = Vec::new();
+    for (runtime, name, usage) in [
+        (Runtime::ClaudeCode, "Claude Code", snapshot.claude.as_ref()),
+        (Runtime::Codex, "Codex", snapshot.codex.as_ref()),
+    ] {
+        if !enabled.contains(&runtime) {
+            continue;
+        }
+        let value = usage.and_then(|usage| {
+            usage
+                .windows
+                .iter()
+                .max_by(|a, b| a.used_percent.total_cmp(&b.used_percent))
+        });
+        parts.push(match value {
+            Some(window) => format!("{name} {:.0}%", window.used_percent),
+            None => format!("{name} unavailable"),
+        });
+    }
+    parts.join(" · ")
+}
+
+fn usage_window_row(window: &UsageWindow, now: chrono::DateTime<chrono::Utc>) -> AnyElement {
+    let tone = usage_tone([window.used_percent]);
+    let fill = usage_color(tone);
+    div()
+        .w_full()
+        .flex()
+        .flex_col()
+        .gap_1()
+        .child(
+            div()
+                .w_full()
+                .flex()
+                .items_center()
+                .justify_between()
+                .child(
+                    div()
+                        .text_size(theme::text_body())
+                        .text_color(theme::text())
+                        .child(window.name.clone()),
+                )
+                .child(
+                    div()
+                        .text_size(theme::text_body())
+                        .text_color(fill)
+                        .child(format!("{:.0}%", window.used_percent)),
+                ),
+        )
+        .child(
+            div()
+                .w_full()
+                .h(px(5.))
+                .rounded_full()
+                .bg(theme::border())
+                .child(
+                    div()
+                        .w(relative((window.used_percent / 100.) as f32))
+                        .h_full()
+                        .rounded_full()
+                        .bg(fill),
+                ),
+        )
+        .child(
+            div()
+                .text_size(theme::text_meta())
+                .text_color(theme::muted())
+                .child(reset_label(window.resets_at, now)),
+        )
+        .into_any_element()
+}
+
+fn usage_section(
+    runtime: Runtime,
+    usage: Option<&AgentUsage>,
+    reason: Option<UnavailableReason>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> AnyElement {
+    let (name, mark) = match runtime {
+        Runtime::ClaudeCode => ("Claude Code", "claude.svg"),
+        _ => ("Codex", "openai.svg"),
+    };
+    let rows: Vec<AnyElement> = usage
+        .map(|usage| {
+            usage
+                .windows
+                .iter()
+                .map(|window| usage_window_row(window, now))
+                .collect()
+        })
+        .unwrap_or_default();
+    div()
+        .w_full()
+        .flex()
+        .flex_col()
+        .gap_3()
+        .py_3()
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap_2()
+                .child(svg().path(mark).size(px(16.)).text_color(theme::text()))
+                .child(
+                    div()
+                        .text_size(theme::text_title())
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(name),
+                ),
+        )
+        .children(rows)
+        .children(usage.is_none().then(|| {
+            div()
+                .text_size(theme::text_body())
+                .text_color(theme::muted())
+                .child(unavailable_line(reason, runtime))
+        }))
+        .into_any_element()
+}
+
 pub(crate) fn alpha(mut color: gpui::Hsla, value: f32) -> gpui::Hsla {
     color.a = value;
     color
 }
 
 impl NativeRoot {
+    fn render_usage_popover(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let snapshot = self.core(cx).usage.snapshot();
+        let now = chrono::Utc::now();
+        let updated = snapshot
+            .claude
+            .iter()
+            .chain(snapshot.codex.iter())
+            .map(|usage| usage.updated_at)
+            .max();
+        let age = if snapshot.refreshing && updated.is_none() {
+            "Refreshing…".to_owned()
+        } else if let Some(updated) = updated {
+            let minutes = now.signed_duration_since(updated).num_minutes().max(0);
+            if minutes == 0 {
+                "updated just now".into()
+            } else {
+                format!("updated {minutes}m ago")
+            }
+        } else {
+            "Not updated yet".into()
+        };
+        let refresh = div()
+            .id("refresh-usage")
+            .size(px(24.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded_sm()
+            .cursor_pointer()
+            .hover(|button| button.bg(theme::sidebar_selected()))
+            .on_click(cx.listener(|this, _, _, cx| {
+                let core = this.core(cx).clone();
+                core.usage
+                    .request_refresh(core.clone(), RefreshReason::Button);
+                cx.notify();
+            }))
+            .child(
+                svg()
+                    .path("refresh-cw.svg")
+                    .size(px(14.))
+                    .text_color(theme::muted()),
+            );
+        let sections: Vec<AnyElement> = [Runtime::ClaudeCode, Runtime::Codex]
+            .into_iter()
+            .filter(|runtime| {
+                self.usage_installed.contains(runtime)
+                    && self.settings(cx).model_runtimes().contains(runtime)
+            })
+            .map(|runtime| match runtime {
+                Runtime::ClaudeCode => usage_section(
+                    runtime,
+                    snapshot.claude.as_ref(),
+                    snapshot.claude_error,
+                    now,
+                ),
+                _ => usage_section(runtime, snapshot.codex.as_ref(), snapshot.codex_error, now),
+            })
+            .collect();
+        div()
+            .w_full()
+            .px_4()
+            .pt_3()
+            .pb_2()
+            .flex()
+            .flex_col()
+            .rounded(px(8.))
+            .border_1()
+            .border_color(theme::border_strong())
+            .bg(theme::panel())
+            .shadow(vec![BoxShadow {
+                color: gpui::black().opacity(0.25),
+                blur_radius: px(16.),
+                spread_radius: px(0.),
+                offset: point(px(0.), px(4.)),
+            }])
+            .child(
+                div()
+                    .w_full()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_size(theme::text_lead())
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child("Usage"),
+                    )
+                    .child(div().flex_1())
+                    .child(
+                        div()
+                            .text_size(theme::text_meta())
+                            .text_color(theme::muted())
+                            .child(age),
+                    )
+                    .child(refresh),
+            )
+            .children(sections)
+            .child(
+                div()
+                    .w_full()
+                    .border_t_1()
+                    .border_color(theme::border())
+                    .pt_2()
+                    .child(
+                        div()
+                            .id("usage-agent-settings")
+                            .w_full()
+                            .py_2()
+                            .rounded_sm()
+                            .cursor_pointer()
+                            .text_size(theme::text_body())
+                            .text_color(theme::muted())
+                            .hover(|row| {
+                                row.bg(theme::sidebar_selected()).text_color(theme::text())
+                            })
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.usage_open = false;
+                                this.enter_settings_route(Some("agents"), window, cx);
+                            }))
+                            .child("Agent settings…"),
+                    ),
+            )
+            .into_any_element()
+    }
+
     pub(crate) fn render_app_shell(
         &mut self,
         window: &mut Window,
@@ -150,6 +493,7 @@ impl NativeRoot {
             .map(|toast| deferred(toast).with_priority(3));
         let modifier_sidebar = self.sidebar.clone();
         let key_sidebar = self.sidebar.clone();
+        let usage_root = cx.entity();
 
         div()
             .relative()
@@ -180,7 +524,16 @@ impl NativeRoot {
                     sidebar.handle_shortcut_modifiers_changed(event.modifiers, window, sidebar_cx);
                 });
             })
-            .capture_key_down(move |_, _, cx| {
+            .capture_key_down(move |event, _, cx| {
+                if event.keystroke.key == "escape" {
+                    usage_root.update(cx, |this, cx| {
+                        if this.usage_open {
+                            this.usage_open = false;
+                            cx.stop_propagation();
+                            cx.notify();
+                        }
+                    });
+                }
                 key_sidebar.update(cx, |sidebar, sidebar_cx| {
                     sidebar.handle_shortcut_key_pressed(sidebar_cx);
                 });
@@ -411,7 +764,71 @@ impl NativeRoot {
                     ),
             )
         });
+        let enabled = self.settings(cx).model_runtimes();
+        let show_usage = self
+            .usage_installed
+            .iter()
+            .any(|runtime| enabled.contains(runtime))
+            && !self.sidebar_collapsed;
+        let usage_hint = show_usage.then(|| {
+            let snapshot = self.core(cx).usage.snapshot();
+            let visible: Vec<_> = self
+                .usage_installed
+                .iter()
+                .copied()
+                .filter(|runtime| enabled.contains(runtime))
+                .collect();
+            let tone = usage_tone(
+                visible
+                    .iter()
+                    .filter_map(|runtime| match runtime {
+                        Runtime::ClaudeCode => snapshot.claude.as_ref(),
+                        Runtime::Codex => snapshot.codex.as_ref(),
+                        _ => None,
+                    })
+                    .flat_map(|agent| agent.windows.iter().map(|window| window.used_percent)),
+            );
+            let color = usage_color(tone);
+            let trigger = Tooltip::new(
+                "sidebar-usage-tooltip",
+                usage_tooltip(&snapshot, &visible),
+                div()
+                    .id("sidebar-usage")
+                    .flex_none()
+                    .size(rems(32. / 16.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded_sm()
+                    .border_1()
+                    .border_color(gpui::transparent_black())
+                    .cursor_pointer()
+                    .when(self.usage_open, |button| {
+                        button.bg(theme::sidebar_selected())
+                    })
+                    .hover(|button| button.bg(alpha(theme::sidebar_selected(), 0.5)))
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.usage_open = !this.usage_open;
+                        if this.usage_open {
+                            let core = this.core(cx).clone();
+                            core.usage
+                                .request_refresh(core.clone(), RefreshReason::Open);
+                        }
+                        cx.notify();
+                    }))
+                    .child(
+                        svg()
+                            .path("gauge.svg")
+                            .size(px(14. * zoom))
+                            .text_color(color),
+                    ),
+            );
+            div().flex_none().size(rems(32. / 16.)).child(trigger)
+        });
+        let anchor_owner = cx.entity();
         let settings_button = crate::platform_ui::sidebar_section()
+            .relative()
             .px_3()
             .pt_2()
             .border_t_1()
@@ -461,7 +878,18 @@ impl NativeRoot {
                                 this.enter_settings_route(None, window, cx);
                             })),
                     )
-                    .children(update_hint),
+                    .children(update_hint)
+                    .children(usage_hint),
+            )
+            .child(
+                canvas(
+                    |_, _, _| {},
+                    move |bounds, _, _, cx| {
+                        anchor_owner.update(cx, |this, _| this.usage_anchor = Some(bounds));
+                    },
+                )
+                .absolute()
+                .inset_0(),
             );
         // The content keeps its full width while the wrapper animates, so the
         // transition clips instead of squashing every row; a squashed row
@@ -476,7 +904,28 @@ impl NativeRoot {
             .children(titlebar)
             .child(brand)
             .child(self.sidebar.clone())
-            .child(settings_button);
+            .child(settings_button)
+            .children(
+                (self.usage_open && show_usage)
+                    .then(|| {
+                        self.usage_anchor.map(|anchor| {
+                            let owner = cx.entity();
+                            popup_layer(
+                                anchor,
+                                window,
+                                px(340. * zoom),
+                                self.render_usage_popover(cx),
+                                Rc::new(move |_, cx| {
+                                    owner.update(cx, |this, cx| {
+                                        this.usage_open = false;
+                                        cx.notify();
+                                    });
+                                }),
+                            )
+                        })
+                    })
+                    .flatten(),
+            );
         let mut sidebar = div()
             .id("app-sidebar")
             .relative()
@@ -875,6 +1324,9 @@ impl NativeRoot {
     ) {
         let changed = self.sidebar_collapsed != collapsed;
         self.sidebar_collapsed = collapsed;
+        if collapsed {
+            self.usage_open = false;
+        }
         self.mission_workspace
             .update(cx, |workspace, workspace_cx| {
                 workspace.set_sidebar_collapsed(collapsed, workspace_cx)
@@ -1128,6 +1580,54 @@ mod tests {
     use super::*;
 
     #[test]
+    fn usage_thresholds_and_reset_labels() {
+        use chrono::TimeDelta;
+        assert_eq!(usage_tone([79.9]), UsageTone::Normal);
+        assert_eq!(usage_tone([5., 80.]), UsageTone::Warning);
+        assert_eq!(usage_tone([80., 100.]), UsageTone::Danger);
+        let now = chrono::Utc::now();
+        assert_eq!(
+            reset_label(Some(now + TimeDelta::minutes(190)), now),
+            "resets 3h 10m"
+        );
+        assert_eq!(
+            reset_label(Some(now + TimeDelta::hours(164)), now),
+            "resets 6d 20h"
+        );
+        assert_eq!(
+            reset_label(Some(now + TimeDelta::seconds(30)), now),
+            "resets <1m"
+        );
+    }
+
+    #[test]
+    fn usage_tooltip_explains_highest_window_and_pending_is_not_an_error() {
+        let snapshot = UsageSnapshot {
+            claude: Some(AgentUsage {
+                windows: vec![
+                    UsageWindow {
+                        name: "5 hours".into(),
+                        used_percent: 4.,
+                        resets_at: None,
+                    },
+                    UsageWindow {
+                        name: "Week".into(),
+                        used_percent: 85.,
+                        resets_at: None,
+                    },
+                ],
+                updated_at: chrono::Utc::now(),
+            }),
+            ..UsageSnapshot::default()
+        };
+        assert_eq!(
+            usage_tooltip(&snapshot, &[Runtime::ClaudeCode]),
+            "Claude Code 85%"
+        );
+        assert_eq!(unavailable_line(None, Runtime::Codex), "Checking…");
+    }
+
+    #[test]
     fn sidebar_resize_bar_rides_the_divider() {
         use crate::theme_snapshot::ThemeGuard;
         use gpui::{px, size, TestAppContext, VisualTestContext};
@@ -1150,6 +1650,7 @@ mod tests {
             ),
             runtime_shell_env,
             runtime_discovery,
+            usage: Arc::new(runner_backend::usage::UsageService::default()),
             buses: event_bus::BusRegistry::new(),
             routers: router::RouterRegistry::new(),
             mission_grid_hint: Arc::new(Mutex::new(None)),
