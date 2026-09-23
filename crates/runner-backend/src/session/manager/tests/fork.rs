@@ -59,7 +59,7 @@ fn codex_fork_materializer(
     std::fs::write(
         &command,
         format!(
-            "#!/bin/sh\n{{\n  printf 'cwd=%s\\n' \"$PWD\"\n  printf 'env=%s\\n' \"$FORK_TEST_ENV\"\n  for arg in \"$@\"; do printf 'arg=%s\\n' \"$arg\"; done\n}} > \"{}\"\nprintf '%s\\n' '{}'\n{create_rollout}sleep 10\n",
+            "#!/bin/sh\n{{\n  printf 'cwd=%s\\n' \"$PWD\"\n  printf 'env=%s\\n' \"$FORK_TEST_ENV\"\n  for arg in \"$@\"; do printf 'arg=%s\\n' \"$arg\"; done\n}} > \"{}\"\nprintf '%s\\n' '{}'\n{create_rollout}sleep 60\n",
             capture_path.display(),
             event,
         ),
@@ -291,8 +291,11 @@ fn codex_direct_chat_fork_captures_headless_key_then_resumes_without_watcher() {
             capture(),
         )
         .unwrap();
+    // The materializer lives for a minute after writing the rollout, so
+    // returning well inside that shows the fork took the rollout file without
+    // waiting on the process, however slowly the fixture started.
     assert!(
-        started.elapsed() < ci_scaled_budget(Duration::from_secs(4)),
+        started.elapsed() < Duration::from_secs(30),
         "Codex fork waited for the materializer reply instead of the rollout file"
     );
 
@@ -440,12 +443,15 @@ fn headless_fork_rejects_nonzero_exit_and_kills_timed_out_process_group() {
     };
     let codex_plan =
         router::runtime::fork_plan(Some(Runtime::Codex), &source_key, "Source").unwrap();
+    // The rollout deadline, five seconds after thread.started, must be what
+    // ends this wait. A short overall timeout races the materializer's start
+    // on a loaded machine and reports a timeout before thread.started arrives.
+    let timeout = Duration::from_secs(30);
     let started = Instant::now();
     let error =
-        super::spawn::run_headless_fork(&missing_rollout_spec, &codex_plan, Duration::from_secs(3))
-            .unwrap_err();
+        super::spawn::run_headless_fork(&missing_rollout_spec, &codex_plan, timeout).unwrap_err();
     assert!(error.to_string().contains("rollout for thread"), "{error}");
-    assert!(started.elapsed() < ci_scaled_budget(Duration::from_secs(4)));
+    assert!(started.elapsed() < timeout);
 
     let dir = tempfile::tempdir().unwrap();
     let command = dir.path().join("slow-materializer");
