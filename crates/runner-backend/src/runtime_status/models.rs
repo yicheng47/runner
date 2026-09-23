@@ -329,6 +329,24 @@ struct Query<'a> {
     timeout: Duration,
 }
 
+/// Stdout of one bounded, headless command, or `None` when it fails, times
+/// out, or exits non-zero. Shares `run`'s process-tree handling.
+pub(super) fn command_output(
+    executable: &str,
+    args: &[&str],
+    env: &LoginShellEnv,
+    timeout: Duration,
+) -> Option<Vec<u8>> {
+    run(Query {
+        executable,
+        args,
+        stdin: None,
+        env,
+        timeout,
+    })
+    .ok()
+}
+
 /// Runs one bounded, headless query off the UI thread. Owned processes and
 /// their descendants are terminated on timeout and reaped on every path.
 fn run(query: Query<'_>) -> Result<Vec<u8>, Reason> {

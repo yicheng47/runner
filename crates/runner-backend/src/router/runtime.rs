@@ -37,6 +37,11 @@ pub struct RuntimeDefinition {
     pub command: &'static str,
     pub native_fork: bool,
     pub skills_dirs: &'static [&'static str],
+    /// Arguments that make the CLI update itself; empty when it has no
+    /// updater, which also hides the Update button in Settings → Agents.
+    pub update_args: &'static [&'static str],
+    /// npm package whose `latest` dist-tag says whether an update exists.
+    pub npm_package: Option<&'static str>,
 }
 
 const RUNTIME_DEFINITIONS: &[RuntimeDefinition] = &[
@@ -46,6 +51,8 @@ const RUNTIME_DEFINITIONS: &[RuntimeDefinition] = &[
         command: "codex",
         native_fork: true,
         skills_dirs: &[".agents/skills", ".codex/skills"],
+        update_args: &["update"],
+        npm_package: Some("@openai/codex"),
     },
     RuntimeDefinition {
         name: Runtime::ClaudeCode,
@@ -53,6 +60,8 @@ const RUNTIME_DEFINITIONS: &[RuntimeDefinition] = &[
         command: "claude",
         native_fork: true,
         skills_dirs: &[".claude/skills"],
+        update_args: &["update"],
+        npm_package: Some("@anthropic-ai/claude-code"),
     },
     RuntimeDefinition {
         name: Runtime::Copilot,
@@ -60,6 +69,8 @@ const RUNTIME_DEFINITIONS: &[RuntimeDefinition] = &[
         command: "copilot",
         native_fork: false,
         skills_dirs: &[".copilot/skills", ".agents/skills"],
+        update_args: &["update"],
+        npm_package: Some("@github/copilot"),
     },
     RuntimeDefinition {
         name: Runtime::Pi,
@@ -67,6 +78,8 @@ const RUNTIME_DEFINITIONS: &[RuntimeDefinition] = &[
         command: "pi",
         native_fork: true,
         skills_dirs: &[".pi/agent/skills", ".agents/skills"],
+        update_args: &[],
+        npm_package: None,
     },
     RuntimeDefinition {
         name: Runtime::Trae,
@@ -74,6 +87,8 @@ const RUNTIME_DEFINITIONS: &[RuntimeDefinition] = &[
         command: "traecli",
         native_fork: false,
         skills_dirs: &[".trae/skills"],
+        update_args: &[],
+        npm_package: None,
     },
 ];
 
