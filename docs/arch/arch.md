@@ -335,7 +335,7 @@ The whole system runs many of these side-by-side — one per slot per live missi
 
 ### 5.2 Why PTY (not pipes) and why alacritty
 
-Claude Code, Codex, TRAE CLI, GitHub Copilot CLI, and pi are TUIs. They check `isatty()`; if false they degrade. Their output is escape sequences that only a terminal emulator can render. The PTY gives the child a real terminal; `alacritty_terminal` gives Runner a correct emulator — grid, VTE parser, alt screen, scrollback reflow, selection, mouse reporting modes — without reinventing one. GPUI paints the grid it maintains.
+Claude Code, Codex, TRAE CLI, GitHub Copilot CLI, and pi are TUIs. They check `isatty()`; if false they degrade. Their output is escape sequences that only a terminal emulator can render. The PTY gives the child a real terminal; `alacritty_terminal` gives Runner a correct emulator — grid, VTE parser, alt screen, scrollback reflow, selection, mouse reporting modes — without reinventing one. GPUI paints the grid it maintains. Runner feeds each chunk to the `Term`'s VTE parser itself (`TerminalSession::feed_output`) instead of running alacritty's `EventLoop`, so it also services the parser's synchronized-update deadline, which that loop would otherwise own: vte holds everything between `ESC[?2026h` and `ESC[?2026l` and only records when to give up waiting for the end marker, so a per-session flusher applies a held update 150 ms after its last begin marker and logs the flush at info level (#647).
 
 ### 5.3 Spawn
 

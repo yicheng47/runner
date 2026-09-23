@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::mpsc::{self, Sender};
-use std::sync::{Arc, Mutex};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::sync::{Arc, Mutex, Weak};
 use std::thread;
 use std::time::Instant;
 
@@ -26,7 +26,7 @@ use runner_backend::AppCore;
 use crate::palette;
 use crate::{
     fixtures::FixtureRecorder,
-    input_state::{InputEvent, InputTracker},
+    input_state::{InputEvent, InputObservation, InputTracker},
 };
 
 pub const XTERM_WORD_SEPARATORS: &str = " ()[]{}',\"`";
@@ -154,6 +154,18 @@ fn scheme_report(palette: palette::TerminalPalette) -> String {
     format!("\x1b[?997;{}n", if palette.is_light() { 2 } else { 1 })
 }
 
+/// vte holds every byte of a synchronized update (`ESC[?2026h` … `ESC[?2026l`)
+/// and records a deadline for it, but only its caller can act on that deadline:
+/// alacritty's event loop does, and Runner, which feeds the parser itself, runs
+/// a flusher per session instead. `flush_scheduled` lives under the parser's
+/// lock so a feed that opens an update and a flusher that finds none pending
+/// cannot interleave and leave a deadline unwatched.
+#[derive(Default)]
+struct ParserState {
+    processor: Processor,
+    flush_scheduled: bool,
+}
+
 #[derive(Default)]
 struct SequenceState {
     last: u64,
@@ -195,7 +207,8 @@ pub struct TerminalSession {
     pub term: Arc<FairMutex<Term<EventProxy>>>,
     core: AppCore,
     session_id: String,
-    parser: Mutex<Processor>,
+    parser: Mutex<ParserState>,
+    sync_flush: Sender<()>,
     sequence: Mutex<SequenceState>,
     size: Arc<Mutex<(u16, u16)>>,
     title: Arc<Mutex<String>>,
@@ -267,6 +280,7 @@ impl TerminalSession {
         input_mode: UserInputMode,
     ) -> Result<Arc<Self>> {
         let (tx, rx) = mpsc::channel::<Event>();
+        let (sync_flush, sync_flush_requests) = mpsc::channel::<()>();
         let user_input = match input_mode {
             UserInputMode::Inline => UserInput::Inline,
             UserInputMode::Queued => {
@@ -347,7 +361,8 @@ impl TerminalSession {
             term: Arc::clone(&term),
             core: core.clone(),
             session_id: session_id.clone(),
-            parser: Mutex::new(Processor::new()),
+            parser: Mutex::new(ParserState::default()),
+            sync_flush,
             sequence: Mutex::new(SequenceState::default()),
             size: Arc::clone(&size),
             title: Arc::clone(&title),
@@ -465,6 +480,12 @@ impl TerminalSession {
             })
             .context("spawn terminal event thread")?;
 
+        let session_for_flush = Arc::downgrade(&session);
+        thread::Builder::new()
+            .name(format!("native-term-sync-{}", session.session_id))
+            .spawn(move || run_sync_flusher(session_for_flush, sync_flush_requests))
+            .context("spawn terminal sync flush thread")?;
+
         Ok(session)
     }
 
@@ -550,7 +571,7 @@ impl TerminalSession {
         // alacritty's own, in order.
         let mut fed = 0;
         for (end, sequence) in scheme_sequences {
-            parser.advance(&mut *term, &bytes[fed..end]);
+            parser.processor.advance(&mut *term, &bytes[fed..end]);
             fed = end;
             match sequence {
                 SchemeSequence::Subscribe => self.scheme.subscribed.store(true, Ordering::Relaxed),
@@ -564,25 +585,71 @@ impl TerminalSession {
                 }
             }
         }
-        parser.advance(&mut *term, &bytes[fed..]);
-        if sequence.first_paint_seq == 0
-            && term
-                .grid()
-                .display_iter()
-                .any(|cell| !cell.c.is_whitespace())
-        {
-            sequence.first_paint_seq = event.seq;
-        }
-        let mode = *term.mode();
-        if !previous_mode.intersects(TermMode::MOUSE_MODE) && mode.intersects(TermMode::MOUSE_MODE)
-        {
-            term.selection = None;
-        }
-        let input_observation = input_tracker.observe_output(now, &term);
+        parser.processor.advance(&mut *term, &bytes[fed..]);
+        let input_observation = observe_parsed(
+            &mut sequence,
+            &mut input_tracker,
+            &mut term,
+            previous_mode,
+            event.seq,
+            now,
+        );
+        let schedule_flush = parser.processor.sync_timeout().sync_timeout().is_some()
+            && !std::mem::replace(&mut parser.flush_scheduled, true);
         drop(term);
         drop(input_tracker);
         drop(parser);
         drop(sequence);
+        if schedule_flush {
+            let _ = self.sync_flush.send(());
+        }
+        self.publish_parsed(input_observation);
+        Ok(())
+    }
+
+    /// Applies a synchronized update whose end marker is overdue, as
+    /// alacritty's event loop does at the same deadline. Returns the deadline
+    /// still to wait for, or `None` once no update is held.
+    fn flush_sync_update(&self) -> Option<Instant> {
+        let mut sequence = self.sequence.lock().unwrap();
+        let mut parser = self.parser.lock().unwrap();
+        let now = Instant::now();
+        match parser.processor.sync_timeout().sync_timeout() {
+            Some(deadline) if deadline > now => return Some(deadline),
+            Some(_) => {}
+            None => {
+                parser.flush_scheduled = false;
+                return None;
+            }
+        }
+        let mut input_tracker = self.input_tracker.lock().unwrap();
+        let mut term = self.term.lock();
+        let previous_mode = *term.mode();
+        let held = parser.processor.sync_bytes_count();
+        parser.processor.stop_sync(&mut *term);
+        parser.flush_scheduled = false;
+        let seq = sequence.last;
+        let input_observation = observe_parsed(
+            &mut sequence,
+            &mut input_tracker,
+            &mut term,
+            previous_mode,
+            seq,
+            now,
+        );
+        drop(term);
+        drop(input_tracker);
+        drop(parser);
+        drop(sequence);
+        log::info!(
+            "terminal {}: synchronized update timed out without its end marker; flushed {held} held bytes",
+            self.session_id
+        );
+        self.publish_parsed(input_observation);
+        None
+    }
+
+    fn publish_parsed(&self, input_observation: Option<InputObservation>) {
         if let Some(observation) = input_observation {
             self.core
                 .sessions
@@ -591,7 +658,6 @@ impl TerminalSession {
         if self.viewers.load(Ordering::Acquire) > 0 {
             (self.waker)();
         }
-        Ok(())
     }
 
     pub fn submit_text(&self, text: &str) -> runner_backend::error::Result<()> {
@@ -880,6 +946,53 @@ impl TerminalSession {
         ));
         drop(term);
         (self.waker)();
+    }
+}
+
+/// What a PTY chunk and a synchronized-update flush both do once the parser
+/// has applied bytes, while the feed locks are still held.
+fn observe_parsed(
+    sequence: &mut SequenceState,
+    input_tracker: &mut InputTracker,
+    term: &mut Term<EventProxy>,
+    previous_mode: TermMode,
+    seq: u64,
+    now: Instant,
+) -> Option<InputObservation> {
+    if sequence.first_paint_seq == 0
+        && term
+            .grid()
+            .display_iter()
+            .any(|cell| !cell.c.is_whitespace())
+    {
+        sequence.first_paint_seq = seq;
+    }
+    if !previous_mode.intersects(TermMode::MOUSE_MODE)
+        && term.mode().intersects(TermMode::MOUSE_MODE)
+    {
+        term.selection = None;
+    }
+    input_tracker.observe_output(now, term)
+}
+
+/// Waits out each synchronized update `feed_output` leaves open, re-reading
+/// the deadline on every wake because a later begin marker extends it. The
+/// session is held only while a flush runs, and the thread ends when the
+/// session drops its sender.
+fn run_sync_flusher(session: Weak<TerminalSession>, requests: Receiver<()>) {
+    while requests.recv().is_ok() {
+        loop {
+            let Some(next) = session.upgrade().map(|session| session.flush_sync_update()) else {
+                return;
+            };
+            let Some(deadline) = next else {
+                break;
+            };
+            let wait = deadline.saturating_duration_since(Instant::now());
+            if let Err(RecvTimeoutError::Disconnected) = requests.recv_timeout(wait) {
+                return;
+            }
+        }
     }
 }
 
@@ -1294,9 +1407,11 @@ mod tests {
     use alacritty_terminal::index::{Column, Line, Point, Side};
     use alacritty_terminal::selection::SelectionType;
     use alacritty_terminal::term::cell::Flags;
+    use alacritty_terminal::term::TermMode;
     use alacritty_terminal::vte::ansi::CursorShape;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::time::{Duration, Instant};
 
     use runner_backend::session::manager::{
         ExitEvent, OutputEvent, SessionEvents, SessionSpawnedEvent, SessionUpdatedEvent,
@@ -2349,5 +2464,200 @@ mod tests {
 
         terminal.feed_output(&output(4, "later")).unwrap();
         assert_eq!(terminal.output_activity().first_paint_seq, 3);
+    }
+
+    /// The shape of #647's 09-21 probe: a redraw that opens a synchronized
+    /// update, clears, hides the cursor while drawing and shows it again, and
+    /// never sends the end marker.
+    const HELD_REDRAW: &str = "\x1b[?2026h\x1b[2J\x1b[H\x1b[?25lredrawn\r\n> \x1b[?25h";
+
+    fn bytes_output(seq: u64, bytes: &[u8]) -> OutputEvent {
+        OutputEvent {
+            session_id: "replay-race".into(),
+            mission_id: None,
+            seq,
+            bytes: bytes.to_vec(),
+        }
+    }
+
+    fn screen(terminal: &TerminalSession) -> Vec<String> {
+        visible_lines(&*terminal.term.lock())
+    }
+
+    fn sync_deadline(terminal: &TerminalSession) -> Option<Instant> {
+        terminal
+            .parser
+            .lock()
+            .unwrap()
+            .processor
+            .sync_timeout()
+            .sync_timeout()
+    }
+
+    /// Polls in 5 ms steps for at most `limit`. The flushes under test land at
+    /// vte's 150 ms deadline, so the limit only bounds a failing run.
+    fn wait_until(limit: Duration, mut done: impl FnMut() -> bool) -> bool {
+        let start = Instant::now();
+        loop {
+            if done() {
+                return true;
+            }
+            if start.elapsed() >= limit {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    fn populated_terminal(core: AppCore) -> Arc<TerminalSession> {
+        let terminal =
+            TerminalSession::attach(core, "replay-race".into(), 20, 4, Arc::new(|| {})).unwrap();
+        terminal
+            .feed_output(&output(1, "old prompt\r\nold output"))
+            .unwrap();
+        terminal
+    }
+
+    #[test]
+    fn a_synchronized_update_without_its_end_marker_flushes_at_its_deadline() {
+        let temp = tempfile::tempdir().unwrap();
+        let terminal = populated_terminal(test_core(temp.path()));
+        terminal.feed_output(&output(2, HELD_REDRAW)).unwrap();
+        let deadline = sync_deadline(&terminal).expect("the redraw is held");
+        let held = screen(&terminal);
+        if Instant::now() < deadline {
+            assert_eq!(held[..2], ["old prompt", "old output"]);
+        }
+
+        assert!(wait_until(Duration::from_secs(2), || screen(&terminal)[0] == "redrawn"));
+        assert!(Instant::now() >= deadline);
+        {
+            let term = terminal.term.lock();
+            assert_eq!(visible_lines(&*term)[..2], ["redrawn", ">"]);
+            assert!(term.mode().contains(TermMode::SHOW_CURSOR));
+            assert_eq!(term.grid().cursor.point, Point::new(Line(1), Column(2)));
+        }
+        assert_eq!(sync_deadline(&terminal), None);
+
+        terminal.feed_output(&output(3, "\x1b[?2026l")).unwrap();
+        assert_eq!(screen(&terminal)[..2], ["redrawn", ">"]);
+    }
+
+    #[test]
+    fn resizes_neither_release_a_held_update_early_nor_lose_it() {
+        let temp = tempfile::tempdir().unwrap();
+        let terminal = populated_terminal(test_core(temp.path()));
+        terminal.feed_output(&output(2, HELD_REDRAW)).unwrap();
+        let deadline = sync_deadline(&terminal).expect("the redraw is held");
+
+        for (cols, rows) in [(30, 6), (12, 3), (24, 5)] {
+            terminal.resize(cols, rows);
+        }
+        let resized = screen(&terminal);
+        let held_bytes = terminal.parser.lock().unwrap().processor.sync_bytes_count();
+        if Instant::now() < deadline {
+            assert!(held_bytes > 0);
+            assert!(!resized.iter().any(|line| line.contains("redrawn")));
+        }
+
+        assert!(wait_until(Duration::from_secs(2), || screen(&terminal)[0] == "redrawn"));
+        assert_eq!(screen(&terminal), ["redrawn", ">", "", "", ""]);
+    }
+
+    #[test]
+    fn a_complete_update_split_anywhere_applies_once_without_a_timeout_flush() {
+        const UPDATE: &[u8] = b"\x1b[?2026habc\r\n\x1b[?2026l";
+        let temp = tempfile::tempdir().unwrap();
+        let core = test_core(temp.path());
+        let wakes = Arc::new(AtomicUsize::new(0));
+        let mut terminals = Vec::new();
+        for split in 0..=UPDATE.len() {
+            let wake_count = Arc::clone(&wakes);
+            let terminal = TerminalSession::attach(
+                core.clone(),
+                format!("split-{split}"),
+                20,
+                4,
+                Arc::new(move || {
+                    wake_count.fetch_add(1, Ordering::Relaxed);
+                }),
+            )
+            .unwrap();
+            let view = terminal.view();
+            terminal.feed_output(&output(1, "top\r\n")).unwrap();
+            terminal
+                .feed_output(&bytes_output(2, &UPDATE[..split]))
+                .unwrap();
+            terminal
+                .feed_output(&bytes_output(3, &UPDATE[split..]))
+                .unwrap();
+            assert_eq!(
+                screen(&terminal),
+                ["top", "abc", "", ""],
+                "split at {split}"
+            );
+            terminals.push((split, terminal, view));
+        }
+        let fed_wakes = wakes.load(Ordering::Relaxed);
+
+        // A flusher scheduled while the update was open wakes at its deadline
+        // and stands down.
+        assert!(wait_until(Duration::from_secs(2), || terminals.iter().all(
+            |(_, terminal, _)| !terminal.parser.lock().unwrap().flush_scheduled
+        )));
+        assert_eq!(wakes.load(Ordering::Relaxed), fed_wakes);
+        for (split, terminal, _) in &terminals {
+            assert_eq!(screen(terminal), ["top", "abc", "", ""], "split at {split}");
+            assert_eq!(sync_deadline(terminal), None, "split at {split}");
+        }
+    }
+
+    #[test]
+    fn a_flush_scheduled_for_a_dropped_session_does_nothing() {
+        let temp = tempfile::tempdir().unwrap();
+        let terminal = populated_terminal(test_core(temp.path()));
+        terminal.feed_output(&output(2, HELD_REDRAW)).unwrap();
+        let deadline = sync_deadline(&terminal).expect("the redraw is held");
+        let term = Arc::clone(&terminal.term);
+        let session = Arc::downgrade(&terminal);
+
+        drop(terminal);
+        assert!(wait_until(Duration::from_secs(2), || session
+            .upgrade()
+            .is_none()));
+        std::thread::sleep(
+            deadline.saturating_duration_since(Instant::now()) + Duration::from_millis(100),
+        );
+        assert_eq!(
+            visible_lines(&*term.lock())[..2],
+            ["old prompt", "old output"]
+        );
+    }
+
+    #[test]
+    fn a_begin_marker_inside_a_held_update_extends_its_deadline() {
+        let temp = tempfile::tempdir().unwrap();
+        let terminal = populated_terminal(test_core(temp.path()));
+        terminal
+            .feed_output(&output(2, "\x1b[?2026h\x1b[2J\x1b[H\x1b[?25lredrawn"))
+            .unwrap();
+        let first = sync_deadline(&terminal).expect("the redraw is held");
+        std::thread::sleep(Duration::from_millis(75));
+        terminal
+            .feed_output(&output(3, "\x1b[?2026h\r\n> \x1b[?25h"))
+            .unwrap();
+        let extended = sync_deadline(&terminal).expect("the redraw is still held");
+        assert!(extended > first);
+
+        std::thread::sleep(
+            first.saturating_duration_since(Instant::now()) + Duration::from_millis(20),
+        );
+        let after_first = screen(&terminal);
+        if Instant::now() < extended {
+            assert_eq!(after_first[..2], ["old prompt", "old output"]);
+        }
+
+        assert!(wait_until(Duration::from_secs(2), || screen(&terminal)[0] == "redrawn"));
+        assert_eq!(screen(&terminal)[..2], ["redrawn", ">"]);
     }
 }
