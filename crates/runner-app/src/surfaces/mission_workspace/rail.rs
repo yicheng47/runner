@@ -459,7 +459,7 @@ impl MissionWorkspace {
                         div()
                             .min_w(px(0.))
                             .flex_1()
-                            .font_family(theme::SYSTEM_MONOSPACE_FONT)
+                            .font_family(theme::UI_MONOSPACE_FONT)
                             .text_size(theme::text_meta())
                             .text_color(theme::muted())
                             .child(mission.id.clone()),
@@ -519,7 +519,7 @@ impl MissionWorkspace {
                             .px_2()
                             .py_2()
                             .cursor_pointer()
-                            .font_family(theme::SYSTEM_MONOSPACE_FONT)
+                            .font_family(theme::UI_MONOSPACE_FONT)
                             .text_size(theme::text_meta())
                             .text_color(theme::text())
                             .hover(|button| button.border_color(theme::border_strong()))

@@ -371,7 +371,7 @@ impl UpdateDialog {
                             )
                             .child(
                                 div()
-                                    .font_family(theme::SYSTEM_MONOSPACE_FONT)
+                                    .font_family(theme::UI_MONOSPACE_FONT)
                                     .text_size(theme::text_meta())
                                     .text_color(theme::muted())
                                     .child(progress_caption(received, total)),

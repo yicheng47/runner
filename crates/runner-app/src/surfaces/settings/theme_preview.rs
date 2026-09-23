@@ -51,6 +51,7 @@ pub(crate) struct PreviewPane {
     pub mode: PreviewMode,
     pub colors: ThemeColors,
     pub palette: TerminalPalette,
+    pub font_family: &'static str,
     pub caption: SharedString,
     pub active: bool,
 }
@@ -77,6 +78,7 @@ fn preview_pane(pane: PreviewPane, on_pick: PickHandler) -> AnyElement {
         mode,
         colors,
         palette,
+        font_family,
         caption,
         active,
     } = pane;
@@ -113,7 +115,7 @@ fn preview_pane(pane: PreviewPane, on_pick: PickHandler) -> AnyElement {
                     pane
                 })
                 .child(sidebar_strip(&colors))
-                .child(main_area(mode, &colors, &palette)),
+                .child(main_area(mode, &colors, &palette, font_family)),
         )
         .child(
             div()
@@ -150,7 +152,12 @@ fn sidebar_strip(colors: &ThemeColors) -> Div {
         .child(bar(50., 6., colors.fg_3))
 }
 
-fn main_area(mode: PreviewMode, colors: &ThemeColors, palette: &TerminalPalette) -> Div {
+fn main_area(
+    mode: PreviewMode,
+    colors: &ThemeColors,
+    palette: &TerminalPalette,
+    font_family: &'static str,
+) -> Div {
     let lines = [
         ("❯ cargo test -p runner-backend", palette.foreground),
         ("   Compiling runner-backend v0.8.6", palette.ansi[8]),
@@ -198,7 +205,7 @@ fn main_area(mode: PreviewMode, colors: &ThemeColors, palette: &TerminalPalette)
                 .p(rems(8. / 16.))
                 .flex()
                 .flex_col()
-                .font_family(theme::SYSTEM_MONOSPACE_FONT)
+                .font_family(font_family)
                 .text_size(theme::text_meta())
                 .font_weight(FontWeight::NORMAL)
                 .line_height(rems(15. / 16.))

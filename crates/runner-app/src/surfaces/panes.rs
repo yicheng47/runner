@@ -1040,8 +1040,7 @@ impl NativeRoot {
                                         .child(
                                             div()
                                                 .when(identity_monospace, |identity| {
-                                                    identity
-                                                        .font_family(theme::SYSTEM_MONOSPACE_FONT)
+                                                    identity.font_family(theme::UI_MONOSPACE_FONT)
                                                 })
                                                 .text_size(theme::text_title())
                                                 .font_weight(FontWeight::SEMIBOLD)
@@ -1078,7 +1077,7 @@ impl NativeRoot {
                                                     div()
                                                         .flex_1()
                                                         .min_w(px(0.))
-                                                        .font_family(theme::SYSTEM_MONOSPACE_FONT)
+                                                        .font_family(theme::UI_MONOSPACE_FONT)
                                                         .text_color(theme::muted())
                                                         .child(
                                                             detail
@@ -2956,7 +2955,7 @@ fn side_panel_value(value: String) -> AnyElement {
     div()
         .flex_1()
         .min_w(px(0.))
-        .font_family(theme::SYSTEM_MONOSPACE_FONT)
+        .font_family(theme::UI_MONOSPACE_FONT)
         .text_color(theme::muted())
         .child(value)
         .into_any_element()
