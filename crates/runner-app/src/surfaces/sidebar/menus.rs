@@ -359,13 +359,9 @@ pub(super) fn tab_menu_entries(
     }
     if !chat_session_ids.is_empty() {
         entries.push((
-            UiMenuItem::new(if archive_all {
-                "Archive all"
-            } else {
-                "Archive"
-            })
-            .icon("archive.svg")
-            .destructive(true),
+            UiMenuItem::new("Archive")
+                .icon("archive.svg")
+                .destructive(true),
             SidebarMenuAction::ArchiveTab {
                 tab_id: node_id.to_owned(),
                 session_ids: if archive_all {

@@ -547,7 +547,7 @@ fn tab_and_mission_menus_have_the_trimmed_item_lists() {
     );
     assert_eq!(
         menu_labels(&multi_pane_entries),
-        ["Pin", "Rename tab", "Archive all"]
+        ["Pin", "Rename tab", "Archive"]
     );
     assert!(multi_pane_entries[2].0.destructive);
 
