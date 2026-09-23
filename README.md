@@ -288,4 +288,4 @@ Runner is written and maintained by **Yicheng Wang** (Jason Wang, 王逸成) —
 
 ## License
 
-GPL-3.0-only. Copyright (C) 2026 Yicheng Wang (Jason Wang). Runner is free software: you can use it for anything, including at work, and redistribute or modify it under the terms of the GNU General Public License v3.0 — modified versions you distribute must stay under the same license (see `LICENSE`). Versions released before 2026-08-22 were published under MIT and remain so.
+MIT. Copyright (c) 2026 Yicheng Wang (Jason Wang). You can use, modify, and redistribute Runner for anything, including at work and inside closed-source products, as long as you keep the copyright notice (see `LICENSE`). Versions released from 2026-08-22 through 2026-09-22 were published under GPL-3.0-only and remain available under that license.

@@ -288,4 +288,4 @@ Runner 由 **王逸成**（Yicheng Wang / Jason Wang）编写和维护，GitHub 
 
 ## 许可证
 
-GPL-3.0-only。Copyright (C) 2026 Yicheng Wang (Jason Wang)。Runner 是自由软件：你可以将它用于任何用途，包括工作，并可在 GNU 通用公共许可证 v3.0 的条款下再分发或修改，但你分发的修改版本必须保持同一许可证（见 `LICENSE`）。2026-08-22 之前发布的版本以 MIT 许可证发布，并保持不变。
+MIT。Copyright (c) 2026 Yicheng Wang (Jason Wang)。你可以将 Runner 用于任何用途，包括工作场景和闭源产品，并可自由修改和再分发，只需保留版权声明（见 `LICENSE`）。2026-08-22 至 2026-09-22 期间发布的版本以 GPL-3.0-only 许可证发布，并继续以该许可证提供。
