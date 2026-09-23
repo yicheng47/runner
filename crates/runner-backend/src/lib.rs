@@ -27,6 +27,7 @@ pub mod shell_path;
 pub mod skills;
 #[cfg(test)]
 pub(crate) mod test_support;
+pub mod usage;
 #[cfg(target_os = "macos")]
 pub mod wake;
 pub mod windows;
@@ -56,6 +57,7 @@ pub struct AppCore {
     pub runtime_shell_env: runtime_status::SharedShellEnv,
     /// Current login-shell probe state and diagnostics for agent availability.
     pub runtime_discovery: runtime_status::SharedDiscoveryState,
+    pub usage: Arc<usage::UsageService>,
     /// Live per-mission event-bus watchers. Mounted by `mission_start` once
     /// the opening events are durable; unmounted by `mission_stop` and on
     /// any rollback path.

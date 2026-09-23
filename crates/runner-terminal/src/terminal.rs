@@ -1459,6 +1459,7 @@ mod tests {
             ),
             runtime_shell_env,
             runtime_discovery,
+            usage: Arc::new(runner_backend::usage::UsageService::default()),
             buses: runner_backend::event_bus::BusRegistry::new(),
             routers: runner_backend::router::RouterRegistry::new(),
             mission_grid_hint: Arc::new(std::sync::Mutex::new(None)),

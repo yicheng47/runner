@@ -5015,6 +5015,7 @@ dependencies = [
  "runner-core",
  "rusqlite",
  "schemars",
+ "security-framework",
  "serde",
  "serde_json",
  "serde_rusqlite",
@@ -5027,6 +5028,7 @@ dependencies = [
  "uuid",
  "vte",
  "windows-sys 0.61.2",
+ "zed-reqwest",
 ]
 
 [[package]]

@@ -141,6 +141,7 @@ pub fn boot_core(
         sessions,
         runtime_shell_env: Arc::clone(&runtime_shell_env),
         runtime_discovery: Arc::clone(&runtime_discovery),
+        usage: Arc::new(runner_backend::usage::UsageService::default()),
         buses: event_bus::BusRegistry::new(),
         routers: runner_backend::router::RouterRegistry::new(),
         mission_grid_hint: Arc::new(std::sync::Mutex::new(None)),
@@ -176,6 +177,7 @@ pub fn boot_core(
     }
     session::pty_runtime::cleanup_orphan_processes_on_startup(&pool)
         .context("clean up orphan PTY processes")?;
+    core.usage.set_enabled(model_runtimes.clone());
     runtime_status::start_background_discovery(
         event_channel,
         Arc::clone(&pool),
@@ -184,6 +186,8 @@ pub fn boot_core(
         false,
         model_runtimes,
     );
+    #[cfg(not(test))]
+    core.usage.start_scheduler(core.clone());
     Ok(core)
 }
 
@@ -443,6 +447,7 @@ mod tests {
             ),
             runtime_shell_env,
             runtime_discovery,
+            usage: Arc::new(runner_backend::usage::UsageService::default()),
             buses: event_bus::BusRegistry::new(),
             routers: runner_backend::router::RouterRegistry::new(),
             mission_grid_hint: Arc::new(std::sync::Mutex::new(None)),

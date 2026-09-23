@@ -61,6 +61,7 @@ pub(crate) fn test_core_in(app_data_dir: PathBuf) -> AppCore {
         ),
         runtime_shell_env,
         runtime_discovery,
+        usage: Arc::new(crate::usage::UsageService::default()),
         buses: BusRegistry::new(),
         routers: RouterRegistry::new(),
         mission_grid_hint: Arc::new(std::sync::Mutex::new(None)),
