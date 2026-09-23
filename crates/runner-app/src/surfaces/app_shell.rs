@@ -1,4 +1,5 @@
 use gpui::{canvas, deferred, svg, BoxShadow, FontWeight, WindowAppearance, WindowControlArea};
+use runner_app::ui::button::spinner;
 use runner_app::ui::menu::popup_layer;
 use runner_backend::model::Runtime;
 use runner_backend::usage::{
@@ -147,8 +148,11 @@ fn reset_label(
 fn unavailable_line(reason: Option<UnavailableReason>, runtime: Runtime) -> &'static str {
     match reason {
         Some(UnavailableReason::SignIn) => "Sign in to Claude Code to see usage.",
-        Some(UnavailableReason::KeychainDenied | UnavailableReason::KeychainUnavailable) => {
+        Some(UnavailableReason::KeychainDenied) => {
             "Runner was not allowed to read Claude Code's sign-in from the Keychain."
+        }
+        Some(UnavailableReason::KeychainUnavailable) => {
+            "Couldn't read Claude Code's sign-in from the Keychain."
         }
         Some(UnavailableReason::ClaudeUnreachable) => "Couldn't reach Anthropic.",
         Some(UnavailableReason::CodexNoAnswer) => "Codex didn't answer.",
@@ -237,11 +241,16 @@ fn usage_section(
     runtime: Runtime,
     usage: Option<&AgentUsage>,
     reason: Option<UnavailableReason>,
+    refreshing: bool,
     now: chrono::DateTime<chrono::Utc>,
 ) -> AnyElement {
     let name = match runtime {
         Runtime::ClaudeCode => "Claude Code",
         _ => "Codex",
+    };
+    let refresh_spinner_id = match runtime {
+        Runtime::ClaudeCode => "usage-claude-refreshing",
+        _ => "usage-codex-refreshing",
     };
     let icon = ChatIcon::for_runtime(runtime.key());
     let rows: Vec<AnyElement> = usage
@@ -261,6 +270,7 @@ fn usage_section(
         .py_3()
         .child(
             div()
+                .w_full()
                 .flex()
                 .items_center()
                 .gap_2()
@@ -275,15 +285,38 @@ fn usage_section(
                         .text_size(theme::text_title())
                         .font_weight(FontWeight::SEMIBOLD)
                         .child(name),
+                )
+                .child(div().flex_1())
+                .children(
+                    (refreshing && usage.is_some())
+                        .then(|| spinner(refresh_spinner_id, 12., theme::muted())),
                 ),
         )
         .children(rows)
-        .children(usage.is_none().then(|| {
-            div()
-                .text_size(theme::text_body())
-                .text_color(theme::muted())
-                .child(unavailable_line(reason, runtime))
-        }))
+        .children(
+            (usage.is_none() && reason.is_none() && refreshing).then(|| {
+                let id = match runtime {
+                    Runtime::ClaudeCode => "usage-claude-checking",
+                    _ => "usage-codex-checking",
+                };
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .text_size(theme::text_body())
+                    .text_color(theme::muted())
+                    .child(spinner(id, 12., theme::muted()))
+                    .child("Checking…")
+            }),
+        )
+        .children(
+            (usage.is_none() && (reason.is_some() || !refreshing)).then(|| {
+                div()
+                    .text_size(theme::text_body())
+                    .text_color(theme::muted())
+                    .child(unavailable_line(reason, runtime))
+            }),
+        )
         .into_any_element()
 }
 
@@ -302,8 +335,8 @@ impl NativeRoot {
             .chain(snapshot.codex.iter())
             .map(|usage| usage.updated_at)
             .max();
-        let age = if snapshot.refreshing && updated.is_none() {
-            "Refreshing…".to_owned()
+        let age = if snapshot.refreshing {
+            "Updating…".to_owned()
         } else if let Some(updated) = updated {
             let minutes = now.signed_duration_since(updated).num_minutes().max(0);
             if minutes == 0 {
@@ -321,20 +354,49 @@ impl NativeRoot {
             .items_center()
             .justify_center()
             .rounded_sm()
-            .cursor_pointer()
-            .hover(|button| button.bg(theme::sidebar_selected()))
-            .on_click(cx.listener(|this, _, _, cx| {
-                let core = this.core(cx).clone();
-                core.usage
-                    .request_refresh(core.clone(), RefreshReason::Button);
-                cx.notify();
-            }))
-            .child(
+            .when(!snapshot.refreshing, |button| {
+                button
+                    .cursor_pointer()
+                    .hover(|button| button.bg(theme::sidebar_selected()))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        let core = this.core(cx).clone();
+                        core.usage
+                            .request_refresh(core.clone(), RefreshReason::Button);
+                        cx.notify();
+                    }))
+            })
+            .child(if snapshot.refreshing {
+                spinner("usage-refresh-spinner", 14., theme::muted())
+            } else {
                 svg()
                     .path("refresh-cw.svg")
                     .size(px(14.))
-                    .text_color(theme::muted()),
-            );
+                    .text_color(theme::muted())
+                    .into_any_element()
+            });
+        let agent_settings = Tooltip::new(
+            "usage-agent-settings-tooltip",
+            "Agent settings",
+            div()
+                .id("usage-agent-settings")
+                .size(px(24.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded_sm()
+                .cursor_pointer()
+                .hover(|button| button.bg(theme::sidebar_selected()))
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.usage_open = false;
+                    this.enter_settings_route(Some("agents"), window, cx);
+                }))
+                .child(
+                    svg()
+                        .path("settings.svg")
+                        .size(px(14.))
+                        .text_color(theme::muted()),
+                ),
+        );
         let sections: Vec<AnyElement> = [Runtime::ClaudeCode, Runtime::Codex]
             .into_iter()
             .filter(|runtime| {
@@ -346,9 +408,16 @@ impl NativeRoot {
                     runtime,
                     snapshot.claude.as_ref(),
                     snapshot.claude_error,
+                    snapshot.refreshing,
                     now,
                 ),
-                _ => usage_section(runtime, snapshot.codex.as_ref(), snapshot.codex_error, now),
+                _ => usage_section(
+                    runtime,
+                    snapshot.codex.as_ref(),
+                    snapshot.codex_error,
+                    snapshot.refreshing,
+                    now,
+                ),
             })
             .collect();
         div()
@@ -387,44 +456,10 @@ impl NativeRoot {
                             .text_color(theme::muted())
                             .child(age),
                     )
-                    .child(refresh),
+                    .child(refresh)
+                    .child(agent_settings),
             )
             .children(sections)
-            .child(
-                div()
-                    .w_full()
-                    .border_t_1()
-                    .border_color(theme::border())
-                    .pt_2()
-                    .child(
-                        div()
-                            .id("usage-agent-settings")
-                            .ml(rems(-10. / 16.))
-                            .mr(rems(-10. / 16.))
-                            .px(rems(10. / 16.))
-                            .py(rems(6. / 16.))
-                            .flex()
-                            .items_center()
-                            .rounded(rems(4. / 16.))
-                            .cursor_pointer()
-                            .text_size(theme::text_body())
-                            .text_color(theme::muted())
-                            .hover(|row| {
-                                row.bg(theme::sidebar_selected()).text_color(theme::text())
-                            })
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.usage_open = false;
-                                this.enter_settings_route(Some("agents"), window, cx);
-                            }))
-                            .child(div().flex_1().child("Agent settings…"))
-                            .child(
-                                svg()
-                                    .path("chevron-right.svg")
-                                    .size(rems(14. / 16.))
-                                    .text_color(theme::muted()),
-                            ),
-                    ),
-            )
             .into_any_element()
     }
 
