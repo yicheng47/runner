@@ -399,9 +399,12 @@ impl AgentUpdateDialog {
         .detach();
     }
 
+    /// Closing reads this dialog to restore focus, so it waits until the
+    /// update that called `dismiss` has released the dialog.
     fn dismiss(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.phase.dismissible() {
-            (self.close)(window, cx);
+            let close = self.close.clone();
+            window.defer(cx, move |window, cx| close(window, cx));
         }
     }
 
@@ -585,16 +588,18 @@ impl AgentUpdateDialog {
                     ),
             )
             .children(footer.button.map(|label| {
-                Button::new("agent-update-close", label)
-                    .size(ButtonSize::Sm)
-                    .variant(if label == "Done" {
-                        ButtonVariant::Primary
-                    } else {
-                        ButtonVariant::Secondary
-                    })
-                    .on_press(move |window, cx| {
-                        let _ = done.update(cx, |dialog, cx| dialog.dismiss(window, cx));
-                    })
+                div().debug_selector(|| "AGENT_UPDATE_CLOSE".into()).child(
+                    Button::new("agent-update-close", label)
+                        .size(ButtonSize::Sm)
+                        .variant(if label == "Done" {
+                            ButtonVariant::Primary
+                        } else {
+                            ButtonVariant::Secondary
+                        })
+                        .on_press(move |window, cx| {
+                            let _ = done.update(cx, |dialog, cx| dialog.dismiss(window, cx));
+                        }),
+                )
             }))
             .into_any_element()
     }
@@ -917,9 +922,20 @@ mod tests {
         let store = test_store(temp.path(), &mut cx);
         let closes = Rc::new(std::cell::Cell::new(0));
         let counter = Rc::clone(&closes);
+        let dialog_slot: Rc<std::cell::RefCell<Option<Entity<AgentUpdateDialog>>>> = Rc::default();
+        let closing = Rc::clone(&dialog_slot);
         let window = cx.add_window(|window, cx| {
-            let close: CloseHandler = Rc::new(move |_, _| counter.set(counter.get() + 1));
-            Host(cx.new(|cx| AgentUpdateDialog::new(request(), store, close, window, cx)))
+            // Like `NativeRoot::close_agent_update`, the handler reads the
+            // dialog, which panics if it runs while the dialog is updating.
+            let close: CloseHandler = Rc::new(move |window, cx| {
+                if let Some(dialog) = closing.borrow().as_ref() {
+                    dialog.read(cx).restore_focus(window);
+                }
+                counter.set(counter.get() + 1);
+            });
+            let dialog = cx.new(|cx| AgentUpdateDialog::new(request(), store, close, window, cx));
+            *dialog_slot.borrow_mut() = Some(dialog.clone());
+            Host(dialog)
         });
         let host = window.update(&mut cx, |host, _, _| host.0.clone()).unwrap();
         let mut window = VisualTestContext::from_window(window.into(), &cx);
@@ -953,6 +969,19 @@ mod tests {
         window.simulate_keystrokes("escape");
         window.run_until_parked();
         assert_eq!(closes.get(), 2);
+
+        host.update(&mut window, |dialog, cx| {
+            dialog.phase = Phase::Succeeded {
+                version: Some("0.155.0".into()),
+                running_sessions: 0,
+            };
+            cx.notify();
+        });
+        window.run_until_parked();
+        let done = window.debug_bounds("AGENT_UPDATE_CLOSE").unwrap();
+        window.simulate_click(done.center(), Modifiers::default());
+        window.run_until_parked();
+        assert_eq!(closes.get(), 3);
     }
 
     #[test]
