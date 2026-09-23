@@ -17,7 +17,7 @@ Snapshot as of 2026-09-23. The live source is the [GitHub milestones page](https
 | 0.11.2 | Shipped 2026-09-21: Settings → Agents Installed / Not installed split, Codex stuck on Working at an untouched prompt | #617, #687 |
 | 0.11.3 | Shipped 2026-09-22: title-aware Codex status fallback, pi resume with custom session directories, Not installed card layout | #688, #666, #695 |
 | [0.11.x](https://github.com/yicheng47/runner/milestone/1) | Agent maintenance, the Antigravity runtime, and focused follow-through; #686, #694, #697 and #700 have landed for the next patch; plan usage (#706) moved in from 0.12 | #644, #533, #703, #706 |
-| [0.12](https://github.com/yicheng47/runner/milestone/2) | Headline: missions as containers (#562) and session-to-session prompts (#704). Also the role and crew pages, navigation, desktop notifications, and the terminal black-pane fix | #562, #704, #619, #393, #699, #577, #559, #701, #647 |
+| [0.12](https://github.com/yicheng47/runner/milestone/2) | Headline: missions as containers (#562) and session-to-session prompts (#704). Also the role and crew pages, navigation, desktop notifications, the terminal black-pane fix, and the OpenCode runtime | #562, #704, #619, #393, #699, #577, #559, #701, #647, #592 |
 | [0.13](https://github.com/yicheng47/runner/milestone/3) | Session hosting and visibility: local/remote hosts, Activity, shell process status | #645, #552, #586 |
 | [0.14](https://github.com/yicheng47/runner/milestone/4) | Localization and terminal follow-through: live shell cwd, 简体中文 | #575, #565 |
 
@@ -25,7 +25,7 @@ A minor is a change to the model or a new surface; a patch is fixes and follow-t
 
 ## Open work by release
 
-There are 21 open issues: 18 assigned to the four milestones and three deliberately unscheduled. Milestone placement is the release track, not a promise that every issue gates its first release. The `release-blocker` label marks the issues that gate the milestone's .0 release; everything else in the milestone may ship in a patch. Only [#393](https://github.com/yicheng47/runner/issues/393) (role page) and [#699](https://github.com/yicheng47/runner/issues/699) (crew page) gate 0.12.0. [#562](https://github.com/yicheng47/runner/issues/562) (missions as containers) and [#704](https://github.com/yicheng47/runner/issues/704) (session-to-session prompts) stay the release's headline, but Jason narrowed the gate to the two page redesigns on 2026-09-23, the same day he had marked all four. Priority labels are unchanged by the scheduling pass, except [#562](https://github.com/yicheng47/runner/issues/562), raised from P3 to P1 on 2026-09-22 because it changes how crews work, and [#704](https://github.com/yicheng47/runner/issues/704), filed P2 and raised to P1 on 2026-09-23 when Jason made the two 0.12's headline.
+There are 18 open issues: 16 assigned to the four milestones and two deliberately unscheduled. Milestone placement is the release track, not a promise that every issue gates its first release. The `release-blocker` label marks the issues that gate the milestone's .0 release; everything else in the milestone may ship in a patch. Only [#393](https://github.com/yicheng47/runner/issues/393) (role page) and [#699](https://github.com/yicheng47/runner/issues/699) (crew page) gate 0.12.0. [#562](https://github.com/yicheng47/runner/issues/562) (missions as containers) and [#704](https://github.com/yicheng47/runner/issues/704) (session-to-session prompts) stay the release's headline, but Jason narrowed the gate to the two page redesigns on 2026-09-23, the same day he had marked all four. Priority labels are unchanged by the scheduling pass, except [#562](https://github.com/yicheng47/runner/issues/562), raised from P3 to P1 on 2026-09-22 because it changes how crews work, and [#704](https://github.com/yicheng47/runner/issues/704), filed P2 and raised to P1 on 2026-09-23 when Jason made the two 0.12's headline.
 
 | Release | Issue | Reason and ordering |
 | --- | --- | --- |
@@ -42,6 +42,7 @@ There are 21 open issues: 18 assigned to the four milestones and three deliberat
 | 0.12 | [#559](https://github.com/yicheng47/runner/issues/559) command palette | Expose the settled mission and role actions through the keyboard |
 | 0.12 | [#701](https://github.com/yicheng47/runner/issues/701) desktop notifications | A popup Runner draws itself, after Zed's agent notification; app-side, no backend changes |
 | 0.12 | [#647](https://github.com/yicheng47/runner/issues/647) terminal goes black after sidebar toggle | Moved from 0.11 at Jason's request because of the change's size |
+| 0.12 | [#592](https://github.com/yicheng47/runner/issues/592) OpenCode runtime | P2; moved from the backlog on 2026-09-23, the next runtime after Antigravity (#644) |
 | 0.13 | [#645](https://github.com/yicheng47/runner/issues/645) session host | Local host first, then ssh remotes and the Windows host |
 | 0.13 | [#552](https://github.com/yicheng47/runner/issues/552) Activity / Needs you view | Consolidate the status of sessions across missions and hosts |
 | 0.13 | [#586](https://github.com/yicheng47/runner/issues/586) shell process status | Keep process observation on the host that owns the PTY |
@@ -60,7 +61,7 @@ There are 21 open issues: 18 assigned to the four milestones and three deliberat
 
 ## Backlog
 
-These deferrals were explicitly preserved with Jason on 2026-09-21; #644 left the list for 0.11 on 2026-09-22. They have no release date or milestone; they are scheduled by setting a milestone, not by editing this file.
+These deferrals were explicitly preserved with Jason on 2026-09-21; #644 left the list for 0.11 on 2026-09-22, and #592 for 0.12 on 2026-09-23. They have no release date or milestone; they are scheduled by setting a milestone, not by editing this file.
 
-- **P2:** [#592](https://github.com/yicheng47/runner/issues/592) OpenCode runtime; [#630](https://github.com/yicheng47/runner/issues/630) token ledger and per-subscription quota.
+- **P2:** [#630](https://github.com/yicheng47/runner/issues/630) token ledger and per-subscription quota.
 - **P3:** [#582](https://github.com/yicheng47/runner/issues/582) split the files that outgrew the 478 audit; time it around feature work on the affected files.
