@@ -35,7 +35,7 @@ One design for every state (frame `z08zW`), 340px wide.
 
 - **Header.** "Usage", "updated 2m ago", and a refresh button.
 - **One section per agent,** in the order Claude Code, Codex, each with its mark and name. Under it, one row per window: its name (5 hours, Week, Fable · week), a bar, the percent used, and "resets 3h 10m". The bar fills in `text-mid`, `warn` at 80% and `danger` at 100%, matching the icon.
-- **A version line per agent,** from 533: the installed version, then either "up to date" or "0.153.4 → 0.155.0 · Update available" with an **Update** button that opens 533's update pane. Until 533 lands, the line shows the installed version only.
+- **A version line per agent arrives with 533.** That work will show the installed version and update availability with an **Update** button. The popover ships without the line until then; 533 owns the version probe.
 - **Unavailable.** An agent whose usage cannot be read keeps its section with one line saying why, instead of window rows: "Sign in to Claude Code to see usage.", "Runner was not allowed to read Claude Code's sign-in from the Keychain.", "Couldn't reach Anthropic." or "Codex didn't answer.". The icon ignores unavailable agents when it picks its colour.
 - **Footer.** "Agent settings…", which opens Settings → Agents.
 
@@ -106,4 +106,4 @@ A `usage` module in `runner-backend`: the two fetchers, the cache, the schedule,
 - [ ] Denying the Keychain prompt shows the Keychain line and does not prompt again in that run.
 - [ ] A failed refresh keeps the last numbers with their age, and an agent that has never answered shows its unavailable line.
 - [ ] Refreshes happen at launch, every 15 minutes, on the button, and on opening a popover older than 5 minutes, and never more often.
-- [ ] With 533 landed, the Update button opens the update pane for that agent.
+- [ ] After 533 lands, the version line and Update button open the update pane for that agent.
