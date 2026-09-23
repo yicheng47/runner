@@ -100,6 +100,8 @@ Work stays inside its own worktree. When several are live at once, treat the oth
 
 A crew mission ends in an open pull request, never a merge. The crew works on its own branch in its own worktree, commits, pushes, opens the PR against `main`, and drives CI green on both platforms; then it stops. It does not merge the PR, delete its branch or worktree, or cut a nightly or release. Jason reviews the PR and does the final merge. Every mission brief states this in its authorization section, and a crew whose brief is silent on it follows this rule anyway.
 
+A mission runs in its worktree. Before starting it, create the worktree as described under Worktrees and commit the brief on its branch; then start the mission with the worktree as its directory, `runner mission start --crew <crew> --cwd <repo>/.worktrees/<flattened-branch> …`, not `--project runner`. Every slot's agent and shell then start in the worktree instead of the root checkout, the mission still lands under the runner project because the project is inferred from the directory, and the brief names the same path.
+
 ## Notes For Agent Runtimes
 
 This repository is intentionally agent-agnostic. Claude Code, Codex, or any
