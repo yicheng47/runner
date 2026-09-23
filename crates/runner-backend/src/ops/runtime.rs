@@ -761,6 +761,5 @@ mod tests {
         assert_eq!(spec.initial_size, Some((90, 28)));
 
         assert!(runtime_update_spawn_spec(&state, Runtime::Trae, (90, 28)).is_err());
-        assert!(runtime_update_spawn_spec(&state, Runtime::Pi, (90, 28)).is_err());
     }
 }

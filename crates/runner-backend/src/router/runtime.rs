@@ -78,8 +78,8 @@ const RUNTIME_DEFINITIONS: &[RuntimeDefinition] = &[
         command: "pi",
         native_fork: true,
         skills_dirs: &[".pi/agent/skills", ".agents/skills"],
-        update_args: &[],
-        npm_package: None,
+        update_args: &["update"],
+        npm_package: Some("@earendil-works/pi-coding-agent"),
     },
     RuntimeDefinition {
         name: Runtime::Trae,

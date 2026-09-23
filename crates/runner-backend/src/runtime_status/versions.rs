@@ -1065,7 +1065,7 @@ mod tests {
         assert!(updatable(Runtime::Codex));
         assert!(updatable(Runtime::ClaudeCode));
         assert!(updatable(Runtime::Copilot));
+        assert!(updatable(Runtime::Pi));
         assert!(!updatable(Runtime::Trae));
-        assert!(!updatable(Runtime::Pi));
     }
 }
