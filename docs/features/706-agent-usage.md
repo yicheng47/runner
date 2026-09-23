@@ -33,15 +33,17 @@ Decided with Jason on 2026-09-23 after five candidates in the design file's hist
 
 One design for every state (frame `z08zW`), 340px wide.
 
-- **Header.** "Usage", "updated 2m ago", and a refresh button.
+- **Header.** "Usage", "updated 2m ago", a refresh button, and an Agent settings gear button at the far right. The gear's tooltip says "Agent settings"; clicking it closes the popover and opens Settings → Agents.
 - **One section per agent,** in the order Claude Code, Codex, each with its mark and name. Under it, one row per window: its name (5 hours, Week, Fable · week), a bar, the percent used, and "resets 3h 10m". The bar fills in `text-mid`, `warn` at 80% and `danger` at 100%, matching the icon.
 - **A version line per agent arrives with 533.** That work will show the installed version and update availability with an **Update** button. The popover ships without the line until then; 533 owns the version probe.
-- **Unavailable.** An agent whose usage cannot be read keeps its section with one line saying why, instead of window rows: "Sign in to Claude Code to see usage.", "Runner was not allowed to read Claude Code's sign-in from the Keychain.", "Couldn't reach Anthropic." or "Codex didn't answer.". The icon ignores unavailable agents when it picks its colour.
-- **Footer.** "Agent settings…", which opens Settings → Agents.
+- **Unavailable.** An agent whose usage cannot be read keeps its section with one line saying why, instead of window rows: "Sign in to Claude Code to see usage.", "Runner was not allowed to read Claude Code's sign-in from the Keychain.", "Couldn't read Claude Code's sign-in from the Keychain.", "Couldn't reach Anthropic." or "Codex didn't answer.". The icon ignores unavailable agents when it picks its colour.
+- **No footer.** The popover ends with the last agent section; Agent settings is in the header.
+
+**Refresh states** (frame `V9E2Mb`): While refreshing, the header age reads "Updating…" and the refresh button shows the app's turning spinner and cannot be clicked. Each agent section with cached numbers shows a small spinner at the right of its heading without moving its rows. The spinners stay visible for at least 400 ms after a refresh starts. Previous bars and numbers remain until the new answer arrives. On first open with no data, each agent section shows a small spinner and "Checking…" instead of window rows. The Settings-row gauge never animates, including during scheduled refreshes.
 
 ## Data
 
-Both fetches run off the UI thread with a 10-second timeout, through the login-shell proxy environment Settings → Agents already captures, and against the effective executable Settings → Agents resolves.
+Both agent fetches run off the UI thread with a 10-second network or Codex timeout, through the login-shell proxy environment Settings → Agents already captures, and against the effective executable Settings → Agents resolves. The macOS Keychain command has its own two-minute timeout to allow a system prompt to be answered.
 
 ### Codex
 
@@ -52,9 +54,9 @@ Both fetches run off the UI thread with a 10-second timeout, through the login-s
 ### Claude Code
 
 - `GET https://api.anthropic.com/api/oauth/usage` with `Authorization: Bearer <token>` and `anthropic-beta: oauth-2025-04-20`. The answer carries `five_hour` and `seven_day` windows and per-model weekly limits (the `limits` list, `kind: weekly_scoped`, Fable today), each with a percent used and `resets_at`.
-- **The token is the one Claude Code stores.** On macOS it is the Keychain generic password `Claude Code-credentials`. On Windows and Linux it is `~/.claude/.credentials.json`. Both hold JSON with `claudeAiOauth.accessToken`.
+- **The token is the one Claude Code stores.** On macOS Runner reads the Keychain generic password `Claude Code-credentials` through `/usr/bin/security find-generic-password -s 'Claude Code-credentials' -a <account> -w`, the same tool Claude Code uses. The account is `$USER` when it contains only ASCII letters, digits, `.`, `_`, or `-`, and `claude-code-user` otherwise. On Windows and Linux Runner reads `~/.claude/.credentials.json`. Both hold JSON with `claudeAiOauth.accessToken`.
 - **Runner only reads the token.** It never refreshes, writes or caches it. A refresh can rotate the refresh token and sign Claude Code out. A rejected token shows "Sign in to Claude Code to see usage." and recovers on the next fetch after Claude Code has refreshed its own login.
-- **The first Keychain read on macOS shows a system prompt** asking to let Runner read Claude Code's item. "Always Allow" makes it silent. "Deny" shows the Keychain line above, and Runner does not ask again in that app run.
+- **No Keychain prompt is expected on macOS** because the `security` tool Claude Code uses is already trusted by the item. If macOS ever asks, the prompt names `security`; "Always Allow" makes it permanent. A user cancel or denial shows the Keychain denial line and Runner does not ask again in that app run. A missing item shows the sign-in line; other Keychain errors are retryable.
 - **The endpoint is undocumented.** It is what Claude Code's `/usage` calls, and it can change without notice. The parser takes known fields and ignores the rest, and a shape it cannot read shows the agent as unavailable. There is no fallback that reads `/usage` from a hidden terminal.
 
 ### When it refreshes
