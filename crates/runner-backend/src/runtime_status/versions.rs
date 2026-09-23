@@ -7,7 +7,7 @@
 //! to showing the version alone.
 
 use std::cmp::Ordering;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -31,7 +31,10 @@ pub(crate) struct VersionDiscovery {
     probing: HashMap<Runtime, (String, u64)>,
     next_probe: u64,
     latest: HashMap<Runtime, Latest>,
-    checking: HashSet<Runtime>,
+    /// The newest npm check started per runtime: its tag and generation.
+    /// A check for another tag supersedes it, like an override does a probe.
+    checking: HashMap<Runtime, (&'static str, u64)>,
+    next_check: u64,
     /// A check asked for while discovery was still resolving executables;
     /// `true` when it was forced. It runs once discovery completes.
     deferred_latest: Option<bool>,
@@ -114,24 +117,36 @@ impl VersionDiscovery {
         self.installed.insert(runtime, probe.clone()) != Some(probe)
     }
 
+    /// Starts an npm check of `tag` unless one for it is already running or,
+    /// without `force`, answered within the cache window. Returns the check's
+    /// generation, and whether an answer from another tag was dropped: once
+    /// a runtime asks for a new tag, the old tag's answer no longer shows.
     fn begin_latest(
         &mut self,
         runtime: Runtime,
         tag: &'static str,
         force: bool,
         now: Instant,
-    ) -> bool {
-        if self.checking.contains(&runtime)
-            || (!force
-                && self.latest.get(&runtime).is_some_and(|latest| {
-                    latest.tag == tag
-                        && now.saturating_duration_since(latest.fetched_at) < LATEST_TTL
-                }))
-        {
-            return false;
+    ) -> (Option<u64>, bool) {
+        let dropped = self
+            .latest
+            .get(&runtime)
+            .is_some_and(|latest| latest.tag != tag)
+            && self.latest.remove(&runtime).is_some();
+        let running = self
+            .checking
+            .get(&runtime)
+            .is_some_and(|(running, _)| *running == tag);
+        let fresh = self
+            .latest
+            .get(&runtime)
+            .is_some_and(|latest| now.saturating_duration_since(latest.fetched_at) < LATEST_TTL);
+        if running || (!force && fresh) {
+            return (None, dropped);
         }
-        self.checking.insert(runtime);
-        true
+        self.next_check += 1;
+        self.checking.insert(runtime, (tag, self.next_check));
+        (Some(self.next_check), dropped)
     }
 
     /// A failed check forgets the previous answer, so the row falls back to
@@ -139,10 +154,18 @@ impl VersionDiscovery {
     fn finish_latest(
         &mut self,
         runtime: Runtime,
+        generation: u64,
         tag: &'static str,
         version: Option<String>,
         now: Instant,
     ) -> bool {
+        if self
+            .checking
+            .get(&runtime)
+            .is_none_or(|(_, newest)| *newest != generation)
+        {
+            return false;
+        }
         self.checking.remove(&runtime);
         let Some(version) = version else {
             return self.latest.remove(&runtime).is_some();
@@ -385,7 +408,8 @@ fn request_latest_with(
 }
 
 /// One cached npm check with the fetch passed in, so tests stub the network.
-/// Returns whether the known latest version changed.
+/// Returns whether the shown latest version changed. A check superseded by a
+/// newer one, for another tag or forced, is discarded.
 fn check_latest(
     discovery: &SharedDiscoveryState,
     runtime: Runtime,
@@ -394,19 +418,25 @@ fn check_latest(
     now: Instant,
     fetch: impl FnOnce() -> Option<String>,
 ) -> bool {
-    if !discovery
+    let Ok((generation, dropped)) = discovery
         .write()
-        .is_ok_and(|mut state| state.versions.begin_latest(runtime, tag, force, now))
-    {
+        .map(|mut state| state.versions.begin_latest(runtime, tag, force, now))
+    else {
         return false;
-    }
+    };
+    let Some(generation) = generation else {
+        return dropped;
+    };
     let version = fetch();
     if version.is_none() {
         log::debug!("runtime latest check failed: runtime={runtime} tag={tag}");
     }
-    discovery
-        .write()
-        .is_ok_and(|mut state| state.versions.finish_latest(runtime, tag, version, now))
+    let finished = discovery.write().is_ok_and(|mut state| {
+        state
+            .versions
+            .finish_latest(runtime, generation, tag, version, now)
+    });
+    dropped || finished
 }
 
 /// The npm dist-tag a runtime's own updater follows. Claude Code follows the
@@ -659,7 +689,7 @@ mod tests {
             state.versions.installed(Runtime::Codex, "/a/codex"),
             Some("0.153.4")
         );
-        assert!(!state.versions.checking.contains(&Runtime::Codex));
+        assert!(!state.versions.checking.contains_key(&Runtime::Codex));
     }
 
     #[test]
@@ -732,15 +762,81 @@ mod tests {
     }
 
     #[test]
+    fn a_channel_switch_supersedes_a_check_in_flight() {
+        let discovery = discovery();
+        let now = Instant::now();
+        let available = |discovery: &SharedDiscoveryState, installed: &str| {
+            discovery
+                .read()
+                .unwrap()
+                .versions
+                .available(Runtime::ClaudeCode, Some(installed))
+                .map(str::to_owned)
+        };
+        assert!(check_latest(
+            &discovery,
+            Runtime::ClaudeCode,
+            "latest",
+            false,
+            now,
+            || Some("2.1.280".into())
+        ));
+        assert_eq!(available(&discovery, "2.1.267").as_deref(), Some("2.1.280"));
+
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let in_flight = {
+            let discovery = Arc::clone(&discovery);
+            std::thread::spawn(move || {
+                check_latest(&discovery, Runtime::ClaudeCode, "latest", true, now, || {
+                    entered_tx.send(()).unwrap();
+                    release_rx.recv().unwrap();
+                    Some("2.1.281".into())
+                })
+            })
+        };
+        entered_rx.recv().unwrap();
+
+        assert!(check_latest(
+            &discovery,
+            Runtime::ClaudeCode,
+            "stable",
+            false,
+            now,
+            || {
+                assert_eq!(
+                    available(&discovery, "2.1.267"),
+                    None,
+                    "the latest-tag answer hides once stable is asked for"
+                );
+                Some("2.1.267".into())
+            }
+        ));
+        assert_eq!(available(&discovery, "2.1.267"), None);
+
+        release_tx.send(()).unwrap();
+        assert!(
+            !in_flight.join().unwrap(),
+            "the latest-tag check was superseded"
+        );
+        assert_eq!(available(&discovery, "2.1.267"), None);
+        let state = discovery.read().unwrap();
+        let latest = &state.versions.latest[&Runtime::ClaudeCode];
+        assert_eq!((latest.tag, latest.version.as_str()), ("stable", "2.1.267"));
+        assert!(state.versions.checking.is_empty());
+    }
+
+    #[test]
     fn a_check_in_flight_is_not_started_twice() {
         let discovery = discovery();
         let now = Instant::now();
-        assert!(discovery.write().unwrap().versions.begin_latest(
-            Runtime::Codex,
-            "latest",
-            true,
-            now
-        ));
+        assert!(discovery
+            .write()
+            .unwrap()
+            .versions
+            .begin_latest(Runtime::Codex, "latest", true, now)
+            .0
+            .is_some());
         assert!(!check_latest(
             &discovery,
             Runtime::Codex,
