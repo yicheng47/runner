@@ -398,20 +398,27 @@ fn request_latest_with(
         std::thread::spawn(move || {
             let env = shell_env.read().map(|env| env.clone()).unwrap_or_default();
             let tag = dist_tag(runtime);
-            if check_latest(&discovery, runtime, tag, force, Instant::now(), || {
-                fetch(&env, package, tag)
-            }) {
-                events.emit("runtime/changed", &());
-            }
+            check_latest(
+                &discovery,
+                &events,
+                runtime,
+                tag,
+                force,
+                Instant::now(),
+                || fetch(&env, package, tag),
+            );
         });
     }
 }
 
 /// One cached npm check with the fetch passed in, so tests stub the network.
-/// Returns whether the shown latest version changed. A check superseded by a
-/// newer one, for another tag or forced, is discarded.
+/// Emits `runtime/changed` whenever the shown answer changes: at once when an
+/// answer from another tag is dropped, before any network I/O, and again when
+/// the new answer lands. Returns whether anything changed. A check superseded
+/// by a newer one, for another tag or forced, is discarded.
 fn check_latest(
     discovery: &SharedDiscoveryState,
+    events: &EventChannel,
     runtime: Runtime,
     tag: &'static str,
     force: bool,
@@ -424,6 +431,9 @@ fn check_latest(
     else {
         return false;
     };
+    if dropped {
+        events.emit("runtime/changed", &());
+    }
     let Some(generation) = generation else {
         return dropped;
     };
@@ -436,6 +446,9 @@ fn check_latest(
             .versions
             .finish_latest(runtime, generation, tag, version, now)
     });
+    if finished {
+        events.emit("runtime/changed", &());
+    }
     dropped || finished
 }
 
@@ -589,6 +602,7 @@ mod tests {
         };
         assert!(check_latest(
             &discovery,
+            &EventChannel::new(),
             Runtime::Codex,
             "latest",
             false,
@@ -601,6 +615,7 @@ mod tests {
         let later = start + Duration::from_secs(5 * 60 * 60);
         assert!(!check_latest(
             &discovery,
+            &EventChannel::new(),
             Runtime::Codex,
             "latest",
             false,
@@ -611,6 +626,7 @@ mod tests {
 
         assert!(check_latest(
             &discovery,
+            &EventChannel::new(),
             Runtime::Codex,
             "latest",
             true,
@@ -623,6 +639,7 @@ mod tests {
         let expired = later + LATEST_TTL;
         assert!(!check_latest(
             &discovery,
+            &EventChannel::new(),
             Runtime::Codex,
             "latest",
             false,
@@ -638,6 +655,7 @@ mod tests {
         let now = Instant::now();
         assert!(!check_latest(
             &discovery,
+            &EventChannel::new(),
             Runtime::Codex,
             "latest",
             false,
@@ -668,6 +686,7 @@ mod tests {
         }
         assert!(check_latest(
             &discovery,
+            &EventChannel::new(),
             Runtime::Codex,
             "latest",
             true,
@@ -677,6 +696,7 @@ mod tests {
         assert_eq!(available(&discovery, "0.153.4").as_deref(), Some("0.155.0"));
         assert!(check_latest(
             &discovery,
+            &EventChannel::new(),
             Runtime::Codex,
             "latest",
             true,
@@ -729,6 +749,7 @@ mod tests {
         };
         assert!(check_latest(
             &discovery,
+            &EventChannel::new(),
             Runtime::ClaudeCode,
             "latest",
             false,
@@ -740,6 +761,7 @@ mod tests {
         let fetched = std::cell::Cell::new(false);
         assert!(check_latest(
             &discovery,
+            &EventChannel::new(),
             Runtime::ClaudeCode,
             "stable",
             false,
@@ -753,6 +775,7 @@ mod tests {
         assert_eq!(available("2.1.267"), None);
         assert!(!check_latest(
             &discovery,
+            &EventChannel::new(),
             Runtime::ClaudeCode,
             "stable",
             false,
@@ -775,6 +798,7 @@ mod tests {
         };
         assert!(check_latest(
             &discovery,
+            &EventChannel::new(),
             Runtime::ClaudeCode,
             "latest",
             false,
@@ -788,17 +812,26 @@ mod tests {
         let in_flight = {
             let discovery = Arc::clone(&discovery);
             std::thread::spawn(move || {
-                check_latest(&discovery, Runtime::ClaudeCode, "latest", true, now, || {
-                    entered_tx.send(()).unwrap();
-                    release_rx.recv().unwrap();
-                    Some("2.1.281".into())
-                })
+                check_latest(
+                    &discovery,
+                    &EventChannel::new(),
+                    Runtime::ClaudeCode,
+                    "latest",
+                    true,
+                    now,
+                    || {
+                        entered_tx.send(()).unwrap();
+                        release_rx.recv().unwrap();
+                        Some("2.1.281".into())
+                    },
+                )
             })
         };
         entered_rx.recv().unwrap();
 
         assert!(check_latest(
             &discovery,
+            &EventChannel::new(),
             Runtime::ClaudeCode,
             "stable",
             false,
@@ -827,6 +860,44 @@ mod tests {
     }
 
     #[test]
+    fn dropping_the_old_channel_answer_notifies_before_the_fetch() {
+        let discovery = discovery();
+        let events = EventChannel::new();
+        let now = Instant::now();
+        assert!(check_latest(
+            &discovery,
+            &events,
+            Runtime::ClaudeCode,
+            "latest",
+            false,
+            now,
+            || Some("2.1.280".into())
+        ));
+        let mut changes = events.subscribe();
+        assert!(check_latest(
+            &discovery,
+            &events,
+            Runtime::ClaudeCode,
+            "stable",
+            false,
+            now,
+            || {
+                let early = changes.try_recv().expect("notified before the fetch");
+                assert_eq!(early.name, "runtime/changed");
+                assert_eq!(
+                    discovery
+                        .read()
+                        .unwrap()
+                        .versions
+                        .available(Runtime::ClaudeCode, Some("2.1.267")),
+                    None
+                );
+                None
+            }
+        ));
+    }
+
+    #[test]
     fn a_check_in_flight_is_not_started_twice() {
         let discovery = discovery();
         let now = Instant::now();
@@ -839,6 +910,7 @@ mod tests {
             .is_some());
         assert!(!check_latest(
             &discovery,
+            &EventChannel::new(),
             Runtime::Codex,
             "latest",
             true,
