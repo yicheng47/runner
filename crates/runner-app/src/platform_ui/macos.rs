@@ -10,6 +10,10 @@ pub(crate) const PRIMARY_MODIFIER: &str = "⌘";
 pub(crate) const SHORTCUT_REQUIREMENTS: &str =
     "Shortcuts must include ⌘, Control, or Option. Function keys can be used alone.";
 
+/// Unlinking a running executable is safe on macOS, so an agent CLI can update
+/// while sessions of it run; they keep the old version until they relaunch.
+pub(crate) const AGENT_UPDATE_NEEDS_STOPPED_SESSIONS: bool = false;
+
 pub(crate) fn primary_modifier_held(modifiers: gpui::Modifiers) -> bool {
     modifiers.platform
 }

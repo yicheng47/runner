@@ -103,6 +103,7 @@ pub fn runtime_set_override(
         log::info!("runtime override saved: runtime={runtime} path={path}");
     }
     state.events.emit("runtime/changed", &());
+    request_version_probe(state, runtime);
     runtime_status_list(state).map_err(persistence_error)
 }
 
@@ -113,7 +114,105 @@ pub fn runtime_clear_override(state: &AppCore, runtime: Runtime) -> Result<Runti
     crate::db::set_runtime_override(&state.db, runtime.key(), None)?;
     log::info!("runtime override cleared: runtime={runtime}");
     state.events.emit("runtime/changed", &());
+    request_version_probe(state, runtime);
     runtime_status_list(state)
+}
+
+fn request_version_probe(state: &AppCore, runtime: Runtime) {
+    crate::runtime_status::versions::request_probes(
+        &state.db,
+        &state.runtime_shell_env,
+        &state.runtime_discovery,
+        &state.events,
+        &[runtime],
+        false,
+    );
+}
+
+/// Probes one runtime's installed version on the calling thread, after its
+/// update exits, and returns it. The Agents pane hears `runtime/changed`.
+pub fn runtime_probe_version(state: &AppCore, runtime: Runtime) -> Option<String> {
+    crate::runtime_status::versions::probe_now(
+        runtime,
+        &state.db,
+        &state.runtime_shell_env,
+        &state.runtime_discovery,
+        &state.events,
+    )
+}
+
+/// Asks npm whether a newer version of each installed, updatable runtime
+/// exists, off the calling thread. Answers are cached for six hours per app
+/// run; `force` skips the cache. Failures leave the rows showing versions
+/// only.
+pub fn runtime_check_updates(state: &AppCore, force: bool) {
+    crate::runtime_status::versions::request_latest(
+        &state.db,
+        &state.runtime_shell_env,
+        &state.runtime_discovery,
+        &state.events,
+        force,
+    );
+}
+
+/// argv, env and cwd for a runtime's own update (#533): the effective
+/// executable with the runtime's update arguments, the agent environment
+/// without Runner's layers, and the home directory. On Windows it refuses
+/// while any session of the runtime is alive, because the executable is in
+/// use.
+pub fn runtime_update_spawn_spec(
+    state: &AppCore,
+    runtime: Runtime,
+    size: (u16, u16),
+) -> Result<crate::session::runtime::SpawnSpec> {
+    let definition = crate::router::runtime::runtime_definition(runtime)
+        .filter(|definition| !definition.update_args.is_empty())
+        .ok_or_else(|| Error::msg(format!("{runtime} has no update command")))?;
+    #[cfg(windows)]
+    if let Some(&count) = crate::ops::session::live_session_counts(state)?
+        .get(&runtime)
+        .filter(|count| **count > 0)
+    {
+        return Err(Error::msg(format!(
+            "Stop the {count} running {} sessions first.",
+            definition.display_name
+        )));
+    }
+    let command = crate::runtime_status::effective_runtime_command(
+        runtime,
+        &state.db,
+        &state.runtime_shell_env,
+        &state.runtime_discovery,
+    )?;
+    if command.source == RuntimeCommandSource::Catalog {
+        return Err(crate::runtime_status::runtime_not_found_error(runtime));
+    }
+    Ok(state.sessions.update_spawn_spec(
+        command.command,
+        definition
+            .update_args
+            .iter()
+            .map(|arg| (*arg).to_owned())
+            .collect(),
+        runner_core::app_paths::home_dir(),
+        size,
+    ))
+}
+
+/// Starts the update PTY `runtime_update_spawn_spec` described. It is not a
+/// session: `events` alone hears its output and exit.
+pub fn runtime_update_start(
+    state: &AppCore,
+    spec: crate::session::runtime::SpawnSpec,
+    events: Arc<dyn crate::session::manager::SessionEvents>,
+) -> Result<()> {
+    log::info!(
+        "runtime update started: session={} command={} args={:?}",
+        spec.session_id,
+        spec.command,
+        spec.args
+    );
+    state.sessions.spawn_unlisted(spec, &state.db, events)
 }
 
 pub fn runtime_request_models(state: &AppCore, runtimes: &[Runtime]) {
@@ -154,6 +253,7 @@ pub fn runtime_refresh(
         Arc::clone(&state.runtime_discovery),
         model_runtimes.to_vec(),
     )?;
+    runtime_check_updates(state, true);
     runtime_status_list(state)
 }
 
@@ -639,5 +739,27 @@ mod tests {
                 .collect::<Vec<_>>(),
             [Runtime::Trae]
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn update_spec_runs_the_effective_executable_with_its_update_argument() {
+        use std::os::unix::fs::PermissionsExt;
+        let bin = tempfile::tempdir().unwrap();
+        for command in ["codex", "traecli"] {
+            let path = bin.path().join(command);
+            std::fs::write(&path, "#!/bin/sh\n").unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let state = crate::test_support::test_core();
+        state.runtime_shell_env.write().unwrap().path = Some(bin.path().display().to_string());
+
+        let spec = runtime_update_spawn_spec(&state, Runtime::Codex, (90, 28)).unwrap();
+        assert_eq!(spec.command, bin.path().join("codex").display().to_string());
+        assert_eq!(spec.args, ["update"]);
+        assert_eq!(spec.cwd, runner_core::app_paths::home_dir());
+        assert_eq!(spec.initial_size, Some((90, 28)));
+
+        assert!(runtime_update_spawn_spec(&state, Runtime::Trae, (90, 28)).is_err());
     }
 }

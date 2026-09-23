@@ -468,6 +468,7 @@ struct NativeRoot {
     pending_pane_closes: HashMap<String, PendingPaneClose>,
     #[cfg(windows)]
     update_dialog: Option<Entity<surfaces::update_dialog::UpdateDialog>>,
+    agent_update: Option<Entity<surfaces::agent_update::AgentUpdateDialog>>,
     fork_confirm: Option<ForkConfirm>,
     forking_sessions: HashMap<String, String>,
     chat_rename_modal: Option<ChatRenameModal>,
@@ -486,6 +487,9 @@ struct NativeRoot {
     usage_open: bool,
     usage_anchor: Option<Bounds<Pixels>>,
     usage_installed: Vec<runner_backend::model::Runtime>,
+    /// Agents with a newer version on npm; enabled ones dot the usage
+    /// popover's Agent settings gear.
+    agent_updates: Vec<runner_backend::model::Runtime>,
     runtime_navigation_history: Vec<RuntimeLocation>,
     runtime_navigation_index: Option<usize>,
     sidebar_collapsed: bool,
@@ -595,6 +599,12 @@ impl NativeRoot {
             while let Some(event) = chat_event_rx.next().await {
                 if weak
                     .update_in(cx, |this, window, cx| {
+                        if matches!(
+                            event.name,
+                            "session/spawned" | "session/exit" | "session/archived"
+                        ) {
+                            this.refresh_agents_live_sessions(cx);
+                        }
                         this.handle_chat_lifecycle_event(event, window, cx);
                         cx.notify();
                     })
@@ -638,6 +648,8 @@ impl NativeRoot {
                             this.refresh_agents_pane(cx);
                             this.usage_installed =
                                 crate::surfaces::app_shell::usage_installed(this.core(cx));
+                            this.agent_updates =
+                                crate::surfaces::app_shell::agents_with_updates(this.core(cx));
                         }
                         cx.notify();
                     })
@@ -829,6 +841,7 @@ impl NativeRoot {
             pending_pane_closes: HashMap::new(),
             #[cfg(windows)]
             update_dialog: None,
+            agent_update: None,
             fork_confirm: None,
             forking_sessions: HashMap::new(),
             chat_rename_modal: None,
@@ -847,6 +860,7 @@ impl NativeRoot {
             usage_open: false,
             usage_anchor: None,
             usage_installed: crate::surfaces::app_shell::usage_installed(&core),
+            agent_updates: crate::surfaces::app_shell::agents_with_updates(&core),
             runtime_navigation_history,
             runtime_navigation_index,
             sidebar_collapsed,

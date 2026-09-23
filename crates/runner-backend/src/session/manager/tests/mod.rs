@@ -16,6 +16,7 @@ mod slot_restart;
 mod spawn_env;
 mod status;
 mod terminal_size;
+mod unlisted;
 mod wake;
 #[cfg(windows)]
 mod windows_batch;

@@ -191,10 +191,32 @@ done
     role
 }
 
+/// The hook generation the fixture recorded as it started. A baseline Idle
+/// comes from two seconds of silence and can land before the shell has run
+/// at all on a loaded machine, so wait for the fixture rather than read.
+#[cfg(unix)]
+fn fixture_generation(root: &Path) -> String {
+    let path = root.join("generation");
+    let deadline = Instant::now() + ci_scaled_budget(Duration::from_secs(10));
+    loop {
+        if let Some(generation) = std::fs::read_to_string(&path)
+            .ok()
+            .filter(|generation| !generation.is_empty())
+        {
+            return generation;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the codex fixture never recorded its hook generation"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
 #[cfg(unix)]
 fn append_codex_fixture_hook(root: &Path, id: &str, event: &str, turn: &str) {
     use std::io::Write;
-    let generation = std::fs::read_to_string(root.join("generation")).unwrap();
+    let generation = fixture_generation(root);
     let path = crate::session::hook_feed::status_path(root, id);
     writeln!(
         std::fs::OpenOptions::new().append(true).open(path).unwrap(),
@@ -477,7 +499,7 @@ fn codex_pre_hook_early_escape_accepts_interrupt_as_first_hook() {
     std::fs::write(&transcript, "").unwrap();
     let feed = crate::session::hook_feed::status_path(app_data.path(), id);
     assert_eq!(std::fs::metadata(&feed).unwrap().len(), 0);
-    let generation = std::fs::read_to_string(app_data.path().join("generation")).unwrap();
+    let generation = fixture_generation(app_data.path());
     writeln!(
         std::fs::OpenOptions::new().append(true).open(feed).unwrap(),
         "{}",

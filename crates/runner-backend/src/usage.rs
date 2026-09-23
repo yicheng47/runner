@@ -523,7 +523,9 @@ fn fetch_claude(env: &LoginShellEnv) -> Result<Vec<UsageWindow>, UnavailableReas
     claude_response(status, &value)
 }
 
-fn http_client(env: &LoginShellEnv) -> Result<reqwest::blocking::Client, reqwest::Error> {
+pub(crate) fn http_client(
+    env: &LoginShellEnv,
+) -> Result<reqwest::blocking::Client, reqwest::Error> {
     let mut builder = reqwest::blocking::Client::builder()
         .user_agent(concat!("Runner/", env!("CARGO_PKG_VERSION")))
         .no_proxy()

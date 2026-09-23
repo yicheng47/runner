@@ -11,6 +11,7 @@ use crate::shell_path::{DiscoveryOutcome, DiscoveryResult, DiscoveryState, Login
 use serde::Serialize;
 
 pub(crate) mod models;
+pub(crate) mod versions;
 
 pub type SharedShellEnv = Arc<RwLock<LoginShellEnv>>;
 pub type SharedDiscoveryState = Arc<RwLock<DiscoveryState>>;
@@ -63,6 +64,11 @@ pub struct RuntimeExecutableStatus {
     pub effective_source: Option<RuntimeCommandSource>,
     pub state: RuntimeRowState,
     pub invalid_reason: Option<String>,
+    /// First semver token of `<effective command> --version`, once probed.
+    pub installed_version: Option<String>,
+    /// npm's latest version when it is newer than `installed_version` and
+    /// the runtime can update itself; its presence shows the Update button.
+    pub available_version: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -147,6 +153,19 @@ pub fn status_list(
             } else {
                 RuntimeRowState::NotFound
             };
+            let installed_version = effective_command
+                .as_deref()
+                .filter(|_| effective_source != Some(RuntimeCommandSource::Catalog))
+                .and_then(|command| discovery.versions.installed(runtime.name, command))
+                .map(str::to_owned);
+            let available_version = versions::updatable(runtime.name)
+                .then(|| {
+                    discovery
+                        .versions
+                        .available(runtime.name, installed_version.as_deref())
+                })
+                .flatten()
+                .map(str::to_owned);
             RuntimeExecutableStatus {
                 name: runtime.name,
                 display_name: runtime.display_name.to_string(),
@@ -159,6 +178,8 @@ pub fn status_list(
                 effective_source,
                 state,
                 invalid_reason,
+                installed_version,
+                available_version,
             }
         })
         .collect();
@@ -423,6 +444,12 @@ pub fn start_background_discovery(
         }
         log_runtime_paths(&pool, &shell_env);
         events.emit("runtime/changed", &());
+        let runtimes: Vec<_> = runtime_definitions()
+            .iter()
+            .map(|runtime| runtime.name)
+            .collect();
+        versions::request_probes(&pool, &shell_env, &discovery, &events, &runtimes, true);
+        versions::run_deferred_latest(&pool, &shell_env, &discovery, &events);
         models::request(
             &pool,
             &shell_env,
@@ -512,6 +539,7 @@ mod tests {
             seeded_shell: None,
             last_known_good_captured_at: None,
             models: Default::default(),
+            versions: Default::default(),
         }))
     }
 

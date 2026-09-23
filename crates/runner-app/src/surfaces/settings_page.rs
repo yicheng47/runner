@@ -937,6 +937,7 @@ impl NativeRoot {
                 if let Some(agents) = self.settings_page.agents.clone() {
                     agents.update(cx, |pane, pane_cx| pane.refresh(pane_cx));
                 }
+                runner_backend::ops::runtime::runtime_check_updates(self.core(cx), false);
             }
             SettingsPane::Skills => {
                 if self.settings_page.skills.is_none() {
@@ -1538,6 +1539,17 @@ impl NativeRoot {
     pub(crate) fn refresh_agents_pane(&self, cx: &mut Context<Self>) {
         if let Some(agents) = self.settings_page.agents.clone() {
             agents.update(cx, |pane, pane_cx| pane.refresh(pane_cx));
+        }
+    }
+
+    /// Keeps the Update guard's running-session count live while the
+    /// Agents pane is on screen.
+    pub(crate) fn refresh_agents_live_sessions(&self, cx: &mut Context<Self>) {
+        if self.route != AppRoute::Settings || self.settings_page.pane != SettingsPane::Agents {
+            return;
+        }
+        if let Some(agents) = self.settings_page.agents.clone() {
+            agents.update(cx, |pane, pane_cx| pane.refresh_live_sessions(pane_cx));
         }
     }
 

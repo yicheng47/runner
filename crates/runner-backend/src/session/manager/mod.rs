@@ -936,6 +936,22 @@ impl SessionManager {
                 .is_none_or(|last| last.elapsed() >= RECENT_LOCAL_INPUT_WINDOW)
     }
 
+    /// Ids of every session whose process is attached right now.
+    pub fn live_session_ids(&self) -> Vec<String> {
+        let sessions: Vec<_> = self
+            .sessions
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(id, session)| (id.clone(), Arc::clone(session)))
+            .collect();
+        sessions
+            .into_iter()
+            .filter(|(_, session)| session.lock().unwrap().handle.is_some())
+            .map(|(id, _)| id)
+            .collect()
+    }
+
     pub fn session_live(&self, session_id: &str) -> bool {
         self.session_state(session_id)
             .is_some_and(|session| session.lock().unwrap().handle.is_some())

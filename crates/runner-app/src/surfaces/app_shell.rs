@@ -69,6 +69,49 @@ fn settings_update_hint_version(
     available.map(|update| update.version())
 }
 
+pub(crate) fn terminal_style_for(
+    settings: &app_settings::AppSettings,
+) -> crate::terminal::element::TerminalStyle {
+    crate::terminal::element::TerminalStyle {
+        palette: app_settings::terminal_palette(settings, theme::active_variant()),
+        font: settings.terminal_font_family.font(),
+        font_size: settings.terminal_font_size as f32 * settings.app_zoom,
+        app_zoom: settings.app_zoom,
+    }
+}
+
+/// Agents whose npm `latest` is newer than the installed version.
+pub(crate) fn agents_with_updates(core: &AppCore) -> Vec<Runtime> {
+    runner_backend::runtime_status::status_list(
+        &core.db,
+        &core.runtime_shell_env,
+        &core.runtime_discovery,
+    )
+    .map(|status| {
+        status
+            .runtimes
+            .into_iter()
+            .filter(|runtime| runtime.available_version.is_some())
+            .map(|runtime| runtime.name)
+            .collect()
+    })
+    .unwrap_or_default()
+}
+
+/// The Agent settings gear carries a dot while any enabled agent has an
+/// update available; a disabled agent's update does not count.
+pub(crate) fn update_dot_visible(
+    updates: &[Runtime],
+    settings: &app_settings::AppSettings,
+) -> bool {
+    updates.iter().any(|runtime| {
+        settings.is_agent_enabled(
+            *runtime,
+            runner_backend::ops::runtime::runtime_default_enabled(*runtime),
+        )
+    })
+}
+
 pub(crate) fn usage_installed(core: &AppCore) -> Vec<Runtime> {
     runner_backend::runtime_status::status_list(
         &core.db,
@@ -374,11 +417,17 @@ impl NativeRoot {
                     .text_color(theme::muted())
                     .into_any_element()
             });
+        let update_dot = update_dot_visible(&self.agent_updates, self.settings(cx));
         let agent_settings = Tooltip::new(
             "usage-agent-settings-tooltip",
-            "Agent settings",
+            if update_dot {
+                "Agent settings · Update available"
+            } else {
+                "Agent settings"
+            },
             div()
                 .id("usage-agent-settings")
+                .relative()
                 .size(px(24.))
                 .flex()
                 .items_center()
@@ -395,7 +444,17 @@ impl NativeRoot {
                         .path("settings.svg")
                         .size(px(14.))
                         .text_color(theme::muted()),
-                ),
+                )
+                .children(update_dot.then(|| {
+                    div()
+                        .debug_selector(|| "USAGE_AGENT_SETTINGS_DOT".into())
+                        .absolute()
+                        .top(px(3.))
+                        .right(px(3.))
+                        .size(px(6.))
+                        .rounded_full()
+                        .bg(theme::accent())
+                })),
         );
         let sections: Vec<AnyElement> = [Runtime::ClaudeCode, Runtime::Codex]
             .into_iter()
@@ -561,6 +620,11 @@ impl NativeRoot {
             .children(settings_confirm)
             .child(command_palette)
             .children(toast)
+            .children(
+                self.agent_update
+                    .clone()
+                    .map(|dialog| deferred(dialog).with_priority(150)),
+            )
             .map(|root| {
                 // Stays inside the content root so the scrim ends at the Windows title bar.
                 #[cfg(windows)]
@@ -865,6 +929,7 @@ impl NativeRoot {
                             let core = this.core(cx).clone();
                             core.usage
                                 .request_refresh(core.clone(), RefreshReason::Open);
+                            runner_backend::ops::runtime::runtime_check_updates(&core, false);
                         }
                         cx.notify();
                     }))
@@ -1251,12 +1316,7 @@ impl NativeRoot {
     }
 
     pub(crate) fn terminal_style(&self, cx: &App) -> crate::terminal::element::TerminalStyle {
-        crate::terminal::element::TerminalStyle {
-            palette: app_settings::terminal_palette(self.settings(cx), theme::active_variant()),
-            font: self.settings(cx).terminal_font_family.font(),
-            font_size: self.settings(cx).terminal_font_size as f32 * self.settings(cx).app_zoom,
-            app_zoom: self.settings(cx).app_zoom,
-        }
+        terminal_style_for(self.settings(cx))
     }
 
     /// Chat panes and the mission workspace carry the open-sidebar cluster in
@@ -1629,6 +1689,29 @@ impl NativeRoot {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn update_dot_counts_only_enabled_agents() {
+        let mut settings = app_settings::AppSettings::default();
+        assert!(!update_dot_visible(&[], &settings));
+        assert!(update_dot_visible(&[Runtime::Codex], &settings));
+        settings.disabled_agents.insert(Runtime::Codex.key().into());
+        assert!(!update_dot_visible(&[Runtime::Codex], &settings));
+        assert!(update_dot_visible(
+            &[Runtime::Codex, Runtime::ClaudeCode],
+            &settings
+        ));
+        let copilot_default =
+            runner_backend::ops::runtime::runtime_default_enabled(Runtime::Copilot);
+        assert_eq!(
+            update_dot_visible(&[Runtime::Copilot], &settings),
+            copilot_default
+        );
+        settings
+            .enabled_agents
+            .insert(Runtime::Copilot.key().into());
+        assert!(update_dot_visible(&[Runtime::Copilot], &settings));
+    }
 
     #[test]
     fn usage_thresholds_and_reset_labels() {
