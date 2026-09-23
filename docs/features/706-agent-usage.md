@@ -4,7 +4,7 @@
 > Priority: P2, milestone 0.11 (moved from 0.12 on 2026-09-23: Jason wants to use it), so it ships in a 0.11.x patch. Platforms: macOS and Windows.
 > Status: spec, waiting for Jason's comments. Design settled 2026-09-23.
 > Design: `design/specs/706-agent-usage.pen`: `706 — Usage icon in the Settings row, popover open` (`z08zW`) and `706 — Usage icon states` (`aFl82`).
-> Related: [533](./533-agent-cli-updates.md) (agent CLI updates: the popover is where its "Update available" shows on the main window), [562](./562-mission-spawn.md) (a lead choosing a runtime per spawn).
+> Related: [533](./533-agent-cli-updates.md) (agent CLI updates: the popover's Agent settings gear carries its update dot), [562](./562-mission-spawn.md) (a lead choosing a runtime per spawn).
 > Prior art: Orca's status-bar usage meters and popover (`~/repos/ai/orca/src/main/rate-limits/`, `src/renderer/src/components/status-bar/`), read 2026-09-23.
 
 ## Motivation
@@ -35,7 +35,7 @@ One design for every state (frame `z08zW`), 340px wide.
 
 - **Header.** "Usage", "updated 2m ago", a refresh button, and an Agent settings gear button at the far right. The gear's tooltip says "Agent settings"; clicking it closes the popover and opens Settings → Agents.
 - **One section per agent,** in the order Claude Code, Codex, each with its mark and name. Under it, one row per window: its name (5 hours, Week, Fable · week), a bar, the percent used, and "resets 3h 10m". The bar fills in `text-mid`, `warn` at 80% and `danger` at 100%, matching the icon.
-- **A version line per agent arrives with 533.** That work will show the installed version and update availability with an **Update** button. The popover ships without the line until then; 533 owns the version probe.
+- **No versions or Update button.** Updating is 533's, in Settings → Agents. When 533 lands, the Agent settings gear carries an accent dot while any agent has an update available (Jason, 2026-09-23); the popover itself shows no versions.
 - **Unavailable.** An agent whose usage cannot be read keeps its section with one line saying why, instead of window rows: "Sign in to Claude Code to see usage.", "Runner was not allowed to read Claude Code's sign-in from the Keychain.", "Couldn't read Claude Code's sign-in from the Keychain.", "Couldn't reach Anthropic." or "Codex didn't answer.". The icon ignores unavailable agents when it picks its colour.
 - **No footer.** The popover ends with the last agent section; Agent settings is in the header.
 
@@ -108,4 +108,4 @@ A `usage` module in `runner-backend`: the two fetchers, the cache, the schedule,
 - [ ] Denying the Keychain prompt shows the Keychain line and does not prompt again in that run.
 - [ ] A failed refresh keeps the last numbers with their age, and an agent that has never answered shows its unavailable line.
 - [ ] Refreshes happen at launch, every 15 minutes, on the button, and on opening a popover older than 5 minutes, and never more often.
-- [ ] After 533 lands, the version line and Update button open the update pane for that agent.
+- [ ] After 533 lands, the Agent settings gear shows its dot while an update is available, and nothing else in the popover changes.

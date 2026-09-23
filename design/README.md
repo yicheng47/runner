@@ -21,6 +21,8 @@ Windows in-app updates (#493): the centered update dialog is the component `cmp/
 
 Settings controls are components since 2026-09-19: `cmp/ToggleOn` (`BUCWv`), `cmp/ToggleOff` (`dkqPP`), `cmp/Button` (`IelRd`, a label and an icon that is off by default) and `cmp/SettingsRow` (`O75mx`: a title, a description and a slot for the control). `Settings — General` and the Windows Updates screens are built from them; the other Settings screens still draw their rows by hand. `cmp/SettingsNav` has no default selection: each instance sets the fill and border on its own item.
 
+Plan usage (#706) is in `runner.pen` since 2026-09-23: `cmp/SidebarC`'s Settings row ends with the gauge button `sbUsageBtn` (`TrVD6`), the Runner update icon moved beside the Settings label, the popover is the component `cmp/UsagePopover` (`y655u`), and the chat band shows it open in `Runner chat — usage popover open (706)` (`Z2MEX`). The popover's gear has an `update_dot` that is off; it belongs to #533 and is drawn in `specs/533-agent-cli-updates.pen`.
+
 - One `.pen` file per major surface (e.g. `home.pen`, `crew-editor.pen`, `runner-card.pen`).
 - `runner-mvp-design.pen` is the historical MVP canvas; do not add new feature work to it.
 - `chat-attention-indicators.pen` frame `R4LJz` contains the issue #285 working, unread, and collapsed-rollup states.
