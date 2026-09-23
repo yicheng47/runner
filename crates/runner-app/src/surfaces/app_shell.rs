@@ -239,10 +239,11 @@ fn usage_section(
     reason: Option<UnavailableReason>,
     now: chrono::DateTime<chrono::Utc>,
 ) -> AnyElement {
-    let (name, mark) = match runtime {
-        Runtime::ClaudeCode => ("Claude Code", "claude.svg"),
-        _ => ("Codex", "openai.svg"),
+    let name = match runtime {
+        Runtime::ClaudeCode => "Claude Code",
+        _ => "Codex",
     };
+    let icon = ChatIcon::for_runtime(runtime.key());
     let rows: Vec<AnyElement> = usage
         .map(|usage| {
             usage
@@ -263,7 +264,12 @@ fn usage_section(
                 .flex()
                 .items_center()
                 .gap_2()
-                .child(svg().path(mark).size(px(16.)).text_color(theme::text()))
+                .child(
+                    svg()
+                        .path(icon.path)
+                        .size(px(16.))
+                        .text_color(icon.color(theme::text(), true)),
+                )
                 .child(
                     div()
                         .text_size(theme::text_title())
@@ -393,9 +399,13 @@ impl NativeRoot {
                     .child(
                         div()
                             .id("usage-agent-settings")
-                            .w_full()
-                            .py_2()
-                            .rounded_sm()
+                            .ml(rems(-10. / 16.))
+                            .mr(rems(-10. / 16.))
+                            .px(rems(10. / 16.))
+                            .py(rems(6. / 16.))
+                            .flex()
+                            .items_center()
+                            .rounded(rems(4. / 16.))
                             .cursor_pointer()
                             .text_size(theme::text_body())
                             .text_color(theme::muted())
@@ -406,7 +416,13 @@ impl NativeRoot {
                                 this.usage_open = false;
                                 this.enter_settings_route(Some("agents"), window, cx);
                             }))
-                            .child("Agent settings…"),
+                            .child(div().flex_1().child("Agent settings…"))
+                            .child(
+                                svg()
+                                    .path("chevron-right.svg")
+                                    .size(rems(14. / 16.))
+                                    .text_color(theme::muted()),
+                            ),
                     ),
             )
             .into_any_element()
@@ -844,7 +860,6 @@ impl NativeRoot {
                             .id("open-settings")
                             .group("sidebar-settings")
                             .min_w(px(0.))
-                            .flex_1()
                             .px(rems(10. / 16.))
                             .py_2()
                             .flex()
@@ -879,6 +894,7 @@ impl NativeRoot {
                             })),
                     )
                     .children(update_hint)
+                    .child(div().flex_1())
                     .children(usage_hint),
             )
             .child(
