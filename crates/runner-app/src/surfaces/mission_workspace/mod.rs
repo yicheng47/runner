@@ -136,6 +136,39 @@ fn slot_controls(status: SessionStatus) -> [SessionControlKind; 2] {
     ]
 }
 
+fn focused_slot_action_target(
+    active_tab: &MissionTab,
+    status: Option<SessionStatus>,
+    action: SessionControlKind,
+) -> Option<&str> {
+    let MissionTab::Session(session_id) = active_tab else {
+        return None;
+    };
+    match (action, status) {
+        (SessionControlKind::Stop, Some(SessionStatus::Running))
+        | (SessionControlKind::Resume, Some(SessionStatus::Stopped | SessionStatus::Crashed)) => {
+            Some(session_id)
+        }
+        _ => None,
+    }
+}
+
+fn slot_control_title(action: SessionControlKind, overrides: &keymap::KeymapOverrides) -> String {
+    let (label, binding) = match action {
+        SessionControlKind::Stop => ("Stop", Some("stop-session")),
+        SessionControlKind::Resume => ("Resume", Some("resume-session")),
+        SessionControlKind::Restart => ("Restart", None),
+        SessionControlKind::Resuming => ("Resuming…", None),
+        SessionControlKind::Back => ("Back to role", None),
+    };
+    binding
+        .and_then(|id| keymap::effective_binding(id, overrides))
+        .map_or_else(
+            || label.to_owned(),
+            |combo| format!("{label} · {}", keymap::format_combo(&combo)),
+        )
+}
+
 fn restart_confirm_body(handle: &str, lead_handle: &str, is_lead: bool) -> String {
     if is_lead {
         format!("Its conversation so far is discarded. @{handle} comes back with the launch prompt, the same first turn a cold start gives it, and the other slots get a note that it starts over.")

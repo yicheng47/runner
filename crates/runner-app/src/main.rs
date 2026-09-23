@@ -96,6 +96,7 @@ actions!(
         ShowAll,
         SplitPaneDown,
         SplitPaneRight,
+        ResumeFocusedSession,
         StopFocusedSession,
         ToggleFullscreen,
         ToggleTerminalDrawer,
@@ -1342,48 +1343,7 @@ fn run() -> Result<()> {
         cx.on_action(|_: &CheckForUpdates, cx| {
             global_updater(cx).read(cx).check_for_updates();
         });
-        cx.set_menus(vec![
-            Menu {
-                name: "Runner".into(),
-                items: vec![
-                    MenuItem::action("Check for Updates…", CheckForUpdates),
-                    MenuItem::separator(),
-                    MenuItem::os_submenu("Services", SystemMenuType::Services),
-                    MenuItem::separator(),
-                    MenuItem::action("Hide Runner", Hide),
-                    MenuItem::action("Hide Others", HideOthers),
-                    MenuItem::action("Show All", ShowAll),
-                    MenuItem::separator(),
-                    MenuItem::action("Quit Runner", Quit),
-                ],
-            },
-            Menu {
-                name: "File".into(),
-                items: vec![MenuItem::action("New Window", NewWindow)],
-            },
-            Menu {
-                name: "Edit".into(),
-                items: vec![
-                    MenuItem::os_action("Cut", Cut, OsAction::Cut),
-                    MenuItem::os_action("Copy", Copy, OsAction::Copy),
-                    MenuItem::os_action("Paste", Paste, OsAction::Paste),
-                    MenuItem::os_action("Select All", SelectAll, OsAction::SelectAll),
-                ],
-            },
-            Menu {
-                name: "View".into(),
-                items: vec![MenuItem::action("Enter Full Screen", ToggleFullscreen)],
-            },
-            Menu {
-                name: "Window".into(),
-                items: vec![
-                    MenuItem::action("Minimize", Minimize),
-                    MenuItem::action("Maximize", Maximize),
-                    MenuItem::separator(),
-                    MenuItem::action("Close Window", CloseWindowOrPane),
-                ],
-            },
-        ]);
+        cx.set_menus(app_menus());
 
         let restored_layout = window_state::read_layout(&core.app_data_dir);
         for warning in &restored_layout.warnings {
@@ -1428,6 +1388,53 @@ fn run() -> Result<()> {
     let shutdown_result = stop_running_sessions_on_quit(&shutdown_core);
     drop(mcp_server);
     shutdown_result
+}
+
+/// Rebuilt whenever key bindings change: the macOS menu bar reads its
+/// shortcuts from the bindings when it is set, and a stale one still fires.
+pub(crate) fn app_menus() -> Vec<Menu> {
+    vec![
+        Menu {
+            name: "Runner".into(),
+            items: vec![
+                MenuItem::action("Check for Updates…", CheckForUpdates),
+                MenuItem::separator(),
+                MenuItem::os_submenu("Services", SystemMenuType::Services),
+                MenuItem::separator(),
+                MenuItem::action("Hide Runner", Hide),
+                MenuItem::action("Hide Others", HideOthers),
+                MenuItem::action("Show All", ShowAll),
+                MenuItem::separator(),
+                MenuItem::action("Quit Runner", Quit),
+            ],
+        },
+        Menu {
+            name: "File".into(),
+            items: vec![MenuItem::action("New Window", NewWindow)],
+        },
+        Menu {
+            name: "Edit".into(),
+            items: vec![
+                MenuItem::os_action("Cut", Cut, OsAction::Cut),
+                MenuItem::os_action("Copy", Copy, OsAction::Copy),
+                MenuItem::os_action("Paste", Paste, OsAction::Paste),
+                MenuItem::os_action("Select All", SelectAll, OsAction::SelectAll),
+            ],
+        },
+        Menu {
+            name: "View".into(),
+            items: vec![MenuItem::action("Enter Full Screen", ToggleFullscreen)],
+        },
+        Menu {
+            name: "Window".into(),
+            items: vec![
+                MenuItem::action("Minimize", Minimize),
+                MenuItem::action("Maximize", Maximize),
+                MenuItem::separator(),
+                MenuItem::action("Close Window", CloseWindowOrPane),
+            ],
+        },
+    ]
 }
 
 fn handle_reopen(cx: &mut App) {

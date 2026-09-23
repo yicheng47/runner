@@ -466,6 +466,87 @@ fn slot_rail_actions_match_status() {
 }
 
 #[test]
+fn focused_mission_session_actions_match_the_active_tab_and_status() {
+    let session = MissionTab::Session("coder".into());
+    assert_eq!(
+        focused_slot_action_target(
+            &session,
+            Some(SessionStatus::Running),
+            SessionControlKind::Stop,
+        ),
+        Some("coder")
+    );
+    assert_eq!(
+        focused_slot_action_target(
+            &session,
+            Some(SessionStatus::Stopped),
+            SessionControlKind::Resume,
+        ),
+        Some("coder")
+    );
+    assert_eq!(
+        focused_slot_action_target(
+            &session,
+            Some(SessionStatus::Crashed),
+            SessionControlKind::Resume,
+        ),
+        Some("coder")
+    );
+    assert_eq!(
+        focused_slot_action_target(
+            &session,
+            Some(SessionStatus::Running),
+            SessionControlKind::Resume,
+        ),
+        None
+    );
+    assert_eq!(
+        focused_slot_action_target(
+            &session,
+            Some(SessionStatus::Stopped),
+            SessionControlKind::Stop,
+        ),
+        None
+    );
+    assert_eq!(
+        focused_slot_action_target(
+            &MissionTab::Feed,
+            Some(SessionStatus::Running),
+            SessionControlKind::Stop,
+        ),
+        None
+    );
+}
+
+#[test]
+#[cfg(not(windows))]
+fn slot_control_titles_follow_effective_bindings() {
+    let mut overrides = keymap::KeymapOverrides::new();
+    assert_eq!(
+        slot_control_title(SessionControlKind::Stop, &overrides),
+        "Stop · ⇧⌘X"
+    );
+    assert_eq!(
+        slot_control_title(SessionControlKind::Resume, &overrides),
+        "Resume · ⇧⌘R"
+    );
+
+    overrides.insert(
+        "stop-session".into(),
+        Some(keymap::entry("resume-session").unwrap().default.clone()),
+    );
+    overrides.insert("resume-session".into(), None);
+    assert_eq!(
+        slot_control_title(SessionControlKind::Stop, &overrides),
+        "Stop · ⇧⌘R"
+    );
+    assert_eq!(
+        slot_control_title(SessionControlKind::Resume, &overrides),
+        "Resume"
+    );
+}
+
+#[test]
 fn restarting_preserves_its_transition_and_starting_overlay() {
     assert_eq!(
         transition_to_begin_on_spawn(Some(MissionTransitionKind::Restarting)),

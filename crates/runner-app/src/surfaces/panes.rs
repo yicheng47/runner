@@ -1551,7 +1551,7 @@ impl NativeRoot {
                         Rc::new(move |index, window, cx| {
                             let session_id = action_target.clone();
                             action_root.update(cx, |this, cx| match index {
-                                0 => this.stop_chat(&session_id, window, cx),
+                                0 => this.activate_primary_pane_action(&session_id, window, cx),
                                 1 => {
                                     if let Some(entry) =
                                         this.session_entry(&session_id, cx).cloned()
@@ -1586,10 +1586,37 @@ impl NativeRoot {
         let stop_shortcut =
             keymap::effective_binding("stop-session", &self.settings(cx).keymap_overrides)
                 .map(|combo| keymap::format_combo(&combo));
+        let resume_shortcut =
+            keymap::effective_binding("resume-session", &self.settings(cx).keymap_overrides)
+                .map(|combo| keymap::format_combo(&combo));
         menu.update(cx, |menu, menu_cx| {
-            menu.set_items(pane_action_items(entry, disabled, stop_shortcut), menu_cx)
+            menu.set_items(
+                pane_action_items(entry, disabled, stop_shortcut, resume_shortcut),
+                menu_cx,
+            )
         });
         menu
+    }
+
+    fn activate_primary_pane_action(
+        &mut self,
+        session_id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.session_lifecycle_disabled(session_id, cx)
+            || self.chat_secondary_state(session_id, cx).secondary
+        {
+            return;
+        }
+        let Some(status) = self.session_entry(session_id, cx).map(|entry| entry.status) else {
+            return;
+        };
+        if status == SessionStatus::Running {
+            self.stop_chat(session_id, window, cx);
+        } else {
+            self.resume_chats(vec![session_id.to_owned()], window, cx);
+        }
     }
 
     pub(crate) fn render_terminal_drawer(
@@ -2824,12 +2851,14 @@ fn pane_action_items(
     entry: &DirectSessionEntry,
     disabled: bool,
     stop_shortcut: Option<String>,
+    resume_shortcut: Option<String>,
 ) -> Vec<UiMenuItem> {
     pane_action_items_for(
         &entry.agent_runtime,
         entry.status == SessionStatus::Running,
         disabled,
         stop_shortcut,
+        resume_shortcut,
     )
 }
 
@@ -2838,21 +2867,28 @@ fn pane_action_items_for(
     running: bool,
     disabled: bool,
     stop_shortcut: Option<String>,
+    resume_shortcut: Option<String>,
 ) -> Vec<UiMenuItem> {
-    let stop = UiMenuItem::new("Stop")
-        .icon("square.svg")
-        .disabled(disabled || !running);
-    let stop = match stop_shortcut {
-        Some(shortcut) => stop.shortcut(shortcut),
-        None => stop,
+    let shell = Runtime::parse(runtime) == Some(Runtime::Shell);
+    let (label, icon, shortcut) = if running {
+        ("Stop", "square.svg", stop_shortcut)
+    } else if shell {
+        ("Restart", "rotate-ccw.svg", resume_shortcut)
+    } else {
+        ("Resume", "play.svg", resume_shortcut)
+    };
+    let primary = UiMenuItem::new(label).icon(icon).disabled(disabled);
+    let primary = match shortcut {
+        Some(shortcut) => primary.shortcut(shortcut),
+        None => primary,
     };
     let mut items = vec![
-        stop,
+        primary,
         UiMenuItem::new("Rename…")
             .icon("pencil.svg")
             .disabled(disabled),
     ];
-    if Runtime::parse(runtime) != Some(Runtime::Shell) {
+    if !shell {
         items.push(
             UiMenuItem::new("Archive chat")
                 .icon("archive.svg")
@@ -3185,8 +3221,14 @@ mod tests {
     }
 
     #[test]
-    fn pane_actions_never_offer_close_and_terminals_cannot_be_archived() {
-        let chat = pane_action_items_for("codex", true, false, Some("⌘.".to_owned()));
+    fn pane_actions_follow_session_status_and_terminals_cannot_be_archived() {
+        let chat = pane_action_items_for(
+            "codex",
+            true,
+            false,
+            Some("⇧⌘X".to_owned()),
+            Some("⇧⌘R".to_owned()),
+        );
         assert_eq!(
             chat.iter()
                 .map(|item| item.label.as_ref())
@@ -3195,18 +3237,47 @@ mod tests {
         );
         assert_eq!(
             chat[0].shortcut.as_ref().map(|shortcut| shortcut.as_ref()),
-            Some("⌘.")
+            Some("⇧⌘X")
         );
         assert!(chat[2].separator_before);
         assert!(chat.iter().all(|item| item.label.as_ref() != "Close pane"));
 
-        let terminal = pane_action_items_for("shell", true, false, Some("⌘.".to_owned()));
+        let stopped_chat = pane_action_items_for(
+            "codex",
+            false,
+            false,
+            Some("⇧⌘X".to_owned()),
+            Some("⇧⌘R".to_owned()),
+        );
+        assert_eq!(stopped_chat[0].label.as_ref(), "Resume");
+        assert_eq!(
+            stopped_chat[0]
+                .shortcut
+                .as_ref()
+                .map(|shortcut| shortcut.as_ref()),
+            Some("⇧⌘R")
+        );
+
+        let terminal = pane_action_items_for(
+            "shell",
+            false,
+            false,
+            Some("⇧⌘X".to_owned()),
+            Some("⇧⌘R".to_owned()),
+        );
         assert_eq!(
             terminal
                 .iter()
                 .map(|item| item.label.as_ref())
                 .collect::<Vec<_>>(),
-            ["Stop", "Rename…"]
+            ["Restart", "Rename…"]
+        );
+        assert_eq!(
+            terminal[0]
+                .shortcut
+                .as_ref()
+                .map(|shortcut| shortcut.as_ref()),
+            Some("⇧⌘R")
         );
         assert_eq!(
             pane_close_behavior(Some("shell")),

@@ -230,6 +230,7 @@ impl NativeRoot {
             .on_action(cx.listener(Self::focus_previous_chat_pane))
             .on_action(cx.listener(Self::focus_next_chat_pane))
             .on_action(cx.listener(Self::stop_focused_session))
+            .on_action(cx.listener(Self::resume_focused_session))
             .on_action(cx.listener(Self::toggle_terminal_drawer_action))
             .on_action(cx.listener(Self::toggle_sidebar))
             .on_action(cx.listener(Self::open_command_palette))
