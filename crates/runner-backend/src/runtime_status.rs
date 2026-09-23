@@ -564,6 +564,7 @@ mod tests {
                 (Runtime::Copilot, "GitHub Copilot CLI", "copilot"),
                 (Runtime::Pi, "pi", "pi"),
                 (Runtime::Trae, "TRAE CLI", "traecli"),
+                (Runtime::Antigravity, "Antigravity CLI", "agy"),
             ],
         );
     }

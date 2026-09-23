@@ -73,7 +73,7 @@ fn lead_restart_and_missing_conversation_resume_deliver_launch_prompt() {
 
 #[test]
 fn missing_worker_conversation_resume_delivers_cold_start_first_turn() {
-    for runtime in ["claude-code", "codex", "trae", "copilot"] {
+    for runtime in ["claude-code", "codex", "trae", "copilot", "antigravity"] {
         let (pool, app_data, id) = slot_respawn_fixture(runtime, false);
         if !matches!(runtime, "claude-code" | "copilot") {
             pool.get()
@@ -98,7 +98,7 @@ fn missing_worker_conversation_resume_delivers_cold_start_first_turn() {
         assert!(!spec
             .args
             .iter()
-            .any(|arg| arg == "resume" || arg == "--resume"));
+            .any(|arg| arg == "resume" || arg == "--resume" || arg == "--conversation"));
         mgr.kill(&id).unwrap();
     }
 }

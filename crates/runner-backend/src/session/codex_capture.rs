@@ -69,7 +69,7 @@ pub fn sessions_root_for(runtime: Option<Runtime>) -> Option<PathBuf> {
     match runtime {
         Some(Runtime::Codex) => Some(home.join(".codex").join("sessions")),
         Some(Runtime::Trae) => Some(home.join(".trae").join("cli").join("sessions")),
-        Some(Runtime::ClaudeCode | Runtime::Copilot | Runtime::Pi)
+        Some(Runtime::ClaudeCode | Runtime::Copilot | Runtime::Pi | Runtime::Antigravity)
         | Some(Runtime::Shell)
         | None => None,
     }
@@ -675,6 +675,7 @@ mod tests {
             Some(home.join(".trae").join("cli").join("sessions")),
         );
         assert_eq!(sessions_root_for(Some(Runtime::Pi)), None);
+        assert_eq!(sessions_root_for(Some(Runtime::Antigravity)), None);
         assert_eq!(sessions_root_for(Some(Runtime::Shell)), None);
     }
 

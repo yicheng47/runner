@@ -157,7 +157,7 @@ fn remove_registration_at(
     let status = match client {
         McpClientId::ClaudeCode => mcp::claude_code_status_at(&path, &bridge),
         McpClientId::Codex | McpClientId::Trae => mcp::codex_status_at(&path, &bridge),
-        McpClientId::Copilot => mcp::copilot_status_at(&path, &bridge),
+        McpClientId::Copilot | McpClientId::Antigravity => mcp::copilot_status_at(&path, &bridge),
     };
     let status = match status {
         Ok(status) => status,

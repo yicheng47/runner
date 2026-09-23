@@ -837,6 +837,15 @@ impl SessionManager {
                 log::warn!("install Copilot status plugin: {error}");
             }
         }
+        if super::hook_feed::hooks_supported(
+            Some(crate::model::Runtime::Antigravity),
+            cfg!(windows),
+        ) {
+            if let Err(error) = super::agy_status::install_hooks(app_data_dir) {
+                log::warn!("install Antigravity status hooks: {error}");
+            }
+        }
+        super::agy_capture::clear_orphans(app_data_dir, &pool);
         if super::hook_feed::hooks_supported(Some(crate::model::Runtime::Pi), cfg!(windows)) {
             if let Err(error) = super::pi_status::install_extension(app_data_dir) {
                 log::warn!("install pi status extension: {error}");

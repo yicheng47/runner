@@ -3153,7 +3153,7 @@ mod tests {
             );
         }
 
-        for runtime in ["trae", "copilot"] {
+        for runtime in ["trae", "copilot", "antigravity"] {
             let entry = direct_session(runtime, false, false);
             assert_eq!(
                 header_fork_state(Some(&entry), false),
@@ -3198,6 +3198,10 @@ mod tests {
         assert_eq!(pane_identity_icon(Some("copilot")).path, "copilot.svg");
         assert_eq!(pane_identity_icon(Some("pi")).path, "pi.svg");
         assert_eq!(
+            pane_identity_icon(Some("antigravity")).path,
+            "antigravity.svg"
+        );
+        assert_eq!(
             pane_identity_icon(Some("unknown")).path,
             "message-square.svg"
         );
@@ -3231,6 +3235,7 @@ mod tests {
             (Some("trae"), "trae.svg"),
             (Some("copilot"), "copilot.svg"),
             (Some("pi"), "pi.svg"),
+            (Some("antigravity"), "antigravity.svg"),
             (Some("unknown"), "message-square.svg"),
             (None, "message-square.svg"),
         ] {

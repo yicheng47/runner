@@ -694,6 +694,32 @@ mod tests {
     }
 
     #[test]
+    fn antigravity_catalog_reads_both_personal_roots_without_global_toggles() {
+        let home = tempfile::tempdir().unwrap();
+        for (root, name) in [
+            (".gemini/antigravity-cli/skills", "agy-skill"),
+            (".gemini/skills", "gemini-skill"),
+        ] {
+            let path = home.path().join(root).join(name);
+            std::fs::create_dir_all(&path).unwrap();
+            std::fs::write(path.join("SKILL.md"), "---\ndescription: demo\n---\nbody").unwrap();
+        }
+        let catalog = skill_catalog(Runtime::Antigravity, home.path(), None).unwrap();
+        assert_eq!(
+            catalog.roots,
+            [
+                home.path().join(".gemini/antigravity-cli/skills"),
+                home.path().join(".gemini/skills")
+            ]
+        );
+        assert_eq!(catalog.entries.len(), 2);
+        assert!(catalog
+            .entries
+            .iter()
+            .all(|entry| entry.global == GlobalState::On));
+    }
+
+    #[test]
     fn copilot_catalog_reads_disabled_skills_from_settings() {
         let home = tempfile::tempdir().unwrap();
         for (root, name) in [

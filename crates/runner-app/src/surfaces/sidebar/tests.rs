@@ -603,6 +603,7 @@ fn tab_and_mission_menus_have_the_trimmed_item_lists() {
         (Some("trae"), "trae.svg"),
         (Some("copilot"), "copilot.svg"),
         (Some("pi"), "pi.svg"),
+        (Some("antigravity"), "antigravity.svg"),
         (Some("unknown"), "message-square.svg"),
         (None, "message-square.svg"),
     ] {
@@ -890,10 +891,12 @@ fn sidebar_fork_menu_target_exposes_enabled_and_disabled_single_chats() {
     assert!(trae_entries[2].0.disabled);
     assert_eq!(trae_entries[2].0.description, None);
 
-    let copilot_members = vec![direct_session("chat", "copilot", SessionStatus::Running)];
-    let copilot_target = sidebar_fork_menu_target(&layout, &copilot_members).unwrap();
-    assert!(copilot_target.disabled);
-    assert_eq!(copilot_target.description, None);
+    for runtime in ["copilot", "antigravity"] {
+        let members = vec![direct_session("chat", runtime, SessionStatus::Running)];
+        let target = sidebar_fork_menu_target(&layout, &members).unwrap();
+        assert!(target.disabled, "{runtime}");
+        assert_eq!(target.description, None, "{runtime}");
+    }
 
     let shell_members = vec![direct_session("chat", "shell", SessionStatus::Running)];
     assert!(sidebar_fork_menu_target(&layout, &shell_members).is_none());
