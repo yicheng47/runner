@@ -347,6 +347,9 @@ impl NativeRoot {
         self.configure_chat_action_menu(&layout, lifecycle_busy, cx);
         self.prune_pane_state(&layout);
         let pane_tree = self.render_pane_node(&layout.root, &layout, window, cx);
+        let tab_archiving = split_tab_archiving(&layout, |session_id| {
+            self.sidebar_archiving_session(session_id, cx)
+        });
         let sidebar_toggle = self.render_open_sidebar_button(cx);
         let root = cx.entity();
         let fork_root = root.clone();
@@ -600,7 +603,13 @@ impl NativeRoot {
             }))
             .on_drop(cx.listener(|this, drag: &PaneDrag, window, cx| {
                 this.apply_pane_drop(drag, window, cx);
-            }));
+            }))
+            .when(tab_archiving, |body| {
+                body.child(SessionOverlay::transition(
+                    format!("archiving-tab-{}", layout.id),
+                    SessionOverlayKind::Archiving,
+                ))
+            });
         let chat_column = div()
             .relative()
             .flex_1()
@@ -740,7 +749,7 @@ impl NativeRoot {
             });
             if !chat_session_ids.is_empty() {
                 items.push(
-                    UiMenuItem::new("Archive all")
+                    UiMenuItem::new("Archive")
                         .icon("archive.svg")
                         .destructive(true)
                         .disabled(lifecycle_busy),
@@ -775,14 +784,10 @@ impl NativeRoot {
                 if Runtime::parse(&entry.agent_runtime) != Some(Runtime::Shell) {
                     let archive_all = !layout.drawer_shells().is_empty();
                     items.push(
-                        UiMenuItem::new(if archive_all {
-                            "Archive all"
-                        } else {
-                            "Archive"
-                        })
-                        .icon("archive.svg")
-                        .destructive(true)
-                        .disabled(lifecycle_busy),
+                        UiMenuItem::new("Archive")
+                            .icon("archive.svg")
+                            .destructive(true)
+                            .disabled(lifecycle_busy),
                     );
                     actions.push(if archive_all {
                         ChatMenuAction::ArchiveAll(all_session_ids)
@@ -1169,9 +1174,9 @@ impl NativeRoot {
             Some(TerminalCloseTarget::ArchiveAll {
                 confirmation_body, ..
             }) => (
-                "Archive all?",
+                "Archive tab?",
                 confirmation_body.clone(),
-                "Archive all",
+                "Archive",
                 "Archiving…",
                 "trash.svg",
             ),
@@ -2308,6 +2313,13 @@ impl NativeRoot {
                 )
             } else {
                 match overlay {
+                    PaneOverlayState::Archiving
+                        if split_tab_archiving(layout, |session_id| {
+                            self.sidebar_archiving_session(session_id, cx)
+                        }) =>
+                    {
+                        None
+                    }
                     PaneOverlayState::Archiving => Some(
                         SessionOverlay::transition(
                             format!("archiving-{session_id}"),
@@ -2630,6 +2642,13 @@ fn pane_rename_key(key: &str) -> Option<PaneRenameKey> {
 
 fn pane_identity_visible(pane_count: usize) -> bool {
     pane_count > 1
+}
+
+fn split_tab_archiving(layout: &PaneLayout, archiving: impl Fn(&str) -> bool) -> bool {
+    let session_ids = layout.session_ids();
+    layout.root.leaves().len() > 1
+        && !session_ids.is_empty()
+        && session_ids.iter().all(|session_id| archiving(session_id))
 }
 
 fn empty_pane_action_label(overrides: &keymap::KeymapOverrides) -> String {
@@ -2994,13 +3013,13 @@ mod tests {
         empty_pane_action_label, header_fork_state, pane_action_items_for, pane_body_opacity,
         pane_close_behavior, pane_identity_icon, pane_identity_shows_status, pane_identity_visible,
         pane_rename_key, side_panel_open, split_allowed, split_decision, split_menu_items,
-        starting_overlay_label, terminal_drawer_tooltip, workspace_header_icon, HeaderForkState,
-        PaneCloseBehavior, PaneRenameKey, SplitDecision, MIN_SPLIT_PANE_HEIGHT,
-        MIN_SPLIT_PANE_WIDTH, TOO_SMALL_TO_SPLIT, UNFOCUSED_PANE_OPACITY,
+        split_tab_archiving, starting_overlay_label, terminal_drawer_tooltip,
+        workspace_header_icon, HeaderForkState, PaneCloseBehavior, PaneRenameKey, SplitDecision,
+        MIN_SPLIT_PANE_HEIGHT, MIN_SPLIT_PANE_WIDTH, TOO_SMALL_TO_SPLIT, UNFOCUSED_PANE_OPACITY,
     };
     use crate::keymap;
     use gpui::{point, px, size, Bounds};
-    use runner_app::pane_layout::{DropSide, SplitOrientation};
+    use runner_app::pane_layout::{DropSide, PaneLayout, SplitOrientation};
     use runner_backend::model::SessionStatus;
     use runner_backend::ops::session::DirectSessionEntry;
 
@@ -3026,6 +3045,21 @@ mod tests {
             pinned: false,
             archived_at: None,
         }
+    }
+
+    #[test]
+    fn split_tab_shows_one_archiving_pill_only_when_every_pane_archives() {
+        let single = PaneLayout::single(Some("a"), &["a".into()]);
+        assert!(!split_tab_archiving(&single, |_| true));
+
+        let mut split = PaneLayout::single(Some("a"), &["a".into()]);
+        let second = split.split("p1", SplitOrientation::Row).unwrap();
+        assert!(split_tab_archiving(&split, |_| true));
+
+        split.assign_session(&second, "b").unwrap();
+        assert!(split_tab_archiving(&split, |_| true));
+        assert!(!split_tab_archiving(&split, |session_id| session_id == "a"));
+        assert!(!split_tab_archiving(&split, |_| false));
     }
 
     #[test]
