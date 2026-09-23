@@ -14,6 +14,7 @@ Since 2026-09-01 a spec's number **is** its tracking issue number: file the issu
 - [559 — Command palette on ⌘⇧P](./559-command-palette.md) — the ⌘K overlay in command mode over the keymap ([#559](https://github.com/yicheng47/runner/issues/559), P2, 0.12).
 - [565 — i18n, 简体中文 first](./565-i18n.md) — a language setting, a compile-time catalog, a live switch ([#565](https://github.com/yicheng47/runner/issues/565), P2, 0.14).
 - [586 — Shell status: process detection first](./586-shell-status-detection.md) — foreground-process detection for shell panes before semantic shell integration ([#586](https://github.com/yicheng47/runner/issues/586), P2, 0.13).
+- [644 — Antigravity CLI runtime](./644-antigravity-runtime.md) — `agy` as the next agent runtime: log-file key capture, trust preseed, a model catalog that only emits combinations agy accepts, hook status without `PreToolUse` ([#644](https://github.com/yicheng47/runner/issues/644), P1, 0.11.x; spec under review).
 - [533 — Update agent CLIs from Settings → Agents](./533-agent-cli-updates.md) — installed versions, an Update button that runs the CLI's own updater in a pane, an update-available badge ([#533](https://github.com/yicheng47/runner/issues/533), P2, 0.11.x).
 - [701 — Desktop notifications](./701-desktop-notifications.md) — a popup Runner draws itself, following Zed's agent notification, when a session off screen waits on you, finishes or fails ([#701](https://github.com/yicheng47/runner/issues/701), P2, 0.12).
 
