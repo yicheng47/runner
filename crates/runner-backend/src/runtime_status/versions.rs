@@ -738,8 +738,10 @@ mod tests {
         assert!(versions.probing.is_empty());
     }
 
+    #[cfg(unix)]
     static STUB_FETCHES: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
 
+    #[cfg(unix)]
     fn stub_fetch(_: &LoginShellEnv, package: &str) -> Option<String> {
         STUB_FETCHES.lock().unwrap().push(package.to_owned());
         Some("99.0.0".into())
