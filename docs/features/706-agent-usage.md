@@ -19,7 +19,7 @@ Decided with Jason on 2026-09-23 after five candidates in the design file's hist
 
 **A usage icon in the Settings row that opens a popover.**
 
-- **The icon.** A lucide `gauge` icon at the right end of the sidebar footer's Settings row (`crates/runner-app/src/surfaces/app_shell.rs`, `settings_button`). It always holds the rightmost slot. The Runner update icon, shown only while an update is available, appears to its left, so the gauge never moves.
+- **The icon.** A lucide `gauge` icon at the right end of the sidebar footer's Settings row (`crates/runner-app/src/surfaces/app_shell.rs`, `settings_button`). It always holds the rightmost slot alone. The Runner update icon, shown only while an update is available, sits right after the Settings label; flexible space separates it from the gauge, so the gauge never moves.
 - **Its colour is the signal** (frame `aFl82`):
   - grey (`text-mid`) while every agent is under 80% of every window;
   - amber (`warn`) when any window of any agent is at 80% or more;
