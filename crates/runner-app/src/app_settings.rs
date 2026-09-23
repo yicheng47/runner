@@ -316,7 +316,7 @@ impl Default for AppSettings {
             default_working_dir: String::new(),
             file_link_editor: FileLinkEditor::DefaultApp,
             mission_permission_mode: MissionPermissionMode::Bypass,
-            resume_on_launch: false,
+            resume_on_launch: true,
             automatically_check_for_updates: true,
             #[cfg(windows)]
             automatically_download_updates: true,
@@ -648,7 +648,7 @@ mod tests {
         assert_eq!(value["terminalFontFamily"], "JetBrains Mono");
         assert_eq!(value["defaultCrewId"], "");
         assert_eq!(value["defaultWorkingDir"], "");
-        assert_eq!(value["resumeOnLaunch"], false);
+        assert_eq!(value["resumeOnLaunch"], true);
         assert_eq!(value["automaticallyCheckForUpdates"], true);
         assert_eq!(value["defaultRuntime"], "");
         assert_eq!(value["initializedCommandInstall"], false);
