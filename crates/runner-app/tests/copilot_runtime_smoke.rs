@@ -39,6 +39,7 @@ fn core_at(app_data_dir: PathBuf, db: Arc<runner_backend::db::DbPool>) -> AppCor
         app_data_dir,
         runtime_shell_env,
         runtime_discovery,
+        usage: Arc::new(runner_backend::usage::UsageService::default()),
         buses: runner_backend::event_bus::BusRegistry::new(),
         routers: runner_backend::router::RouterRegistry::new(),
         mission_grid_hint: Arc::new(Mutex::new(None)),

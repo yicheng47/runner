@@ -483,6 +483,9 @@ struct NativeRoot {
     settings_page: SettingsState,
     route: AppRoute,
     settings_return_route: AppRoute,
+    usage_open: bool,
+    usage_anchor: Option<Bounds<Pixels>>,
+    usage_installed: Vec<runner_backend::model::Runtime>,
     runtime_navigation_history: Vec<RuntimeLocation>,
     runtime_navigation_index: Option<usize>,
     sidebar_collapsed: bool,
@@ -603,13 +606,14 @@ impl NativeRoot {
         })
         .detach();
 
-        let (runtime_event_tx, mut runtime_event_rx) = futures::channel::mpsc::unbounded::<()>();
+        let (runtime_event_tx, mut runtime_event_rx) =
+            futures::channel::mpsc::unbounded::<&'static str>();
         let mut app_events = core.events.subscribe();
         cx.background_spawn(async move {
             loop {
                 match app_events.recv().await {
-                    Ok(event) if event.name == "runtime/changed" => {
-                        if runtime_event_tx.unbounded_send(()).is_err() {
+                    Ok(event) if matches!(event.name, "runtime/changed" | "usage/updated") => {
+                        if runtime_event_tx.unbounded_send(event.name).is_err() {
                             break;
                         }
                     }
@@ -620,14 +624,22 @@ impl NativeRoot {
         })
         .detach();
         cx.spawn(async move |weak, cx| {
-            while runtime_event_rx.next().await.is_some() {
-                while runtime_event_rx.try_recv().is_ok() {}
+            while let Some(event) = runtime_event_rx.next().await {
+                let mut runtime_changed = event == "runtime/changed";
+                while let Ok(pending) = runtime_event_rx.try_recv() {
+                    runtime_changed |= pending == "runtime/changed";
+                }
                 if weak
                     .update(cx, |this, cx| {
-                        this.refresh_start_chat_runtimes(cx);
-                        this.refresh_role_form_runtimes(cx);
-                        this.refresh_add_slot_runtimes(cx);
-                        this.refresh_agents_pane(cx);
+                        if runtime_changed {
+                            this.refresh_start_chat_runtimes(cx);
+                            this.refresh_role_form_runtimes(cx);
+                            this.refresh_add_slot_runtimes(cx);
+                            this.refresh_agents_pane(cx);
+                            this.usage_installed =
+                                crate::surfaces::app_shell::usage_installed(this.core(cx));
+                        }
+                        cx.notify();
                     })
                     .is_err()
                 {
@@ -832,6 +844,9 @@ impl NativeRoot {
             settings_page,
             route: initial_route.clone(),
             settings_return_route: initial_route,
+            usage_open: false,
+            usage_anchor: None,
+            usage_installed: crate::surfaces::app_shell::usage_installed(&core),
             runtime_navigation_history,
             runtime_navigation_index,
             sidebar_collapsed,
@@ -960,6 +975,12 @@ impl NativeRoot {
     }
 
     fn handle_app_store_update(&mut self, cx: &mut Context<Self>) {
+        let core = self.core(cx).clone();
+        if core.usage.set_enabled(self.settings(cx).model_runtimes()) {
+            core.usage
+                .request_refresh(core.clone(), runner_backend::usage::RefreshReason::Button);
+            cx.notify();
+        }
         let revisions = self.app_store.read(cx).revisions;
         let previous = self.store_revisions;
         self.store_revisions = revisions;

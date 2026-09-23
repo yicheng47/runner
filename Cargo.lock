@@ -5027,6 +5027,7 @@ dependencies = [
  "uuid",
  "vte",
  "windows-sys 0.61.2",
+ "zed-reqwest",
 ]
 
 [[package]]

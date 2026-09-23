@@ -8351,6 +8351,7 @@ fn restart_notification_failure_warns_without_failing_the_completed_restart() {
         sessions: mgr.clone(),
         runtime_shell_env: mgr.shell_env.clone(),
         runtime_discovery: mgr.discovery_state.clone(),
+        usage: Arc::new(crate::usage::UsageService::default()),
         buses: crate::event_bus::BusRegistry::new(),
         routers: crate::router::RouterRegistry::new(),
         mission_grid_hint: Arc::new(Mutex::new(None)),

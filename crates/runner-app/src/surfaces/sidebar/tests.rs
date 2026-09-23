@@ -74,6 +74,7 @@ fn mission_rename_commits_when_the_field_loses_focus() {
         ),
         runtime_shell_env,
         runtime_discovery,
+        usage: Arc::new(runner_backend::usage::UsageService::default()),
         buses: event_bus::BusRegistry::new(),
         routers: router::RouterRegistry::new(),
         mission_grid_hint: Arc::new(Mutex::new(None)),
