@@ -89,7 +89,7 @@ Sites and their shapes follow the [540 inventory](./archive/540-copilot-cli-runt
 | `session/agy_trust.rs` (new) | Seeds the spawn cwd into `trustedWorkspaces` before every spawn (decision 2). |
 | `session/manager/spawn.rs` | Trust preseed, capture start, the conversation-missing arm, the first-turn warning gate, the Windows batch fallback list. *Exhaustive in two places.* |
 | `session/codex_capture.rs` `sessions_root_for` | `Antigravity => None`. *Exhaustive.* |
-| `runtime_defaults.rs` | None in v1: `settings.json` carries no model key, and where `/model` persists its choice is unprobed. *Exhaustive.* |
+| `runtime_defaults.rs` | None in v1. Corrected 2026-09-23: `/model` persists to `settings.json` as a display label (`"model": "Gemini 3.8 Flash (High)"`), not an id `--model` accepts, so reading it needs a label-to-alias map. *Exhaustive.* |
 | `ops/runtime.rs` catalog | Description; `default_enabled: true` on macOS, Windows after its smoke; the static model list with per-model efforts (decision 3). |
 | `ops/runner.rs`, `ops/slot.rs`, `mcp/tools/session.rs`, `runtime_status.rs` | Runtime lists, error strings and tests gain `antigravity`. |
 | `runtime_status/models.rs` `DISCOVERY_RUNTIMES` | Unchanged in v1. `agy models` needs network and sign-in and prints leveled ids that need grouping; that is a follow-up. |
@@ -99,7 +99,7 @@ Sites and their shapes follow the [540 inventory](./archive/540-copilot-cli-runt
 | Site | agy |
 | --- | --- |
 | `ops/mcp.rs` `McpClientId` | `Antigravity`, path `~/.gemini/config/mcp_config.json`, entry `{"command":…,"args":[…],"disabled":false}` under `mcpServers`; a 0-byte or missing file reads as `{}`. *Exhaustive in four matches.* |
-| `app_store/mcp_defaults.rs` | The default-registration arm. *Exhaustive.* |
+| `app_store/mcp_defaults.rs` | Gone since [#648](https://github.com/yicheng47/runner/issues/648) removed Runner's MCP registration; `mcp_removal.rs` gains only a compile arm, since Runner never registered with agy. `McpClientId::Antigravity` makes agy's servers a Settings → MCP catalog column. *Exhaustive.* |
 | `surfaces/settings/agents.rs` | Catalog-driven. For [#533](./533-agent-cli-updates.md): `agy --version` prints a bare semver and `agy update` is the update command. The badge is mostly moot because agy updates itself. |
 | `skills.rs`, `surfaces/settings/skills.rs` | Two personal roots, no global toggle (the TRAE shape). |
 | `session/title.rs` | No change: agy sets no title, so the tab keeps Runner's name. |
@@ -177,7 +177,7 @@ MCP client and default registration, the Agents row, the Skills pane, the mark a
 
 ### Phase 3 — hook status (macOS)
 
-The Runner-owned hooks folder, `agy_status.rs`, the watcher, env injection and the decision 5 mapping, as a slice under `docs/impls/347-hook-status/` with its own smoke checklist.
+The Runner-owned hooks folder, `agy_status.rs`, the watcher, env injection and the decision 5 mapping, with its smoke checklist in [`docs/tests/644-antigravity-smoke.md`](../tests/644-antigravity-smoke.md).
 
 ### Phase 4 — smoke (macOS, then JASONPC)
 
@@ -196,7 +196,7 @@ Model discovery from `agy models`; the persona on a native channel; hooks on Win
 - [ ] Resume carries `--conversation <key>` and no `-i`; a missing `conversations/<key>.db` gives a fresh spawn with the first turn and a new key.
 - [ ] AcceptEdits rows spawn with `--mode accept-edits`, Bypass rows with `--dangerously-skip-permissions`, Default rows with neither; the strip removes `-mode=plan`, `--mode plan` and `-dangerously-skip-permissions`.
 - [ ] A never-trusted cwd is added to `trustedWorkspaces` before spawn with every other key unchanged, and the session shows no trust dialog.
-- [ ] Runner's server appears in `~/.gemini/config/mcp_config.json` with `disabled: false`, including when the file starts at 0 bytes.
+- [ ] A server copied in Settings → MCP lands in `~/.gemini/config/mcp_config.json` with `disabled: false`, including when the file starts at 0 bytes (Runner no longer registers itself since #648).
 - [ ] Hook status: a finished turn shows Idle, a running turn Working; tools still run under `request-review`, `accept-edits` and bypass with Runner's hooks loaded, which proves Runner sends no `PreToolUse` decision.
 - [ ] The agy fixture renders without stray escapes, and wheel input behaves as phase 2 decided.
 - [ ] Every runtime-enumerating test lists `antigravity`.

@@ -228,24 +228,25 @@ agent 使用 `--json`；不加时，列表和详情命令会为人显示表格�
 
 ## 支持的 Agent
 
-| | Claude Code | Codex | GitHub Copilot CLI | pi |
-| --- | :---: | :---: | :---: | :---: |
-| 聊天、mission、重启后恢复会话 | ✓ | ✓ | ✓ | ✓ |
-| 在 Windows 上运行 | ✓ | ✓ | ✓ ¹ | ✓ ² |
-| 分叉聊天 | ✓ | ✓ | — | ✓ |
-| 由 agent 自身的 hook 驱动 Working / Idle 状态 | ✓ | ✓ | ✓ | ✓ |
-| Needs you：显示审批和提问对话框 | ✓ | — | ✓ | 仅来自扩展 |
-| 从 CLI 读取模型列表 | ✓ | ✓ | — | ✓ |
-| 在 Settings → Agents 中更新 | ✓ | ✓ | ✓ | ✓ |
-| 权限模式 | Default · Accept edits · Auto · Bypass | Default · Auto · Bypass | Default · Accept edits · Bypass | — |
-| Skills 面板 | 目录 + 开关 | 目录 + 开关 | 目录 + 开关 | 目录 |
-| 已安装 Runner skill | ✓ | ✓ | ✓ | ✓ |
-| 终端渲染有夹具测试覆盖 | ✓ | ✓ | — | — |
+| | Claude Code | Codex | GitHub Copilot CLI | pi | Antigravity CLI |
+| --- | :---: | :---: | :---: | :---: | :---: |
+| 聊天、mission、重启后恢复会话 | ✓ | ✓ | ✓ | ✓ | ✓ |
+| 在 Windows 上运行 | ✓ | ✓ | ✓ ¹ | ✓ ² | 默认关闭 ³ |
+| 分叉聊天 | ✓ | ✓ | — | ✓ | — |
+| 由 agent 自身的 hook 驱动 Working / Idle 状态 | ✓ | ✓ | ✓ | ✓ | 仅 macOS |
+| Needs you：显示审批和提问对话框 | ✓ | — | ✓ | 仅来自扩展 | — |
+| 从 CLI 读取模型列表 | ✓ | ✓ | — | ✓ | — |
+| 在 Settings → Agents 中更新 | ✓ | ✓ | ✓ | ✓ | — |
+| 权限模式 | Default · Accept edits · Auto · Bypass | Default · Auto · Bypass | Default · Accept edits · Bypass | — | Default · Accept edits · Bypass |
+| Skills 面板 | 目录 + 开关 | 目录 + 开关 | 目录 + 开关 | 目录 | 目录 |
+| 已安装 Runner skill | ✓ | ✓ | ✓ | ✓ | — |
+| 终端渲染有夹具测试覆盖 | ✓ | ✓ | — | — | — |
 
 ¹ GitHub Copilot CLI 在 Windows 上原生运行，但尚未在 Windows 上做过冒烟测试。
 ² pi 在 Windows 上原生运行，但尚未在 Windows 上做过冒烟测试；它的 bash 工具需要 Git for Windows。
+³ Antigravity CLI 在 Windows 上做过冒烟测试之前默认关闭；可以在 **Settings → Agents** 里手动打开。
 
-Claude Code 和 Codex 是主要支持的 agent，启动和催促时序做过调优。GitHub Copilot CLI 需要 Copilot 订阅。pi 使用你已经配置好的模型提供商。欢迎提 [issue](https://github.com/yicheng47/runner/issues)。
+Claude Code 和 Codex 是主要支持的 agent，启动和催促时序做过调优。GitHub Copilot CLI 需要 Copilot 订阅。pi 使用你已经配置好的模型提供商。Antigravity CLI 使用 Google 账号登录，并在启动时自行更新，所以没有 **Update** 按钮。欢迎提 [issue](https://github.com/yicheng47/runner/issues)。
 
 agent 的命令行工具需要单独安装。Runner 会在 `PATH` 上检测它们，也可以在 **Settings → Agents** 里为每个 agent 单独指定可执行文件；这里还会显示每个 CLI 的版本，有新版本发布时出现 **Update** 按钮，在终端里运行该 CLI 自带的更新命令。在 Windows 上，Claude Code 和 pi 的 bash 工具需要 Git for Windows；通过 npm 安装的 CLI 需要 Node.js。PowerShell 7 可选。agent 在 Windows 上原生运行，不需要 WSL。
 
