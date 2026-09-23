@@ -94,6 +94,7 @@ Work stays inside its own worktree. When several are live at once, treat the oth
   `router`, `cli`, `mission`, `docs`, `validation`.
 - Example: `fix(session): preserve terminal geometry on tab switch`.
 - For validation branches, keep PR descriptions current when scope changes.
+- Bring a branch up to date by rebasing it onto `origin/main` and pushing with `git push --force-with-lease`; never merge `main` into a branch. A PR's history stays its own commits on top of `main`.
 - Do not add tool-specific co-author trailers unless the user explicitly asks.
 
 ## Crew Missions
