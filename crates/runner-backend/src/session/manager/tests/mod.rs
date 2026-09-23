@@ -1,3 +1,4 @@
+mod antigravity;
 mod attention;
 mod codex;
 mod copilot;
@@ -607,6 +608,9 @@ fn assert_chat_has_no_permission_flags(args: &[String]) {
         "--allow-all-tools",
         "--allow-all-paths",
         "--allow-all-urls",
+        "--mode",
+        "-mode",
+        "-dangerously-skip-permissions",
     ] {
         assert!(
             !args

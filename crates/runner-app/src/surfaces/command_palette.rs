@@ -823,6 +823,7 @@ mod tests {
             ("trae", "trae.svg"),
             ("copilot", "copilot.svg"),
             ("pi", "pi.svg"),
+            ("antigravity", "antigravity.svg"),
             ("shell", "square-terminal.svg"),
             ("unknown", "message-square.svg"),
         ] {

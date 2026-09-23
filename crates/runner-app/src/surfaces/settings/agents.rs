@@ -1966,6 +1966,7 @@ mod tests {
             "AGENT_CARD_copilot",
             "AGENT_CARD_pi",
             "AGENT_CARD_trae",
+            "AGENT_CARD_antigravity",
         ] {
             let card = window.debug_bounds(selector).unwrap();
             assert!(card.top() > previous_bottom, "{selector}");

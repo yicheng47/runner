@@ -1138,6 +1138,53 @@ mod tests {
     }
 
     #[test]
+    fn antigravity_create_and_update_bake_only_the_selected_permission_mode() {
+        let pool = ctx();
+        let conn = pool.get().unwrap();
+        let role = create(
+            &conn,
+            CreateRoleInput {
+                handle: "agy-tester".into(),
+                display_name: "Antigravity".into(),
+                runtime: crate::model::Runtime::Antigravity,
+                command: "agy".into(),
+                args: vec![
+                    "--sandbox".into(),
+                    "-mode=plan".into(),
+                    "-dangerously-skip-permissions".into(),
+                ],
+                working_dir: None,
+                system_prompt: None,
+                env: HashMap::new(),
+                model: None,
+                effort: None,
+                permission_mode: PermissionMode::AcceptEdits,
+            },
+        )
+        .unwrap();
+        assert_eq!(role.args, ["--sandbox", "--mode", "accept-edits"]);
+        for (mode, expected) in [
+            (
+                PermissionMode::Bypass,
+                vec!["--sandbox", "--dangerously-skip-permissions"],
+            ),
+            (PermissionMode::Default, vec!["--sandbox"]),
+            (PermissionMode::Auto, vec!["--sandbox"]),
+        ] {
+            let updated = update(
+                &conn,
+                &role.id,
+                UpdateRoleInput {
+                    permission_mode: Some(mode),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            assert_eq!(updated.args, expected);
+        }
+    }
+
+    #[test]
     fn create_omits_bypass_flags_when_toggle_off() {
         let pool = ctx();
         let conn = pool.get().unwrap();

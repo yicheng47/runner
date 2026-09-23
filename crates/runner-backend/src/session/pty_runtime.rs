@@ -24,6 +24,7 @@ use portable_pty::{native_pty_system, Child, CommandBuilder, ExitStatus, MasterP
 #[cfg(unix)]
 use portable_pty::ChildKiller;
 
+use super::agy_status::AgyStatusWatcher;
 use super::claude_status::{
     ClaudeStatusWatcher, CTRL_C_INTERRUPT, ESCAPE_INTERRUPT, GENERATION_ENV, PATH_ENV,
 };
@@ -100,6 +101,7 @@ enum HookStatusWatcher {
     Codex(CodexStatusWatcher),
     Copilot(CopilotStatusWatcher),
     Pi(PiStatusWatcher),
+    Antigravity(AgyStatusWatcher),
 }
 
 impl HookStatusWatcher {
@@ -108,7 +110,7 @@ impl HookStatusWatcher {
             Self::Claude(watcher) => Some(watcher.interrupt_signal()),
             Self::Codex(_) => None,
             Self::Copilot(watcher) => Some(watcher.interrupt_signal()),
-            Self::Pi(_) => None,
+            Self::Pi(_) | Self::Antigravity(_) => None,
         }
     }
 
@@ -121,6 +123,7 @@ impl HookStatusWatcher {
             Self::Codex(watcher) => watcher.drain_observations(transition),
             Self::Copilot(watcher) => watcher.drain_observations(transition),
             Self::Pi(watcher) => watcher.drain_observations(transition),
+            Self::Antigravity(watcher) => watcher.drain_observations(transition),
         }
     }
 }
@@ -288,6 +291,26 @@ impl SessionRuntime for PtyRuntime {
                 Err(error) => {
                     log::warn!(
                         "pi status bridge unavailable for {}: {error}",
+                        spec.session_id
+                    );
+                    None
+                }
+            }
+        });
+        let hook_status = hook_status.or_else(|| {
+            if !super::hook_feed::hooks_supported(
+                Some(crate::model::Runtime::Antigravity),
+                cfg!(windows),
+            ) {
+                return None;
+            }
+            let path = spec.env.get(super::agy_status::PATH_ENV)?;
+            let generation = spec.env.get(super::agy_status::GENERATION_ENV)?;
+            match AgyStatusWatcher::start(std::path::Path::new(path), generation.clone()) {
+                Ok(watcher) => Some(HookStatusWatcher::Antigravity(watcher)),
+                Err(error) => {
+                    log::warn!(
+                        "Antigravity status bridge unavailable for {}: {error}",
                         spec.session_id
                     );
                     None

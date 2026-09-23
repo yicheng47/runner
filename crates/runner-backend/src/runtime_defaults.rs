@@ -20,7 +20,9 @@ pub fn runtime_defaults(runtime: Runtime, home: &Path) -> RuntimeDefaults {
         Runtime::Copilot => json_defaults(&copilot_settings_path(home), true),
         Runtime::Pi => pi_defaults(&home.join(PI_SETTINGS_RELATIVE_PATH)),
         Runtime::Trae => toml_defaults(&trae_config_path(home)),
-        Runtime::Shell => RuntimeDefaults::default(),
+        // agy's settings.json stores `/model`'s pick as a display label such as
+        // "Gemini 3.8 Flash (High)", not an id `--model` accepts (spec 644).
+        Runtime::Antigravity | Runtime::Shell => RuntimeDefaults::default(),
     }
 }
 
@@ -318,6 +320,22 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         assert_eq!(
             runtime_defaults(Runtime::Shell, home.path()),
+            RuntimeDefaults::default()
+        );
+    }
+
+    #[test]
+    fn antigravity_display_label_is_not_read_as_a_model() {
+        let home = tempfile::tempdir().unwrap();
+        let settings = home.path().join(".gemini/antigravity-cli/settings.json");
+        std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
+        std::fs::write(
+            &settings,
+            "{\n  \"model\": \"Gemini 3.8 Flash (High)\"\n}\n",
+        )
+        .unwrap();
+        assert_eq!(
+            runtime_defaults(Runtime::Antigravity, home.path()),
             RuntimeDefaults::default()
         );
     }

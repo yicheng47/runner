@@ -33,6 +33,7 @@ pub enum McpClientId {
     Codex,
     Trae,
     Copilot,
+    Antigravity,
 }
 
 impl McpClientId {
@@ -44,13 +45,14 @@ impl McpClientId {
             Some(crate::model::Runtime::Codex) => Ok(Self::Codex),
             Some(crate::model::Runtime::Trae) => Ok(Self::Trae),
             Some(crate::model::Runtime::Copilot) => Ok(Self::Copilot),
+            Some(crate::model::Runtime::Antigravity) => Ok(Self::Antigravity),
             Some(
                 crate::model::Runtime::ClaudeCode
                 | crate::model::Runtime::Pi
                 | crate::model::Runtime::Shell,
             )
             | None => Err(Error::msg(format!(
-                "unknown MCP client: {raw:?} (expected claude_code, codex, trae, or copilot)"
+                "unknown MCP client: {raw:?} (expected claude_code, codex, trae, copilot, or antigravity)"
             ))),
         }
     }
@@ -165,7 +167,7 @@ pub fn remove_runner_entry(client: McpClientId, path: &Path, binary_path: &str) 
     let status = match client {
         McpClientId::ClaudeCode => claude_code_status_at(path, binary_path),
         McpClientId::Codex | McpClientId::Trae => codex_status_at(path, binary_path),
-        McpClientId::Copilot => copilot_status_at(path, binary_path),
+        McpClientId::Copilot | McpClientId::Antigravity => copilot_status_at(path, binary_path),
     }?;
     if !status.registered || !status.matches_current {
         return Ok(false);
@@ -174,12 +176,19 @@ pub fn remove_runner_entry(client: McpClientId, path: &Path, binary_path: &str) 
         McpClientId::ClaudeCode => claude_code_write_at(path),
         McpClientId::Codex | McpClientId::Trae => codex_write_at(path),
         McpClientId::Copilot => copilot_write_at(path),
+        McpClientId::Antigravity => write_entry_at(path, client, "runner", None, false),
     }?;
     Ok(true)
 }
 
 impl McpClientId {
-    pub const ALL: [Self; 4] = [Self::ClaudeCode, Self::Codex, Self::Trae, Self::Copilot];
+    pub const ALL: [Self; 5] = [
+        Self::ClaudeCode,
+        Self::Codex,
+        Self::Trae,
+        Self::Copilot,
+        Self::Antigravity,
+    ];
 
     pub fn key(self) -> &'static str {
         match self {
@@ -187,6 +196,7 @@ impl McpClientId {
             Self::Codex => "codex",
             Self::Trae => "trae",
             Self::Copilot => "copilot",
+            Self::Antigravity => "antigravity",
         }
     }
 
@@ -196,6 +206,7 @@ impl McpClientId {
             crate::model::Runtime::Codex => Some(Self::Codex),
             crate::model::Runtime::Trae => Some(Self::Trae),
             crate::model::Runtime::Copilot => Some(Self::Copilot),
+            crate::model::Runtime::Antigravity => Some(Self::Antigravity),
             crate::model::Runtime::Pi | crate::model::Runtime::Shell => None,
         }
     }
@@ -206,6 +217,7 @@ impl McpClientId {
             Self::Codex => crate::model::Runtime::Codex,
             Self::Trae => crate::model::Runtime::Trae,
             Self::Copilot => crate::model::Runtime::Copilot,
+            Self::Antigravity => crate::model::Runtime::Antigravity,
         }
     }
 
@@ -215,6 +227,7 @@ impl McpClientId {
             Self::Codex => "Codex",
             Self::Trae => "TRAE CLI",
             Self::Copilot => "GitHub Copilot CLI",
+            Self::Antigravity => "Antigravity CLI",
         }
     }
 
@@ -224,13 +237,14 @@ impl McpClientId {
             Self::Codex => "~/.codex/config.toml",
             Self::Trae => "~/.trae/traecli.toml",
             Self::Copilot => "~/.copilot/mcp-config.json",
+            Self::Antigravity => "~/.gemini/config/mcp_config.json",
         }
     }
 
     pub fn entry_key(self, name: &str) -> String {
         format!(
             "{}.{name}",
-            if matches!(self, Self::ClaudeCode | Self::Copilot) {
+            if self.is_json() {
                 "mcpServers"
             } else {
                 "mcp_servers"
@@ -244,7 +258,13 @@ impl McpClientId {
             Self::Codex => crate::runtime_defaults::codex_config_path(home),
             Self::Trae => crate::runtime_defaults::trae_config_path(home),
             Self::Copilot => home.join(".copilot/mcp-config.json"),
+            Self::Antigravity => home.join(".gemini/config/mcp_config.json"),
         }
+    }
+
+    /// Clients whose config keeps servers under a JSON `mcpServers` object.
+    pub fn is_json(self) -> bool {
+        matches!(self, Self::ClaudeCode | Self::Copilot | Self::Antigravity)
     }
 }
 
@@ -435,7 +455,7 @@ fn read_entries_at(path: &Path, client: McpClientId) -> Result<BTreeMap<String, 
     if raw.trim().is_empty() {
         return Ok(BTreeMap::new());
     }
-    if matches!(client, McpClientId::ClaudeCode | McpClientId::Copilot) {
+    if client.is_json() {
         let value: serde_json::Value = serde_json::from_str(&raw)
             .map_err(|e| Error::msg(format!("parse {}: {e}", path.display())))?;
         let object = value
@@ -541,14 +561,14 @@ const PARSED_SPAN: &str = "a parsed TOML document keeps its spans";
 
 // serde_json validates and locates values; splice only the owned member so unrelated
 // JSON whitespace, ordering, and number/string spellings survive byte for byte.
-struct JsonMember {
-    key: String,
-    key_start: usize,
-    value: std::ops::Range<usize>,
+pub(crate) struct JsonMember {
+    pub(crate) key: String,
+    pub(crate) key_start: usize,
+    pub(crate) value: std::ops::Range<usize>,
     comma: Option<usize>,
 }
 
-fn json_members(raw: &str) -> Result<(Vec<JsonMember>, usize)> {
+pub(crate) fn json_members(raw: &str) -> Result<(Vec<JsonMember>, usize)> {
     let mut offset = raw
         .find('{')
         .ok_or_else(|| Error::msg("expected JSON object"))?
@@ -816,7 +836,7 @@ fn write_entry_at(
     if entry.is_none() && !existing.contains_key(name) {
         return Ok(());
     }
-    let output = if matches!(client, McpClientId::ClaudeCode | McpClientId::Copilot) {
+    let output = if client.is_json() {
         let raw = if raw.trim().is_empty() { "{}" } else { &raw };
         let (members, _) = json_members(raw)?;
         let server_member = members.iter().find(|m| m.key == "mcpServers");
@@ -884,8 +904,27 @@ fn write_entry_at(
         .map_err(|e| Error::msg(format!("write {}: {e}", path.display())))
 }
 
-fn translated(definition: &McpServerDefinition, client: McpClientId) -> NativeEntry {
-    if matches!(client, McpClientId::ClaudeCode | McpClientId::Copilot) {
+fn translated(definition: &McpServerDefinition, client: McpClientId) -> Result<NativeEntry> {
+    if client == McpClientId::Antigravity {
+        // `agy mcp add` writes args, command, disabled, env in this order and
+        // omits empty args. Its HTTP entry shape is unprobed.
+        let McpServerDefinition::Stdio { command, args, env } = definition else {
+            return Err(Error::msg(
+                "Antigravity CLI's HTTP entry is not supported yet; add the server with `agy mcp add`",
+            ));
+        };
+        let mut value = serde_json::Map::new();
+        if !args.is_empty() {
+            value.insert("args".into(), json!(args));
+        }
+        value.insert("command".into(), json!(command));
+        value.insert("disabled".into(), json!(false));
+        if !env.is_empty() {
+            value.insert("env".into(), json!(env));
+        }
+        return Ok(NativeEntry::Claude(serde_json::Value::Object(value)));
+    }
+    Ok(if client.is_json() {
         let mut value = definition.to_claude();
         if client == McpClientId::Copilot && matches!(definition, McpServerDefinition::Stdio { .. })
         {
@@ -897,7 +936,7 @@ fn translated(definition: &McpServerDefinition, client: McpClientId) -> NativeEn
         let mut table = toml_edit::Table::new();
         definition.write_toml(&mut table);
         NativeEntry::Toml(table)
-    }
+    })
 }
 
 fn copy_at(
@@ -923,7 +962,7 @@ fn copy_at(
         &paths[&to],
         to,
         name,
-        Some(translated(&definition, to)),
+        Some(translated(&definition, to)?),
         true,
     )
 }
@@ -937,7 +976,7 @@ pub fn mcp_remove_server(home: &Path, client: McpClientId, name: &str) -> Result
 }
 
 fn parse_native(client: McpClientId, name: &str, text: &str) -> Result<NativeEntry> {
-    if matches!(client, McpClientId::ClaudeCode | McpClientId::Copilot) {
+    if client.is_json() {
         let value: serde_json::Value =
             serde_json::from_str(text).map_err(|e| Error::msg(format!("Invalid JSON: {e}")))?;
         if !value.is_object() {
@@ -972,13 +1011,38 @@ pub fn validate_mcp_edit(
     client: McpClientId,
     name: &str,
     text: &str,
-    also_update: bool,
+    also: &[McpClientId],
 ) -> Result<()> {
-    let entry = parse_native(client, name, text)?;
-    if also_update && entry.definition().is_none() {
-        return Err(Error::msg("This transport cannot be translated. Turn off Also update and edit each agent's config with its own CLI."));
+    also_update_entries(client, &parse_native(client, name, text)?, also).map(|_| ())
+}
+
+/// The entry each also-update target will receive, translated before any
+/// file is written so a target that cannot take it leaves every file alone.
+fn also_update_entries(
+    client: McpClientId,
+    native: &NativeEntry,
+    also: &[McpClientId],
+) -> Result<Vec<(McpClientId, NativeEntry)>> {
+    let targets: Vec<_> = McpClientId::ALL
+        .into_iter()
+        .filter(|&other| other != client && also.contains(&other))
+        .collect();
+    if targets.is_empty() {
+        return Ok(Vec::new());
     }
-    Ok(())
+    let Some(definition) = native.definition() else {
+        return Err(Error::msg("This transport cannot be translated. Turn off Also update and edit each agent's config with its own CLI."));
+    };
+    targets
+        .into_iter()
+        .map(|other| {
+            translated(&definition, other)
+                .map(|entry| (other, entry))
+                .map_err(|e| {
+                    Error::msg(format!("{e}. Turn off Also update for {}.", other.label()))
+                })
+        })
+        .collect()
 }
 
 fn edit_at(
@@ -988,29 +1052,14 @@ fn edit_at(
     text: &str,
     also: &[McpClientId],
 ) -> Result<()> {
-    validate_mcp_edit(client, name, text, !also.is_empty())?;
     let native = parse_native(client, name, text)?;
-    let definition = native.definition();
+    let targets = also_update_entries(client, &native, also)?;
     let mut errors = Vec::new();
     if let Err(e) = write_entry_at(&paths[&client], client, name, Some(native), false) {
         errors.push(e.to_string());
     }
-    for &other in McpClientId::ALL
-        .iter()
-        .filter(|&&other| other != client && also.contains(&other))
-    {
-        if let Err(e) = write_entry_at(
-            &paths[&other],
-            other,
-            name,
-            Some(translated(
-                definition
-                    .as_ref()
-                    .expect("also-update is validated to have a translatable definition"),
-                other,
-            )),
-            true,
-        ) {
+    for (other, entry) in targets {
+        if let Err(e) = write_entry_at(&paths[&other], other, name, Some(entry), true) {
             errors.push(e.to_string());
         }
     }
@@ -1491,7 +1540,129 @@ mod tests {
             read_entries_at(&paths[&Codex], Codex).unwrap()["other"].definition(),
             entry.definition()
         );
-        assert_eq!(catalog(&paths).servers[0].clients.len(), 4);
+        assert_eq!(
+            catalog(&paths).servers[0].clients.len(),
+            McpClientId::ALL.len()
+        );
+    }
+
+    #[test]
+    fn antigravity_client_reads_an_empty_file_and_copies_in_agys_stdio_shape() {
+        use McpClientId::*;
+        assert_eq!(McpClientId::parse("antigravity").unwrap(), Antigravity);
+        assert_eq!(Antigravity.runtime(), crate::model::Runtime::Antigravity);
+        assert_eq!(
+            McpClientId::for_runtime(crate::model::Runtime::Antigravity),
+            Some(Antigravity)
+        );
+        assert_eq!(Antigravity.key(), "antigravity");
+        assert_eq!(Antigravity.label(), "Antigravity CLI");
+        assert_eq!(
+            Antigravity.config_file(),
+            "~/.gemini/config/mcp_config.json"
+        );
+        assert_eq!(Antigravity.entry_key("runner"), "mcpServers.runner");
+        assert_eq!(
+            Antigravity.config_path(Path::new("/home/me")),
+            Path::new("/home/me/.gemini/config/mcp_config.json")
+        );
+
+        let dir = TempDir::new().unwrap();
+        let paths = paths(&dir);
+        // agy ships the file at 0 bytes.
+        std::fs::write(&paths[&Antigravity], "").unwrap();
+        assert!(read_entries_at(&paths[&Antigravity], Antigravity)
+            .unwrap()
+            .is_empty());
+        std::fs::write(
+            &paths[&ClaudeCode],
+            r#"{"mcpServers":{"fs":{"type":"stdio","command":"fs-mcp","args":["/work"],"env":{"TOKEN":"x"}},"bare":{"command":"bare-mcp"},"web":{"type":"http","url":"https://example.com/mcp"}}}"#,
+        )
+        .unwrap();
+        assert!(catalog(&paths).servers.iter().all(|server| server
+            .clients
+            .get(&Antigravity)
+            .is_some_and(|entry| entry.error.is_none())));
+
+        copy_at(&paths, ClaudeCode, Antigravity, "fs").unwrap();
+        copy_at(&paths, ClaudeCode, Antigravity, "bare").unwrap();
+        let written: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&paths[&Antigravity]).unwrap()).unwrap();
+        assert_eq!(
+            serde_json::to_string(&written).unwrap(),
+            r#"{"mcpServers":{"fs":{"args":["/work"],"command":"fs-mcp","disabled":false,"env":{"TOKEN":"x"}},"bare":{"command":"bare-mcp","disabled":false}}}"#
+        );
+        let entries = read_entries_at(&paths[&Antigravity], Antigravity).unwrap();
+        let claude = read_entries_at(&paths[&ClaudeCode], ClaudeCode).unwrap();
+        assert_eq!(entries["fs"].definition(), claude["fs"].definition());
+        assert!(
+            !catalog(&paths)
+                .servers
+                .iter()
+                .find(|server| server.name == "fs")
+                .unwrap()
+                .clients[&Antigravity]
+                .conflicting
+        );
+
+        let refused = copy_at(&paths, ClaudeCode, Antigravity, "web").unwrap_err();
+        assert!(refused.to_string().contains("agy mcp add"), "{refused}");
+        assert!(!read_entries_at(&paths[&Antigravity], Antigravity)
+            .unwrap()
+            .contains_key("web"));
+
+        copy_at(&paths, Antigravity, Codex, "fs").unwrap();
+        assert_eq!(
+            read_entries_at(&paths[&Codex], Codex).unwrap()["fs"].definition(),
+            claude["fs"].definition()
+        );
+        mcp_remove_server_at(&paths, Antigravity, "bare");
+        assert!(!read_entries_at(&paths[&Antigravity], Antigravity)
+            .unwrap()
+            .contains_key("bare"));
+    }
+
+    #[test]
+    fn an_http_edit_that_includes_antigravity_writes_no_file() {
+        use McpClientId::*;
+        let dir = TempDir::new().unwrap();
+        let paths = paths(&dir);
+        let claude = r#"{"mcpServers":{"web":{"type":"http","url":"https://old.example/mcp"}}}"#;
+        let codex = "[mcp_servers.web]\nurl = 'https://old.example/mcp'\n";
+        let agy = r#"{"mcpServers":{"fs":{"command":"fs-mcp","disabled":false}}}"#;
+        std::fs::write(&paths[&ClaudeCode], claude).unwrap();
+        std::fs::write(&paths[&Codex], codex).unwrap();
+        std::fs::write(&paths[&Antigravity], agy).unwrap();
+        let text = r#"{"type":"http","url":"https://new.example/mcp"}"#;
+
+        let error = validate_mcp_edit(ClaudeCode, "web", text, &[Codex, Antigravity]).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("Turn off Also update for Antigravity CLI"),
+            "{error}"
+        );
+        assert!(edit_at(&paths, ClaudeCode, "web", text, &[Codex, Antigravity]).is_err());
+        assert_eq!(
+            std::fs::read_to_string(&paths[&ClaudeCode]).unwrap(),
+            claude
+        );
+        assert_eq!(std::fs::read_to_string(&paths[&Codex]).unwrap(), codex);
+        assert_eq!(std::fs::read_to_string(&paths[&Antigravity]).unwrap(), agy);
+
+        edit_at(&paths, ClaudeCode, "web", text, &[Codex]).unwrap();
+        assert!(std::fs::read_to_string(&paths[&Codex])
+            .unwrap()
+            .contains("https://new.example/mcp"));
+        assert_eq!(std::fs::read_to_string(&paths[&Antigravity]).unwrap(), agy);
+    }
+
+    fn mcp_remove_server_at(
+        paths: &BTreeMap<McpClientId, PathBuf>,
+        client: McpClientId,
+        name: &str,
+    ) {
+        write_entry_at(&paths[&client], client, name, None, false).unwrap();
     }
 
     #[test]

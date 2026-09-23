@@ -581,10 +581,9 @@ pub fn session_unarchive(state: &AppCore, session_id: &str) -> Result<()> {
 /// Permanently delete an archived direct chat (Settings → Archived
 /// delete, feature 01 Phase 4). Refused for non-archived and
 /// mission-scoped rows — archive is the reversible step, delete is
-/// not. Role keeps nothing else on disk for a direct chat (the
-/// agent's own JSONL belongs to the agent runtime), so the row delete
-/// is the whole cleanup; the scrollback buffer was already purged at
-/// archive time.
+/// not. An Antigravity chat's `--log-file` goes with the row; the
+/// agent's own JSONL belongs to the agent runtime, and the scrollback
+/// buffer was already purged at archive time.
 pub fn session_delete(state: &AppCore, session_id: &str) -> Result<()> {
     let conn = state.db.get()?;
     let deleted = repo::session::delete_archived_direct(&conn, session_id)?;
@@ -601,6 +600,7 @@ pub fn session_delete(state: &AppCore, session_id: &str) -> Result<()> {
             ))),
         };
     }
+    crate::session::agy_capture::remove_log(&state.app_data_dir, session_id);
     Ok(())
 }
 
@@ -1496,6 +1496,22 @@ mod tests {
     }
 
     #[test]
+    fn session_delete_removes_an_antigravity_chat_log_with_its_row() {
+        let app_data = tempfile::tempdir().unwrap();
+        let state = crate::test_support::test_core_in(app_data.path().to_path_buf());
+        let conn = state.db.get().unwrap();
+        let role_id = seed_role(&conn);
+        let archived = insert_direct_session(&conn, &role_id, true);
+        drop(conn);
+        crate::session::agy_capture::prepare_log(app_data.path(), &archived);
+        let log = crate::session::agy_capture::log_path(app_data.path(), &archived);
+        std::fs::write(&log, "log").unwrap();
+
+        session_delete(&state, &archived).unwrap();
+        assert!(!log.exists());
+    }
+
+    #[test]
     fn delete_archived_direct_only_deletes_archived_direct_rows() {
         let pool = db::open_in_memory().unwrap();
         let conn = pool.get().unwrap();
@@ -1669,9 +1685,11 @@ mod tests {
             assert!(row.native_fork);
             assert!(row.forkable);
         }
-        let trae = entry("trae", true, false, false);
-        assert!(!trae.native_fork);
-        assert!(!trae.forkable);
+        for runtime in ["trae", "copilot", "antigravity"] {
+            let row = entry(runtime, true, false, false);
+            assert!(!row.native_fork, "{runtime}");
+            assert!(!row.forkable, "{runtime}");
+        }
         let unkeyed = entry("codex", false, false, false);
         assert!(unkeyed.native_fork);
         assert!(!unkeyed.forkable);

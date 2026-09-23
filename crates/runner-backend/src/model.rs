@@ -149,16 +149,18 @@ pub enum Runtime {
     Trae,
     Copilot,
     Pi,
+    Antigravity,
     Shell,
 }
 
 impl Runtime {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::ClaudeCode,
         Self::Codex,
         Self::Trae,
         Self::Copilot,
         Self::Pi,
+        Self::Antigravity,
         Self::Shell,
     ];
 
@@ -169,6 +171,7 @@ impl Runtime {
             Self::Trae => "trae",
             Self::Copilot => "copilot",
             Self::Pi => "pi",
+            Self::Antigravity => "antigravity",
             Self::Shell => "shell",
         }
     }
@@ -196,6 +199,7 @@ mod tests {
             (Runtime::Trae, "trae"),
             (Runtime::Copilot, "copilot"),
             (Runtime::Pi, "pi"),
+            (Runtime::Antigravity, "antigravity"),
             (Runtime::Shell, "shell"),
         ] {
             let json = format!("\"{key}\"");

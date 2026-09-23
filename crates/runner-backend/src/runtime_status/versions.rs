@@ -519,6 +519,8 @@ mod tests {
                 "1.0.83",
             ),
             ("0.85.1\n", "0.85.1"),
+            // agy --version
+            ("1.2.9\n", "1.2.9"),
             ("codex-cli 0.156.0-alpha.2\n", "0.156.0-alpha.2"),
             ("tool v1.2.3\n", "1.2.3"),
         ] {
@@ -1139,5 +1141,6 @@ mod tests {
         assert!(updatable(Runtime::Copilot));
         assert!(updatable(Runtime::Pi));
         assert!(!updatable(Runtime::Trae));
+        assert!(!updatable(Runtime::Antigravity));
     }
 }
