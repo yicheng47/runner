@@ -261,7 +261,7 @@ pub(super) fn sidebar_row_label(label: String, selected: bool, monospace: bool) 
         .overflow_hidden()
         .whitespace_nowrap()
         .when(monospace, |label| {
-            label.font_family(theme::SYSTEM_MONOSPACE_FONT)
+            label.font_family(theme::UI_MONOSPACE_FONT)
         })
         .font_weight(if selected {
             FontWeight::SEMIBOLD

@@ -164,7 +164,7 @@ impl RenderOnce for SessionOverlay {
                         .border_color(theme::with_alpha(theme::warning(), 0.4))
                         .bg(theme::with_alpha(theme::warning(), 0.15))
                         .px_3()
-                        .font_family(theme::SYSTEM_MONOSPACE_FONT)
+                        .font_family(theme::UI_MONOSPACE_FONT)
                         .text_size(theme::text_body())
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(theme::warning())

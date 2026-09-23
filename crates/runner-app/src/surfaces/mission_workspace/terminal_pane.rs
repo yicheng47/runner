@@ -261,7 +261,6 @@ impl MissionWorkspace {
                     .child("Submit / clear")
                     .child(
                         div()
-                            .font_family(theme::SYSTEM_MONOSPACE_FONT)
                             .text_size(theme::text_caption())
                             .font_weight(FontWeight::NORMAL)
                             .child("↵"),

@@ -532,7 +532,7 @@ impl Render for CommandPaletteState {
                     .child(
                         div()
                             .flex_none()
-                            .font_family(theme::SYSTEM_MONOSPACE_FONT)
+                            .font_family(theme::UI_MONOSPACE_FONT)
                             .text_size(theme::text_meta())
                             .text_color(theme::faint())
                             .child(item.kind.label()),
@@ -568,7 +568,7 @@ impl Render for CommandPaletteState {
                     div()
                         .px(rems(10. / 16.))
                         .py(rems(6. / 16.))
-                        .font_family(theme::SYSTEM_MONOSPACE_FONT)
+                        .font_family(theme::UI_MONOSPACE_FONT)
                         .text_size(theme::text_caption())
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(theme::faint())
@@ -634,7 +634,6 @@ impl Render for CommandPaletteState {
                                     .bg(theme::bg())
                                     .px(rems(6. / 16.))
                                     .py(px(1.))
-                                    .font_family(theme::SYSTEM_MONOSPACE_FONT)
                                     .text_size(theme::text_caption())
                                     .font_weight(FontWeight::MEDIUM)
                                     .text_color(theme::faint())

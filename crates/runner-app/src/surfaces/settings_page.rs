@@ -657,7 +657,7 @@ fn command_installed_line(path: &Path) -> AnyElement {
         .child("Installed at")
         .child(
             div()
-                .font_family(theme::SYSTEM_MONOSPACE_FONT)
+                .font_family(theme::UI_MONOSPACE_FONT)
                 .child(path.display().to_string()),
         )
         .into_any_element()
@@ -1935,7 +1935,7 @@ impl NativeRoot {
             "settings-app-zoom",
             56.,
             div()
-                .font_family(theme::SYSTEM_MONOSPACE_FONT)
+                .font_family(theme::UI_MONOSPACE_FONT)
                 .text_size(theme::text_ui())
                 .font_weight(FontWeight::MEDIUM)
                 .child(format!(
@@ -2230,7 +2230,7 @@ impl NativeRoot {
                 .text_size(theme::text_body())
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(theme::text())
-                .child(div().font_family(theme::SYSTEM_MONOSPACE_FONT).child(
+                .child(div().font_family(theme::UI_MONOSPACE_FONT).child(
                     runner_backend::cli_install::runner_command_name(cfg!(debug_assertions)),
                 ))
                 .child(" command")
@@ -2310,6 +2310,7 @@ impl NativeRoot {
                 mode: PreviewMode::Light,
                 colors: theme::colors_for(light_variant),
                 palette: settings.light_terminal_theme.palette(),
+                font_family: settings.terminal_font_family.family(),
                 caption: format!(
                     "Light · {} + {}",
                     light_theme_label(settings.light_app_theme),
@@ -2322,6 +2323,7 @@ impl NativeRoot {
                 mode: PreviewMode::Dark,
                 colors: theme::colors_for(dark_variant),
                 palette: settings.dark_terminal_theme.palette(),
+                font_family: settings.terminal_font_family.family(),
                 caption: format!(
                     "Dark · {} + {}",
                     dark_theme_label(settings.dark_app_theme),
@@ -2433,7 +2435,7 @@ impl NativeRoot {
                 .flex()
                 .items_center()
                 .gap(rems(3. / 16.))
-                .font_family(theme::SYSTEM_MONOSPACE_FONT)
+                .font_family(theme::UI_MONOSPACE_FONT)
                 .child(
                     div()
                         .text_size(theme::text_ui())
