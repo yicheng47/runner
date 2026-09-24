@@ -16,11 +16,12 @@ The positioning settled on 2026-09-16 raises the bar. A role is a setup that job
 
 ## Scope
 
-Redesign the page in Pencil first, in `design/specs/393-role-page.pen`, then implement to match. The page shows the same data and runs the same commands, with no backend changes.
+Redesign the page in Pencil first, in `design/specs/393-role-page.pen`, which also holds the crew page ([699](./699-crew-page.md)), then implement to match. The page shows the same data and runs the same commands, with no backend changes.
 
-- **Setup hero**: handle, display name, runtime, model and effort, directly under the header.
+- **Profile split**: a left column holds the role's pixel avatar, display name and handle, Chat now and Edit, then the setup (runtime, model and effort, permissions, command, working directory), the crews using the role and its activity. The system prompt fills the right column. The avatar is the mission's `RoleAvatar` seeded with the role's handle, so it needs no new field, and a slot that keeps its role's handle looks the same on the crew page and in a mission.
+- **Edit in place**: Edit turns the page into its own form instead of opening the edit drawer. The left column's values become controls, the prompt card becomes the editor at full column height, and Save and Cancel replace Chat now and Edit. The create form keeps its drawer.
 - **Clamped prompt**: the system prompt shows a few lines with expand and collapse instead of the full text, and is collapsed by default.
-- **Chat now card removed**: it folds into the header action, and the working directory becomes a row in Details.
+- **Chat now card removed**: it folds into the header action, and the working directory becomes a row in the setup.
 - **Crews using this role** stays one glance away.
 - **Override hint**: the stale hint is corrected.
 - **Room for what is coming, without building it**: the layout leaves a place for per-run usage from #630 in Activity, and for per-role skills and MCP picks from #577, so neither lands as another card at the bottom.

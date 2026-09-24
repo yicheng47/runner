@@ -13,11 +13,12 @@ The crew page is still the MVP draft (frame `CUKjM` in `design/runner-mvp-design
 
 ## Scope
 
-Redesign the page in Pencil first, in `design/specs/699-crew-page.pen`, then implement to match. The page shows the same data and runs the same commands, with no backend changes.
+Redesign the page in Pencil first, in `design/specs/393-role-page.pen` beside the role page, then implement to match. The page shows the same data and runs the same commands, except for the dropped fields below; the only backend change is removing the goal fallback.
 
-- **Slots on top**: the slots sit directly under the header.
-- **Prose tucked away**: purpose, default goal and team conventions move to a secondary presentation, such as collapsed sections, a side column or a tab, collapsed by default when long.
-- **Slot rows**: each row reads at a glance: handle, LEAD, role, and the effective runtime, model and effort, with overrides marked. The prompt and the command move behind a disclosure.
+- **Profile split, like the role page**: the left column holds the crew's picture (its first four slots' avatars), name, a one-line summary (slot count and lead), Start mission and Edit, then the slots and the details. Team conventions fill the right column, with the crew's recent missions under them, taken from the mission summaries the app already loads.
+- **Conventions are the crew's only prose**: purpose, default goal and team conventions were three prose fields doing overlapping jobs, and conventions alone are enough (Jason, 2026-09-24). Team conventions sit beside the slots, collapsed when long, the way the role page shows its system prompt. Edit turns the name into a field and the conventions into an editor; slot changes keep saving on their own.
+- **Purpose and default goal dropped from the app**: purpose never reached an agent; it appeared on this page, the crew list card, the create form and crew search, which stop showing and asking for it. The default goal pre-filled the Start mission dialog and was the lead's goal when a mission started without one; every mission now states its own goal, and a repeatable job's goal belongs to the job (#630), not the crew. The dialog stops pre-filling it, and `ops::mission` stops falling back to `crew.goal` when a mission starts or resumes without a goal, so a goal nobody can see never reaches the lead. The database columns and the CLI's `--purpose` and `--goal` on `crew create` and `crew update` stay for now.
+- **Slot rows**: each row reads at a glance: the slot's pixel avatar (`RoleAvatar` seeded with the slot handle, as the mission rail and feed draw it), handle, LEAD, role, and the effective runtime, model and effort, with overrides marked. Clicking a slot opens a popup beside it with its setup against the role's defaults, the command, a prompt preview, and Edit overrides, Set as lead, Open role and Remove. Edit overrides edits the slot's runtime, model and effort in the popup and saves to the slot only; the role is edited on its own page. This replaces the slot menu's Edit role drawer.
 - **Settled model**: the page is implemented against #562's settled roster model, not the one before it.
 
 ## Non-goals
@@ -35,5 +36,5 @@ Redesign the page in Pencil first, in `design/specs/699-crew-page.pen`, then imp
 ## Verification
 
 - `runner-app` tests pass, extended where the row restructure moves behavior (`surfaces/crews/tests.rs`); workspace clippy is clean.
-- Manual pass with a crew of five or more slots, per-slot overrides, and long purpose, goal and conventions prose: the slots are visible without scrolling.
+- Manual pass with a crew of five or more slots, per-slot overrides, and long conventions prose: the slots are visible without scrolling.
 - On macOS and Windows, the page keeps its layout at the minimum window width.
