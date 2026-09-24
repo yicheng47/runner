@@ -216,24 +216,12 @@ pub fn popup_layer_sized(
     let zoom = app_zoom(window);
     let gap = px(4. * zoom);
     let edge = px(8. * zoom);
-    let estimated_height = px(280. * zoom);
     let dismiss = Rc::clone(&on_dismiss);
     let dismiss_right = Rc::clone(&on_dismiss);
     let widest = viewport.width - edge * 2.;
     let (min_width, max_width) = match width {
         PopupWidth::Fixed(width) => (width.min(widest), width.min(widest)),
         PopupWidth::Fit { min, max } => (min.min(widest), max.min(widest)),
-    };
-    let left = anchor
-        .left()
-        .min(viewport.width - edge - min_width)
-        .max(edge);
-    let space_below = viewport.height - anchor.bottom();
-    let flip = space_below < estimated_height && anchor.top() > space_below;
-    let top = if flip {
-        anchor.top() - gap
-    } else {
-        anchor.bottom() + gap
     };
     deferred(
         div()
@@ -256,27 +244,42 @@ pub fn popup_layer_sized(
                         }),
                 ),
             )
+            // Below the anchor, or above it only when the measured menu does
+            // not fit below and does above: gpui's default `SwitchAnchor` fit
+            // flips the corner and drops the offset, which moves the menu from
+            // `gap` under the anchor to `gap` over it. The row spans the
+            // viewport so the switch never acts sideways; its spacer shrinks
+            // instead, keeping a menu near the right edge `edge` inside.
             .child(
                 anchored()
-                    .position(point(left, top))
-                    .anchor(if flip {
-                        Corner::BottomLeft
-                    } else {
-                        Corner::TopLeft
-                    })
+                    .position(point(px(0.), anchor.top() - gap))
+                    .offset(point(px(0.), anchor.size.height + gap * 2.))
                     .position_mode(AnchoredPositionMode::Window)
-                    .snap_to_window_with_margin(edge)
                     .child(
                         div()
-                            .map(|popup| match width {
-                                PopupWidth::Fixed(_) => popup.w(min_width),
-                                PopupWidth::Fit { .. } => popup.min_w(min_width).max_w(max_width),
-                            })
-                            .occlude()
-                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                            .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
-                            .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
-                            .child(menu),
+                            .w(viewport.width)
+                            .px(edge)
+                            .flex()
+                            .child(div().w((anchor.left() - edge).max(px(0.))))
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .map(|popup| match width {
+                                        PopupWidth::Fixed(_) => popup.w(min_width),
+                                        PopupWidth::Fit { .. } => {
+                                            popup.min_w(min_width).max_w(max_width)
+                                        }
+                                    })
+                                    .occlude()
+                                    .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                                        cx.stop_propagation()
+                                    })
+                                    .on_mouse_down(MouseButton::Right, |_, _, cx| {
+                                        cx.stop_propagation()
+                                    })
+                                    .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+                                    .child(menu),
+                            ),
                     ),
             ),
     )
@@ -578,6 +581,7 @@ pub struct ContextMenu {
     id: ElementId,
     focus_handle: FocusHandle,
     position: gpui::Point<Pixels>,
+    anchor: Option<Bounds<Pixels>>,
     width: Pixels,
     items: Vec<MenuItem>,
     state: MenuState,
@@ -600,6 +604,7 @@ impl ContextMenu {
             id: id.into(),
             focus_handle,
             position,
+            anchor: None,
             width: px(160.),
             items,
             state,
@@ -611,6 +616,17 @@ impl ContextMenu {
     pub fn width(mut self, width: Pixels) -> Self {
         self.width = width;
         self
+    }
+
+    /// Opens under `anchor`, the button that opened the menu, the way a
+    /// popover does, instead of at `position`.
+    pub fn anchored_to(mut self, anchor: Bounds<Pixels>) -> Self {
+        self.anchor = Some(anchor);
+        self
+    }
+
+    pub fn anchor(&self) -> Option<Bounds<Pixels>> {
+        self.anchor
     }
 
     pub fn focus_handle(&self) -> FocusHandle {
@@ -776,7 +792,10 @@ impl Render for ContextMenu {
         let dismiss: DismissHandler = Rc::new(move |window, cx| {
             dismiss_entity.update(cx, |menu, cx| menu.dismiss(window, cx));
         });
-        context_menu_layer(self.position, window, width, menu, dismiss)
+        match self.anchor {
+            Some(anchor) => popup_layer(anchor, window, width, menu, dismiss),
+            None => context_menu_layer(self.position, window, width, menu, dismiss),
+        }
     }
 }
 
@@ -867,6 +886,66 @@ mod tests {
         }
     }
 
+    /// A 120 × 30 anchor `bottom` px above the window's bottom edge and
+    /// `right` px in from its right edge, opening a 200 × 80 popup.
+    struct PopupPlacementHost {
+        bottom: Pixels,
+        right: Pixels,
+    }
+
+    impl Render for PopupPlacementHost {
+        fn render(&mut self, window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            let viewport = window.viewport_size();
+            let anchor = Bounds {
+                origin: point(
+                    viewport.width - self.right - px(120.),
+                    viewport.height - self.bottom - px(30.),
+                ),
+                size: gpui::size(px(120.), px(30.)),
+            };
+            div()
+                .size_full()
+                .relative()
+                .debug_selector(|| "POPUP_PLACEMENT_ROOT".into())
+                .child(
+                    div()
+                        .absolute()
+                        .left(anchor.left())
+                        .top(anchor.top())
+                        .w(anchor.size.width)
+                        .h(anchor.size.height)
+                        .debug_selector(|| "POPUP_PLACEMENT_ANCHOR".into()),
+                )
+                .child(popup_layer(
+                    anchor,
+                    window,
+                    px(200.),
+                    div()
+                        .h(px(80.))
+                        .debug_selector(|| "POPUP_PLACEMENT_MENU".into())
+                        .into_any_element(),
+                    Rc::new(|_, _| {}),
+                ))
+        }
+    }
+
+    /// The window, anchor and popup bounds.
+    fn popup_placement(bottom: f32, right: f32) -> [Bounds<Pixels>; 3] {
+        let mut cx = TestAppContext::single();
+        let window = cx.add_window(move |_, _| PopupPlacementHost {
+            bottom: px(bottom),
+            right: px(right),
+        });
+        cx.run_until_parked();
+        let mut window = VisualTestContext::from_window(window.into(), &cx);
+        [
+            "POPUP_PLACEMENT_ROOT",
+            "POPUP_PLACEMENT_ANCHOR",
+            "POPUP_PLACEMENT_MENU",
+        ]
+        .map(|selector| window.debug_bounds(selector).expect(selector))
+    }
+
     fn items() -> Vec<MenuItem> {
         vec![
             MenuItem::new("Open"),
@@ -897,6 +976,22 @@ mod tests {
 
         assert!(popup_clicked.get());
         assert!(!underlying_clicked.get());
+    }
+
+    #[test]
+    fn popups_open_below_their_anchor_unless_only_above_fits() {
+        // 100 px is room for the 80 px popup, though less than its 280 px cap.
+        let [_, anchor, menu] = popup_placement(100., 200.);
+        assert_eq!(menu.top(), anchor.bottom() + px(4.));
+        assert_eq!(menu.left(), anchor.left());
+
+        let [_, anchor, menu] = popup_placement(40., 200.);
+        assert_eq!(menu.bottom(), anchor.top() - px(4.));
+        assert_eq!(menu.left(), anchor.left());
+
+        let [root, anchor, menu] = popup_placement(100., 20.);
+        assert_eq!(menu.top(), anchor.bottom() + px(4.));
+        assert_eq!(menu.left(), root.right() - px(8.) - px(200.));
     }
 
     #[test]

@@ -12,6 +12,7 @@ use super::elements::sidebar_tab_target;
 use super::elements::tab_label_live;
 use super::elements::tab_shortcut_pill;
 use super::menus::sidebar_tab_icon;
+use super::menus::MenuOrigin;
 
 use super::*;
 use crate::surfaces::sidebar_logic::{AttentionState, DropKind};
@@ -400,12 +401,11 @@ impl Sidebar {
                         "plus.svg",
                         12.,
                         "New in project",
-                        move |window, cx| {
-                            let position = window.mouse_position();
+                        move |anchor, window, cx| {
                             create_menu_root.update(cx, |this, cx| {
                                 this.open_project_create_menu(
                                     create_project_id.clone(),
-                                    position,
+                                    anchor,
                                     window,
                                     cx,
                                 )
@@ -417,10 +417,14 @@ impl Sidebar {
                         "more-horizontal.svg",
                         14.,
                         "Project actions",
-                        move |window, cx| {
-                            let position = window.mouse_position();
+                        move |anchor, window, cx| {
                             menu_root.update(cx, |this, cx| {
-                                this.open_project_menu(menu_project.clone(), position, window, cx)
+                                this.open_project_menu(
+                                    menu_project.clone(),
+                                    MenuOrigin::Button(anchor),
+                                    window,
+                                    cx,
+                                )
                             });
                         },
                     )),
@@ -432,7 +436,12 @@ impl Sidebar {
                 MouseButton::Right,
                 cx.listener(move |this, event: &gpui::MouseDownEvent, window, cx| {
                     cx.stop_propagation();
-                    this.open_project_menu(context_project.clone(), event.position, window, cx);
+                    this.open_project_menu(
+                        context_project.clone(),
+                        MenuOrigin::Pointer(event.position),
+                        window,
+                        cx,
+                    );
                 }),
             )
             .into_any_element()

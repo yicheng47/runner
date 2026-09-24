@@ -452,12 +452,7 @@ impl NativeRoot {
         let sibling_cwd = self.tabs.active().and_then(|layout| {
             layout
                 .focused_session_id()
-                .map(str::to_owned)
-                .and_then(|session_id| {
-                    self.session_entry(&session_id, cx)
-                        .and_then(|entry| entry.cwd.as_deref())
-                        .map(str::to_owned)
-                })
+                .and_then(|session_id| self.session_start_cwd(session_id, cx))
         });
         let project_id = self.active_project_id(cx);
         let project_cwd = project_id.as_deref().and_then(|project_id| {
@@ -1660,6 +1655,34 @@ impl NativeRoot {
     }
 }
 
+impl NativeRoot {
+    /// The cwd a shell started from `session_id` opens in: see
+    /// `shell_start_cwd`. Only shell sessions scan for OSC 7, so a chat's
+    /// cwd never moves.
+    pub(crate) fn session_start_cwd(&self, session_id: &str, cx: &App) -> Option<String> {
+        let live = self
+            .app_store
+            .read(cx)
+            .bridge
+            .session(session_id)
+            .and_then(|terminal| terminal.live_cwd());
+        shell_start_cwd(
+            live,
+            self.session_entry(session_id, cx)
+                .and_then(|entry| entry.cwd.as_deref()),
+        )
+    }
+}
+
+/// Where a new shell opens when it is started from another session (#575):
+/// the directory that session's shell last reported through OSC 7, which
+/// `live_cwd` only offers while it exists, else the cwd it was spawned in.
+/// `None` continues down `terminal_working_dir`'s chain.
+pub(crate) fn shell_start_cwd(live: Option<PathBuf>, spawn: Option<&str>) -> Option<String> {
+    live.and_then(|cwd| cwd.into_os_string().into_string().ok())
+        .or_else(|| spawn.map(str::to_owned))
+}
+
 pub(crate) fn terminal_working_dir(
     sibling_cwd: Option<&str>,
     project_cwd: Option<&str>,
@@ -2324,6 +2347,34 @@ mod tests {
         assert_eq!(
             build_start_request(ChatMode::Role, None, None, None, None, None, None),
             None
+        );
+    }
+
+    #[test]
+    fn a_shell_started_from_a_session_prefers_its_live_cwd_then_its_spawn_cwd() {
+        let live = Some(PathBuf::from("/repo/crates/app"));
+        assert_eq!(
+            shell_start_cwd(live.clone(), Some("/repo")).as_deref(),
+            Some("/repo/crates/app")
+        );
+        assert_eq!(
+            shell_start_cwd(live, None).as_deref(),
+            Some("/repo/crates/app")
+        );
+        assert_eq!(
+            shell_start_cwd(None, Some("/repo")).as_deref(),
+            Some("/repo")
+        );
+        assert_eq!(shell_start_cwd(None, None), None);
+        assert_eq!(
+            terminal_working_dir(
+                shell_start_cwd(None, None).as_deref(),
+                Some("/project"),
+                "/settings",
+                Some("/home")
+            )
+            .as_deref(),
+            Some("/project")
         );
     }
 

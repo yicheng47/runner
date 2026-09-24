@@ -75,21 +75,27 @@ pub(super) fn workspace_new_chat_row(
         .into_any_element()
 }
 
+/// A project row's hover button. `on_press` gets the button's bounds, so a
+/// menu can open under it.
 pub(super) fn project_row_action(
     id: SharedString,
     icon: &'static str,
     icon_size: f32,
     tooltip: &'static str,
-    on_press: impl Fn(&mut Window, &mut gpui::App) + 'static,
+    on_press: impl Fn(gpui::Bounds<gpui::Pixels>, &mut Window, &mut gpui::App) + 'static,
 ) -> AnyElement {
     let id = gpui::ElementId::from(id);
     let tooltip_id = (id.clone(), "tooltip");
     let on_press = Rc::new(on_press);
     let key_press = Rc::clone(&on_press);
+    let bounds = Rc::new(std::cell::Cell::new(gpui::Bounds::default()));
+    let painted_bounds = Rc::clone(&bounds);
+    let key_bounds = Rc::clone(&bounds);
     let button = div()
         .id(id)
         .tab_index(0)
         .tab_stop(true)
+        .relative()
         .size(rems(1.))
         .flex()
         .items_center()
@@ -112,15 +118,23 @@ pub(super) fn project_row_action(
                 .text_color(theme::muted())
                 .group_hover("sidebar-row-actions", |icon| icon.text_color(theme::text())),
         )
+        .child(
+            gpui::canvas(
+                move |button_bounds, _, _| painted_bounds.set(button_bounds),
+                |_, _, _, _| {},
+            )
+            .absolute()
+            .inset_0(),
+        )
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .on_click(move |_, window, cx| {
             cx.stop_propagation();
-            on_press(window, cx);
+            on_press(bounds.get(), window, cx);
         })
         .on_key_down(move |event: &KeyDownEvent, window, cx| {
             if matches!(event.keystroke.key.as_str(), "enter" | "space") {
                 cx.stop_propagation();
-                key_press(window, cx);
+                key_press(key_bounds.get(), window, cx);
             }
         });
     Tooltip::new(tooltip_id, tooltip, button).into_any_element()

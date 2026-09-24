@@ -10,6 +10,13 @@ const CODEX_FORK_ROLLOUT_TIMEOUT: Duration = Duration::from_secs(5);
 
 const LOCALE_VARS: [&str; 3] = ["LANG", "LC_ALL", "LC_CTYPE"];
 
+/// A terminal pane or drawer shell: the runtime-only `shell` role that
+/// `runtime_direct_role` builds, as opposed to a role-backed shell chat or
+/// mission slot. Only these get the OSC 7 shell integration (#575).
+fn is_terminal_shell(role: &Role) -> bool {
+    role.id == format!("runtime:{}", Runtime::Shell.key())
+}
+
 /// Dock-launched GUI apps inherit no locale, so children run in the
 /// POSIX C locale and macOS clipboard tools (claude's `pbpaste`)
 /// decode UTF-8 as Mac Roman — CJK text arrives as mojibake (#461).
@@ -745,6 +752,9 @@ impl SessionManager {
             composed.push(extra);
         }
         spec.args = composed;
+        if is_terminal_shell(role) && !spec.mission {
+            crate::shell_integration::inject(spec, app_data_dir, |name| std::env::var(name).ok());
+        }
         delivered_via_argv
     }
 

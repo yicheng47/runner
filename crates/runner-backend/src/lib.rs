@@ -23,6 +23,7 @@ pub mod router;
 pub mod runtime_defaults;
 pub mod runtime_status;
 pub mod session;
+pub mod shell_integration;
 pub mod shell_path;
 pub mod skills;
 #[cfg(test)]

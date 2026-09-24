@@ -1795,8 +1795,14 @@ impl NativeRoot {
                 .into_iter()
                 .find(|leaf| leaf.id == pane_id)
                 .and_then(|leaf| leaf.session_id.as_deref())
-                .and_then(|session_id| self.session_entry(session_id, cx))
-                .map(|entry| (entry.project_id.clone(), entry.cwd.clone()))
+                .and_then(|session_id| {
+                    self.session_entry(session_id, cx).map(|entry| {
+                        (
+                            entry.project_id.clone(),
+                            self.session_start_cwd(session_id, cx),
+                        )
+                    })
+                })
                 .unwrap_or_else(|| self.terminal_start_location(cx))
         });
         let split = self

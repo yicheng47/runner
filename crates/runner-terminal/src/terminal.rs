@@ -154,6 +154,119 @@ fn scheme_report(palette: palette::TerminalPalette) -> String {
     format!("\x1b[?997;{}n", if palette.is_light() { 2 } else { 1 })
 }
 
+/// OSC 7, `ESC ] 7 ; file://host/path` ended by BEL or ST: the shell's
+/// working directory (#575). `vte` drops it as an unhandled OSC, so a shell
+/// session scans its raw output for it before parsing.
+const OSC7_INTRODUCER: &[u8] = b"\x1b]7;";
+const OSC7_MAX_PAYLOAD: usize = 16 * 1024;
+
+/// The OSC 7 reports in a shell's output. `carry` holds what the previous
+/// chunk cut off: a prefix of the introducer, or an unterminated report.
+#[derive(Default)]
+struct CwdReports {
+    carry: Vec<u8>,
+}
+
+impl CwdReports {
+    /// The directory reported by the last valid report that completes in
+    /// `chunk`, if any.
+    fn scan(&mut self, chunk: &[u8]) -> Option<PathBuf> {
+        self.payloads(chunk)
+            .iter()
+            .rev()
+            .find_map(|payload| parse_cwd_report(payload))
+    }
+
+    /// The payloads of the reports that complete in `chunk`, in order.
+    fn payloads(&mut self, chunk: &[u8]) -> Vec<Vec<u8>> {
+        let joined;
+        let buf = if self.carry.is_empty() {
+            chunk
+        } else {
+            let mut carried = std::mem::take(&mut self.carry);
+            carried.extend_from_slice(chunk);
+            joined = carried;
+            &joined
+        };
+        let (reports, carry) = scan_osc7(buf);
+        self.carry = carry.to_vec();
+        reports.into_iter().map(<[u8]>::to_vec).collect()
+    }
+}
+
+/// The complete OSC 7 payloads in `buf`, in order, and the tail to carry into
+/// the next chunk. BEL and ST terminate a report; ESC followed by anything
+/// else, CAN and SUB abort it, as they do in `vte`. `0x9C` is not taken as
+/// ST: in UTF-8 output it is a continuation byte.
+fn scan_osc7(buf: &[u8]) -> (Vec<&[u8]>, &[u8]) {
+    let mut reports = Vec::new();
+    let mut pos = 0;
+    while let Some(offset) = buf[pos..].iter().position(|&byte| byte == 0x1b) {
+        let start = pos + offset;
+        let rest = &buf[start..];
+        if !rest.starts_with(OSC7_INTRODUCER) {
+            if rest.len() < OSC7_INTRODUCER.len() && OSC7_INTRODUCER.starts_with(rest) {
+                return (reports, rest);
+            }
+            pos = start + 1;
+            continue;
+        }
+        let body = start + OSC7_INTRODUCER.len();
+        let Some(end) = buf[body..]
+            .iter()
+            .position(|byte| matches!(byte, 0x07 | 0x18 | 0x1a | 0x1b))
+            .map(|offset| body + offset)
+        else {
+            let overlong = buf.len() - body > OSC7_MAX_PAYLOAD;
+            return (reports, if overlong { &[] } else { rest });
+        };
+        let payload = &buf[body..end];
+        let mut complete = |next: usize| {
+            if payload.len() <= OSC7_MAX_PAYLOAD {
+                reports.push(payload);
+            }
+            next
+        };
+        pos = match (buf[end], buf.get(end + 1)) {
+            (0x07, _) => complete(end + 1),
+            (0x1b, Some(b'\\')) => complete(end + 2),
+            (0x1b, None) if payload.len() <= OSC7_MAX_PAYLOAD => return (reports, rest),
+            (0x1b, _) => end,
+            _ => end + 1,
+        };
+    }
+    (reports, &[])
+}
+
+/// The directory an OSC 7 payload reports: a `file://` URI whose host is
+/// this machine and whose path, cut at `?` or `#` and percent-decoded, is
+/// absolute UTF-8. Anything else reports nothing.
+fn parse_cwd_report(payload: &[u8]) -> Option<PathBuf> {
+    let text = std::str::from_utf8(payload).ok()?;
+    if !text.get(..7)?.eq_ignore_ascii_case("file://") {
+        return None;
+    }
+    let (host, path) = text[7..].split_at(text[7..].find('/')?);
+    if !runner_backend::shell_integration::is_local_host(&percent_decode(host)) {
+        return None;
+    }
+    let path = String::from_utf8(percent_decode_bytes(path.split(['?', '#']).next()?)).ok()?;
+    #[cfg(windows)]
+    let path = strip_drive_slash(&path).to_owned();
+    let path = PathBuf::from(path);
+    path.is_absolute().then_some(path)
+}
+
+/// `/C:/Users/me` as a Windows path: a file URI's path keeps a slash before
+/// the drive letter.
+#[cfg(any(windows, test))]
+fn strip_drive_slash(path: &str) -> &str {
+    match path.as_bytes() {
+        [b'/', drive, b':', ..] if drive.is_ascii_alphabetic() => &path[1..],
+        _ => path,
+    }
+}
+
 /// vte holds every byte of a synchronized update (`ESC[?2026h` … `ESC[?2026l`)
 /// and records a deadline for it, but only its caller can act on that deadline:
 /// alacritty's event loop does, and Runner, which feeds the parser itself, runs
@@ -221,6 +334,12 @@ pub struct TerminalSession {
     input_tracker: Mutex<InputTracker>,
     fixture_recorder: Option<FixtureRecorder>,
     link_cwd: std::sync::OnceLock<Option<PathBuf>>,
+    /// OSC 7 scanning for a shell session; `None` for every other runtime,
+    /// whose output is never scanned.
+    cwd_reports: Option<Mutex<CwdReports>>,
+    /// The last directory the shell reported, beside the spawn cwd on the
+    /// session row, which stays the fallback.
+    live_cwd: Mutex<Option<PathBuf>>,
 }
 
 pub struct TerminalView {
@@ -321,16 +440,16 @@ impl TerminalSession {
             proxy,
         )));
         let size = Arc::new(Mutex::new((cols, rows)));
-        let (agent, row) = {
+        let (runtime, row) = {
             let conn = core.db.get()?;
-            let runtime = runner_backend::repo::session::effective_runtime(&conn, &session_id)?
-                .as_deref()
-                .and_then(Runtime::parse);
             (
-                runtime.is_some_and(|runtime| runtime != Runtime::Shell),
+                runner_backend::repo::session::effective_runtime(&conn, &session_id)?
+                    .as_deref()
+                    .and_then(Runtime::parse),
                 runner_backend::repo::session::get_row(&conn, &session_id)?,
             )
         };
+        let agent = runtime.is_some_and(|runtime| runtime != Runtime::Shell);
         let started_at = row
             .as_ref()
             .and_then(|row| row.started_at)
@@ -375,6 +494,8 @@ impl TerminalSession {
             input_tracker: Mutex::new(input_tracker),
             fixture_recorder,
             link_cwd: std::sync::OnceLock::new(),
+            cwd_reports: (runtime == Some(Runtime::Shell)).then(Mutex::default),
+            live_cwd: Mutex::new(None),
         });
         core.sessions
             .report_input_state(&session_id, initial_observation);
@@ -556,6 +677,11 @@ impl TerminalSession {
             recorder.record_output(bytes);
         }
         let scheme_sequences = scan_scheme_sequences(&mut self.scheme.tail.lock().unwrap(), bytes);
+        if let Some(reports) = self.cwd_reports.as_ref() {
+            if let Some(cwd) = reports.lock().unwrap().scan(bytes) {
+                *self.live_cwd.lock().unwrap() = Some(cwd);
+            }
+        }
         sequence.last = event.seq;
         sequence.last_output_at = Some(Instant::now());
         if chunk_indicates_tui_ready(bytes) {
@@ -873,11 +999,30 @@ impl TerminalSession {
             && cell.c.is_whitespace()
     }
 
+    /// The directory the shell last reported through OSC 7, while it still
+    /// is one. `None` for any other runtime, for a shell that has not
+    /// reported, and for a directory removed since its report.
+    pub fn live_cwd(&self) -> Option<PathBuf> {
+        self.live_cwd
+            .lock()
+            .unwrap()
+            .clone()
+            .filter(|cwd| cwd.is_dir())
+    }
+
+    /// Relative paths try the shell's live cwd first, then the spawn cwd, so
+    /// output printed before a `cd` still resolves.
     pub fn link_at(&self, point: Point) -> Option<TerminalLink> {
-        let cwd = self
+        let live = self.live_cwd.lock().unwrap().clone();
+        let spawn = self
             .link_cwd
             .get_or_init(|| resolve_link_cwd(&self.core, &self.session_id));
-        terminal_link_at(&*self.term.lock_unfair(), point, cwd.as_deref())
+        let cwds: Vec<&Path> = live
+            .as_deref()
+            .into_iter()
+            .chain(spawn.as_deref())
+            .collect();
+        terminal_link_at(&*self.term.lock_unfair(), point, &cwds)
     }
 
     pub fn move_cursor_to_viewport(&self, column: usize, row: usize) {
@@ -1016,7 +1161,7 @@ fn resolve_link_cwd(core: &AppCore, session_id: &str) -> Option<PathBuf> {
     Some(PathBuf::from(project.cwd))
 }
 
-fn terminal_link_at<T>(term: &Term<T>, point: Point, cwd: Option<&Path>) -> Option<TerminalLink> {
+fn terminal_link_at<T>(term: &Term<T>, point: Point, cwds: &[&Path]) -> Option<TerminalLink> {
     let mut point = point.grid_clamp(term, Boundary::Grid);
     if term.grid()[point]
         .flags
@@ -1099,7 +1244,7 @@ fn terminal_link_at<T>(term: &Term<T>, point: Point, cwd: Option<&Path>) -> Opti
                 .find(|captures| overlaps_hit(&captures.get(0).map_or(0..0, |m| m.range())))?;
             (
                 captures.get(0)?.range(),
-                file_target_from_captures(&captures, cwd)?,
+                file_target_from_captures(&captures, cwds)?,
             )
         }
     };
@@ -1136,11 +1281,8 @@ fn file_link_regex() -> &'static Regex {
     })
 }
 
-fn file_target_from_captures(
-    captures: &regex::Captures<'_>,
-    cwd: Option<&Path>,
-) -> Option<LinkTarget> {
-    let path = resolve_file_candidate(captures.name("path")?.as_str(), cwd)?;
+fn file_target_from_captures(captures: &regex::Captures<'_>, cwds: &[&Path]) -> Option<LinkTarget> {
+    let path = resolve_file_candidate(captures.name("path")?.as_str(), cwds)?;
     let number = |name: &str| {
         captures
             .name(name)
@@ -1155,16 +1297,18 @@ fn file_target_from_captures(
     })
 }
 
-fn resolve_file_candidate(candidate: &str, cwd: Option<&Path>) -> Option<PathBuf> {
-    let path = if let Some(rest) = candidate.strip_prefix("~/") {
-        runner_backend::app_paths::home_dir()?.join(rest)
+fn resolve_file_candidate(candidate: &str, cwds: &[&Path]) -> Option<PathBuf> {
+    let paths = if let Some(rest) = candidate.strip_prefix("~/") {
+        vec![runner_backend::app_paths::home_dir()?.join(rest)]
     } else if candidate.starts_with('/') {
-        PathBuf::from(candidate)
+        vec![PathBuf::from(candidate)]
     } else {
-        cwd?.join(candidate)
+        cwds.iter().map(|cwd| cwd.join(candidate)).collect()
     };
-    let path = normalize_path(&path);
-    std::fs::metadata(&path).ok()?.is_file().then_some(path)
+    paths
+        .iter()
+        .map(|path| normalize_path(path))
+        .find(|path| std::fs::metadata(path).is_ok_and(|metadata| metadata.is_file()))
 }
 
 fn normalize_path(path: &Path) -> PathBuf {
@@ -1224,6 +1368,10 @@ fn split_line_suffix(path: &str) -> (&str, Option<u32>, Option<u32>) {
 }
 
 fn percent_decode(text: &str) -> String {
+    String::from_utf8_lossy(&percent_decode_bytes(text)).into_owned()
+}
+
+fn percent_decode_bytes(text: &str) -> Vec<u8> {
     let bytes = text.as_bytes();
     let mut decoded = Vec::with_capacity(bytes.len());
     let mut index = 0;
@@ -1243,7 +1391,7 @@ fn percent_decode(text: &str) -> String {
             }
         }
     }
-    String::from_utf8_lossy(&decoded).into_owned()
+    decoded
 }
 
 fn url_regex() -> &'static Regex {
@@ -1836,6 +1984,244 @@ mod tests {
         assert_eq!(
             with_fragment.target,
             file_target("/tmp/y z.rs".into(), Some(12), None)
+        );
+    }
+
+    fn osc7_payloads(chunks: &[&[u8]]) -> Vec<String> {
+        let mut reports = super::CwdReports::default();
+        chunks
+            .iter()
+            .flat_map(|chunk| reports.payloads(chunk))
+            .map(|payload| String::from_utf8(payload).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn osc7_reports_end_at_bel_or_st_across_any_chunk_split() {
+        let stream: &[u8] = "\x1b[31mls\x1b[0m\r\n\x1b]7;file://h/a\x07\x1b]0;title\x07\x1b]7;file://h/b%20c\x1b\\\x1b]8;;x\x1b\\$ "
+            .as_bytes();
+        let expected = vec!["file://h/a".to_string(), "file://h/b%20c".to_string()];
+        assert_eq!(osc7_payloads(&[stream]), expected);
+        for first in 0..=stream.len() {
+            for second in first..=stream.len() {
+                assert_eq!(
+                    osc7_payloads(&[&stream[..first], &stream[first..second], &stream[second..]]),
+                    expected,
+                    "split at {first} and {second}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn osc7_reports_abort_on_esc_can_and_sub_and_skip_overlong_payloads() {
+        assert_eq!(
+            osc7_payloads(&[b"\x1b]7;file:///a\x1b[0m\x1b]7;file:///b\x07"]),
+            vec!["file:///b"]
+        );
+        assert_eq!(
+            osc7_payloads(&[b"\x1b]7;file:///a\x1b", b"\x1b]7;file:///b\x07"]),
+            vec!["file:///b"]
+        );
+        assert_eq!(
+            osc7_payloads(&[b"\x1b]7;file:///a\x18 \x1b]7;file:///b\x1a \x1b]7;file:///c\x07"]),
+            vec!["file:///c"]
+        );
+        let overlong = format!("\x1b]7;file:///{}", "a".repeat(super::OSC7_MAX_PAYLOAD));
+        assert!(osc7_payloads(&[format!("{overlong}\x07").as_bytes()]).is_empty());
+        assert_eq!(
+            osc7_payloads(&[
+                overlong.as_bytes(),
+                b"aaaa\x07 \x1b]7;file:///ok\x1b",
+                b"\\"
+            ]),
+            vec!["file:///ok"]
+        );
+        // 0x9C ends a report only as C1 ST, never inside UTF-8 text: 朝 is E6 9C 9D.
+        assert_eq!(
+            osc7_payloads(&["\x1b]7;file:///tmp/朝\x07".as_bytes()]),
+            vec!["file:///tmp/朝"]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn osc7_reports_name_an_absolute_directory_on_this_machine() {
+        let parse = |uri: &str| super::parse_cwd_report(uri.as_bytes());
+        let host = runner_backend::shell_integration::local_hostname().unwrap();
+        let label = host.split('.').next().unwrap().to_owned();
+        let tmp = Some(std::path::PathBuf::from("/tmp/a b/中文"));
+        assert_eq!(parse("file:///tmp/a%20b/%E4%B8%AD%E6%96%87"), tmp);
+        assert_eq!(parse("file://localhost/tmp/a b/中文"), tmp);
+        assert_eq!(parse("FILE://local%68ost/tmp/a%20b/中文"), tmp);
+        assert_eq!(parse(&format!("file://{host}/tmp/a%20b/中文")), tmp);
+        assert_eq!(parse(&format!("file://{label}/tmp/a%20b/中文")), tmp);
+        assert_eq!(parse("file:///tmp/x?query#fragment"), Some("/tmp/x".into()));
+        for ignored in [
+            "file://runner-575-elsewhere.invalid/tmp",
+            "kitty-shell-cwd://localhost/tmp",
+            "http://localhost/tmp",
+            "file://localhost",
+            "file:",
+            "file:///tmp/%FF",
+            "",
+            "garbage",
+        ] {
+            assert_eq!(parse(ignored), None, "{ignored:?}");
+        }
+        assert_eq!(super::parse_cwd_report(b"file:///tmp/\xff"), None);
+    }
+
+    #[test]
+    fn osc7_file_uri_paths_drop_the_slash_before_a_windows_drive() {
+        assert_eq!(super::strip_drive_slash("/C:/Users/me"), "C:/Users/me");
+        assert_eq!(super::strip_drive_slash("/d:"), "d:");
+        assert_eq!(super::strip_drive_slash("/Users/me"), "/Users/me");
+        assert_eq!(super::strip_drive_slash("/1:/x"), "/1:/x");
+    }
+
+    fn insert_runtime_session_row(core: &AppCore, id: &str, runtime: &str, cwd: &std::path::Path) {
+        let conn = core.db.get().unwrap();
+        let mut row = runner_backend::repo::session::SessionRowDb::new_running(id.into());
+        row.cwd = Some(cwd.to_string_lossy().into_owned());
+        row.agent_runtime = Some(runtime.into());
+        runner_backend::repo::session::insert(&conn, &row).unwrap();
+    }
+
+    fn cwd_report(path: &std::path::Path, terminator: &str) -> String {
+        let path = path.to_string_lossy().replace('\\', "/");
+        let path = if path.starts_with('/') {
+            path
+        } else {
+            format!("/{path}")
+        };
+        format!(
+            "\x1b]7;file://localhost{}{terminator}",
+            path.replace(' ', "%20")
+        )
+    }
+
+    #[test]
+    fn a_shell_session_keeps_its_last_valid_osc7_directory_while_it_exists() {
+        let temp = tempfile::tempdir().unwrap();
+        let core = test_core(temp.path());
+        let spawn = temp.path().join("spawn");
+        let live = temp.path().join("live dir");
+        std::fs::create_dir_all(&spawn).unwrap();
+        std::fs::create_dir_all(&live).unwrap();
+        insert_runtime_session_row(&core, "shell-cwd", "shell", &spawn);
+        let terminal =
+            TerminalSession::attach(core, "shell-cwd".into(), 80, 4, Arc::new(|| {})).unwrap();
+        let feed = |seq: u64, text: &str| {
+            terminal
+                .feed_output(&OutputEvent {
+                    session_id: "shell-cwd".into(),
+                    mission_id: None,
+                    seq,
+                    bytes: text.as_bytes().to_vec(),
+                })
+                .unwrap()
+        };
+        assert_eq!(terminal.live_cwd(), None);
+
+        let report = cwd_report(&live, "\x1b\\");
+        let (head, tail) = report.split_at(report.len() / 2);
+        feed(1, &format!("$ cd 'live dir'\r\n{head}"));
+        assert_eq!(terminal.live_cwd(), None);
+        feed(2, &format!("{tail}$ "));
+        assert_eq!(terminal.live_cwd(), Some(live.clone()));
+
+        feed(
+            3,
+            "\x1b]7;file://runner-575-elsewhere.invalid/srv\x07\x1b]7;garbage\x07\x1b]7;file://localhost\x07",
+        );
+        assert_eq!(
+            terminal.live_cwd(),
+            Some(live.clone()),
+            "ignored reports keep the previous directory"
+        );
+
+        let missing = temp.path().join("reported but missing");
+        feed(4, &cwd_report(&missing, "\x07"));
+        assert_eq!(
+            terminal.live_cwd(),
+            None,
+            "a missing directory is not offered"
+        );
+        feed(5, &cwd_report(&live, "\x07"));
+        assert_eq!(terminal.live_cwd(), Some(live.clone()));
+        std::fs::remove_dir(&live).unwrap();
+        assert_eq!(
+            terminal.live_cwd(),
+            None,
+            "a removed directory is not offered"
+        );
+    }
+
+    #[test]
+    fn agent_sessions_never_take_a_live_cwd() {
+        let temp = tempfile::tempdir().unwrap();
+        let core = test_core(temp.path());
+        insert_runtime_session_row(&core, "agent-cwd", "claude-code", temp.path());
+        let terminal =
+            TerminalSession::attach(core, "agent-cwd".into(), 80, 4, Arc::new(|| {})).unwrap();
+        terminal
+            .feed_output(&OutputEvent {
+                session_id: "agent-cwd".into(),
+                mission_id: None,
+                seq: 1,
+                bytes: cwd_report(temp.path(), "\x07").into_bytes(),
+            })
+            .unwrap();
+        assert_eq!(terminal.live_cwd(), None);
+        assert!(terminal.cwd_reports.is_none());
+    }
+
+    #[test]
+    fn relative_file_links_try_the_live_cwd_then_the_spawn_cwd() {
+        let temp = tempfile::tempdir().unwrap();
+        let core = test_core(temp.path());
+        let spawn = temp.path().join("project");
+        let live = spawn.join("crates/app");
+        std::fs::create_dir_all(spawn.join("src")).unwrap();
+        std::fs::create_dir_all(&live).unwrap();
+        for file in ["src/lib.rs", "README.md"] {
+            std::fs::write(spawn.join(file), "").unwrap();
+        }
+        for file in ["main.rs", "README.md"] {
+            std::fs::write(live.join(file), "").unwrap();
+        }
+        insert_runtime_session_row(&core, "shell-links", "shell", &spawn);
+        let terminal =
+            TerminalSession::attach(core, "shell-links".into(), 120, 4, Arc::new(|| {})).unwrap();
+        terminal
+            .feed_output(&OutputEvent {
+                session_id: "shell-links".into(),
+                mission_id: None,
+                seq: 1,
+                bytes: format!(
+                    "{}main.rs:3 src/lib.rs README.md",
+                    cwd_report(&live, "\x07")
+                )
+                .into_bytes(),
+            })
+            .unwrap();
+        let link = |column: usize| {
+            terminal
+                .link_at(Point::new(Line(0), Column(column)))
+                .map(|link| link.target)
+        };
+        assert_eq!(
+            link(1),
+            Some(file_target(live.join("main.rs"), Some(3), None))
+        );
+        assert_eq!(
+            link(12),
+            Some(file_target(spawn.join("src/lib.rs"), None, None))
+        );
+        assert_eq!(
+            link(24),
+            Some(file_target(live.join("README.md"), None, None))
         );
     }
 

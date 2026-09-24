@@ -86,6 +86,23 @@ If installation aborts, Setup restores renamed binaries whose original paths are
 
 To preview the update indicator in a development build, set `$env:RUNNER_DEV_UPDATE_AVAILABLE = '0.8.0.20260907.1200'` before `.\make.cmd run`. Clear it with `Remove-Item Env:RUNNER_DEV_UPDATE_AVAILABLE` before the next launch. Release builds ignore this preview variable.
 
+## Terminal working directory
+
+Terminal splits follow a shell's live working directory through OSC 7 ([#575](../features/575-live-cwd.md)). On macOS Runner injects the reporting hook into zsh and bash; on Windows it injects nothing, so a split opens at the split-from shell's spawn directory unless the user's own prompt sends OSC 7. The parser accepts the Windows form `file://<COMPUTERNAME>/C:/…`, so oh-my-posh with `"pwd": "osc7"`, or this snippet placed at the end of a PowerShell profile, is enough. It has not been verified on native Windows yet:
+
+```powershell
+$runnerPrompt = $function:prompt
+function prompt {
+    $location = $executionContext.SessionState.Path.CurrentLocation
+    if ($location.Provider.Name -eq 'FileSystem') {
+        $path = ($location.ProviderPath -split '\\' | ForEach-Object { [uri]::EscapeDataString($_) }) -join '/'
+        $esc = [char]27
+        [Console]::Write("$esc]7;file://$env:COMPUTERNAME/$path$esc\")
+    }
+    & $runnerPrompt
+}
+```
+
 ## Follow-up work
 
 The unsigned Windows port shipped in 0.8.0 and signing followed with [#497](https://github.com/yicheng47/runner/issues/497); these items were not completed by that release:
@@ -93,4 +110,5 @@ The unsigned Windows port shipped in 0.8.0 and signing followed with [#497](http
 - Confirm SmartScreen behavior for the signed stable installer on a fresh Windows 11 PC and record the result in the [signing spec](../features/archive/497-windows-code-signing.md).
 - Complete detailed installed-build lifecycle, crash/relaunch, IME, resize, DPI, path, and update/data-retention acceptance. The [remaining validation checklist](../impls/archive/windows-nightly/impl_log.md#todo) preserves the specific cases and prior results. TRAE remains disabled by default on Windows and native validation is deferred unless requested.
 - Investigate the shutdown `window not found` diagnostic. The separate development-only DXGI debug-interface warning is an optional gpui-ce debug probe and is skipped in release builds.
+- Inject the OSC 7 prompt hook into PowerShell as Runner does for zsh and bash on macOS, through `-NoExit -Command` and a `prompt` wrapper that coexists with oh-my-posh and starship, and consider Windows Terminal's OSC 9;9 ([#575](../features/575-live-cwd.md)); validate the snippet above on native Windows first.
 - Promote `Rust / Windows` to a required branch check after a week of green merges, planned no earlier than 2026-09-12; inspect current branch protection before changing it.
