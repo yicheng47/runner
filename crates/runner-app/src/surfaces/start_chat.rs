@@ -11,6 +11,7 @@ use gpui::{
     SharedString, Window,
 };
 use runner_backend::model::Role;
+use runner_backend::ops::project::ProjectScope;
 use runner_backend::ops::runtime::{
     filter_selectable_runtime_catalog, RuntimeCatalogEntry, RuntimeCatalogOption,
 };
@@ -97,7 +98,7 @@ enum StartChatSelection {
 
 pub(crate) struct StartChatModal {
     target: ChatTarget,
-    project_id: Option<String>,
+    scope: ProjectScope,
     mode: ChatMode,
     roles: Vec<Role>,
     runtimes: Vec<RuntimeCatalogEntry>,
@@ -193,11 +194,11 @@ enum StartRequest {
 impl NativeRoot {
     pub(crate) fn new_terminal_tab(
         &mut self,
-        project_id: Option<String>,
+        scope: ProjectScope,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let project_cwd = project_id.as_deref().and_then(|project_id| {
+        let project_cwd = scope.project_id().and_then(|project_id| {
             self.app_store
                 .read(cx)
                 .projects
@@ -215,9 +216,9 @@ impl NativeRoot {
         );
         let mut spawned_id = None;
         let result = (|| -> Result<String> {
-            let spawned = runner_backend::ops::session::session_start_shell(
+            let spawned = runner_backend::ops::session::session_start_shell_in(
                 self.core(cx),
-                project_id,
+                scope,
                 cwd,
                 Some(INITIAL_COLS),
                 Some(INITIAL_ROWS),
@@ -288,8 +289,8 @@ impl NativeRoot {
             return;
         }
         if let Some(pane_id) = new_terminal_empty_pane(&original) {
-            let (project_id, cwd) = self.terminal_start_location(cx);
-            self.spawn_terminal_in_pane(pane_id, original, project_id, cwd, window, cx);
+            let (scope, cwd) = self.terminal_start_location(cx);
+            self.spawn_terminal_in_pane(pane_id, original, scope, cwd, window, cx);
         } else {
             self.split_pane(&original.focused_pane_id, SplitOrientation::Row, window, cx);
         }
@@ -371,13 +372,13 @@ impl NativeRoot {
         if self.active_tab_is_terminal(cx) {
             return;
         }
-        let (project_id, cwd) = self.terminal_start_location(cx);
+        let (scope, cwd) = self.terminal_start_location(cx);
         let size = self.estimated_drawer_terminal_size(&original, window, cx);
         let mut spawned_id = None;
         let result = (|| -> Result<String> {
-            let spawned = runner_backend::ops::session::session_start_shell(
+            let spawned = runner_backend::ops::session::session_start_shell_in(
                 self.core(cx),
-                project_id,
+                scope,
                 cwd,
                 Some(size.0),
                 Some(size.1),
@@ -448,13 +449,15 @@ impl NativeRoot {
         cx.notify();
     }
 
-    pub(crate) fn terminal_start_location(&self, cx: &App) -> (Option<String>, Option<String>) {
+    /// Where a terminal started into the active tab opens: the tab's
+    /// project, and the focused sibling's cwd before the project's.
+    pub(crate) fn terminal_start_location(&self, cx: &App) -> (ProjectScope, Option<String>) {
         let sibling_cwd = self.tabs.active().and_then(|layout| {
             layout
                 .focused_session_id()
                 .and_then(|session_id| self.session_start_cwd(session_id, cx))
         });
-        let project_id = self.active_project_id(cx);
+        let project_id = self.active_tab_project_id(cx);
         let project_cwd = project_id.as_deref().and_then(|project_id| {
             self.app_store
                 .read(cx)
@@ -471,14 +474,14 @@ impl NativeRoot {
                 .as_deref()
                 .and_then(|home| home.to_str()),
         );
-        (project_id, cwd)
+        (ProjectScope::or_root(project_id), cwd)
     }
 
     pub(crate) fn spawn_terminal_in_pane(
         &mut self,
         pane_id: String,
         original: PaneLayout,
-        project_id: Option<String>,
+        scope: ProjectScope,
         cwd: Option<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -490,9 +493,9 @@ impl NativeRoot {
             .unwrap_or((INITIAL_COLS, INITIAL_ROWS));
         let mut spawned_id = None;
         let result = (|| -> Result<String> {
-            let spawned = runner_backend::ops::session::session_start_shell(
+            let spawned = runner_backend::ops::session::session_start_shell_in(
                 self.core(cx),
-                project_id,
+                scope,
                 cwd,
                 Some(initial_size.0),
                 Some(initial_size.1),
@@ -577,14 +580,15 @@ impl NativeRoot {
 
     pub(crate) fn open_sidebar_chat_modal(
         &mut self,
-        project_id: Option<&str>,
+        scope: ProjectScope,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if self.start_chat_modal.is_some() {
             return;
         }
-        let project = project_id
+        let project = scope
+            .project_id()
             .and_then(|id| {
                 self.app_store
                     .read(cx)
@@ -605,8 +609,8 @@ impl NativeRoot {
         let Some(tab_id) = self.tabs.active_tab_id().map(str::to_owned) else {
             return;
         };
-        let active_project_id = self.active_project_id(cx);
-        let project = active_project_id
+        let tab_project_id = self.active_tab_project_id(cx);
+        let project = tab_project_id
             .as_deref()
             .and_then(|id| {
                 self.app_store
@@ -704,7 +708,7 @@ impl NativeRoot {
         let title_input = cx.new(|input_cx| {
             TextField::new(input_cx.focus_handle(), "", title, false).text_size(theme::text_body())
         });
-        let (project_id, project_cwd) = project_start_scope(project.as_ref());
+        let (scope, project_cwd) = project_start_scope(project.as_ref());
         let cwd_input = cx.new(|input_cx| {
             working_dir_text_field(input_cx.focus_handle(), project_cwd, cwd_placeholder)
                 .text_size(theme::text_ui())
@@ -801,7 +805,7 @@ impl NativeRoot {
         self.sidebar_preview_open = false;
         self.start_chat_modal = Some(StartChatModal {
             target,
-            project_id,
+            scope,
             mode,
             roles: self.app_store.read(cx).roles.clone(),
             runtimes,
@@ -1164,7 +1168,7 @@ impl NativeRoot {
         let model = normalized_value(modal.model.read(cx).text());
         let effort = normalized_value(&modal.effort);
         let title = user_chat_title(modal.title.read(cx));
-        let project_id = modal.project_id.clone();
+        let scope = modal.scope.clone();
         let request = build_start_request(
             modal.mode,
             modal.selected_role().map(|role| role.id.as_str()),
@@ -1216,7 +1220,7 @@ impl NativeRoot {
                     runtime,
                     model,
                     effort,
-                    project_id,
+                    scope,
                     cwd,
                     Some(initial_size.0),
                     Some(initial_size.1),
@@ -1230,7 +1234,7 @@ impl NativeRoot {
                     runner_backend::ops::session::session_start_runtime(
                         self.core(cx),
                         &runtime,
-                        project_id,
+                        scope,
                         cwd,
                         Some(initial_size.0),
                         Some(initial_size.1),
@@ -1970,10 +1974,15 @@ fn cwd_placeholder(mode: ChatMode, role: Option<&Role>, default_path: &str) -> S
 
 fn project_start_scope(
     project: Option<&runner_backend::repo::project::ProjectRow>,
-) -> (Option<String>, String) {
+) -> (ProjectScope, String) {
     project.map_or_else(
-        || (None, String::new()),
-        |project| (Some(project.id.clone()), project.cwd.clone()),
+        || (ProjectScope::Root, String::new()),
+        |project| {
+            (
+                ProjectScope::Project(project.id.clone()),
+                project.cwd.clone(),
+            )
+        },
     )
 }
 
@@ -2435,16 +2444,16 @@ mod tests {
             position: 0,
             created_at: "now".into(),
         };
-        let (project_id, seeded_cwd) = project_start_scope(Some(&project));
-        assert_eq!(project_id.as_deref(), Some("project-1"));
+        let (scope, seeded_cwd) = project_start_scope(Some(&project));
+        assert_eq!(scope, ProjectScope::Project("project-1".into()));
         assert_eq!(seeded_cwd, "/project");
         assert_eq!(
             effective_working_dir(&seeded_cwd, true, "/settings"),
             Some("/project".into())
         );
 
-        let (project_id, seeded_cwd) = project_start_scope(None);
-        assert_eq!(project_id, None);
+        let (scope, seeded_cwd) = project_start_scope(None);
+        assert_eq!(scope, ProjectScope::Root);
         assert!(seeded_cwd.is_empty());
         assert_eq!(
             effective_working_dir(&seeded_cwd, false, "/settings"),

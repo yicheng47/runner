@@ -1,6 +1,7 @@
 use gpui::prelude::*;
 use gpui::{App, DragMoveEvent, Window};
 use runner_backend::model::SessionStatus;
+use runner_backend::ops::project::ProjectScope;
 
 use super::*;
 use crate::*;
@@ -118,9 +119,9 @@ impl MissionWorkspace {
         let size = self.estimated_mission_drawer_terminal_size(window, cx);
         let mut spawned_id = None;
         let result = (|| -> Result<String> {
-            let spawned = runner_backend::ops::session::session_start_shell(
+            let spawned = runner_backend::ops::session::session_start_shell_in(
                 self.core(cx),
-                mission.project_id,
+                ProjectScope::or_root(mission.project_id),
                 cwd,
                 Some(size.0),
                 Some(size.1),

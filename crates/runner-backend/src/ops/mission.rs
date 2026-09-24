@@ -24,7 +24,11 @@ use ulid::Ulid as UlidGen;
 use crate::{
     error::{Error, Result},
     model::{Mission, MissionStatus, Runtime, SessionStatus, Timestamp},
-    ops::{crew, project, slot},
+    ops::{
+        crew,
+        project::{self, ProjectScope},
+        slot,
+    },
     repo,
     router::runtime::MissionPermissionMode,
     AppCore,
@@ -47,6 +51,30 @@ pub struct StartMissionInput {
     /// An explicit value overrides the project's bound cwd.
     #[serde(default)]
     pub cwd: Option<String>,
+}
+
+/// A mission start whose project the caller has decided. The socket tool's
+/// `StartMissionInput` converts with its project inferred from `cwd` when
+/// none is named.
+#[derive(Debug, Clone)]
+pub struct MissionStart {
+    pub crew_id: String,
+    pub scope: ProjectScope,
+    pub title: String,
+    pub goal_override: Option<String>,
+    pub cwd: Option<String>,
+}
+
+impl From<StartMissionInput> for MissionStart {
+    fn from(input: StartMissionInput) -> Self {
+        Self {
+            crew_id: input.crew_id,
+            scope: ProjectScope::or_infer(input.project_id),
+            title: input.title,
+            goal_override: input.goal_override,
+            cwd: input.cwd,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -183,9 +211,10 @@ pub(crate) fn ensure_first_turn_fits(slot_handle: &str, body: &str) -> Result<()
 pub fn start(
     conn: &mut Connection,
     app_data_dir: &Path,
-    mut input: StartMissionInput,
+    input: impl Into<MissionStart>,
     permission_mode: MissionPermissionMode,
 ) -> Result<StartMissionOutput> {
+    let input = input.into();
     let title = input.title.trim().to_string();
     if title.is_empty() {
         return Err(Error::msg("mission title must not be empty"));
@@ -193,8 +222,7 @@ pub fn start(
     if let Some(g) = input.goal_override.as_deref() {
         validate_mission_goal(g)?;
     }
-    (input.project_id, input.cwd) =
-        project::resolve_cwd(conn, input.project_id.as_deref(), input.cwd)?;
+    let (project_id, cwd) = project::resolve_scope(conn, &input.scope, input.cwd)?;
 
     // Validate crew exists and is launchable.
     let crew = crew::get(conn, &input.crew_id)?;
@@ -238,11 +266,11 @@ pub fn start(
         &repo::mission::MissionRow {
             id: id.clone(),
             crew_id: crew.id.clone(),
-            project_id: input.project_id.clone(),
+            project_id: project_id.clone(),
             title: title.clone(),
             status: MissionStatus::Running,
             goal_override: input.goal_override.clone(),
-            cwd: input.cwd.clone(),
+            cwd: cwd.clone(),
             started_at,
             stopped_at: None,
             pinned_at: None,
@@ -250,7 +278,7 @@ pub fn start(
         },
     )?;
     // Sidebar node, under the project's node when bound (feature 44).
-    repo::node::ensure_mission_node(&tx, &id, input.project_id.as_deref())?;
+    repo::node::ensure_mission_node(&tx, &id, project_id.as_deref())?;
 
     let mission_dir = event_log::mission_dir(app_data_dir, &crew.id, &id);
     std::fs::create_dir_all(&mission_dir)?;
@@ -282,7 +310,7 @@ pub fn start(
         signal_type: Some(SignalType::new("mission_start")),
         payload: serde_json::json!({
             "title": title,
-            "cwd": input.cwd,
+            "cwd": cwd,
             "permission_mode": permission_mode,
         }),
     })?;
@@ -583,7 +611,7 @@ pub async fn mission_start_impl(
     state: &AppCore,
     input: StartMissionInput,
 ) -> Result<StartMissionOutput> {
-    mission_start_impl_with_size(state, input, None).await
+    mission_start_impl_with_size(state, input.into(), None).await
 }
 
 /// Grid a mission fork will use, plus the source tag the fork log line
@@ -615,7 +643,7 @@ pub fn mission_grid_hint_set(state: &AppCore, cols: u16, rows: u16) -> Result<()
 
 pub async fn mission_start_impl_with_size(
     state: &AppCore,
-    input: StartMissionInput,
+    input: MissionStart,
     initial_size: Option<(u16, u16)>,
 ) -> Result<StartMissionOutput> {
     use crate::event_bus::{BusEmitter, ChannelBusEvents};
@@ -2305,6 +2333,43 @@ mod tests {
                 .unwrap()
                 .unwrap();
         assert_eq!(mission_node.parent_id, Some(project_node.id));
+    }
+
+    #[test]
+    fn start_in_the_root_scope_ignores_a_cwd_inside_a_project() {
+        let pool = pool();
+        let mut conn = pool.get().unwrap();
+        let crew_id = seed_crew(&conn, "Alpha", None);
+        add_role(&mut conn, &crew_id, "lead");
+        let tmp = tempfile::tempdir().unwrap();
+        let project_cwd = tmp.path().join("runner");
+        let cwd = project_cwd.join(".worktrees/fix-718");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let cwd = cwd.to_string_lossy().into_owned();
+        repo::project::create(&conn, "Runner", project_cwd.to_string_lossy().as_ref()).unwrap();
+
+        let out = start(
+            &mut conn,
+            tmp.path(),
+            MissionStart {
+                crew_id,
+                scope: ProjectScope::Root,
+                title: "recents mission".into(),
+                goal_override: None,
+                cwd: Some(cwd.clone()),
+            },
+            MissionPermissionMode::Bypass,
+        )
+        .unwrap();
+
+        let stored = repo::mission::get(&conn, &out.mission.id).unwrap().unwrap();
+        assert_eq!(stored.project_id, None);
+        assert_eq!(stored.cwd.as_deref(), Some(cwd.as_str()));
+        let mission_node =
+            repo::node::find_by_ref(&conn, repo::node::NodeType::Mission, &out.mission.id)
+                .unwrap()
+                .unwrap();
+        assert_eq!(mission_node.parent_id, None);
     }
 
     #[test]

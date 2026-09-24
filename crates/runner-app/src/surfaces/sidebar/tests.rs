@@ -445,9 +445,9 @@ fn project_create_menu_uses_short_labels_and_project_targets() {
             .map(|(_, action)| action.clone())
             .collect::<Vec<_>>(),
         [
-            SidebarMenuAction::NewChat(None),
-            SidebarMenuAction::NewMission(None),
-            SidebarMenuAction::NewTerminal(None),
+            SidebarMenuAction::NewChat(ProjectScope::Root),
+            SidebarMenuAction::NewMission(ProjectScope::Root),
+            SidebarMenuAction::NewTerminal(ProjectScope::Root),
         ]
     );
 
@@ -462,9 +462,9 @@ fn project_create_menu_uses_short_labels_and_project_targets() {
             .map(|(_, action)| action.clone())
             .collect::<Vec<_>>(),
         [
-            SidebarMenuAction::NewChat(Some("project-1".into())),
-            SidebarMenuAction::NewMission(Some("project-1".into())),
-            SidebarMenuAction::NewTerminal(Some("project-1".into())),
+            SidebarMenuAction::NewChat(ProjectScope::Project("project-1".into())),
+            SidebarMenuAction::NewMission(ProjectScope::Project("project-1".into())),
+            SidebarMenuAction::NewTerminal(ProjectScope::Project("project-1".into())),
         ]
     );
 

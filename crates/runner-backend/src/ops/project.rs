@@ -63,6 +63,50 @@ pub struct ProjectDeleteOutcome {
     pub archived_session_ids: Vec<String>,
 }
 
+/// The project a new session or mission joins.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProjectScope {
+    /// The project that owns the working directory, if any.
+    Infer,
+    /// No project, whatever the working directory.
+    Root,
+    Project(String),
+}
+
+impl ProjectScope {
+    /// For callers that may pass only a directory: the CLI and socket tools.
+    pub fn or_infer(project_id: Option<String>) -> Self {
+        project_id.map_or(Self::Infer, Self::Project)
+    }
+
+    /// For starts from inside the app, which belong to the place they were
+    /// started from: a project, or the sidebar root.
+    pub fn or_root(project_id: Option<String>) -> Self {
+        project_id.map_or(Self::Root, Self::Project)
+    }
+
+    pub fn project_id(&self) -> Option<&str> {
+        match self {
+            Self::Project(project_id) => Some(project_id),
+            Self::Infer | Self::Root => None,
+        }
+    }
+}
+
+/// Decide the project and working directory of a new session or mission.
+/// `Root` never consults the directory.
+pub(crate) fn resolve_scope(
+    conn: &rusqlite::Connection,
+    scope: &ProjectScope,
+    cwd: Option<String>,
+) -> Result<(Option<String>, Option<String>)> {
+    match scope {
+        ProjectScope::Infer => resolve_cwd(conn, None, cwd),
+        ProjectScope::Root => Ok((None, cwd)),
+        ProjectScope::Project(project_id) => resolve_cwd(conn, Some(project_id), cwd),
+    }
+}
+
 pub(crate) fn resolve_cwd(
     conn: &rusqlite::Connection,
     project_id: Option<&str>,
@@ -194,6 +238,7 @@ pub async fn project_delete(state: &AppCore, id: String) -> Result<ProjectDelete
 #[cfg(test)]
 mod tests {
     use super::{clean_value, resolve_cwd};
+    use super::{resolve_scope, ProjectScope};
     use crate::{db, repo};
 
     fn create_dir(root: &std::path::Path, relative: &str) -> String {
@@ -349,6 +394,60 @@ mod tests {
         assert_eq!(
             resolve_cwd(&conn, Some(&project.id), Some(cwd.clone())).unwrap(),
             (Some(project.id), Some(cwd))
+        );
+    }
+
+    #[test]
+    fn scope_constructors_read_a_missing_project_by_caller() {
+        assert_eq!(ProjectScope::or_infer(None), ProjectScope::Infer);
+        assert_eq!(ProjectScope::or_root(None), ProjectScope::Root);
+        for scope in [
+            ProjectScope::or_infer(Some("p".into())),
+            ProjectScope::or_root(Some("p".into())),
+        ] {
+            assert_eq!(scope, ProjectScope::Project("p".into()));
+        }
+    }
+
+    #[test]
+    fn resolve_scope_root_never_infers_from_the_cwd() {
+        let pool = db::open_in_memory().unwrap();
+        let conn = pool.get().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let project_cwd = create_dir(temp.path(), "runner");
+        let cwd = create_dir(temp.path(), "runner/.worktrees/fix-718");
+        repo::project::create(&conn, "Runner", &project_cwd).unwrap();
+
+        assert_eq!(
+            resolve_scope(&conn, &ProjectScope::Root, Some(project_cwd.clone())).unwrap(),
+            (None, Some(project_cwd))
+        );
+        assert_eq!(
+            resolve_scope(&conn, &ProjectScope::Root, Some(cwd.clone())).unwrap(),
+            (None, Some(cwd))
+        );
+        assert_eq!(
+            resolve_scope(&conn, &ProjectScope::Root, None).unwrap(),
+            (None, None)
+        );
+    }
+
+    #[test]
+    fn resolve_scope_infers_or_takes_the_named_project() {
+        let pool = db::open_in_memory().unwrap();
+        let conn = pool.get().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let project_cwd = create_dir(temp.path(), "runner");
+        let cwd = create_dir(temp.path(), "runner/.worktrees/fix-718");
+        let project = repo::project::create(&conn, "Runner", &project_cwd).unwrap();
+
+        assert_eq!(
+            resolve_scope(&conn, &ProjectScope::Infer, Some(cwd.clone())).unwrap(),
+            (Some(project.id.clone()), Some(cwd))
+        );
+        assert_eq!(
+            resolve_scope(&conn, &ProjectScope::Project(project.id.clone()), None).unwrap(),
+            (Some(project.id), Some(project_cwd))
         );
     }
 
