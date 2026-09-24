@@ -821,7 +821,7 @@ A refused delete rolls back its transaction, including any dependents it had alr
 
 ## 11. Process and thread model
 
-Runner is one process. There is no IPC boundary between the screen and the PTY.
+Runner is one process. There is no IPC boundary between the screen and the PTY. [`concurrency.md`](concurrency.md) explains the executors and runtimes behind this section: GPUI's and tokio's, how they share state, and the `runner` CLI as the only other process.
 
 ### 11.1 The shape
 
@@ -831,8 +831,8 @@ Runner.app process
   │     render + layout, input dispatch, IME, window management,
   │     AppStore reactions → scoped cx.notify, Sparkle callbacks
   │
-  ├── native-app-events thread
-  │     AppEvent broadcast → AppStore snapshots → wake GPUI
+  ├── GPUI background executor
+  │     UI-issued ops (cx.background_spawn); AppEvent broadcast → AppStore refresh → wake GPUI
   │
   ├── Per live session
   │     ├── blocking PTY reader thread  (read(2) → SessionEvents::output → Term, idle detector)
@@ -842,9 +842,8 @@ Runner.app process
   ├── Per live mission
   │     └── notify watcher → EventBus tail → Router dispatch; router cooldown / reconciliation timers
   │
-  ├── tokio runtime (small)
-  │     ├── rmcp MCP server on $APPDATA/mcp.sock
-  │     └── AppEvent broadcast channel
+  ├── tokio runtime `runner-ipc` (one worker per core, plus its blocking pool)
+  │     └── rmcp MCP server on $APPDATA/mcp.sock, the runner CLI's way in
   │
   └── login-shell probe thread (startup, five-second deadline)
 ```
@@ -857,7 +856,7 @@ Runner.app process
 
 | Lifetime | Components |
 |---|---|
-| App-wide | GPUI main thread, the events thread, AppStore, SessionManager, MissionManager, the SQLite pool, the MCP server, the tracing writer, the Sparkle controller. |
+| App-wide | GPUI main thread, the AppStore event task, AppStore, SessionManager, MissionManager, the SQLite pool, the MCP server, the tracing writer, the Sparkle controller. |
 | Per live mission | One notify watcher + bus tail + router dispatch, wired to that mission's NDJSON file. |
 | Per live session | The PTY reader thread, the writer and input worker, the idle detector, and one `Term` (10,000-line scrollback) in the bridge registry. |
 
