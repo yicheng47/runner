@@ -437,7 +437,7 @@ fn project_create_menu_uses_short_labels_and_project_targets() {
     let root_entries = sidebar_create_menu_entries();
     assert_eq!(
         menu_labels(&root_entries),
-        ["New chat", "New terminal", "New mission"]
+        ["New chat", "New mission", "New terminal"]
     );
     assert_eq!(
         root_entries
@@ -446,15 +446,15 @@ fn project_create_menu_uses_short_labels_and_project_targets() {
             .collect::<Vec<_>>(),
         [
             SidebarMenuAction::NewChat(None),
-            SidebarMenuAction::NewTerminal(None),
             SidebarMenuAction::NewMission(None),
+            SidebarMenuAction::NewTerminal(None),
         ]
     );
 
     let entries = project_create_menu_entries("project-1");
     assert_eq!(
         menu_labels(&entries),
-        ["New chat", "New terminal", "New mission"]
+        ["New chat", "New mission", "New terminal"]
     );
     assert_eq!(
         entries
@@ -463,8 +463,8 @@ fn project_create_menu_uses_short_labels_and_project_targets() {
             .collect::<Vec<_>>(),
         [
             SidebarMenuAction::NewChat(Some("project-1".into())),
-            SidebarMenuAction::NewTerminal(Some("project-1".into())),
             SidebarMenuAction::NewMission(Some("project-1".into())),
+            SidebarMenuAction::NewTerminal(Some("project-1".into())),
         ]
     );
 

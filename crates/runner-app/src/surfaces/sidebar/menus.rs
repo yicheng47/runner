@@ -6,6 +6,14 @@ use crate::*;
 use runner_backend::ops::mission::MissionSummary;
 use runner_backend::repo::node::NodeRow;
 
+/// Where a sidebar menu opens: at the pointer, as a right-click menu does,
+/// or under the row button that opened it.
+#[derive(Clone, Copy)]
+pub(super) enum MenuOrigin {
+    Pointer(gpui::Point<gpui::Pixels>),
+    Button(gpui::Bounds<gpui::Pixels>),
+}
+
 impl Sidebar {
     pub(super) fn open_sidebar_context_menu(
         &mut self,
@@ -15,6 +23,34 @@ impl Sidebar {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.open_sidebar_menu(MenuOrigin::Pointer(position), width, entries, window, cx);
+    }
+
+    /// Opens a menu at `origin`. Pressing the button a menu is open under
+    /// closes it instead.
+    fn open_sidebar_menu(
+        &mut self,
+        origin: MenuOrigin,
+        width: f32,
+        entries: Vec<(UiMenuItem, SidebarMenuAction)>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let (position, anchor) = match origin {
+            MenuOrigin::Pointer(position) => (position, None),
+            MenuOrigin::Button(anchor) => (anchor.bottom_left(), Some(anchor)),
+        };
+        if anchor.is_some()
+            && self
+                .context_menu
+                .as_ref()
+                .is_some_and(|menu| menu.read(cx).anchor() == anchor)
+        {
+            self.context_menu = None;
+            self.schedule_shell_notify(cx);
+            cx.notify();
+            return;
+        }
         let items = entries
             .iter()
             .map(|(item, _)| item.clone())
@@ -27,7 +63,7 @@ impl Sidebar {
         let dismiss_root = root.clone();
         let menu = cx.new(move |menu_cx| {
             let action_root = root.clone();
-            ContextMenu::new(
+            let menu = ContextMenu::new(
                 "sidebar-context-menu",
                 menu_cx.focus_handle(),
                 position,
@@ -47,7 +83,11 @@ impl Sidebar {
                     });
                 }),
             )
-            .width(px(width))
+            .width(px(width));
+            match anchor {
+                Some(anchor) => menu.anchored_to(anchor),
+                None => menu,
+            }
         });
         let focus = menu.read(cx).focus_handle();
         self.context_menu = Some(menu);
@@ -130,12 +170,12 @@ impl Sidebar {
     pub(super) fn open_project_create_menu(
         &mut self,
         project_id: String,
-        position: gpui::Point<gpui::Pixels>,
+        anchor: gpui::Bounds<gpui::Pixels>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.open_sidebar_context_menu(
-            position,
+        self.open_sidebar_menu(
+            MenuOrigin::Button(anchor),
             160.,
             project_create_menu_entries(&project_id),
             window,
@@ -146,12 +186,12 @@ impl Sidebar {
     pub(super) fn open_project_menu(
         &mut self,
         project: runner_backend::repo::project::ProjectRow,
-        position: gpui::Point<gpui::Pixels>,
+        origin: MenuOrigin,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let entries = project_menu_entries(project.id, project.name);
-        self.open_sidebar_context_menu(position, 200., entries, window, cx);
+        self.open_sidebar_menu(origin, 200., entries, window, cx);
     }
 
     pub(super) fn handle_sidebar_menu_action(
@@ -436,12 +476,12 @@ pub(super) fn project_create_menu_entries(
             SidebarMenuAction::NewChat(Some(project_id.to_owned())),
         ),
         (
-            UiMenuItem::new("New terminal").icon("square-terminal.svg"),
-            SidebarMenuAction::NewTerminal(Some(project_id.to_owned())),
-        ),
-        (
             UiMenuItem::new("New mission").icon("flag.svg"),
             SidebarMenuAction::NewMission(Some(project_id.to_owned())),
+        ),
+        (
+            UiMenuItem::new("New terminal").icon("square-terminal.svg"),
+            SidebarMenuAction::NewTerminal(Some(project_id.to_owned())),
         ),
     ]
 }
@@ -453,12 +493,12 @@ pub(super) fn sidebar_create_menu_entries() -> Vec<(UiMenuItem, SidebarMenuActio
             SidebarMenuAction::NewChat(None),
         ),
         (
-            UiMenuItem::new("New terminal").icon("square-terminal.svg"),
-            SidebarMenuAction::NewTerminal(None),
-        ),
-        (
             UiMenuItem::new("New mission").icon("flag.svg"),
             SidebarMenuAction::NewMission(None),
+        ),
+        (
+            UiMenuItem::new("New terminal").icon("square-terminal.svg"),
+            SidebarMenuAction::NewTerminal(None),
         ),
     ]
 }
