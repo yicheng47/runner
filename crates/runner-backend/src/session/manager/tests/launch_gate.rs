@@ -229,7 +229,14 @@ fn spawn_argv_injects_runtime_settings_for_fresh_and_resume() {
         .any(|args| args == ["-c", "check_for_update_on_startup=false"]));
     assert!(!resumed.iter().any(|arg| arg == "first turn"));
 
-    for runtime in ["claude-code", "trae", "copilot", "pi"] {
+    for runtime in [
+        "claude-code",
+        "trae",
+        "copilot",
+        "pi",
+        "antigravity",
+        "opencode",
+    ] {
         let args = compose(
             runtime,
             router::runtime::resume_plan(Runtime::parse(runtime), None),

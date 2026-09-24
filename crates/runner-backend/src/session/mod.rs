@@ -8,6 +8,9 @@
 // has been retired — see docs/impls/archive/0011-pty-host-terminal-runtime.md
 // for the rationale.
 
+pub(crate) mod agy_capture;
+pub(crate) mod agy_status;
+pub(crate) mod agy_trust;
 pub(crate) mod claude_rekey;
 pub(crate) mod claude_status;
 pub mod codex_capture;
@@ -18,6 +21,7 @@ pub(crate) mod copilot_trust;
 pub(crate) mod hook_feed;
 pub mod launch;
 pub mod manager;
+pub(crate) mod opencode;
 pub(crate) mod pi_status;
 pub(crate) mod process;
 pub mod pty_runtime;

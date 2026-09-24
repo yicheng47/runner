@@ -573,6 +573,51 @@ fn runtime_catalog_options() -> Vec<RuntimeCatalogEntry> {
             models: vec![default_model_option()],
             efforts: common_efforts(),
         },
+        RuntimeCatalogEntry {
+            name: Runtime::Antigravity,
+            display_name: "Antigravity CLI".into(),
+            command: "agy".into(),
+            native_fork: crate::router::runtime::supports_native_fork(Some(Runtime::Antigravity)),
+            description: "Google Antigravity CLI (signs in with a Google account)".into(),
+            install_url: "https://antigravity.google/docs/cli/reference".into(),
+            default_enabled: cfg!(target_os = "macos"),
+            available: false,
+            default_model: None,
+            default_effort: None,
+            models: std::iter::once(default_model_option())
+                .chain(crate::router::runtime::ANTIGRAVITY_MODELS.iter().map(
+                    |(model, efforts)| RuntimeCatalogOption {
+                        supported_efforts: Some(
+                            efforts.iter().map(|effort| (*effort).into()).collect(),
+                        ),
+                        ..plain_option(model, model)
+                    },
+                ))
+                .collect(),
+            efforts: std::iter::once(default_effort())
+                .chain(
+                    crate::router::runtime::ANTIGRAVITY_EFFORTS
+                        .iter()
+                        .map(|effort| plain_option(effort, effort)),
+                )
+                .collect(),
+        },
+        // Models are `provider/model` from the user's own providers, typed
+        // freely; the TUI has no effort flag (spec 592 decision 4).
+        RuntimeCatalogEntry {
+            name: Runtime::OpenCode,
+            display_name: "OpenCode".into(),
+            command: "opencode".into(),
+            native_fork: crate::router::runtime::supports_native_fork(Some(Runtime::OpenCode)),
+            description: "OpenCode (bring your own model provider)".into(),
+            install_url: "https://opencode.ai/docs/".into(),
+            default_enabled: cfg!(target_os = "macos"),
+            available: false,
+            default_model: None,
+            default_effort: None,
+            models: vec![default_model_option()],
+            efforts: vec![default_effort()],
+        },
     ]
 }
 
@@ -621,6 +666,31 @@ mod tests {
             .unwrap();
         assert_eq!(pi.command, "pi");
         assert!(pi.native_fork);
+        let agy = definitions
+            .iter()
+            .find(|runtime| runtime.name == Runtime::Antigravity)
+            .unwrap();
+        assert_eq!(agy.display_name, "Antigravity CLI");
+        assert_eq!(agy.command, "agy");
+        assert!(!agy.native_fork);
+        let opencode = definitions
+            .iter()
+            .find(|runtime| runtime.name == Runtime::OpenCode)
+            .unwrap();
+        assert_eq!(opencode.display_name, "OpenCode");
+        assert_eq!(opencode.command, "opencode");
+        assert!(opencode.native_fork);
+        let definition = crate::router::runtime::runtime_definition(Runtime::OpenCode).unwrap();
+        assert_eq!(
+            definition.skills_dirs,
+            [
+                ".config/opencode/skills",
+                ".claude/skills",
+                ".agents/skills"
+            ]
+        );
+        assert_eq!(definition.update_args, ["upgrade"]);
+        assert_eq!(definition.npm_package, Some("opencode-ai"));
 
         let catalog = runtime_catalog_options();
         assert_eq!(
@@ -634,6 +704,8 @@ mod tests {
                 Runtime::Copilot,
                 Runtime::Pi,
                 Runtime::Trae,
+                Runtime::Antigravity,
+                Runtime::OpenCode,
             ]
         );
         assert!(catalog[0].default_enabled);
@@ -695,6 +767,64 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["", "low", "medium", "high", "xhigh"]
         );
+
+        let agy = &catalog[5];
+        assert_eq!(agy.command, "agy");
+        assert!(!agy.native_fork);
+        assert_eq!(agy.default_enabled, cfg!(target_os = "macos"));
+        assert_eq!(
+            agy.models
+                .iter()
+                .map(|model| model.value.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "",
+                "gemini-3.8-flash",
+                "gemini-3.7-flash",
+                "gemini-3.6-flash",
+                "gemini-3.1-pro",
+                "claude-sonnet-4-6",
+                "claude-opus-4-6-thinking",
+                "gpt-oss-120b-medium",
+            ]
+        );
+        let efforts = |model: &str| {
+            agy.efforts_for_model(model)
+                .into_iter()
+                .map(|effort| effort.value)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(efforts(""), [""]);
+        assert_eq!(efforts("gemini-3.8-flash"), ["", "low", "medium", "high"]);
+        assert_eq!(efforts("gemini-3.1-pro"), ["", "low", "high"]);
+        for model in [
+            "claude-sonnet-4-6",
+            "claude-opus-4-6-thinking",
+            "gpt-oss-120b-medium",
+        ] {
+            assert_eq!(efforts(model), [""], "{model}");
+        }
+
+        let opencode = &catalog[6];
+        assert_eq!(opencode.command, "opencode");
+        assert!(opencode.native_fork);
+        assert_eq!(opencode.default_enabled, cfg!(target_os = "macos"));
+        assert_eq!(
+            opencode
+                .models
+                .iter()
+                .map(|model| model.value.as_str())
+                .collect::<Vec<_>>(),
+            [""]
+        );
+        assert_eq!(
+            opencode
+                .efforts
+                .iter()
+                .map(|effort| effort.value.as_str())
+                .collect::<Vec<_>>(),
+            [""]
+        );
     }
 
     #[test]
@@ -714,6 +844,8 @@ mod tests {
                 Runtime::Copilot,
                 Runtime::Pi,
                 Runtime::Trae,
+                Runtime::Antigravity,
+                Runtime::OpenCode,
             ]
         } else {
             vec![
@@ -746,7 +878,7 @@ mod tests {
     fn update_spec_runs_the_effective_executable_with_its_update_argument() {
         use std::os::unix::fs::PermissionsExt;
         let bin = tempfile::tempdir().unwrap();
-        for command in ["codex", "traecli"] {
+        for command in ["codex", "traecli", "opencode"] {
             let path = bin.path().join(command);
             std::fs::write(&path, "#!/bin/sh\n").unwrap();
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -761,5 +893,12 @@ mod tests {
         assert_eq!(spec.initial_size, Some((90, 28)));
 
         assert!(runtime_update_spawn_spec(&state, Runtime::Trae, (90, 28)).is_err());
+
+        let spec = runtime_update_spawn_spec(&state, Runtime::OpenCode, (90, 28)).unwrap();
+        assert_eq!(
+            spec.command,
+            bin.path().join("opencode").display().to_string()
+        );
+        assert_eq!(spec.args, ["upgrade"]);
     }
 }

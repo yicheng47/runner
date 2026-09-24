@@ -107,7 +107,12 @@ fn root_is_detected(relative: &str, available: &[Runtime]) -> bool {
 fn root_runtimes(relative: &str) -> &'static [Runtime] {
     match relative {
         ".claude/skills" => &[Runtime::ClaudeCode],
-        ".agents/skills" => &[Runtime::Codex, Runtime::Copilot, Runtime::Pi],
+        ".agents/skills" => &[
+            Runtime::Codex,
+            Runtime::Copilot,
+            Runtime::Pi,
+            Runtime::OpenCode,
+        ],
         ".trae/skills" => &[Runtime::Trae],
         _ => &[],
     }
@@ -168,7 +173,12 @@ mod tests {
         assert_eq!(root_runtimes(".claude/skills"), &[Runtime::ClaudeCode]);
         assert_eq!(
             root_runtimes(".agents/skills"),
-            &[Runtime::Codex, Runtime::Copilot, Runtime::Pi]
+            &[
+                Runtime::Codex,
+                Runtime::Copilot,
+                Runtime::Pi,
+                Runtime::OpenCode
+            ]
         );
         assert_eq!(root_runtimes(".trae/skills"), &[Runtime::Trae]);
     }

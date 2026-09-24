@@ -228,24 +228,26 @@ Agents use `--json`; without it, list and show commands render tables and readab
 
 ## Supported agents
 
-| | Claude Code | Codex | GitHub Copilot CLI | pi |
-| --- | :---: | :---: | :---: | :---: |
-| Chats, missions, resume after relaunch | ✓ | ✓ | ✓ | ✓ |
-| Runs on Windows | ✓ | ✓ | ✓ ¹ | ✓ ² |
-| Fork a chat | ✓ | ✓ | — | ✓ |
-| Working / Idle from the agent's hooks | ✓ | ✓ | ✓ | ✓ |
-| Needs you: approval and question dialogs shown | ✓ | — | ✓ | from extensions only |
-| Model list read from the CLI | ✓ | ✓ | — | ✓ |
-| Update from Settings → Agents | ✓ | ✓ | ✓ | ✓ |
-| Permission modes | Default · Accept edits · Auto · Bypass | Default · Auto · Bypass | Default · Accept edits · Bypass | — |
-| Skills pane | catalog + on/off | catalog + on/off | catalog + on/off | catalog |
-| Runner skill installed | ✓ | ✓ | ✓ | ✓ |
-| Terminal rendering covered by fixtures | ✓ | ✓ | — | — |
+| | Claude Code | Codex | GitHub Copilot CLI | pi | Antigravity CLI | OpenCode |
+| --- | :---: | :---: | :---: | :---: | :---: | :---: |
+| Chats, missions, resume after relaunch | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Runs on Windows | ✓ | ✓ | ✓ ¹ | ✓ ² | off by default ³ | off by default ⁴ |
+| Fork a chat | ✓ | ✓ | — | ✓ | — | ✓ |
+| Working / Idle from the agent's hooks | ✓ | ✓ | ✓ | ✓ | macOS only | — |
+| Needs you: approval and question dialogs shown | ✓ | — | ✓ | from extensions only | — | — |
+| Model list read from the CLI | ✓ | ✓ | — | ✓ | — | — |
+| Update from Settings → Agents | ✓ | ✓ | ✓ | ✓ | — | ✓ |
+| Permission modes | Default · Accept edits · Auto · Bypass | Default · Auto · Bypass | Default · Accept edits · Bypass | — | Default · Accept edits · Bypass | Default · Bypass |
+| Skills pane | catalog + on/off | catalog + on/off | catalog + on/off | catalog | catalog | catalog |
+| Runner skill installed | ✓ | ✓ | ✓ | ✓ | — | ✓ |
+| Terminal rendering covered by fixtures | ✓ | ✓ | — | — | — | — |
 
 ¹ GitHub Copilot CLI runs natively on Windows but has not been smoke-tested there yet.
 ² pi runs natively on Windows but has not been smoke-tested there yet; its bash tool requires Git for Windows.
+³ Antigravity CLI stays off by default on Windows until it has been smoke-tested there; you can switch it on in **Settings → Agents**.
+⁴ OpenCode stays off by default on Windows until it has been smoke-tested there; you can switch it on in **Settings → Agents**.
 
-Claude Code and Codex are the primary agents, with tuned launch and nudge timing. GitHub Copilot CLI needs a Copilot subscription. pi brings your own configured model provider. [Issues](https://github.com/yicheng47/runner/issues) are welcome.
+Claude Code and Codex are the primary agents, with tuned launch and nudge timing. GitHub Copilot CLI needs a Copilot subscription. pi brings your own configured model provider. Antigravity CLI signs in with a Google account and updates itself when it starts, so it has no **Update** button. OpenCode also brings your own model provider; Runner loads a small plugin into each OpenCode session it starts, which reports the session's id so a relaunch or a fork can find it. [Issues](https://github.com/yicheng47/runner/issues) are welcome.
 
 Install the agent CLIs separately. Runner detects them on `PATH`, with per-agent executable overrides in **Settings → Agents**, which also shows each CLI's version and, when a newer one is published, an **Update** button that runs the CLI's own updater in a terminal. On Windows, Claude Code and pi's bash tool require Git for Windows; npm-based CLI installations require Node.js. PowerShell 7 is optional. Agents run natively on Windows, without WSL.
 

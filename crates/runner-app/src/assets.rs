@@ -195,6 +195,10 @@ const ASSETS: &[(&str, &[u8])] = &[
     ("trae.svg", TRAE),
     ("copilot.svg", COPILOT),
     ("pi.svg", PI),
+    // Placeholder until the Antigravity mark is designed (#644 phase 0).
+    ("antigravity.svg", MESSAGE_SQUARE),
+    // Placeholder until the OpenCode mark is designed (#592).
+    ("opencode.svg", MESSAGE_SQUARE),
     ("message-square-plus.svg", MESSAGE_SQUARE_PLUS),
     ("columns-2.svg", COLUMNS_2),
     ("pin.svg", PIN),
@@ -402,6 +406,22 @@ mod tests {
                 assert!(svg.contains("fill-rule=\"evenodd\""));
             }
         }
+    }
+
+    #[test]
+    fn antigravity_placeholder_is_registered() {
+        assert_eq!(
+            Assets.load("antigravity.svg").unwrap(),
+            Assets.load("message-square.svg").unwrap()
+        );
+    }
+
+    #[test]
+    fn opencode_placeholder_is_registered() {
+        assert_eq!(
+            Assets.load("opencode.svg").unwrap(),
+            Assets.load("message-square.svg").unwrap()
+        );
     }
 
     #[test]

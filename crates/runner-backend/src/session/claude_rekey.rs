@@ -32,7 +32,8 @@ struct SessionStartReport {
     session_id: String,
 }
 
-/// Watches atomic session-key reports written by Claude Code and pi hooks.
+/// Watches atomic session-key reports written by Claude Code and pi hooks and
+/// by the OpenCode plugin.
 pub(crate) struct ClaudeSessionKeyWatcher {
     shutdown: Arc<AtomicBool>,
     _consumer: JoinHandle<()>,
@@ -191,14 +192,21 @@ fn try_process_drop_file(path: &Path, pool: &DbPool, events: &dyn SessionEvents)
         Ok(report) => report,
         Err(_) => return Ok(()),
     };
-    if uuid::Uuid::parse_str(&report.session_id).is_err() {
-        return Ok(());
-    }
-
     let conn = pool.get()?;
     let Some(row) = repo::session::get_row(&conn, runner_session_id)? else {
         return Ok(());
     };
+    // Claude Code and pi report UUIDs; OpenCode's plugin reports `ses_…` ids.
+    let valid_key = if repo::session::effective_runtime(&conn, runner_session_id)?.as_deref()
+        == Some(crate::model::Runtime::OpenCode.key())
+    {
+        super::opencode::is_session_id(&report.session_id)
+    } else {
+        uuid::Uuid::parse_str(&report.session_id).is_ok()
+    };
+    if !valid_key {
+        return Ok(());
+    }
     if row.agent_session_key.as_deref() == Some(report.session_id.as_str()) {
         return Ok(());
     }
@@ -278,6 +286,47 @@ mod tests {
         assert_eq!(row.agent_session_key.as_deref(), Some(new_key.as_str()));
         assert_eq!(events.updated.lock().unwrap().len(), 1);
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn opencode_ids_rekey_only_opencode_rows() {
+        let root = tempfile::tempdir().unwrap();
+        let pool = crate::db::open_in_memory().unwrap();
+        let events = Capture::default();
+        let old_key = uuid::Uuid::new_v4().to_string();
+        let opencode_key = "ses_f31048251ffepsv6qvMgfycvy1";
+        for (id, runtime) in [
+            ("opencode-row", "opencode"),
+            ("claude-row", "claude-code"),
+            ("pi-row", "pi"),
+        ] {
+            insert_running(&pool, id, &old_key);
+            pool.get()
+                .unwrap()
+                .execute(
+                    "UPDATE sessions SET agent_runtime = ?2 WHERE id = ?1",
+                    rusqlite::params![id, runtime],
+                )
+                .unwrap();
+        }
+        let report = |id: &str, key: &str| {
+            let path = drop_path(root.path(), id);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, serde_json::json!({ "session_id": key }).to_string()).unwrap();
+            process_drop_file(&path, &pool, &events);
+            repo::session::get_row(&pool.get().unwrap(), id)
+                .unwrap()
+                .unwrap()
+                .agent_session_key
+                .unwrap()
+        };
+        assert_eq!(report("claude-row", opencode_key), old_key);
+        assert_eq!(report("pi-row", opencode_key), old_key);
+        let fresh_uuid = uuid::Uuid::new_v4().to_string();
+        assert_eq!(report("opencode-row", &fresh_uuid), old_key);
+        assert_eq!(report("opencode-row", "ses_not valid"), old_key);
+        assert_eq!(report("opencode-row", opencode_key), opencode_key);
+        assert_eq!(events.updated.lock().unwrap().len(), 1);
     }
 
     #[test]

@@ -25,6 +25,8 @@ const CLAUDE_CAPTION: &str = "Toggles hide a skill from every new Claude Code se
 const CODEX_CAPTION: &str = "Toggles hide a skill from every new Codex session, inside Runner or not; the only write is a [[skills.config]] entry in ~/.codex/config.toml. Click a row to read a skill, hover it to edit. Codex's system skills (~/.codex/skills/.system) and plugin skills always load and are not listed.";
 const COPILOT_CAPTION: &str = "Toggles hide a skill from every new GitHub Copilot CLI session, inside Runner or not; the only write is the disabledSkills list in ~/.copilot/settings.json, the list `copilot plugins disable --skill` keeps. Click a row to read a skill, hover it to edit. Project skills (.github/skills, .agents/skills) and plugin skills always load and are not listed.";
 const PI_CAPTION: &str = "Every skill in ~/.pi/agent/skills and ~/.agents/skills loads in every new pi session; Runner does not toggle skills for pi. Click a row to read a skill, hover it to edit.";
+const ANTIGRAVITY_CAPTION: &str = "Every skill in ~/.gemini/antigravity-cli/skills and ~/.gemini/skills loads in every new Antigravity CLI session; Runner does not toggle skills for agy. Built-in and plugin skills are not listed. Click a row to read a skill, hover it to edit.";
+const OPENCODE_CAPTION: &str = "Every skill in ~/.config/opencode/skills, ~/.claude/skills and ~/.agents/skills loads in every new OpenCode session; Runner does not toggle skills for OpenCode. The last two roots are shared with Claude Code and with Codex, Copilot and pi, and turning a skill off for Claude Code does not hide it from OpenCode. Project and built-in skills are not listed. Click a row to read a skill, hover it to edit.";
 const TRAE_CAPTION: &str = "Every skill in ~/.trae/skills loads in every new TRAE CLI session; Runner does not toggle skills for TRAE. TRAE's per-skill switch is disable-model-invocation in the skill frontmatter. Click a row to read a skill, hover it to edit.";
 const READ_ONLY_CAPTION: &str = "Every skill in these roots loads in every new session; Runner does not toggle skills for this agent. Click a row to read a skill, hover it to edit.";
 
@@ -35,6 +37,8 @@ fn catalog_caption(runtime: Runtime) -> &'static str {
         Runtime::Copilot => COPILOT_CAPTION,
         Runtime::Pi => PI_CAPTION,
         Runtime::Trae => TRAE_CAPTION,
+        Runtime::Antigravity => ANTIGRAVITY_CAPTION,
+        Runtime::OpenCode => OPENCODE_CAPTION,
         _ => READ_ONLY_CAPTION,
     }
 }
@@ -1439,6 +1443,43 @@ mod tests {
 
         assert!(supports_global_skill_toggle(Runtime::Copilot));
         assert!(visual.debug_bounds("SKILL_ENABLED_ROW").is_some());
+    }
+
+    #[test]
+    fn opencode_lists_its_root_and_the_shared_roots_without_a_global_toggle() {
+        assert!(!supports_global_skill_toggle(Runtime::OpenCode));
+        let caption = catalog_caption(Runtime::OpenCode);
+        for root in [
+            "~/.config/opencode/skills",
+            "~/.claude/skills",
+            "~/.agents/skills",
+        ] {
+            assert!(caption.contains(root), "{root}");
+        }
+        assert_eq!(
+            runner_backend::router::runtime::runtime_definition(Runtime::OpenCode)
+                .unwrap()
+                .skills_dirs,
+            [
+                ".config/opencode/skills",
+                ".claude/skills",
+                ".agents/skills"
+            ]
+        );
+    }
+
+    #[test]
+    fn antigravity_lists_both_personal_roots_without_a_global_toggle() {
+        assert!(!supports_global_skill_toggle(Runtime::Antigravity));
+        let caption = catalog_caption(Runtime::Antigravity);
+        assert!(caption.contains("~/.gemini/antigravity-cli/skills"));
+        assert!(caption.contains("~/.gemini/skills"));
+        assert_eq!(
+            runner_backend::router::runtime::runtime_definition(Runtime::Antigravity)
+                .unwrap()
+                .skills_dirs,
+            [".gemini/antigravity-cli/skills", ".gemini/skills"]
+        );
     }
 
     #[test]

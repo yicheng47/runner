@@ -1074,7 +1074,13 @@ mod tests {
         )
         .is_err());
         assert!(!home.path().join(".codex").exists());
-        for runtime in [Runtime::Trae, Runtime::Pi, Runtime::Shell] {
+        for runtime in [
+            Runtime::Trae,
+            Runtime::Pi,
+            Runtime::Antigravity,
+            Runtime::OpenCode,
+            Runtime::Shell,
+        ] {
             assert!(set_global_enabled_at(
                 home.path(),
                 None,

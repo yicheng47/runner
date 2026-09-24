@@ -67,6 +67,7 @@ fn decoration(text: &str, cwd: Option<&str>) -> bool {
             | "github copilot"
             | "copilot"
             | "opencode"
+            | "oc"
             | "gemini"
             | "gemini cli"
             | "new chat"
@@ -119,6 +120,19 @@ mod tests {
         assert_eq!(
             provider_title("Run Shell Command Echo - GitHub Copilot", None).as_deref(),
             Some("Run Shell Command Echo")
+        );
+    }
+
+    #[test]
+    fn opencode_titles_keep_only_the_topic() {
+        assert_eq!(provider_title("OpenCode", None), None);
+        assert_eq!(
+            provider_title("OC | Fix the bug", None).as_deref(),
+            Some("Fix the bug")
+        );
+        assert_eq!(
+            provider_title("OC | Refactor the session capture and a…", None).as_deref(),
+            Some("Refactor the session capture and a…")
         );
     }
 

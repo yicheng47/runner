@@ -1,3 +1,4 @@
+mod antigravity;
 mod attention;
 mod codex;
 mod copilot;
@@ -7,6 +8,7 @@ mod hook_status;
 mod input;
 mod launch_gate;
 mod mission_lifecycle;
+mod opencode;
 mod permissions;
 mod pi;
 mod resume;
@@ -607,6 +609,11 @@ fn assert_chat_has_no_permission_flags(args: &[String]) {
         "--allow-all-tools",
         "--allow-all-paths",
         "--allow-all-urls",
+        "--mode",
+        "-mode",
+        "-dangerously-skip-permissions",
+        "--auto",
+        "--no-auto",
     ] {
         assert!(
             !args

@@ -849,12 +849,22 @@ mod tests {
         pi.display_name = "pi".into();
         pi.command = "pi".into();
         catalog.push(pi);
+        let mut agy = catalog[0].clone();
+        agy.name = runner_backend::model::Runtime::Antigravity;
+        agy.display_name = "Antigravity CLI".into();
+        agy.command = "agy".into();
+        catalog.push(agy);
+        let mut opencode = catalog[0].clone();
+        opencode.name = runner_backend::model::Runtime::OpenCode;
+        opencode.display_name = "OpenCode".into();
+        opencode.command = "opencode".into();
+        catalog.push(opencode);
         assert_eq!(
             runtime_select_options(&catalog)
                 .iter()
                 .map(|entry| entry.value.as_str())
                 .collect::<Vec<_>>(),
-            ["codex", "copilot", "pi"]
+            ["codex", "copilot", "pi", "antigravity", "opencode"]
         );
     }
 }

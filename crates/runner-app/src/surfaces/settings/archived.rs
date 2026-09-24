@@ -853,6 +853,8 @@ mod tests {
             ("trae", "trae.svg"),
             ("copilot", "copilot.svg"),
             ("pi", "pi.svg"),
+            ("antigravity", "antigravity.svg"),
+            ("opencode", "opencode.svg"),
         ] {
             chat.agent_runtime = runtime.into();
             let items = merge_archived_items(&[], std::slice::from_ref(&chat));
