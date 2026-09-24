@@ -122,7 +122,7 @@ Starting a mission spawns one live PTY per slot into a tabbed workspace. The **f
 
 ### Chats — tabs, split panes, folders
 
-Every chat is a real 1:1 PTY with a role, no mission required. Split a tab as far as the window allows — right or down from any pane, `⌘D` and `⇧⌘D` — and drag a pane by its grip to reorder; terminal tabs split the same way, straight into another shell. The sidebar groups tabs into collapsible folders; every tab shows a spinner while a pane is still working and a dot when one finished while you were elsewhere, so a wall of parallel agents stays scannable.
+Every chat is a real 1:1 PTY with a role, no mission required. Split a tab as far as the window allows — right or down from any pane, `⌘D` and `⇧⌘D` — and drag a pane by its grip to reorder; terminal tabs split the same way, straight into another shell in the directory you last `cd`'d to. The sidebar groups tabs into collapsible folders; every tab shows a spinner while a pane is still working and a dot when one finished while you were elsewhere, so a wall of parallel agents stays scannable.
 
 </td>
 </tr>

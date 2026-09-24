@@ -17,6 +17,8 @@ fn runtime_direct_role_applies_model_and_effort() {
 fn shell_runtime_spawns_and_resumes_as_plain_login_shell() {
     let pool = pool_with_schema();
     let project = crate::repo::project::create(&pool.get().unwrap(), "Project", "/tmp").unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let zdotdir = data.path().join("shell-integration/zsh");
     let fake = fake_runtime();
     let mgr = mgr_with_fake(
         Some("/usr/local/bin:/usr/bin:/bin".into()),
@@ -37,7 +39,7 @@ fn shell_runtime_spawns_and_resumes_as_plain_login_shell() {
             Some("/tmp"),
             Some(132),
             Some(41),
-            std::path::Path::new("/tmp"),
+            data.path(),
             Arc::clone(&pool),
             capture(),
         )
@@ -54,9 +56,16 @@ fn shell_runtime_spawns_and_resumes_as_plain_login_shell() {
     assert!(spec.shim_dir.is_none());
     assert_eq!(
         spec.bundled_bin_dir.as_deref(),
-        Some(std::path::Path::new("/tmp/bin"))
+        Some(data.path().join("bin").as_path())
     );
-    assert!(spec.env.keys().all(|key| !key.starts_with("RUNNER_")));
+    assert!(spec
+        .env
+        .keys()
+        .all(|key| !key.starts_with("RUNNER_") || key == "RUNNER_ZSH_ZDOTDIR"));
+    assert_eq!(
+        spec.env.get("ZDOTDIR").map(PathBuf::from),
+        Some(zdotdir.clone())
+    );
 
     let stored = crate::repo::session::get_row(&pool.get().unwrap(), &spawned.id)
         .unwrap()
@@ -72,7 +81,7 @@ fn shell_runtime_spawns_and_resumes_as_plain_login_shell() {
         &spawned.id,
         None,
         None,
-        std::path::Path::new("/tmp"),
+        data.path(),
         Arc::clone(&pool),
         capture(),
     )
@@ -81,9 +90,74 @@ fn shell_runtime_spawns_and_resumes_as_plain_login_shell() {
     assert_eq!(resumed.command, "/bin/zsh");
     assert_eq!(resumed.args, ["-l"]);
     assert_eq!(resumed.cwd.as_deref(), Some(std::path::Path::new("/tmp")));
-    assert!(resumed.env.keys().all(|key| !key.starts_with("RUNNER_")));
+    assert!(resumed
+        .env
+        .keys()
+        .all(|key| !key.starts_with("RUNNER_") || key == "RUNNER_ZSH_ZDOTDIR"));
+    assert_eq!(resumed.env.get("ZDOTDIR").map(PathBuf::from), Some(zdotdir));
 
     mgr.kill(&spawned.id).unwrap();
+}
+
+/// Only Runner's terminal shells get the OSC 7 integration (#575): the
+/// `runtime:shell` role outside a mission. A role-backed shell, a mission
+/// slot and an agent keep their spawn environment and argv as they were.
+#[cfg(unix)]
+#[test]
+fn only_terminal_shells_get_the_osc7_integration() {
+    let data = tempfile::tempdir().unwrap();
+    let compose = |role: &Role, mission: bool| {
+        let mut spec = SpawnSpec {
+            session_id: "osc7-gate".into(),
+            command: role.command.clone(),
+            args: role.args.clone(),
+            mission,
+            initial_size: Some((80, 24)),
+            ..SpawnSpec::default()
+        };
+        SessionManager::apply_runtime_args(
+            &mut spec,
+            role,
+            &router::runtime::resume_plan(Runtime::parse(&role.runtime), None),
+            data.path(),
+            None,
+            None,
+            None,
+        );
+        spec
+    };
+    let integrated = |spec: &SpawnSpec| {
+        [
+            "ZDOTDIR",
+            "RUNNER_ZSH_ZDOTDIR",
+            "PROMPT_COMMAND",
+            "RUNNER_BASH_INTEGRATION",
+        ]
+        .iter()
+        .any(|name| spec.env.contains_key(*name))
+    };
+
+    for shell in ["/bin/zsh", "/bin/bash"] {
+        let terminal = runtime_direct_role("shell", Some(shell), None, None).unwrap();
+        let spec = compose(&terminal, false);
+        assert!(integrated(&spec), "{shell}: {:?}", spec.env);
+        assert_eq!(spec.args, ["-l"]);
+        assert!(
+            !integrated(&compose(&terminal, true)),
+            "{shell} in a mission"
+        );
+
+        let mut role_backed = role(shell, &["-l"]);
+        role_backed.runtime = "shell".into();
+        let spec = compose(&role_backed, false);
+        assert!(!integrated(&spec), "role-backed {shell}: {:?}", spec.env);
+        assert_eq!(spec.args, ["-l"]);
+    }
+
+    let mut agent = role("/bin/zsh", &[]);
+    agent.runtime = "claude-code".into();
+    let plain = compose(&agent, false);
+    assert!(!integrated(&plain), "{:?}", plain.env);
 }
 
 #[test]

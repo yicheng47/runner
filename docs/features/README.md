@@ -17,6 +17,7 @@ Since 2026-09-01 a spec's number **is** its tracking issue number: file the issu
 - [644 — Antigravity CLI runtime](./644-antigravity-runtime.md) — `agy` as the next agent runtime: log-file key capture, trust preseed, a model catalog that only emits combinations agy accepts, hook status without `PreToolUse` ([#644](https://github.com/yicheng47/runner/issues/644), P1, 0.11.x; spec under review).
 - [533 — Update agent CLIs from Settings → Agents](./533-agent-cli-updates.md) — installed versions, an Update button that runs the CLI's own updater in a modal terminal, an update dot on the usage popover's Agent settings gear ([#533](https://github.com/yicheng47/runner/issues/533), P2, 0.11.x).
 - [701 — Desktop notifications](./701-desktop-notifications.md) — a popup Runner draws itself, following Zed's agent notification, when a session off screen waits on you, finishes or fails ([#701](https://github.com/yicheng47/runner/issues/701), P2, 0.12).
+- [575 — Splits follow the shell's live cwd](./575-live-cwd.md) — OSC 7 parsed per shell session, split and New terminal on a terminal tab open where the shell is, zsh and bash hooks injected without touching rc files ([#575](https://github.com/yicheng47/runner/issues/575), P3, 0.14).
 
 ## Dropped
 
