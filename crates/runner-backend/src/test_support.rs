@@ -133,6 +133,20 @@ pub(crate) fn insert_test_slot(
     .unwrap();
 }
 
+/// Turn foreign-key enforcement off on `conn`, so a delete test proves the
+/// code does its dependent work itself instead of leaning on the schema.
+pub(crate) fn foreign_keys_off(conn: &Connection) {
+    conn.pragma_update(None, "foreign_keys", "OFF").unwrap();
+    assert_eq!(
+        row_count(conn, "SELECT foreign_keys FROM pragma_foreign_keys"),
+        0
+    );
+}
+
+pub(crate) fn row_count(conn: &Connection, sql: &str) -> i64 {
+    conn.query_row(sql, [], |row| row.get(0)).unwrap()
+}
+
 pub(crate) fn test_session_row(
     id: &str,
     status: crate::model::SessionStatus,

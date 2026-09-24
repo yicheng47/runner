@@ -113,9 +113,9 @@ pub fn project_rename(state: &AppCore, id: String, name: String) -> Result<Proje
 
 /// Delete a project after archiving member missions and chats and closing member
 /// terminals. Missions archive first as complete self-consistent operations;
-/// member tabs and the project node and row then change in one transaction. The
-/// project row's ON DELETE SET NULL unbinds the archived rows' pointers, so
-/// restored items come back unfiled. Returns archived member ids for event fanout.
+/// member tabs and the project node and row then change in one transaction,
+/// which unbinds the archived rows' pointers, so restored items come back
+/// unfiled. Returns archived member ids for event fanout.
 pub(crate) async fn project_delete_impl(state: &AppCore, id: &str) -> Result<ProjectDeleteOutcome> {
     let (project_node, children) = {
         let conn = state.db.get()?;
@@ -143,16 +143,18 @@ pub(crate) async fn project_delete_impl(state: &AppCore, id: &str) -> Result<Pro
         // snapshot), so late arrivals archive too — or fail the guard
         // if their sessions are still running.
         let removed = match project_node.as_ref() {
-            Some(node) => repo::node::delete_container_tabs_and_archive(&tx, &node.id)?,
+            Some(node) => super::node::delete_container_tabs_and_archive(&tx, &node.id)?,
             None => (Vec::new(), Vec::new()),
         };
-        // A plain RESTRICT-guarded delete: a child that arrived during
+        // Refused while the node has children: a child that arrived during
         // the archive gap (another window moving a mission in) fails
         // the whole transaction loudly instead of being silently
         // reparented and unbound.
         if let Some(node) = project_node.as_ref() {
             repo::node::delete(&tx, &node.id)?;
         }
+        repo::session::unbind_project(&tx, id)?;
+        repo::mission::unbind_project(&tx, id)?;
         if repo::project::delete(&tx, id)? == 0 {
             return Err(Error::msg(format!("project not found: {id}")));
         }

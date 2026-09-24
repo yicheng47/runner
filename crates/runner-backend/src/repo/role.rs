@@ -297,24 +297,18 @@ pub fn unarchived_direct_session_ids(
     rows.collect()
 }
 
-pub fn affected_crews(conn: &Connection, role_id: &str) -> rusqlite::Result<Vec<(String, bool)>> {
+/// One name per crew with a slot for this role, falling back to the crew id
+/// for a slot whose crew row is gone.
+pub fn crew_names(conn: &Connection, role_id: &str) -> rusqlite::Result<Vec<String>> {
     let mut stmt = conn.prepare(
-        "SELECT crew_id, MAX(lead)
-           FROM slots
-          WHERE role_id = ?1
-          GROUP BY crew_id",
+        "SELECT DISTINCT COALESCE(c.name, s.crew_id) AS crew
+           FROM slots s
+           LEFT JOIN crews c ON c.id = s.crew_id
+          WHERE s.role_id = ?1
+          ORDER BY crew",
     )?;
-    let rows = stmt.query_map(rusqlite::params![role_id], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? != 0))
-    })?;
+    let rows = stmt.query_map(rusqlite::params![role_id], |row| row.get(0))?;
     rows.collect()
-}
-
-pub fn delete_sessions(conn: &Connection, role_id: &str) -> rusqlite::Result<usize> {
-    conn.execute(
-        "DELETE FROM sessions WHERE role_id = ?1",
-        rusqlite::params![role_id],
-    )
 }
 
 pub fn session_count(conn: &Connection, role_id: &str) -> rusqlite::Result<i64> {

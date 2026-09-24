@@ -510,7 +510,7 @@ struct SessionHandle {
     mission_id: Option<String>,
     /// The role this session is an instance of. `kill_all_for_role`
     /// filters on this so deleting a role can reap its live PTY
-    /// children before the cascade nukes the DB rows underneath.
+    /// children before the role delete removes the DB rows underneath.
     role_id: Option<String>,
     /// Runtime-side identity returned from `SessionRuntime::spawn`.
     /// The manager passes this back to `runtime.send_bytes` /

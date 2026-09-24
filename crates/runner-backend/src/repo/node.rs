@@ -13,7 +13,6 @@
 // stay authoritative for domain membership, so reparenting across a
 // project boundary writes the pointer through (see `move_and_reorder`).
 
-use crate::model::Runtime;
 use std::collections::HashSet;
 
 use chrono::Utc;
@@ -250,19 +249,45 @@ pub fn ensure_mission_node(
     create_ref_node(conn, NodeType::Mission, mission_id, parent.as_deref())
 }
 
+/// Refused while the node has children, with the error the self-reference's
+/// `ON DELETE RESTRICT` raises (SQLite runs it as a trigger), so a refusal
+/// reads the same whether or not the pragma is on (#619).
 pub fn delete(conn: &Connection, id: &str) -> rusqlite::Result<usize> {
+    let has_children: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM nodes WHERE parent_id = ?1)",
+        [id],
+        |row| row.get(0),
+    )?;
+    if has_children {
+        return Err(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CONSTRAINT_TRIGGER),
+            Some("FOREIGN KEY constraint failed".to_owned()),
+        ));
+    }
     conn.execute("DELETE FROM nodes WHERE id = ?1", [id])
 }
 
-pub fn delete_mission_node(conn: &Connection, mission_id: &str) -> rusqlite::Result<usize> {
+pub fn set_layout(conn: &Connection, id: &str, layout: &str) -> rusqlite::Result<usize> {
     conn.execute(
-        "DELETE FROM nodes WHERE type = 'mission' AND ref_id = ?1",
-        [mission_id],
+        "UPDATE nodes SET layout = ?2 WHERE id = ?1",
+        rusqlite::params![id, layout],
     )
 }
 
+pub fn delete_mission_node(conn: &Connection, mission_id: &str) -> rusqlite::Result<usize> {
+    let ids: Vec<String> = conn
+        .prepare("SELECT id FROM nodes WHERE type = 'mission' AND ref_id = ?1")?
+        .query_map([mission_id], |row| row.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    let mut deleted = 0;
+    for id in ids {
+        deleted += delete(conn, &id)?;
+    }
+    Ok(deleted)
+}
+
 /// Remove a project's node, reparenting any children to the root end
-/// first (the self-FK is ON DELETE RESTRICT). Domain unbinding is the
+/// first (a node with children cannot be deleted). Domain unbinding is the
 /// caller's `projects` delete — `project_id` pointers go NULL there.
 pub fn delete_project_node(conn: &Connection, project_id: &str) -> rusqlite::Result<()> {
     let Some(node) = find_by_ref(conn, NodeType::Project, project_id)? else {
@@ -685,13 +710,18 @@ pub fn ensure_active_sessions(conn: &Connection) -> rusqlite::Result<()> {
     for (mission_id, project_id) in &missions {
         ensure_mission_node(conn, mission_id, project_id.as_deref())?;
     }
-    conn.execute(
-        "DELETE FROM nodes
-         WHERE type = 'mission'
-           AND ref_id NOT IN
-               (SELECT id FROM missions WHERE archived_at IS NULL)",
-        [],
-    )?;
+    let stale_missions: Vec<String> = conn
+        .prepare(
+            "SELECT id FROM nodes
+             WHERE type = 'mission'
+               AND ref_id NOT IN
+                   (SELECT id FROM missions WHERE archived_at IS NULL)",
+        )?
+        .query_map([], |row| row.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    for id in &stale_missions {
+        delete(conn, id)?;
+    }
 
     // Direct sessions -> tab nodes.
     let covered: HashSet<String> = list(conn)?
@@ -808,62 +838,48 @@ pub(crate) fn remove_session_except(
     Ok(())
 }
 
-/// Delete a project's member tabs after archiving their chats and deleting
-/// their terminals. The project node itself deletes afterwards (self-FK is
-/// RESTRICT). Returns the archived chat ids followed by the deleted terminal
-/// ids.
-pub fn delete_container_tabs_and_archive(
-    tx: &Transaction<'_>,
+pub(crate) fn container_tabs(
+    conn: &Connection,
     container_id: &str,
-) -> rusqlite::Result<(Vec<String>, Vec<String>)> {
-    let rows = {
-        let mut stmt = tx.prepare(&format!(
-            "SELECT {} FROM nodes
-             WHERE parent_id = ?1 AND type = 'tab'
-             ORDER BY position, created_at",
-            select_list(COLUMNS)
-        ))?;
-        let rows = stmt
-            .query_map([container_id], |row| from_row(row).map_err(de_err))?
-            .collect::<rusqlite::Result<Vec<NodeRow>>>()?;
-        rows
-    };
-    let session_ids: HashSet<String> = rows.iter().flat_map(session_ids).collect();
-    let archived_at = Utc::now().to_rfc3339();
-    let mut archived_ids = Vec::new();
-    let mut deleted_ids = Vec::new();
+) -> rusqlite::Result<Vec<NodeRow>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {} FROM nodes
+         WHERE parent_id = ?1 AND type = 'tab'
+         ORDER BY position, created_at",
+        select_list(COLUMNS)
+    ))?;
+    let rows = stmt
+        .query_map([container_id], |row| from_row(row).map_err(de_err))?
+        .collect();
+    rows
+}
+
+/// Refuse removing a container's tabs while any member session is missing,
+/// bound to a mission or slot, or still running.
+pub fn check_container_tabs_removable(
+    conn: &Connection,
+    container_id: &str,
+) -> rusqlite::Result<()> {
+    let session_ids: HashSet<String> = container_tabs(conn, container_id)?
+        .iter()
+        .flat_map(session_ids)
+        .collect();
     for id in &session_ids {
-        let shell = crate::repo::session::effective_runtime(tx, id)?.as_deref()
-            == Some(Runtime::Shell.key());
-        let updated = if shell {
-            tx.execute(
-                "DELETE FROM sessions
-                 WHERE id = ?1 AND mission_id IS NULL AND slot_id IS NULL AND status != 'running'",
-                [id],
-            )?
-        } else {
-            tx.execute(
-                "UPDATE sessions SET archived_at = ?2
-                 WHERE id = ?1 AND mission_id IS NULL AND slot_id IS NULL AND status != 'running'",
-                rusqlite::params![id, archived_at],
-            )?
-        };
-        if updated == 0 {
+        let removable: bool = conn.query_row(
+            "SELECT EXISTS(
+                 SELECT 1 FROM sessions
+                  WHERE id = ?1 AND mission_id IS NULL AND slot_id IS NULL
+                    AND status != 'running')",
+            [id],
+            |row| row.get(0),
+        )?;
+        if !removable {
             return Err(rusqlite::Error::InvalidParameterName(format!(
                 "session {id} is missing or still running"
             )));
         }
-        if shell {
-            deleted_ids.push(id.clone());
-        } else {
-            archived_ids.push(id.clone());
-        }
     }
-    tx.execute(
-        "DELETE FROM nodes WHERE parent_id = ?1 AND type = 'tab'",
-        [container_id],
-    )?;
-    Ok((archived_ids, deleted_ids))
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1281,82 +1297,59 @@ mod tests {
     }
 
     #[test]
-    fn project_tab_delete_includes_drawer_shells() {
+    fn node_with_children_is_refused_with_the_schema_error() {
+        use crate::test_support::{foreign_keys_off, row_count};
         let pool = db::open_in_memory().unwrap();
-        let mut conn = pool.get().unwrap();
-        insert_session(&conn, "chat", None);
-        conn.execute(
-            "INSERT INTO sessions (id, status, agent_runtime, agent_command)
-             VALUES ('drawer-terminal', 'stopped', 'shell', '/bin/zsh')",
-            [],
-        )
-        .unwrap();
-        let project = crate::repo::project::create(&conn, "Project", "/tmp/project").unwrap();
-        let project_node = super::ensure_project_node(&conn, &project.id).unwrap();
-        super::create_tab(
-            &conn,
-            Some(&project_node.id),
-            "",
-            0,
-            r#"{"preset":"single","slots":["chat"],"sizes":{},"drawer":{"open":true,"height":280,"shells":["drawer-terminal"],"active":0}}"#,
-        )
-        .unwrap();
+        let conn = pool.get().unwrap();
+        let project = crate::repo::project::create(&conn, "P", "/tmp/p").unwrap();
+        let parent = super::ensure_project_node(&conn, &project.id).unwrap();
+        let child = super::create_tab(&conn, Some(&parent.id), "", 0, "{}").unwrap();
+        let schema_error = conn
+            .execute("DELETE FROM nodes WHERE id = ?1", [&parent.id])
+            .unwrap_err();
 
-        let tx = conn.transaction().unwrap();
-        let (archived_ids, deleted_ids) =
-            super::delete_container_tabs_and_archive(&tx, &project_node.id).unwrap();
-        tx.commit().unwrap();
+        foreign_keys_off(&conn);
+        let refused = super::delete(&conn, &parent.id).unwrap_err();
+        assert_eq!(refused, schema_error);
+        assert_eq!(refused.to_string(), "FOREIGN KEY constraint failed");
+        assert_eq!(
+            row_count(&conn, "SELECT COUNT(*) FROM nodes"),
+            2,
+            "nothing written"
+        );
 
-        assert_eq!(archived_ids, ["chat"]);
-        assert_eq!(deleted_ids, ["drawer-terminal"]);
+        assert_eq!(super::delete(&conn, &child.id).unwrap(), 1);
+        assert_eq!(super::delete(&conn, &parent.id).unwrap(), 1);
+        assert_eq!(row_count(&conn, "SELECT COUNT(*) FROM nodes"), 0);
     }
 
     #[test]
-    fn project_tab_delete_archives_chats_and_deletes_terminals() {
+    fn delete_project_node_reparents_children_with_foreign_keys_off() {
+        use crate::test_support::foreign_keys_off;
         let pool = db::open_in_memory().unwrap();
-        let mut conn = pool.get().unwrap();
+        let conn = pool.get().unwrap();
+        foreign_keys_off(&conn);
         insert_session(&conn, "chat", None);
-        conn.execute(
-            "INSERT INTO sessions (id, status, agent_runtime, agent_command)
-             VALUES ('terminal', 'stopped', 'shell', '/bin/zsh')",
-            [],
-        )
-        .unwrap();
         let project = crate::repo::project::create(&conn, "Project", "/tmp/project").unwrap();
         let project_node = super::ensure_project_node(&conn, &project.id).unwrap();
-        super::create_tab(
+        let tab = super::create_tab(
             &conn,
             Some(&project_node.id),
             "",
             0,
-            r#"{"preset":"cols-2","slots":["chat","terminal"],"sizes":{}}"#,
+            r#"{"preset":"single","slots":["chat"],"sizes":{}}"#,
         )
         .unwrap();
-        assert!(conn
-            .execute("DELETE FROM nodes WHERE id = ?1", [&project_node.id])
-            .is_err());
+        insert_mission(&conn, "m1", Some(&project.id), false);
+        let mission = super::ensure_mission_node(&conn, "m1", Some(&project.id)).unwrap();
 
-        let tx = conn.transaction().unwrap();
-        let (archived_ids, deleted_ids) =
-            super::delete_container_tabs_and_archive(&tx, &project_node.id).unwrap();
-        assert_eq!(archived_ids, ["chat"]);
-        assert_eq!(deleted_ids, ["terminal"]);
-        super::delete(&tx, &project_node.id).unwrap();
-        tx.commit().unwrap();
+        super::delete_project_node(&conn, &project.id).unwrap();
 
-        let archived: Option<String> = conn
-            .query_row(
-                "SELECT archived_at FROM sessions WHERE id = 'chat'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert!(archived.is_some());
-        assert!(crate::repo::session::get_row(&conn, "terminal")
-            .unwrap()
-            .is_none());
         assert!(super::get(&conn, &project_node.id).unwrap().is_none());
-        assert!(super::list(&conn).unwrap().is_empty());
+        for child in [&tab.id, &mission.id] {
+            let row = super::get(&conn, child).unwrap().unwrap();
+            assert_eq!(row.parent_id, None, "{child} moved to the root first");
+        }
     }
 
     #[test]
@@ -1626,37 +1619,6 @@ mod tests {
     /// sweep, e.g. moved in by another window) must fail the guarded
     /// container delete via the self-FK's ON DELETE RESTRICT — never
     /// be silently detached or dropped.
-    #[test]
-    fn container_delete_is_blocked_by_remaining_children() {
-        let pool = db::open_in_memory().unwrap();
-        let mut conn = pool.get().unwrap();
-        let project = crate::repo::project::create(&conn, "A", "/tmp/a").unwrap();
-        let project_node = super::ensure_project_node(&conn, &project.id).unwrap();
-        insert_mission(&conn, "m1", Some(&project.id), false);
-        let mission_node = super::ensure_mission_node(&conn, "m1", Some(&project.id)).unwrap();
-
-        let tx = conn.transaction().unwrap();
-        let (archived, deleted) =
-            super::delete_container_tabs_and_archive(&tx, &project_node.id).unwrap();
-        assert!(archived.is_empty());
-        assert!(deleted.is_empty());
-        assert!(
-            super::delete(&tx, &project_node.id).is_err(),
-            "RESTRICT must block the project-node delete while a child remains"
-        );
-        drop(tx); // rollback
-
-        assert!(super::get(&conn, &project_node.id).unwrap().is_some());
-        assert_eq!(
-            super::get(&conn, &mission_node.id)
-                .unwrap()
-                .unwrap()
-                .parent_id
-                .as_deref(),
-            Some(project_node.id.as_str())
-        );
-    }
-
     #[test]
     fn pinned_reorder_requires_the_complete_pinned_set() {
         let pool = db::open_in_memory().unwrap();

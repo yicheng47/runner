@@ -801,6 +801,24 @@ Migrations live in `crates/runner-backend/migrations/` (`0001_init.sql` … `002
 
 The data directory has been the same since the Tauri app, so every upgrade finds its roles, crews, missions and sessions in place. Startup removes the stale legacy bridge executable from `bin/` best-effort. Direct chats are off-disk beyond their row in `sessions`; mission sessions share their mission's directory and the only durable artifact is `events.ndjson`. Screen state lives in memory (§5.8).
 
+### 10.3 Deletion
+
+What a delete takes with it is decided in code, not by the `REFERENCES` clauses in §10.1 ([#619](https://github.com/yicheng47/runner/issues/619)). A repository delete removes rows from its own table; the owning delete in `ops/` removes or unbinds every dependent row first, inside the transaction the operation already holds. The constraints and `PRAGMA foreign_keys = ON` stay as a backstop that nothing relies on: each delete path has a test that runs it with the pragma off, and one test in `ops/tests.rs` runs them all on a real database and checks that `PRAGMA foreign_key_check` stays empty. That test also pins the list of foreign keys, so a new one fails it until its owning delete handles it.
+
+| Entity | Owning delete | Deletes first | Unbinds | Refused when |
+|---|---|---|---|---|
+| Role | `ops::role::delete` | its sessions | — | a crew has a slot for it; then, it has an unarchived direct chat |
+| Crew | `ops::crew::delete` | its missions, then its slots | — | it has a mission that is not archived |
+| Slot | `ops::slot::delete` | — | — | — |
+| Mission | `ops::mission::delete_rows` | its sessions | — | Settings delete: it is not archived |
+| Session | `ops::session::delete_rows` | its `session_attention` row | — | Settings delete: it is not archived, or it belongs to a mission. Close: it is not a shell |
+| Project | `ops::project::project_delete_impl` | its tabs, archiving chats and deleting terminals | `sessions.project_id`, `missions.project_id` | a session in one of its tabs is missing, bound to a mission, or still running; then, its node still has a child once the tabs are gone. The socket tool also refuses running members unless forced |
+| Node | `repo::node::delete` | — | — | it has children, with SQLite's own `FOREIGN KEY constraint failed` |
+
+Dependents go through their own entity's delete, so deleting a crew deletes its missions through `ops::mission::delete_rows`, which deletes their sessions and attention rows through `ops::session::delete_rows`. Both take a list of ids and issue one statement per table, however many rows go. A mission's sessions are deleted, not unbound: a mission-scoped row with no mission would surface as a direct chat, so the `ON DELETE SET NULL` on `sessions.mission_id` never fires. Role delete refuses instead of taking the role's slots with it: a slot is part of its crew, so a crew only loses a member through slot delete, which promotes a new lead and repacks positions. The sessions a role delete does take are its archived chats and the sessions of missions whose slot for it was removed since. The node refusal is the one guard in the repository layer, because the sidebar tree is a single table that references itself.
+
+A refused delete rolls back its transaction, including any dependents it had already removed. Work committed before that transaction stays committed: a project delete archives its member missions one by one first, so a delete refused later can leave them archived, as it always could. `ops/` also owns what is product rather than integrity: a new lead and dense positions after a slot delete, and removing a mission's directories after commit. Live processes stop before the transaction opens. Role delete kills the role's sessions, in both `ops::role::role_delete` and the socket tool. Mission delete closes its drawer shells. Project delete archives its missions and kills its running chats before its final transaction. References with no foreign key behind them, `sessions.slot_id`, `nodes.ref_id` and the session ids inside `nodes.layout`, are handled where they always were: `repo::node::remove_session`, `delete_mission_node` and the `ensure_active_sessions` repair.
+
 ## 11. Process and thread model
 
 Runner is one process. There is no IPC boundary between the screen and the PTY.

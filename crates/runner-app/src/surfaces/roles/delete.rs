@@ -50,7 +50,7 @@ impl NativeRoot {
         ConfirmDialog::new(
             format!("Delete role @{}?", confirm.handle),
             format!(
-                "This removes @{} from every crew it's in and deletes archived session history for that role. Unarchived chats must be archived first. Crews and missions are kept.",
+                "This deletes @{} and its archived session history. Remove it from every crew and archive its chats first. Crews and missions are kept.",
                 confirm.handle
             ),
             "Delete role",
