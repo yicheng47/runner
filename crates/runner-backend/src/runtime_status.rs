@@ -565,6 +565,7 @@ mod tests {
                 (Runtime::Pi, "pi", "pi"),
                 (Runtime::Trae, "TRAE CLI", "traecli"),
                 (Runtime::Antigravity, "Antigravity CLI", "agy"),
+                (Runtime::OpenCode, "OpenCode", "opencode"),
             ],
         );
     }

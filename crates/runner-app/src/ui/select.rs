@@ -854,12 +854,17 @@ mod tests {
         agy.display_name = "Antigravity CLI".into();
         agy.command = "agy".into();
         catalog.push(agy);
+        let mut opencode = catalog[0].clone();
+        opencode.name = runner_backend::model::Runtime::OpenCode;
+        opencode.display_name = "OpenCode".into();
+        opencode.command = "opencode".into();
+        catalog.push(opencode);
         assert_eq!(
             runtime_select_options(&catalog)
                 .iter()
                 .map(|entry| entry.value.as_str())
                 .collect::<Vec<_>>(),
-            ["codex", "copilot", "pi", "antigravity"]
+            ["codex", "copilot", "pi", "antigravity", "opencode"]
         );
     }
 }

@@ -16,7 +16,7 @@ fn legacy_slot_pins_reach_validation_as_raw_names() {
         assert_eq!(
             error.to_string(),
             format!(
-                "unknown runtime '{name}' — valid runtimes: codex, claude-code, copilot, pi, trae, antigravity"
+                "unknown runtime '{name}' — valid runtimes: codex, claude-code, copilot, pi, trae, antigravity, opencode"
             )
         );
     }
@@ -150,6 +150,7 @@ fn trae_does_not_offer_a_mode_it_cannot_write() {
         "copilot",
         "pi",
         "antigravity",
+        "opencode",
     ] {
         for mode in permission_modes(runtime) {
             assert!(
@@ -176,6 +177,23 @@ fn copilot_offers_only_the_three_supported_permission_modes_with_the_approved_co
     assert_eq!(permission_mode_description("copilot", PermissionMode::Default), "Copilot's own manual mode: read-only tools run, writes and shell commands ask. Governed by defaultPermissionMode in ~/.copilot/settings.json.");
     assert_eq!(permission_mode_description("copilot", PermissionMode::AcceptEdits), "File creates and edits run without asking; shell commands, URLs and paths outside the cwd still prompt.");
     assert_eq!(permission_mode_description("copilot", PermissionMode::Bypass), "Every tool, path and URL is allowed. Same flag for the app-wide mission permission mode; chats never carry it (#596).");
+}
+
+#[test]
+fn opencode_offers_default_and_bypass_with_its_own_copy() {
+    use super::logic::{permission_mode_description, permission_modes};
+    use runner_backend::router::runtime::PermissionMode;
+    assert_eq!(
+        permission_modes("opencode"),
+        [PermissionMode::Default, PermissionMode::Bypass]
+    );
+    assert!(permission_mode_description("opencode", PermissionMode::AcceptEdits).is_empty());
+    assert!(permission_mode_description("opencode", PermissionMode::Auto).is_empty());
+    assert!(
+        permission_mode_description("opencode", PermissionMode::Default)
+            .contains("~/.config/opencode/opencode.json")
+    );
+    assert!(permission_mode_description("opencode", PermissionMode::Bypass).contains("`--auto`"));
 }
 
 #[test]

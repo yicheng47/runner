@@ -1029,7 +1029,11 @@ impl McpDetail {
                         .child(format!(
                             "{} · {}",
                             client.label(),
-                            if client.is_json() { "JSON" } else { "TOML" }
+                            match client {
+                                McpClientId::OpenCode => "JSONC",
+                                client if client.is_json() => "JSON",
+                                _ => "TOML",
+                            }
                         )),
                 )
             })
@@ -1308,7 +1312,9 @@ mod tests {
                     env: BTreeMap::from([("TOKEN".into(), "secret-value".into())]),
                 };
                 let registered = client != McpClientId::Trae;
-                let text = if client.is_json() {
+                let text = if client == McpClientId::OpenCode {
+                    serde_json::to_string_pretty(&definition.to_opencode()).unwrap()
+                } else if client.is_json() {
                     serde_json::to_string_pretty(&definition.to_claude()).unwrap()
                 } else {
                     format!(
@@ -1435,7 +1441,8 @@ mod tests {
                 McpClientId::ClaudeCode,
                 McpClientId::Codex,
                 McpClientId::Copilot,
-                McpClientId::Antigravity
+                McpClientId::Antigravity,
+                McpClientId::OpenCode
             ]
         );
         assert!(conflict_caption(github, McpClientId::ClaudeCode)
@@ -1505,11 +1512,13 @@ mod tests {
                 McpClientId::ClaudeCode,
                 McpClientId::Codex,
                 McpClientId::Copilot,
-                McpClientId::Antigravity
+                McpClientId::Antigravity,
+                McpClientId::OpenCode
             ]
         );
         settings.disabled_agents.insert("claude-code".into());
         settings.disabled_agents.insert("antigravity".into());
+        settings.disabled_agents.insert("opencode".into());
         assert_eq!(
             available_clients(&runtimes(), &settings),
             [McpClientId::Codex, McpClientId::Copilot]

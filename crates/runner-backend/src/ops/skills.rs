@@ -1078,6 +1078,7 @@ mod tests {
             Runtime::Trae,
             Runtime::Pi,
             Runtime::Antigravity,
+            Runtime::OpenCode,
             Runtime::Shell,
         ] {
             assert!(set_global_enabled_at(

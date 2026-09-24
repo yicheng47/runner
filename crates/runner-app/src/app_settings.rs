@@ -916,6 +916,8 @@ mod tests {
         assert!(settings.is_agent_enabled(Runtime::Pi, true));
         assert!(settings.is_agent_enabled(Runtime::Antigravity, true));
         assert!(!settings.is_agent_enabled(Runtime::Antigravity, false));
+        assert!(settings.is_agent_enabled(Runtime::OpenCode, true));
+        assert!(!settings.is_agent_enabled(Runtime::OpenCode, false));
         settings.disabled_agents.insert("copilot".into());
         assert!(!settings.is_agent_enabled(Runtime::Copilot, true));
         assert!(!settings.is_agent_enabled(Runtime::Trae, false));

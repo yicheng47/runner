@@ -21,6 +21,7 @@ pub(crate) mod copilot_trust;
 pub(crate) mod hook_feed;
 pub mod launch;
 pub mod manager;
+pub(crate) mod opencode;
 pub(crate) mod pi_status;
 pub(crate) mod process;
 pub mod pty_runtime;

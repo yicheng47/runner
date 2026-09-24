@@ -846,6 +846,9 @@ impl SessionManager {
             }
         }
         super::agy_capture::clear_orphans(app_data_dir, &pool);
+        if let Err(error) = super::opencode::install_plugin(app_data_dir) {
+            log::warn!("install OpenCode session-key plugin: {error}");
+        }
         if super::hook_feed::hooks_supported(Some(crate::model::Runtime::Pi), cfg!(windows)) {
             if let Err(error) = super::pi_status::install_extension(app_data_dir) {
                 log::warn!("install pi status extension: {error}");

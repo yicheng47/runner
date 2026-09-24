@@ -100,6 +100,19 @@ const RUNTIME_DEFINITIONS: &[RuntimeDefinition] = &[
         update_args: &[],
         npm_package: None,
     },
+    RuntimeDefinition {
+        name: Runtime::OpenCode,
+        display_name: "OpenCode",
+        command: "opencode",
+        native_fork: true,
+        skills_dirs: &[
+            ".config/opencode/skills",
+            ".claude/skills",
+            ".agents/skills",
+        ],
+        update_args: &["upgrade"],
+        npm_package: Some("opencode-ai"),
+    },
 ];
 
 /// The model aliases agy accepts and the effort levels each one takes. agy
@@ -185,6 +198,9 @@ pub fn supports_native_fork(runtime: Option<Runtime>) -> bool {
 /// `ANTIGRAVITY_MODELS` lists that level for that model. It never passes `--effort` alone,
 /// because agy would apply it to the account's default model.
 ///
+/// opencode maps model to `--model <provider/model>` verbatim. Its TUI has no
+/// effort flag; the reasoning variant is chosen inside the TUI.
+///
 /// shell / unknown runtimes: no equivalent flags — degrade silently
 /// so the role row's preference is recorded but the spawn
 /// doesn't reject on unknown args.
@@ -242,6 +258,9 @@ pub fn model_effort_args(
             }
             out
         }
+        Some(Runtime::OpenCode) => model
+            .map(|m| vec!["--model".into(), m.to_string()])
+            .unwrap_or_default(),
         Some(Runtime::Codex) | Some(Runtime::Trae) => {
             let mut out = Vec::new();
             if let Some(m) = model {
@@ -506,6 +525,9 @@ pub fn claude_settings_args(
 /// antigravity exposes Default (no flag), Accept edits (`--mode accept-edits`), and Bypass
 /// (`--dangerously-skip-permissions`); Auto has no equivalent.
 ///
+/// opencode exposes Default (no flag) and Bypass (`--auto`); Accept edits and Auto have no
+/// flag, and injecting an `edit: allow` permission is unreliable (spec 592 decision 3).
+///
 /// trae accepts `default` (ask), `plan` (plan-only), and
 /// `bypass_permissions` (never ask). It has no auto-approve middle ground:
 /// - **Default** — no flag; use TRAE CLI's configured default.
@@ -541,6 +563,7 @@ pub fn permission_mode_args(runtime: Option<Runtime>, mode: PermissionMode) -> V
             | Some(Runtime::Copilot)
             | Some(Runtime::Pi)
             | Some(Runtime::Antigravity)
+            | Some(Runtime::OpenCode)
             | Some(Runtime::Shell),
             PermissionMode::Default,
         ) => Vec::new(),
@@ -567,6 +590,8 @@ pub fn permission_mode_args(runtime: Option<Runtime>, mode: PermissionMode) -> V
             vec!["--dangerously-skip-permissions".into()]
         }
         (Some(Runtime::Antigravity), PermissionMode::Auto) => Vec::new(),
+        (Some(Runtime::OpenCode), PermissionMode::Bypass) => vec!["--auto".into()],
+        (Some(Runtime::OpenCode), PermissionMode::AcceptEdits | PermissionMode::Auto) => Vec::new(),
         (
             Some(Runtime::Pi),
             PermissionMode::AcceptEdits | PermissionMode::Auto | PermissionMode::Bypass,
@@ -620,6 +645,9 @@ pub fn permission_mode_args(runtime: Option<Runtime>, mode: PermissionMode) -> V
 ///   - antigravity: `mode` (value-bearing) and `dangerously-skip-permissions`
 ///     in every spelling Go's `flag` package accepts: `-x`, `--x`, `-x=v`
 ///     and `--x=v`.
+///   - opencode: `--auto` and its hidden aliases `--yolo` and
+///     `--dangerously-skip-permissions`, bare or `=value` (yargs booleans),
+///     plus the negation `--no-auto`.
 pub fn strip_permission_flags(runtime: Option<Runtime>, args: &[String]) -> Vec<String> {
     // (flag_name, takes_value)
     let keys: &[(&str, bool)] = match runtime {
@@ -643,10 +671,16 @@ pub fn strip_permission_flags(runtime: Option<Runtime>, args: &[String]) -> Vec<
             ("--dangerously-skip-permissions", false),
             ("-dangerously-skip-permissions", false),
         ],
+        Some(Runtime::OpenCode) => &[
+            ("--auto", false),
+            ("--yolo", false),
+            ("--dangerously-skip-permissions", false),
+            ("--no-auto", false),
+        ],
         Some(Runtime::Pi | Runtime::Shell) | None => &[],
     };
-    // Go's flag package also takes `=value` on a boolean flag.
-    let equals_on_bool = runtime == Some(Runtime::Antigravity);
+    // Go's flag package and yargs also take `=value` on a boolean flag.
+    let equals_on_bool = matches!(runtime, Some(Runtime::Antigravity | Runtime::OpenCode));
     if keys.is_empty() {
         return args.to_vec();
     }
@@ -851,6 +885,16 @@ fn mode_pair_matches(runtime: Option<Runtime>, args: &[String], mode: Permission
             PermissionMode::Auto | PermissionMode::Default => false,
         };
     }
+    if runtime == Some(Runtime::OpenCode) && mode == PermissionMode::Bypass {
+        return args.iter().any(|arg| {
+            ["--auto", "--yolo", "--dangerously-skip-permissions"]
+                .iter()
+                .any(|flag| {
+                    arg.strip_prefix(flag)
+                        .is_some_and(|rest| matches!(rest, "" | "=true"))
+                })
+        });
+    }
     let pairs = mode_match_pairs(runtime, mode);
     if pairs.is_empty() {
         return false;
@@ -899,6 +943,8 @@ fn mode_match_pairs(
             &[("--dangerously-skip-permissions", None)]
         }
         (Some(Runtime::Antigravity), PermissionMode::Auto) => &[],
+        // OpenCode's hidden aliases are recognized together above.
+        (Some(Runtime::OpenCode), PermissionMode::Bypass) => &[("--auto", None)],
         // Recognize the legacy invalid Auto flag until the role is saved again.
         (Some(Runtime::Trae), PermissionMode::Auto) => &[("--permission-mode", Some("auto"))],
         (Some(Runtime::Trae), PermissionMode::Bypass) => {
@@ -919,13 +965,19 @@ fn mode_match_pairs(
             | Some(Runtime::Copilot)
             | Some(Runtime::Pi)
             | Some(Runtime::Antigravity)
+            | Some(Runtime::OpenCode)
             | Some(Runtime::Shell),
             PermissionMode::Default,
         )
         | (
-            Some(Runtime::Codex) | Some(Runtime::Trae) | Some(Runtime::Pi) | Some(Runtime::Shell),
+            Some(Runtime::Codex)
+            | Some(Runtime::Trae)
+            | Some(Runtime::Pi)
+            | Some(Runtime::OpenCode)
+            | Some(Runtime::Shell),
             PermissionMode::AcceptEdits,
         )
+        | (Some(Runtime::OpenCode), PermissionMode::Auto)
         | (Some(Runtime::Pi | Runtime::Shell), PermissionMode::Auto | PermissionMode::Bypass) => {
             &[]
         }
@@ -1008,7 +1060,7 @@ pub fn system_prompt_args(runtime: Option<Runtime>, system_prompt: Option<&str>)
         Some(Runtime::Codex) => Vec::new(),
         Some(Runtime::Pi) => vec!["--append-system-prompt".into(), prompt.to_string()],
         // shell / unknown — no prompt mechanism.
-        Some(Runtime::Trae | Runtime::Copilot | Runtime::Antigravity)
+        Some(Runtime::Trae | Runtime::Copilot | Runtime::Antigravity | Runtime::OpenCode)
         | Some(Runtime::Shell)
         | None => Vec::new(),
     }
@@ -1028,7 +1080,7 @@ pub const FIRST_TURN_ARGV_MAX_BYTES: usize = 32 * 1024;
 /// the agent CLI reads as its first user turn at process spawn.
 ///
 /// claude-code, codex, and trae accept a positional `[PROMPT]`; Copilot and Antigravity accept
-/// `-i <PROMPT>`;
+/// `-i <PROMPT>`; OpenCode accepts `--prompt <PROMPT>`;
 /// pi accepts a lead's mission turn behind `--`.
 /// Delivering the first turn at spawn-time avoids racing the TUI's
 /// readiness: if the child starts, the prompt is already part of its argv.
@@ -1061,6 +1113,7 @@ pub fn first_turn_argv(runtime: Option<Runtime>, body: Option<&str>) -> Vec<Stri
             vec![body.to_string()]
         }
         Some(Runtime::Copilot | Runtime::Antigravity) => vec!["-i".into(), body.to_string()],
+        Some(Runtime::OpenCode) => vec!["--prompt".into(), body.to_string()],
         Some(Runtime::Pi) => vec!["--".into(), body.to_string()],
         Some(Runtime::Shell) | None => Vec::new(),
     }
@@ -1150,6 +1203,7 @@ pub fn mission_bus_sandbox_args(
             Some(Runtime::ClaudeCode)
             | Some(Runtime::Trae)
             | Some(Runtime::Pi)
+            | Some(Runtime::OpenCode)
             | Some(Runtime::Shell),
             _,
         ) => Vec::new(),
@@ -1209,6 +1263,8 @@ impl ResumePlan {
 ///   - antigravity with no `prior_key` → fresh spawn, no key. agy assigns the
 ///     conversation id when the first message is sent, and Runner reads it
 ///     from the per-session `--log-file`.
+///   - opencode with no `prior_key` → fresh spawn, no key. OpenCode creates
+///     its `ses_…` id at the first message, and Runner's plugin reports it.
 ///
 /// `prior_key` should be the value of `sessions.agent_session_key` from the
 /// most recent prior session in the same scope. The caller decides how to
@@ -1284,6 +1340,15 @@ pub fn resume_plan(runtime: Option<Runtime>, prior_key: Option<&str>) -> ResumeP
             },
             _ => ResumePlan::fresh(),
         },
+        Some(Runtime::OpenCode) => match prior_key {
+            Some(k) if crate::session::opencode::is_session_id(k) => ResumePlan {
+                args: vec!["--session".into(), k.to_string()],
+                prepend: false,
+                assigned_key: Some(k.to_string()),
+                resuming: true,
+            },
+            _ => ResumePlan::fresh(),
+        },
         // shell / unknown — no resume concept. Custom wrappers can be wired
         // up later.
         Some(Runtime::Shell) | None => ResumePlan::fresh(),
@@ -1304,7 +1369,12 @@ pub fn fork_plan(
     source_key: &str,
     source_label: &str,
 ) -> Option<ForkPlan> {
-    if !is_uuid(source_key) {
+    let valid_key = if runtime == Some(Runtime::OpenCode) {
+        crate::session::opencode::is_session_id(source_key)
+    } else {
+        is_uuid(source_key)
+    };
+    if !valid_key {
         return None;
     }
     match runtime {
@@ -1351,6 +1421,14 @@ pub fn fork_plan(
                 resuming: true,
             }))
         }
+        // The fork is created by OpenCode at startup, and Runner's plugin
+        // reports its id like any other new session.
+        Some(Runtime::OpenCode) => Some(ForkPlan::Direct(ResumePlan {
+            args: vec!["--session".into(), source_key.to_string(), "--fork".into()],
+            prepend: false,
+            assigned_key: None,
+            resuming: true,
+        })),
         Some(Runtime::Trae | Runtime::Copilot | Runtime::Antigravity)
         | Some(Runtime::Shell)
         | None => None,
@@ -1503,6 +1581,18 @@ fn antigravity_conversation_exists_at(home: &Path, key: &str) -> bool {
     home.join(".gemini/antigravity-cli/conversations")
         .join(format!("{key}.db"))
         .is_file()
+}
+
+/// True iff OpenCode's SQLite store still holds `key`, resolving the
+/// database from the role's env like OpenCode does (spec 592 decision 2).
+pub fn opencode_conversation_exists(key: &str, role_env: &HashMap<String, String>) -> bool {
+    #[cfg(test)]
+    let home = CONVERSATION_HOME.with_borrow(|home| home.clone());
+    #[cfg(not(test))]
+    let home = runner_core::app_paths::home_dir();
+    // Without a home or a checkable file, let OpenCode decide.
+    home.and_then(|home| crate::session::opencode::database_path(role_env, &home))
+        .is_none_or(|db| crate::session::opencode::session_exists(&db, key))
 }
 
 pub(crate) fn pi_project_slug(cwd: &str) -> String {
@@ -2082,7 +2172,7 @@ mod tests {
 
     #[test]
     fn claude_settings_do_not_leak_to_other_runtimes() {
-        for runtime in ["codex", "pi", "antigravity", "shell"] {
+        for runtime in ["codex", "pi", "antigravity", "opencode", "shell"] {
             assert!(claude_settings_args(
                 Runtime::parse(runtime),
                 &[],
@@ -2406,6 +2496,187 @@ mod tests {
     }
 
     #[test]
+    fn opencode_plans_resume_and_fork_by_its_own_session_ids() {
+        let runtime = Some(Runtime::OpenCode);
+        let fresh = resume_plan(runtime, None);
+        assert!(fresh.args.is_empty());
+        assert!(fresh.assigned_key.is_none());
+        assert!(!fresh.resuming);
+        for foreign in ["019fa1b9-a133-7841-b4dd-730d376ab1d1", "ses_bad-id", "ses_"] {
+            assert!(
+                resume_plan(runtime, Some(foreign)).args.is_empty(),
+                "{foreign}"
+            );
+            assert!(fork_plan(runtime, foreign, "Source").is_none(), "{foreign}");
+        }
+
+        let prior = "ses_f31048251ffepsv6qvMgfycvy1";
+        let plan = resume_plan(runtime, Some(prior));
+        assert_eq!(plan.args, ["--session", prior]);
+        assert!(!plan.prepend, "--session is a trailing flag");
+        assert_eq!(plan.assigned_key.as_deref(), Some(prior));
+        assert!(plan.resuming);
+
+        let Some(ForkPlan::Direct(fork)) = fork_plan(runtime, prior, "Source") else {
+            panic!("OpenCode forks natively");
+        };
+        assert_eq!(fork.args, ["--session", prior, "--fork"]);
+        assert!(!fork.prepend);
+        assert!(
+            fork.assigned_key.is_none(),
+            "the plugin reports the fork's id"
+        );
+        assert!(fork.resuming);
+        assert!(supports_native_fork(runtime));
+        // Other runtimes keep the UUID guard.
+        assert!(fork_plan(Some(Runtime::ClaudeCode), prior, "Source").is_none());
+        assert!(resume_plan(Some(Runtime::Antigravity), Some(prior))
+            .args
+            .is_empty());
+    }
+
+    #[test]
+    fn opencode_trailing_args_carry_model_and_first_turn_only() {
+        let app_data = Path::new("/tmp/runner-app-data");
+        let fresh = trailing_runtime_args(
+            Some(Runtime::OpenCode),
+            &[],
+            app_data,
+            "runner-session",
+            false,
+            Some("anthropic/claude-sonnet-4-5"),
+            Some("high"),
+            Some("persona"),
+            Some("first turn"),
+        );
+        assert_eq!(
+            fresh,
+            [
+                "--model",
+                "anthropic/claude-sonnet-4-5",
+                "--prompt",
+                "first turn"
+            ]
+        );
+        let resumed = trailing_runtime_args(
+            Some(Runtime::OpenCode),
+            &[],
+            app_data,
+            "runner-session",
+            true,
+            None,
+            Some("high"),
+            Some("persona"),
+            Some("first turn"),
+        );
+        assert!(resumed.is_empty(), "{resumed:?}");
+        assert!(model_effort_args(Some(Runtime::OpenCode), None, Some("high")).is_empty());
+        assert!(system_prompt_args(Some(Runtime::OpenCode), Some("persona")).is_empty());
+        assert_eq!(
+            first_turn_argv(Some(Runtime::OpenCode), Some("body")),
+            ["--prompt", "body"]
+        );
+        assert!(
+            mission_bus_sandbox_args(Some(Runtime::OpenCode), Some(Path::new("/tmp/m"))).is_empty()
+        );
+    }
+
+    #[test]
+    fn opencode_permissions_offer_bypass_and_strip_every_alias() {
+        let runtime = Some(Runtime::OpenCode);
+        assert!(permission_mode_args(runtime, PermissionMode::Default).is_empty());
+        assert!(permission_mode_args(runtime, PermissionMode::AcceptEdits).is_empty());
+        assert!(permission_mode_args(runtime, PermissionMode::Auto).is_empty());
+        assert_eq!(
+            permission_mode_args(runtime, PermissionMode::Bypass),
+            ["--auto"]
+        );
+        for mode in [PermissionMode::Default, PermissionMode::Bypass] {
+            let args = apply_permission_mode(runtime, &["--agent".into(), "build".into()], mode);
+            assert_eq!(infer_permission_mode(runtime, &args), mode);
+        }
+        for mode in [PermissionMode::AcceptEdits, PermissionMode::Auto] {
+            let args = apply_permission_mode(runtime, &[], mode);
+            assert!(args.is_empty());
+            assert_eq!(
+                infer_permission_mode(runtime, &args),
+                PermissionMode::Default
+            );
+        }
+
+        let noisy: Vec<String> = [
+            "--keep",
+            "--auto",
+            "--auto=false",
+            "--yolo",
+            "--yolo=true",
+            "--dangerously-skip-permissions",
+            "--dangerously-skip-permissions=true",
+            "--no-auto",
+            "--agent",
+            "build",
+        ]
+        .map(String::from)
+        .to_vec();
+        assert_eq!(
+            strip_permission_flags(runtime, &noisy),
+            ["--keep", "--agent", "build"]
+        );
+        for (args, mode) in [
+            (vec!["--yolo"], PermissionMode::Bypass),
+            (
+                vec!["--dangerously-skip-permissions"],
+                PermissionMode::Bypass,
+            ),
+            (vec!["--auto=true"], PermissionMode::Bypass),
+            (vec!["--auto=false"], PermissionMode::Default),
+            (vec!["--no-auto"], PermissionMode::Default),
+            (vec!["--automatic"], PermissionMode::Default),
+        ] {
+            let args: Vec<String> = args.into_iter().map(String::from).collect();
+            assert_eq!(infer_permission_mode(runtime, &args), mode, "{args:?}");
+        }
+        // The yargs aliases are OpenCode's; other runtimes keep them.
+        let copilot = vec!["--auto".to_string()];
+        assert_eq!(
+            strip_permission_flags(Some(Runtime::Copilot), &copilot),
+            copilot
+        );
+    }
+
+    #[test]
+    fn opencode_conversation_probe_reads_the_resolved_database() {
+        let home = tempfile::tempdir().unwrap();
+        let key = "ses_f31048251ffepsv6qvMgfycvy1";
+        let env = HashMap::new();
+        assert!(!with_conversation_home(home.path(), || {
+            opencode_conversation_exists(key, &env)
+        }));
+        let db = home.path().join(".local/share/opencode/opencode.db");
+        std::fs::create_dir_all(db.parent().unwrap()).unwrap();
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.execute_batch("CREATE TABLE session (id text PRIMARY KEY)")
+            .unwrap();
+        assert!(!with_conversation_home(home.path(), || {
+            opencode_conversation_exists(key, &env)
+        }));
+        conn.execute("INSERT INTO session VALUES (?1)", [key])
+            .unwrap();
+        assert!(with_conversation_home(home.path(), || {
+            opencode_conversation_exists(key, &env)
+        }));
+
+        let custom = home.path().join("custom.db");
+        let env = HashMap::from([(
+            "OPENCODE_DB".to_string(),
+            custom.to_string_lossy().into_owned(),
+        )]);
+        assert!(!with_conversation_home(home.path(), || {
+            opencode_conversation_exists(key, &env)
+        }));
+    }
+
+    #[test]
     fn unknown_runtime_returns_empty_resume_plan() {
         let plan = resume_plan(Runtime::parse("aider-future"), Some("anything"));
         assert!(plan.args.is_empty());
@@ -2421,13 +2692,18 @@ mod tests {
         assert!(!supports_native_fork(Some(Runtime::Trae)));
         assert!(!supports_native_fork(Some(Runtime::Copilot)));
         assert!(!supports_native_fork(Some(Runtime::Antigravity)));
+        assert!(supports_native_fork(Some(Runtime::OpenCode)));
         assert!(!supports_native_fork(Runtime::parse("aider-future")));
     }
 
     #[test]
     fn native_fork_capability_matches_available_fork_plans() {
-        let source = "019fa1b9-a133-7841-b4dd-730d376ab1d1";
         for definition in runtime_definitions() {
+            let source = if definition.name == Runtime::OpenCode {
+                "ses_f31048251ffepsv6qvMgfycvy1"
+            } else {
+                "019fa1b9-a133-7841-b4dd-730d376ab1d1"
+            };
             assert_eq!(
                 definition.native_fork,
                 fork_plan(Some(definition.name), source, "Source").is_some(),
@@ -3389,6 +3665,14 @@ mod tests {
             mission_permission_mode_args(Some(Runtime::Antigravity), M::Auto),
             Some(vec![]),
         );
+        assert_eq!(
+            mission_permission_mode_args(Some(Runtime::OpenCode), M::Bypass),
+            Some(vec!["--auto".to_string()]),
+        );
+        assert_eq!(
+            mission_permission_mode_args(Some(Runtime::OpenCode), M::Auto),
+            Some(vec![]),
+        );
         for runtime in [
             "claude-code",
             "codex",
@@ -3396,6 +3680,7 @@ mod tests {
             "copilot",
             "pi",
             "antigravity",
+            "opencode",
             "shell",
             "unknown",
         ] {
@@ -3768,6 +4053,7 @@ mod tests {
             "copilot",
             "pi",
             "antigravity",
+            "opencode",
         ] {
             let body = "You are the architect. Goal: ship 0007.";
             let args = trailing_runtime_args(
@@ -3798,6 +4084,7 @@ mod tests {
             "copilot",
             "pi",
             "antigravity",
+            "opencode",
         ] {
             let body = "You are the architect. Goal: ship 0007.";
             let args = trailing_runtime_args(

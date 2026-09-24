@@ -51,6 +51,9 @@ pub(super) fn agent_env(
     if runtime == Some(Runtime::Pi) {
         env.insert("PI_SKIP_VERSION_CHECK".into(), "1".into());
     }
+    if runtime == Some(Runtime::OpenCode) {
+        env.insert("OPENCODE_DISABLE_AUTOUPDATE".into(), "1".into());
+    }
     let process_has_locale = LOCALE_VARS
         .iter()
         .any(|var| std::env::var_os(var).is_some());
@@ -630,7 +633,10 @@ impl SessionManager {
         };
         // Rekey reports from an earlier spawn must be cleared even with custom settings.
         let runtime = Runtime::parse(&role.runtime);
-        if matches!(runtime, Some(Runtime::ClaudeCode | Runtime::Pi)) {
+        if matches!(
+            runtime,
+            Some(Runtime::ClaudeCode | Runtime::Pi | Runtime::OpenCode)
+        ) {
             let _ = std::fs::remove_file(crate::session::claude_rekey::drop_path(
                 app_data_dir,
                 &spec.session_id,
@@ -694,6 +700,16 @@ impl SessionManager {
                     uuid::Uuid::new_v4().to_string(),
                 );
             }
+        }
+        if runtime == Some(Runtime::OpenCode) {
+            crate::session::opencode::apply_spawn_env(
+                &mut spec.env,
+                app_data_dir,
+                &spec.session_id,
+                std::env::var(crate::session::opencode::CONFIG_CONTENT_ENV)
+                    .ok()
+                    .as_deref(),
+            );
         }
         if runtime == Some(Runtime::Pi)
             && crate::session::hook_feed::hooks_supported(Some(Runtime::Pi), cfg!(windows))
@@ -1785,6 +1801,7 @@ impl SessionManager {
                     | Runtime::Copilot
                     | Runtime::Pi
                     | Runtime::Antigravity
+                    | Runtime::OpenCode
             )
         ) && !plan.resuming
             && first_turn.is_some()
@@ -1826,6 +1843,7 @@ impl SessionManager {
                     | Runtime::Copilot
                     | Runtime::Pi
                     | Runtime::Antigravity
+                    | Runtime::OpenCode
             )
         ) && !plan.resuming
             && crate::session::launch::is_windows_batch(&role.command)
@@ -2557,7 +2575,13 @@ impl SessionManager {
             (Some(Runtime::Antigravity), Some(key)) => {
                 !router::runtime::antigravity_conversation_exists(key)
             }
-            (Some(Runtime::ClaudeCode | Runtime::Copilot | Runtime::Pi), None)
+            (Some(Runtime::OpenCode), Some(key)) => {
+                !router::runtime::opencode_conversation_exists(key, &role.env)
+            }
+            (
+                Some(Runtime::ClaudeCode | Runtime::Copilot | Runtime::Pi | Runtime::OpenCode),
+                None,
+            )
             | (
                 Some(Runtime::Codex | Runtime::Trae | Runtime::Antigravity | Runtime::Shell) | None,
                 _,
@@ -2721,16 +2745,20 @@ impl SessionManager {
                     )
                 }
             } else {
-                // A fresh agy conversation has no persona unless it is resent: agy
-                // takes no system prompt, and its lost conversation held the first turn.
+                // A fresh agy or OpenCode conversation has no persona unless it is
+                // resent: neither takes a system prompt, and the lost conversation
+                // held the first turn.
                 router::prompt::split_session_prompt(
                     runtime,
                     router::prompt::SessionPromptKind::Direct,
-                    matches!(runtime, Some(Runtime::Pi | Runtime::Antigravity))
-                        .then(|| {
-                            router::prompt::compose_direct_first_turn(role.system_prompt.as_deref())
-                        })
-                        .flatten(),
+                    matches!(
+                        runtime,
+                        Some(Runtime::Pi | Runtime::Antigravity | Runtime::OpenCode)
+                    )
+                    .then(|| {
+                        router::prompt::compose_direct_first_turn(role.system_prompt.as_deref())
+                    })
+                    .flatten(),
                 )
             }
         } else {

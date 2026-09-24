@@ -2227,9 +2227,10 @@ fn runtime_command(runtime: &str) -> Result<&'static str, CliError> {
         "copilot" => Ok("copilot"),
         "pi" => Ok("pi"),
         "antigravity" => Ok("agy"),
+        "opencode" => Ok("opencode"),
         "shell" => Ok(if cfg!(windows) { "cmd.exe" } else { "/bin/zsh" }),
         other => Err(CliError::usage(format!(
-            "unknown role runtime {other:?}; expected claude-code, codex, trae, copilot, pi, antigravity, or shell"
+            "unknown role runtime {other:?}; expected claude-code, codex, trae, copilot, pi, antigravity, opencode, or shell"
         ))),
     }
 }
@@ -2976,6 +2977,7 @@ mod tests {
             "traecli"
         );
         assert_eq!(runtime_command("antigravity").unwrap(), "agy");
+        assert_eq!(runtime_command("opencode").unwrap(), "opencode");
         let update = role_fields(&fields, true).unwrap();
         assert_eq!(update["model"], json!(""));
         assert_eq!(update["effort"], json!(""));

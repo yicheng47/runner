@@ -224,6 +224,9 @@ pub(super) fn permission_modes(runtime: &str) -> &'static [PermissionMode] {
             PermissionMode::AcceptEdits,
             PermissionMode::Bypass,
         ],
+        // OpenCode has no accept-edits flag, and an injected `edit: allow`
+        // rule is unreliable (spec 592 decision 3).
+        Some(Runtime::OpenCode) => &[PermissionMode::Default, PermissionMode::Bypass],
         Some(Runtime::Pi | Runtime::Shell) | None => &[],
     }
 }
@@ -292,6 +295,9 @@ pub(super) fn permission_mode_description(runtime: &str, mode: PermissionMode) -
         (Some(Runtime::Antigravity), PermissionMode::AcceptEdits) => "File edits run without asking (`--mode accept-edits`); other tools still follow toolPermission.",
         (Some(Runtime::Antigravity), PermissionMode::Bypass) => "Every tool runs without asking (`--dangerously-skip-permissions`). Same flag for the app-wide mission permission mode; chats never carry it (#596).",
         (Some(Runtime::Antigravity), PermissionMode::Auto) => "",
+        (Some(Runtime::OpenCode), PermissionMode::Default) => "OpenCode's own permission rules in ~/.config/opencode/opencode.json. With none set it asks only for paths outside the folder, .env files and repeated identical tool calls.",
+        (Some(Runtime::OpenCode), PermissionMode::Bypass) => "Every permission request is approved (`--auto`); rules set to deny still deny. Same flag for the app-wide mission permission mode; chats never carry it (#596).",
+        (Some(Runtime::OpenCode), PermissionMode::AcceptEdits | PermissionMode::Auto) => "",
         (Some(Runtime::Codex | Runtime::Trae), PermissionMode::AcceptEdits)
         | (Some(Runtime::Trae), PermissionMode::Auto)
         | (Some(Runtime::Pi), _)

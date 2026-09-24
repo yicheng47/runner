@@ -687,6 +687,16 @@ fn direct_chat_spawn_and_resume_strip_permission_flags_and_preserve_row_args() {
             ],
             vec!["--effort", "high"],
         ),
+        (
+            "opencode",
+            vec![
+                "--auto",
+                "--yolo=true",
+                "--dangerously-skip-permissions",
+                "--no-auto",
+            ],
+            vec!["--agent", "build"],
+        ),
     ] {
         let pool = pool_with_schema();
         let app_data = tempfile::tempdir().unwrap();
@@ -758,6 +768,7 @@ fn runtime_only_chat_spawn_and_resume_assert_no_permission_posture() {
         "copilot",
         "pi",
         "antigravity",
+        "opencode",
     ] {
         let pool = pool_with_schema();
         let app_data = tempfile::tempdir().unwrap();
@@ -785,11 +796,12 @@ fn runtime_only_chat_spawn_and_resume_assert_no_permission_posture() {
         let args = fake.last_spawn_spec().unwrap().args;
         assert_chat_has_no_permission_flags(&args);
         assert!(has_arg_pair(&args, "--model", "test-model"));
-        // agy takes `--effort` only with a catalog model that lists the level.
+        // agy takes `--effort` only with a catalog model that lists the level;
+        // OpenCode's TUI has no effort flag.
         let effort = match runtime {
             "claude-code" | "copilot" => Some(("--effort", "high")),
             "pi" => Some(("--thinking", "high")),
-            "antigravity" => None,
+            "antigravity" | "opencode" => None,
             _ => Some(("-c", "model_reasoning_effort=high")),
         };
         let has_effort = |args: &[String]| match effort {

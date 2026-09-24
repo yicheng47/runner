@@ -197,6 +197,8 @@ const ASSETS: &[(&str, &[u8])] = &[
     ("pi.svg", PI),
     // Placeholder until the Antigravity mark is designed (#644 phase 0).
     ("antigravity.svg", MESSAGE_SQUARE),
+    // Placeholder until the OpenCode mark is designed (#592).
+    ("opencode.svg", MESSAGE_SQUARE),
     ("message-square-plus.svg", MESSAGE_SQUARE_PLUS),
     ("columns-2.svg", COLUMNS_2),
     ("pin.svg", PIN),
@@ -410,6 +412,14 @@ mod tests {
     fn antigravity_placeholder_is_registered() {
         assert_eq!(
             Assets.load("antigravity.svg").unwrap(),
+            Assets.load("message-square.svg").unwrap()
+        );
+    }
+
+    #[test]
+    fn opencode_placeholder_is_registered() {
+        assert_eq!(
+            Assets.load("opencode.svg").unwrap(),
             Assets.load("message-square.svg").unwrap()
         );
     }

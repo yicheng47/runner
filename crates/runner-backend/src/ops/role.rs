@@ -1185,6 +1185,52 @@ mod tests {
     }
 
     #[test]
+    fn opencode_create_and_update_bake_only_auto_for_bypass() {
+        let pool = ctx();
+        let conn = pool.get().unwrap();
+        let role = create(
+            &conn,
+            CreateRoleInput {
+                handle: "opencode-tester".into(),
+                display_name: "OpenCode".into(),
+                runtime: crate::model::Runtime::OpenCode,
+                command: "opencode".into(),
+                args: vec![
+                    "--agent".into(),
+                    "build".into(),
+                    "--yolo".into(),
+                    "--dangerously-skip-permissions=true".into(),
+                    "--no-auto".into(),
+                ],
+                working_dir: None,
+                system_prompt: None,
+                env: HashMap::new(),
+                model: None,
+                effort: None,
+                permission_mode: PermissionMode::Bypass,
+            },
+        )
+        .unwrap();
+        assert_eq!(role.args, ["--agent", "build", "--auto"]);
+        for mode in [
+            PermissionMode::Default,
+            PermissionMode::AcceptEdits,
+            PermissionMode::Auto,
+        ] {
+            let updated = update(
+                &conn,
+                &role.id,
+                UpdateRoleInput {
+                    permission_mode: Some(mode),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            assert_eq!(updated.args, ["--agent", "build"], "{mode:?}");
+        }
+    }
+
+    #[test]
     fn create_omits_bypass_flags_when_toggle_off() {
         let pool = ctx();
         let conn = pool.get().unwrap();

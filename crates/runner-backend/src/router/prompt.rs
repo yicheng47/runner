@@ -296,6 +296,7 @@ mod tests {
             Runtime::Trae,
             Runtime::Copilot,
             Runtime::Antigravity,
+            Runtime::OpenCode,
         ] {
             for (kind, body) in [
                 (SessionPromptKind::Direct, direct.clone()),

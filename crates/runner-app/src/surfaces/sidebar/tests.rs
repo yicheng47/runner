@@ -604,6 +604,7 @@ fn tab_and_mission_menus_have_the_trimmed_item_lists() {
         (Some("copilot"), "copilot.svg"),
         (Some("pi"), "pi.svg"),
         (Some("antigravity"), "antigravity.svg"),
+        (Some("opencode"), "opencode.svg"),
         (Some("unknown"), "message-square.svg"),
         (None, "message-square.svg"),
     ] {

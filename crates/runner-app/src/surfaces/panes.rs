@@ -3145,7 +3145,7 @@ mod tests {
 
     #[test]
     fn header_fork_state_uses_capability_key_and_focused_pane_kind() {
-        for runtime in ["claude-code", "codex", "pi"] {
+        for runtime in ["claude-code", "codex", "pi", "opencode"] {
             let entry = direct_session(runtime, true, true);
             assert_eq!(
                 header_fork_state(Some(&entry), false),
@@ -3201,6 +3201,7 @@ mod tests {
             pane_identity_icon(Some("antigravity")).path,
             "antigravity.svg"
         );
+        assert_eq!(pane_identity_icon(Some("opencode")).path, "opencode.svg");
         assert_eq!(
             pane_identity_icon(Some("unknown")).path,
             "message-square.svg"
@@ -3236,6 +3237,7 @@ mod tests {
             (Some("copilot"), "copilot.svg"),
             (Some("pi"), "pi.svg"),
             (Some("antigravity"), "antigravity.svg"),
+            (Some("opencode"), "opencode.svg"),
             (Some("unknown"), "message-square.svg"),
             (None, "message-square.svg"),
         ] {

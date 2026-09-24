@@ -158,6 +158,8 @@ fn remove_registration_at(
         McpClientId::ClaudeCode => mcp::claude_code_status_at(&path, &bridge),
         McpClientId::Codex | McpClientId::Trae => mcp::codex_status_at(&path, &bridge),
         McpClientId::Copilot | McpClientId::Antigravity => mcp::copilot_status_at(&path, &bridge),
+        // Runner never registered itself with OpenCode.
+        McpClientId::OpenCode => return Ok(ClientRemoval::Absent),
     };
     let status = match status {
         Ok(status) => status,

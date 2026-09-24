@@ -34,6 +34,7 @@ pub enum McpClientId {
     Trae,
     Copilot,
     Antigravity,
+    OpenCode,
 }
 
 impl McpClientId {
@@ -46,13 +47,14 @@ impl McpClientId {
             Some(crate::model::Runtime::Trae) => Ok(Self::Trae),
             Some(crate::model::Runtime::Copilot) => Ok(Self::Copilot),
             Some(crate::model::Runtime::Antigravity) => Ok(Self::Antigravity),
+            Some(crate::model::Runtime::OpenCode) => Ok(Self::OpenCode),
             Some(
                 crate::model::Runtime::ClaudeCode
                 | crate::model::Runtime::Pi
                 | crate::model::Runtime::Shell,
             )
             | None => Err(Error::msg(format!(
-                "unknown MCP client: {raw:?} (expected claude_code, codex, trae, copilot, or antigravity)"
+                "unknown MCP client: {raw:?} (expected claude_code, codex, trae, copilot, antigravity, or opencode)"
             ))),
         }
     }
@@ -168,6 +170,8 @@ pub fn remove_runner_entry(client: McpClientId, path: &Path, binary_path: &str) 
         McpClientId::ClaudeCode => claude_code_status_at(path, binary_path),
         McpClientId::Codex | McpClientId::Trae => codex_status_at(path, binary_path),
         McpClientId::Copilot | McpClientId::Antigravity => copilot_status_at(path, binary_path),
+        // Runner never registered itself with OpenCode.
+        McpClientId::OpenCode => return Ok(false),
     }?;
     if !status.registered || !status.matches_current {
         return Ok(false);
@@ -176,18 +180,21 @@ pub fn remove_runner_entry(client: McpClientId, path: &Path, binary_path: &str) 
         McpClientId::ClaudeCode => claude_code_write_at(path),
         McpClientId::Codex | McpClientId::Trae => codex_write_at(path),
         McpClientId::Copilot => copilot_write_at(path),
-        McpClientId::Antigravity => write_entry_at(path, client, "runner", None, false),
+        McpClientId::Antigravity | McpClientId::OpenCode => {
+            write_entry_at(path, client, "runner", None, false)
+        }
     }?;
     Ok(true)
 }
 
 impl McpClientId {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::ClaudeCode,
         Self::Codex,
         Self::Trae,
         Self::Copilot,
         Self::Antigravity,
+        Self::OpenCode,
     ];
 
     pub fn key(self) -> &'static str {
@@ -197,6 +204,7 @@ impl McpClientId {
             Self::Trae => "trae",
             Self::Copilot => "copilot",
             Self::Antigravity => "antigravity",
+            Self::OpenCode => "opencode",
         }
     }
 
@@ -207,6 +215,7 @@ impl McpClientId {
             crate::model::Runtime::Trae => Some(Self::Trae),
             crate::model::Runtime::Copilot => Some(Self::Copilot),
             crate::model::Runtime::Antigravity => Some(Self::Antigravity),
+            crate::model::Runtime::OpenCode => Some(Self::OpenCode),
             crate::model::Runtime::Pi | crate::model::Runtime::Shell => None,
         }
     }
@@ -218,6 +227,7 @@ impl McpClientId {
             Self::Trae => crate::model::Runtime::Trae,
             Self::Copilot => crate::model::Runtime::Copilot,
             Self::Antigravity => crate::model::Runtime::Antigravity,
+            Self::OpenCode => crate::model::Runtime::OpenCode,
         }
     }
 
@@ -228,6 +238,7 @@ impl McpClientId {
             Self::Trae => "TRAE CLI",
             Self::Copilot => "GitHub Copilot CLI",
             Self::Antigravity => "Antigravity CLI",
+            Self::OpenCode => "OpenCode",
         }
     }
 
@@ -238,18 +249,21 @@ impl McpClientId {
             Self::Trae => "~/.trae/traecli.toml",
             Self::Copilot => "~/.copilot/mcp-config.json",
             Self::Antigravity => "~/.gemini/config/mcp_config.json",
+            Self::OpenCode => "~/.config/opencode/opencode.json",
         }
     }
 
     pub fn entry_key(self, name: &str) -> String {
-        format!(
-            "{}.{name}",
-            if self.is_json() {
-                "mcpServers"
-            } else {
-                "mcp_servers"
-            }
-        )
+        format!("{}.{name}", self.servers_key())
+    }
+
+    /// The top-level key that holds the client's servers.
+    pub fn servers_key(self) -> &'static str {
+        match self {
+            Self::ClaudeCode | Self::Copilot | Self::Antigravity => "mcpServers",
+            Self::OpenCode => "mcp",
+            Self::Codex | Self::Trae => "mcp_servers",
+        }
     }
 
     pub fn config_path(self, home: &Path) -> PathBuf {
@@ -259,12 +273,26 @@ impl McpClientId {
             Self::Trae => crate::runtime_defaults::trae_config_path(home),
             Self::Copilot => home.join(".copilot/mcp-config.json"),
             Self::Antigravity => home.join(".gemini/config/mcp_config.json"),
+            // The file `opencode mcp add` writes: opencode.json, else an existing
+            // opencode.jsonc.
+            Self::OpenCode => {
+                let dir = home.join(".config/opencode");
+                let jsonc = dir.join("opencode.jsonc");
+                if !dir.join("opencode.json").exists() && jsonc.exists() {
+                    jsonc
+                } else {
+                    dir.join("opencode.json")
+                }
+            }
         }
     }
 
-    /// Clients whose config keeps servers under a JSON `mcpServers` object.
+    /// Clients whose config is a JSON object (JSONC for OpenCode).
     pub fn is_json(self) -> bool {
-        matches!(self, Self::ClaudeCode | Self::Copilot | Self::Antigravity)
+        matches!(
+            self,
+            Self::ClaudeCode | Self::Copilot | Self::Antigravity | Self::OpenCode
+        )
     }
 }
 
@@ -355,6 +383,67 @@ impl McpServerDefinition {
         })
     }
 
+    /// An OpenCode `mcp` entry: `{"type":"local","command":[cmd, …args],
+    /// "environment":{…}}` or `{"type":"remote","url":…,"headers":{…}}`.
+    pub fn from_opencode(value: &serde_json::Value) -> Option<Self> {
+        let strings = |key: &str| -> Option<BTreeMap<String, String>> {
+            match value.get(key) {
+                None => Some(BTreeMap::new()),
+                Some(v) => v
+                    .as_object()?
+                    .iter()
+                    .map(|(k, v)| Some((k.clone(), v.as_str()?.into())))
+                    .collect(),
+            }
+        };
+        match value.get("type")?.as_str()? {
+            "local" => {
+                let mut command = value
+                    .get("command")?
+                    .as_array()?
+                    .iter()
+                    .map(|part| part.as_str().map(str::to_owned))
+                    .collect::<Option<Vec<_>>>()?
+                    .into_iter();
+                Some(Self::Stdio {
+                    command: command.next()?,
+                    args: command.collect(),
+                    env: strings("environment")?,
+                })
+            }
+            "remote" => Some(Self::Http {
+                url: value.get("url")?.as_str()?.into(),
+                headers: strings("headers")?,
+            }),
+            _ => None,
+        }
+    }
+
+    /// The entry `opencode mcp add` writes for this definition.
+    pub fn to_opencode(&self) -> serde_json::Value {
+        let mut value = serde_json::Map::new();
+        match self {
+            Self::Stdio { command, args, env } => {
+                value.insert("type".into(), json!("local"));
+                value.insert(
+                    "command".into(),
+                    json!(std::iter::once(command).chain(args).collect::<Vec<_>>()),
+                );
+                if !env.is_empty() {
+                    value.insert("environment".into(), json!(env));
+                }
+            }
+            Self::Http { url, headers } => {
+                value.insert("type".into(), json!("remote"));
+                value.insert("url".into(), json!(url));
+                if !headers.is_empty() {
+                    value.insert("headers".into(), json!(headers));
+                }
+            }
+        }
+        serde_json::Value::Object(value)
+    }
+
     pub fn to_claude(&self) -> serde_json::Value {
         match self {
             Self::Stdio { command, args, env } => {
@@ -414,20 +503,30 @@ pub struct McpCatalog {
 #[derive(Clone)]
 enum NativeEntry {
     Claude(serde_json::Value),
+    OpenCode(serde_json::Value),
     Toml(toml_edit::Table),
 }
 
 impl NativeEntry {
+    fn json(client: McpClientId, value: serde_json::Value) -> Self {
+        if client == McpClientId::OpenCode {
+            Self::OpenCode(value)
+        } else {
+            Self::Claude(value)
+        }
+    }
+
     fn definition(&self) -> Option<McpServerDefinition> {
         match self {
             Self::Claude(value) => McpServerDefinition::from_claude(value),
+            Self::OpenCode(value) => McpServerDefinition::from_opencode(value),
             Self::Toml(table) => McpServerDefinition::from_toml(table),
         }
     }
 
     fn text(&self, name: &str) -> String {
         match self {
-            Self::Claude(value) => {
+            Self::Claude(value) | Self::OpenCode(value) => {
                 serde_json::to_string_pretty(value).expect("a serde_json::Value always serializes")
             }
             Self::Toml(table) => {
@@ -450,29 +549,40 @@ fn read_config(path: &Path) -> Result<String> {
     }
 }
 
+/// OpenCode's config is JSONC; the other JSON clients keep strict JSON, so a
+/// file they would reject is never cataloged or written back.
+fn parse_json(client: McpClientId, text: &str) -> serde_json::Result<serde_json::Value> {
+    if client == McpClientId::OpenCode {
+        crate::runtime_defaults::jsonc_document(text)
+    } else {
+        serde_json::from_str(text)
+    }
+}
+
 fn read_entries_at(path: &Path, client: McpClientId) -> Result<BTreeMap<String, NativeEntry>> {
     let raw = read_config(path)?;
     if raw.trim().is_empty() {
         return Ok(BTreeMap::new());
     }
     if client.is_json() {
-        let value: serde_json::Value = serde_json::from_str(&raw)
+        let value = parse_json(client, &raw)
             .map_err(|e| Error::msg(format!("parse {}: {e}", path.display())))?;
         let object = value
             .as_object()
             .ok_or_else(|| Error::msg(format!("{} is not a JSON object", path.display())))?;
-        match object.get("mcpServers") {
+        match object.get(client.servers_key()) {
             None => Ok(BTreeMap::new()),
             Some(servers) => Ok(servers
                 .as_object()
                 .ok_or_else(|| {
                     Error::msg(format!(
-                        "{}::mcpServers is not a JSON object",
-                        path.display()
+                        "{}::{} is not a JSON object",
+                        path.display(),
+                        client.servers_key()
                     ))
                 })?
                 .iter()
-                .map(|(name, value)| (name.clone(), NativeEntry::Claude(value.clone())))
+                .map(|(name, value)| (name.clone(), NativeEntry::json(client, value.clone())))
                 .collect()),
         }
     } else {
@@ -561,6 +671,10 @@ const PARSED_SPAN: &str = "a parsed TOML document keeps its spans";
 
 // serde_json validates and locates values; splice only the owned member so unrelated
 // JSON whitespace, ordering, and number/string spellings survive byte for byte.
+// JSONC is scanned through two offset-preserving copies (spec 592 decision 5):
+// `scan` has comments and every trailing comma blanked, so serde never sees
+// either; `commas` keeps the commas, so a trailing comma after the last member
+// is recorded as that member's comma. Strict JSON makes both copies equal `raw`.
 pub(crate) struct JsonMember {
     pub(crate) key: String,
     pub(crate) key_start: usize,
@@ -569,6 +683,9 @@ pub(crate) struct JsonMember {
 }
 
 pub(crate) fn json_members(raw: &str) -> Result<(Vec<JsonMember>, usize)> {
+    let commas = crate::runtime_defaults::jsonc_blank(raw, false);
+    let scan = crate::runtime_defaults::jsonc_blank(raw, true);
+    let raw = scan.as_str();
     let mut offset = raw
         .find('{')
         .ok_or_else(|| Error::msg("expected JSON object"))?
@@ -603,8 +720,12 @@ pub(crate) fn json_members(raw: &str) -> Result<(Vec<JsonMember>, usize)> {
         offset += values.byte_offset();
         let end = offset;
         offset += raw[offset..].len() - raw[offset..].trim_start().len();
-        let comma = (raw.as_bytes().get(offset) == Some(&b',')).then_some(offset);
-        if comma.is_some() {
+        let comma = if raw.as_bytes().get(offset) == Some(&b',') {
+            Some(offset)
+        } else {
+            commas[end..offset].find(',').map(|at| end + at)
+        };
+        if raw.as_bytes().get(offset) == Some(&b',') {
             offset += 1;
         }
         members.push(JsonMember {
@@ -645,7 +766,7 @@ fn replace_json_member(raw: &str, name: &str, value: Option<&serde_json::Value>)
             serde_json::to_string_pretty(value).expect("a serde_json::Value always serializes")
         );
         out.insert_str(close, &text);
-        if let Some(last) = members.last() {
+        if let Some(last) = members.last().filter(|last| last.comma.is_none()) {
             out.insert(last.value.end, ',');
         }
     }
@@ -839,14 +960,21 @@ fn write_entry_at(
     let output = if client.is_json() {
         let raw = if raw.trim().is_empty() { "{}" } else { &raw };
         let (members, _) = json_members(raw)?;
-        let server_member = members.iter().find(|m| m.key == "mcpServers");
+        let server_member = members.iter().find(|m| m.key == client.servers_key());
+        let owned: &[&str] = if client == McpClientId::OpenCode {
+            &["type", "command", "environment", "url", "headers"]
+        } else {
+            &["type", "command", "args", "env", "url", "headers"]
+        };
         let value = match entry {
-            Some(NativeEntry::Claude(mut value)) => {
+            Some(NativeEntry::Claude(mut value) | NativeEntry::OpenCode(mut value)) => {
                 if merge {
-                    if let Some(NativeEntry::Claude(old)) = existing.get(name) {
+                    if let Some(NativeEntry::Claude(old) | NativeEntry::OpenCode(old)) =
+                        existing.get(name)
+                    {
                         let mut base = old.as_object().cloned().unwrap_or_default();
-                        for key in ["type", "command", "args", "env", "url", "headers"] {
-                            base.remove(key);
+                        for key in owned {
+                            base.remove(*key);
                         }
                         base.extend(
                             value
@@ -862,15 +990,22 @@ fn write_entry_at(
             None => None,
             _ => unreachable!(),
         };
-        if let Some(member) = server_member {
+        let out = if let Some(member) = server_member {
             let updated = replace_json_member(&raw[member.value.clone()], name, value.as_ref())?;
             let mut out = raw.to_owned();
             out.replace_range(member.value.clone(), &updated);
             out
         } else {
-            let value = value.expect("a removal with no mcpServers member returned early");
-            replace_json_member(raw, "mcpServers", Some(&json!({ name: value })))?
-        }
+            let value = value.expect("a removal with no servers member returned early");
+            replace_json_member(raw, client.servers_key(), Some(&json!({ name: value })))?
+        };
+        parse_json(client, &out).map_err(|e| {
+            Error::msg(format!(
+                "{}: cannot update this entry in place: {e}",
+                path.display()
+            ))
+        })?;
+        out
     } else {
         let replacement = match entry {
             Some(NativeEntry::Toml(mut table)) => {
@@ -923,6 +1058,9 @@ fn translated(definition: &McpServerDefinition, client: McpClientId) -> Result<N
             value.insert("env".into(), json!(env));
         }
         return Ok(NativeEntry::Claude(serde_json::Value::Object(value)));
+    }
+    if client == McpClientId::OpenCode {
+        return Ok(NativeEntry::OpenCode(definition.to_opencode()));
     }
     Ok(if client.is_json() {
         let mut value = definition.to_claude();
@@ -977,12 +1115,12 @@ pub fn mcp_remove_server(home: &Path, client: McpClientId, name: &str) -> Result
 
 fn parse_native(client: McpClientId, name: &str, text: &str) -> Result<NativeEntry> {
     if client.is_json() {
-        let value: serde_json::Value =
-            serde_json::from_str(text).map_err(|e| Error::msg(format!("Invalid JSON: {e}")))?;
+        let value =
+            parse_json(client, text).map_err(|e| Error::msg(format!("Invalid JSON: {e}")))?;
         if !value.is_object() {
             return Err(Error::msg("The MCP entry must be a JSON object"));
         }
-        Ok(NativeEntry::Claude(value))
+        Ok(NativeEntry::json(client, value))
     } else {
         let mut doc: toml_edit::DocumentMut = text
             .parse()
@@ -1655,6 +1793,272 @@ mod tests {
             .unwrap()
             .contains("https://new.example/mcp"));
         assert_eq!(std::fs::read_to_string(&paths[&Antigravity]).unwrap(), agy);
+    }
+
+    #[test]
+    fn opencode_client_identity_follows_opencode_mcp_add() {
+        use McpClientId::*;
+        assert_eq!(McpClientId::parse("opencode").unwrap(), OpenCode);
+        assert_eq!(OpenCode.runtime(), crate::model::Runtime::OpenCode);
+        assert_eq!(
+            McpClientId::for_runtime(crate::model::Runtime::OpenCode),
+            Some(OpenCode)
+        );
+        assert_eq!(OpenCode.key(), "opencode");
+        assert_eq!(OpenCode.label(), "OpenCode");
+        assert_eq!(OpenCode.config_file(), "~/.config/opencode/opencode.json");
+        assert_eq!(OpenCode.entry_key("github"), "mcp.github");
+        assert!(OpenCode.is_json());
+        for client in [ClaudeCode, Copilot, Antigravity] {
+            assert_eq!(client.entry_key("github"), "mcpServers.github");
+        }
+        assert_eq!(Codex.entry_key("github"), "mcp_servers.github");
+
+        let home = TempDir::new().unwrap();
+        let dir = home.path().join(".config/opencode");
+        assert_eq!(OpenCode.config_path(home.path()), dir.join("opencode.json"));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("opencode.jsonc"), "{}").unwrap();
+        assert_eq!(
+            OpenCode.config_path(home.path()),
+            dir.join("opencode.jsonc")
+        );
+        std::fs::write(dir.join("opencode.json"), "{}").unwrap();
+        assert_eq!(OpenCode.config_path(home.path()), dir.join("opencode.json"));
+        assert!(!remove_runner_entry(OpenCode, &dir.join("opencode.json"), "/runner").unwrap());
+    }
+
+    #[test]
+    fn opencode_jsonc_copies_keep_every_byte_outside_the_rewritten_entry() {
+        use McpClientId::*;
+        let dir = TempDir::new().unwrap();
+        let paths = paths(&dir);
+        std::fs::write(
+            &paths[&ClaudeCode],
+            r#"{"mcpServers":{"fs":{"type":"stdio","command":"fs-mcp","args":["/work"],"env":{"TOKEN":"x"}},"web":{"type":"http","url":"https://example.com/mcp","headers":{"Authorization":"Bearer x"}}}}"#,
+        )
+        .unwrap();
+        let head = "{\n  // my settings\n  \"$schema\": \"https://opencode.ai/config.json\",\n  \"model\": \"anthropic/claude-sonnet-4-5\", /* pinned */\n  \"permission\": {\"edit\": \"ask\", \"*\": \"allow\",},\n  \"mcp\": {\n    // keep this server\n    \"kept\": {\"type\": \"local\", \"command\": [\"kept-mcp\",], \"enabled\": false,},\n";
+        let tail = "  },\n  \"theme\": \"dark\",\n}\n";
+        std::fs::write(&paths[&OpenCode], format!("{head}{tail}")).unwrap();
+        let entries = read_entries_at(&paths[&OpenCode], OpenCode).unwrap();
+        assert_eq!(
+            entries["kept"].definition(),
+            Some(McpServerDefinition::Stdio {
+                command: "kept-mcp".into(),
+                args: vec![],
+                env: BTreeMap::new()
+            })
+        );
+
+        copy_at(&paths, ClaudeCode, OpenCode, "fs").unwrap();
+        copy_at(&paths, ClaudeCode, OpenCode, "web").unwrap();
+        let written = std::fs::read_to_string(&paths[&OpenCode]).unwrap();
+        // New entries go in just before mcp's closing brace, after its indent.
+        let (indent, close) = tail.split_at(2);
+        assert!(written.starts_with(&format!("{head}{indent}")), "{written}");
+        assert!(written.ends_with(close), "{written}");
+        let document = crate::runtime_defaults::jsonc_document(&written).unwrap();
+        assert_eq!(
+            document["mcp"]["fs"],
+            json!({"type": "local", "command": ["fs-mcp", "/work"], "environment": {"TOKEN": "x"}})
+        );
+        assert_eq!(
+            document["mcp"]["web"],
+            json!({"type": "remote", "url": "https://example.com/mcp", "headers": {"Authorization": "Bearer x"}})
+        );
+        assert_eq!(
+            serde_json::to_string(&document["permission"]).unwrap(),
+            r#"{"edit":"ask","*":"allow"}"#
+        );
+        let entries = read_entries_at(&paths[&OpenCode], OpenCode).unwrap();
+        let claude = read_entries_at(&paths[&ClaudeCode], ClaudeCode).unwrap();
+        for name in ["fs", "web"] {
+            assert_eq!(
+                entries[name].definition(),
+                claude[name].definition(),
+                "{name}"
+            );
+            assert!(
+                !catalog(&paths)
+                    .servers
+                    .iter()
+                    .find(|server| server.name == name)
+                    .unwrap()
+                    .clients[&OpenCode]
+                    .conflicting
+            );
+        }
+
+        // Keys Runner does not own survive a copy onto an existing entry; the
+        // entry itself is rewritten whole, as `opencode mcp add` rewrites it.
+        let edited = written.replace(
+            "\"environment\": {\n",
+            "\"enabled\": false,\n  \"timeout\": 5000,\n  \"environment\": {\n",
+        );
+        assert_ne!(edited, written);
+        std::fs::write(&paths[&OpenCode], &edited).unwrap();
+        std::fs::write(
+            &paths[&ClaudeCode],
+            r#"{"mcpServers":{"fs":{"command":"fs-mcp","args":["/other"]}}}"#,
+        )
+        .unwrap();
+        copy_at(&paths, ClaudeCode, OpenCode, "fs").unwrap();
+        let document = crate::runtime_defaults::jsonc_document(
+            &std::fs::read_to_string(&paths[&OpenCode]).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            document["mcp"]["fs"],
+            json!({"enabled": false, "timeout": 5000, "type": "local", "command": ["fs-mcp", "/other"]})
+        );
+
+        copy_at(&paths, OpenCode, Codex, "web").unwrap();
+        assert_eq!(
+            read_entries_at(&paths[&Codex], Codex).unwrap()["web"].definition(),
+            claude_web()
+        );
+    }
+
+    fn claude_web() -> Option<McpServerDefinition> {
+        Some(McpServerDefinition::Http {
+            url: "https://example.com/mcp".into(),
+            headers: BTreeMap::from([("Authorization".into(), "Bearer x".into())]),
+        })
+    }
+
+    #[test]
+    fn opencode_inserts_and_removals_stay_valid_jsonc() {
+        use McpClientId::*;
+        let dir = TempDir::new().unwrap();
+        let paths = paths(&dir);
+        std::fs::write(
+            &paths[&ClaudeCode],
+            r#"{"mcpServers":{"a":{"command":"a-mcp"},"b":{"command":"b-mcp"}}}"#,
+        )
+        .unwrap();
+        let read = |paths: &BTreeMap<McpClientId, PathBuf>| {
+            std::fs::read_to_string(&paths[&OpenCode]).unwrap()
+        };
+
+        // A config with no mcp member yet, ending in a trailing comma.
+        std::fs::write(&paths[&OpenCode], "{\n  \"theme\": \"dark\", // mine\n}\n").unwrap();
+        copy_at(&paths, ClaudeCode, OpenCode, "a").unwrap();
+        let text = read(&paths);
+        assert!(
+            text.starts_with("{\n  \"theme\": \"dark\", // mine\n"),
+            "{text}"
+        );
+        assert!(!text.contains(",,"), "{text}");
+        crate::runtime_defaults::jsonc_document(&text).unwrap();
+
+        // Inserting after a trailing comma inside mcp adds no second comma.
+        std::fs::write(
+            &paths[&OpenCode],
+            "{\"mcp\": {\"a\": {\"type\": \"local\", \"command\": [\"a-mcp\"]},}}",
+        )
+        .unwrap();
+        copy_at(&paths, ClaudeCode, OpenCode, "b").unwrap();
+        let text = read(&paths);
+        assert!(!text.contains(",,"), "{text}");
+        assert_eq!(
+            read_entries_at(&paths[&OpenCode], OpenCode).unwrap().len(),
+            2
+        );
+
+        // Removing the last member takes its trailing comma with it.
+        mcp_remove_server_at(&paths, OpenCode, "b");
+        let text = read(&paths);
+        crate::runtime_defaults::jsonc_document(&text).unwrap();
+        assert_eq!(
+            read_entries_at(&paths[&OpenCode], OpenCode).unwrap().len(),
+            1
+        );
+        std::fs::write(
+            &paths[&OpenCode],
+            "{\"mcp\": {\"a\": {\"type\": \"local\", \"command\": [\"a-mcp\",],}, /* only */},}",
+        )
+        .unwrap();
+        mcp_remove_server_at(&paths, OpenCode, "a");
+        let text = read(&paths);
+        assert_eq!(text, "{\"mcp\": { /* only */},}");
+        crate::runtime_defaults::jsonc_document(&text).unwrap();
+
+        // An entry OpenCode cannot describe is listed but not translated.
+        std::fs::write(
+            &paths[&OpenCode],
+            r#"{"mcp": {"odd": {"type": "local", "command": "not-an-array"}}}"#,
+        )
+        .unwrap();
+        assert!(read_entries_at(&paths[&OpenCode], OpenCode).unwrap()["odd"]
+            .definition()
+            .is_none());
+        assert!(copy_at(&paths, OpenCode, Codex, "odd").is_err());
+    }
+
+    #[test]
+    fn strict_json_clients_refuse_jsonc_and_leave_the_file_alone() {
+        use McpClientId::*;
+        let dir = TempDir::new().unwrap();
+        let paths = paths(&dir);
+        std::fs::write(
+            &paths[&OpenCode],
+            r#"{"mcp": {"fs": {"type": "local", "command": ["fs-mcp"]}}}"#,
+        )
+        .unwrap();
+        for client in [ClaudeCode, Copilot, Antigravity] {
+            let jsonc =
+                "{\n  // mine\n  \"mcpServers\": {\"old\": {\"command\": \"old-mcp\"},},\n}\n";
+            std::fs::write(&paths[&client], jsonc).unwrap();
+            assert!(
+                read_entries_at(&paths[&client], client).is_err(),
+                "{client:?}"
+            );
+            assert!(catalog(&paths)
+                .servers
+                .iter()
+                .all(|server| server.clients[&client].error.is_some()));
+            assert!(
+                copy_at(&paths, OpenCode, client, "fs").is_err(),
+                "{client:?}"
+            );
+            let text = r#"{"command": "old-mcp"}"#;
+            assert!(
+                edit_at(&paths, client, "old", text, &[]).is_err(),
+                "{client:?}"
+            );
+            assert_eq!(std::fs::read_to_string(&paths[&client]).unwrap(), jsonc);
+            assert!(
+                validate_mcp_edit(client, "old", "{\"command\": \"x\", // note\n}", &[]).is_err(),
+                "{client:?}"
+            );
+            std::fs::write(&paths[&client], "").unwrap();
+        }
+    }
+
+    #[test]
+    fn opencode_edits_parse_jsonc_and_translate_to_other_clients() {
+        use McpClientId::*;
+        let dir = TempDir::new().unwrap();
+        let paths = paths(&dir);
+        std::fs::write(&paths[&OpenCode], r#"{"mcp": {}}"#).unwrap();
+        let text = "{\n  // local server\n  \"type\": \"local\",\n  \"command\": [\"gh-mcp\", \"--stdio\",],\n  \"environment\": {\"GH\": \"1\"},\n}";
+        validate_mcp_edit(OpenCode, "github", text, &[ClaudeCode]).unwrap();
+        edit_at(&paths, OpenCode, "github", text, &[ClaudeCode]).unwrap();
+        let expected = Some(McpServerDefinition::Stdio {
+            command: "gh-mcp".into(),
+            args: vec!["--stdio".into()],
+            env: BTreeMap::from([("GH".into(), "1".into())]),
+        });
+        assert_eq!(
+            read_entries_at(&paths[&OpenCode], OpenCode).unwrap()["github"].definition(),
+            expected
+        );
+        assert_eq!(
+            read_entries_at(&paths[&ClaudeCode], ClaudeCode).unwrap()["github"].definition(),
+            expected
+        );
+        assert!(validate_mcp_edit(OpenCode, "github", "[]", &[]).is_err());
     }
 
     fn mcp_remove_server_at(

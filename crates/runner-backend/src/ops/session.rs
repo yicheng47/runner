@@ -1680,10 +1680,10 @@ mod tests {
             .unwrap()
         };
 
-        for runtime in ["claude-code", "codex", "pi"] {
+        for runtime in ["claude-code", "codex", "pi", "opencode"] {
             let row = entry(runtime, true, false, false);
-            assert!(row.native_fork);
-            assert!(row.forkable);
+            assert!(row.native_fork, "{runtime}");
+            assert!(row.forkable, "{runtime}");
         }
         for runtime in ["trae", "copilot", "antigravity"] {
             let row = entry(runtime, true, false, false);
