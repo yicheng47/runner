@@ -6,7 +6,7 @@
 // + sidecar that used to feed it are gone (feature 20).
 
 use chrono::Utc;
-use rusqlite::{params, Connection};
+use rusqlite::Connection;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ulid::Ulid as UlidGen;
@@ -239,39 +239,17 @@ pub fn update(conn: &Connection, id: &str, input: UpdateCrewInput) -> Result<Cre
     get(conn, id)
 }
 
-fn non_archived_mission_ids_for_crew(
-    conn: &Connection,
-    crew_id: &str,
-) -> rusqlite::Result<Vec<String>> {
-    let mut stmt = conn.prepare(
-        "SELECT id
-           FROM missions
-          WHERE crew_id = ?1
-            AND archived_at IS NULL
-          ORDER BY started_at ASC",
-    )?;
-    let ids = stmt
-        .query_map(params![crew_id], |row| row.get::<_, String>(0))?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    Ok(ids)
-}
-
 pub fn delete(conn: &mut Connection, id: &str) -> Result<()> {
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-    let mission_ids = non_archived_mission_ids_for_crew(&tx, id)?;
+    let mission_ids = repo::mission::unarchived_ids_for_crew(&tx, id)?;
     if !mission_ids.is_empty() {
         return Err(Error::msg(format!(
             "crew {id} has non-archived missions; archive them before deleting this crew: {}",
             mission_ids.join(", ")
         )));
     }
-    tx.execute(
-        "DELETE FROM sessions
-          WHERE mission_id IN (
-              SELECT id FROM missions WHERE crew_id = ?1
-          )",
-        params![id],
-    )?;
+    super::mission::delete_rows(&tx, &repo::mission::ids_for_crew(&tx, id)?)?;
+    repo::slot::delete_for_crew(&tx, id)?;
     let affected = repo::crew::delete(&tx, id)?;
     if affected == 0 {
         return Err(Error::msg(format!("crew not found: {id}")));
@@ -626,6 +604,96 @@ mod tests {
             mission_count, 0,
             "crew delete still removes archived missions"
         );
+    }
+
+    #[test]
+    fn delete_removes_missions_sessions_and_slots_with_foreign_keys_off() {
+        use crate::test_support::{foreign_keys_off, insert_test_slot, row_count};
+        let pool = ctx();
+        let mut conn = pool.get().unwrap();
+        foreign_keys_off(&conn);
+        let mut crew_ids = Vec::new();
+        for name in ["doomed", "kept"] {
+            let crew = create(
+                &conn,
+                CreateCrewInput {
+                    name: name.into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            crew_ids.push(crew.id);
+        }
+        crate::test_support::insert_test_role(&conn, "r1", "worker", "shell", "sh");
+        for (name, crew_id) in ["doomed", "kept"].into_iter().zip(&crew_ids) {
+            insert_test_slot(
+                &conn,
+                &format!("{name}-slot"),
+                crew_id,
+                "r1",
+                "worker",
+                0,
+                true,
+            );
+            conn.execute(
+                "INSERT INTO missions
+                    (id, crew_id, title, status, started_at, stopped_at, archived_at)
+                 VALUES (?1, ?2, 'Done', 'completed', '2026-04-22T00:00:00Z',
+                         '2026-04-22T01:00:00Z', '2026-04-22T01:00:00Z')",
+                params![format!("{name}-mission"), crew_id],
+            )
+            .unwrap();
+            let session_id = format!("{name}-session");
+            let mut session = crate::test_support::test_session_row(
+                &session_id,
+                crate::model::SessionStatus::Stopped,
+            );
+            session.mission_id = Some(format!("{name}-mission"));
+            session.role_id = Some("r1".into());
+            session.slot_id = Some(format!("{name}-slot"));
+            repo::session::insert(&conn, &session).unwrap();
+            repo::session_attention::record_completion(&conn, &session_id, false, 100).unwrap();
+        }
+        conn.execute(
+            "INSERT INTO missions
+                (id, crew_id, title, status, started_at, stopped_at, archived_at)
+             VALUES ('doomed-mission-2', ?1, 'Done', 'completed', '2026-04-23T00:00:00Z',
+                     '2026-04-23T01:00:00Z', '2026-04-23T01:00:00Z')",
+            params![crew_ids[0]],
+        )
+        .unwrap();
+        for session_id in ["doomed-session-2a", "doomed-session-2b"] {
+            let mut session = crate::test_support::test_session_row(
+                session_id,
+                crate::model::SessionStatus::Stopped,
+            );
+            session.mission_id = Some("doomed-mission-2".into());
+            session.role_id = Some("r1".into());
+            session.slot_id = Some("doomed-slot".into());
+            repo::session::insert(&conn, &session).unwrap();
+            repo::session_attention::record_completion(&conn, session_id, false, 100).unwrap();
+        }
+
+        delete(&mut conn, &crew_ids[0]).unwrap();
+
+        for (table, column) in [
+            ("crews", "name"),
+            ("missions", "id"),
+            ("sessions", "id"),
+            ("session_attention", "session_id"),
+            ("slots", "id"),
+        ] {
+            let left: Vec<String> = conn
+                .prepare(&format!("SELECT {column} FROM {table}"))
+                .unwrap()
+                .query_map([], |row| row.get(0))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap();
+            assert_eq!(left.len(), 1, "{table}: {left:?}");
+            assert!(left[0].starts_with("kept"), "{table}: {left:?}");
+        }
+        assert_eq!(row_count(&conn, "SELECT COUNT(*) FROM roles"), 1);
     }
 
     #[test]

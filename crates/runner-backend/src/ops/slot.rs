@@ -22,7 +22,7 @@ use crate::model::Runtime;
 use std::collections::HashMap;
 
 use chrono::Utc;
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::Connection;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ulid::Ulid as UlidGen;
@@ -120,12 +120,7 @@ fn now() -> Timestamp {
 }
 
 fn crew_exists(conn: &Connection, crew_id: &str) -> Result<bool> {
-    let found: Option<i64> = conn
-        .query_row("SELECT 1 FROM crews WHERE id = ?1", params![crew_id], |r| {
-            r.get(0)
-        })
-        .optional()?;
-    Ok(found.is_some())
+    Ok(repo::crew::get(conn, crew_id)?.is_some())
 }
 
 fn role_exists(conn: &Connection, role_id: &str) -> Result<bool> {
@@ -138,15 +133,7 @@ fn role_exists(conn: &Connection, role_id: &str) -> Result<bool> {
 /// shift, so park each survivor at a negative slot first then
 /// rewrite the final positions.
 pub(super) fn repack_positions(conn: &Connection, crew_id: &str) -> Result<()> {
-    let ordered: Vec<String> = {
-        let mut stmt = conn.prepare(
-            "SELECT id FROM slots
-              WHERE crew_id = ?1
-              ORDER BY position ASC",
-        )?;
-        let rows = stmt.query_map(params![crew_id], |r| r.get::<_, String>(0))?;
-        rows.collect::<rusqlite::Result<Vec<_>>>()?
-    };
+    let ordered = repo::slot::ids_for_crew(conn, crew_id)?;
     for (i, id) in ordered.iter().enumerate() {
         repo::slot::set_position(conn, id, -(i as i64) - 1)?;
     }
@@ -229,16 +216,8 @@ pub fn create(
     let added_at = now();
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
 
-    let count: i64 = tx.query_row(
-        "SELECT COUNT(*) FROM slots WHERE crew_id = ?1",
-        params![crew_id],
-        |r| r.get(0),
-    )?;
-    let next_position: i64 = tx.query_row(
-        "SELECT COALESCE(MAX(position), -1) + 1 FROM slots WHERE crew_id = ?1",
-        params![crew_id],
-        |r| r.get(0),
-    )?;
+    let count = repo::slot::count_for_crew(&tx, crew_id)?;
+    let next_position = repo::slot::next_position(&tx, crew_id)?;
     let is_first = count == 0;
 
     repo::slot::insert(
@@ -371,16 +350,7 @@ pub fn delete(conn: &mut Connection, slot_id: &str) -> Result<()> {
     }
 
     if was_lead {
-        let promote: Option<String> = tx
-            .query_row(
-                "SELECT id FROM slots
-                  WHERE crew_id = ?1
-                  ORDER BY position ASC LIMIT 1",
-                params![crew_id],
-                |r| r.get(0),
-            )
-            .optional()?;
-        if let Some(new_lead) = promote {
+        if let Some(new_lead) = repo::slot::ids_for_crew(&tx, &crew_id)?.into_iter().next() {
             repo::slot::promote_to_lead(&tx, &new_lead)?;
         }
     }
@@ -442,11 +412,7 @@ pub fn reorder(
 
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
 
-    let current: Vec<String> = {
-        let mut stmt = tx.prepare("SELECT id FROM slots WHERE crew_id = ?1")?;
-        let rows = stmt.query_map(params![crew_id], |r| r.get::<_, String>(0))?;
-        rows.collect::<rusqlite::Result<Vec<_>>>()?
-    };
+    let current = repo::slot::ids_for_crew(&tx, crew_id)?;
     if current.len() != ordered_slot_ids.len() {
         return Err(Error::msg(
             "slot_reorder: ordered_slot_ids must contain every slot exactly once",
@@ -840,7 +806,7 @@ mod tests {
     }
 
     #[test]
-    fn deleting_role_cascades_slots_and_repacks_other_crews() {
+    fn a_role_in_crews_deletes_once_its_slots_are_removed() {
         let pool = pool();
         let mut conn = pool.get().unwrap();
         let c1 = seed_crew(&conn, "A");
@@ -850,11 +816,16 @@ mod tests {
         let b1 = seed_role(&conn, "b1");
         let b2 = seed_role(&conn, "b2");
         create(&mut conn, &c1, &a2, "a2", None, None).unwrap();
-        create(&mut conn, &c1, &shared, "shared-a", None, None).unwrap();
+        let shared_a = create(&mut conn, &c1, &shared, "shared-a", None, None).unwrap();
         create(&mut conn, &c2, &b1, "b1", None, None).unwrap();
-        create(&mut conn, &c2, &shared, "shared-b", None, None).unwrap();
+        let shared_b = create(&mut conn, &c2, &shared, "shared-b", None, None).unwrap();
         create(&mut conn, &c2, &b2, "b2", None, None).unwrap();
 
+        let refused = role::delete(&mut conn, &shared).unwrap_err().to_string();
+        assert!(refused.contains("is used by crews"), "{refused}");
+
+        delete(&mut conn, &shared_a.slot.id).unwrap();
+        delete(&mut conn, &shared_b.slot.id).unwrap();
         role::delete(&mut conn, &shared).unwrap();
 
         let in_a = list(&conn, &c1).unwrap();
@@ -863,7 +834,7 @@ mod tests {
 
         let in_b = list(&conn, &c2).unwrap();
         let positions: Vec<i64> = in_b.iter().map(|m| m.slot.position).collect();
-        assert_eq!(positions, vec![0, 1], "crew B dense after cascade + repack");
+        assert_eq!(positions, vec![0, 1], "crew B dense after its slot delete");
     }
 
     #[test]

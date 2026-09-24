@@ -203,17 +203,50 @@ pub fn unarchive(conn: &Connection, id: &str) -> rusqlite::Result<usize> {
     )
 }
 
-/// Hard-delete an archived mission row (Settings → Archived delete).
-/// The `IS NOT NULL` guard turns a non-archived target into a 0-row
-/// no-op the command layer refuses; callers must delete the mission's
-/// session rows first — `sessions.mission_id` is `ON DELETE SET NULL`,
-/// so an unguarded row delete would orphan them into the direct-chat
-/// lists.
-pub fn delete_archived(conn: &Connection, id: &str) -> rusqlite::Result<usize> {
+pub fn delete_many(conn: &Connection, ids: &[String]) -> rusqlite::Result<usize> {
+    if ids.is_empty() {
+        return Ok(0);
+    }
+    let placeholders = vec!["?"; ids.len()].join(", ");
     conn.execute(
-        "DELETE FROM missions
-          WHERE id = ?1 AND archived_at IS NOT NULL",
-        rusqlite::params![id],
+        &format!("DELETE FROM missions WHERE id IN ({placeholders})"),
+        rusqlite::params_from_iter(ids),
+    )
+}
+
+pub fn ids_for_crew(conn: &Connection, crew_id: &str) -> rusqlite::Result<Vec<String>> {
+    let mut stmt = conn.prepare("SELECT id FROM missions WHERE crew_id = ?1")?;
+    let ids = stmt.query_map(rusqlite::params![crew_id], |row| row.get(0))?;
+    ids.collect()
+}
+
+pub fn unarchived_ids_for_crew(conn: &Connection, crew_id: &str) -> rusqlite::Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT id
+           FROM missions
+          WHERE crew_id = ?1
+            AND archived_at IS NULL
+          ORDER BY started_at ASC",
+    )?;
+    let ids = stmt.query_map(rusqlite::params![crew_id], |row| row.get(0))?;
+    ids.collect()
+}
+
+/// Every mission that is running and not archived, oldest first.
+pub fn running_ids(conn: &Connection) -> rusqlite::Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT id FROM missions
+           WHERE status = 'running' AND archived_at IS NULL
+           ORDER BY started_at ASC",
+    )?;
+    let ids = stmt.query_map([], |row| row.get(0))?;
+    ids.collect()
+}
+
+pub fn unbind_project(conn: &Connection, project_id: &str) -> rusqlite::Result<usize> {
+    conn.execute(
+        "UPDATE missions SET project_id = NULL WHERE project_id = ?1",
+        rusqlite::params![project_id],
     )
 }
 

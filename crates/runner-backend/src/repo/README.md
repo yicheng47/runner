@@ -23,6 +23,8 @@ domain and API types  ↔  SQLite row types + SQL  ←  product behavior
 
 Repository functions never acquire a connection from `AppCore`. A `rusqlite::Transaction` dereferences to `Connection`, so the same repository function works both inside and outside a caller-owned transaction.
 
+SQL lives only here and in `db/`, which owns the schema, migrations and connection setup. `ops`, the session manager and every other module call a repository function instead of preparing a statement of their own; tests may seed and inspect rows directly.
+
 ## Module anatomy
 
 A table-backed module normally contains:
@@ -116,6 +118,8 @@ Join results should remain explicit. Do not use `#[serde(flatten)]` to deseriali
 
 Repository functions execute the requested SQL; they do not own multi-step product invariants. For example, changing a crew lead requires clearing the current lead and promoting the new one atomically. `ops::slot` owns that transaction and calls the small `repo::slot` statements within it.
 
+Deletes follow the same rule. A repository delete removes rows from its own table; `ops` decides what else goes with them, so no path depends on a foreign-key cascade. `ops::session::delete_rows` deletes sessions' `session_attention` rows before the sessions, and `ops::mission::delete_rows` deletes missions' sessions through it, one statement per table for any number of ids. [`docs/arch/arch.md`](../../../../docs/arch/arch.md) §10.3 lists what each delete takes with it.
+
 The same boundary applies to application events. A repository write does not emit `role/changed`, `crew/changed`, or another `AppEvent`; the state-level operation emits the event only after the database work succeeds.
 
 Not-found messages, validation errors, and constraint explanations also belong in `ops`. Repositories return the original `rusqlite::Result`, with `de_err` and `ser_err` translating only `serde_rusqlite` failures into the corresponding `rusqlite` error categories.
@@ -129,6 +133,8 @@ When adding a table:
 3. Add a repository module with its row type, `COLUMNS`, SQL functions, and repository tests.
 4. Add storage adapters only when an existing adapter cannot preserve the required byte format.
 5. Add operations that enforce invariants, own transactions, shape errors, and emit events.
+
+When adding a foreign key, add its step to the owning delete in `ops` and to the pinned foreign-key list in `ops/tests.rs`.
 
 When adding a column:
 

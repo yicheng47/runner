@@ -13,7 +13,7 @@ use crate::model::Runtime;
 use std::collections::HashMap;
 
 use chrono::Utc;
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::Connection;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ulid::Ulid as UlidGen;
@@ -403,64 +403,35 @@ pub fn update(conn: &Connection, id: &str, input: UpdateRoleInput) -> Result<Rol
 }
 
 pub(crate) fn ensure_delete_allowed(conn: &Connection, id: &str) -> Result<()> {
+    let handle = get(conn, id)?.handle;
+    let crews = repo::role::crew_names(conn, id)?;
+    if !crews.is_empty() {
+        return Err(Error::msg(format!(
+            "role @{handle} is used by crews; remove it from them before deleting this role: {}",
+            crews.join(", ")
+        )));
+    }
     let session_ids = repo::role::unarchived_direct_session_ids(conn, id)?;
     if !session_ids.is_empty() {
         return Err(Error::msg(format!(
-            "role {id} has unarchived chats; archive them before deleting this role: {}",
+            "role @{handle} has unarchived chats; archive them before deleting this role: {}",
             session_ids.join(", ")
         )));
     }
     Ok(())
 }
 
-// Global delete: removes the role template row and lets the
-// `ON DELETE CASCADE` on `slots` strip every slot that referenced
-// the role. A single role template might have been referenced by
-// multiple slots in the same crew (post-slot-redesign), so the
-// cleanup runs per-crew, not per-slot.
-//
-// For any crew where one of the deleted slots was lead, auto-promote
-// the lowest-position surviving slot so non-empty crews never end up
-// leaderless. Then repack positions per-crew so survivors stay dense
-// (0..N-1).
+// Global delete: refused while any crew has a slot for the role, so it
+// never reshapes a crew. The row takes its remaining sessions with it:
+// archived chats, and sessions of missions whose slot for it was removed
+// since.
 pub fn delete(conn: &mut Connection, id: &str) -> Result<()> {
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     ensure_delete_allowed(&tx, id)?;
-
-    // Distinct crews that referenced this role, plus whether ANY of
-    // its slots in that crew was lead (so we know to auto-promote
-    // after the cascade). Collected before the DELETE so we still
-    // have the membership info.
-    let affected_crews = repo::role::affected_crews(&tx, id)?;
-
-    repo::role::delete_sessions(&tx, id)?;
-    let affected = repo::role::delete(&tx, id)?;
-    if affected != 1 {
+    super::session::delete_rows(&tx, &repo::session::ids_for_role(&tx, id)?)?;
+    if repo::role::delete(&tx, id)? != 1 {
         return Err(Error::msg(format!("role not found: {id}")));
     }
-    // CASCADE fired: every slot row referencing this role is gone.
-
-    for (crew_id, had_lead) in affected_crews {
-        if had_lead {
-            let promote: Option<String> = tx
-                .query_row(
-                    "SELECT id FROM slots
-                      WHERE crew_id = ?1
-                      ORDER BY position ASC LIMIT 1",
-                    params![crew_id],
-                    |r| r.get(0),
-                )
-                .optional()?;
-            if let Some(new_lead) = promote {
-                repo::slot::promote_to_lead(&tx, &new_lead)?;
-            }
-        }
-        // Close the position gap the cascade left for this crew so
-        // survivors stay dense (0..N-1) and the next `slot::create`
-        // lands at a contiguous position.
-        super::slot::repack_positions(&tx, &crew_id)?;
-    }
-
     tx.commit()?;
     Ok(())
 }
@@ -936,6 +907,109 @@ mod tests {
             .unwrap();
         assert_eq!(session_count, 0, "role sessions are hard-deleted");
         assert_eq!(mission_count, 1, "role delete does not delete missions");
+    }
+
+    #[test]
+    fn delete_removes_sessions_and_attention_with_foreign_keys_off() {
+        use crate::test_support::{foreign_keys_off, row_count};
+        let pool = ctx();
+        let mut conn = pool.get().unwrap();
+        foreign_keys_off(&conn);
+        let doomed = make(&conn, "doomed");
+        let kept = make(&conn, "kept");
+        conn.execute_batch(
+            "INSERT INTO crews (id, name, created_at, updated_at)
+             VALUES ('crew-a', 'A', '2026-04-22T00:00:00Z', '2026-04-22T00:00:00Z');
+             INSERT INTO missions (id, crew_id, title, status, started_at)
+             VALUES ('mission-a', 'crew-a', 'Mission', 'running', '2026-04-22T00:00:00Z');",
+        )
+        .unwrap();
+        // The doomed role's slot was removed after the mission started, so
+        // its mission session outlives it and the role is in no crew.
+        for (id, role_id, mission_id) in [
+            ("doomed-mission", &doomed.id, Some("mission-a")),
+            ("doomed-archived", &doomed.id, None),
+            ("kept-chat", &kept.id, None),
+        ] {
+            let mut row =
+                crate::test_support::test_session_row(id, crate::model::SessionStatus::Stopped);
+            row.role_id = Some(role_id.clone());
+            row.mission_id = mission_id.map(Into::into);
+            row.slot_id = mission_id.map(|_| "removed-slot".into());
+            if id == "doomed-archived" {
+                row.archived_at = Some(chrono::Utc::now());
+            }
+            repo::session::insert(&conn, &row).unwrap();
+            repo::session_attention::record_completion(&conn, id, false, 100).unwrap();
+        }
+
+        delete(&mut conn, &doomed.id).unwrap();
+
+        assert_eq!(row_count(&conn, "SELECT COUNT(*) FROM roles"), 1);
+        assert_eq!(
+            row_count(
+                &conn,
+                "SELECT COUNT(*) FROM sessions WHERE id IN ('doomed-mission', 'doomed-archived')"
+            ),
+            0,
+            "the role's sessions go with it"
+        );
+        assert_eq!(
+            row_count(
+                &conn,
+                "SELECT COUNT(*) FROM session_attention WHERE session_id != 'kept-chat'"
+            ),
+            0,
+            "and their attention rows"
+        );
+        assert_eq!(
+            row_count(
+                &conn,
+                "SELECT COUNT(*) FROM session_attention WHERE session_id = 'kept-chat'"
+            ),
+            1
+        );
+        assert_eq!(row_count(&conn, "SELECT COUNT(*) FROM missions"), 1);
+    }
+
+    #[test]
+    fn delete_refuses_role_in_a_crew_and_changes_nothing() {
+        use crate::test_support::{insert_test_slot, row_count};
+        let pool = ctx();
+        let mut conn = pool.get().unwrap();
+        let r = make(&conn, "shared");
+        conn.execute_batch(
+            "INSERT INTO crews (id, name, created_at, updated_at)
+             VALUES ('crew-a', 'Alpha', '2026-04-22T00:00:00Z', '2026-04-22T00:00:00Z'),
+                    ('crew-b', 'Beta', '2026-04-22T00:00:00Z', '2026-04-22T00:00:00Z');",
+        )
+        .unwrap();
+        insert_test_slot(&conn, "a-lead", "crew-a", &r.id, "lead", 0, true);
+        insert_test_slot(&conn, "b-one", "crew-b", &r.id, "one", 0, true);
+        insert_test_slot(&conn, "b-two", "crew-b", &r.id, "two", 1, false);
+        let mut archived = crate::test_support::test_session_row(
+            "archived-chat",
+            crate::model::SessionStatus::Stopped,
+        );
+        archived.role_id = Some(r.id.clone());
+        archived.archived_at = Some(chrono::Utc::now());
+        repo::session::insert(&conn, &archived).unwrap();
+
+        let err = delete(&mut conn, &r.id).unwrap_err().to_string();
+
+        assert_eq!(
+            err,
+            "role @shared is used by crews; remove it from them before deleting this role: Alpha, Beta"
+        );
+        assert!(repo::role::get(&conn, &r.id).unwrap().is_some());
+        assert_eq!(row_count(&conn, "SELECT COUNT(*) FROM slots"), 3);
+        assert_eq!(
+            row_count(
+                &conn,
+                "SELECT COUNT(*) FROM sessions WHERE id = 'archived-chat'"
+            ),
+            1
+        );
     }
 
     #[test]

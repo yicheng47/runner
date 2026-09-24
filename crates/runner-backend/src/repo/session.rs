@@ -158,6 +158,14 @@ pub fn insert(conn: &Connection, row: &SessionRowDb) -> rusqlite::Result<()> {
     Ok(())
 }
 
+pub fn exists(conn: &Connection, id: &str) -> rusqlite::Result<bool> {
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sessions WHERE id = ?1)",
+        rusqlite::params![id],
+        |row| row.get(0),
+    )
+}
+
 pub fn get_row(conn: &Connection, id: &str) -> rusqlite::Result<Option<SessionRowDb>> {
     let sql = format!(
         "SELECT {} FROM sessions WHERE id = ?1",
@@ -184,15 +192,105 @@ pub fn effective_runtime(conn: &Connection, id: &str) -> rusqlite::Result<Option
     .map(Option::flatten)
 }
 
-pub fn delete(conn: &Connection, id: &str) -> rusqlite::Result<usize> {
-    conn.execute("DELETE FROM sessions WHERE id = ?1", rusqlite::params![id])
+pub fn delete_many(conn: &Connection, ids: &[String]) -> rusqlite::Result<usize> {
+    if ids.is_empty() {
+        return Ok(0);
+    }
+    let placeholders = vec!["?"; ids.len()].join(", ");
+    conn.execute(
+        &format!("DELETE FROM sessions WHERE id IN ({placeholders})"),
+        rusqlite::params_from_iter(ids),
+    )
 }
 
-pub fn delete_all_for_mission(conn: &Connection, mission_id: &str) -> rusqlite::Result<usize> {
+pub fn ids_for_missions(
+    conn: &Connection,
+    mission_ids: &[String],
+) -> rusqlite::Result<Vec<String>> {
+    if mission_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let placeholders = vec!["?"; mission_ids.len()].join(", ");
+    let mut stmt = conn.prepare(&format!(
+        "SELECT id FROM sessions WHERE mission_id IN ({placeholders})"
+    ))?;
+    let ids = stmt.query_map(rusqlite::params_from_iter(mission_ids), |row| row.get(0))?;
+    ids.collect()
+}
+
+pub fn ids_for_role(conn: &Connection, role_id: &str) -> rusqlite::Result<Vec<String>> {
+    let mut stmt = conn.prepare("SELECT id FROM sessions WHERE role_id = ?1")?;
+    let ids = stmt.query_map(rusqlite::params![role_id], |row| row.get(0))?;
+    ids.collect()
+}
+
+pub fn unbind_project(conn: &Connection, project_id: &str) -> rusqlite::Result<usize> {
     conn.execute(
-        "DELETE FROM sessions WHERE mission_id = ?1",
-        rusqlite::params![mission_id],
+        "UPDATE sessions SET project_id = NULL WHERE project_id = ?1",
+        rusqlite::params![project_id],
     )
+}
+
+/// The newest unarchived session a mission slot has had.
+pub fn latest_unarchived_id_for_slot(
+    conn: &Connection,
+    mission_id: &str,
+    slot_id: &str,
+) -> rusqlite::Result<Option<String>> {
+    conn.query_row(
+        "SELECT id FROM sessions
+          WHERE mission_id = ?1 AND slot_id = ?2 AND archived_at IS NULL
+          ORDER BY started_at DESC
+          LIMIT 1",
+        rusqlite::params![mission_id, slot_id],
+        |row| row.get(0),
+    )
+    .optional()
+}
+
+/// How many of a mission's unarchived sessions there are, and how many of
+/// them are running.
+pub fn unarchived_counts_for_mission(
+    conn: &Connection,
+    mission_id: &str,
+) -> rusqlite::Result<(usize, usize)> {
+    conn.query_row(
+        "SELECT COUNT(*),
+                COALESCE(SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END), 0)
+           FROM sessions
+          WHERE mission_id = ?1
+            AND archived_at IS NULL",
+        rusqlite::params![mission_id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )
+}
+
+/// An unarchived session's persisted lifecycle and attention stamps.
+pub struct StatusRow {
+    pub id: String,
+    pub status: String,
+    pub stopped_at: Option<String>,
+    pub unread_since: Option<i64>,
+    pub error_acknowledged_at: Option<String>,
+}
+
+pub fn status_rows(conn: &Connection) -> rusqlite::Result<Vec<StatusRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT s.id, s.status, s.stopped_at, a.unread_since, a.error_acknowledged_at
+           FROM sessions s
+           LEFT JOIN session_attention a ON a.session_id = s.id
+          WHERE s.archived_at IS NULL",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok(StatusRow {
+            id: row.get(0)?,
+            status: row.get(1)?,
+            stopped_at: row.get(2)?,
+            unread_since: row.get(3)?,
+            error_acknowledged_at: row.get(4)?,
+        })
+    })?;
+    rows.collect()
 }
 
 /// Persist the runtime-side identity after the PTY forks.
@@ -602,20 +700,6 @@ pub fn unarchive_direct(conn: &Connection, id: &str) -> rusqlite::Result<usize> 
     )
 }
 
-/// Hard-delete an archived direct chat (Settings → Archived delete).
-/// Scoped like `unarchive_direct`: mission/slot-bound rows are deleted
-/// through `mission_delete`'s cascade, never through this path.
-pub fn delete_archived_direct(conn: &Connection, id: &str) -> rusqlite::Result<usize> {
-    conn.execute(
-        "DELETE FROM sessions
-          WHERE id = ?1
-            AND mission_id IS NULL
-            AND slot_id IS NULL
-            AND archived_at IS NOT NULL",
-        rusqlite::params![id],
-    )
-}
-
 pub fn set_title(conn: &Connection, id: &str, title: Option<&str>) -> rusqlite::Result<usize> {
     conn.execute(
         "UPDATE sessions SET title = ?2 WHERE id = ?1",
@@ -899,6 +983,31 @@ pub fn list_orphan_process_candidates(
         })
     })?;
     rows.collect()
+}
+
+/// Clear the recorded pid of every session that is not running.
+pub fn clear_stale_pids(conn: &Connection) -> rusqlite::Result<usize> {
+    conn.execute(
+        "UPDATE sessions SET pid = NULL WHERE status != 'running' AND pid IS NOT NULL",
+        [],
+    )
+}
+
+/// Clear a session's recorded pid, only while it is still `expected_pid` and
+/// the session is not running.
+pub fn clear_recorded_pid(
+    conn: &Connection,
+    session_id: &str,
+    expected_pid: i64,
+) -> rusqlite::Result<usize> {
+    conn.execute(
+        "UPDATE sessions
+            SET pid = NULL
+          WHERE id = ?1
+            AND pid = ?2
+            AND status != 'running'",
+        rusqlite::params![session_id, expected_pid],
+    )
 }
 
 #[cfg(test)]

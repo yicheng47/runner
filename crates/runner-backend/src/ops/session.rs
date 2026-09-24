@@ -86,24 +86,13 @@ pub fn session_status_snapshot(
     use crate::session::status::{AgentStatus, Lifecycle};
     let mut statuses = state.sessions.status_snapshot();
     let conn = state.db.get()?;
-    let mut statement = conn.prepare("SELECT s.id, s.status, s.stopped_at, a.unread_since, a.error_acknowledged_at FROM sessions s LEFT JOIN session_attention a ON a.session_id = s.id WHERE s.archived_at IS NULL")?;
-    let rows = statement.query_map([], |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, String>(1)?,
-            row.get::<_, Option<String>>(2)?,
-            row.get::<_, Option<i64>>(3)?,
-            row.get::<_, Option<String>>(4)?,
-        ))
-    })?;
-    for row in rows {
-        let (id, lifecycle, stopped_at, unread, acknowledged) = row?;
-        let status = statuses.entry(id).or_insert(AgentStatus {
+    for row in repo::session::status_rows(&conn)? {
+        let status = statuses.entry(row.id).or_insert(AgentStatus {
             lifecycle: Lifecycle::Running,
             ..Default::default()
         });
-        status.unread_since = unread;
-        match lifecycle.as_str() {
+        status.unread_since = row.unread_since;
+        match row.status.as_str() {
             "stopped" => {
                 status.lifecycle = Lifecycle::Stopped;
                 status.error_since = None;
@@ -112,11 +101,13 @@ pub fn session_status_snapshot(
             "crashed" => {
                 status.lifecycle = Lifecycle::Error;
                 status.failed_since = None;
-                let stopped = stopped_at
+                let stopped = row
+                    .stopped_at
                     .as_deref()
                     .and_then(|time| chrono::DateTime::parse_from_rfc3339(time).ok())
                     .map(|time| time.timestamp_millis());
-                let acknowledged = acknowledged
+                let acknowledged = row
+                    .error_acknowledged_at
                     .as_deref()
                     .and_then(|time| chrono::DateTime::parse_from_rfc3339(time).ok())
                     .map(|time| time.timestamp_millis());
@@ -586,22 +577,33 @@ pub fn session_unarchive(state: &AppCore, session_id: &str) -> Result<()> {
 /// is the whole cleanup; the scrollback buffer was already purged at
 /// archive time.
 pub fn session_delete(state: &AppCore, session_id: &str) -> Result<()> {
-    let conn = state.db.get()?;
-    let deleted = repo::session::delete_archived_direct(&conn, session_id)?;
-    if deleted == 0 {
-        // Split not-found from the two refusals the scoped DELETE
-        // can't distinguish, mirroring `session_unarchive`.
-        return match repo::session::get_row(&conn, session_id)? {
-            None => Err(Error::msg(format!("session not found: {session_id}"))),
-            Some(row) if row.mission_id.is_some() || row.slot_id.is_some() => Err(Error::msg(
-                format!("session {session_id} is mission-scoped; only direct chats can be deleted"),
-            )),
-            Some(_) => Err(Error::msg(format!(
+    let mut conn = state.db.get()?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    match repo::session::get_row(&tx, session_id)? {
+        None => return Err(Error::msg(format!("session not found: {session_id}"))),
+        Some(row) if row.mission_id.is_some() || row.slot_id.is_some() => {
+            return Err(Error::msg(format!(
+                "session {session_id} is mission-scoped; only direct chats can be deleted"
+            )))
+        }
+        Some(row) if row.archived_at.is_none() => {
+            return Err(Error::msg(format!(
                 "session {session_id} is not archived; archive it before deleting"
-            ))),
-        };
+            )))
+        }
+        Some(_) => {}
     }
+    delete_rows(&tx, &[session_id.to_owned()])?;
+    tx.commit()?;
     Ok(())
+}
+
+/// Delete sessions and the rows keyed by them, one statement per table,
+/// inside the caller's transaction. Every path that removes a session comes
+/// through here, so none depends on the `session_attention` cascade (#619).
+pub(crate) fn delete_rows(tx: &rusqlite::Transaction<'_>, ids: &[String]) -> Result<usize> {
+    repo::session_attention::delete_for_sessions(tx, ids)?;
+    Ok(repo::session::delete_many(tx, ids)?)
 }
 
 fn close_shell_row(conn: &mut rusqlite::Connection, session_id: &str) -> Result<()> {
@@ -616,7 +618,7 @@ fn close_shell_row(conn: &mut rusqlite::Connection, session_id: &str) -> Result<
         None => return Err(Error::msg(format!("session not found: {session_id}"))),
     }
     repo::node::remove_session(&tx, session_id)?;
-    if repo::session::delete(&tx, session_id)? == 0 {
+    if delete_rows(&tx, &[session_id.to_owned()])? == 0 {
         return Err(Error::msg(format!("session not found: {session_id}")));
     }
     tx.commit()?;
@@ -1496,40 +1498,142 @@ mod tests {
     }
 
     #[test]
-    fn delete_archived_direct_only_deletes_archived_direct_rows() {
-        let pool = db::open_in_memory().unwrap();
-        let conn = pool.get().unwrap();
-        let role_id = seed_role(&conn);
-        let active = insert_direct_session(&conn, &role_id, false);
-        let archived = insert_direct_session(&conn, &role_id, true);
-        // Archived slot-bound row: must survive this path — it dies
-        // with its mission, not through chat delete.
-        let slot_bound = ulid::Ulid::new().to_string();
-        let mut row = crate::test_support::test_session_row(&slot_bound, SessionStatus::Stopped);
-        row.role_id = Some(role_id.clone());
-        row.slot_id = Some("slot-1".into());
-        row.archived_at = row.started_at;
-        repo::session::insert(&conn, &row).unwrap();
+    fn session_delete_only_deletes_archived_direct_rows() {
+        let state = crate::test_support::test_core();
+        let (active, archived, slot_bound) = {
+            let conn = state.db.get().unwrap();
+            let role_id = seed_role(&conn);
+            let active = insert_direct_session(&conn, &role_id, false);
+            let archived = insert_direct_session(&conn, &role_id, true);
+            // Archived slot-bound row: must survive this path — it dies
+            // with its mission, not through chat delete.
+            let slot_bound = ulid::Ulid::new().to_string();
+            let mut row =
+                crate::test_support::test_session_row(&slot_bound, SessionStatus::Stopped);
+            row.role_id = Some(role_id.clone());
+            row.slot_id = Some("slot-1".into());
+            row.archived_at = row.started_at;
+            repo::session::insert(&conn, &row).unwrap();
+            (active, archived, slot_bound)
+        };
 
-        assert_eq!(
-            repo::session::delete_archived_direct(&conn, &active).unwrap(),
-            0,
-            "active chats must be archived before deletion"
+        let refused = session_delete(&state, &active).unwrap_err().to_string();
+        assert!(
+            refused.contains("not archived"),
+            "active chats must be archived before deletion: {refused}"
         );
-        assert_eq!(
-            repo::session::delete_archived_direct(&conn, &slot_bound).unwrap(),
-            0,
-            "slot-bound rows must not be deletable as chats"
+        let refused = session_delete(&state, &slot_bound).unwrap_err().to_string();
+        assert!(
+            refused.contains("mission-scoped"),
+            "slot-bound rows must not be deletable as chats: {refused}"
         );
-        assert_eq!(
-            repo::session::delete_archived_direct(&conn, &archived).unwrap(),
-            1
-        );
+        session_delete(&state, &archived).unwrap();
 
+        let conn = state.db.get().unwrap();
         let remaining: i64 = conn
             .query_row("SELECT COUNT(*) FROM sessions", [], |r| r.get(0))
             .unwrap();
         assert_eq!(remaining, 2, "only the archived direct row is gone");
+    }
+
+    #[test]
+    fn session_delete_removes_attention_with_foreign_keys_off() {
+        use crate::test_support::{foreign_keys_off, row_count};
+        let state = crate::test_support::test_core();
+        {
+            let conn = state.db.get().unwrap();
+            foreign_keys_off(&conn);
+            conn.execute_batch(
+                "INSERT INTO sessions (id, status, archived_at)
+                 VALUES ('archived', 'stopped', '2026-07-01T00:00:00Z'),
+                        ('active', 'stopped', NULL);",
+            )
+            .unwrap();
+            for id in ["archived", "active"] {
+                repo::session_attention::record_completion(&conn, id, false, 100).unwrap();
+            }
+        }
+
+        let refused = session_delete(&state, "active").unwrap_err().to_string();
+        assert!(refused.contains("not archived"), "{refused}");
+        session_delete(&state, "archived").unwrap();
+
+        let conn = state.db.get().unwrap();
+        assert_eq!(
+            row_count(&conn, "SELECT foreign_keys FROM pragma_foreign_keys"),
+            0
+        );
+        let left: Vec<(String, i64)> = conn
+            .prepare(
+                "SELECT s.id, (SELECT COUNT(*) FROM session_attention a WHERE a.session_id = s.id)
+                   FROM sessions s",
+            )
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(left, [("active".to_string(), 1)]);
+        assert_eq!(
+            row_count(&conn, "SELECT COUNT(*) FROM session_attention"),
+            1
+        );
+    }
+
+    #[test]
+    fn session_close_removes_attention_and_tab_with_foreign_keys_off() {
+        use crate::test_support::{foreign_keys_off, row_count};
+        let state = crate::test_support::test_core();
+        {
+            let conn = state.db.get().unwrap();
+            foreign_keys_off(&conn);
+            conn.execute_batch(
+                "INSERT INTO sessions (id, status, agent_runtime, agent_command)
+                 VALUES ('terminal', 'stopped', 'shell', '/bin/zsh'),
+                        ('other', 'stopped', 'shell', '/bin/zsh');",
+            )
+            .unwrap();
+            for id in ["terminal", "other"] {
+                repo::session_attention::record_completion(&conn, id, false, 100).unwrap();
+                repo::node::create_tab(
+                    &conn,
+                    None,
+                    "",
+                    repo::node::next_position(&conn, None).unwrap(),
+                    &format!(r#"{{"preset":"single","slots":["{id}"],"sizes":{{}}}}"#),
+                )
+                .unwrap();
+            }
+        }
+
+        session_close(&state, "terminal").unwrap();
+
+        let conn = state.db.get().unwrap();
+        assert_eq!(
+            row_count(&conn, "SELECT foreign_keys FROM pragma_foreign_keys"),
+            0
+        );
+        assert_eq!(
+            row_count(&conn, "SELECT COUNT(*) FROM sessions WHERE id = 'terminal'"),
+            0
+        );
+        assert_eq!(
+            row_count(
+                &conn,
+                "SELECT COUNT(*) FROM session_attention WHERE session_id = 'terminal'"
+            ),
+            0
+        );
+        assert_eq!(
+            row_count(&conn, "SELECT COUNT(*) FROM session_attention"),
+            1
+        );
+        let tabs: Vec<Vec<String>> = repo::node::list(&conn)
+            .unwrap()
+            .iter()
+            .map(repo::node::session_ids)
+            .collect();
+        assert_eq!(tabs, [vec!["other".to_string()]]);
     }
 
     #[test]

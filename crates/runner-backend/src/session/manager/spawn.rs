@@ -321,7 +321,15 @@ fn delete_failed_fork(pool: &DbPool, session_id: &str) -> Result<()> {
     let mut conn = pool.get()?;
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     crate::repo::node::remove_session(&tx, session_id)?;
-    crate::repo::session::delete(&tx, session_id)?;
+    crate::ops::session::delete_rows(&tx, &[session_id.to_owned()])?;
+    tx.commit()?;
+    Ok(())
+}
+
+fn delete_session_row(pool: &DbPool, session_id: &str) -> Result<()> {
+    let mut conn = pool.get()?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    crate::ops::session::delete_rows(&tx, &[session_id.to_owned()])?;
     tx.commit()?;
     Ok(())
 }
@@ -1022,8 +1030,8 @@ impl SessionManager {
         // were asleep in the gate. The wake-up still races with the
         // cancel — flagging it here means we observe it before the
         // expensive `runtime.spawn`. Also covers the case where
-        // `role_delete` cascade-removed the row through the FK on
-        // `sessions.role_id` — surfaces the same way (we have no
+        // `role_delete` removed the row along with the role's other
+        // sessions — surfaces the same way (we have no
         // row to attach a PTY to).
         if cancel.load(Ordering::Acquire) || !Self::session_row_exists(&pool, &session_id) {
             log::info!(
@@ -1071,7 +1079,7 @@ impl SessionManager {
         //      runtime was mid-fork — `kill_all_for_mission` can't
         //      see the PTY yet (no `SessionHandle` in `sessions`
         //      until the insert below). Flagged by `cancel`.
-        //   2. A `role_delete` whose FK cascade dropped the row
+        //   2. A `role_delete` that removed the row
         //      while runtime was mid-fork. Flagged by the row check.
         // Either way the PTY exists with no DB anchor; tear it down
         // before any further bookkeeping. The dropped output stream
@@ -1318,9 +1326,7 @@ impl SessionManager {
             // can't bring the PTY up, delete the half-row so retries
             // start from a clean slate. The async mission_start path
             // takes a softer line and marks the row crashed instead.
-            if let Ok(conn) = pool.get() {
-                let _ = crate::repo::session::delete(&conn, &session_id);
-            }
+            let _ = delete_session_row(&pool, &session_id);
             return Err(e);
         }
         Ok(SpawnedSession {
@@ -1565,8 +1571,8 @@ impl SessionManager {
         // `enter_claude_launch_gate` + issue #171.
         self.enter_claude_launch_gate(&session_id, Runtime::parse(&role.runtime));
 
-        // Post-gate row check: `role_delete` can cascade through
-        // `sessions.role_id` while we were asleep in the gate. The
+        // Post-gate row check: `role_delete` can remove the role's
+        // sessions while we were asleep in the gate. The
         // session row is gone; spawning a PTY now would attach to
         // nothing.
         if !Self::session_row_exists(&pool, &session_id) {
@@ -1588,9 +1594,7 @@ impl SessionManager {
         let (rt_session, output) = match self.runtime.spawn(spec) {
             Ok(p) => p,
             Err(e) => {
-                if let Ok(conn) = pool.get() {
-                    let _ = crate::repo::session::delete(&conn, &session_id);
-                }
+                let _ = delete_session_row(&pool, &session_id);
                 crate::session::system_prompt::remove(app_data_dir, &session_id);
                 return Err(Error::msg(format!("spawn {}: {e}", role.command)));
             }
@@ -2374,24 +2378,17 @@ impl SessionManager {
                     {
                         return Err(Error::msg("mission is not running"));
                     }
-                    let (slot_handle, lead): (String, i64) = conn
-                        .query_row(
-                            "SELECT slot_handle, lead FROM slots WHERE id = ?1",
-                            params![sid],
-                            |r| Ok((r.get(0)?, r.get(1)?)),
-                        )
-                        .map_err(|e| match e {
-                            rusqlite::Error::QueryReturnedNoRows => Error::msg(format!(
-                                "slot {sid} referenced by session {session_id} no longer exists"
-                            )),
-                            other => other.into(),
-                        })?;
+                    let slot = crate::repo::slot::get(&conn, sid)?.ok_or_else(|| {
+                        Error::msg(format!(
+                            "slot {sid} referenced by session {session_id} no longer exists"
+                        ))
+                    })?;
                     Some(MissionCtx {
                         crew_id: mission.crew_id,
                         mission_id: mission.id,
                         mission_cwd: mission.cwd,
-                        slot_handle,
-                        lead: lead != 0,
+                        slot_handle: slot.slot_handle,
+                        lead: slot.lead,
                     })
                 }
                 _ => None,
@@ -2883,8 +2880,8 @@ impl SessionManager {
 
     /// True iff the `sessions` row for `session_id` is still in the
     /// DB. False if the row was deleted out from under an in-flight
-    /// spawn — most commonly `role_delete` triggering the foreign
-    /// key cascade on `sessions.role_id`, but also covers manual
+    /// spawn — most commonly `role_delete` removing the role's
+    /// sessions, but also covers manual
     /// DB cleanup or any other path that drops the row while a
     /// gated spawn was asleep. Returns false on pool errors so the
     /// caller treats "can't tell" the same as "deleted" and bails
@@ -2892,12 +2889,7 @@ impl SessionManager {
     /// is preferable to leaving an orphan PTY attached to no row.
     fn session_row_exists(pool: &DbPool, session_id: &str) -> bool {
         let Ok(conn) = pool.get() else { return false };
-        let count: rusqlite::Result<i64> = conn.query_row(
-            "SELECT COUNT(*) FROM sessions WHERE id = ?1",
-            params![session_id],
-            |r| r.get(0),
-        );
-        count.map(|n| n > 0).unwrap_or(false)
+        crate::repo::session::exists(&conn, session_id).unwrap_or(false)
     }
 
     /// The row's persisted last size: the hint from registration until a

@@ -28,6 +28,17 @@ pub fn mark_viewed(conn: &Connection, session_id: &str, now: &str) -> rusqlite::
     Ok(())
 }
 
+pub fn delete_for_sessions(conn: &Connection, session_ids: &[String]) -> rusqlite::Result<usize> {
+    if session_ids.is_empty() {
+        return Ok(0);
+    }
+    let placeholders = vec!["?"; session_ids.len()].join(", ");
+    conn.execute(
+        &format!("DELETE FROM session_attention WHERE session_id IN ({placeholders})"),
+        rusqlite::params_from_iter(session_ids),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

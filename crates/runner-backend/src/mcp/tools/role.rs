@@ -111,7 +111,9 @@ impl RunnerMcpHandler {
         Ok(CallToolResult::success(vec![Content::json(&role)?]))
     }
 
-    #[tool(description = "Delete a crew role by ID. Live sessions for that role are killed first.")]
+    #[tool(
+        description = "Delete a crew role by ID. Refused while any crew uses the role or it has unarchived chats. Live sessions for that role are killed first."
+    )]
     pub async fn role_delete(
         &self,
         Parameters(RoleIdArgs { id }): Parameters<RoleIdArgs>,
@@ -135,7 +137,6 @@ impl RunnerMcpHandler {
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
         role::delete(&mut conn, &id).map_err(command_error)?;
         self.state.events.emit("role/changed", &());
-        self.state.events.emit("slot/changed", &());
         Ok(CallToolResult::success(vec![Content::json(
             serde_json::json!({ "deleted": true, "id": id }),
         )?]))

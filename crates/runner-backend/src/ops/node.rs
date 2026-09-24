@@ -4,6 +4,7 @@
 use crate::model::Runtime;
 use chrono::Utc;
 use serde::Deserialize;
+use std::collections::HashSet;
 
 use crate::db::DbPool;
 use crate::error::{Error, Result};
@@ -136,10 +137,7 @@ pub fn node_mission_layout_set(state: &AppCore, node_id: &str, layout: String) -
         repo::node::remove_session_except(&tx, &session_id, Some(node_id))?;
     }
     repo::node::write_layout_project(&tx, &layout, project_id.as_deref())?;
-    tx.execute(
-        "UPDATE nodes SET layout = ?2 WHERE id = ?1",
-        rusqlite::params![node_id, layout],
-    )?;
+    repo::node::set_layout(&tx, node_id, &layout)?;
     let row = repo::node::get(&tx, node_id)?.ok_or_else(|| Error::msg("node disappeared"))?;
     tx.commit()?;
     emit_layout_changed(state);
@@ -337,11 +335,7 @@ pub(crate) fn archive_mission_step(
     if mission.status == crate::model::MissionStatus::Running {
         return Ok(MissionArchiveStep::NeedsFullArchive); // tx drops unwritten
     }
-    tx.execute(
-        "UPDATE missions SET archived_at = ?2
-         WHERE id = ?1 AND archived_at IS NULL AND status != 'running'",
-        rusqlite::params![mission_id, Utc::now().to_rfc3339()],
-    )?;
+    repo::mission::archive_if_stopped(&tx, mission_id, Utc::now())?;
     repo::node::delete_mission_node(&tx, mission_id)?;
     tx.commit()?;
     Ok(MissionArchiveStep::Done)
@@ -424,6 +418,37 @@ pub(crate) fn kill_running_children(state: &AppCore, session_ids: &[String]) -> 
         )));
     }
     Ok(())
+}
+
+/// Delete a project's member tabs after archiving their chats and deleting
+/// their terminals. The project node itself deletes afterwards (a node with
+/// children cannot be deleted). Returns the archived chat ids followed by the
+/// deleted terminal ids.
+pub(crate) fn delete_container_tabs_and_archive(
+    tx: &rusqlite::Transaction<'_>,
+    container_id: &str,
+) -> Result<(Vec<String>, Vec<String>)> {
+    repo::node::check_container_tabs_removable(tx, container_id)?;
+    let rows = repo::node::container_tabs(tx, container_id)?;
+    let session_ids: HashSet<String> = rows.iter().flat_map(repo::node::session_ids).collect();
+    let archived_at = Utc::now();
+    let mut archived_ids = Vec::new();
+    let mut deleted_ids = Vec::new();
+    for id in &session_ids {
+        let shell =
+            repo::session::effective_runtime(tx, id)?.as_deref() == Some(Runtime::Shell.key());
+        if shell {
+            deleted_ids.push(id.clone());
+        } else {
+            repo::session::archive(tx, id, archived_at)?;
+            archived_ids.push(id.clone());
+        }
+    }
+    super::session::delete_rows(tx, &deleted_ids)?;
+    for row in &rows {
+        repo::node::delete(tx, &row.id)?;
+    }
+    Ok((archived_ids, deleted_ids))
 }
 
 /// Body of the `node_mark_viewed` command. The window label comes from
@@ -968,6 +993,415 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM nodes", [], |row| row.get(0))
             .unwrap();
         assert_eq!(remaining, 0, "project, tab, and mission nodes all gone");
+    }
+
+    fn insert_chat(conn: &rusqlite::Connection, id: &str) {
+        conn.execute(
+            "INSERT INTO sessions (id, status) VALUES (?1, 'stopped')",
+            [id],
+        )
+        .unwrap();
+    }
+
+    fn insert_mission(conn: &rusqlite::Connection, id: &str, project_id: &str) {
+        conn.execute(
+            "INSERT OR IGNORE INTO crews (id, name, created_at, updated_at)
+             VALUES ('c1', 'Crew', '2026-07-01T00:00:00Z', '2026-07-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO missions (id, crew_id, title, status, started_at, project_id)
+             VALUES (?1, 'c1', 'M', 'running', '2026-07-01T00:00:00Z', ?2)",
+            rusqlite::params![id, project_id],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn project_tab_delete_includes_drawer_shells() {
+        let pool = crate::db::open_in_memory().unwrap();
+        let mut conn = pool.get().unwrap();
+        insert_chat(&conn, "chat");
+        conn.execute(
+            "INSERT INTO sessions (id, status, agent_runtime, agent_command)
+             VALUES ('drawer-terminal', 'stopped', 'shell', '/bin/zsh')",
+            [],
+        )
+        .unwrap();
+        let project = repo::project::create(&conn, "Project", "/tmp/project").unwrap();
+        let project_node = repo::node::ensure_project_node(&conn, &project.id).unwrap();
+        repo::node::create_tab(
+            &conn,
+            Some(&project_node.id),
+            "",
+            0,
+            r#"{"preset":"single","slots":["chat"],"sizes":{},"drawer":{"open":true,"height":280,"shells":["drawer-terminal"],"active":0}}"#,
+        )
+        .unwrap();
+
+        let tx = conn.transaction().unwrap();
+        let (archived_ids, deleted_ids) =
+            delete_container_tabs_and_archive(&tx, &project_node.id).unwrap();
+        tx.commit().unwrap();
+
+        assert_eq!(archived_ids, ["chat"]);
+        assert_eq!(deleted_ids, ["drawer-terminal"]);
+    }
+
+    #[test]
+    fn project_tab_delete_archives_chats_and_deletes_terminals() {
+        let pool = crate::db::open_in_memory().unwrap();
+        let mut conn = pool.get().unwrap();
+        insert_chat(&conn, "chat");
+        conn.execute(
+            "INSERT INTO sessions (id, status, agent_runtime, agent_command)
+             VALUES ('terminal', 'stopped', 'shell', '/bin/zsh')",
+            [],
+        )
+        .unwrap();
+        let project = repo::project::create(&conn, "Project", "/tmp/project").unwrap();
+        let project_node = repo::node::ensure_project_node(&conn, &project.id).unwrap();
+        repo::node::create_tab(
+            &conn,
+            Some(&project_node.id),
+            "",
+            0,
+            r#"{"preset":"cols-2","slots":["chat","terminal"],"sizes":{}}"#,
+        )
+        .unwrap();
+        assert!(conn
+            .execute("DELETE FROM nodes WHERE id = ?1", [&project_node.id])
+            .is_err());
+
+        let tx = conn.transaction().unwrap();
+        let (archived_ids, deleted_ids) =
+            delete_container_tabs_and_archive(&tx, &project_node.id).unwrap();
+        assert_eq!(archived_ids, ["chat"]);
+        assert_eq!(deleted_ids, ["terminal"]);
+        repo::node::delete(&tx, &project_node.id).unwrap();
+        tx.commit().unwrap();
+
+        let archived: Option<String> = conn
+            .query_row(
+                "SELECT archived_at FROM sessions WHERE id = 'chat'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(archived.is_some());
+        assert!(repo::session::get_row(&conn, "terminal").unwrap().is_none());
+        assert!(repo::node::get(&conn, &project_node.id).unwrap().is_none());
+        assert!(repo::node::list(&conn).unwrap().is_empty());
+    }
+
+    #[test]
+    fn project_tab_delete_removes_terminal_attention_with_foreign_keys_off() {
+        use crate::test_support::{foreign_keys_off, row_count};
+        let pool = crate::db::open_in_memory().unwrap();
+        let mut conn = pool.get().unwrap();
+        foreign_keys_off(&conn);
+        insert_chat(&conn, "chat");
+        conn.execute(
+            "INSERT INTO sessions (id, status, agent_runtime, agent_command)
+             VALUES ('terminal', 'stopped', 'shell', '/bin/zsh'),
+                    ('elsewhere', 'stopped', 'shell', '/bin/zsh')",
+            [],
+        )
+        .unwrap();
+        for id in ["chat", "terminal", "elsewhere"] {
+            repo::session_attention::record_completion(&conn, id, false, 100).unwrap();
+        }
+        let project = repo::project::create(&conn, "Project", "/tmp/project").unwrap();
+        let project_node = repo::node::ensure_project_node(&conn, &project.id).unwrap();
+        repo::node::create_tab(
+            &conn,
+            Some(&project_node.id),
+            "",
+            0,
+            r#"{"preset":"cols-2","slots":["chat","terminal"],"sizes":{}}"#,
+        )
+        .unwrap();
+        let other_tab = repo::node::create_tab(
+            &conn,
+            None,
+            "",
+            1,
+            r#"{"preset":"single","slots":["elsewhere"],"sizes":{}}"#,
+        )
+        .unwrap();
+
+        let tx = conn.transaction().unwrap();
+        delete_container_tabs_and_archive(&tx, &project_node.id).unwrap();
+        tx.commit().unwrap();
+
+        assert!(repo::session::get_row(&conn, "terminal").unwrap().is_none());
+        let attention: Vec<String> = conn
+            .prepare("SELECT session_id FROM session_attention ORDER BY session_id")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            attention,
+            ["chat", "elsewhere"],
+            "the closed terminal's attention row goes; the archived chat keeps its own"
+        );
+        let nodes: Vec<String> = repo::node::list(&conn)
+            .unwrap()
+            .into_iter()
+            .map(|n| n.id)
+            .collect();
+        assert_eq!(nodes, [project_node.id.clone(), other_tab.id]);
+        assert_eq!(
+            row_count(&conn, "SELECT COUNT(*) FROM nodes WHERE type = 'tab'"),
+            1
+        );
+    }
+
+    #[test]
+    fn container_delete_is_blocked_by_remaining_children() {
+        let pool = crate::db::open_in_memory().unwrap();
+        let mut conn = pool.get().unwrap();
+        let project = repo::project::create(&conn, "A", "/tmp/a").unwrap();
+        let project_node = repo::node::ensure_project_node(&conn, &project.id).unwrap();
+        insert_mission(&conn, "m1", &project.id);
+        let mission_node = repo::node::ensure_mission_node(&conn, "m1", Some(&project.id)).unwrap();
+
+        let tx = conn.transaction().unwrap();
+        let (archived, deleted) = delete_container_tabs_and_archive(&tx, &project_node.id).unwrap();
+        assert!(archived.is_empty());
+        assert!(deleted.is_empty());
+        assert!(
+            repo::node::delete(&tx, &project_node.id).is_err(),
+            "RESTRICT must block the project-node delete while a child remains"
+        );
+        drop(tx); // rollback
+
+        assert!(repo::node::get(&conn, &project_node.id).unwrap().is_some());
+        assert_eq!(
+            repo::node::get(&conn, &mission_node.id)
+                .unwrap()
+                .unwrap()
+                .parent_id
+                .as_deref(),
+            Some(project_node.id.as_str())
+        );
+    }
+
+    fn seed_project_members(state: &AppCore, name: &str) -> repo::project::ProjectRow {
+        let project = {
+            let conn = state.db.get().unwrap();
+            repo::project::create(&conn, name, &format!("/tmp/{name}")).unwrap()
+        };
+        seed_mission(state, &format!("{name}-mission"), Some(&project.id));
+        let conn = state.db.get().unwrap();
+        let (chat, terminal) = (format!("{name}-chat"), format!("{name}-terminal"));
+        conn.execute(
+            "INSERT INTO sessions (id, status, project_id) VALUES (?1, 'stopped', ?2)",
+            rusqlite::params![chat, project.id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO sessions (id, status, agent_runtime, agent_command, project_id)
+             VALUES (?1, 'stopped', 'shell', '/bin/zsh', ?2)",
+            rusqlite::params![terminal, project.id],
+        )
+        .unwrap();
+        for id in [&chat, &terminal] {
+            repo::session_attention::record_completion(&conn, id, false, 100).unwrap();
+        }
+        let project_node = repo::node::ensure_project_node(&conn, &project.id).unwrap();
+        repo::node::create_tab(
+            &conn,
+            Some(&project_node.id),
+            "",
+            0,
+            &format!(r#"{{"preset":"cols-2","slots":["{chat}","{terminal}"],"sizes":{{}}}}"#),
+        )
+        .unwrap();
+        repo::node::ensure_mission_node(&conn, &format!("{name}-mission"), Some(&project.id))
+            .unwrap();
+        project
+    }
+
+    #[test]
+    fn project_delete_unbinds_members_with_foreign_keys_off() {
+        use crate::test_support::{foreign_keys_off, row_count};
+        let state = test_core();
+        foreign_keys_off(&state.db.get().unwrap());
+        let doomed = seed_project_members(&state, "doomed");
+        let kept = seed_project_members(&state, "kept");
+
+        block_on(crate::ops::project::project_delete_impl(&state, &doomed.id)).unwrap();
+
+        let conn = state.db.get().unwrap();
+        assert_eq!(
+            row_count(&conn, "SELECT foreign_keys FROM pragma_foreign_keys"),
+            0
+        );
+        assert!(repo::project::get(&conn, &doomed.id).unwrap().is_none());
+        let project_of = |table: &str, id: &str| -> Option<String> {
+            conn.query_row(
+                &format!("SELECT project_id FROM {table} WHERE id = ?1"),
+                [id],
+                |row| row.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(project_of("sessions", "doomed-chat"), None);
+        assert_eq!(project_of("missions", "doomed-mission"), None);
+        assert_eq!(project_of("sessions", "kept-chat"), Some(kept.id.clone()));
+        assert_eq!(
+            project_of("sessions", "kept-terminal"),
+            Some(kept.id.clone())
+        );
+        assert_eq!(
+            project_of("missions", "kept-mission"),
+            Some(kept.id.clone())
+        );
+        assert_eq!(
+            row_count(
+                &conn,
+                "SELECT COUNT(*) FROM sessions WHERE id = 'doomed-terminal'"
+            ),
+            0,
+            "the project's terminal is closed"
+        );
+        assert_eq!(
+            row_count(
+                &conn,
+                "SELECT COUNT(*) FROM session_attention WHERE session_id = 'doomed-terminal'"
+            ),
+            0,
+            "with its attention row"
+        );
+        assert_eq!(
+            row_count(&conn, "SELECT COUNT(*) FROM session_attention"),
+            3
+        );
+        let nodes: Vec<(String, Option<String>)> = conn
+            .prepare("SELECT type, parent_id FROM nodes ORDER BY type")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            nodes.len(),
+            3,
+            "only the kept project's nodes remain: {nodes:?}"
+        );
+        assert!(nodes
+            .iter()
+            .all(|(kind, parent)| kind == "project" || parent.is_some()));
+    }
+
+    /// Seeds a project whose delete will meet a late child: a mission node
+    /// the pre-transaction archive sweep cannot see (its mission row is not
+    /// there to archive), standing in for one another window moved in
+    /// during the gap. `extra_tab` adds a tab holding those session ids.
+    fn seed_project_with_late_child(state: &AppCore, extra_tab: &[&str]) -> String {
+        let project = seed_project_members(state, "doomed");
+        let conn = state.db.get().unwrap();
+        let project_node = repo::node::find_by_ref(&conn, NodeType::Project, &project.id)
+            .unwrap()
+            .unwrap();
+        conn.execute(
+            "INSERT INTO nodes (id, parent_id, position, type, ref_id, created_at)
+             VALUES ('late', ?1, 9, 'mission', 'ghost', '2026-07-01T00:00:00Z')",
+            [&project_node.id],
+        )
+        .unwrap();
+        if !extra_tab.is_empty() {
+            let layout = serde_json::json!({ "preset": "single", "slots": extra_tab, "sizes": {} });
+            repo::node::create_tab(&conn, Some(&project_node.id), "", 1, &layout.to_string())
+                .unwrap();
+        }
+        project.id
+    }
+
+    /// Nothing the refused transaction owns changed. The member mission's
+    /// archive commits on its own before the transaction, by design.
+    fn assert_project_delete_wrote_nothing(state: &AppCore, project_id: &str, node_types: &[&str]) {
+        use crate::test_support::row_count;
+        let conn = state.db.get().unwrap();
+        assert_eq!(
+            row_count(&conn, "SELECT foreign_keys FROM pragma_foreign_keys"),
+            0
+        );
+        assert!(repo::project::get(&conn, project_id).unwrap().is_some());
+        let found: Vec<String> = conn
+            .prepare("SELECT type FROM nodes ORDER BY type")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(found, node_types);
+        assert_eq!(
+            row_count(
+                &conn,
+                "SELECT COUNT(*) FROM sessions
+                  WHERE id IN ('doomed-chat', 'doomed-terminal')
+                    AND archived_at IS NULL AND project_id IS NOT NULL"
+            ),
+            2,
+            "the chat is not archived, the terminal not closed, neither unbound"
+        );
+        assert_eq!(
+            row_count(&conn, "SELECT COUNT(*) FROM session_attention"),
+            2
+        );
+        assert_eq!(
+            row_count(
+                &conn,
+                "SELECT COUNT(*) FROM missions WHERE project_id IS NOT NULL"
+            ),
+            1
+        );
+    }
+
+    #[test]
+    fn project_delete_refuses_a_late_child_and_writes_nothing_with_foreign_keys_off() {
+        let state = test_core();
+        crate::test_support::foreign_keys_off(&state.db.get().unwrap());
+        let project_id = seed_project_with_late_child(&state, &[]);
+
+        let error = block_on(crate::ops::project::project_delete_impl(
+            &state,
+            &project_id,
+        ))
+        .unwrap_err()
+        .to_string();
+
+        assert_eq!(error, "sqlite: FOREIGN KEY constraint failed");
+        assert_project_delete_wrote_nothing(&state, &project_id, &["mission", "project", "tab"]);
+    }
+
+    #[test]
+    fn project_delete_reports_an_unremovable_tab_session_before_a_late_child() {
+        let state = test_core();
+        crate::test_support::foreign_keys_off(&state.db.get().unwrap());
+        let project_id = seed_project_with_late_child(&state, &["gone"]);
+
+        let error = block_on(crate::ops::project::project_delete_impl(
+            &state,
+            &project_id,
+        ))
+        .unwrap_err()
+        .to_string();
+
+        assert!(
+            error.contains("session gone is missing or still running"),
+            "{error}"
+        );
+        assert_project_delete_wrote_nothing(
+            &state,
+            &project_id,
+            &["mission", "project", "tab", "tab"],
+        );
     }
 
     #[test]

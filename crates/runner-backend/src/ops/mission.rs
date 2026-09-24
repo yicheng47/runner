@@ -16,7 +16,7 @@ use std::path::Path;
 use chrono::Utc;
 use runner_core::event_log::{self, EventLog};
 use runner_core::model::{EventDraft, EventKind, KnownSignalType, SignalType};
-use rusqlite::{params, Connection};
+use rusqlite::Connection;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ulid::Ulid as UlidGen;
@@ -840,9 +840,8 @@ pub async fn mission_start_impl_with_size(
                 // mark the mission aborted, surface the original
                 // error. Bus and router aren't mounted yet so no
                 // event-side cleanup.
-                if let Ok(conn) = state.db.get() {
-                    let _ = repo::session::delete_all_for_mission(&conn, &out.mission.id);
-                    let _ = repo::mission::abort(&conn, &out.mission.id, Utc::now());
+                if let Ok(mut conn) = state.db.get() {
+                    let _ = abort_start(&mut conn, &out.mission.id);
                 }
                 for (_, session_id) in &spawned_pairs {
                     crate::session::system_prompt::remove(&state.app_data_dir, session_id);
@@ -879,9 +878,8 @@ pub async fn mission_start_impl_with_size(
         // any held resources without ever firing
         // `complete_mission_session_spawn`.
         drop(pendings);
-        if let Ok(conn) = state.db.get() {
-            let _ = repo::session::delete_all_for_mission(&conn, &out.mission.id);
-            let _ = repo::mission::abort(&conn, &out.mission.id, Utc::now());
+        if let Ok(mut conn) = state.db.get() {
+            let _ = abort_start(&mut conn, &out.mission.id);
         }
         for (_, session_id) in &spawned_pairs {
             crate::session::system_prompt::remove(&state.app_data_dir, session_id);
@@ -1072,16 +1070,10 @@ pub(crate) async fn ensure_mission_router_mounted(state: &AppCore, mission_id: &
         let conn = state.db.get()?;
         let mut out = Vec::with_capacity(roster.len());
         for member in &roster {
-            let session_id: Option<String> = conn
-                .query_row(
-                    "SELECT id FROM sessions
-                       WHERE mission_id = ?1 AND slot_id = ?2 AND archived_at IS NULL
-                       ORDER BY started_at DESC
-                       LIMIT 1",
-                    rusqlite::params![mission.id, member.slot.id],
-                    |r| r.get(0),
-                )
-                .ok();
+            let session_id =
+                repo::session::latest_unarchived_id_for_slot(&conn, &mission.id, &member.slot.id)
+                    .ok()
+                    .flatten();
             if let Some(sid) = session_id {
                 out.push((member.slot.slot_handle.clone(), sid));
             }
@@ -1138,7 +1130,7 @@ pub(crate) async fn ensure_mission_router_mounted(state: &AppCore, mission_id: &
 /// missing crew row, etc.), it gets logged and the loop continues.
 pub async fn mount_all_running_mission_routers(state: &AppCore) {
     let mission_ids = match state.db.get() {
-        Ok(conn) => list_running_mission_ids(&conn).unwrap_or_else(|e| {
+        Ok(conn) => repo::mission::running_ids(&conn).unwrap_or_else(|e| {
             log::error!("mount_all_running_mission_routers query failed: {e}");
             Vec::new()
         }),
@@ -1159,21 +1151,6 @@ pub async fn mount_all_running_mission_routers(state: &AppCore) {
             }
         }
     }
-}
-
-/// Return the ids of every mission that's currently `running` and not
-/// archived. Factored out of `mount_all_running_mission_routers` so the
-/// filter logic is unit-testable without an `AppHandle`.
-fn list_running_mission_ids(conn: &Connection) -> rusqlite::Result<Vec<String>> {
-    let mut stmt = conn.prepare(
-        "SELECT id FROM missions
-           WHERE status = 'running' AND archived_at IS NULL
-           ORDER BY started_at ASC",
-    )?;
-    let ids = stmt
-        .query_map([], |r| r.get::<_, String>(0))?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    Ok(ids)
 }
 
 /// Pause a mission by killing every live PTY but leaving the mission
@@ -1336,10 +1313,9 @@ pub async fn mission_unarchive(state: &AppCore, id: String) -> Result<Mission> {
     Ok(mission)
 }
 
-/// Permanent delete of an archived mission: session rows first
-/// (`sessions.mission_id` is `ON DELETE SET NULL` — deleting the
-/// mission row alone would orphan them into the direct-chat lists),
-/// then the mission row, one transaction — then its on-disk footprint:
+/// Permanent delete of an archived mission: its session rows (with their
+/// attention rows) and the mission row in one transaction — then its
+/// on-disk footprint:
 /// the mission dir (NDJSON log + roster sidecar) and the
 /// `missions/<id>` scratch dir (per-slot runner shims,
 /// cli_install::install_session_runner_shim). Refused for non-archived
@@ -1360,8 +1336,7 @@ pub(crate) fn delete_archived(
             "mission {id} is not archived; archive it before deleting"
         )));
     }
-    repo::session::delete_all_for_mission(&tx, id)?;
-    repo::mission::delete_archived(&tx, id)?;
+    delete_rows(&tx, &[id.to_owned()])?;
     tx.commit()?;
     let mission_dir = event_log::mission_dir(app_data_dir, &mission.crew_id, id);
     let scratch_dir = app_data_dir.join("missions").join(id);
@@ -1376,6 +1351,25 @@ pub(crate) fn delete_archived(
         }
     }
     Ok(mission)
+}
+
+/// Delete missions and their sessions, inside the caller's transaction.
+/// The sessions are deleted, not unbound: a mission-scoped row with no
+/// mission would surface as a direct chat.
+pub(crate) fn delete_rows(tx: &rusqlite::Transaction<'_>, ids: &[String]) -> Result<usize> {
+    super::session::delete_rows(tx, &repo::session::ids_for_missions(tx, ids)?)?;
+    Ok(repo::mission::delete_many(tx, ids)?)
+}
+
+/// Undo a mission start that failed before any PTY forked: delete the session
+/// rows registered so far and mark the mission aborted.
+fn abort_start(conn: &mut Connection, mission_id: &str) -> Result<()> {
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let session_ids = repo::session::ids_for_missions(&tx, &[mission_id.to_owned()])?;
+    super::session::delete_rows(&tx, &session_ids)?;
+    repo::mission::abort(&tx, mission_id, Utc::now())?;
+    tx.commit()?;
+    Ok(())
 }
 
 /// Settings → Archived permanent delete (feature 01 Phase 4). Archived
@@ -1518,15 +1512,7 @@ fn live_session_handles(conn: &Connection, mission_id: &str) -> rusqlite::Result
 }
 
 fn all_mission_sessions_live(conn: &Connection, mission_id: &str) -> rusqlite::Result<bool> {
-    let (total, running): (usize, usize) = conn.query_row(
-        "SELECT COUNT(*),
-                COALESCE(SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END), 0)
-           FROM sessions
-          WHERE mission_id = ?1
-            AND archived_at IS NULL",
-        params![mission_id],
-        |row| Ok((row.get(0)?, row.get(1)?)),
-    )?;
+    let (total, running) = repo::session::unarchived_counts_for_mission(conn, mission_id)?;
     Ok(total > 0 && running == total)
 }
 
@@ -1609,6 +1595,7 @@ mod tests {
     use crate::db;
     use crate::ops::crew::CreateCrewInput;
     use crate::ops::role::{self as runner_cmd, CreateRoleInput};
+    use rusqlite::params;
 
     fn pool() -> db::DbPool {
         db::open_in_memory().unwrap()
@@ -2584,6 +2571,115 @@ mod tests {
     }
 
     #[test]
+    fn delete_archived_removes_sessions_and_attention_with_foreign_keys_off() {
+        use crate::test_support::{foreign_keys_off, row_count};
+        let pool = pool();
+        let mut conn = pool.get().unwrap();
+        foreign_keys_off(&conn);
+        let crew_id = seed_crew(&conn, "A", None);
+        for mission in ["doomed", "kept"] {
+            conn.execute(
+                "INSERT INTO missions
+                    (id, crew_id, title, status, started_at, stopped_at, archived_at)
+                 VALUES (?1, ?2, 'Done', 'completed', '2026-07-11T00:00:00Z',
+                         '2026-07-11T01:00:00Z', '2026-07-11T01:00:00Z')",
+                params![mission, crew_id],
+            )
+            .unwrap();
+        }
+        for (session, mission) in [
+            ("doomed-lead", Some("doomed")),
+            ("doomed-worker", Some("doomed")),
+            ("kept-lead", Some("kept")),
+            ("direct", None),
+        ] {
+            conn.execute(
+                "INSERT INTO sessions (id, mission_id, slot_id, status, started_at)
+                 VALUES (?1, ?2, ?3, 'stopped', '2026-07-11T00:00:00Z')",
+                params![session, mission, mission.map(|_| "s1")],
+            )
+            .unwrap();
+            repo::session_attention::record_completion(&conn, session, false, 100).unwrap();
+        }
+        let tmp = tempfile::tempdir().unwrap();
+
+        delete_archived(&mut conn, tmp.path(), "doomed").unwrap();
+
+        assert_eq!(
+            row_count(&conn, "SELECT COUNT(*) FROM missions WHERE id = 'doomed'"),
+            0
+        );
+        assert_eq!(
+            row_count(
+                &conn,
+                "SELECT COUNT(*) FROM sessions WHERE id LIKE 'doomed-%'"
+            ),
+            0,
+            "the mission's sessions are deleted, not left unbound"
+        );
+        assert_eq!(
+            row_count(
+                &conn,
+                "SELECT COUNT(*) FROM session_attention WHERE session_id LIKE 'doomed-%'"
+            ),
+            0
+        );
+        assert_eq!(row_count(&conn, "SELECT COUNT(*) FROM sessions"), 2);
+        assert_eq!(
+            row_count(&conn, "SELECT COUNT(*) FROM session_attention"),
+            2
+        );
+        assert_eq!(row_count(&conn, "SELECT COUNT(*) FROM missions"), 1);
+    }
+
+    #[test]
+    fn abort_start_deletes_sessions_and_attention_with_foreign_keys_off() {
+        use crate::test_support::{foreign_keys_off, row_count};
+        let pool = pool();
+        let mut conn = pool.get().unwrap();
+        foreign_keys_off(&conn);
+        let crew_id = seed_crew(&conn, "A", None);
+        for mission in ["m1", "m2"] {
+            conn.execute(
+                "INSERT INTO missions (id, crew_id, title, status, started_at)
+                 VALUES (?1, ?2, 'M', 'running', '2026-07-11T00:00:00Z')",
+                params![mission, crew_id],
+            )
+            .unwrap();
+        }
+        for (session, mission) in [("m1-lead", "m1"), ("m1-worker", "m1"), ("m2-lead", "m2")] {
+            conn.execute(
+                "INSERT INTO sessions (id, mission_id, status) VALUES (?1, ?2, 'stopped')",
+                params![session, mission],
+            )
+            .unwrap();
+            repo::session_attention::record_completion(&conn, session, false, 100).unwrap();
+        }
+
+        abort_start(&mut conn, "m1").unwrap();
+
+        assert_eq!(row_count(&conn, "SELECT COUNT(*) FROM sessions"), 1);
+        assert_eq!(
+            row_count(
+                &conn,
+                "SELECT COUNT(*) FROM session_attention WHERE session_id = 'm2-lead'"
+            ),
+            1
+        );
+        assert_eq!(
+            row_count(&conn, "SELECT COUNT(*) FROM session_attention"),
+            1
+        );
+        assert_eq!(
+            row_count(
+                &conn,
+                "SELECT COUNT(*) FROM missions WHERE id = 'm1' AND status = 'aborted'"
+            ),
+            1
+        );
+    }
+
+    #[test]
     fn stop_rejects_already_stopped_mission() {
         let pool = pool();
         let mut conn = pool.get().unwrap();
@@ -3422,7 +3518,7 @@ mod tests {
     }
 
     #[test]
-    fn list_running_mission_ids_filters_status_and_archive() {
+    fn running_ids_filters_status_and_archive() {
         // Startup reconciler should mount router + bus for `running`
         // missions only — archived rows and completed/aborted rows
         // are out of scope. Stable order by started_at so the
@@ -3504,7 +3600,7 @@ mod tests {
         )
         .unwrap();
 
-        let ids = list_running_mission_ids(&conn).unwrap();
+        let ids = repo::mission::running_ids(&conn).unwrap();
         assert_eq!(
             ids,
             vec![m_running_first, m_running_second],

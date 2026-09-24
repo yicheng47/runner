@@ -255,7 +255,7 @@ impl SessionManager {
     }
 
     /// Kill every live session for `role_id` — both mission-scoped and
-    /// direct-chat. Used by `role_delete` so the cascade dropping the
+    /// direct-chat. Used by `role_delete` so deleting the role's
     /// `sessions` rows doesn't strand the PTY children running underneath.
     /// Returns only after every reader thread has joined.
     pub fn kill_all_for_role(&self, role_id: &str) -> Result<()> {

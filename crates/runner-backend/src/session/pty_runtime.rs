@@ -1575,23 +1575,14 @@ pub fn cleanup_orphan_processes_on_startup(
 pub fn cleanup_orphan_processes_on_startup(
     pool: &r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>,
 ) -> crate::error::Result<usize> {
-    pool.get()?.execute(
-        "UPDATE sessions SET pid = NULL WHERE status != 'running' AND pid IS NOT NULL",
-        [],
-    )?;
+    let conn = pool.get()?;
+    crate::repo::session::clear_stale_pids(&conn)?;
     Ok(0)
 }
 
 #[cfg(unix)]
 fn clear_recorded_pid(conn: &rusqlite::Connection, session_id: &str, expected_pid: i64) {
-    if let Err(error) = conn.execute(
-        "UPDATE sessions
-            SET pid = NULL
-          WHERE id = ?1
-            AND pid = ?2
-            AND status != 'running'",
-        rusqlite::params![session_id, expected_pid],
-    ) {
+    if let Err(error) = crate::repo::session::clear_recorded_pid(conn, session_id, expected_pid) {
         log::warn!(
             "startup orphan sweep: session={session_id} pid={expected_pid} clear failed: {error}"
         );

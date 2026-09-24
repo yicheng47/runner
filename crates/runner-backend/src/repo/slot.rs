@@ -103,6 +103,34 @@ pub fn list_for_crew(conn: &Connection, crew_id: &str) -> rusqlite::Result<Vec<S
     rows.map(|r| r.map(Slot::from)).collect()
 }
 
+/// A crew's slot ids in position order.
+pub fn ids_for_crew(conn: &Connection, crew_id: &str) -> rusqlite::Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT id FROM slots
+          WHERE crew_id = ?1
+          ORDER BY position ASC",
+    )?;
+    let ids = stmt.query_map(rusqlite::params![crew_id], |row| row.get(0))?;
+    ids.collect()
+}
+
+pub fn count_for_crew(conn: &Connection, crew_id: &str) -> rusqlite::Result<i64> {
+    conn.query_row(
+        "SELECT COUNT(*) FROM slots WHERE crew_id = ?1",
+        rusqlite::params![crew_id],
+        |row| row.get(0),
+    )
+}
+
+/// The position after a crew's last slot, 0 for an empty crew.
+pub fn next_position(conn: &Connection, crew_id: &str) -> rusqlite::Result<i64> {
+    conn.query_row(
+        "SELECT COALESCE(MAX(position), -1) + 1 FROM slots WHERE crew_id = ?1",
+        rusqlite::params![crew_id],
+        |row| row.get(0),
+    )
+}
+
 /// Every slot that references `role_id`, across every crew, joined with
 /// the crew name. Ordered by `added_at` DESC — drives the Role Detail
 /// "Crews using this role" panel.
@@ -192,6 +220,13 @@ pub fn clear_crew_lead(conn: &Connection, crew_id: &str) -> rusqlite::Result<usi
 
 pub fn delete(conn: &Connection, id: &str) -> rusqlite::Result<usize> {
     conn.execute("DELETE FROM slots WHERE id = ?1", rusqlite::params![id])
+}
+
+pub fn delete_for_crew(conn: &Connection, crew_id: &str) -> rusqlite::Result<usize> {
+    conn.execute(
+        "DELETE FROM slots WHERE crew_id = ?1",
+        rusqlite::params![crew_id],
+    )
 }
 
 #[cfg(test)]
