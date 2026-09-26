@@ -707,7 +707,7 @@ roles (
   id TEXT PRIMARY KEY,
   handle TEXT NOT NULL UNIQUE,        -- globally unique slug; §3.2
   display_name TEXT NOT NULL,
-  runtime TEXT NOT NULL,              -- claude-code | codex | trae | copilot | pi | shell (qoder: legacy rows only)
+  runtime TEXT NOT NULL,              -- claude-code | codex | trae | copilot | pi (shell, qoder: legacy rows only)
   command TEXT NOT NULL,
   args_json TEXT,
   working_dir TEXT,                   -- direct-chat working dir; missions use mission.cwd

@@ -567,6 +567,29 @@ fn local_usage_errors_win_over_a_missing_app() {
     assert!(String::from_utf8_lossy(&out.stderr).contains("--runtime is required"));
 }
 
+#[test]
+fn role_runtime_shell_is_a_usage_error() {
+    for args in [
+        ["role", "create", "smoke-shell", "--runtime", "shell"],
+        ["role", "update", "smoke-shell", "--runtime", "shell"],
+    ] {
+        let mut cmd = Command::new(runner_bin());
+        cmd.args(args);
+        cmd.env_remove("RUNNER_CREW_ID");
+        cmd.env_remove("RUNNER_MISSION_ID");
+        cmd.env_remove("RUNNER_HANDLE");
+        cmd.env_remove("RUNNER_EVENT_LOG");
+
+        let out = cmd.output().unwrap();
+        assert_eq!(out.status.code(), Some(2), "{args:?}");
+        assert_eq!(
+            String::from_utf8_lossy(&out.stderr),
+            "unknown role runtime \"shell\"; expected claude-code, codex, trae, copilot, or pi\n",
+            "{args:?}"
+        );
+    }
+}
+
 #[cfg(unix)]
 #[test]
 fn health_status_reports_not_running_with_exit_three() {
