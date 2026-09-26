@@ -3,13 +3,13 @@ use super::logic::permission_mode_description;
 use super::logic::permission_mode_value;
 use super::logic::permission_modes;
 use super::logic::permission_options;
+use super::logic::role_edit_args;
 use super::logic::role_edit_focus_order;
 use super::logic::role_edit_form_is_composing;
 use super::logic::runtime_efforts;
 use super::logic::runtime_entry;
 use super::logic::runtime_model_placeholder;
 use super::logic::runtime_models;
-use super::logic::split_args;
 use super::logic::trimmed_option;
 use super::logic::RoleFormKind;
 use runner_backend::model::Runtime;
@@ -83,7 +83,21 @@ impl NativeRoot {
         cx.notify();
     }
 
-    fn close_role_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// The role page's in-place editor lives only on its own role's page, so a
+    /// route that leaves it discards the draft, as closing the drawer does.
+    pub(crate) fn drop_role_edit_for_route(&mut self, route: &AppRoute) {
+        let stale = self.role_surfaces.edit.as_ref().is_some_and(|form| {
+            form.slot.is_none()
+                && !form.submitting
+                && !matches!(route, AppRoute::Settings)
+                && !matches!(route, AppRoute::RoleDetail(handle) if handle == &form.role.handle)
+        });
+        if stale {
+            self.role_surfaces.edit = None;
+        }
+    }
+
+    pub(super) fn close_role_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self
             .role_surfaces
             .edit
@@ -97,7 +111,7 @@ impl NativeRoot {
         cx.notify();
     }
 
-    fn on_role_edit_key_down(
+    pub(super) fn on_role_edit_key_down(
         &mut self,
         event: &KeyDownEvent,
         window: &mut Window,
@@ -118,7 +132,7 @@ impl NativeRoot {
         }
     }
 
-    fn browse_role_edit_cwd(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn browse_role_edit_cwd(&mut self, cx: &mut Context<Self>) {
         let Some(input) = self
             .role_surfaces
             .edit
@@ -192,7 +206,7 @@ impl NativeRoot {
         .detach();
     }
 
-    fn submit_role_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn submit_role_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(form) = self.role_surfaces.edit.as_mut() else {
             return;
         };
@@ -208,7 +222,7 @@ impl NativeRoot {
                 .then(|| Runtime::parse(&form.runtime))
                 .flatten(),
             command: (!edits_slot).then(|| form.command.read(cx).text().trim().to_owned()),
-            args: (!edits_slot).then(|| split_args(form.args.read(cx).text())),
+            args: (!edits_slot).then(|| role_edit_args(form, cx)),
             working_dir: Some(trimmed_option(form.working_dir.read(cx).text())),
             system_prompt: Some(trimmed_option(form.system_prompt.read(cx).text())),
             env: None,
@@ -299,6 +313,9 @@ impl NativeRoot {
         let submit_root = root.clone();
         let browse_root = root.clone();
         let title = div()
+            .when(cfg!(test), |title| {
+                title.debug_selector(|| "ROLE_EDIT_DRAWER".into())
+            })
             .flex()
             .items_center()
             .justify_between()

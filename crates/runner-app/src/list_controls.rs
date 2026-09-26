@@ -66,6 +66,11 @@ impl<T> ListControls<T> {
         self.debounce_generation = self.debounce_generation.wrapping_add(1);
     }
 
+    /// Whether the loaded counts answer a search rather than the whole list.
+    pub fn searching(&self) -> bool {
+        !self.debounced_query.trim().is_empty()
+    }
+
     pub fn page_count(&self) -> usize {
         self.filtered_count.div_ceil(PAGE_SIZE)
     }
@@ -165,6 +170,22 @@ mod tests {
         assert_eq!(controls.debounced_query, "");
         assert!(controls.apply_debounced_query(latest.generation));
         assert_eq!(controls.debounced_query, "needle");
+    }
+
+    #[test]
+    fn searching_follows_the_committed_query() {
+        let mut controls = ListControls::<String>::default();
+        assert!(!controls.searching());
+        let update = controls.set_query("  ".into());
+        assert!(controls.apply_debounced_query(update.generation));
+        assert!(!controls.searching(), "a blank query lists everything");
+        let update = controls.set_query("rev".into());
+        assert!(
+            !controls.searching(),
+            "counts still answer the committed query"
+        );
+        assert!(controls.apply_debounced_query(update.generation));
+        assert!(controls.searching());
     }
 
     #[test]

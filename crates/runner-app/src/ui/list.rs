@@ -13,7 +13,7 @@ use crate::ui::scrollbar::Scrollbar;
 /// Side padding of a paginated list page in logical pixels at 100% zoom. The
 /// list scrollbar is pushed out by the same amount so its thumb rides the
 /// page's right edge instead of the cards' (#553).
-const LIST_PAGE_PADDING_X: f32 = 32.;
+pub const LIST_PAGE_PADDING_X: f32 = 32.;
 
 pub const PAGE_SIZE: usize = 8;
 
@@ -472,6 +472,16 @@ impl RenderOnce for EmptyStateCard {
     }
 }
 
+/// The pager row's count: the total, or matches of the total while a search
+/// is active.
+pub fn count_label(filtered: usize, total: usize, noun: &str, searching: bool) -> String {
+    if searching {
+        format!("{filtered} of {total} {noun}")
+    } else {
+        format!("{total} {noun}")
+    }
+}
+
 #[derive(IntoElement)]
 pub struct PaginatedListPage {
     title: SharedString,
@@ -482,6 +492,7 @@ pub struct PaginatedListPage {
     loaded: bool,
     total_count: usize,
     filtered_count: usize,
+    searching: bool,
     noun: SharedString,
     empty_state: AnyElement,
     search: Entity<SearchInput>,
@@ -489,6 +500,7 @@ pub struct PaginatedListPage {
     page: usize,
     page_count: usize,
     on_page_change: PageHandler,
+    header: Option<AnyElement>,
     content: AnyElement,
     scroll_handle: ScrollHandle,
     scrollbar: Entity<Scrollbar>,
@@ -520,6 +532,7 @@ impl PaginatedListPage {
             loaded: true,
             total_count: 0,
             filtered_count: 0,
+            searching: false,
             noun: noun.into(),
             empty_state: empty_state.into_any_element(),
             search,
@@ -527,15 +540,25 @@ impl PaginatedListPage {
             page,
             page_count,
             on_page_change,
+            header: None,
             content: content.into_any_element(),
             scroll_handle,
             scrollbar,
         }
     }
 
-    pub fn counts(mut self, filtered: usize, total: usize) -> Self {
+    /// `searching` is whether the counts answer a search; only then does the
+    /// count read as matches of the total.
+    pub fn counts(mut self, filtered: usize, total: usize, searching: bool) -> Self {
         self.filtered_count = filtered;
         self.total_count = total;
+        self.searching = searching;
+        self
+    }
+
+    /// A row pinned above the scrolling items, such as a table's column labels.
+    pub fn header(mut self, header: impl IntoElement) -> Self {
+        self.header = Some(header.into_any_element());
         self
     }
 
@@ -572,7 +595,13 @@ impl RenderOnce for PaginatedListPage {
         } else {
             let scroll_handle = self.scroll_handle;
             let scrollbar = self.scrollbar;
-            let list = if self.filtered_count == 0 {
+            let count = count_label(
+                self.filtered_count,
+                self.total_count,
+                &self.noun,
+                self.searching,
+            );
+            let items = if self.filtered_count == 0 {
                 self.no_matches
             } else {
                 div()
@@ -580,7 +609,7 @@ impl RenderOnce for PaginatedListPage {
                     .flex_1()
                     .flex()
                     .flex_col()
-                    .gap_3()
+                    .children(self.header)
                     .child(
                         div()
                             .relative()
@@ -608,44 +637,54 @@ impl RenderOnce for PaginatedListPage {
                                     .child(div().relative().size_full().child(scrollbar)),
                             ),
                     )
-                    .child(
-                        div()
-                            .mt_auto()
-                            .flex_none()
-                            .flex()
-                            .justify_center()
-                            .border_t_1()
-                            .border_color(theme::border())
-                            .pt(rems(10. / 16.))
-                            .child(Pager::new(self.page, self.page_count, self.on_page_change)),
-                    )
                     .into_any_element()
             };
+            // The footer stays when a search matches nothing, so its count
+            // still reads `0 of N`.
+            let list = div()
+                .min_h(px(0.))
+                .flex_1()
+                .flex()
+                .flex_col()
+                .gap_3()
+                .child(items)
+                .child(
+                    div()
+                        .mt_auto()
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .gap_4()
+                        .border_t_1()
+                        .border_color(theme::border())
+                        .pt(rems(10. / 16.))
+                        .child(
+                            div()
+                                .debug_selector(|| "PAGINATED_LIST_COUNT".into())
+                                .flex_1()
+                                .min_w(px(0.))
+                                .truncate()
+                                .font_family(theme::UI_MONOSPACE_FONT)
+                                .text_size(theme::text_meta())
+                                .text_color(theme::faint())
+                                .child(count),
+                        )
+                        .children((self.page_count > 0).then(|| {
+                            div().flex_none().child(Pager::new(
+                                self.page,
+                                self.page_count,
+                                self.on_page_change,
+                            ))
+                        }))
+                        .child(div().flex_1()),
+                );
             div()
                 .min_h(px(0.))
                 .flex_1()
                 .flex()
                 .flex_col()
                 .gap_4()
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .justify_between()
-                        .gap_4()
-                        .child(self.search)
-                        .child(
-                            div()
-                                .flex_none()
-                                .font_family(theme::UI_MONOSPACE_FONT)
-                                .text_size(theme::text_meta())
-                                .text_color(theme::muted())
-                                .child(format!(
-                                    "{} of {} {}",
-                                    self.filtered_count, self.total_count, self.noun
-                                )),
-                        ),
-                )
+                .child(div().flex().items_center().child(self.search))
                 .child(list)
                 .into_any_element()
         };
@@ -740,6 +779,14 @@ mod tests {
             page_window(8, 8),
             [Page(1), Ellipsis, Page(5), Page(6), Page(7), Page(8)]
         );
+    }
+
+    #[test]
+    fn count_reads_as_a_total_until_a_search_is_active() {
+        assert_eq!(count_label(9, 9, "roles", false), "9 roles");
+        assert_eq!(count_label(3, 9, "roles", true), "3 of 9 roles");
+        assert_eq!(count_label(9, 9, "crews", true), "9 of 9 crews");
+        assert_eq!(count_label(0, 9, "crews", true), "0 of 9 crews");
     }
 
     #[test]
