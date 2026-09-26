@@ -1,17 +1,27 @@
-use super::logic::plural;
+use super::logic::crews_label;
+use super::logic::last_active_label;
+use super::logic::role_setting_label;
+use super::logic::role_table_columns;
+use super::logic::runtime_display_name;
+use super::logic::RoleColumn;
+use super::logic::ROLE_ROW_ACTIONS_WIDTH;
+use super::logic::ROLE_ROW_PADDING_X;
 use std::rc::Rc;
 use std::time::Duration;
 
 use gpui::prelude::*;
 use gpui::{
-    div, px, rems, svg, AnyElement, Context, CursorStyle, FontWeight, KeyDownEvent, MouseButton,
-    SharedString, Window,
+    div, px, rems, svg, AnyElement, App, Context, CursorStyle, FontWeight, KeyDownEvent,
+    MouseButton, SharedString, Window,
 };
+use runner_app::ui::list::LIST_PAGE_PADDING_X;
 use runner_app::ui::{
     Button, ButtonSize, ButtonVariant, EmptyStateCard, IconButton, IconButtonSize,
-    PaginatedListPage, Tooltip,
+    PaginatedListPage, RoleAvatar, Tooltip,
 };
 use runner_backend::ops::role::RoleWithActivity;
+
+use crate::chat_icon::ChatIcon;
 
 use super::*;
 use crate::list_controls::LIST_QUERY_DEBOUNCE_MS;
@@ -39,6 +49,7 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.role_surfaces.prompt_expanded = false;
         self.enter_entity_route(AppRoute::RoleDetail(handle.clone()), window, cx);
         self.load_role_detail(handle, cx);
     }
@@ -199,7 +210,7 @@ impl NativeRoot {
         };
         match route {
             AppRoute::Chat => self.render_active_tab(window, cx),
-            AppRoute::Roles => self.render_roles_page(cx),
+            AppRoute::Roles => self.render_roles_page(window, cx),
             AppRoute::RoleDetail(_) => self.render_role_detail(cx),
             AppRoute::Crews | AppRoute::CrewEditor(_) => self.render_crew_surface(window, cx),
             AppRoute::Mission(_) => self.mission_workspace.clone().into_any_element(),
@@ -208,20 +219,21 @@ impl NativeRoot {
         }
     }
 
-    fn render_roles_page(&mut self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_roles_page(&mut self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let root = cx.entity();
         let create_root = root.clone();
         let empty_create_root = root.clone();
         let clear_root = root.clone();
         let page_root = root.clone();
         let query = self.role_surfaces.list.query.clone();
-        let cards = self
-            .role_surfaces
-            .list
-            .items
-            .clone()
+        let columns = role_table_columns(self.role_table_width(window, cx));
+        let items = self.role_surfaces.list.items.clone();
+        let last = items.len().saturating_sub(1);
+        let now = chrono::Local::now();
+        let rows = items
             .into_iter()
-            .map(|item| self.render_role_card(item, cx))
+            .enumerate()
+            .map(|(index, item)| self.render_role_row(item, &columns, index < last, &now, cx))
             .collect::<Vec<_>>();
         let no_matches = div()
             .w_full()
@@ -286,7 +298,9 @@ impl NativeRoot {
         );
         PaginatedListPage::new(
             "Roles",
-            div().child("Reusable CLI agents — pick one for a crew slot or chat directly."),
+            div().child(
+                "The setups your chats and crews run on: a runtime, a model, an effort and a brief.",
+            ),
             Button::new("new-role", "+ New role")
                 .variant(ButtonVariant::Primary)
                 .on_press(move |window, cx| {
@@ -301,13 +315,22 @@ impl NativeRoot {
             Rc::new(move |page, _, cx| {
                 page_root.update(cx, |this, cx| this.set_role_page(page, cx));
             }),
-            div().flex().flex_col().gap_3().children(cards),
+            div()
+                .when(cfg!(test), |table| {
+                    table.debug_selector(|| "ROLE_TABLE_ROWS".into())
+                })
+                .w_full()
+                .flex()
+                .flex_col()
+                .children(rows),
             self.role_surfaces.scroll.clone(),
             self.role_surfaces.scrollbar.clone(),
         )
+        .header(role_table_header(&columns))
         .counts(
             self.role_surfaces.list.filtered_count,
             self.role_surfaces.list.total_count,
+            self.role_surfaces.list.searching(),
         )
         .load_state(
             self.role_surfaces.list.loading,
@@ -317,48 +340,141 @@ impl NativeRoot {
         .into_any_element()
     }
 
-    fn render_role_card(&self, item: RoleWithActivity, cx: &mut Context<Self>) -> AnyElement {
+    /// The table's width in unzoomed pixels: the window less the sidebar and
+    /// the list page's side padding.
+    fn role_table_width(&self, window: &Window, cx: &App) -> f32 {
+        let settings = self.settings(cx);
+        let sidebar = if self.sidebar_collapsed {
+            0.
+        } else {
+            settings.sidebar_width
+        };
+        f32::from(window.viewport_size().width) / settings.app_zoom
+            - sidebar
+            - 2. * LIST_PAGE_PADDING_X
+    }
+
+    fn set_role_row_hovered(&mut self, id: &str, hovered: bool, cx: &mut Context<Self>) {
+        let next = if hovered {
+            Some(id.to_owned())
+        } else if self.role_surfaces.hovered_row.as_deref() == Some(id) {
+            None
+        } else {
+            return;
+        };
+        if self.role_surfaces.hovered_row != next {
+            self.role_surfaces.hovered_row = next;
+            cx.notify();
+        }
+    }
+
+    fn render_role_row(
+        &self,
+        item: RoleWithActivity,
+        columns: &[RoleColumn],
+        divider: bool,
+        now: &chrono::DateTime<chrono::Local>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let root = cx.entity();
         let open_root = root.clone();
         let key_root = root.clone();
+        let hover_root = root.clone();
         let chat_root = root.clone();
         let chat_key_root = root.clone();
         let menu_root = root;
+        let id = item.role.id.clone();
+        let hover_id = id.clone();
         let handle = item.role.handle.clone();
         let open_handle = handle.clone();
         let menu_item = item.clone();
         let chat_role = item.role.clone();
         let chat_key_role = item.role.clone();
-        let sessions_label = plural(item.activity.active_sessions, "session", "sessions");
-        let missions_label = plural(item.activity.active_missions, "mission", "missions");
-        let crews_label = if item.activity.crew_count == 1 {
-            "in 1 crew".to_owned()
-        } else {
-            format!("in {} crews", item.activity.crew_count)
-        };
-        let live = item.activity.active_sessions > 0 || item.activity.active_missions > 0;
-        let pending = self.role_surfaces.chat_pending.as_deref() == Some(item.role.id.as_str());
-        let command = if item.role.args.is_empty() {
-            item.role.command.clone()
-        } else {
-            format!("{} {}", item.role.command, item.role.args.join(" "))
-        };
+        let pending = self.role_surfaces.chat_pending.as_deref() == Some(id.as_str());
+        let chat_button = pending || self.role_surfaces.hovered_row.as_deref() == Some(id.as_str());
+        let chat = div()
+            .id(SharedString::from(format!("role-chat-{id}")))
+            .tab_index(0)
+            .tab_stop(!pending)
+            .flex_none()
+            .flex()
+            .items_center()
+            .justify_center()
+            .gap(rems(6. / 16.))
+            .h(rems(24. / 16.))
+            .rounded(rems(4. / 16.))
+            .border_1()
+            .when(chat_button, |chat| {
+                chat.px_2()
+                    .border_color(theme::border_strong())
+                    .bg(theme::bg())
+            })
+            .when(!chat_button, |chat| {
+                chat.w(rems(24. / 16.))
+                    .border_color(gpui::transparent_black())
+            })
+            .text_size(theme::text_ui())
+            .line_height(rems(1.))
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(theme::text())
+            .opacity(if pending { 0.6 } else { 1. })
+            .cursor(if pending {
+                CursorStyle::Arrow
+            } else {
+                CursorStyle::PointingHand
+            })
+            .focus_visible(|chat| chat.border_color(theme::border_strong()))
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_click(move |_, window, cx| {
+                cx.stop_propagation();
+                if !pending {
+                    let role = chat_role.clone();
+                    chat_root.update(cx, |this, cx| this.start_role_chat(role, window, cx));
+                }
+            })
+            .on_key_down(move |event: &KeyDownEvent, window, cx| {
+                if !pending && matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                    cx.stop_propagation();
+                    let role = chat_key_role.clone();
+                    chat_key_root.update(cx, |this, cx| this.start_role_chat(role, window, cx));
+                }
+            })
+            .child(
+                // The speech-bubble tail pulls the glyph's optical center down.
+                svg()
+                    .path("message-square.svg")
+                    .size(rems(12. / 16.))
+                    .relative()
+                    .bottom(rems(1. / 16.))
+                    .flex_none()
+                    .text_color(if chat_button {
+                        theme::accent()
+                    } else {
+                        theme::faint()
+                    }),
+            )
+            .when(chat_button, |chat| {
+                chat.child(if pending { "Starting…" } else { "Chat" })
+            });
         div()
-            .id(SharedString::from(format!("role-card-{}", item.role.id)))
-            .group("role-card")
+            .id(SharedString::from(format!("role-row-{id}")))
             .tab_index(0)
             .w_full()
             .flex()
-            .flex_col()
-            .gap_2()
-            .rounded_lg()
-            .border_1()
-            .border_color(theme::border())
-            .bg(theme::panel())
-            .p_4()
+            .items_center()
+            .px(rems(ROLE_ROW_PADDING_X / 16.))
+            .py(rems(9. / 16.))
+            .when(divider, |row| {
+                row.border_b_1().border_color(theme::border())
+            })
             .cursor_pointer()
-            .hover(|card| card.border_color(theme::border_strong()))
-            .focus_visible(|card| card.border_color(theme::faint()))
+            .hover(|row| row.bg(theme::panel()))
+            .focus_visible(|row| row.bg(theme::panel()))
+            .on_hover(move |hovered, _, cx| {
+                hover_root.update(cx, |this, cx| {
+                    this.set_role_row_hovered(&hover_id, *hovered, cx)
+                });
+            })
             .on_click(move |_, window, cx| {
                 open_root.update(cx, |this, cx| {
                     this.open_role_detail(open_handle.clone(), window, cx)
@@ -373,175 +489,193 @@ impl NativeRoot {
             })
             .child(
                 div()
+                    .flex_1()
+                    .min_w(px(0.))
                     .flex()
-                    .items_start()
-                    .justify_between()
-                    .gap_4()
+                    .items_center()
+                    .gap(rems(10. / 16.))
+                    .pr_3()
+                    .child(RoleAvatar::new(item.role.handle.clone(), 26.))
                     .child(
                         div()
                             .min_w(px(0.))
-                            .flex_1()
+                            .flex()
+                            .flex_col()
                             .child(
                                 div()
-                                    .flex()
-                                    .items_center()
-                                    .gap_2()
-                                    .child(
-                                        div()
-                                            .font_family(theme::UI_MONOSPACE_FONT)
-                                            .text_size(theme::text_heading())
-                                            .font_weight(FontWeight::SEMIBOLD)
-                                            .text_color(theme::text())
-                                            .child(format!("@{}", item.role.handle)),
-                                    )
-                                    .child(
-                                        div()
-                                            .font_family(theme::UI_MONOSPACE_FONT)
-                                            .text_size(theme::text_meta())
-                                            .text_color(theme::faint())
-                                            .child(item.role.runtime.clone()),
-                                    )
-                                    .child(Tooltip::new(
-                                        SharedString::from(format!(
-                                            "role-chat-tooltip-{}",
-                                            item.role.id
-                                        )),
-                                        "Start a new chat",
-                                        div()
-                                            .id(SharedString::from(format!(
-                                                "role-chat-{}",
-                                                item.role.id
-                                            )))
-                                            .tab_index(0)
-                                            .tab_stop(!pending)
-                                            .ml_1()
-                                            .flex()
-                                            .items_center()
-                                            .gap(rems(6. / 16.))
-                                            .rounded_sm()
-                                            .px(rems(6. / 16.))
-                                            .py(rems(2. / 16.))
-                                            .text_size(theme::text_meta())
-                                            .line_height(rems(1.))
-                                            .font_weight(FontWeight::MEDIUM)
-                                            .text_color(theme::accent())
-                                            .opacity(if pending { 0.6 } else { 1. })
-                                            .cursor(if pending {
-                                                CursorStyle::Arrow
-                                            } else {
-                                                CursorStyle::PointingHand
-                                            })
-                                            .when(!pending, |button| {
-                                                button.hover(|button| {
-                                                    button
-                                                        .bg(theme::with_alpha(theme::accent(), 0.1))
-                                                })
-                                            })
-                                            .focus_visible(|button| {
-                                                button.bg(theme::with_alpha(theme::accent(), 0.1))
-                                            })
-                                            .on_mouse_down(MouseButton::Left, |_, _, cx| {
-                                                cx.stop_propagation()
-                                            })
-                                            .on_click(move |_, window, cx| {
-                                                cx.stop_propagation();
-                                                if !pending {
-                                                    let role = chat_role.clone();
-                                                    chat_root.update(cx, |this, cx| {
-                                                        this.start_role_chat(role, window, cx)
-                                                    });
-                                                }
-                                            })
-                                            .on_key_down(move |event: &KeyDownEvent, window, cx| {
-                                                if !pending
-                                                    && matches!(
-                                                        event.keystroke.key.as_str(),
-                                                        "enter" | "space"
-                                                    )
-                                                {
-                                                    cx.stop_propagation();
-                                                    let role = chat_key_role.clone();
-                                                    chat_key_root.update(cx, |this, cx| {
-                                                        this.start_role_chat(role, window, cx)
-                                                    });
-                                                }
-                                            })
-                                            .child(
-                                                // The speech-bubble tail pulls the glyph's optical center down.
-                                                svg()
-                                                    .path("message-square.svg")
-                                                    .size(rems(12. / 16.))
-                                                    .relative()
-                                                    .bottom(rems(1. / 16.))
-                                                    .flex_none()
-                                                    .text_color(theme::accent()),
-                                            )
-                                            .child(div().h(rems(1.)).flex().items_center().child(
-                                                if pending { "Starting…" } else { "Chat" },
-                                            )),
-                                    )),
-                            )
-                            .child(
-                                div()
-                                    .mt_1()
-                                    .max_h(rems(38. / 16.))
-                                    .overflow_hidden()
-                                    .text_size(theme::text_ui())
-                                    .text_color(theme::muted())
+                                    .truncate()
+                                    .text_size(theme::text_body())
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(theme::text())
                                     .child(item.role.display_name.clone()),
                             )
                             .child(
                                 div()
-                                    .mt(rems(6. / 16.))
                                     .truncate()
                                     .font_family(theme::UI_MONOSPACE_FONT)
                                     .text_size(theme::text_meta())
                                     .text_color(theme::faint())
-                                    .child(format!("$ {command}")),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .flex_none()
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .text_size(theme::text_ui())
-                            .child(
-                                div()
-                                    .text_color(if live {
-                                        theme::accent()
-                                    } else {
-                                        theme::faint()
-                                    })
-                                    .child(if live {
-                                        if item.activity.active_missions > 0 {
-                                            format!("{sessions_label} · {missions_label}")
-                                        } else {
-                                            sessions_label
-                                        }
-                                    } else {
-                                        crews_label
-                                    }),
-                            )
-                            .child(
-                                IconButton::new(
-                                    SharedString::from(format!("role-actions-{}", item.role.id)),
-                                    "more-horizontal.svg",
-                                )
-                                .size(IconButtonSize::Sm)
-                                .stop_click_propagation(true)
-                                .tooltip("More actions")
-                                .on_press(move |window, cx| {
-                                    let position = window.mouse_position();
-                                    let item = menu_item.clone();
-                                    menu_root.update(cx, |this, cx| {
-                                        this.open_role_menu(item, position, window, cx)
-                                    });
-                                }),
+                                    .child(format!("@{}", item.role.handle)),
                             ),
                     ),
             )
+            .children(
+                columns
+                    .iter()
+                    .map(|column| role_table_cell(*column, &item, now)),
+            )
+            .child(
+                div()
+                    .when(cfg!(test), |actions| {
+                        actions.debug_selector(|| "ROLE_ROW_ACTIONS".into())
+                    })
+                    .w(rems(ROLE_ROW_ACTIONS_WIDTH / 16.))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .justify_end()
+                    .gap_1()
+                    .child(Tooltip::new(
+                        SharedString::from(format!("role-chat-tooltip-{id}")),
+                        "Start a new chat",
+                        chat,
+                    ))
+                    .child(
+                        IconButton::new(
+                            SharedString::from(format!("role-actions-{id}")),
+                            "more-horizontal.svg",
+                        )
+                        .size(IconButtonSize::Sm)
+                        .stop_click_propagation(true)
+                        .tooltip("More actions")
+                        .on_press(move |window, cx| {
+                            let position = window.mouse_position();
+                            let item = menu_item.clone();
+                            menu_root.update(cx, |this, cx| {
+                                this.open_role_menu(item, position, window, cx)
+                            });
+                        }),
+                    ),
+            )
             .into_any_element()
+    }
+}
+
+fn role_table_header(columns: &[RoleColumn]) -> AnyElement {
+    div()
+        .when(cfg!(test), |header| {
+            header.debug_selector(|| "ROLE_TABLE_HEADER".into())
+        })
+        .w_full()
+        .flex()
+        .items_center()
+        .px(rems(ROLE_ROW_PADDING_X / 16.))
+        .pb_2()
+        .border_b_1()
+        .border_color(theme::border_strong())
+        .text_size(theme::text_meta())
+        .text_color(theme::faint())
+        .child(div().flex_1().min_w(px(0.)).child("Role"))
+        .children(columns.iter().map(|column| {
+            div()
+                .w(rems(column.width() / 16.))
+                .flex_none()
+                .child(column.label())
+        }))
+        .child(div().w(rems(ROLE_ROW_ACTIONS_WIDTH / 16.)).flex_none())
+        .into_any_element()
+}
+
+fn role_table_cell(
+    column: RoleColumn,
+    item: &RoleWithActivity,
+    now: &chrono::DateTime<chrono::Local>,
+) -> AnyElement {
+    let cell = div()
+        .w(rems(column.width() / 16.))
+        .flex_none()
+        .min_w(px(0.))
+        .pr_3()
+        .text_size(theme::text_ui());
+    let text = |value: String, monospace: bool, color: gpui::Hsla| {
+        div()
+            .min_w(px(0.))
+            .truncate()
+            .text_color(color)
+            .when(monospace, |value| {
+                value.font_family(theme::UI_MONOSPACE_FONT)
+            })
+            .child(value)
+    };
+    match column {
+        RoleColumn::Runtime => {
+            let icon = ChatIcon::for_runtime(&item.role.runtime);
+            cell.flex()
+                .items_center()
+                .gap(rems(6. / 16.))
+                .child(
+                    svg()
+                        .flex_none()
+                        .path(icon.path)
+                        .size(rems(12. / 16.))
+                        .text_color(icon.color(theme::muted(), true)),
+                )
+                .child(text(
+                    runtime_display_name(&item.role.runtime),
+                    false,
+                    theme::text(),
+                ))
+                .into_any_element()
+        }
+        RoleColumn::Model | RoleColumn::Effort => {
+            let value = if column == RoleColumn::Model {
+                item.role.model.as_deref()
+            } else {
+                item.role.effort.as_deref()
+            };
+            let (label, unset) = role_setting_label(value);
+            cell.child(text(
+                label,
+                !unset,
+                if unset { theme::faint() } else { theme::text() },
+            ))
+            .into_any_element()
+        }
+        RoleColumn::Crews => {
+            let crews = item.activity.crew_count;
+            cell.child(text(
+                crews_label(crews),
+                false,
+                if crews > 0 {
+                    theme::text()
+                } else {
+                    theme::faint()
+                },
+            ))
+            .into_any_element()
+        }
+        RoleColumn::LastActive => {
+            let (label, live) = last_active_label(&item.activity, now);
+            cell.flex()
+                .items_center()
+                .gap(rems(6. / 16.))
+                .children(live.then(|| {
+                    div()
+                        .flex_none()
+                        .size(rems(6. / 16.))
+                        .rounded_full()
+                        .bg(theme::accent())
+                }))
+                .child(text(
+                    label,
+                    false,
+                    if live {
+                        theme::accent()
+                    } else {
+                        theme::faint()
+                    },
+                ))
+                .into_any_element()
+        }
     }
 }

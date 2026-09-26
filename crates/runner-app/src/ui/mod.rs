@@ -40,8 +40,8 @@ pub use field::{
     FieldError, FieldValidation, Label, TextField, TextFieldKind, WorkingDirField,
 };
 pub use list::{
-    clamp_page, page_window, EmptyStateCard, PageHandler, PageWindowItem, Pager, PaginatedListPage,
-    SearchHandler, SearchInput, PAGE_SIZE,
+    clamp_page, count_label, page_window, EmptyStateCard, PageHandler, PageWindowItem, Pager,
+    PaginatedListPage, SearchHandler, SearchInput, PAGE_SIZE,
 };
 pub use menu::{ContextMenu, MenuAction, MenuItem, MenuKey, MenuState, PopoverMenu};
 pub use model_field::ModelField;

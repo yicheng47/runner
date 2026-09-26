@@ -56,6 +56,7 @@ pub struct Button {
     variant: ButtonVariant,
     size: ButtonSize,
     radius: f32,
+    full_width: bool,
     disabled: bool,
     loading: bool,
     focus_handle: Option<FocusHandle>,
@@ -72,12 +73,20 @@ impl Button {
             variant: ButtonVariant::default(),
             size: ButtonSize::default(),
             radius: 4.,
+            full_width: false,
             disabled: false,
             loading: false,
             focus_handle: None,
             tooltip: None,
             on_press: None,
         }
+    }
+
+    /// Fill the parent's width. A tooltip's wrapper sizes to its content, so
+    /// a full-width button goes without one.
+    pub fn full_width(mut self, full_width: bool) -> Self {
+        self.full_width = full_width;
+        self
     }
 
     pub fn icon(mut self, path: impl Into<SharedString>) -> Self {
@@ -179,6 +188,7 @@ impl RenderOnce for Button {
             })
             .tab_index(0)
             .tab_stop(!inactive)
+            .when(self.full_width, |button| button.w_full())
             .flex()
             .items_center()
             .justify_center()

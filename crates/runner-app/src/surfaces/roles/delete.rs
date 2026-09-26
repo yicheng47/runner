@@ -19,7 +19,12 @@ impl NativeRoot {
         if self.role_surfaces.create.is_some() {
             overlays.push(self.render_create_role_modal(cx));
         }
-        if self.role_surfaces.edit.is_some() {
+        if self
+            .role_surfaces
+            .edit
+            .as_ref()
+            .is_some_and(|form| form.slot.is_some())
+        {
             overlays.push(self.render_role_edit_drawer(cx));
         }
         if self.role_surfaces.delete_confirm.is_some() {

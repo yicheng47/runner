@@ -172,17 +172,161 @@ fn copilot_offers_only_the_three_supported_permission_modes_with_the_approved_co
 }
 
 #[test]
-fn role_detail_columns_stay_inside_the_centered_container() {
-    use crate::surfaces::AppRoute;
+fn prompt_meta_counts_lines_and_size() {
+    use super::logic::prompt_meta;
+
+    assert_eq!(prompt_meta("one line"), "1 line · 8 B");
+    assert_eq!(prompt_meta("a\nb\n"), "2 lines · 4 B");
+    let prompt = "x".repeat(60) + "\n";
+    assert_eq!(prompt_meta(&prompt.repeat(48)), "48 lines · 2.9 KB");
+}
+
+#[test]
+fn prompt_preview_clamps_only_long_prompts_at_a_line_boundary() {
+    use super::logic::{prompt_preview, PROMPT_PREVIEW_LINES};
+
+    let fits = (1..=PROMPT_PREVIEW_LINES)
+        .map(|line| format!("line {line}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert_eq!(prompt_preview(&fits), None);
+    assert_eq!(
+        prompt_preview(&format!("{fits}\n")),
+        None,
+        "a trailing newline adds no line"
+    );
+
+    let long = format!(
+        "{fits}\nline {}\nline {}",
+        PROMPT_PREVIEW_LINES + 1,
+        PROMPT_PREVIEW_LINES + 2
+    );
+    assert_eq!(prompt_preview(&long), Some(fits.as_str()));
+}
+
+#[test]
+fn list_cells_read_default_dash_and_live_counts() {
+    use super::logic::{crews_label, last_active_label, role_setting_label};
+    use chrono::{TimeZone, Utc};
+    use runner_backend::ops::role::RoleActivity;
+
+    assert_eq!(role_setting_label(None), ("default".into(), true));
+    assert_eq!(role_setting_label(Some("  ")), ("default".into(), true));
+    assert_eq!(
+        role_setting_label(Some("opus[1m]")),
+        ("opus[1m]".into(), false)
+    );
+    assert_eq!(crews_label(0), "—");
+    assert_eq!(crews_label(3), "3");
+
+    let now = Utc.with_ymd_and_hms(2026, 9, 26, 12, 0, 0).unwrap();
+    let activity = |sessions, missions, started: Option<chrono::DateTime<Utc>>| RoleActivity {
+        role_id: "role".into(),
+        active_sessions: sessions,
+        active_missions: missions,
+        crew_count: 0,
+        last_started_at: started,
+        direct_session_id: None,
+    };
+    let started = Utc.with_ymd_and_hms(2026, 9, 23, 17, 41, 0).unwrap();
+    assert_eq!(
+        last_active_label(&activity(2, 1, Some(started)), &now),
+        ("2 sessions · 1 mission".into(), true)
+    );
+    assert_eq!(
+        last_active_label(&activity(1, 0, Some(started)), &now),
+        ("1 session".into(), true)
+    );
+    assert_eq!(
+        last_active_label(&activity(0, 0, Some(started)), &now),
+        ("Sep 23, 17:41".into(), false)
+    );
+    let last_year = Utc.with_ymd_and_hms(2025, 12, 30, 9, 5, 0).unwrap();
+    assert_eq!(
+        last_active_label(&activity(0, 0, Some(last_year)), &now),
+        ("Dec 30, 2025".into(), false)
+    );
+    assert_eq!(
+        last_active_label(&activity(0, 0, None), &now),
+        ("—".into(), false)
+    );
+}
+
+#[test]
+fn the_crews_heading_counts_crews_not_slots() {
+    use super::logic::distinct_crew_count;
+    use chrono::Utc;
+    use runner_backend::ops::slot::CrewMembership;
+
+    let membership = |crew_id: &str, slot_id: &str| CrewMembership {
+        crew_id: crew_id.into(),
+        crew_name: crew_id.into(),
+        slot_id: slot_id.into(),
+        slot_handle: slot_id.into(),
+        lead: false,
+        position: 0,
+        added_at: Utc::now(),
+    };
+    assert_eq!(distinct_crew_count(&[]), 0);
+    assert_eq!(
+        distinct_crew_count(&[
+            membership("pair", "coder"),
+            membership("pair", "coder-2"),
+            membership("release", "implementer"),
+        ]),
+        2
+    );
+}
+
+#[test]
+fn short_ids_keep_both_ends() {
+    use super::logic::short_id;
+
+    assert_eq!(short_id("01K000DEFAULT000RUNNERREVW01"), "01K0…ERREVW01");
+    assert_eq!(short_id("short"), "short");
+}
+
+#[test]
+fn narrow_tables_drop_columns_and_keep_the_role() {
+    use super::logic::{role_table_columns, RoleColumn};
+
+    let all = [
+        RoleColumn::Runtime,
+        RoleColumn::Model,
+        RoleColumn::Effort,
+        RoleColumn::Crews,
+        RoleColumn::LastActive,
+    ];
+    assert_eq!(role_table_columns(1136.), all);
+    assert_eq!(
+        role_table_columns(796.),
+        [
+            RoleColumn::Runtime,
+            RoleColumn::Model,
+            RoleColumn::LastActive
+        ]
+    );
+    assert_eq!(role_table_columns(500.), [RoleColumn::LastActive]);
+    assert!(role_table_columns(336.).is_empty());
+}
+
+struct RolePageHarness {
+    visual: gpui::VisualTestContext,
+    host: gpui::WindowHandle<crate::NativeRoot>,
+    core: crate::AppCore,
+    _cx: gpui::TestAppContext,
+    _temp: tempfile::TempDir,
+    _theme: crate::theme_snapshot::ThemeGuard,
+}
+
+fn role_page_harness(label: &str) -> RolePageHarness {
     use crate::theme_snapshot::ThemeGuard;
     use crate::*;
-    use chrono::Utc;
-    use gpui::{px, size, TestAppContext, VisualTestContext};
-    use runner_backend::model::Role;
+    use gpui::{TestAppContext, VisualTestContext};
     use runner_backend::{db, event_bus, events, mcp, router, session, shell_path, windows};
     use std::sync::{Arc, Mutex, RwLock};
 
-    let _theme = ThemeGuard::new();
+    let theme = ThemeGuard::new();
     theme::set_active_variant(theme::ThemeVariant::Carbon);
     let temp = tempfile::tempdir().unwrap();
     let pool = Arc::new(db::open_pool(&temp.path().join("runner.db")).unwrap());
@@ -229,119 +373,191 @@ fn role_detail_columns_stay_inside_the_centered_container() {
         let updater = cx.new(|cx| crate::Updater::new(false, temp.path().join("updates"), cx));
         cx.set_global(crate::GlobalUpdater(updater));
     });
-    let now = Utc::now();
-    let role = Role {
-        id: "01K000DEFAULT000RUNNERREVW01".into(),
-        handle: "reviewer".into(),
-        display_name: "Reviewer".into(),
-        runtime: "codex".into(),
-        command: "codex".into(),
-        args: ["--ask-for-approval", "on-request", "--sandbox", "workspace-write"]
-            .map(str::to_owned)
-            .to_vec(),
-        working_dir: None,
-        system_prompt: Some(
-            "You are a reviewer in a two-person peer coding loop. Your job is to read the task, inspect the coder's local working-tree diff, and push back when something is wrong, missing, risky, or out of scope.\n\n"
-                .repeat(4),
-        ),
-        env: Default::default(),
-        model: None,
-        effort: None,
-        created_at: now,
-        updated_at: now,
-    };
+    let label = label.to_owned();
     let host = cx.add_window(|window, cx| {
-        let mut root = NativeRoot::new(
-            "role-detail-layout".into(),
+        NativeRoot::new(
+            label,
             temp.path().join("logs"),
             None,
             None,
             store.clone(),
             window,
             cx,
-        );
-        root.route = AppRoute::RoleDetail("reviewer".into());
-        root.role_surfaces.detail = RoleDetailState {
-            handle: "reviewer".into(),
-            role: Some(role),
-            activity: None,
-            crews: Vec::new(),
-            loaded: true,
-            loading: false,
-            error: None,
-        };
-        root
+        )
     });
-    let mut visual = VisualTestContext::from_window(host.into(), &cx);
-    for width in [900., 1100., 1440.] {
-        visual.simulate_resize(size(px(width), px(900.)));
-        visual.run_until_parked();
-        let scroll = visual.debug_bounds("ROLE_DETAIL_SCROLL").unwrap();
-        let container = visual.debug_bounds("ROLE_DETAIL_CONTAINER").unwrap();
-        let header = visual.debug_bounds("ROLE_DETAIL_HEADER").unwrap();
-        let body = visual.debug_bounds("ROLE_DETAIL_BODY").unwrap();
-        let main = visual.debug_bounds("ROLE_DETAIL_MAIN").unwrap();
-        let aside = visual.debug_bounds("ROLE_DETAIL_ASIDE").unwrap();
+    let visual = VisualTestContext::from_window(host.into(), &cx);
+    RolePageHarness {
+        visual,
+        host,
+        core,
+        _cx: cx,
+        _temp: temp,
+        _theme: theme,
+    }
+}
+
+fn create_test_role(core: &crate::AppCore, handle: &str, system_prompt: Option<String>) -> Role {
+    create_test_role_with_args(core, handle, system_prompt, Vec::new())
+}
+
+fn create_test_role_with_args(
+    core: &crate::AppCore,
+    handle: &str,
+    system_prompt: Option<String>,
+    args: Vec<String>,
+) -> Role {
+    runner_backend::ops::role::role_create(
+        core,
+        runner_backend::ops::role::CreateRoleInput {
+            handle: handle.into(),
+            display_name: format!("Role {handle}"),
+            runtime: Runtime::ClaudeCode,
+            command: "claude".into(),
+            args,
+            working_dir: Some("/tmp/runner-role-page".into()),
+            system_prompt,
+            env: Default::default(),
+            model: Some("opus".into()),
+            effort: None,
+            permission_mode: runner_backend::router::runtime::PermissionMode::AcceptEdits,
+        },
+    )
+    .unwrap()
+}
+
+impl RolePageHarness {
+    fn open_role(&mut self, handle: &str) {
+        let handle = handle.to_owned();
+        self.host
+            .update(&mut self.visual, |root, window, cx| {
+                root.open_role_detail(handle, window, cx)
+            })
+            .unwrap();
+        self.visual.run_until_parked();
+    }
+
+    fn click(&mut self, selector: &'static str) {
+        let bounds = self
+            .visual
+            .debug_bounds(selector)
+            .unwrap_or_else(|| panic!("{selector} is not on screen"));
+        self.visual
+            .simulate_click(bounds.center(), gpui::Modifiers::default());
+        self.visual.run_until_parked();
+    }
+
+    fn read<T>(&mut self, read: impl FnOnce(&crate::NativeRoot) -> T) -> T {
+        self.host
+            .update(&mut self.visual, |root, _, _| read(root))
+            .unwrap()
+    }
+
+    fn in_place_edit(&mut self) -> bool {
+        self.read(|root| {
+            root.role_surfaces
+                .edit
+                .as_ref()
+                .is_some_and(|form| form.slot.is_none())
+        })
+    }
+}
+
+#[test]
+fn role_page_columns_split_wide_and_stack_at_the_minimum_width() {
+    use gpui::{px, size};
+
+    let mut page = role_page_harness("role-page-layout");
+    create_test_role(
+        &page.core,
+        "page-reviewer",
+        Some("You are a reviewer in a two-person peer coding loop.\n\n".repeat(40)),
+    );
+    page.open_role("page-reviewer");
+    // 640 wide is the smallest window Runner restores to; the sidebar keeps its default width.
+    for width in [640., 900., 1100., 1440.] {
+        page.visual.simulate_resize(size(px(width), px(900.)));
+        page.visual.run_until_parked();
+        let scroll = page.visual.debug_bounds("ROLE_DETAIL_SCROLL").unwrap();
+        let container = page.visual.debug_bounds("ROLE_DETAIL_CONTAINER").unwrap();
+        let header = page.visual.debug_bounds("ROLE_DETAIL_HEADER").unwrap();
+        let profile = page.visual.debug_bounds("ROLE_PAGE_PROFILE").unwrap();
+        let prompt = page.visual.debug_bounds("ROLE_PAGE_PROMPT").unwrap();
         let left_slack = container.left() - scroll.left();
         let right_slack = scroll.right() - container.right();
         assert!(
             (left_slack - right_slack).abs() <= px(1.),
             "{width}: container is off-centre, slack {left_slack:?} vs {right_slack:?}"
         );
-        assert!(
-            (body.right() - header.right()).abs() <= px(1.),
-            "{width}: body row {:?} does not end with the header {:?}",
-            body.right(),
-            header.right()
-        );
-        assert!(
-            aside.right() <= header.right() + px(1.),
-            "{width}: aside ends at {:?}, past the header's {:?}",
-            aside.right(),
-            header.right()
-        );
-        assert!(
-            main.right() + px(1.) < aside.left(),
-            "{width}: columns overlap: main ends {:?}, aside starts {:?}",
-            main.right(),
-            aside.left()
-        );
+        for (name, bounds) in [("profile", profile), ("prompt", prompt)] {
+            assert!(
+                bounds.left() >= header.left() - px(1.)
+                    && bounds.right() <= header.right() + px(1.),
+                "{width}: {name} {bounds:?} leaves the page {header:?}"
+            );
+        }
+        if width >= 1100. {
+            assert!(
+                profile.right() + px(1.) < prompt.left(),
+                "{width}: the prompt should sit beside the profile, {profile:?} vs {prompt:?}"
+            );
+            assert_eq!(profile.top(), prompt.top(), "{width}: columns share a top");
+        }
+        if width <= 640. {
+            assert!(
+                prompt.top() >= profile.bottom(),
+                "{width}: the prompt should wrap under the profile, {profile:?} vs {prompt:?}"
+            );
+        }
     }
     assert!(
-        visual.debug_bounds("ENTITY_SIDEBAR_TOGGLE").is_none(),
+        page.visual.debug_bounds("ENTITY_SIDEBAR_TOGGLE").is_none(),
         "the shell must not add an open-sidebar cluster while the sidebar is open"
     );
+}
+
+#[test]
+fn entity_pages_keep_the_sidebar_cluster_when_it_collapses() {
+    use crate::surfaces::AppRoute;
+    use gpui::{px, size};
+
+    let mut page = role_page_harness("role-page-cluster");
+    create_test_role(&page.core, "page-reviewer", None);
+    page.open_role("page-reviewer");
+    page.visual.simulate_resize(size(px(1100.), px(900.)));
+    page.visual.run_until_parked();
+    let host = page.host;
     for route in [
-        AppRoute::RoleDetail("reviewer".into()),
+        AppRoute::RoleDetail("page-reviewer".into()),
         AppRoute::Roles,
         AppRoute::Crews,
         AppRoute::CrewEditor("crew".into()),
     ] {
-        host.update(&mut visual, |root, _, cx| {
+        host.update(&mut page.visual, |root, _, cx| {
             root.set_sidebar_collapsed(true, false, cx);
             root.route = route.clone();
             cx.notify();
         })
         .unwrap();
-        visual.run_until_parked();
+        page.visual.run_until_parked();
         #[cfg(not(target_os = "macos"))]
         assert!(
-            visual.debug_bounds("ENTITY_SIDEBAR_TOGGLE").is_none(),
+            page.visual.debug_bounds("ENTITY_SIDEBAR_TOGGLE").is_none(),
             "{route:?}: the platform chrome owns the sidebar toggle off macOS"
         );
         #[cfg(target_os = "macos")]
         {
-            let toggle = visual
+            let toggle = page
+                .visual
                 .debug_bounds("ENTITY_SIDEBAR_TOGGLE")
                 .unwrap_or_else(|| {
                     panic!("{route:?}: a collapsed sidebar leaves no open-sidebar cluster")
                 });
             let padding = host
-                .update(&mut visual, |root, window, cx| {
+                .update(&mut page.visual, |root, window, cx| {
                     root.workspace_titlebar_padding(window, cx)
                 })
                 .unwrap();
-            let column = visual.debug_bounds("APP_CONTENT_COLUMN").unwrap();
+            let column = page.visual.debug_bounds("APP_CONTENT_COLUMN").unwrap();
             assert_eq!(toggle.top(), column.top(), "{route:?}");
             assert!(
                 (toggle.left() - column.left() - px(padding)).abs() <= px(1.),
@@ -359,4 +575,436 @@ fn role_detail_columns_stay_inside_the_centered_container() {
             );
         }
     }
+}
+
+#[test]
+fn role_list_table_fits_the_minimum_window_and_counts_its_rows() {
+    use crate::surfaces::AppRoute;
+    use gpui::{px, size};
+
+    let mut page = role_page_harness("role-list-layout");
+    for index in 0..9 {
+        create_test_role(&page.core, &format!("page-role-{index}"), None);
+    }
+    page.host
+        .update(&mut page.visual, |root, window, cx| {
+            root.open_roles(window, cx)
+        })
+        .unwrap();
+    page.visual.run_until_parked();
+    assert_eq!(page.read(|root| root.route.clone()), AppRoute::Roles);
+    for width in [640., 1100., 1440.] {
+        page.visual.simulate_resize(size(px(width), px(700.)));
+        page.visual.run_until_parked();
+        let rows = page.visual.debug_bounds("ROLE_TABLE_ROWS").unwrap();
+        let header = page.visual.debug_bounds("ROLE_TABLE_HEADER").unwrap();
+        let actions = page.visual.debug_bounds("ROLE_ROW_ACTIONS").unwrap();
+        assert!(
+            actions.right() <= rows.right() + px(1.),
+            "{width}: row actions {actions:?} overflow the table {rows:?}"
+        );
+        assert!(
+            (header.right() - rows.right()).abs() <= px(1.),
+            "{width}: header {header:?} and rows {rows:?} end apart"
+        );
+    }
+    let roles = runner_backend::ops::role::role_list(&page.core)
+        .unwrap()
+        .len();
+    let (filtered, total, searching) = page.read(|root| {
+        let list = &root.role_surfaces.list;
+        (list.filtered_count, list.total_count, list.searching())
+    });
+    assert_eq!((filtered, total, searching), (roles, roles, false));
+    assert_eq!(
+        runner_app::ui::count_label(filtered, total, "roles", searching),
+        format!("{roles} roles")
+    );
+}
+
+// GPUI's test frames keep a selector's bounds once it has been drawn, so a
+// "not shown" check only holds for an element that window has never drawn.
+#[test]
+fn the_prompt_starts_collapsed_and_collapses_again_for_another_role() {
+    let mut page = role_page_harness("role-prompt-clamp");
+    let long = (1..=40)
+        .map(|line| format!("Line {line} of the brief."))
+        .collect::<Vec<_>>()
+        .join("\n");
+    create_test_role(&page.core, "page-long", Some(long));
+    create_test_role(
+        &page.core,
+        "page-other",
+        Some(String::from("# Short\n\nOne line.")),
+    );
+    page.open_role("page-other");
+    assert!(page.visual.debug_bounds("ROLE_PROMPT_TEXT").is_some());
+    assert!(
+        page.visual.debug_bounds("ROLE_PROMPT_TOGGLE").is_none(),
+        "a short prompt shows whole, with no toggle"
+    );
+
+    page.open_role("page-long");
+    assert!(!page.read(|root| root.role_surfaces.prompt_expanded));
+    let collapsed = page.visual.debug_bounds("ROLE_PROMPT_TEXT").unwrap();
+    page.click("ROLE_PROMPT_TOGGLE");
+    assert!(page.read(|root| root.role_surfaces.prompt_expanded));
+    let expanded = page.visual.debug_bounds("ROLE_PROMPT_TEXT").unwrap();
+    assert!(
+        expanded.size.height > collapsed.size.height,
+        "expanding should show more of the prompt: {collapsed:?} vs {expanded:?}"
+    );
+    page.click("ROLE_PROMPT_TOGGLE");
+    assert!(
+        !page.read(|root| root.role_surfaces.prompt_expanded),
+        "the same toggle collapses it again"
+    );
+    page.click("ROLE_PROMPT_TOGGLE");
+    assert!(page.read(|root| root.role_surfaces.prompt_expanded));
+
+    page.open_role("page-other");
+    assert!(!page.read(|root| root.role_surfaces.prompt_expanded));
+    page.open_role("page-long");
+    assert!(!page.read(|root| root.role_surfaces.prompt_expanded));
+    assert_eq!(
+        page.visual.debug_bounds("ROLE_PROMPT_TEXT").unwrap().size,
+        collapsed.size,
+        "coming back shows the collapsed prompt"
+    );
+}
+
+#[test]
+fn edit_edits_in_place_and_cancel_discards_the_draft() {
+    let mut page = role_page_harness("role-edit-cancel");
+    let role = create_test_role(&page.core, "page-coder", Some("Ship it.".into()));
+    page.open_role("page-coder");
+    page.host
+        .update(&mut page.visual, |root, window, cx| {
+            root.open_role_edit(role.clone(), None, window, cx)
+        })
+        .unwrap();
+    page.visual.run_until_parked();
+    assert!(page.in_place_edit());
+    assert!(page.visual.debug_bounds("ROLE_EDIT_IN_PLACE").is_some());
+    assert!(page.visual.debug_bounds("ROLE_EDITING_TAG").is_some());
+    assert!(page.visual.debug_bounds("ROLE_PROMPT_EDITOR").is_some());
+    assert!(
+        page.visual.debug_bounds("ROLE_EDIT_DRAWER").is_none(),
+        "the role page never opens the drawer"
+    );
+    assert!(page.visual.debug_bounds("ROLE_EDIT_DIRTY").is_none());
+
+    let name = page.read(|root| {
+        root.role_surfaces
+            .edit
+            .as_ref()
+            .unwrap()
+            .display_name
+            .clone()
+    });
+    page.host
+        .update(&mut page.visual, |_, _, cx| {
+            name.update(cx, |input, cx| input.set_text("Renamed", cx))
+        })
+        .unwrap();
+    page.visual.run_until_parked();
+    assert!(page.visual.debug_bounds("ROLE_EDIT_DIRTY").is_some());
+
+    page.click("ROLE_EDIT_CANCEL");
+    assert!(!page.in_place_edit());
+    let stored = runner_backend::ops::role::role_get(&page.core, &role.id).unwrap();
+    assert_eq!(stored.display_name, "Role page-coder");
+
+    // Escape from a field cancels too, as it closes the drawer.
+    page.host
+        .update(&mut page.visual, |root, window, cx| {
+            root.open_role_edit(role.clone(), None, window, cx)
+        })
+        .unwrap();
+    page.visual.run_until_parked();
+    assert!(page.in_place_edit());
+    page.visual.simulate_keystrokes("escape");
+    page.visual.run_until_parked();
+    assert!(!page.in_place_edit());
+}
+
+#[test]
+fn an_untouched_form_is_clean_even_when_an_arg_holds_a_space() {
+    let mut page = role_page_harness("role-edit-args");
+    let role = create_test_role_with_args(
+        &page.core,
+        "page-coder",
+        Some("Ship it.".into()),
+        vec!["--label".into(), "two words".into()],
+    );
+    assert!(role.args.iter().any(|arg| arg == "two words"));
+    page.open_role("page-coder");
+    page.host
+        .update(&mut page.visual, |root, window, cx| {
+            root.open_role_edit(role.clone(), None, window, cx)
+        })
+        .unwrap();
+    page.visual.run_until_parked();
+    let dirty = page
+        .host
+        .update(&mut page.visual, |root, _, cx| {
+            super::logic::role_edit_is_dirty(root.role_surfaces.edit.as_ref().unwrap(), cx)
+        })
+        .unwrap();
+    assert!(!dirty, "opening the editor changes nothing");
+    assert!(page.visual.debug_bounds("ROLE_EDIT_IN_PLACE").is_some());
+    assert!(page.visual.debug_bounds("ROLE_EDIT_DIRTY").is_none());
+
+    let args = page.read(|root| root.role_surfaces.edit.as_ref().unwrap().args.clone());
+    page.host
+        .update(&mut page.visual, |_, _, cx| {
+            args.update(cx, |input, cx| {
+                input.set_text("--label two  words --verbose", cx)
+            })
+        })
+        .unwrap();
+    page.visual.run_until_parked();
+    assert!(page.visual.debug_bounds("ROLE_EDIT_DIRTY").is_some());
+}
+
+#[test]
+fn saving_a_rename_keeps_an_arg_that_holds_a_space() {
+    let mut page = role_page_harness("role-save-args");
+    let role = create_test_role_with_args(
+        &page.core,
+        "page-coder",
+        None,
+        vec!["--label".into(), "two words".into()],
+    );
+    page.open_role("page-coder");
+    page.host
+        .update(&mut page.visual, |root, window, cx| {
+            root.open_role_edit(role.clone(), None, window, cx)
+        })
+        .unwrap();
+    page.visual.run_until_parked();
+    let name = page.read(|root| {
+        root.role_surfaces
+            .edit
+            .as_ref()
+            .unwrap()
+            .display_name
+            .clone()
+    });
+    page.host
+        .update(&mut page.visual, |_, _, cx| {
+            name.update(cx, |input, cx| input.set_text("Renamed coder", cx))
+        })
+        .unwrap();
+    page.visual.run_until_parked();
+    page.click("ROLE_EDIT_SAVE");
+    assert!(!page.in_place_edit());
+    let stored = runner_backend::ops::role::role_get(&page.core, &role.id).unwrap();
+    assert_eq!(stored.display_name, "Renamed coder");
+    assert_eq!(stored.args, role.args, "a rename leaves the command alone");
+    assert!(stored.args.iter().any(|arg| arg == "two words"));
+}
+
+#[test]
+fn a_search_with_no_matches_keeps_the_count() {
+    use crate::surfaces::AppRoute;
+
+    let mut page = role_page_harness("role-list-no-matches");
+    let total = runner_backend::ops::role::role_list(&page.core)
+        .unwrap()
+        .len();
+    page.visual.run_until_parked();
+    // Seed the list as a finished zero-match search before the Roles route
+    // first draws, since test frames keep a selector's bounds once drawn.
+    page.host
+        .update(&mut page.visual, |root, _, cx| {
+            let list = &mut root.role_surfaces.list;
+            list.query = "zzz-no-role".into();
+            list.debounced_query = "zzz-no-role".into();
+            list.items.clear();
+            list.filtered_count = 0;
+            list.total_count = total;
+            list.loaded = true;
+            list.loading = false;
+            root.route = AppRoute::Roles;
+            cx.notify();
+        })
+        .unwrap();
+    page.visual.run_until_parked();
+    assert!(
+        page.visual.debug_bounds("PAGINATED_LIST_COUNT").is_some(),
+        "the pager row and its count stay under the no-match card"
+    );
+    let (filtered, total_count, searching) = page.read(|root| {
+        let list = &root.role_surfaces.list;
+        (list.filtered_count, list.total_count, list.searching())
+    });
+    assert_eq!(
+        runner_app::ui::count_label(filtered, total_count, "roles", searching),
+        format!("0 of {total} roles")
+    );
+}
+
+#[test]
+fn the_prompt_editor_fills_the_column_while_editing() {
+    use gpui::{px, size};
+
+    let mut page = role_page_harness("role-edit-height");
+    let role = create_test_role(&page.core, "page-coder", Some("Ship it.".into()));
+    page.open_role("page-coder");
+    page.visual.simulate_resize(size(px(1440.), px(900.)));
+    page.host
+        .update(&mut page.visual, |root, window, cx| {
+            root.open_role_edit(role.clone(), None, window, cx)
+        })
+        .unwrap();
+    page.visual.run_until_parked();
+    let profile = page.visual.debug_bounds("ROLE_PAGE_PROFILE").unwrap();
+    let prompt = page.visual.debug_bounds("ROLE_PAGE_PROMPT").unwrap();
+    let card = page.visual.debug_bounds("ROLE_PROMPT_CARD").unwrap();
+    let editor = page.visual.debug_bounds("ROLE_PROMPT_EDITOR").unwrap();
+    assert!(
+        (prompt.bottom() - profile.bottom()).abs() <= px(1.),
+        "the prompt column should run the profile column's height: {prompt:?} vs {profile:?}"
+    );
+    assert!(
+        card.size.height > profile.size.height * 0.8,
+        "the editor card should fill the column, got {card:?} beside {profile:?}"
+    );
+    assert!(editor.bottom() <= card.bottom() && editor.size.height > card.size.height * 0.8);
+}
+
+#[test]
+fn save_in_place_goes_through_the_shared_submit() {
+    let mut page = role_page_harness("role-edit-save");
+    let role = create_test_role(&page.core, "page-coder", Some("Ship it.".into()));
+    page.open_role("page-coder");
+    page.host
+        .update(&mut page.visual, |root, window, cx| {
+            root.open_role_edit(role.clone(), None, window, cx)
+        })
+        .unwrap();
+    page.visual.run_until_parked();
+    let (name, prompt) = page.read(|root| {
+        let form = root.role_surfaces.edit.as_ref().unwrap();
+        (form.display_name.clone(), form.system_prompt.clone())
+    });
+    page.host
+        .update(&mut page.visual, |_, _, cx| {
+            name.update(cx, |input, cx| input.set_text("Renamed coder", cx));
+            prompt.update(cx, |input, cx| {
+                input.set_text("# Coder\n\nShip it, tested.", cx)
+            });
+        })
+        .unwrap();
+    page.visual.run_until_parked();
+
+    page.click("ROLE_EDIT_SAVE");
+    assert!(!page.in_place_edit(), "a clean save leaves edit mode");
+    let stored = runner_backend::ops::role::role_get(&page.core, &role.id).unwrap();
+    assert_eq!(stored.display_name, "Renamed coder");
+    assert_eq!(
+        stored.system_prompt.as_deref(),
+        Some("# Coder\n\nShip it, tested.")
+    );
+    assert_eq!(
+        stored.model.as_deref(),
+        Some("opus"),
+        "untouched fields survive"
+    );
+    let shown = page.read(|root| root.role_surfaces.detail.role.clone().unwrap());
+    assert_eq!(shown.display_name, "Renamed coder");
+}
+
+#[test]
+fn leaving_the_role_page_discards_an_in_place_draft() {
+    let mut page = role_page_harness("role-edit-leave");
+    let role = create_test_role(&page.core, "page-coder", None);
+    page.open_role("page-coder");
+    page.host
+        .update(&mut page.visual, |root, window, cx| {
+            root.open_role_edit(role.clone(), None, window, cx)
+        })
+        .unwrap();
+    assert!(page.in_place_edit());
+    page.host
+        .update(&mut page.visual, |root, window, cx| {
+            root.open_roles(window, cx)
+        })
+        .unwrap();
+    page.visual.run_until_parked();
+    assert!(!page.in_place_edit());
+}
+
+#[test]
+fn edit_details_opens_the_role_page_in_edit_mode() {
+    use crate::surfaces::AppRoute;
+
+    let mut page = role_page_harness("role-menu-edit");
+    let role = create_test_role(&page.core, "page-planner", None);
+    page.host
+        .update(&mut page.visual, |root, window, cx| {
+            root.open_roles(window, cx)
+        })
+        .unwrap();
+    page.visual.run_until_parked();
+    page.host
+        .update(&mut page.visual, |root, window, cx| {
+            root.handle_role_menu_action(RoleMenuAction::Edit(Box::new(role.clone())), window, cx)
+        })
+        .unwrap();
+    page.visual.run_until_parked();
+    assert_eq!(
+        page.read(|root| root.route.clone()),
+        AppRoute::RoleDetail("page-planner".into())
+    );
+    assert!(page.in_place_edit());
+    assert!(page.visual.debug_bounds("ROLE_EDIT_IN_PLACE").is_some());
+    assert!(page.visual.debug_bounds("ROLE_EDIT_DRAWER").is_none());
+}
+
+#[test]
+fn a_crew_slot_edit_still_opens_the_drawer() {
+    use crate::surfaces::AppRoute;
+    use chrono::Utc;
+    use runner_backend::model::{Slot, SlotWithRole};
+
+    let mut page = role_page_harness("role-slot-drawer");
+    let role = create_test_role(&page.core, "page-coder", None);
+    let slot = SlotWithRole {
+        slot: Slot {
+            id: "slot".into(),
+            crew_id: "crew".into(),
+            role_id: role.id.clone(),
+            slot_handle: "page-coder".into(),
+            position: 0,
+            lead: true,
+            runtime_override: None,
+            model_override: Some("sonnet".into()),
+            effort_override: None,
+            added_at: Utc::now(),
+        },
+        role: role.clone(),
+    };
+    page.host
+        .update(&mut page.visual, |root, window, cx| {
+            root.route = AppRoute::CrewEditor("crew".into());
+            root.open_role_edit(role.clone(), Some(slot), window, cx)
+        })
+        .unwrap();
+    page.visual.run_until_parked();
+    assert!(page.visual.debug_bounds("ROLE_EDIT_DRAWER").is_some());
+    assert!(page.visual.debug_bounds("ROLE_EDIT_IN_PLACE").is_none());
+    let model = page.read(|root| {
+        let form = root.role_surfaces.edit.as_ref().unwrap();
+        assert!(form.slot.is_some());
+        form.model.clone()
+    });
+    let model = page
+        .host
+        .update(&mut page.visual, |_, _, cx| {
+            model.read(cx).text().to_owned()
+        })
+        .unwrap();
+    assert_eq!(model, "sonnet", "the drawer keeps the slot's overrides");
 }

@@ -1,10 +1,13 @@
 use runner_backend::model::Runtime;
 
+use chrono::{DateTime, Datelike, TimeZone};
 use gpui::prelude::*;
-use gpui::{div, px, rems, AnyElement, Context, FocusHandle, FontWeight};
+use gpui::{div, AnyElement, Context, FocusHandle};
 use runner_app::ui::SelectOption;
 use runner_backend::model::Role;
+use runner_backend::ops::role::RoleActivity;
 use runner_backend::ops::runtime::{RuntimeCatalogEntry, RuntimeCatalogOption};
+use runner_backend::ops::slot::CrewMembership;
 use runner_backend::router::runtime::PermissionMode;
 
 use super::*;
@@ -258,7 +261,7 @@ pub(super) fn parse_permission_mode(value: &str) -> PermissionMode {
     }
 }
 
-fn permission_mode_label(mode: PermissionMode) -> &'static str {
+pub(super) fn permission_mode_label(mode: PermissionMode) -> &'static str {
     match mode {
         PermissionMode::Default => "Default",
         PermissionMode::AcceptEdits => "Accept edits",
@@ -293,6 +296,26 @@ pub(super) fn permission_mode_description(runtime: &str, mode: PermissionMode) -
         | (Some(Runtime::Pi), _)
         | (Some(Runtime::Shell) | None, _) => "",
     }
+}
+
+/// The permission mode a role's args carry, or `None` for a runtime that has
+/// no modes. A row saved with a mode its runtime no longer offers — a Trae row
+/// with the old `--permission-mode auto` still infers as Auto (#599) — reads as
+/// the fallback, which is what saving then writes.
+pub(super) fn role_permission_mode(role: &Role) -> Option<PermissionMode> {
+    let modes = permission_modes(&role.runtime);
+    if modes.is_empty() {
+        return None;
+    }
+    let inferred = runner_backend::router::runtime::infer_permission_mode(
+        Runtime::parse(&role.runtime),
+        &role.args,
+    );
+    Some(if modes.contains(&inferred) {
+        inferred
+    } else {
+        PermissionMode::Default
+    })
 }
 
 pub(super) fn validate_role_handle(handle: &str) -> Option<&'static str> {
@@ -400,6 +423,44 @@ pub(super) fn role_edit_focus_order(
     order
 }
 
+/// Whether the in-place editor holds anything a save would write.
+pub(super) fn role_edit_is_dirty(form: &RoleEditForm, cx: &Context<NativeRoot>) -> bool {
+    let role = &form.role;
+    let stored = |value: &Option<String>| value.as_deref().and_then(trimmed_option);
+    form.display_name.read(cx).text().trim() != role.display_name.trim()
+        || form.runtime != role.runtime
+        || role_edit_args(form, cx) != role_visible_args(role)
+        || trimmed_option(form.model.read(cx).text()) != stored(&role.model)
+        || trimmed_option(&form.effort) != stored(&role.effort)
+        || (!permission_modes(&form.runtime).is_empty()
+            && Some(form.permission_mode) != role_permission_mode(role))
+        || trimmed_option(form.working_dir.read(cx).text()) != stored(&role.working_dir)
+        || trimmed_option(form.system_prompt.read(cx).text()) != stored(&role.system_prompt)
+}
+
+/// The args the form shows: the stored ones less the permission flags its
+/// Permissions control owns.
+pub(super) fn role_visible_args(role: &Role) -> Vec<String> {
+    runner_backend::router::runtime::strip_permission_flags(
+        Runtime::parse(&role.runtime),
+        &role.args,
+    )
+}
+
+/// The args a save writes. The field joins args with spaces, so while it
+/// still reads as the stored args, the stored vector goes back untouched and
+/// an arg holding a space keeps its grouping; an edited field splits on
+/// whitespace.
+pub(super) fn role_edit_args(form: &RoleEditForm, cx: &Context<NativeRoot>) -> Vec<String> {
+    let visible = role_visible_args(&form.role);
+    let edited = split_args(form.args.read(cx).text());
+    if edited == split_args(&visible.join(" ")) {
+        visible
+    } else {
+        edited
+    }
+}
+
 pub(super) fn trimmed_option(value: &str) -> Option<String> {
     let value = value.trim();
     (!value.is_empty()).then(|| value.to_owned())
@@ -437,13 +498,6 @@ pub(super) fn plural(count: i64, singular: &str, plural: &str) -> String {
     }
 }
 
-pub(super) fn format_timestamp(timestamp: runner_backend::model::Timestamp) -> String {
-    timestamp
-        .with_timezone(&chrono::Local)
-        .format("%-m/%-d/%Y, %-I:%M:%S %p")
-        .to_string()
-}
-
 pub(super) fn error_banner(error: String) -> AnyElement {
     div()
         .rounded_sm()
@@ -458,119 +512,189 @@ pub(super) fn error_banner(error: String) -> AnyElement {
         .into_any_element()
 }
 
-pub(super) fn detail_card(
-    title: &'static str,
-    subtitle: Option<&'static str>,
-    child: impl IntoElement,
-) -> AnyElement {
-    div()
-        .flex()
-        .flex_col()
-        .gap_2()
-        .rounded_lg()
-        .border_1()
-        .border_color(theme::border())
-        .bg(theme::panel())
-        .p_4()
-        .child(
-            div()
-                .flex()
-                .flex_col()
-                .gap(rems(2. / 16.))
-                .child(
-                    div()
-                        .text_size(theme::text_title())
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(theme::text())
-                        .child(title),
-                )
-                .children(subtitle.map(|subtitle| {
-                    div()
-                        .text_size(theme::text_meta())
-                        .text_color(theme::faint())
-                        .child(subtitle)
-                })),
-        )
-        .child(child)
-        .into_any_element()
+/// Source lines the role page's collapsed prompt card renders.
+pub(super) const PROMPT_PREVIEW_LINES: usize = 24;
+
+/// The prompt card's header: `48 lines · 2.9 KB`.
+pub(super) fn prompt_meta(prompt: &str) -> String {
+    let lines = plural(prompt.lines().count() as i64, "line", "lines");
+    let bytes = prompt.len();
+    if bytes < 1024 {
+        format!("{lines} · {bytes} B")
+    } else {
+        format!("{lines} · {:.1} KB", bytes as f64 / 1024.)
+    }
 }
 
-pub(super) fn big_stat(label: &'static str, value: i64, accent: bool) -> AnyElement {
-    div()
-        .flex_1()
-        .flex()
-        .flex_col()
-        .gap(rems(2. / 16.))
-        .rounded_sm()
-        .border_1()
-        .border_color(theme::border())
-        .bg(theme::bg())
-        .p_3()
-        .child(
-            div()
-                .text_size(theme::text_display_xl())
-                .font_weight(FontWeight::BOLD)
-                .line_height(rems(30. / 16.))
-                .text_color(if accent {
-                    theme::accent()
-                } else {
-                    theme::text()
-                })
-                .child(value.to_string()),
-        )
-        .child(
-            div()
-                .text_size(theme::text_caption())
-                .text_color(theme::faint())
-                .child(label.to_uppercase()),
-        )
-        .into_any_element()
+/// The first lines of a prompt too long to show whole, or `None` when it fits.
+pub(super) fn prompt_preview(prompt: &str) -> Option<&str> {
+    if prompt.lines().count() <= PROMPT_PREVIEW_LINES {
+        return None;
+    }
+    let end = prompt
+        .match_indices('\n')
+        .nth(PROMPT_PREVIEW_LINES - 1)
+        .map_or(prompt.len(), |(index, _)| index);
+    Some(&prompt[..end])
 }
 
-pub(super) fn detail_row(label: &'static str, value: String) -> AnyElement {
-    div()
-        .flex()
-        .items_start()
-        .justify_between()
-        .gap_3()
-        .child(div().flex_none().text_color(theme::faint()).child(label))
-        .child(
-            div()
-                .min_w(px(0.))
-                .text_right()
-                .text_color(theme::text())
-                .child(value),
-        )
-        .into_any_element()
+/// A model or effort cell: the value, or `default` (dimmed) when unset.
+pub(super) fn role_setting_label(value: Option<&str>) -> (String, bool) {
+    match value.map(str::trim).filter(|value| !value.is_empty()) {
+        Some(value) => (value.to_owned(), false),
+        None => ("default".to_owned(), true),
+    }
 }
 
-pub(super) fn detail_metadata_row(
-    label: &'static str,
-    value: String,
-    monospace: bool,
-    subtle: bool,
-) -> AnyElement {
-    div()
-        .flex()
-        .items_start()
-        .justify_between()
-        .gap_3()
-        .text_size(theme::text_ui())
-        .child(div().flex_none().text_color(theme::faint()).child(label))
-        .child(
-            div()
-                .min_w(px(0.))
-                .text_right()
-                .when(monospace, |value| {
-                    value.font_family(theme::UI_MONOSPACE_FONT)
-                })
-                .when(subtle, |value| {
-                    value
-                        .text_size(theme::text_caption())
-                        .text_color(theme::faint())
-                })
-                .when(!subtle, |value| value.text_color(theme::text()))
-                .child(value),
-        )
-        .into_any_element()
+/// A role can fill several slots of one crew; the heading counts crews.
+pub(super) fn distinct_crew_count(crews: &[CrewMembership]) -> usize {
+    crews
+        .iter()
+        .map(|membership| membership.crew_id.as_str())
+        .collect::<std::collections::HashSet<_>>()
+        .len()
+}
+
+pub(super) fn crews_label(count: i64) -> String {
+    if count > 0 {
+        count.to_string()
+    } else {
+        "—".to_owned()
+    }
+}
+
+/// `2 sessions · 1 mission` while the role runs anywhere, else `None`.
+pub(super) fn live_activity_label(activity: &RoleActivity) -> Option<String> {
+    let sessions = plural(activity.active_sessions, "session", "sessions");
+    if activity.active_missions > 0 {
+        let missions = plural(activity.active_missions, "mission", "missions");
+        Some(format!("{sessions} · {missions}"))
+    } else if activity.active_sessions > 0 {
+        Some(sessions)
+    } else {
+        None
+    }
+}
+
+/// The list's Last active cell and whether it is live: the live counts, the
+/// last start, or a dash for a role that never ran.
+pub(super) fn last_active_label<Tz: TimeZone>(
+    activity: &RoleActivity,
+    now: &DateTime<Tz>,
+) -> (String, bool)
+where
+    Tz::Offset: std::fmt::Display,
+{
+    if let Some(live) = live_activity_label(activity) {
+        return (live, true);
+    }
+    let last = activity
+        .last_started_at
+        .map(|started| short_timestamp(&started.with_timezone(&now.timezone()), now))
+        .unwrap_or_else(|| "—".to_owned());
+    (last, false)
+}
+
+/// `Sep 23, 17:41` this year, `Sep 23, 2025` before it.
+pub(super) fn short_timestamp<Tz: TimeZone>(timestamp: &DateTime<Tz>, now: &DateTime<Tz>) -> String
+where
+    Tz::Offset: std::fmt::Display,
+{
+    if timestamp.year() == now.year() {
+        timestamp.format("%b %-d, %H:%M").to_string()
+    } else {
+        timestamp.format("%b %-d, %Y").to_string()
+    }
+}
+
+pub(super) fn local_short_timestamp(timestamp: runner_backend::model::Timestamp) -> String {
+    short_timestamp(
+        &timestamp.with_timezone(&chrono::Local),
+        &chrono::Local::now(),
+    )
+}
+
+/// `01K0…RCODER01`: enough of an id to tell rows apart.
+pub(super) fn short_id(id: &str) -> String {
+    if id.len() <= 12 || !id.is_ascii() {
+        return id.to_owned();
+    }
+    format!("{}…{}", &id[..4], &id[id.len() - 8..])
+}
+
+pub(super) fn runtime_display_name(runtime: &str) -> String {
+    runner_backend::ops::runtime::runtime_list()
+        .into_iter()
+        .find(|definition| definition.name.key() == runtime)
+        .map(|definition| definition.display_name)
+        .unwrap_or_else(|| runtime.to_owned())
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum RoleColumn {
+    Runtime,
+    Model,
+    Effort,
+    Crews,
+    LastActive,
+}
+
+pub(super) const ROLE_ROW_PADDING_X: f32 = 12.;
+pub(super) const ROLE_CELL_MIN_WIDTH: f32 = 176.;
+pub(super) const ROLE_ROW_ACTIONS_WIDTH: f32 = 92.;
+
+impl RoleColumn {
+    const ORDER: [Self; 5] = [
+        Self::Runtime,
+        Self::Model,
+        Self::Effort,
+        Self::Crews,
+        Self::LastActive,
+    ];
+
+    pub(super) fn width(self) -> f32 {
+        match self {
+            Self::Runtime => 140.,
+            Self::Model => 116.,
+            Self::Effort => 84.,
+            Self::Crews => 56.,
+            Self::LastActive => 168.,
+        }
+    }
+
+    pub(super) fn label(self) -> &'static str {
+        match self {
+            Self::Runtime => "Runtime",
+            Self::Model => "Model",
+            Self::Effort => "Effort",
+            Self::Crews => "Crews",
+            Self::LastActive => "Last active",
+        }
+    }
+}
+
+/// The columns a table this wide shows beside Role. A narrow table drops the
+/// least telling columns first, and the Role column takes whatever is left.
+pub(super) fn role_table_columns(table_width: f32) -> Vec<RoleColumn> {
+    const PRIORITY: [RoleColumn; 5] = [
+        RoleColumn::LastActive,
+        RoleColumn::Runtime,
+        RoleColumn::Model,
+        RoleColumn::Effort,
+        RoleColumn::Crews,
+    ];
+    let mut budget =
+        table_width - 2. * ROLE_ROW_PADDING_X - ROLE_CELL_MIN_WIDTH - ROLE_ROW_ACTIONS_WIDTH;
+    let mut shown = Vec::new();
+    for column in PRIORITY {
+        if column.width() > budget {
+            break;
+        }
+        budget -= column.width();
+        shown.push(column);
+    }
+    RoleColumn::ORDER
+        .into_iter()
+        .filter(|column| shown.contains(column))
+        .collect()
 }

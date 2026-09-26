@@ -213,6 +213,7 @@ impl NativeRoot {
         .counts(
             self.crew_surfaces.list.filtered_count,
             self.crew_surfaces.list.total_count,
+            self.crew_surfaces.list.searching(),
         )
         .load_state(
             self.crew_surfaces.list.loading,

@@ -27,6 +27,8 @@ use crate::*;
 
 const FORM_WIDTH: f32 = 576.;
 const FIELD_WIDTH: f32 = 528.;
+/// The role page's left column, which holds the profile, setup and crews.
+const ROLE_COLUMN_WIDTH: f32 = 272.;
 
 #[derive(Default)]
 struct RoleDetailState {
@@ -41,7 +43,7 @@ struct RoleDetailState {
 
 #[derive(Clone)]
 enum RoleMenuAction {
-    Open(String),
+    Edit(Box<Role>),
     Delete { id: String, handle: String },
 }
 
@@ -132,6 +134,12 @@ pub(crate) struct RoleSurfaces {
     delete_confirm: Option<RoleDeleteConfirm>,
     delete_busy: bool,
     chat_pending: Option<String>,
+    /// The role page shows the whole prompt instead of its first lines.
+    prompt_expanded: bool,
+    /// The in-place editor's prompt card shows the rendered draft.
+    prompt_preview: bool,
+    /// The list row under the pointer, which trades its Chat icon for a button.
+    hovered_row: Option<String>,
 }
 
 impl RoleSurfaces {
@@ -163,6 +171,9 @@ impl RoleSurfaces {
             delete_confirm: None,
             delete_busy: false,
             chat_pending: None,
+            prompt_expanded: false,
+            prompt_preview: false,
+            hovered_row: None,
         }
     }
 }

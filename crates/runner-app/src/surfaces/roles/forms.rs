@@ -6,11 +6,12 @@ use super::logic::permission_modes;
 use super::logic::permission_options;
 use super::logic::resolve_role_edit;
 use super::logic::role_edit_runtime_options;
+use super::logic::role_permission_mode;
+use super::logic::role_visible_args;
 use super::logic::runtime_entry;
 use super::logic::runtime_model_placeholder;
 use super::logic::runtime_models;
 use super::logic::validate_role_handle;
-use runner_backend::model::Runtime;
 use std::rc::Rc;
 
 use gpui::prelude::*;
@@ -338,13 +339,26 @@ impl NativeRoot {
         let resolution = resolve_role_edit(&role, slot.as_ref());
         ensure_runtime_present(self.core(cx), &mut runtimes, &resolution.runtime);
         self.request_model_catalog(&resolution.runtime, cx);
+        // Without a slot the role page edits in place, in its narrow left column;
+        // a crew slot's Edit role keeps the drawer.
+        let in_place = slot.is_none();
+        let field_width = if in_place {
+            ROLE_COLUMN_WIDTH
+        } else {
+            FIELD_WIDTH
+        };
         let display_name = cx.new(|input_cx| {
-            TextField::new(
+            let input = TextField::new(
                 input_cx.focus_handle(),
                 role.display_name.clone(),
                 "",
                 false,
-            )
+            );
+            if in_place {
+                input.text_size(theme::text_display())
+            } else {
+                input
+            }
         });
         let command = cx.new(|input_cx| {
             let mut input = TextField::new(
@@ -359,14 +373,19 @@ impl NativeRoot {
         let visible_args = if slot.is_some() {
             String::new()
         } else {
-            runner_backend::router::runtime::strip_permission_flags(
-                Runtime::parse(&role.runtime),
-                &role.args,
-            )
-            .join(" ")
+            role_visible_args(&role).join(" ")
         };
         let args = cx.new(|input_cx| {
-            TextField::new(input_cx.focus_handle(), visible_args, "--mcp-debug", true)
+            TextField::new(
+                input_cx.focus_handle(),
+                visible_args,
+                if in_place {
+                    "Extra flags"
+                } else {
+                    "--mcp-debug"
+                },
+                true,
+            )
         });
         let model_value = resolution.model.clone();
         let model = cx.new(move |input_cx| {
@@ -386,22 +405,33 @@ impl NativeRoot {
             input.set_placeholder(model_placeholder, input_cx)
         });
         let working_dir = cx.new(|input_cx| {
-            working_dir_text_field(
+            let input = working_dir_text_field(
                 input_cx.focus_handle(),
                 role.working_dir.clone().unwrap_or_default(),
                 "",
             )
-            .text_size(theme::text_body())
+            .text_size(theme::text_body());
+            if in_place {
+                input.right_padding(34.)
+            } else {
+                input
+            }
         });
         let system_prompt = cx.new(|input_cx| {
-            TextField::textarea(
+            let mut input = TextField::textarea(
                 input_cx.focus_handle(),
                 role.system_prompt.clone().unwrap_or_default(),
                 "",
                 6,
                 true,
             )
-            .text_size(theme::text_body())
+            .text_size(theme::text_body());
+            if in_place {
+                input.set_bare(true, input_cx);
+                input.fill_height().with_scrollbar(input_cx)
+            } else {
+                input
+            }
         });
         let root = cx.entity();
         let runtime_root = root.clone();
@@ -423,10 +453,10 @@ impl NativeRoot {
                 }),
                 select_cx,
             )
-            .width(px(FIELD_WIDTH))
-            .min_menu_width(px(FIELD_WIDTH))
-            .detailed(true)
-            .monospace(true)
+            .width(px(field_width))
+            .min_menu_width(px(field_width))
+            .detailed(!in_place)
+            .monospace(!in_place)
             .placeholder(if agents_checking {
                 "Detecting agents…"
             } else {
@@ -456,26 +486,17 @@ impl NativeRoot {
                 }),
                 select_cx,
             )
-            .width(px(FIELD_WIDTH))
-            .min_menu_width(px(FIELD_WIDTH))
+            .width(px(if in_place {
+                (ROLE_COLUMN_WIDTH - 12.) / 2.
+            } else {
+                FIELD_WIDTH
+            }))
+            .min_menu_width(px(if in_place { 240. } else { FIELD_WIDTH }))
         });
         let permission_mode = if slot.is_some() {
             PermissionMode::Default
         } else {
-            let inferred = runner_backend::router::runtime::infer_permission_mode(
-                Runtime::parse(&role.runtime),
-                &role.args,
-            );
-            // A row can carry a mode this runtime no longer offers —
-            // a Trae row saved with the old `--permission-mode auto`
-            // still infers as Auto (#599). Show the fallback rather
-            // than a value that is not in the list; saving then
-            // rewrites the row.
-            if permission_modes(&resolution.runtime).contains(&inferred) {
-                inferred
-            } else {
-                PermissionMode::Default
-            }
+            role_permission_mode(&role).unwrap_or(PermissionMode::Default)
         };
         let permission_root = root.clone();
         let permission_select = cx.new(|select_cx| {
@@ -494,8 +515,8 @@ impl NativeRoot {
                 }),
                 select_cx,
             )
-            .width(px(FIELD_WIDTH))
-            .min_menu_width(px(FIELD_WIDTH))
+            .width(px(field_width))
+            .min_menu_width(px(if in_place { 320. } else { FIELD_WIDTH }))
         });
         let scroll = ScrollHandle::new();
         let scroll_owner = cx.entity_id();
@@ -513,6 +534,13 @@ impl NativeRoot {
         subscriptions.push(cx.observe(&model, |this, _, cx| {
             this.sync_role_edit_efforts(cx);
         }));
+        if in_place {
+            self.role_surfaces.prompt_preview = false;
+            // The page redraws on every keystroke to keep "Unsaved changes" honest.
+            for input in [&display_name, &args, &model, &working_dir, &system_prompt] {
+                subscriptions.push(cx.observe(input, |_, _, cx| cx.notify()));
+            }
+        }
         self.role_surfaces.edit = Some(RoleEditForm {
             role,
             slot,

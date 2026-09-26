@@ -19,7 +19,7 @@ impl NativeRoot {
         cx: &mut Context<Self>,
     ) {
         let actions = [
-            RoleMenuAction::Open(item.role.handle.clone()),
+            RoleMenuAction::Edit(Box::new(item.role.clone())),
             RoleMenuAction::Delete {
                 id: item.role.id,
                 handle: item.role.handle,
@@ -62,14 +62,17 @@ impl NativeRoot {
         cx.notify();
     }
 
-    fn handle_role_menu_action(
+    pub(super) fn handle_role_menu_action(
         &mut self,
         action: RoleMenuAction,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         match action {
-            RoleMenuAction::Open(handle) => self.open_role_detail(handle, window, cx),
+            RoleMenuAction::Edit(role) => {
+                self.open_role_detail(role.handle.clone(), window, cx);
+                self.open_role_edit(*role, None, window, cx);
+            }
             RoleMenuAction::Delete { id, handle } => {
                 self.role_surfaces.delete_confirm = Some(RoleDeleteConfirm { id, handle });
                 cx.notify();
