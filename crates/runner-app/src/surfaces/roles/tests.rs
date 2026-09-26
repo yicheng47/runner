@@ -806,6 +806,81 @@ fn saving_a_rename_keeps_an_arg_that_holds_a_space() {
 }
 
 #[test]
+fn a_legacy_shell_role_saves_only_after_an_agent_is_picked() {
+    let mut page = role_page_harness("role-legacy-shell");
+    let timestamp = "2026-09-21T00:00:00Z".parse().unwrap();
+    runner_backend::repo::role::insert(
+        &page.core.db.get().unwrap(),
+        &runner_backend::repo::role::RoleRow {
+            id: "legacy-shell".into(),
+            handle: "legacy-shell".into(),
+            display_name: "Legacy shell".into(),
+            runtime: "shell".into(),
+            command: "/bin/zsh".into(),
+            args_json: Some(Vec::new()),
+            working_dir: None,
+            system_prompt: None,
+            env_json: Some(Default::default()),
+            model: None,
+            effort: None,
+            created_at: timestamp,
+            updated_at: timestamp,
+        },
+    )
+    .unwrap();
+    let role = runner_backend::ops::role::role_get(&page.core, "legacy-shell").unwrap();
+    let options = super::logic::role_edit_runtime_options(
+        &[runtime_with_defaults(None, None)],
+        &role,
+        &role.runtime,
+        false,
+    );
+    assert_eq!(
+        options
+            .iter()
+            .map(|option| option.value.as_str())
+            .collect::<Vec<_>>(),
+        ["codex"],
+        "the agent select offers the agent runtimes to switch to"
+    );
+
+    page.open_role("legacy-shell");
+    page.host
+        .update(&mut page.visual, |root, window, cx| {
+            root.open_role_edit(role.clone(), None, window, cx)
+        })
+        .unwrap();
+    page.visual.run_until_parked();
+    let name = page.read(|root| {
+        root.role_surfaces
+            .edit
+            .as_ref()
+            .unwrap()
+            .display_name
+            .clone()
+    });
+    page.host
+        .update(&mut page.visual, |_, _, cx| {
+            name.update(cx, |input, cx| input.set_text("Renamed shell", cx))
+        })
+        .unwrap();
+    page.visual.run_until_parked();
+    page.click("ROLE_EDIT_SAVE");
+
+    assert!(page.in_place_edit(), "a refused save stays in edit mode");
+    assert_eq!(
+        page.read(|root| root.role_surfaces.edit.as_ref().unwrap().error.clone()),
+        Some(
+            "unknown runtime 'shell' — valid runtimes: codex, claude-code, copilot, pi, trae"
+                .into()
+        )
+    );
+    let stored = runner_backend::ops::role::role_get(&page.core, "legacy-shell").unwrap();
+    assert_eq!(stored.display_name, "Legacy shell");
+    assert_eq!(stored.runtime, "shell");
+}
+
+#[test]
 fn a_search_with_no_matches_keeps_the_count() {
     use crate::surfaces::AppRoute;
 
