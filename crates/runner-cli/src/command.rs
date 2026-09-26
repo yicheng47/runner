@@ -2226,9 +2226,8 @@ fn runtime_command(runtime: &str) -> Result<&'static str, CliError> {
         "trae" => Ok("traecli"),
         "copilot" => Ok("copilot"),
         "pi" => Ok("pi"),
-        "shell" => Ok(if cfg!(windows) { "cmd.exe" } else { "/bin/zsh" }),
         other => Err(CliError::usage(format!(
-            "unknown role runtime {other:?}; expected claude-code, codex, trae, copilot, pi, or shell"
+            "unknown role runtime {other:?}; expected claude-code, codex, trae, copilot, or pi"
         ))),
     }
 }
