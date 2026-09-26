@@ -1675,7 +1675,7 @@ mod tests {
             CreateRoleInput {
                 handle: handle.into(),
                 display_name: handle.into(),
-                runtime: crate::model::Runtime::Shell,
+                runtime: crate::model::Runtime::Trae,
                 command: "/bin/sh".into(),
                 args: vec![],
                 working_dir: None,

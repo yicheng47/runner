@@ -155,6 +155,24 @@ pub(super) fn validate_system_prompt(prompt: Option<&str>) -> Result<()> {
     Ok(())
 }
 
+/// A role's runtime, and a slot's override of it, must be an agent runtime:
+/// one with a runtime definition. `shell` has none, because terminals build
+/// their role in memory and never store one.
+pub fn validate_agent_runtime(name: &str) -> Result<Runtime> {
+    Runtime::parse(name)
+        .filter(|runtime| crate::router::runtime::runtime_definition(*runtime).is_some())
+        .ok_or_else(|| {
+            Error::msg(format!(
+                "unknown runtime '{name}' — valid runtimes: {}",
+                crate::router::runtime::runtime_definitions()
+                    .iter()
+                    .map(|r| r.name.key())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ))
+        })
+}
+
 // Handle validation: lowercase ASCII slug, 1..=32 chars, [a-z0-9] start,
 // body [a-z0-9_-]. See `docs/arch/arch.md` §3.2 (Role — handle).
 pub(super) fn validate_handle(handle: &str) -> Result<()> {
@@ -248,6 +266,7 @@ pub fn create(conn: &Connection, input: CreateRoleInput) -> Result<Role> {
     if input.display_name.trim().is_empty() {
         return Err(Error::msg("display_name must not be empty"));
     }
+    validate_agent_runtime(input.runtime.key())?;
     validate_env_keys(&input.env)?;
     validate_system_prompt(input.system_prompt.as_deref())?;
 
@@ -298,6 +317,9 @@ pub fn update(conn: &Connection, id: &str, input: UpdateRoleInput) -> Result<Rol
         if n.trim().is_empty() {
             return Err(Error::msg("display_name must not be empty"));
         }
+    }
+    if let Some(runtime) = input.runtime {
+        validate_agent_runtime(runtime.key())?;
     }
 
     let display_name = input.display_name.unwrap_or(existing.display_name);
@@ -540,7 +562,7 @@ mod tests {
             CreateRoleInput {
                 handle: handle.into(),
                 display_name: format!("{handle} display"),
-                runtime: crate::model::Runtime::Shell,
+                runtime: crate::model::Runtime::Trae,
                 command: "sh".into(),
                 args: vec![],
                 working_dir: None,
@@ -548,8 +570,7 @@ mod tests {
                 env: HashMap::new(),
                 model: None,
                 effort: None,
-                // Auto is the form default, but a no-op for shell — the
-                // runtime adapter has no permission concept here, so
+                // Auto is the form default, but a no-op for trae, so
                 // existing tests that expect `args == []` keep passing.
                 permission_mode: PermissionMode::Auto,
             },
@@ -749,7 +770,7 @@ mod tests {
             CreateRoleInput {
                 handle: "shared".into(),
                 display_name: "Dup".into(),
-                runtime: crate::model::Runtime::Shell,
+                runtime: crate::model::Runtime::Trae,
                 command: "sh".into(),
                 args: vec![],
                 working_dir: None,
@@ -781,6 +802,110 @@ mod tests {
         assert_eq!(updated.display_name, "renamed");
         assert_eq!(updated.handle, r.handle, "handle is unaffected by update");
         assert_eq!(updated.runtime, r.runtime, "unchanged field preserved");
+    }
+
+    const SHELL_RUNTIME_ERROR: &str =
+        "unknown runtime 'shell' — valid runtimes: codex, claude-code, copilot, pi, trae";
+
+    #[test]
+    fn create_rejects_shell_runtime_with_the_slot_override_error() {
+        let pool = ctx();
+        let conn = pool.get().unwrap();
+        let err = create(
+            &conn,
+            CreateRoleInput {
+                handle: "terminal".into(),
+                display_name: "Terminal".into(),
+                runtime: Runtime::Shell,
+                command: "/bin/zsh".into(),
+                args: vec![],
+                working_dir: None,
+                system_prompt: None,
+                env: HashMap::new(),
+                model: None,
+                effort: None,
+                permission_mode: PermissionMode::Auto,
+            },
+        )
+        .unwrap_err();
+        assert_eq!(err.to_string(), SHELL_RUNTIME_ERROR);
+        assert_eq!(
+            crate::ops::slot::validate_runtime_override(Some("shell"))
+                .unwrap_err()
+                .to_string(),
+            SHELL_RUNTIME_ERROR
+        );
+        assert!(list(&conn).unwrap().is_empty());
+    }
+
+    #[test]
+    fn update_rejects_setting_shell_runtime() {
+        let pool = ctx();
+        let conn = pool.get().unwrap();
+        let r = make(&conn, "alpha");
+        let err = update(
+            &conn,
+            &r.id,
+            UpdateRoleInput {
+                runtime: Some(Runtime::Shell),
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+        assert_eq!(err.to_string(), SHELL_RUNTIME_ERROR);
+        assert_eq!(get(&conn, &r.id).unwrap().runtime, "trae");
+    }
+
+    #[test]
+    fn legacy_shell_role_updates_only_without_a_runtime_and_still_deletes() {
+        let pool = ctx();
+        let mut conn = pool.get().unwrap();
+        let ts = now();
+        repo::role::insert(
+            &conn,
+            &repo::role::RoleRow {
+                id: "legacy-shell".into(),
+                handle: "legacy-shell".into(),
+                display_name: "Legacy shell".into(),
+                runtime: "shell".into(),
+                command: "/bin/zsh".into(),
+                args_json: Some(Vec::new()),
+                working_dir: None,
+                system_prompt: None,
+                env_json: Some(HashMap::new()),
+                model: None,
+                effort: None,
+                created_at: ts,
+                updated_at: ts,
+            },
+        )
+        .unwrap();
+
+        let renamed = update(
+            &conn,
+            "legacy-shell",
+            UpdateRoleInput {
+                display_name: Some("Renamed".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(renamed.display_name, "Renamed");
+        assert_eq!(renamed.runtime, "shell");
+
+        let err = update(
+            &conn,
+            "legacy-shell",
+            UpdateRoleInput {
+                runtime: Some(Runtime::Shell),
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+        assert_eq!(err.to_string(), SHELL_RUNTIME_ERROR);
+
+        delete(&mut conn, "legacy-shell").unwrap();
+        assert!(list(&conn).unwrap().is_empty());
     }
 
     #[test]
@@ -1277,29 +1402,24 @@ mod tests {
     fn create_no_op_for_runtimes_without_permission_modes() {
         let pool = ctx();
         let conn = pool.get().unwrap();
-        for (handle, runtime, command) in [
-            ("shell-tester", crate::model::Runtime::Shell, "/bin/sh"),
-            ("pi-tester", crate::model::Runtime::Pi, "pi"),
-        ] {
-            let r = create(
-                &conn,
-                CreateRoleInput {
-                    handle: handle.into(),
-                    display_name: handle.into(),
-                    runtime,
-                    command: command.into(),
-                    args: vec!["--custom".into()],
-                    working_dir: None,
-                    system_prompt: None,
-                    env: HashMap::new(),
-                    model: None,
-                    effort: None,
-                    permission_mode: PermissionMode::Bypass,
-                },
-            )
-            .unwrap();
-            assert_eq!(r.args, vec!["--custom".to_string()]);
-        }
+        let r = create(
+            &conn,
+            CreateRoleInput {
+                handle: "pi-tester".into(),
+                display_name: "pi-tester".into(),
+                runtime: crate::model::Runtime::Pi,
+                command: "pi".into(),
+                args: vec!["--custom".into()],
+                working_dir: None,
+                system_prompt: None,
+                env: HashMap::new(),
+                model: None,
+                effort: None,
+                permission_mode: PermissionMode::Bypass,
+            },
+        )
+        .unwrap();
+        assert_eq!(r.args, vec!["--custom".to_string()]);
     }
 
     #[test]

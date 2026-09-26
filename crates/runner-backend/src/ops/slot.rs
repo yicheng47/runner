@@ -89,19 +89,7 @@ pub fn validate_runtime_override(value: Option<&str>) -> Result<Option<Runtime>>
     let Some(name) = value.map(str::trim).filter(|s| !s.is_empty()) else {
         return Ok(None);
     };
-    let Some(runtime) = Runtime::parse(name)
-        .filter(|runtime| crate::router::runtime::runtime_definition(*runtime).is_some())
-    else {
-        return Err(Error::msg(format!(
-            "unknown runtime '{name}' — valid runtimes: {}",
-            crate::router::runtime::runtime_definitions()
-                .iter()
-                .map(|r| r.name.key())
-                .collect::<Vec<_>>()
-                .join(", ")
-        )));
-    };
-    Ok(Some(runtime))
+    super::role::validate_agent_runtime(name).map(Some)
 }
 
 fn normalize_override_value(value: Option<&str>) -> Option<String> {
@@ -546,7 +534,7 @@ mod tests {
             role::CreateRoleInput {
                 handle: handle.into(),
                 display_name: format!("{handle} display"),
-                runtime: crate::model::Runtime::Shell,
+                runtime: crate::model::Runtime::Trae,
                 command: "sh".into(),
                 args: vec![],
                 working_dir: None,

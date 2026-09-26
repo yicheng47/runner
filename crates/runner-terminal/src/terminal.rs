@@ -2339,7 +2339,7 @@ mod tests {
                 runner_backend::ops::role::CreateRoleInput {
                     handle: "probe".into(),
                     display_name: "Probe".into(),
-                    runtime: runner_backend::model::Runtime::Shell,
+                    runtime: runner_backend::model::Runtime::Trae,
                     command: "probe".into(),
                     args: Vec::new(),
                     working_dir: None,
@@ -2427,7 +2427,7 @@ mod tests {
             runner_backend::ops::role::CreateRoleInput {
                 handle: "probe".into(),
                 display_name: "Probe".into(),
-                runtime: runner_backend::model::Runtime::Shell,
+                runtime: runner_backend::model::Runtime::Trae,
                 command: "probe".into(),
                 args: Vec::new(),
                 working_dir: None,
