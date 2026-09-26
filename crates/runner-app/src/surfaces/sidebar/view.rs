@@ -336,7 +336,7 @@ impl Sidebar {
                                     160.,
                                     vec![(
                                         UiMenuItem::new("New chat").icon("message-square-plus.svg"),
-                                        SidebarMenuAction::NewChat(None),
+                                        SidebarMenuAction::NewChat(ProjectScope::Root),
                                     )],
                                     window,
                                     cx,
@@ -358,12 +358,9 @@ impl Sidebar {
                     workspace_new_chat_row(shortcut, move |window, cx| {
                         if let Some(shell) = shell.upgrade() {
                             shell.update(cx, |shell, shell_cx| {
-                                let project_id = shell.active_project_id(shell_cx);
-                                shell.open_sidebar_chat_modal(
-                                    project_id.as_deref(),
-                                    window,
-                                    shell_cx,
-                                )
+                                let scope =
+                                    ProjectScope::or_root(shell.active_project_id(shell_cx));
+                                shell.open_sidebar_chat_modal(scope, window, shell_cx)
                             });
                         }
                     })

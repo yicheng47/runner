@@ -103,7 +103,7 @@ impl NativeRoot {
                 None,
                 None,
                 None,
-                None,
+                runner_backend::ops::project::ProjectScope::Root,
                 cwd,
                 Some(INITIAL_COLS),
                 Some(INITIAL_ROWS),

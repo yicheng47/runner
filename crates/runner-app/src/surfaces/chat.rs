@@ -4,6 +4,7 @@
 use super::*;
 use crate::*;
 use runner_backend::model::Runtime;
+use runner_backend::ops::project::ProjectScope;
 
 pub(super) fn tab_is_terminal(
     layout: &PaneLayout,
@@ -1798,7 +1799,7 @@ impl NativeRoot {
                 .and_then(|session_id| {
                     self.session_entry(session_id, cx).map(|entry| {
                         (
-                            entry.project_id.clone(),
+                            ProjectScope::or_root(entry.project_id.clone()),
                             self.session_start_cwd(session_id, cx),
                         )
                     })
@@ -1818,8 +1819,8 @@ impl NativeRoot {
                 return;
             }
         };
-        if let Some((project_id, cwd)) = terminal_location {
-            self.spawn_terminal_in_pane(new_pane_id, original, project_id, cwd, window, cx);
+        if let Some((scope, cwd)) = terminal_location {
+            self.spawn_terminal_in_pane(new_pane_id, original, scope, cwd, window, cx);
             return;
         }
         let result = self

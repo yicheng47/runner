@@ -318,7 +318,7 @@ impl NativeRoot {
                                 start_mission_root.update(cx, |this, cx| {
                                     this.open_start_mission_modal(
                                         Some(start_mission_crew_id.clone()),
-                                        None,
+                                        runner_backend::ops::project::ProjectScope::Root,
                                         window,
                                         cx,
                                     )

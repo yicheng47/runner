@@ -8,6 +8,7 @@ use runner_app::ui::{
 };
 use runner_backend::model::SlotWithRole;
 use runner_backend::ops::crew::CrewListItem;
+use runner_backend::ops::project::ProjectScope;
 use runner_backend::repo::project::ProjectRow;
 
 use crate::*;
@@ -38,12 +39,12 @@ impl NativeRoot {
     pub(crate) fn open_start_mission_modal(
         &mut self,
         initial_crew_id: Option<String>,
-        project_id: Option<String>,
+        scope: ProjectScope,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let project = project_id
-            .as_deref()
+        let project = scope
+            .project_id()
             .and_then(|id| {
                 self.app_store
                     .read(cx)
@@ -313,9 +314,9 @@ impl NativeRoot {
         if !launchable {
             return;
         }
-        let input = runner_backend::ops::mission::StartMissionInput {
+        let input = runner_backend::ops::mission::MissionStart {
             crew_id: modal.crew_id.clone(),
-            project_id: modal.project.as_ref().map(|project| project.id.clone()),
+            scope: ProjectScope::or_root(modal.project.as_ref().map(|project| project.id.clone())),
             title: modal.title.read(cx).text().trim().to_owned(),
             goal_override: nonempty(modal.goal.read(cx).text()),
             cwd: nonempty(modal.cwd.read(cx).text()),

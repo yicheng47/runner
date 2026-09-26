@@ -201,9 +201,9 @@ impl Sidebar {
         cx: &mut Context<Self>,
     ) {
         match action {
-            SidebarMenuAction::NewChat(project_id) => {
-                self.set_active_project(project_id.clone(), cx);
-                if let Some(project_id) = project_id.as_deref() {
+            SidebarMenuAction::NewChat(scope) => {
+                self.set_active_project(scope.project_id().map(str::to_owned), cx);
+                if let Some(project_id) = scope.project_id() {
                     let project_id = project_id.to_owned();
                     self.update_app_settings(cx, true, move |settings| {
                         settings.sidebar_projects_open = true;
@@ -214,14 +214,14 @@ impl Sidebar {
                 if let Some(shell) = self.shell.upgrade() {
                     window.defer(cx, move |window, cx| {
                         shell.update(cx, |shell, shell_cx| {
-                            shell.open_sidebar_chat_modal(project_id.as_deref(), window, shell_cx)
+                            shell.open_sidebar_chat_modal(scope, window, shell_cx)
                         });
                     });
                 }
             }
-            SidebarMenuAction::NewTerminal(project_id) => {
-                self.set_active_project(project_id.clone(), cx);
-                if let Some(project_id) = project_id.as_deref() {
+            SidebarMenuAction::NewTerminal(scope) => {
+                self.set_active_project(scope.project_id().map(str::to_owned), cx);
+                if let Some(project_id) = scope.project_id() {
                     let project_id = project_id.to_owned();
                     self.update_app_settings(cx, true, move |settings| {
                         settings.sidebar_projects_open = true;
@@ -232,17 +232,17 @@ impl Sidebar {
                 if let Some(shell) = self.shell.upgrade() {
                     window.defer(cx, move |window, cx| {
                         shell.update(cx, |shell, shell_cx| {
-                            shell.new_terminal_tab(project_id, window, shell_cx)
+                            shell.new_terminal_tab(scope, window, shell_cx)
                         });
                     });
                 }
             }
-            SidebarMenuAction::NewMission(project_id) => {
-                self.set_active_project(project_id.clone(), cx);
+            SidebarMenuAction::NewMission(scope) => {
+                self.set_active_project(scope.project_id().map(str::to_owned), cx);
                 if let Some(shell) = self.shell.upgrade() {
                     window.defer(cx, move |window, cx| {
                         shell.update(cx, |shell, shell_cx| {
-                            shell.open_start_mission_modal(None, project_id, window, shell_cx)
+                            shell.open_start_mission_modal(None, scope, window, shell_cx)
                         });
                     });
                 }
@@ -473,15 +473,15 @@ pub(super) fn project_create_menu_entries(
     vec![
         (
             UiMenuItem::new("New chat").icon("message-square-plus.svg"),
-            SidebarMenuAction::NewChat(Some(project_id.to_owned())),
+            SidebarMenuAction::NewChat(ProjectScope::Project(project_id.to_owned())),
         ),
         (
             UiMenuItem::new("New mission").icon("flag.svg"),
-            SidebarMenuAction::NewMission(Some(project_id.to_owned())),
+            SidebarMenuAction::NewMission(ProjectScope::Project(project_id.to_owned())),
         ),
         (
             UiMenuItem::new("New terminal").icon("square-terminal.svg"),
-            SidebarMenuAction::NewTerminal(Some(project_id.to_owned())),
+            SidebarMenuAction::NewTerminal(ProjectScope::Project(project_id.to_owned())),
         ),
     ]
 }
@@ -490,15 +490,15 @@ pub(super) fn sidebar_create_menu_entries() -> Vec<(UiMenuItem, SidebarMenuActio
     vec![
         (
             UiMenuItem::new("New chat").icon("message-square-plus.svg"),
-            SidebarMenuAction::NewChat(None),
+            SidebarMenuAction::NewChat(ProjectScope::Root),
         ),
         (
             UiMenuItem::new("New mission").icon("flag.svg"),
-            SidebarMenuAction::NewMission(None),
+            SidebarMenuAction::NewMission(ProjectScope::Root),
         ),
         (
             UiMenuItem::new("New terminal").icon("square-terminal.svg"),
-            SidebarMenuAction::NewTerminal(None),
+            SidebarMenuAction::NewTerminal(ProjectScope::Root),
         ),
     ]
 }

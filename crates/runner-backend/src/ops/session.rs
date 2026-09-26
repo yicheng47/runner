@@ -18,7 +18,10 @@ use serde::{Deserialize, Serialize};
 use crate::{
     error::{Error, Result},
     model::{Role, Session, SessionStatus, Timestamp},
-    ops::{project, role},
+    ops::{
+        project::{self, ProjectScope},
+        role,
+    },
     repo,
     session::manager::{
         runtime_direct_role, SessionActivityState, SessionEvents, SessionUpdatedEvent,
@@ -954,25 +957,39 @@ pub fn session_take_resume_on_launch(state: &AppCore, session_id: &str) -> Resul
 /// mission, no orchestrator, no event log (C8.5). Used by the Role
 /// Detail page's "Chat now" button: the user picks a working directory
 /// and gets a one-on-one terminal with the agent's CLI.
-///
-/// Working-directory precedence is explicit `cwd`, project cwd, then the
-/// role's own `working_dir`.
 pub(crate) fn resolve_direct_start(
     conn: &rusqlite::Connection,
     role_id: &str,
     project_id: Option<&str>,
     cwd: Option<String>,
 ) -> Result<(Role, Option<String>, Option<String>)> {
+    resolve_direct_start_in(
+        conn,
+        role_id,
+        &ProjectScope::or_infer(project_id.map(str::to_owned)),
+        cwd,
+    )
+}
+
+/// Working-directory precedence is explicit `cwd`, project cwd, then the
+/// role's own `working_dir`.
+pub(crate) fn resolve_direct_start_in(
+    conn: &rusqlite::Connection,
+    role_id: &str,
+    scope: &ProjectScope,
+    cwd: Option<String>,
+) -> Result<(Role, Option<String>, Option<String>)> {
     let role = role::get(conn, role_id)?;
-    let cwd = if project_id.is_none() {
-        cwd.or_else(|| role.working_dir.clone())
-    } else {
-        cwd
+    let cwd = match scope {
+        ProjectScope::Project(_) => cwd,
+        ProjectScope::Infer | ProjectScope::Root => cwd.or_else(|| role.working_dir.clone()),
     };
-    let (project_id, cwd) = project::resolve_cwd(conn, project_id, cwd)?;
+    let (project_id, cwd) = project::resolve_scope(conn, scope, cwd)?;
     Ok((role, project_id, cwd))
 }
 
+/// The socket tool's direct start: without `project_id`, the project is
+/// inferred from the working directory.
 #[allow(clippy::too_many_arguments)]
 pub fn session_start_direct_impl(
     state: &AppCore,
@@ -985,17 +1002,34 @@ pub fn session_start_direct_impl(
     cols: Option<u16>,
     rows: Option<u16>,
 ) -> Result<StartDirectSessionOutput> {
-    let (role, project_id, effective_cwd) = {
+    let (role, project_id, cwd) = {
         let conn = state.db.get()?;
         resolve_direct_start(&conn, &role_id, project_id.as_deref(), cwd)?
     };
+    spawn_direct_chat(
+        state, &role, runtime, model, effort, project_id, cwd, cols, rows,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn spawn_direct_chat(
+    state: &AppCore,
+    role: &Role,
+    runtime: Option<String>,
+    model: Option<String>,
+    effort: Option<String>,
+    project_id: Option<String>,
+    effective_cwd: Option<String>,
+    cols: Option<u16>,
+    rows: Option<u16>,
+) -> Result<StartDirectSessionOutput> {
     let first_turn =
         crate::router::prompt::compose_direct_first_turn(role.system_prompt.as_deref());
     let emitter: Arc<dyn SessionEvents> = Arc::new(state.session_events());
     let session = state
         .sessions
         .spawn_direct(
-            &role,
+            role,
             runtime.as_deref(),
             model.as_deref(),
             effort.as_deref(),
@@ -1023,13 +1057,17 @@ pub fn session_start_direct(
     runtime: Option<String>,
     model: Option<String>,
     effort: Option<String>,
-    project_id: Option<String>,
+    scope: ProjectScope,
     cwd: Option<String>,
     cols: Option<u16>,
     rows: Option<u16>,
 ) -> Result<SpawnedSession> {
-    Ok(session_start_direct_impl(
-        state, role_id, runtime, model, effort, project_id, cwd, cols, rows,
+    let (role, project_id, cwd) = {
+        let conn = state.db.get()?;
+        resolve_direct_start_in(&conn, &role_id, &scope, cwd)?
+    };
+    Ok(spawn_direct_chat(
+        state, &role, runtime, model, effort, project_id, cwd, cols, rows,
     )?
     .session)
 }
@@ -1038,7 +1076,7 @@ pub fn session_start_direct(
 pub fn session_start_runtime(
     state: &AppCore,
     runtime: &str,
-    project_id: Option<String>,
+    scope: ProjectScope,
     cwd: Option<String>,
     cols: Option<u16>,
     rows: Option<u16>,
@@ -1047,7 +1085,7 @@ pub fn session_start_runtime(
 ) -> Result<StartDirectSessionOutput> {
     let (project_id, cwd) = {
         let conn = state.db.get()?;
-        project::resolve_cwd(&conn, project_id.as_deref(), cwd)?
+        project::resolve_scope(&conn, &scope, cwd)?
     };
     let role = runtime_direct_role(runtime, None, model.as_deref(), effort.as_deref())?;
     let emitter: Arc<dyn SessionEvents> = Arc::new(state.session_events());
@@ -1100,9 +1138,8 @@ fn windows_shell_command(path: &str, comspec: String) -> String {
         .unwrap_or(comspec)
 }
 
-/// Spawn the user's configured login shell as a runtime-only direct session
-/// for a terminal pane. An explicit cwd wins over the project's directory;
-/// no agent prompt, hooks, Role bus environment, or bundled CLI is added.
+/// Spawn the user's configured login shell for a caller that may pass only a
+/// directory: without `project_id`, the project is inferred from `cwd`.
 pub fn session_start_shell(
     state: &AppCore,
     project_id: Option<String>,
@@ -1110,9 +1147,22 @@ pub fn session_start_shell(
     cols: Option<u16>,
     rows: Option<u16>,
 ) -> Result<SpawnedSession> {
+    session_start_shell_in(state, ProjectScope::or_infer(project_id), cwd, cols, rows)
+}
+
+/// Spawn the user's configured login shell as a runtime-only direct session
+/// for a terminal pane. An explicit cwd wins over the project's directory;
+/// no agent prompt, hooks, Role bus environment, or bundled CLI is added.
+pub fn session_start_shell_in(
+    state: &AppCore,
+    scope: ProjectScope,
+    cwd: Option<String>,
+    cols: Option<u16>,
+    rows: Option<u16>,
+) -> Result<SpawnedSession> {
     let (project_id, cwd) = {
         let conn = state.db.get()?;
-        project::resolve_cwd(&conn, project_id.as_deref(), cwd)?
+        project::resolve_scope(&conn, &scope, cwd)?
     };
     let command = resolve_shell_command(std::env::var("SHELL").ok());
     let role = runtime_direct_role(Runtime::Shell.key(), Some(&command), None, None)?;
@@ -1484,6 +1534,34 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM sessions", [], |row| row.get(0))
             .unwrap();
         assert_eq!(session_count, 0);
+    }
+
+    #[test]
+    fn resolve_direct_start_in_root_keeps_the_role_working_dir_without_a_project() {
+        let temp = tempfile::tempdir().unwrap();
+        let project_cwd = temp.path().join("runner");
+        let role_cwd = project_cwd.join("crates");
+        std::fs::create_dir_all(&role_cwd).unwrap();
+        let role_cwd = role_cwd.to_string_lossy().into_owned();
+        let pool = db::open_in_memory().unwrap();
+        let conn = pool.get().unwrap();
+        let role_id = seed_role(&conn);
+        conn.execute(
+            "UPDATE roles SET working_dir = ?2 WHERE id = ?1",
+            rusqlite::params![role_id, role_cwd],
+        )
+        .unwrap();
+        let project =
+            repo::project::create(&conn, "Runner", project_cwd.to_string_lossy().as_ref()).unwrap();
+
+        let (_, project_id, cwd) =
+            resolve_direct_start_in(&conn, &role_id, &ProjectScope::Root, None).unwrap();
+        assert_eq!(project_id, None);
+        assert_eq!(cwd.as_deref(), Some(role_cwd.as_str()));
+
+        let (_, project_id, cwd) = resolve_direct_start(&conn, &role_id, None, None).unwrap();
+        assert_eq!(project_id.as_deref(), Some(project.id.as_str()));
+        assert_eq!(cwd.as_deref(), Some(role_cwd.as_str()));
     }
 
     fn insert_direct_session(conn: &rusqlite::Connection, role_id: &str, archived: bool) -> String {

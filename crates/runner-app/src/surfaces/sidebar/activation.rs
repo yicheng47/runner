@@ -114,18 +114,19 @@ impl NativeRoot {
     }
 
     pub(crate) fn sync_active_project_from_active_tab(&mut self, cx: &mut Context<Self>) {
-        let active_project_id = self.tabs.active_tab_id().and_then(|tab_id| {
-            let node = self
-                .app_store
-                .read(cx)
-                .nodes
-                .iter()
-                .find(|node| node.id == tab_id)?;
-            node_project_id(&self.app_store.read(cx).nodes, node)
-        });
+        let active_project_id = self.active_tab_project_id(cx);
         self.sidebar.update(cx, |sidebar, sidebar_cx| {
             sidebar.set_active_project(active_project_id, sidebar_cx)
         });
+    }
+
+    /// The project the active tab sits under, which every pane and drawer
+    /// shell in it belongs to.
+    pub(crate) fn active_tab_project_id(&self, cx: &App) -> Option<String> {
+        let tab_id = self.tabs.active_tab_id()?;
+        let nodes = &self.app_store.read(cx).nodes;
+        let node = nodes.iter().find(|node| node.id == tab_id)?;
+        node_project_id(nodes, node)
     }
 
     pub(crate) fn active_project_id(&self, cx: &App) -> Option<String> {

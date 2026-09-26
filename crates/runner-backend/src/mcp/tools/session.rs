@@ -211,7 +211,7 @@ impl RunnerMcpHandler {
             (None, Some(runtime)) => session::session_start_runtime(
                 &self.state,
                 runtime.key(),
-                args.project_id,
+                crate::ops::project::ProjectScope::or_infer(args.project_id),
                 args.cwd,
                 None,
                 None,
@@ -228,6 +228,7 @@ impl RunnerMcpHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ops::project::ProjectScope;
 
     #[derive(Default)]
     struct TrackingRuntime {
@@ -462,6 +463,117 @@ mod tests {
         .unwrap();
 
         assert_project_row_and_tab(&handler, &spawned.id, &project.id);
+        session::session_kill(&handler.state, &spawned.id).unwrap();
+    }
+
+    fn assert_root_row_and_tab(handler: &RunnerMcpHandler, session_id: &str) {
+        let mut conn = handler.state.db.get().unwrap();
+        let row = crate::repo::session::get_row(&conn, session_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.project_id, None);
+
+        let nodes = crate::repo::node::list_with_repair(&mut conn).unwrap();
+        let tab = nodes
+            .iter()
+            .find(|node| crate::repo::node::session_ids(node) == [session_id])
+            .unwrap();
+        assert_eq!(tab.parent_id, None);
+    }
+
+    fn project_with_nested_cwd(handler: &RunnerMcpHandler, root: &std::path::Path) -> String {
+        let project_cwd = root.join("runner");
+        let cwd = project_cwd.join(".worktrees/fix-718");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let conn = handler.state.db.get().unwrap();
+        crate::repo::project::create(&conn, "Runner", project_cwd.to_string_lossy().as_ref())
+            .unwrap();
+        cwd.to_string_lossy().into_owned()
+    }
+
+    #[tokio::test]
+    async fn root_scoped_role_chat_stays_unfiled_inside_a_project() {
+        let temp = tempfile::tempdir().unwrap();
+        let app_data_dir = temp.path().join("app-data");
+        std::fs::create_dir_all(&app_data_dir).unwrap();
+        let handler = tracking_handler(app_data_dir);
+        let cwd = project_with_nested_cwd(&handler, temp.path());
+        {
+            let conn = handler.state.db.get().unwrap();
+            crate::test_support::insert_test_role(
+                &conn,
+                "role",
+                "coder",
+                "test",
+                std::env::current_exe().unwrap().to_string_lossy().as_ref(),
+            );
+            conn.execute(
+                "UPDATE roles SET working_dir = ?2 WHERE id = ?1",
+                rusqlite::params!["role", cwd],
+            )
+            .unwrap();
+        }
+
+        let spawned = session::session_start_direct(
+            &handler.state,
+            "role".into(),
+            None,
+            None,
+            None,
+            ProjectScope::Root,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+        assert_root_row_and_tab(&handler, &spawned.id);
+        session::session_kill(&handler.state, &spawned.id).unwrap();
+    }
+
+    #[tokio::test]
+    async fn root_scoped_runtime_chat_stays_unfiled_inside_a_project() {
+        let temp = tempfile::tempdir().unwrap();
+        let app_data_dir = temp.path().join("app-data");
+        std::fs::create_dir_all(&app_data_dir).unwrap();
+        let handler = tracking_handler(app_data_dir);
+        let cwd = project_with_nested_cwd(&handler, temp.path());
+
+        let output = session::session_start_runtime(
+            &handler.state,
+            crate::model::Runtime::Codex.key(),
+            ProjectScope::Root,
+            Some(cwd),
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(output.project_id, None);
+        assert_root_row_and_tab(&handler, &output.session.id);
+        session::session_kill(&handler.state, &output.session.id).unwrap();
+    }
+
+    #[test]
+    fn root_scoped_shell_stays_unfiled_inside_a_project() {
+        let temp = tempfile::tempdir().unwrap();
+        let app_data_dir = temp.path().join("app-data");
+        std::fs::create_dir_all(&app_data_dir).unwrap();
+        let handler = tracking_handler(app_data_dir);
+        let cwd = project_with_nested_cwd(&handler, temp.path());
+
+        let spawned = session::session_start_shell_in(
+            &handler.state,
+            ProjectScope::Root,
+            Some(cwd),
+            None,
+            None,
+        )
+        .unwrap();
+
+        assert_root_row_and_tab(&handler, &spawned.id);
         session::session_kill(&handler.state, &spawned.id).unwrap();
     }
 

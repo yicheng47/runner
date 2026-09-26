@@ -29,6 +29,7 @@ use crate::*;
 use gpui::WeakEntity;
 use runner_app::ui::TextField;
 use runner_backend::ops::mission::MissionSummary;
+use runner_backend::ops::project::ProjectScope;
 use runner_backend::repo::node::{NodeRow, NodeType};
 
 #[derive(Clone, Copy)]
@@ -181,9 +182,9 @@ impl Render for SidebarNodeDrag {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum SidebarMenuAction {
-    NewChat(Option<String>),
-    NewTerminal(Option<String>),
-    NewMission(Option<String>),
+    NewChat(ProjectScope),
+    NewTerminal(ProjectScope),
+    NewMission(ProjectScope),
     TogglePin {
         node_id: String,
         pinned: bool,
