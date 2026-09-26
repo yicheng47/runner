@@ -32,6 +32,10 @@ use crate::*;
 
 /// Below this the prompt card wraps under the profile column.
 const PROMPT_COLUMN_BASIS: f32 = 360.;
+/// Model and Effort share a row of the profile column, 16 px apart.
+const HALF_COLUMN_WIDTH: f32 = (ROLE_COLUMN_WIDTH - 16.) / 2.;
+/// A crew row's text, beside its 20 px avatar and 14 px chevron with 10 px gaps.
+const CREW_TEXT_WIDTH: f32 = ROLE_COLUMN_WIDTH - 20. - 14. - 2. * 10.;
 const PROMPT_CAPTION: &str = "Used in every chat and crew slot. A crew adds its own conventions; a slot can override runtime, model and effort.";
 
 impl NativeRoot {
@@ -229,22 +233,16 @@ impl NativeRoot {
                     .flex_col()
                     .gap_1()
                     .child(
-                        div()
-                            .min_w(px(0.))
-                            .truncate()
+                        column_text(role.display_name.clone(), ROLE_COLUMN_WIDTH)
                             .text_size(theme::text_display())
                             .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(theme::text())
-                            .child(role.display_name.clone()),
+                            .text_color(theme::text()),
                     )
                     .child(
-                        div()
-                            .min_w(px(0.))
-                            .truncate()
+                        column_text(format!("@{}", role.handle), ROLE_COLUMN_WIDTH)
                             .font_family(theme::UI_MONOSPACE_FONT)
                             .text_size(theme::text_body())
-                            .text_color(theme::muted())
-                            .child(format!("@{}", role.handle)),
+                            .text_color(theme::muted()),
                     ),
             )
             .child(
@@ -299,6 +297,7 @@ impl NativeRoot {
                     )
                     .child(setup_value(
                         runtime_display_name(&role.runtime),
+                        ROLE_COLUMN_WIDTH - 18.,
                         false,
                         false,
                     ))
@@ -309,13 +308,16 @@ impl NativeRoot {
                     .flex()
                     .gap_4()
                     .child(
-                        setup_row("Model", setup_value(model, !model_default, model_default))
-                            .flex_1(),
+                        setup_row(
+                            "Model",
+                            setup_value(model, HALF_COLUMN_WIDTH, !model_default, model_default),
+                        )
+                        .flex_1(),
                     )
                     .child(
                         setup_row(
                             "Effort",
-                            setup_value(effort, !effort_default, effort_default),
+                            setup_value(effort, HALF_COLUMN_WIDTH, !effort_default, effort_default),
                         )
                         .flex_1(),
                     ),
@@ -323,18 +325,18 @@ impl NativeRoot {
             .children(role_permission_mode(&role).map(|mode| {
                 setup_row(
                     "Permissions",
-                    setup_value(permission_mode_label(mode), false, false),
+                    setup_value(permission_mode_label(mode), ROLE_COLUMN_WIDTH, false, false),
                 )
             }))
             .child(setup_row(
                 "Command",
-                setup_value(format!("$ {command}"), true, false),
+                setup_value(format!("$ {command}"), ROLE_COLUMN_WIDTH, true, false),
             ))
             .child(setup_row(
                 "Working directory",
                 match role.working_dir.clone() {
-                    Some(dir) => setup_value(dir, true, false),
-                    None => setup_value("default", false, true),
+                    Some(dir) => setup_value(dir, ROLE_COLUMN_WIDTH, true, false),
+                    None => setup_value("default", ROLE_COLUMN_WIDTH, false, true),
                 },
             ));
         let left = div()
@@ -392,14 +394,11 @@ impl NativeRoot {
                     .gap_1()
                     .child(div().w_full().child(form.display_name.clone()))
                     .child(
-                        div()
+                        column_text(format!("@{}", role.handle), ROLE_COLUMN_WIDTH)
                             .mt_1()
-                            .min_w(px(0.))
-                            .truncate()
                             .font_family(theme::UI_MONOSPACE_FONT)
                             .text_size(theme::text_body())
-                            .text_color(theme::muted())
-                            .child(format!("@{}", role.handle)),
+                            .text_color(theme::muted()),
                     )
                     .child(
                         div()
@@ -979,8 +978,8 @@ fn crew_row(membership: CrewMembership, interactive: bool, root: Entity<NativeRo
         .child(RoleAvatar::new(membership.slot_handle.clone(), 20.))
         .child(
             div()
-                .flex_1()
-                .min_w(px(0.))
+                .w(rems(CREW_TEXT_WIDTH / 16.))
+                .flex_none()
                 .flex()
                 .flex_col()
                 .child(
@@ -1012,13 +1011,10 @@ fn crew_row(membership: CrewMembership, interactive: bool, root: Entity<NativeRo
                         })),
                 )
                 .child(
-                    div()
-                        .min_w(px(0.))
-                        .truncate()
+                    column_text(format!("as @{}", membership.slot_handle), CREW_TEXT_WIDTH)
                         .font_family(theme::UI_MONOSPACE_FONT)
                         .text_size(theme::text_meta())
-                        .text_color(theme::faint())
-                        .child(format!("as @{}", membership.slot_handle)),
+                        .text_color(theme::faint()),
                 ),
         )
         .child(
@@ -1113,17 +1109,27 @@ fn setup_row(label: &'static str, value: AnyElement) -> Div {
         .child(value)
 }
 
-fn setup_value(value: impl Into<SharedString>, monospace: bool, dim: bool) -> AnyElement {
-    div()
-        .min_w(px(0.))
-        .truncate()
+fn setup_value(
+    value: impl Into<SharedString>,
+    width: f32,
+    monospace: bool,
+    dim: bool,
+) -> AnyElement {
+    column_text(value, width)
         .text_size(theme::text_body())
         .text_color(if dim { theme::faint() } else { theme::text() })
         .when(monospace, |value| {
             value.font_family(theme::UI_MONOSPACE_FONT)
         })
-        .child(value.into())
         .into_any_element()
+}
+
+/// One line of truncated text in the fixed-width profile column. GPUI shapes
+/// a non-wrapping line once, at the first width layout offers, and a flex
+/// column's first sizing pass offers none (a 0 px width), which left every
+/// value as a bare "…". An explicit width makes that first pass the real one.
+pub(super) fn column_text(text: impl Into<SharedString>, width: f32) -> Div {
+    div().w(rems(width / 16.)).truncate().child(text.into())
 }
 
 fn edit_row(label: &'static str, control: impl IntoElement) -> Div {

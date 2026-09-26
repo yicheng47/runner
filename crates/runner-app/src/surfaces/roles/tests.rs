@@ -1008,3 +1008,121 @@ fn a_crew_slot_edit_still_opens_the_drawer() {
         .unwrap();
     assert_eq!(model, "sonnet", "the drawer keeps the slot's overrides");
 }
+
+/// Records the width layout offers a text leaf, in the order offered.
+struct MeasureProbe(std::rc::Rc<std::cell::RefCell<Vec<gpui::AvailableSpace>>>);
+
+impl gpui::IntoElement for MeasureProbe {
+    type Element = Self;
+
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+impl gpui::Element for MeasureProbe {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<gpui::ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _: Option<&gpui::GlobalElementId>,
+        _: Option<&gpui::InspectorElementId>,
+        window: &mut gpui::Window,
+        _: &mut gpui::App,
+    ) -> (gpui::LayoutId, ()) {
+        let offered = self.0.clone();
+        let layout =
+            window.request_measured_layout(Default::default(), move |_, available, _, _| {
+                offered.borrow_mut().push(available.width);
+                gpui::size(gpui::px(10.), gpui::px(10.))
+            });
+        (layout, ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _: Option<&gpui::GlobalElementId>,
+        _: Option<&gpui::InspectorElementId>,
+        _: gpui::Bounds<gpui::Pixels>,
+        _: &mut (),
+        _: &mut gpui::Window,
+        _: &mut gpui::App,
+    ) {
+    }
+
+    fn paint(
+        &mut self,
+        _: Option<&gpui::GlobalElementId>,
+        _: Option<&gpui::InspectorElementId>,
+        _: gpui::Bounds<gpui::Pixels>,
+        _: &mut (),
+        _: &mut (),
+        _: &mut gpui::Window,
+        _: &mut gpui::App,
+    ) {
+    }
+}
+
+#[test]
+fn profile_text_is_first_shaped_at_its_column_width() {
+    use super::detail::column_text;
+    use gpui::prelude::*;
+    use gpui::{div, px, rems, size, AvailableSpace, TestAppContext, VisualTestContext};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    // GPUI keeps a non-wrapping line as first shaped, so a first offer of
+    // 0 px left every profile value as "…" inside the min_w(0) columns.
+    struct Column(Rc<RefCell<Vec<AvailableSpace>>>);
+    impl gpui::Render for Column {
+        fn render(
+            &mut self,
+            _: &mut gpui::Window,
+            _: &mut gpui::Context<Self>,
+        ) -> impl IntoElement {
+            div().size_full().flex().flex_col().child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .items_start()
+                    .child(
+                        div()
+                            .w(rems(ROLE_COLUMN_WIDTH / 16.))
+                            .min_w(px(0.))
+                            .flex()
+                            .flex_col()
+                            .child(
+                                div().min_w(px(0.)).flex().flex_col().child(
+                                    column_text("~/repos/yicheng47/runner", ROLE_COLUMN_WIDTH)
+                                        .child(MeasureProbe(self.0.clone())),
+                                ),
+                            ),
+                    )
+                    .child(div().flex_1().flex_basis(px(360.)).min_w(px(0.))),
+            )
+        }
+    }
+    let offered = Rc::new(RefCell::new(Vec::new()));
+    let mut cx = TestAppContext::single();
+    let probe = offered.clone();
+    let window = cx.add_window(move |_, _| Column(probe));
+    let visual = VisualTestContext::from_window(window.into(), &cx);
+    visual.simulate_resize(size(px(1200.), px(800.)));
+    visual.run_until_parked();
+    let first = offered.borrow().first().copied();
+    assert_eq!(
+        first,
+        Some(AvailableSpace::Definite(px(ROLE_COLUMN_WIDTH))),
+        "all offers: {:?}",
+        offered.borrow()
+    );
+}
