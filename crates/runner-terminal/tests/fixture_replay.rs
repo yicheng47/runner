@@ -91,6 +91,28 @@ fn cjk_cells_are_wide_with_spacers() {
 }
 
 #[test]
+fn kana_stays_in_the_grid_across_sgr_styles() {
+    let text = "タイムパラドックス ココロありがとう";
+    let bytes = format!(
+        "plain: {text}\r\n\x1b[1mbold: {text}\x1b[0m\r\n\x1b[3mitalic: {text}\x1b[0m\r\n\x1b[1;3mbold+italic: {text}\x1b[0m"
+    );
+    let term = replay_bytes(100, 5, bytes.as_bytes());
+    let lines = visible_lines(&term);
+    for (row, label, flags) in [
+        (0, "plain", Flags::empty()),
+        (1, "bold", Flags::BOLD),
+        (2, "italic", Flags::ITALIC),
+        (3, "bold+italic", Flags::BOLD | Flags::ITALIC),
+    ] {
+        assert_eq!(lines[row], format!("{label}: {text}"));
+        let cell = &term.grid()[Line(row as i32)][Column(label.len() + 2)];
+        assert_eq!(cell.c, 'タ');
+        assert_eq!(cell.flags & (Flags::BOLD | Flags::ITALIC), flags);
+        assert!(cell.flags.contains(Flags::WIDE_CHAR));
+    }
+}
+
+#[test]
 fn emoji_is_wide() {
     let term = replay_bytes(20, 4, "x😀y".as_bytes());
     let grid = term.grid();
