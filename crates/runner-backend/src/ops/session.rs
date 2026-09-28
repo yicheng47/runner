@@ -465,6 +465,14 @@ pub fn session_list_recent_direct(state: &AppCore) -> Result<Vec<DirectSessionEn
         .collect()
 }
 
+pub fn recently_used_runtimes(state: &AppCore) -> Result<Vec<Runtime>> {
+    let conn = state.db.get()?;
+    Ok(repo::session::recently_used_runtimes(&conn)?
+        .into_iter()
+        .filter_map(|runtime| Runtime::parse(&runtime))
+        .collect())
+}
+
 /// Unfiltered single-row lookup for a direct-chat session.
 ///
 /// `session_list_recent_direct` hides archived rows (`archived_at IS

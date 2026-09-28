@@ -42,6 +42,7 @@ pub enum UnavailableReason {
     KeychainUnavailable,
     ClaudeUnreachable,
     CodexNoAnswer,
+    AntigravityNoAnswer,
     InvalidResponse,
 }
 
@@ -49,8 +50,10 @@ pub enum UnavailableReason {
 pub struct UsageSnapshot {
     pub claude: Option<AgentUsage>,
     pub codex: Option<AgentUsage>,
+    pub antigravity: Option<AgentUsage>,
     pub claude_error: Option<UnavailableReason>,
     pub codex_error: Option<UnavailableReason>,
+    pub antigravity_error: Option<UnavailableReason>,
     pub last_fetch_at: Option<DateTime<Utc>>,
     pub refreshing: bool,
 }
@@ -168,6 +171,7 @@ impl UsageService {
         let enabled = self.enabled();
         let mut claude = None;
         let mut codex = None;
+        let mut antigravity = None;
         if let Ok(statuses) = statuses {
             for status in statuses.runtimes {
                 if !enabled.contains(&status.name)
@@ -191,6 +195,7 @@ impl UsageService {
                         });
                     }
                     Runtime::Codex => codex = Some(fetch_codex(&command, &env)),
+                    Runtime::Antigravity => antigravity = Some(fetch_antigravity(&command, &env)),
                     _ => {}
                 }
             }
@@ -222,6 +227,15 @@ impl UsageService {
         if let Some(result) = codex {
             let snapshot = &mut state.snapshot;
             apply_result(&mut snapshot.codex, &mut snapshot.codex_error, result, now);
+        }
+        if let Some(result) = antigravity {
+            let snapshot = &mut state.snapshot;
+            apply_result(
+                &mut snapshot.antigravity,
+                &mut snapshot.antigravity_error,
+                result,
+                now,
+            );
         }
         state.snapshot.last_fetch_at = Some(now);
         state.snapshot.refreshing = false;
@@ -335,6 +349,70 @@ fn parse_codex(value: &Value) -> Result<Vec<UsageWindow>, UnavailableReason> {
     } else {
         Ok(windows)
     }
+}
+
+fn parse_antigravity(value: &Value) -> Result<Vec<UsageWindow>, UnavailableReason> {
+    if value.get("status").and_then(Value::as_str) != Some("SUCCESS")
+        || value.pointer("/command/name").and_then(Value::as_str) != Some("usage")
+    {
+        return Err(UnavailableReason::InvalidResponse);
+    }
+    let groups = value
+        .pointer("/command/data/groups")
+        .and_then(Value::as_array)
+        .ok_or(UnavailableReason::InvalidResponse)?;
+    let mut windows = Vec::new();
+    for group in groups {
+        let Some(name) = group.get("name").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(buckets) = group.get("buckets").and_then(Value::as_array) else {
+            continue;
+        };
+        for bucket in buckets {
+            let Some(window) = bucket.get("window").and_then(Value::as_str) else {
+                continue;
+            };
+            let Some(remaining) = bucket
+                .get("remaining_fraction")
+                .and_then(Value::as_f64)
+                .filter(|value| value.is_finite() && (0. ..=1.).contains(value))
+            else {
+                continue;
+            };
+            let label = match window {
+                "5h" => "5 hours",
+                "weekly" => "Week",
+                _ => continue,
+            };
+            windows.push(UsageWindow {
+                name: format!("{name} · {label} used"),
+                used_percent: (1. - remaining) * 100.,
+                resets_at: parse_timestamp(bucket.get("reset_time")),
+            });
+        }
+    }
+    if windows.is_empty() {
+        Err(UnavailableReason::InvalidResponse)
+    } else {
+        Ok(windows)
+    }
+}
+
+fn fetch_antigravity(
+    command: &str,
+    env: &LoginShellEnv,
+) -> Result<Vec<UsageWindow>, UnavailableReason> {
+    let output = crate::runtime_status::models::command_output(
+        command,
+        &["-p", "/usage", "--output-format", "json"],
+        env,
+        Duration::from_secs(15),
+    )
+    .ok_or(UnavailableReason::AntigravityNoAnswer)?;
+    let value: Value =
+        serde_json::from_slice(&output).map_err(|_| UnavailableReason::InvalidResponse)?;
+    parse_antigravity(&value)
 }
 
 fn parse_claude_window(value: Option<&Value>, name: String) -> Option<UsageWindow> {
@@ -709,6 +787,28 @@ mod tests {
         assert_eq!(windows.len(), 3);
         assert_eq!(windows[2].name, "Fable · week");
         assert_eq!(windows[2].used_percent, 80.);
+    }
+
+    #[test]
+    fn antigravity_remaining_fraction_becomes_used_percent() {
+        let output = serde_json::json!({"status":"SUCCESS","command":{"name":"usage","data":{"groups":[
+            {"name":"Gemini Models","buckets":[{"window":"weekly","remaining_fraction":0.75,"reset_time":"2026-10-05T11:56:44Z"},{"window":"5h","remaining_fraction":0.25,"reset_time":"2026-09-28T16:56:44Z"}]},
+            {"name":"Claude and GPT models","buckets":[{"window":"5h","remaining_fraction":1.0}]}
+        ]}}});
+        let windows = parse_antigravity(&output).unwrap();
+        assert_eq!(windows[0].name, "Gemini Models · Week used");
+        assert_eq!(windows[0].used_percent, 25.);
+        assert_eq!(windows[1].used_percent, 75.);
+        assert_eq!(windows[2].used_percent, 0.);
+        assert!(windows[0].resets_at.is_some());
+        let mut invalid = output.clone();
+        invalid["command"]["data"]["groups"][0]["buckets"][0]["remaining_fraction"] = 2.0.into();
+        invalid["command"]["data"]["groups"][0]["buckets"][1]["remaining_fraction"] = (-1.0).into();
+        invalid["command"]["data"]["groups"][1]["buckets"] = serde_json::json!([]);
+        assert_eq!(
+            parse_antigravity(&invalid),
+            Err(UnavailableReason::InvalidResponse)
+        );
     }
 
     #[test]

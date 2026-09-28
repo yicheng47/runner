@@ -3,10 +3,6 @@ use super::logic::create_role_focus_order;
 use super::logic::create_role_form_is_composing;
 use super::logic::error_banner;
 use super::logic::parse_speed;
-use super::logic::permission_mode_description;
-use super::logic::permission_mode_value;
-use super::logic::permission_modes;
-use super::logic::permission_options;
 use super::logic::runtime_entry;
 use super::logic::runtime_model_placeholder;
 use super::logic::runtime_models;
@@ -59,13 +55,6 @@ impl NativeRoot {
         form.model_field.update(cx, |field, field_cx| {
             field.set_suggestions(runtime_models(&form.runtimes, &runtime), field_cx);
             field.set_disabled(runtime.is_empty(), field_cx);
-        });
-        if !permission_modes(&runtime).contains(&form.permission_mode) {
-            form.permission_mode = PermissionMode::Default;
-        }
-        form.permission_select.update(cx, |select, select_cx| {
-            select.set_options(permission_options(&runtime), select_cx);
-            select.set_value(permission_mode_value(form.permission_mode), select_cx);
         });
         self.request_model_catalog(&runtime, cx);
         cx.notify();
@@ -143,7 +132,7 @@ impl NativeRoot {
             model: trimmed_option(form.model.read(cx).text()),
             effort: None,
             codex_speed: parse_speed(&form.speed),
-            permission_mode: form.permission_mode,
+            permission_mode: PermissionMode::Default,
         };
         let core = self.core(cx).clone();
         let task = cx.background_spawn(async move {
@@ -186,8 +175,6 @@ impl NativeRoot {
         let submitting = form.submitting;
         let can_submit = create_role_can_submit(form);
         let handle_error = form.handle_error;
-        let permission_description =
-            permission_mode_description(&form.runtime, form.permission_mode);
         let root = cx.entity();
         let close_root = root.clone();
         let cancel_root = root.clone();
@@ -323,15 +310,6 @@ impl NativeRoot {
                             .text_color(theme::faint())
                             .child("Fast uses more credits.")
                     }))
-            }))
-            .children((!permission_modes(&form.runtime).is_empty()).then(|| {
-                Field::new(
-                    "new-role-permission-mode",
-                    "Permission mode",
-                    form.permission_select.clone(),
-                )
-                .focus_target(form.permission_select.read(cx).focus_handle())
-                .hint(permission_description, form.permission_hint_focus.clone())
             }))
             .child(
                 Field::new(

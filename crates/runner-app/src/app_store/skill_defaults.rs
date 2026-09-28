@@ -109,6 +109,7 @@ fn root_runtimes(relative: &str) -> &'static [Runtime] {
         ".claude/skills" => &[Runtime::ClaudeCode],
         ".agents/skills" => &[Runtime::Codex, Runtime::Copilot, Runtime::Pi],
         ".trae/skills" => &[Runtime::Trae],
+        ".gemini/antigravity-cli/skills" => &[Runtime::Antigravity],
         _ => &[],
     }
 }
@@ -164,13 +165,17 @@ mod tests {
     }
 
     #[test]
-    fn root_runtime_ownership_matches_the_three_shared_locations() {
+    fn root_runtime_ownership_matches_agent_locations() {
         assert_eq!(root_runtimes(".claude/skills"), &[Runtime::ClaudeCode]);
         assert_eq!(
             root_runtimes(".agents/skills"),
             &[Runtime::Codex, Runtime::Copilot, Runtime::Pi]
         );
         assert_eq!(root_runtimes(".trae/skills"), &[Runtime::Trae]);
+        assert_eq!(
+            root_runtimes(".gemini/antigravity-cli/skills"),
+            &[Runtime::Antigravity]
+        );
     }
 
     #[test]
@@ -194,9 +199,19 @@ mod tests {
             content
         );
 
-        reconcile_skill_roots(&home, true, content, &[Runtime::Codex, Runtime::ClaudeCode]);
+        reconcile_skill_roots(
+            &home,
+            true,
+            content,
+            &[Runtime::Codex, Runtime::ClaudeCode, Runtime::Antigravity],
+        );
         assert_eq!(
             fs::read_to_string(home.join(".claude/skills/runner-dev/SKILL.md")).unwrap(),
+            content
+        );
+        assert_eq!(
+            fs::read_to_string(home.join(".gemini/antigravity-cli/skills/runner-dev/SKILL.md"))
+                .unwrap(),
             content
         );
     }

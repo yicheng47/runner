@@ -205,9 +205,8 @@ pub(super) fn permission_modes(runtime: &str) -> &'static [PermissionMode] {
             PermissionMode::Auto,
             PermissionMode::Bypass,
         ],
-        // TRAE CLI has no auto-approve middle ground — `default`,
-        // `plan`, `bypass_permissions` — so offering Auto would write
-        // nothing and read back as Default (#599).
+        // TRAE CLI has no auto-approve middle ground, so an old Auto mode
+        // falls back to Default when a role changes runtime (#599).
         Some(Runtime::Trae) => &[PermissionMode::Default, PermissionMode::Bypass],
         Some(Runtime::Copilot | Runtime::Antigravity) => &[
             PermissionMode::Default,
@@ -215,77 +214,6 @@ pub(super) fn permission_modes(runtime: &str) -> &'static [PermissionMode] {
             PermissionMode::Bypass,
         ],
         Some(Runtime::Pi | Runtime::Shell) | None => &[],
-    }
-}
-
-pub(super) fn permission_options(runtime: &str) -> Vec<SelectOption> {
-    permission_modes(runtime)
-        .iter()
-        .copied()
-        .map(|mode| {
-            SelectOption::new(permission_mode_value(mode), permission_mode_label(mode))
-                .description(permission_mode_description(runtime, mode))
-                .danger(mode == PermissionMode::Bypass)
-        })
-        .collect()
-}
-
-pub(super) fn permission_mode_value(mode: PermissionMode) -> &'static str {
-    match mode {
-        PermissionMode::Default => "default",
-        PermissionMode::AcceptEdits => "accept_edits",
-        PermissionMode::Auto => "auto",
-        PermissionMode::Bypass => "bypass",
-    }
-}
-
-pub(super) fn parse_permission_mode(value: &str) -> PermissionMode {
-    match value {
-        "accept_edits" => PermissionMode::AcceptEdits,
-        "auto" => PermissionMode::Auto,
-        "bypass" => PermissionMode::Bypass,
-        _ => PermissionMode::Default,
-    }
-}
-
-pub(super) fn permission_mode_label(mode: PermissionMode) -> &'static str {
-    match mode {
-        PermissionMode::Default => "Default",
-        PermissionMode::AcceptEdits => "Accept edits",
-        PermissionMode::Auto => "Auto",
-        PermissionMode::Bypass => "Bypass",
-    }
-}
-
-pub(super) fn permission_mode_description(runtime: &str, mode: PermissionMode) -> &'static str {
-    match (Runtime::parse(runtime), mode) {
-        (Some(Runtime::ClaudeCode), PermissionMode::Default) => {
-            "Ask for every tool, shell command, and write."
-        }
-        (Some(Runtime::ClaudeCode), PermissionMode::AcceptEdits) => "Auto-accept file edits and common filesystem commands; still ask for shell, network, and writes outside the workspace. Available on every plan.",
-        (Some(Runtime::ClaudeCode), PermissionMode::Auto) => "Real auto with a server-side classifier. Requires Max / Team / Enterprise / API plan + a supported model (Opus 4.7 on Max). Not available on Pro.",
-        (Some(Runtime::ClaudeCode), PermissionMode::Bypass) => "Skip every check. Runner accepts Claude Code's bypass disclaimer for the sessions it spawns; a role that passes its own --settings still sees the dialog.",
-        (Some(Runtime::Codex), PermissionMode::Default) => {
-            "Codex's built-in approval cadence (untrusted commands)."
-        }
-        (Some(Runtime::Codex), PermissionMode::Auto) => "Auto-run in the workspace and ask only when the model decides approval is needed (`--ask-for-approval on-request`).",
-        (Some(Runtime::Codex), PermissionMode::Bypass) => "Never ask while keeping Codex's workspace-write sandbox (`--ask-for-approval never`).",
-        (Some(Runtime::Trae), PermissionMode::Default) => "TRAE CLI's built-in approval cadence.",
-        (Some(Runtime::Trae), PermissionMode::Bypass) => {
-            "Bypass TRAE CLI permission prompts (`--permission-mode bypass_permissions`)."
-        }
-        (Some(Runtime::Copilot), PermissionMode::Default) => "Copilot's own manual mode: read-only tools run, writes and shell commands ask. Governed by defaultPermissionMode in ~/.copilot/settings.json.",
-        (Some(Runtime::Copilot), PermissionMode::AcceptEdits) => "File creates and edits run without asking; shell commands, URLs and paths outside the cwd still prompt.",
-        (Some(Runtime::Copilot), PermissionMode::Bypass) => "Every tool, path and URL is allowed. Same flag for the app-wide mission permission mode; chats never carry it (#596).",
-        (Some(Runtime::Copilot), PermissionMode::Auto) => "",
-        (Some(Runtime::Antigravity), PermissionMode::Default) => "agy's own review setting: toolPermission in ~/.gemini/antigravity-cli/settings.json, request-review unless you changed it.",
-        (Some(Runtime::Antigravity), PermissionMode::AcceptEdits) => "File edits run without asking (`--mode accept-edits`); other tools still follow toolPermission.",
-        (Some(Runtime::Antigravity), PermissionMode::Bypass) => "Every tool runs without asking (`--dangerously-skip-permissions`). Same flag for the app-wide mission permission mode; chats never carry it (#596).",
-        (Some(Runtime::Antigravity), PermissionMode::Auto) => "",
-        (Some(Runtime::Codex | Runtime::Trae), PermissionMode::AcceptEdits)
-        | (Some(Runtime::Trae), PermissionMode::Auto)
-        | (Some(Runtime::Pi), _)
-        | (Some(Runtime::Shell) | None, _) => "",
     }
 }
 
@@ -354,12 +282,6 @@ pub(super) fn create_role_focus_order(
     if form.runtime == "codex" {
         order.extend([form.speed_select.read(cx).focus_handle()]);
     }
-    if !permission_modes(&form.runtime).is_empty() {
-        order.extend([
-            form.permission_hint_focus.clone(),
-            form.permission_select.read(cx).focus_handle(),
-        ]);
-    }
     order.extend([
         form.working_dir.read(cx).focus_handle(),
         form.browse_focus.clone(),
@@ -380,14 +302,11 @@ pub(super) fn role_edit_is_dirty(form: &RoleEditForm, cx: &Context<NativeRoot>) 
         || trimmed_option(form.model.read(cx).text()) != stored(&role.model)
         || trimmed_option(&form.effort) != stored(&role.effort)
         || parse_speed(&form.speed) != role.codex_speed
-        || (!permission_modes(&form.runtime).is_empty()
-            && Some(form.permission_mode) != role_permission_mode(role))
         || trimmed_option(form.working_dir.read(cx).text()) != stored(&role.working_dir)
         || trimmed_option(form.system_prompt.read(cx).text()) != stored(&role.system_prompt)
 }
 
-/// The args the form shows: the stored ones less the permission flags its
-/// Permissions control owns.
+/// Mission permissions are fixed, so old role permission flags stay out of the form.
 pub(super) fn role_visible_args(role: &Role) -> Vec<String> {
     runner_backend::router::runtime::strip_permission_flags(
         Runtime::parse(&role.runtime),

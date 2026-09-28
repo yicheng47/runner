@@ -173,7 +173,7 @@ Carbon and Runner Light are Runner's own themes; Catppuccin Mocha and Latte ride
 
 - **Sessions that outlive the app** — quitting or crashing does not kill your agents; the next launch reattaches to the sessions still running, and a quit while work is in flight asks first.
 - **Projects** — bind a working directory once; chats and missions started inside a project inherit its cwd and stay grouped in their own sidebar section. Agents can create, rename, file into, and delete projects through the CLI too.
-- **Mission controls** — stop, resume, or restart a single slot without restarting the mission; a restarted session comes back fresh with its original brief. Missions run in Bypass permission mode by default, with Accept-edits and Default a setting away, and never stall on an agent's first-run consent dialog.
+- **Mission controls** — stop, resume, or restart a single slot without restarting the mission; a restarted session comes back fresh with its original brief. Missions use Bypass permissions so unattended slots do not wait at a tool prompt.
 - **Real terminals** — every pane is a real PTY on an `alacritty_terminal` grid drawn on the GPU: the agents' own colours, mouse reporting, IME input (Pinyin included), copy, file-path paste, 10,000 lines of scrollback. Click a file path to open it in your editor; select some output and ask about it in a side thread; ⌘+ and ⌘− zoom the app from 60% to 200%.
 - **Terminal drawer** — every chat and every mission has a shell beneath it, one shortcut away, opened in the same directory as the agent above: run the tests the agent just wrote, check `git status`, tail a log, without leaving the pane or opening another terminal app. Drawers hold as many shells as you need and come back where you left them.
 
@@ -209,7 +209,7 @@ CONTEXT
 
 On macOS, the first launch installs it to `~/.local/bin`, or a writable `/usr/local/bin`, when that directory is already on the login `PATH`; otherwise it is one click in **Settings → General → Command line**. On Windows, Runner adds its sidecar directory to the user `PATH`.
 
-Agents need no setup. Runner installs a `runner` skill for every detected agent into two roots: `~/.claude/skills/` for Claude Code, and `~/.agents/skills/` for Codex, GitHub Copilot CLI, and pi. The skill points the agent at the version-matched `runner help agents` guide. The same **Command line** section has the `runner` command row and the **Runner skill for agents** switch.
+Agents need no setup. Runner installs a `runner` skill for every detected agent into `~/.claude/skills/` for Claude Code, `~/.agents/skills/` for Codex, GitHub Copilot CLI, and pi, `~/.trae/skills/` for TRAE CLI, and `~/.gemini/antigravity-cli/skills/` for Antigravity CLI. The skill points the agent at the version-matched `runner help agents` guide. The same **Command line** section has the `runner` command row and the **Runner skill for agents** switch.
 
 A whole mission, driven from outside the app:
 
@@ -231,31 +231,31 @@ Agents use `--json`; without it, list and show commands render tables and readab
 | | Codex | Claude Code | Antigravity CLI | pi | GitHub Copilot CLI |
 | --- | :---: | :---: | :---: | :---: | :---: |
 | Chats, missions, resume after relaunch | ✓ | ✓ | ✓ | ✓ | ✓ |
-| In-session conversation change updates Runner's resume key | ✓ | ✓ | — | ✓ | — |
+| In-session conversation change updates Runner's resume key | ✓ | ✓ | ✓ | ✓ | — |
 | Runs on Windows | ✓ | ✓ | ✓ ¹ | ✓ ² | ✓ |
 | Fork a chat | ✓ | ✓ | — | ✓ | — |
 | Working / Idle from the agent's hooks | ✓ | ✓ | macOS only | ✓ | ✓ |
 | Needs you: approval and question dialogs shown | — | ✓ | — | from extensions only | ✓ |
-| Model list read from the CLI | ✓ | ✓ | — | ✓ | — |
+| Model list read from the CLI | ✓ | ✓ | ✓ | ✓ | — |
 | Update from Settings → Agents | ✓ | ✓ | — | ✓ | ✓ |
-| Usage in Runner's popover | ✓ | ✓ | — | — | — |
-| Permission modes | Default · Auto · Bypass | Default · Accept edits · Auto · Bypass | Default · Accept edits · Bypass | — | Default · Accept edits · Bypass |
+| Weekly usage pill and detailed popover | ✓ | ✓ | ✓ | — | — |
+| Mission access | Bypass | Bypass | Bypass | trusted workspace | Bypass |
 | Skills pane | catalog + on/off | catalog + on/off | catalog | catalog | catalog + on/off |
-| Runner skill installed | ✓ | ✓ | — | ✓ | ✓ |
-| Terminal rendering covered by fixtures | ✓ | ✓ | — | — | — |
+| Runner skill installed | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Terminal rendering covered by fixtures | ✓ | ✓ | ✓ | — | — |
 
 ¹ Antigravity CLI has not been smoke-tested on Windows yet.
 ² pi runs natively on Windows but has not been smoke-tested there yet; its bash tool requires Git for Windows.
 
 ### Antigravity CLI checklist
 
-**9 capabilities implemented on macOS** in this branch. The [smoke checklist](./docs/tests/644-antigravity-smoke.md) tracks live validation.
+**Antigravity follow-ups are implemented on macOS** in this branch. The [smoke checklist](./docs/tests/644-antigravity-smoke.md) tracks live validation.
 
 - [x] Direct chats and crew mission slots.
 - [x] Role persona delivered with the first turn.
 - [x] Conversation key capture, relaunch resume, and fresh start when a conversation is missing.
-- [x] Static model choices with only supported effort levels.
-- [x] Default, Accept edits, and Bypass mission permission modes; direct chats use Default, and workspace trust is seeded before launch.
+- [x] Discovered model choices with supported effort levels and a cached/static fallback.
+- [x] Mission slots use Bypass; direct chats use the CLI's own permission settings, and workspace trust is seeded before launch.
 - [x] Hook-driven Working, Idle, and Response failed status on macOS.
 - [x] CLI detection and version display in Settings → Agents.
 - [x] Skills catalog roots and stdio MCP server registration in Settings.
@@ -264,9 +264,9 @@ Agents use `--json`; without it, list and show commands render tables and readab
 Still pending:
 
 - [ ] Live macOS smoke for resume, permissions, hooks, and MCP behavior.
-- [ ] A recorded Antigravity terminal fixture and wheel behavior check.
-- [ ] Antigravity quotas in Runner's usage popover (`agy` has its own `/usage` panel).
-- [ ] Track the active conversation after agy's `/clear` (`/new`), `/resume`, or `/fork` changes it inside a running chat.
+- [x] A recorded Antigravity first-turn terminal fixture and a PTY wheel input probe; native Runner wheel smoke remains pending.
+- [x] Antigravity quotas from read-only `agy -p /usage --output-format json` in Runner's usage popover.
+- [x] Track the active conversation after agy's `/clear` (`/new`), `/resume`, or `/fork` changes it inside a running chat.
 - [ ] Windows smoke for Antigravity CLI.
 
 Claude Code and Codex are the primary agents, with tuned launch and nudge timing. GitHub Copilot CLI needs a Copilot subscription. pi brings your own configured model provider. Antigravity CLI signs in with a Google account and updates itself when it starts, so it has no **Update** button. [Issues](https://github.com/yicheng47/runner/issues) are welcome.

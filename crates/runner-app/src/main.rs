@@ -483,6 +483,7 @@ struct NativeRoot {
     usage_open: bool,
     usage_anchor: Option<Bounds<Pixels>>,
     usage_installed: Vec<runner_backend::model::Runtime>,
+    usage_recent: Vec<runner_backend::model::Runtime>,
     /// Agents with a newer version on npm; enabled ones dot the usage
     /// popover's Agent settings gear.
     agent_updates: Vec<runner_backend::model::Runtime>,
@@ -600,6 +601,11 @@ impl NativeRoot {
                             "session/spawned" | "session/exit" | "session/archived"
                         ) {
                             this.refresh_agents_live_sessions(cx);
+                        }
+                        if event.name == "session/spawned" {
+                            this.usage_recent =
+                                runner_backend::ops::session::recently_used_runtimes(this.core(cx))
+                                    .unwrap_or_default();
                         }
                         this.handle_chat_lifecycle_event(event, window, cx);
                         cx.notify();
@@ -857,6 +863,8 @@ impl NativeRoot {
             usage_open: false,
             usage_anchor: None,
             usage_installed: crate::surfaces::app_shell::usage_installed(&core),
+            usage_recent: runner_backend::ops::session::recently_used_runtimes(&core)
+                .unwrap_or_default(),
             agent_updates: crate::surfaces::app_shell::agents_with_updates(&core),
             runtime_navigation_history,
             runtime_navigation_index,

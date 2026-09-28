@@ -4,6 +4,8 @@
 > Priority: P1, milestone 0.12.x. Platforms: macOS and Windows; JASONPC smoke pending.
 > Probed 2026-09-23 against the installed `agy` on macOS, which updated itself from 1.2.8 to 1.2.9 in the middle of the probe. Every claim below comes from `--help`, the docs bundled under `~/.gemini/antigravity-cli/builtin/skills/`, agy's own logs, or a live session recorded in a PTY. This spec supersedes the issue body where they differ.
 
+> Follow-up: [#747](https://github.com/yicheng47/runner/issues/747) supersedes the v1 deferrals below. On agy 1.2.12, Runner follows `Streaming conversation <id>` throughout a process for `/new`, `/fork` and `/resume`; discovers models through bounded `agy models` with cache/static fallback; reads structured quota via `agy -p /usage --output-format json`; installs its skill under `~/.gemini/antigravity-cli/skills`; and has a recorded first-turn fixture. See the [dated validation record](../tests/747-antigravity-followups.md) for probe results and pending native UI/Windows checks.
+
 ## Motivation
 
 Antigravity CLI (`agy`) is Google's terminal coding agent: the TUI surface of Antigravity, sharing its agent engine, and the migration path from Gemini CLI. It runs Gemini models by default plus Claude and GPT-OSS, and signs in with a Google account, so supporting it puts Runner in front of users on a Google AI plan who never run Claude Code or Codex. It is a TUI on a PTY and fits the adapter the way Copilot ([540](./archive/540-copilot-cli-runtime.md)) and pi ([539](./archive/539-pi-runtime.md)) do. The inventory in 540 is the checklist; this spec lists only the values that are agy's.
@@ -65,7 +67,7 @@ Antigravity CLI (`agy`) is Google's terminal coding agent: the TUI surface of An
 
 - DECSET `1049` alternate screen, `2004` bracketed paste, hidden cursor. **No mouse reporting.** It pushes kitty keyboard flags (`CSI > 1 u`), queries them (`CSI ? u`), sets modifyOtherKeys (`CSI > 4;2 m`), and queries DA1, synchronized output (`?2026$p`, `?2027$p`) and kitty graphics. Runner's terminal answers none of the kitty queries, so agy falls back to plain key encoding, as other runtimes do.
 - **No OSC 0/2 title at any point**, before or after a turn.
-- Runner's `encode_scroll` turns the wheel into Up/Down arrows on an alternate screen without mouse reporting, so every wheel tick reaches agy as an arrow key.
+- Runner's `encode_scroll` turns the wheel into Up/Down arrows on an alternate screen without mouse reporting. The #747 first-turn fixture exits the alternate screen before the idle reply, so `encode_scroll` emits no wheel input then and Runner scrolls its local viewport. Actual Runner UI wheel behavior remains unverified.
 
 ## What a new runtime touches
 
@@ -120,7 +122,7 @@ Sites and their shapes follow the [540 inventory](./archive/540-copilot-cli-runt
 - Model and effort from a static catalog that can only emit combinations agy accepts.
 - First turn on `-i`; persona folded into it.
 - Session key captured from a per-session `--log-file`; resume with `--conversation`; the conversation-exists check on `conversations/<id>.db`.
-- Permission modes Default, AcceptEdits and Bypass. Mission Bypass ([#527](./archive/527-mission-permission-mode.md)) maps to `--dangerously-skip-permissions`; chats assert nothing.
+- The CLI accepts Default, AcceptEdits and Bypass flags. Runner missions now always use Bypass, mapped to `--dangerously-skip-permissions`; direct chats assert no permission mode. The earlier selectable modes remain documented below as v1 history.
 - Trust preseed for every spawn cwd.
 - `--add-dir <mission dir>` for mission slots.
 - Settings → Agents row, MCP registration, Skills pane roots.
@@ -155,7 +157,7 @@ These did not get a clean answer on 2026-09-23. None blocks phase 1; each is clo
 
 - Whether `--dangerously-skip-permissions` skips the trust dialog. The preseed makes it moot for Runner; record it anyway.
 - Whether a `PreToolUse` `"ask"`, such as Orca's global hook, overrides `--dangerously-skip-permissions`. If it does, Bypass missions on a machine with Orca installed will stop on prompts. Phase 4.
-- What agy does with Up and Down, which is every wheel tick: prompt history or transcript scroll. If it is history, a wheel over an agy pane rewrites the input line, and the pane needs a wheel policy. Phase 2 fixture.
+- The #747 PTY probe found that manually sent Up/Down changes agy's prompt history. Its recorded idle screen is primary, so that result does not imply a wheel tick sends arrows. Verify wheel behavior in the native Runner UI before adding a runtime policy.
 - A live `ask_question` payload, and whether the transcript tail can show Answer needed. Phase 3.
 - Where `/model` persists the user's default, for `runtime_defaults.rs`.
 - Whether an added directory's `AGENTS.md` loads as rules (decision 6).
@@ -185,7 +187,7 @@ Direct chat: the first turn arrives once, the pane paints, the tab keeps Runner'
 
 ### Phase 5 — follow-ups, each its own issue
 
-Model discovery from `agy models`; the persona on a native channel; hooks on Windows; `/usage` for the [706](./706-agent-usage.md) usage popover.
+Model discovery from `agy models`; the persona on a native channel; hooks on Windows; `/usage` for the [706](./706-agent-usage.md) usage popover. The model and usage items were delivered by [#747](../tests/747-antigravity-followups.md); this line records the original #644 deferral.
 
 ## Verification
 
@@ -194,7 +196,7 @@ Model discovery from `agy models`; the persona on a native channel; hooks on Win
 - [ ] A fresh spawn carries `--log-file <app data>/antigravity/logs/<session>.log -i <body>` and no `--conversation`; the key appears on the row within seconds of the first message.
 - [ ] A blank chat has no key until the first message, then gets one.
 - [ ] Resume carries `--conversation <key>` and no `-i`; a missing `conversations/<key>.db` gives a fresh spawn with the first turn and a new key.
-- [ ] AcceptEdits rows spawn with `--mode accept-edits`, Bypass rows with `--dangerously-skip-permissions`, Default rows with neither; the strip removes `-mode=plan`, `--mode plan` and `-dangerously-skip-permissions`.
+- [ ] Mission slots always spawn with `--dangerously-skip-permissions` and strip any old role permission flags, including `-mode=plan`, `--mode plan` and `-dangerously-skip-permissions`; direct chats carry no Runner permission override.
 - [ ] A never-trusted cwd is added to `trustedWorkspaces` before spawn with every other key unchanged, and the session shows no trust dialog.
 - [ ] A server copied in Settings → MCP lands in `~/.gemini/config/mcp_config.json` with `disabled: false`, including when the file starts at 0 bytes (Runner no longer registers itself since #648).
 - [ ] Hook status: a finished turn shows Idle, a running turn Working; tools still run under `request-review`, `accept-edits` and bypass with Runner's hooks loaded, which proves Runner sends no `PreToolUse` decision.

@@ -1,6 +1,4 @@
-use super::logic::permission_mode_value;
 use super::logic::permission_modes;
-use super::logic::permission_options;
 use super::logic::role_edit_args;
 use super::logic::role_edit_form_is_composing;
 use super::logic::runtime_entry;
@@ -61,10 +59,6 @@ impl NativeRoot {
         if !permission_modes(&next_runtime).contains(&form.permission_mode) {
             form.permission_mode = PermissionMode::Default;
         }
-        form.permission_select.update(cx, |select, select_cx| {
-            select.set_options(permission_options(&next_runtime), select_cx);
-            select.set_value(permission_mode_value(form.permission_mode), select_cx);
-        });
         self.sync_role_edit_efforts(cx);
         self.request_model_catalog(&next_runtime, cx);
         cx.notify();

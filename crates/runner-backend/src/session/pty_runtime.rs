@@ -110,7 +110,8 @@ impl HookStatusWatcher {
             Self::Claude(watcher) => Some(watcher.interrupt_signal()),
             Self::Codex(_) => None,
             Self::Copilot(watcher) => Some(watcher.interrupt_signal()),
-            Self::Pi(_) | Self::Antigravity(_) => None,
+            Self::Antigravity(watcher) => Some(watcher.interrupt_signal()),
+            Self::Pi(_) => None,
         }
     }
 
@@ -2610,6 +2611,70 @@ mod tests {
             std::fs::read_dir(path.parent().unwrap()).unwrap().count(),
             0
         );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn antigravity_escape_releases_working_without_a_stop_hook() {
+        use super::super::{
+            agy_status, hook_feed,
+            status::{Activity, TurnOutcome},
+        };
+
+        let root = tempfile::tempdir().unwrap();
+        agy_status::install_hooks(root.path()).unwrap();
+        let path = hook_feed::status_path(root.path(), "agy-interrupt");
+        let rt = PtyRuntime::new();
+        let mut spawn = spec("agy-interrupt", "/bin/cat", &[]);
+        spawn.env.insert(
+            agy_status::PATH_ENV.into(),
+            path.to_string_lossy().into_owned(),
+        );
+        spawn
+            .env
+            .insert(agy_status::GENERATION_ENV.into(), "current".into());
+        let (session, stream) = rt.spawn(spawn).unwrap();
+        assert!(lookup(&rt, &session.session_id)
+            .unwrap()
+            .hook_interrupt
+            .is_some());
+
+        let mut feed = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        writeln!(
+            feed,
+            r#"{{"generation":"current","hook_event_name":"PreInvocation"}}"#
+        )
+        .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            assert!(Instant::now() < deadline, "missing agy Working hook");
+            if let Ok(RuntimeOutput::AgentObservation(value)) =
+                stream.recv_timeout(Duration::from_millis(50))
+            {
+                assert_eq!(value.activity, Activity::Working);
+                break;
+            }
+        }
+
+        rt.send_bytes(&session, b"\x1b").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            assert!(
+                Instant::now() < deadline,
+                "agy remained Working after Escape"
+            );
+            if let Ok(RuntimeOutput::AgentObservation(value)) =
+                stream.recv_timeout(Duration::from_millis(50))
+            {
+                assert_eq!(value.activity, Activity::Ready);
+                assert_eq!(value.outcome, Some(TurnOutcome::Interrupted));
+                break;
+            }
+        }
+        rt.stop(&session).unwrap();
     }
 
     #[test]

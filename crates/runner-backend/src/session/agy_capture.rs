@@ -4,10 +4,10 @@
 // sent, so Runner cannot pre-assign it the way it does for Claude Code. Every
 // spawn passes `--log-file <app data>/antigravity/logs/<runner session id>.log`,
 // a channel that belongs to one session, and a thread tails it for agy's
-// `Created conversation <uuid>` line, then writes the id into
-// `agent_session_key`. A blank chat keeps tailing until its first message or
-// the end of the session. On a resume that agy could not honour, the new
-// conversation's line replaces the stale key.
+// `Streaming conversation <uuid>` line, then writes the active id into
+// `agent_session_key`. agy emits this line after initial creation, /new,
+// /fork and /resume. A blank chat keeps tailing until its first message or
+// the end of the session.
 //
 // The line is agy's internal log, not a contract: the fixture test pins its
 // shape, and a miss fails soft (no key, no resume), as Codex capture does.
@@ -23,7 +23,7 @@ use crate::db::DbPool;
 use crate::session::manager::{SessionEvents, SessionUpdatedEvent};
 
 const LOG_DIR: &str = "antigravity/logs";
-const CREATED_CONVERSATION: &str = "] Created conversation ";
+const ACTIVE_CONVERSATION: &str = "] Streaming conversation ";
 const POLL_INTERVAL: Duration = Duration::from_millis(400);
 
 pub(crate) fn log_path(app_data_dir: &Path, session_id: &str) -> PathBuf {
@@ -73,9 +73,17 @@ pub(crate) fn clear_orphans(app_data_dir: &Path, pool: &DbPool) {
     }
 }
 
-/// The conversation id in one of agy's `Created conversation <uuid>` lines.
-pub(crate) fn created_conversation(line: &str) -> Option<&str> {
-    let (_, rest) = line.split_once(CREATED_CONVERSATION)?;
+/// The active conversation id in one of agy's manager log lines.
+pub(crate) fn active_conversation(line: &str) -> Option<&str> {
+    let (source, rest) = line.split_once(ACTIVE_CONVERSATION)?;
+    if !source
+        .split_whitespace()
+        .last()
+        .and_then(|token| token.strip_prefix("conversation_manager.go:"))
+        .is_some_and(|line| !line.is_empty() && line.bytes().all(|byte| byte.is_ascii_digit()))
+    {
+        return None;
+    }
     let id = rest.split_whitespace().next()?;
     uuid::Uuid::parse_str(id).is_ok().then_some(id)
 }
@@ -107,9 +115,8 @@ fn run(request: CaptureRequest) {
         // Read once more after the stop flag so a line written just before
         // exit still lands.
         let stopped = request.stop.load(Ordering::Acquire);
-        if let Some(key) = tail.next_conversation(&request.log_path) {
+        for key in tail.next_conversations(&request.log_path) {
             persist(&request, &key);
-            return;
         }
         if stopped {
             return;
@@ -148,18 +155,27 @@ struct LogTail {
 }
 
 impl LogTail {
-    fn next_conversation(&mut self, path: &Path) -> Option<String> {
-        let mut file = File::open(path).ok()?;
-        let length = file.metadata().ok()?.len();
+    fn next_conversations(&mut self, path: &Path) -> Vec<String> {
+        let Ok(mut file) = File::open(path) else {
+            return Vec::new();
+        };
+        let Ok(length) = file.metadata().map(|metadata| metadata.len()) else {
+            return Vec::new();
+        };
         if length < self.offset {
             self.offset = 0;
             self.pending.clear();
         }
-        file.seek(SeekFrom::Start(self.offset)).ok()?;
+        if file.seek(SeekFrom::Start(self.offset)).is_err() {
+            return Vec::new();
+        }
         let mut bytes = Vec::new();
-        self.offset += file.read_to_end(&mut bytes).ok()? as u64;
+        let Ok(read) = file.read_to_end(&mut bytes) else {
+            return Vec::new();
+        };
+        self.offset += read as u64;
         self.pending.extend_from_slice(&bytes);
-        let mut found = None;
+        let mut found = Vec::new();
         let mut consumed = 0;
         while let Some(end) = self.pending[consumed..]
             .iter()
@@ -167,9 +183,8 @@ impl LogTail {
         {
             let line = String::from_utf8_lossy(&self.pending[consumed..consumed + end]);
             consumed += end + 1;
-            if let Some(id) = created_conversation(&line) {
-                found = Some(id.to_owned());
-                break;
+            if let Some(id) = active_conversation(&line) {
+                found.push(id.to_owned());
             }
         }
         self.pending.drain(..consumed);
@@ -193,17 +208,35 @@ I0922 16:29:57.818131     580 conversation_manager.go:887] Streaming conversatio
 ";
 
     #[test]
-    fn created_conversation_reads_agys_log_line_and_nothing_else() {
-        let ids: Vec<_> = FIXTURE.lines().filter_map(created_conversation).collect();
+    fn active_conversation_reads_agys_log_line_and_nothing_else() {
+        let ids: Vec<_> = FIXTURE.lines().filter_map(active_conversation).collect();
         assert_eq!(ids, ["1b82ea2b-dba2-41e7-8318-7e3fe3680ebf"]);
         for line in [
             "I0922 16:29:57.8 1 server.go:1] Resuming conversation 1b82ea2b-dba2-41e7-8318-7e3fe3680ebf",
             "I0922 16:29:57.8 1 server.go:1] Created conversation not-a-uuid",
             "I0922 16:29:57.8 1 server.go:1] Created conversation ",
             "Created conversation 1b82ea2b-dba2-41e7-8318-7e3fe3680ebf",
+            "I0922 16:29:57.8 1 subagent_manager.go:1] Streaming conversation 1b82ea2b-dba2-41e7-8318-7e3fe3680ebf",
+            "I0922 16:29:57.8 1 server.go:1] Streaming conversation 1b82ea2b-dba2-41e7-8318-7e3fe3680ebf",
         ] {
-            assert_eq!(created_conversation(line), None, "{line}");
+            assert_eq!(active_conversation(line), None, "{line}");
         }
+    }
+
+    #[test]
+    fn tail_keeps_every_switch_in_one_poll() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("session.log");
+        let ids = [
+            "1b82ea2b-dba2-41e7-8318-7e3fe3680ebf",
+            "2b82ea2b-dba2-41e7-8318-7e3fe3680ebf",
+            "3b82ea2b-dba2-41e7-8318-7e3fe3680ebf",
+        ];
+        let lines = ids.iter().map(|id| format!("I0928 22:00:00.000000 1 conversation_manager.go:887] Streaming conversation {id}\n")).collect::<String>();
+        std::fs::write(&path, lines).unwrap();
+        let mut tail = LogTail::default();
+        assert_eq!(tail.next_conversations(&path), ids);
+        assert!(tail.next_conversations(&path).is_empty());
     }
 
     #[test]
@@ -211,27 +244,27 @@ I0922 16:29:57.818131     580 conversation_manager.go:887] Streaming conversatio
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("session.log");
         let mut tail = LogTail::default();
-        assert_eq!(tail.next_conversation(&path), None);
+        assert!(tail.next_conversations(&path).is_empty());
 
         let (head, created) = FIXTURE.split_at(FIXTURE.find("I0922 16:29:57.817770").unwrap());
         let mut file = std::fs::File::create(&path).unwrap();
         file.write_all(head.as_bytes()).unwrap();
         file.write_all(&created.as_bytes()[..40]).unwrap();
-        assert_eq!(tail.next_conversation(&path), None);
+        assert!(tail.next_conversations(&path).is_empty());
         file.write_all(&created.as_bytes()[40..]).unwrap();
         assert_eq!(
-            tail.next_conversation(&path).as_deref(),
-            Some("1b82ea2b-dba2-41e7-8318-7e3fe3680ebf")
+            tail.next_conversations(&path),
+            ["1b82ea2b-dba2-41e7-8318-7e3fe3680ebf"]
         );
 
         std::fs::write(
             &path,
-            "I0 1 server.go:1] Created conversation 2c82ea2b-dba2-41e7-8318-7e3fe3680ebf\n",
+            "I0 1 conversation_manager.go:887] Streaming conversation 2c82ea2b-dba2-41e7-8318-7e3fe3680ebf\n",
         )
         .unwrap();
         assert_eq!(
-            tail.next_conversation(&path).as_deref(),
-            Some("2c82ea2b-dba2-41e7-8318-7e3fe3680ebf")
+            tail.next_conversations(&path),
+            ["2c82ea2b-dba2-41e7-8318-7e3fe3680ebf"]
         );
     }
 

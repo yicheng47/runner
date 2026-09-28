@@ -10,10 +10,9 @@ use gpui::{
     SharedString, Window,
 };
 use runner_app::ui::{
-    Button, ButtonVariant, Field, IconButton, Modal, OverlayWidth, RoleAvatar, RolePresence,
-    SessionControl, SessionControlVariant, Tooltip,
+    Button, ButtonVariant, Field, IconButton, Modal, OverlayWidth, RoleAvatar, SessionControl,
+    SessionControlVariant, Tooltip,
 };
-use runner_backend::model::SessionStatus;
 
 use super::*;
 use crate::*;
@@ -198,11 +197,6 @@ impl MissionWorkspace {
             let open_root = root.clone();
             let card_key_id = session_id.clone();
             let card_key_root = root.clone();
-            let presence = match session.session.status {
-                SessionStatus::Running => RolePresence::Busy,
-                SessionStatus::Stopped => RolePresence::Stopped,
-                SessionStatus::Crashed => RolePresence::Crashed,
-            };
             let status = runner_app::ui::agent_status::StatusPresentation::new(
                 &self.slot_agent_status(&session_id, cx),
             );
@@ -311,10 +305,7 @@ impl MissionWorkspace {
                                     .flex()
                                     .items_center()
                                     .gap_2()
-                                    .child(
-                                        RoleAvatar::new(session.handle.clone(), 25.)
-                                            .presence(presence),
-                                    )
+                                    .child(RoleAvatar::new(session.handle.clone(), 25.))
                                     .child(Tooltip::new(
                                         SharedString::from(format!(
                                             "mission-role-title-{session_id}"

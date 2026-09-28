@@ -9,8 +9,10 @@ use alacritty_terminal::grid::Dimensions as _;
 use alacritty_terminal::index::{Column, Line};
 use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::test::TermSize;
+use alacritty_terminal::term::TermMode;
 
 use runner_terminal::fixtures::Fixture;
+use runner_terminal::mappings::encode_scroll;
 use runner_terminal::replay::{
     feed, new_term, replay_bytes, replay_fixture, screen_snapshot, visible_lines,
 };
@@ -56,6 +58,23 @@ fn fixture_corpus_snapshots() {
         checked > 0,
         "fixture corpus is empty — record fixtures first"
     );
+}
+
+#[test]
+fn agy_first_turn_returns_to_primary_screen_for_idle_wheel() {
+    let fixture = Fixture::load(&fixtures_dir().join("agy-first-turn.ndjson")).unwrap();
+    let bytes = fixture.output_bytes().unwrap();
+    assert!(bytes.windows(8).any(|window| window == b"\x1b[?1049h"));
+    assert!(bytes.windows(8).any(|window| window == b"\x1b[?1049l"));
+    let terminal = replay_fixture(&fixture).unwrap();
+    let mode = *terminal.mode();
+    assert!(!mode.contains(TermMode::ALT_SCREEN));
+    assert!(!mode.intersects(TermMode::MOUSE_MODE));
+    assert_eq!(encode_scroll(mode, 1, false, 7, 4), None);
+    assert_eq!(encode_scroll(mode, -1, false, 7, 4), None);
+    let screen = screen_snapshot(&terminal);
+    assert!(screen.contains("OK"));
+    assert!(screen.contains("Gemini 3.8 Flash"));
 }
 
 #[test]

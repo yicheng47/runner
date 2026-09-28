@@ -102,14 +102,16 @@ pub fn statuses(home: &Path, app_data_dir: &Path, debug: bool) -> Vec<SkillRootS
 
 pub fn status_root(root: &Path, debug: bool, expected: &str) -> SkillRootStatus {
     let folder = root.join(skill_name(debug));
-    let state = if !folder.exists() {
-        SkillRootState::Missing
-    } else if !folder.join(runner_core::RUNNER_SKILL_MARKER).is_file() {
-        SkillRootState::Foreign
-    } else if fs::read_to_string(folder.join(SKILL_FILE)).is_ok_and(|content| content == expected) {
-        SkillRootState::Current
-    } else {
-        SkillRootState::Stale
+    let state = match fs::symlink_metadata(&folder) {
+        Err(_) => SkillRootState::Missing,
+        Ok(_) if !managed_folder(&folder) => SkillRootState::Foreign,
+        Ok(_)
+            if fs::read_to_string(folder.join(SKILL_FILE))
+                .is_ok_and(|content| content == expected) =>
+        {
+            SkillRootState::Current
+        }
+        Ok(_) => SkillRootState::Stale,
     };
     SkillRootStatus {
         root: root.to_path_buf(),
@@ -121,8 +123,8 @@ pub fn status_root(root: &Path, debug: bool, expected: &str) -> SkillRootStatus 
 pub fn install_root(root: &Path, debug: bool, content: &str) -> Result<InstallOutcome> {
     fs::create_dir_all(root)?;
     let folder = root.join(skill_name(debug));
-    if folder.exists() {
-        if !folder.join(runner_core::RUNNER_SKILL_MARKER).is_file() {
+    if fs::symlink_metadata(&folder).is_ok() {
+        if status_root(root, debug, content).state == SkillRootState::Foreign {
             return Ok(InstallOutcome::Foreign);
         }
         if fs::read_to_string(folder.join(SKILL_FILE)).is_ok_and(|current| current == content) {
@@ -166,7 +168,7 @@ pub fn refresh(home: &Path, app_data_dir: &Path, debug: bool) -> Result<Vec<Skil
 
 pub fn remove_root(root: &Path, debug: bool) -> Result<bool> {
     let folder = root.join(skill_name(debug));
-    if !folder.exists() || !folder.join(runner_core::RUNNER_SKILL_MARKER).is_file() {
+    if !managed_folder(&folder) {
         return Ok(false);
     }
     let removed = root.join(format!(
@@ -177,6 +179,11 @@ pub fn remove_root(root: &Path, debug: bool) -> Result<bool> {
     fs::rename(&folder, &removed)?;
     fs::remove_dir_all(removed)?;
     Ok(true)
+}
+
+fn managed_folder(folder: &Path) -> bool {
+    matches!(fs::symlink_metadata(folder), Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink())
+        && matches!(fs::symlink_metadata(folder.join(runner_core::RUNNER_SKILL_MARKER)), Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink())
 }
 
 pub fn remove(home: &Path, debug: bool) -> Result<Vec<bool>> {
@@ -205,7 +212,7 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         let app_data = home.path().join("Library/Application Support/runner");
         let outcomes = install(home.path(), &app_data, false).unwrap();
-        assert_eq!(outcomes, vec![InstallOutcome::Installed; 3]);
+        assert_eq!(outcomes, vec![InstallOutcome::Installed; 4]);
         for relative in runner_core::RUNNER_SKILL_ROOTS {
             let folder = home.path().join(relative).join("runner");
             assert!(folder.join(runner_core::RUNNER_SKILL_MARKER).is_file());
@@ -323,7 +330,7 @@ mod tests {
         fs::remove_file(foreign.join(runner_core::RUNNER_SKILL_MARKER)).unwrap();
 
         let removed = remove(home.path(), false).unwrap();
-        assert_eq!(removed, vec![true, false, true]);
+        assert_eq!(removed, vec![true, false, true, true]);
         assert!(foreign.is_dir());
         assert_eq!(
             status_root(
@@ -334,6 +341,48 @@ mod tests {
             .state,
             SkillRootState::Foreign
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn antigravity_root_preserves_user_symlink_even_with_marker() {
+        let home = tempfile::tempdir().unwrap();
+        let root = home.path().join(".gemini/antigravity-cli/skills");
+        fs::create_dir_all(&root).unwrap();
+        let user_folder = home.path().join("user-skill");
+        fs::create_dir_all(&user_folder).unwrap();
+        fs::write(
+            user_folder.join(runner_core::RUNNER_SKILL_MARKER),
+            "user marker",
+        )
+        .unwrap();
+        fs::write(user_folder.join(SKILL_FILE), "user content").unwrap();
+        std::os::unix::fs::symlink(&user_folder, root.join("runner")).unwrap();
+        let content = render(false, Path::new("/app/bin/runner"));
+        assert_eq!(
+            status_root(&root, false, &content).state,
+            SkillRootState::Foreign
+        );
+        assert_eq!(
+            install_root(&root, false, &content).unwrap(),
+            InstallOutcome::Foreign
+        );
+        assert!(!remove_root(&root, false).unwrap());
+        assert_eq!(
+            fs::read_to_string(user_folder.join(SKILL_FILE)).unwrap(),
+            "user content"
+        );
+        assert!(root.join("runner").is_symlink());
+
+        let marked = root.join("runner-dev");
+        fs::create_dir_all(&marked).unwrap();
+        std::os::unix::fs::symlink(
+            user_folder.join(runner_core::RUNNER_SKILL_MARKER),
+            marked.join(runner_core::RUNNER_SKILL_MARKER),
+        )
+        .unwrap();
+        assert!(!remove_root(&root, true).unwrap());
+        assert!(marked.is_dir());
     }
 
     fn frontmatter_description(text: &str) -> &str {

@@ -5,7 +5,6 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result};
 use gpui::{font, Font, FontFallbacks};
-pub use runner_backend::router::runtime::MissionPermissionMode;
 use runner_terminal::palette::{self, TerminalPalette};
 use serde::{Deserialize, Serialize};
 
@@ -273,7 +272,6 @@ pub struct AppSettings {
     pub default_crew_id: String,
     pub default_working_dir: String,
     pub file_link_editor: FileLinkEditor,
-    pub mission_permission_mode: MissionPermissionMode,
     pub resume_on_launch: bool,
     pub automatically_check_for_updates: bool,
     #[cfg(windows)]
@@ -315,7 +313,6 @@ impl Default for AppSettings {
             default_crew_id: String::new(),
             default_working_dir: String::new(),
             file_link_editor: FileLinkEditor::DefaultApp,
-            mission_permission_mode: MissionPermissionMode::Bypass,
             resume_on_launch: true,
             automatically_check_for_updates: true,
             #[cfg(windows)]
@@ -501,45 +498,11 @@ mod tests {
     }
 
     #[test]
-    fn mission_permission_mode_defaults_to_bypass_for_pre_feature_settings() {
-        let settings: AppSettings = serde_json::from_str(r#"{"appZoom":1.0}"#).unwrap();
-        assert_eq!(
-            settings.mission_permission_mode,
-            MissionPermissionMode::Bypass
-        );
-        assert_eq!(
-            AppSettings::default().mission_permission_mode,
-            MissionPermissionMode::Bypass
-        );
-
-        for (mode, key) in [
-            (MissionPermissionMode::Bypass, "bypass"),
-            (MissionPermissionMode::Auto, "auto"),
-            (MissionPermissionMode::RoleDefault, "role-default"),
-        ] {
-            let json = serde_json::to_string(&AppSettings {
-                mission_permission_mode: mode,
-                ..AppSettings::default()
-            })
-            .unwrap();
-            assert!(
-                json.contains(&format!(r#""missionPermissionMode":"{key}""#)),
-                "{json}"
-            );
-            let reloaded: AppSettings = serde_json::from_str(&json).unwrap();
-            assert_eq!(reloaded.mission_permission_mode, mode);
-            assert_eq!(MissionPermissionMode::parse(key), Some(mode));
-        }
-
-        let legacy: AppSettings =
-            serde_json::from_str(r#"{"missionPermissionMode":"runner-default"}"#).unwrap();
-        assert_eq!(
-            legacy.mission_permission_mode,
-            MissionPermissionMode::RoleDefault
-        );
-        let saved = serde_json::to_string(&legacy).unwrap();
-        assert!(saved.contains(r#""missionPermissionMode":"role-default""#));
-        assert_eq!(MissionPermissionMode::parse("plan"), None);
+    fn old_mission_permission_setting_is_ignored() {
+        let settings: AppSettings =
+            serde_json::from_str(r#"{"missionPermissionMode":"auto"}"#).unwrap();
+        let saved = serde_json::to_string(&settings).unwrap();
+        assert!(!saved.contains("missionPermissionMode"));
     }
 
     #[test]

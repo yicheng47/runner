@@ -220,6 +220,23 @@ esac"#;
     }
 
     #[test]
+    fn antigravity_discovery_keeps_last_good_after_query_failure() {
+        let fixture = Fixture::new(
+            Runtime::Antigravity,
+            r#"test "$1" = models || exit 1
+test ! -f "$(dirname "$0")/fail" || exit 1
+printf 'gemini-3.8-flash-high\tGemini 3.8 Flash (High)\nclaude-sonnet-4-6\tClaude Sonnet 4.6 (Thinking)\n'"#,
+        );
+        fixture.refresh(false);
+        let catalog = fixture.catalog().unwrap();
+        assert_eq!(catalog.models.len(), 2);
+        assert_eq!(catalog.models[0].value, "gemini-3.8-flash");
+        std::fs::write(fixture.dir.path().join("fail"), "").unwrap();
+        fixture.refresh(true);
+        assert_eq!(fixture.catalog(), Some(catalog));
+    }
+
+    #[test]
     fn claude_uses_control_only_query_and_unsupported_runtimes_are_skipped() {
         let body = format!("test \"$*\" = '-p --input-format stream-json --output-format stream-json --include-partial-messages --verbose --safe-mode --no-session-persistence' || exit 1\nread request\nprintf '%s' \"$request\" > \"$(dirname \"$0\")/request\"\nprintf '%s' '{}'", claude::STREAM);
         let fixture = Fixture::new(Runtime::ClaudeCode, &body);

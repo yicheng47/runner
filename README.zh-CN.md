@@ -173,7 +173,7 @@ Carbon 和 Runner Light 是 Runner 自己的主题，Catppuccin Mocha 和 Latte 
 
 - **会话不随应用退出而结束** — 退出或崩溃不会杀掉你的 agent；下次启动会重新接上仍在运行的会话，工作进行中时退出会先询问。
 - **项目** — 绑定一次工作目录；在项目里发起的 chat 和 mission 都会继承它的 cwd，并归在侧边栏里自己的分组下。agent 也可以通过 CLI 创建、重命名、归档和删除项目。
-- **Mission 控制** — 停止、恢复或重启单个槽位，不用重启整个 mission；重启的会话会带着最初的任务简报重新开始。mission 默认以 Bypass 权限模式运行，Accept-edits 和 Default 在设置里一步可达，也不会卡在 agent 的首次授权对话框上。
+- **Mission 控制** — 停止、恢复或重启单个槽位，不用重启整个 mission；重启的会话会带着最初的任务简报重新开始。mission 固定使用 Bypass 权限，避免无人值守的槽位卡在工具授权提示上。
 - **真实终端** — 每一栏都是跑在 GPU 绘制的 `alacritty_terminal` 网格上的真实 PTY：agent 自己的配色、鼠标上报、输入法（包括拼音）、复制、文件路径粘贴、10,000 行回滚。点击文件路径可在编辑器里打开；选中一段输出可以在侧线程里追问；⌘+ 和 ⌘− 把整个应用从 60% 缩放到 200%。
 - **终端抽屉** — 每个 chat 和每个 mission 下面都有一个 shell，一个快捷键就能打开，工作目录和上面的 agent 相同：跑一下 agent 刚写的测试、看看 `git status`、tail 一个日志，不用离开当前面板，也不用另开一个终端应用。抽屉里想开几个 shell 都行，下次回来还在原处。
 
@@ -209,7 +209,7 @@ CONTEXT
 
 在 macOS 上，如果登录 `PATH` 已包含 `~/.local/bin`，Runner 会在首次启动时把命令安装到那里；如果 `PATH` 中的 `/usr/local/bin` 可写，则安装到后者；否则去 **Settings → General → Command line** 点一下即可。在 Windows 上，Runner 会把 sidecar 目录加入用户 `PATH`。
 
-agent 不需要额外设置。Runner 会为每个检测到的 agent 安装 `runner` skill，分两个根目录：Claude Code 用 `~/.claude/skills/`，Codex、GitHub Copilot CLI 和 pi 共用 `~/.agents/skills/`。skill 会让 agent 读取与当前版本一致的 `runner help agents` 指南。同一个 **Command line** 区域里还有 `runner` 命令这一行，以及 **Runner skill for agents** 开关。
+agent 不需要额外设置。Runner 会为每个检测到的 agent 安装 `runner` skill，分别安装到 Claude Code 的 `~/.claude/skills/`、Codex/GitHub Copilot CLI/pi 的 `~/.agents/skills/`、TRAE CLI 的 `~/.trae/skills/`，以及 Antigravity CLI 的 `~/.gemini/antigravity-cli/skills/`。skill 会让 agent 读取与当前版本一致的 `runner help agents` 指南。同一个 **Command line** 区域里还有 `runner` 命令这一行，以及 **Runner skill for agents** 开关。
 
 在应用之外驱动一整个 mission：
 
@@ -231,31 +231,31 @@ agent 使用 `--json`；不加时，列表和详情命令会为人显示表格�
 | | Codex | Claude Code | Antigravity CLI | pi | GitHub Copilot CLI |
 | --- | :---: | :---: | :---: | :---: | :---: |
 | 聊天、mission、重启后恢复会话 | ✓ | ✓ | ✓ | ✓ | ✓ |
-| 会话内切换对话后更新 Runner 的恢复 ID | ✓ | ✓ | — | ✓ | — |
+| 会话内切换对话后更新 Runner 的恢复 ID | ✓ | ✓ | ✓ | ✓ | — |
 | 在 Windows 上运行 | ✓ | ✓ | ✓ ¹ | ✓ ² | ✓ |
 | 分叉聊天 | ✓ | ✓ | — | ✓ | — |
 | 由 agent 自身的 hook 驱动 Working / Idle 状态 | ✓ | ✓ | 仅 macOS | ✓ | ✓ |
 | Needs you：显示审批和提问对话框 | — | ✓ | — | 仅来自扩展 | ✓ |
-| 从 CLI 读取模型列表 | ✓ | ✓ | — | ✓ | — |
+| 从 CLI 读取模型列表 | ✓ | ✓ | ✓ | ✓ | — |
 | 在 Settings → Agents 中更新 | ✓ | ✓ | — | ✓ | ✓ |
-| 在 Runner 的用量弹窗中查看用量 | ✓ | ✓ | — | — | — |
-| 权限模式 | Default · Auto · Bypass | Default · Accept edits · Auto · Bypass | Default · Accept edits · Bypass | — | Default · Accept edits · Bypass |
+| 侧边栏每周用量条与详细用量弹窗 | ✓ | ✓ | ✓ | — | — |
+| Mission 权限 | Bypass | Bypass | Bypass | 已信任工作目录 | Bypass |
 | Skills 面板 | 目录 + 开关 | 目录 + 开关 | 目录 | 目录 | 目录 + 开关 |
-| 已安装 Runner skill | ✓ | ✓ | — | ✓ | ✓ |
-| 终端渲染有夹具测试覆盖 | ✓ | ✓ | — | — | — |
+| 已安装 Runner skill | ✓ | ✓ | ✓ | ✓ | ✓ |
+| 终端渲染有夹具测试覆盖 | ✓ | ✓ | ✓ | — | — |
 
 ¹ Antigravity CLI 尚未在 Windows 上做过冒烟测试。
 ² pi 在 Windows 上原生运行，但尚未在 Windows 上做过冒烟测试；它的 bash 工具需要 Git for Windows。
 
 ### Antigravity CLI 支持清单
 
-这个分支已在 macOS 上**实现 9 项能力**；实际运行验证见[冒烟测试清单](./docs/tests/644-antigravity-smoke.md)。
+这个分支已在 macOS 上**实现 Antigravity 后续功能**；实际运行验证见[冒烟测试清单](./docs/tests/644-antigravity-smoke.md)。
 
 - [x] 直接聊天和 crew mission 槽位。
 - [x] 在首轮消息中传入角色人设。
 - [x] 捕获会话 ID、重启后恢复，以及原会话丢失时重新开始。
-- [x] 静态模型列表及各模型支持的 effort 级别。
-- [x] mission 支持 Default、Accept edits、Bypass 权限模式；直接聊天使用 Default，并在启动前预置信任工作目录。
+- [x] 动态发现模型及其支持的 effort 级别，并保留缓存和静态回退。
+- [x] mission 槽位固定使用 Bypass；直接聊天沿用 CLI 自身的权限设置，并在启动前预置信任工作目录。
 - [x] macOS 上由 hook 驱动的 Working、Idle 和 Response failed 状态。
 - [x] 在 Settings → Agents 中检测 CLI 并显示版本。
 - [x] Settings 中的 Skills 目录和 stdio MCP 服务器注册。
@@ -264,9 +264,9 @@ agent 使用 `--json`；不加时，列表和详情命令会为人显示表格�
 仍待完成：
 
 - [ ] 对恢复会话、权限、hook 和 MCP 行为进行 macOS 实机冒烟测试。
-- [ ] 录制 Antigravity 终端夹具，并验证滚轮行为。
-- [ ] 在 Runner 的用量弹窗中显示 Antigravity 配额（`agy` 自带 `/usage` 面板）。
-- [ ] agy 在运行中的聊天里通过 `/clear`（`/new`）、`/resume` 或 `/fork` 切换对话后，跟踪当前对话 ID。
+- [x] 录制 Antigravity 首轮终端夹具，并完成 PTY 滚轮输入探测；Runner 原生界面的滚轮冒烟测试仍待完成。
+- [x] 通过只读 `agy -p /usage --output-format json` 在 Runner 的用量弹窗中显示 Antigravity 配额。
+- [x] agy 在运行中的聊天里通过 `/clear`（`/new`）、`/resume` 或 `/fork` 切换对话后，跟踪当前对话 ID。
 - [ ] 在 Windows 上对 Antigravity CLI 做冒烟测试。
 
 Claude Code 和 Codex 是主要支持的 agent，启动和催促时序做过调优。GitHub Copilot CLI 需要 Copilot 订阅。pi 使用你已经配置好的模型提供商。Antigravity CLI 使用 Google 账号登录，并在启动时自行更新，所以没有 **Update** 按钮。欢迎提 [issue](https://github.com/yicheng47/runner/issues)。

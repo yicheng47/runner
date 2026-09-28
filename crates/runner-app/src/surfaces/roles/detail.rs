@@ -2,13 +2,9 @@ use super::logic::distinct_crew_count;
 use super::logic::error_banner;
 use super::logic::live_activity_label;
 use super::logic::local_short_timestamp;
-use super::logic::permission_mode_description;
-use super::logic::permission_mode_label;
-use super::logic::permission_modes;
 use super::logic::prompt_meta;
 use super::logic::role_edit_form_is_composing;
 use super::logic::role_edit_is_dirty;
-use super::logic::role_permission_mode;
 use super::logic::role_setting_label;
 use super::logic::runtime_display_name;
 use super::logic::runtime_efforts;
@@ -319,12 +315,6 @@ impl NativeRoot {
                         .child("Fast uses more credits.")
                 }))
             }))
-            .children(role_permission_mode(&role).map(|mode| {
-                setup_row(
-                    "Permissions",
-                    setup_value(permission_mode_label(mode), column, false, false),
-                )
-            }))
             .child(setup_row(
                 "Command",
                 setup_value(format!("$ {command}"), column, true, false),
@@ -379,7 +369,6 @@ impl NativeRoot {
         let can_submit = !submitting && form.display_name_valid;
         let dirty = role_edit_is_dirty(form, cx);
         let has_efforts = !runtime_efforts(&form.runtimes, &form.runtime).is_empty();
-        let has_permissions = !permission_modes(&form.runtime).is_empty();
         let profile = div()
             .when(cfg!(test), |profile| {
                 profile.debug_selector(|| "ROLE_EDIT_IN_PLACE".into())
@@ -502,21 +491,6 @@ impl NativeRoot {
                                     .text_color(theme::faint())
                                     .child("Fast uses more credits.")
                             }))
-                    }))
-                    .children(has_permissions.then(|| {
-                        edit_row("Permissions", form.permission_select.clone()).child(
-                            // Wraps at the column's width from the first sizing
-                            // pass, which offers this min_w(0) row none.
-                            div()
-                                .w(rems(ROLE_COLUMN_WIDTH / 16.))
-                                .text_size(theme::text_meta())
-                                .line_height(rems(1.))
-                                .text_color(theme::faint())
-                                .child(permission_mode_description(
-                                    &form.runtime,
-                                    form.permission_mode,
-                                )),
-                        )
                     }))
                     .child(edit_row("Command", form.command.clone()))
                     .child(edit_row("Args", form.args.clone()))

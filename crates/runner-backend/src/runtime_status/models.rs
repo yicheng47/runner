@@ -18,12 +18,17 @@ use crate::ops::runtime::RuntimeCatalogOption;
 use crate::session::process::{prepare_headless_fork, ProcessTree};
 use crate::shell_path::LoginShellEnv;
 
+mod antigravity;
 mod claude;
 mod codex;
 mod pi;
 
-pub(crate) const DISCOVERY_RUNTIMES: [Runtime; 3] =
-    [Runtime::Codex, Runtime::ClaudeCode, Runtime::Pi];
+pub(crate) const DISCOVERY_RUNTIMES: [Runtime; 4] = [
+    Runtime::Codex,
+    Runtime::ClaudeCode,
+    Runtime::Pi,
+    Runtime::Antigravity,
+];
 const REFRESH_SECONDS: i64 = 10 * 60;
 const MAX_OUTPUT_BYTES: u64 = 32 * 1024 * 1024;
 const CACHE_VERSION: u32 = 4;
@@ -200,6 +205,7 @@ pub(crate) fn request(
                 Runtime::Codex => ("debug models", codex::query(&source.command, &env)),
                 Runtime::ClaudeCode => ("list_models", claude::query(&source.command, &env)),
                 Runtime::Pi => ("--offline --list-models", pi::query(&source.command, &env)),
+                Runtime::Antigravity => ("models", antigravity::query(&source.command, &env)),
                 _ => unreachable!(),
             };
             let duration_ms = started.elapsed().as_millis();
@@ -274,6 +280,9 @@ pub(crate) fn source(runtime: Runtime, command: &str) -> ModelSource {
             .map(PathBuf::from)
             .or_else(|| runner_core::app_paths::home_dir().map(|home| home.join(".claude"))),
         Runtime::Pi => runner_core::app_paths::home_dir().map(|home| home.join(".pi/agent")),
+        Runtime::Antigravity => {
+            runner_core::app_paths::home_dir().map(|home| home.join(".gemini/antigravity-cli"))
+        }
         _ => {
             return ModelSource {
                 command: command.into(),
@@ -331,7 +340,7 @@ struct Query<'a> {
 
 /// Stdout of one bounded, headless command, or `None` when it fails, times
 /// out, or exits non-zero. Shares `run`'s process-tree handling.
-pub(super) fn command_output(
+pub(crate) fn command_output(
     executable: &str,
     args: &[&str],
     env: &LoginShellEnv,

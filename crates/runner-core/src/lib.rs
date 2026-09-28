@@ -11,7 +11,12 @@ pub use error::{Error, Result};
 pub use event_log::{EventLog, EVENTS_FILENAME};
 pub use model::{Event, EventDraft, EventKind, SignalType, Timestamp, Ulid};
 
-pub const RUNNER_SKILL_ROOTS: &[&str] = &[".claude/skills", ".agents/skills", ".trae/skills"];
+pub const RUNNER_SKILL_ROOTS: &[&str] = &[
+    ".claude/skills",
+    ".agents/skills",
+    ".trae/skills",
+    ".gemini/antigravity-cli/skills",
+];
 pub const RUNNER_SKILL_MARKER: &str = ".runner-managed";
 
 pub const fn runner_skill_name(debug: bool) -> &'static str {

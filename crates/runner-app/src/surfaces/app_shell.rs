@@ -1,4 +1,7 @@
-use gpui::{canvas, deferred, svg, BoxShadow, FontWeight, WindowAppearance, WindowControlArea};
+use gpui::{
+    canvas, deferred, svg, BoxShadow, Div, FontWeight, TextAlign, WindowAppearance,
+    WindowControlArea,
+};
 use runner_app::ui::button::spinner;
 use runner_app::ui::menu::popup_layer;
 use runner_backend::model::Runtime;
@@ -123,14 +126,16 @@ pub(crate) fn usage_installed(core: &AppCore) -> Vec<Runtime> {
             .runtimes
             .into_iter()
             .filter(|runtime| {
-                matches!(runtime.name, Runtime::ClaudeCode | Runtime::Codex)
-                    && matches!(
-                        runtime.effective_source,
-                        Some(
-                            runner_backend::runtime_status::RuntimeCommandSource::Detected
-                                | runner_backend::runtime_status::RuntimeCommandSource::Override
-                        )
+                matches!(
+                    runtime.name,
+                    Runtime::ClaudeCode | Runtime::Codex | Runtime::Antigravity
+                ) && matches!(
+                    runtime.effective_source,
+                    Some(
+                        runner_backend::runtime_status::RuntimeCommandSource::Detected
+                            | runner_backend::runtime_status::RuntimeCommandSource::Override
                     )
+                )
             })
             .map(|runtime| runtime.name)
             .collect()
@@ -169,7 +174,7 @@ fn reset_label(
     now: chrono::DateTime<chrono::Utc>,
 ) -> String {
     let Some(reset) = resets_at else {
-        return "reset time unknown".into();
+        return "reset unknown".into();
     };
     let seconds = reset.signed_duration_since(now).num_seconds().max(0);
     if seconds < 60 {
@@ -199,6 +204,10 @@ fn unavailable_line(reason: Option<UnavailableReason>, runtime: Runtime) -> &'st
         }
         Some(UnavailableReason::ClaudeUnreachable) => "Couldn't reach Anthropic.",
         Some(UnavailableReason::CodexNoAnswer) => "Codex didn't answer.",
+        Some(UnavailableReason::AntigravityNoAnswer) => "Antigravity CLI didn't answer.",
+        Some(UnavailableReason::InvalidResponse) if runtime == Runtime::Antigravity => {
+            "Antigravity CLI returned invalid usage data."
+        }
         Some(UnavailableReason::InvalidResponse) if runtime == Runtime::Codex => {
             "Codex didn't answer."
         }
@@ -207,60 +216,152 @@ fn unavailable_line(reason: Option<UnavailableReason>, runtime: Runtime) -> &'st
     }
 }
 
-fn usage_tooltip(snapshot: &UsageSnapshot, enabled: &[Runtime]) -> String {
-    let mut parts = Vec::new();
-    for (runtime, name, usage) in [
-        (Runtime::ClaudeCode, "Claude Code", snapshot.claude.as_ref()),
-        (Runtime::Codex, "Codex", snapshot.codex.as_ref()),
-    ] {
-        if !enabled.contains(&runtime) {
-            continue;
-        }
-        let value = usage.and_then(|usage| {
-            usage
-                .windows
-                .iter()
-                .max_by(|a, b| a.used_percent.total_cmp(&b.used_percent))
-        });
-        parts.push(match value {
-            Some(window) => format!("{name} {:.0}%", window.used_percent),
-            None => format!("{name} unavailable"),
-        });
-    }
-    parts.join(" · ")
+fn weekly_usage_percent(runtime: Runtime, usage: Option<&AgentUsage>) -> Option<f64> {
+    let name = match runtime {
+        Runtime::Antigravity => "Gemini Models · Week used",
+        _ => "Week",
+    };
+    usage?
+        .windows
+        .iter()
+        .find(|window| window.name == name)
+        .map(|window| window.used_percent)
 }
 
-fn usage_window_row(window: &UsageWindow, now: chrono::DateTime<chrono::Utc>) -> AnyElement {
+fn visible_usage_runtimes(
+    recent: &[Runtime],
+    installed: &[Runtime],
+    enabled: &[Runtime],
+) -> Vec<Runtime> {
+    let mut selected: Vec<_> = recent
+        .iter()
+        .copied()
+        .filter(|runtime| installed.contains(runtime) && enabled.contains(runtime))
+        .take(3)
+        .collect();
+    if selected.is_empty() {
+        selected = Runtime::ALL
+            .into_iter()
+            .filter(|runtime| installed.contains(runtime) && enabled.contains(runtime))
+            .take(3)
+            .collect();
+    }
+    Runtime::ALL
+        .into_iter()
+        .filter(|runtime| selected.contains(runtime))
+        .collect()
+}
+
+fn usage_pill_element(
+    snapshot: &UsageSnapshot,
+    visible: &[Runtime],
+    zoom: f32,
+    sidebar_width: f32,
+) -> gpui::Stateful<Div> {
+    let entries: Vec<_> = visible
+        .iter()
+        .map(|runtime| {
+            let usage = match runtime {
+                Runtime::ClaudeCode => snapshot.claude.as_ref(),
+                Runtime::Codex => snapshot.codex.as_ref(),
+                Runtime::Antigravity => snapshot.antigravity.as_ref(),
+                _ => None,
+            };
+            let percent = weekly_usage_percent(*runtime, usage);
+            let value = percent.map_or_else(|| "—".to_owned(), |value| format!("{value:.0}%"));
+            let color = percent.map_or(theme::muted(), |value| usage_color(usage_tone([value])));
+            div()
+                .when(cfg!(test), |entry| {
+                    let runtime = *runtime;
+                    entry.debug_selector(move || format!("USAGE_PILL_ENTRY_{}", runtime.key()))
+                })
+                .flex()
+                .items_center()
+                .gap(px(2. * zoom))
+                .child({
+                    let icon = ChatIcon::for_runtime(runtime.key());
+                    icon.render(px(12. * zoom), icon.color(theme::text(), true), true)
+                })
+                .child(
+                    div()
+                        .when(cfg!(test), |value| {
+                            let runtime = *runtime;
+                            value.debug_selector(move || {
+                                format!("USAGE_PILL_VALUE_{}", runtime.key())
+                            })
+                        })
+                        .text_size(px(11. * zoom))
+                        .text_color(color)
+                        .child(value),
+                )
+        })
+        .collect();
+    let show_label = sidebar_width >= 228.;
+    div()
+        .id("sidebar-usage")
+        .when(cfg!(test), |pill| {
+            pill.debug_selector(|| "USAGE_PILL".into())
+        })
+        .w_full()
+        .h(px(30. * zoom))
+        .flex()
+        .items_center()
+        .justify_between()
+        .gap(px(2. * zoom))
+        .px(px(6. * zoom))
+        .rounded(px(6. * zoom))
+        .border_1()
+        .border_color(theme::sidebar_selected_border())
+        .bg(theme::sidebar_selected())
+        .children(show_label.then(|| {
+            div()
+                .when(cfg!(test), |label| {
+                    label.debug_selector(|| "USAGE_PILL_LABEL".into())
+                })
+                .flex_none()
+                .text_size(px(9. * zoom))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(theme::muted())
+                .child("WEEKLY USAGE")
+        }))
+        .children(show_label.then(|| {
+            div()
+                .flex_none()
+                .w(px(1.))
+                .h(px(14. * zoom))
+                .bg(theme::sidebar_selected_border())
+        }))
+        .children(entries)
+}
+
+fn usage_window_row(
+    runtime: Runtime,
+    window: &UsageWindow,
+    label: &str,
+    now: chrono::DateTime<chrono::Utc>,
+) -> AnyElement {
     let tone = usage_tone([window.used_percent]);
     let fill = usage_color(tone);
     div()
         .w_full()
         .flex()
-        .flex_col()
-        .gap_1()
+        .items_center()
+        .gap_2()
+        .child(Tooltip::new(
+            format!("usage-window-{}-{}", runtime.key(), window.name),
+            window.name.clone(),
+            div()
+                .w(rems(76. / 16.))
+                .flex_none()
+                .truncate()
+                .text_size(theme::text_meta())
+                .text_color(theme::text())
+                .child(label.to_owned()),
+        ))
         .child(
             div()
-                .w_full()
-                .flex()
-                .items_center()
-                .justify_between()
-                .child(
-                    div()
-                        .text_size(theme::text_body())
-                        .text_color(theme::text())
-                        .child(window.name.clone()),
-                )
-                .child(
-                    div()
-                        .text_size(theme::text_body())
-                        .text_color(fill)
-                        .child(format!("{:.0}%", window.used_percent)),
-                ),
-        )
-        .child(
-            div()
-                .w_full()
-                .h(px(5.))
+                .flex_1()
+                .h(rems(4. / 16.))
                 .rounded_full()
                 .bg(theme::border())
                 .child(
@@ -273,6 +374,18 @@ fn usage_window_row(window: &UsageWindow, now: chrono::DateTime<chrono::Utc>) ->
         )
         .child(
             div()
+                .w(rems(30. / 16.))
+                .flex_none()
+                .text_align(TextAlign::Right)
+                .text_size(theme::text_meta())
+                .text_color(fill)
+                .child(format!("{:.0}%", window.used_percent)),
+        )
+        .child(
+            div()
+                .w(rems(84. / 16.))
+                .flex_none()
+                .text_align(TextAlign::Right)
                 .text_size(theme::text_meta())
                 .text_color(theme::muted())
                 .child(reset_label(window.resets_at, now)),
@@ -289,28 +402,51 @@ fn usage_section(
 ) -> AnyElement {
     let name = match runtime {
         Runtime::ClaudeCode => "Claude Code",
+        Runtime::Antigravity => "Antigravity CLI",
         _ => "Codex",
     };
     let refresh_spinner_id = match runtime {
         Runtime::ClaudeCode => "usage-claude-refreshing",
+        Runtime::Antigravity => "usage-antigravity-refreshing",
         _ => "usage-codex-refreshing",
     };
     let icon = ChatIcon::for_runtime(runtime.key());
-    let rows: Vec<AnyElement> = usage
-        .map(|usage| {
-            usage
-                .windows
-                .iter()
-                .map(|window| usage_window_row(window, now))
-                .collect()
-        })
-        .unwrap_or_default();
+    let mut rows = Vec::new();
+    let mut previous_group = None;
+    if let Some(usage) = usage {
+        for window in &usage.windows {
+            let (group, label) = if runtime == Runtime::Antigravity {
+                window
+                    .name
+                    .split_once(" · ")
+                    .map_or((None, window.name.as_str()), |(group, label)| {
+                        (Some(group), label.strip_suffix(" used").unwrap_or(label))
+                    })
+            } else {
+                (None, window.name.as_str())
+            };
+            if let Some(group) = group.filter(|group| Some(*group) != previous_group) {
+                rows.push(
+                    div()
+                        .text_size(theme::text_meta())
+                        .text_color(theme::muted())
+                        .child(group.to_owned())
+                        .into_any_element(),
+                );
+            }
+            previous_group = group;
+            rows.push(usage_window_row(runtime, window, label, now));
+        }
+    }
     div()
         .w_full()
         .flex()
         .flex_col()
-        .gap_3()
+        .gap_2()
         .py_3()
+        .when(cfg!(test), |section| {
+            section.debug_selector(move || format!("USAGE_SECTION_{}", runtime.key()))
+        })
         .child(
             div()
                 .w_full()
@@ -358,19 +494,62 @@ fn usage_section(
         .into_any_element()
 }
 
+fn usage_popover_panel(
+    max_height: Pixels,
+    header: AnyElement,
+    sections: Vec<AnyElement>,
+) -> AnyElement {
+    div()
+        .w_full()
+        .max_h(max_height)
+        .px_4()
+        .pt_3()
+        .pb_2()
+        .flex()
+        .flex_col()
+        .rounded(px(8.))
+        .border_1()
+        .border_color(theme::border_strong())
+        .bg(theme::panel())
+        .shadow(vec![BoxShadow {
+            color: gpui::black().opacity(0.25),
+            blur_radius: px(16.),
+            spread_radius: px(0.),
+            offset: point(px(0.), px(4.)),
+        }])
+        .when(cfg!(test), |panel| {
+            panel.debug_selector(|| "USAGE_POPOVER_PANEL".into())
+        })
+        .child(div().flex_none().child(header))
+        .child(
+            div()
+                .id("usage-popover-body")
+                .min_h(px(0.))
+                .flex_shrink()
+                .overflow_y_scroll()
+                .scrollbar_width(px(0.))
+                .when(cfg!(test), |body| {
+                    body.debug_selector(|| "USAGE_POPOVER_BODY".into())
+                })
+                .children(sections),
+        )
+        .into_any_element()
+}
+
 pub(crate) fn alpha(mut color: gpui::Hsla, value: f32) -> gpui::Hsla {
     color.a = value;
     color
 }
 
 impl NativeRoot {
-    fn render_usage_popover(&mut self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_usage_popover(&mut self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let snapshot = self.core(cx).usage.snapshot();
         let now = chrono::Utc::now();
         let updated = snapshot
             .claude
             .iter()
             .chain(snapshot.codex.iter())
+            .chain(snapshot.antigravity.iter())
             .map(|usage| usage.updated_at)
             .max();
         let age = if snapshot.refreshing {
@@ -451,7 +630,7 @@ impl NativeRoot {
                         .bg(theme::accent())
                 })),
         );
-        let sections: Vec<AnyElement> = [Runtime::ClaudeCode, Runtime::Codex]
+        let sections: Vec<AnyElement> = [Runtime::ClaudeCode, Runtime::Codex, Runtime::Antigravity]
             .into_iter()
             .filter(|runtime| {
                 self.usage_installed.contains(runtime)
@@ -465,6 +644,13 @@ impl NativeRoot {
                     snapshot.refreshing,
                     now,
                 ),
+                Runtime::Antigravity => usage_section(
+                    runtime,
+                    snapshot.antigravity.as_ref(),
+                    snapshot.antigravity_error,
+                    snapshot.refreshing,
+                    now,
+                ),
                 _ => usage_section(
                     runtime,
                     snapshot.codex.as_ref(),
@@ -474,47 +660,28 @@ impl NativeRoot {
                 ),
             })
             .collect();
-        div()
+        let header = div()
             .w_full()
-            .px_4()
-            .pt_3()
-            .pb_2()
             .flex()
-            .flex_col()
-            .rounded(px(8.))
-            .border_1()
-            .border_color(theme::border_strong())
-            .bg(theme::panel())
-            .shadow(vec![BoxShadow {
-                color: gpui::black().opacity(0.25),
-                blur_radius: px(16.),
-                spread_radius: px(0.),
-                offset: point(px(0.), px(4.)),
-            }])
+            .items_center()
+            .gap_2()
             .child(
                 div()
-                    .w_full()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .child(
-                        div()
-                            .text_size(theme::text_lead())
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child("Usage"),
-                    )
-                    .child(div().flex_1())
-                    .child(
-                        div()
-                            .text_size(theme::text_meta())
-                            .text_color(theme::muted())
-                            .child(age),
-                    )
-                    .child(refresh)
-                    .child(agent_settings),
+                    .text_size(theme::text_lead())
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child("Usage"),
             )
-            .children(sections)
-            .into_any_element()
+            .child(div().flex_1())
+            .child(
+                div()
+                    .text_size(theme::text_meta())
+                    .text_color(theme::muted())
+                    .child(age),
+            )
+            .child(refresh)
+            .child(agent_settings)
+            .into_any_element();
+        usage_popover_panel(window.bounds().size.height - px(16.), header, sections)
     }
 
     pub(crate) fn render_app_shell(
@@ -875,71 +1042,49 @@ impl NativeRoot {
             )
         });
         let enabled = self.settings(cx).model_runtimes();
-        let show_usage = self
-            .usage_installed
-            .iter()
-            .any(|runtime| enabled.contains(runtime))
-            && !self.sidebar_collapsed;
-        let usage_hint = show_usage.then(|| {
-            let snapshot = self.core(cx).usage.snapshot();
-            let visible: Vec<_> = self
-                .usage_installed
-                .iter()
-                .copied()
-                .filter(|runtime| enabled.contains(runtime))
-                .collect();
-            let tone = usage_tone(
-                visible
-                    .iter()
-                    .filter_map(|runtime| match runtime {
-                        Runtime::ClaudeCode => snapshot.claude.as_ref(),
-                        Runtime::Codex => snapshot.codex.as_ref(),
-                        _ => None,
-                    })
-                    .flat_map(|agent| agent.windows.iter().map(|window| window.used_percent)),
-            );
-            let color = usage_color(tone);
-            let trigger = Tooltip::new(
-                "sidebar-usage-tooltip",
-                usage_tooltip(&snapshot, &visible),
-                div()
-                    .id("sidebar-usage")
-                    .flex_none()
-                    .size(rems(32. / 16.))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded_sm()
-                    .border_1()
-                    .border_color(gpui::transparent_black())
-                    .cursor_pointer()
-                    .when(self.usage_open, |button| {
-                        button.bg(theme::sidebar_selected())
-                    })
-                    .hover(|button| button.bg(alpha(theme::sidebar_selected(), 0.5)))
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.usage_open = !this.usage_open;
-                        if this.usage_open {
-                            let core = this.core(cx).clone();
-                            core.usage
-                                .request_refresh(core.clone(), RefreshReason::Open);
-                            runner_backend::ops::runtime::runtime_check_updates(&core, false);
-                        }
-                        cx.notify();
-                    }))
-                    .child(
-                        svg()
-                            .path("gauge.svg")
-                            .size(px(14. * zoom))
-                            .text_color(color),
-                    ),
-            );
-            div().flex_none().size(rems(32. / 16.)).child(trigger)
-        });
+        let visible_usage_runtimes =
+            visible_usage_runtimes(&self.usage_recent, &self.usage_installed, &enabled);
+        let show_usage = !visible_usage_runtimes.is_empty() && !self.sidebar_collapsed;
         let anchor_owner = cx.entity();
+        let usage_pill = show_usage.then(|| {
+            let snapshot = self.core(cx).usage.snapshot();
+            let trigger = usage_pill_element(
+                &snapshot,
+                &visible_usage_runtimes,
+                zoom,
+                self.settings(cx).sidebar_width,
+            )
+            .cursor_pointer()
+            .hover(|button| button.bg(alpha(theme::sidebar_selected(), 0.75)))
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.usage_open = !this.usage_open;
+                if this.usage_open {
+                    let core = this.core(cx).clone();
+                    core.usage
+                        .request_refresh(core.clone(), RefreshReason::Open);
+                    runner_backend::ops::runtime::runtime_check_updates(&core, false);
+                }
+                cx.notify();
+            }));
+            div()
+                .relative()
+                .flex_none()
+                .px_3()
+                .pb_2()
+                .child(trigger)
+                .child(
+                    canvas(
+                        |_, _, _| {},
+                        move |bounds, _, _, cx| {
+                            anchor_owner.update(cx, |this, _| this.usage_anchor = Some(bounds));
+                        },
+                    )
+                    .absolute()
+                    .inset_0(),
+                )
+        });
         let settings_button = crate::platform_ui::sidebar_section()
-            .relative()
             .px_3()
             .pt_2()
             .border_t_1()
@@ -955,6 +1100,7 @@ impl NativeRoot {
                             .id("open-settings")
                             .group("sidebar-settings")
                             .min_w(px(0.))
+                            .flex_1()
                             .px(rems(10. / 16.))
                             .py_2()
                             .flex()
@@ -988,19 +1134,7 @@ impl NativeRoot {
                                 this.enter_settings_route(None, window, cx);
                             })),
                     )
-                    .children(update_hint)
-                    .child(div().flex_1())
-                    .children(usage_hint),
-            )
-            .child(
-                canvas(
-                    |_, _, _| {},
-                    move |bounds, _, _, cx| {
-                        anchor_owner.update(cx, |this, _| this.usage_anchor = Some(bounds));
-                    },
-                )
-                .absolute()
-                .inset_0(),
+                    .children(update_hint),
             );
         // The content keeps its full width while the wrapper animates, so the
         // transition clips instead of squashing every row; a squashed row
@@ -1015,6 +1149,7 @@ impl NativeRoot {
             .children(titlebar)
             .child(brand)
             .child(self.sidebar.clone())
+            .children(usage_pill)
             .child(settings_button)
             .children(
                 (self.usage_open && show_usage)
@@ -1025,7 +1160,7 @@ impl NativeRoot {
                                 anchor,
                                 window,
                                 px(340. * zoom),
-                                self.render_usage_popover(cx),
+                                self.render_usage_popover(window, cx),
                                 Rc::new(move |_, cx| {
                                     owner.update(cx, |this, cx| {
                                         this.usage_open = false;
@@ -1685,6 +1820,179 @@ impl NativeRoot {
 mod tests {
     use super::*;
 
+    struct UsagePillProbe {
+        zoom: f32,
+        width: f32,
+    }
+
+    impl Render for UsagePillProbe {
+        fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            window.set_rem_size(px(16. * self.zoom));
+            let now = chrono::Utc::now();
+            let usage = |name: &str| AgentUsage {
+                windows: vec![UsageWindow {
+                    name: name.to_owned(),
+                    used_percent: 100.,
+                    resets_at: None,
+                }],
+                updated_at: now,
+            };
+            let snapshot = UsageSnapshot {
+                claude: Some(usage("Week")),
+                codex: Some(usage("Week")),
+                antigravity: Some(usage("Gemini Models · Week used")),
+                ..UsageSnapshot::default()
+            };
+            div()
+                .w(px(self.width * self.zoom))
+                .px_3()
+                .child(usage_pill_element(
+                    &snapshot,
+                    &[Runtime::Codex, Runtime::ClaudeCode, Runtime::Antigravity],
+                    self.zoom,
+                    self.width,
+                ))
+        }
+    }
+
+    #[test]
+    fn usage_pill_fits_three_full_weekly_values_at_minimum_sidebar_width() {
+        use crate::theme_snapshot::ThemeGuard;
+        use gpui::{size, TestAppContext, VisualTestContext};
+
+        let _theme = ThemeGuard::new();
+        theme::set_active_variant(theme::ThemeVariant::Carbon);
+        for width in [200., 240.] {
+            for zoom in [1., 1.5] {
+                let mut cx = TestAppContext::single();
+                let host = cx.add_window(move |_, _| UsagePillProbe { zoom, width });
+                let mut visual = VisualTestContext::from_window(host.into(), &cx);
+                visual.simulate_resize(size(px(800.), px(300.)));
+                visual.run_until_parked();
+
+                let pill = visual.debug_bounds("USAGE_PILL").unwrap();
+                let last = visual.debug_bounds("USAGE_PILL_VALUE_antigravity").unwrap();
+                assert!(
+                    last.right() <= pill.right(),
+                    "{width} {zoom}: {pill:?} {last:?}"
+                );
+                assert_eq!(
+                    visual.debug_bounds("USAGE_PILL_LABEL").is_some(),
+                    width == 240.,
+                    "{width} {zoom}"
+                );
+                if width == 240. {
+                    let label = visual.debug_bounds("USAGE_PILL_LABEL").unwrap();
+                    let first = visual.debug_bounds("USAGE_PILL_ENTRY_codex").unwrap();
+                    assert!(
+                        label.right() <= first.left(),
+                        "{width} {zoom}: {label:?} {first:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    struct UsagePopoverProbe {
+        zoom: f32,
+    }
+
+    impl Render for UsagePopoverProbe {
+        fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            window.set_rem_size(px(16. * self.zoom));
+            let now = chrono::Utc::now();
+            let sections = [
+                (Runtime::ClaudeCode, 2),
+                (Runtime::Codex, 2),
+                (Runtime::Antigravity, 4),
+            ]
+            .into_iter()
+            .map(|(runtime, count)| {
+                let usage = AgentUsage {
+                    windows: (0..count)
+                        .map(|index| UsageWindow {
+                            name: if runtime == Runtime::Antigravity {
+                                [
+                                    "Gemini Models · 5 hours used",
+                                    "Gemini Models · Week used",
+                                    "Claude and GPT models · 5 hours used",
+                                    "Claude and GPT models · Week used",
+                                ][index]
+                                    .to_owned()
+                            } else {
+                                format!("Window {index}")
+                            },
+                            used_percent: 25.,
+                            resets_at: Some(now),
+                        })
+                        .collect(),
+                    updated_at: now,
+                };
+                usage_section(runtime, Some(&usage), None, false, now)
+            })
+            .collect();
+            div().w(px(340. * self.zoom)).child(usage_popover_panel(
+                window.bounds().size.height - px(16.),
+                div()
+                    .h(px(24.))
+                    .debug_selector(|| "USAGE_POPOVER_HEADER".into())
+                    .child("Usage")
+                    .into_any_element(),
+                sections,
+            ))
+        }
+    }
+
+    #[test]
+    fn usage_popover_scrolls_all_provider_rows_in_short_window() {
+        use crate::theme_snapshot::ThemeGuard;
+        use gpui::{size, ScrollDelta, ScrollWheelEvent, TestAppContext, VisualTestContext};
+
+        let _theme = ThemeGuard::new();
+        theme::set_active_variant(theme::ThemeVariant::Carbon);
+        for zoom in [1., 1.5] {
+            let mut cx = TestAppContext::single();
+            let host = cx.add_window(move |_, _| UsagePopoverProbe { zoom });
+            let mut visual = VisualTestContext::from_window(host.into(), &cx);
+            visual.simulate_resize(size(px(800.), px(600.)));
+            visual.run_until_parked();
+
+            if zoom == 1. {
+                let panel = visual.debug_bounds("USAGE_POPOVER_PANEL").unwrap();
+                assert!(panel.size.height < px(500.), "{panel:?}");
+            }
+            visual.simulate_resize(size(px(800.), px(300.)));
+            visual.run_until_parked();
+
+            let panel = visual.debug_bounds("USAGE_POPOVER_PANEL").unwrap();
+            let body = visual.debug_bounds("USAGE_POPOVER_BODY").unwrap();
+            let header = visual.debug_bounds("USAGE_POPOVER_HEADER").unwrap();
+            let antigravity = visual.debug_bounds("USAGE_SECTION_antigravity").unwrap();
+            assert!(panel.size.height <= px(284.), "{zoom}: {panel:?}");
+            assert!(header.bottom() <= body.top(), "{zoom}: {header:?} {body:?}");
+            assert!(
+                antigravity.bottom() > body.bottom(),
+                "{zoom}: {antigravity:?} {body:?}"
+            );
+
+            visual.simulate_event(ScrollWheelEvent {
+                position: body.center(),
+                delta: ScrollDelta::Lines(point(0., -100.)),
+                ..Default::default()
+            });
+            visual.run_until_parked();
+            let scrolled = visual.debug_bounds("USAGE_SECTION_antigravity").unwrap();
+            assert!(
+                scrolled.top() < antigravity.top(),
+                "{zoom}: {antigravity:?} {scrolled:?}"
+            );
+            assert!(
+                scrolled.bottom() <= body.bottom(),
+                "{zoom}: {scrolled:?} {body:?}"
+            );
+        }
+    }
+
     #[test]
     fn update_dot_counts_only_enabled_agents() {
         let mut settings = app_settings::AppSettings::default();
@@ -1715,6 +2023,7 @@ mod tests {
         assert_eq!(usage_tone([5., 80.]), UsageTone::Warning);
         assert_eq!(usage_tone([80., 100.]), UsageTone::Danger);
         let now = chrono::Utc::now();
+        assert_eq!(reset_label(None, now), "reset unknown");
         assert_eq!(
             reset_label(Some(now + TimeDelta::minutes(190)), now),
             "resets 3h 10m"
@@ -1730,18 +2039,38 @@ mod tests {
     }
 
     #[test]
-    fn usage_tooltip_explains_highest_window_and_pending_is_not_an_error() {
+    fn usage_pill_uses_weekly_windows_and_gemini_group() {
         let snapshot = UsageSnapshot {
             claude: Some(AgentUsage {
                 windows: vec![
                     UsageWindow {
                         name: "5 hours".into(),
-                        used_percent: 4.,
+                        used_percent: 91.,
                         resets_at: None,
                     },
                     UsageWindow {
                         name: "Week".into(),
-                        used_percent: 85.,
+                        used_percent: 26.,
+                        resets_at: None,
+                    },
+                ],
+                updated_at: chrono::Utc::now(),
+            }),
+            antigravity: Some(AgentUsage {
+                windows: vec![
+                    UsageWindow {
+                        name: "Gemini Models · 5 hours used".into(),
+                        used_percent: 90.,
+                        resets_at: None,
+                    },
+                    UsageWindow {
+                        name: "Gemini Models · Week used".into(),
+                        used_percent: 1.,
+                        resets_at: None,
+                    },
+                    UsageWindow {
+                        name: "Claude and GPT models · Week used".into(),
+                        used_percent: 70.,
                         resets_at: None,
                     },
                 ],
@@ -1750,10 +2079,36 @@ mod tests {
             ..UsageSnapshot::default()
         };
         assert_eq!(
-            usage_tooltip(&snapshot, &[Runtime::ClaudeCode]),
-            "Claude Code 85%"
+            weekly_usage_percent(Runtime::ClaudeCode, snapshot.claude.as_ref()),
+            Some(26.)
         );
+        assert_eq!(
+            weekly_usage_percent(Runtime::Antigravity, snapshot.antigravity.as_ref()),
+            Some(1.)
+        );
+        assert_eq!(weekly_usage_percent(Runtime::Codex, None), None);
         assert_eq!(unavailable_line(None, Runtime::Codex), "Checking…");
+    }
+
+    #[test]
+    fn usage_pill_selects_recent_runtimes_but_displays_runtime_order() {
+        let recent = [Runtime::Antigravity, Runtime::ClaudeCode, Runtime::Codex];
+        assert_eq!(
+            visible_usage_runtimes(&recent, &recent, &recent),
+            [Runtime::Codex, Runtime::ClaudeCode, Runtime::Antigravity]
+        );
+        assert_eq!(
+            visible_usage_runtimes(&recent, &[Runtime::Codex, Runtime::Antigravity], &recent),
+            [Runtime::Codex, Runtime::Antigravity]
+        );
+        assert_eq!(
+            visible_usage_runtimes(&[], &recent, &recent),
+            [Runtime::Codex, Runtime::ClaudeCode, Runtime::Antigravity]
+        );
+        assert_eq!(
+            visible_usage_runtimes(&[Runtime::Copilot], &recent, &recent),
+            [Runtime::Codex, Runtime::ClaudeCode, Runtime::Antigravity]
+        );
     }
 
     #[test]

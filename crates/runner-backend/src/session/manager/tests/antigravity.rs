@@ -1,7 +1,9 @@
 use super::*;
 
 fn created_line(key: &str) -> String {
-    format!("I0923 10:00:00.000000     580 server.go:1224] Created conversation {key}\n")
+    format!(
+        "I0923 10:00:00.000000     580 conversation_manager.go:887] Streaming conversation {key}\n"
+    )
 }
 
 fn append_log(app_data: &Path, session_id: &str, text: &str) {
@@ -128,6 +130,14 @@ fn antigravity_direct_chat_seeds_trust_captures_its_key_and_resumes_by_conversat
         &spawned.id,
         "I0923 10:00:00.000000       1 hooks_manager.go:53] loaded 2 named hooks from 2 hooks.json file(s)\n",
     );
+    append_log(app_data.path(), &spawned.id, &created_line(&key));
+    wait_for_key(&pool, &spawned.id, &key);
+    let cleared = uuid::Uuid::new_v4().to_string();
+    append_log(app_data.path(), &spawned.id, &created_line(&cleared));
+    wait_for_key(&pool, &spawned.id, &cleared);
+    let forked = uuid::Uuid::new_v4().to_string();
+    append_log(app_data.path(), &spawned.id, &created_line(&forked));
+    wait_for_key(&pool, &spawned.id, &forked);
     append_log(app_data.path(), &spawned.id, &created_line(&key));
     wait_for_key(&pool, &spawned.id, &key);
     assert!(events

@@ -15,9 +15,12 @@
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::Arc;
 
 use serde::Deserialize;
 
+use super::claude_status::CTRL_C_INTERRUPT;
 use super::hook_feed::HookFeed;
 use super::status::{Activity, AgentObservation, ObservationSource, TurnOutcome};
 use crate::error::Result;
@@ -110,13 +113,21 @@ struct StatusReport {
 #[derive(Default)]
 struct AgyObservation {
     value: AgentObservation,
+    interrupted: bool,
 }
 
 impl AgyObservation {
     fn observe(&mut self, report: StatusReport) -> Option<AgentObservation> {
+        if self.interrupted && report.hook_event_name != "PreInvocation" {
+            return None;
+        }
         match report.hook_event_name.as_str() {
-            // PostInvocation only ever comes inside a turn, before its Stop.
-            "PreInvocation" | "PostToolUse" | "PostInvocation" => {
+            "PreInvocation" => {
+                self.interrupted = false;
+                self.value.activity = Activity::Working;
+                self.value.outcome = None;
+            }
+            "PostToolUse" | "PostInvocation" => {
                 self.value.activity = Activity::Working;
                 self.value.outcome = None;
             }
@@ -144,6 +155,7 @@ impl AgyObservation {
 pub(crate) struct AgyStatusWatcher {
     feed: HookFeed,
     observation: AgyObservation,
+    interrupt: Arc<AtomicU8>,
 }
 
 impl AgyStatusWatcher {
@@ -155,20 +167,41 @@ impl AgyStatusWatcher {
         Ok(Self {
             feed: HookFeed::start_external(path, generation, &reporter_path(app_data_dir))?,
             observation: AgyObservation::default(),
+            interrupt: Arc::new(AtomicU8::new(0)),
         })
+    }
+
+    pub(crate) fn interrupt_signal(&self) -> Arc<AtomicU8> {
+        Arc::clone(&self.interrupt)
     }
 
     pub(crate) fn drain_observations(
         &mut self,
         mut transition: impl FnMut(AgentObservation, &'static str),
     ) -> Result<()> {
-        self.feed.drain(false, |report| {
+        let interrupted = self.interrupt.swap(0, Ordering::AcqRel);
+        self.feed.drain(interrupted != 0, |report| {
             if let Ok(report) = serde_json::from_value(report) {
                 if let Some(value) = self.observation.observe(report) {
                     transition(value, "hook");
                 }
             }
-        })
+        })?;
+        if interrupted != 0
+            && self.observation.value.source == ObservationSource::Hook
+            && self.observation.value.activity == Activity::Working
+        {
+            self.observation.interrupted = true;
+            self.observation.value.activity = Activity::Ready;
+            self.observation.value.outcome = Some(TurnOutcome::Interrupted);
+            let source = if interrupted & CTRL_C_INTERRUPT != 0 {
+                "input-interrupt"
+            } else {
+                "input-escape"
+            };
+            transition(self.observation.value.clone(), source);
+        }
+        Ok(())
     }
 }
 
@@ -263,6 +296,122 @@ mod tests {
 
         assert!(observe(&mut state, json!({"hook_event_name":"PreToolUse"})).is_none());
         assert!(observe(&mut state, json!({"hook_event_name":"Notification"})).is_none());
+    }
+
+    #[test]
+    fn interrupted_invocation_without_stop_returns_to_ready() {
+        use super::super::claude_status::ESCAPE_INTERRUPT;
+
+        let root = tempfile::tempdir().unwrap();
+        install_hooks(root.path()).unwrap();
+        let path = crate::session::hook_feed::status_path(root.path(), "agy");
+        let mut watcher = AgyStatusWatcher::start(&path, "current".into()).unwrap();
+        let mut feed = fs::OpenOptions::new().append(true).open(&path).unwrap();
+        let mut transitions = Vec::new();
+        fn drain(
+            watcher: &mut AgyStatusWatcher,
+            transitions: &mut Vec<(Activity, Option<TurnOutcome>, &'static str)>,
+        ) {
+            watcher
+                .drain_observations(|value, source| {
+                    transitions.push((value.activity, value.outcome, source));
+                })
+                .unwrap();
+        }
+
+        writeln!(
+            feed,
+            r#"{{"generation":"current","hook_event_name":"PreInvocation"}}"#
+        )
+        .unwrap();
+        drain(&mut watcher, &mut transitions);
+        watcher
+            .interrupt_signal()
+            .store(ESCAPE_INTERRUPT, Ordering::Release);
+        drain(&mut watcher, &mut transitions);
+        assert_eq!(
+            transitions,
+            [
+                (Activity::Working, None, "hook"),
+                (
+                    Activity::Ready,
+                    Some(TurnOutcome::Interrupted),
+                    "input-escape"
+                ),
+            ]
+        );
+
+        writeln!(
+            feed,
+            r#"{{"generation":"current","hook_event_name":"PostToolUse"}}"#
+        )
+        .unwrap();
+        drain(&mut watcher, &mut transitions);
+        assert_eq!(transitions.len(), 2);
+        assert_eq!(watcher.observation.value.activity, Activity::Ready);
+        assert_eq!(
+            watcher.observation.value.outcome,
+            Some(TurnOutcome::Interrupted)
+        );
+
+        writeln!(
+            feed,
+            r#"{{"generation":"current","hook_event_name":"PreInvocation"}}"#
+        )
+        .unwrap();
+        drain(&mut watcher, &mut transitions);
+        watcher
+            .interrupt_signal()
+            .store(CTRL_C_INTERRUPT, Ordering::Release);
+        drain(&mut watcher, &mut transitions);
+        assert_eq!(transitions[2], (Activity::Working, None, "hook"));
+        assert_eq!(
+            transitions[3],
+            (
+                Activity::Ready,
+                Some(TurnOutcome::Interrupted),
+                "input-interrupt"
+            )
+        );
+
+        writeln!(
+            feed,
+            r#"{{"generation":"current","hook_event_name":"PostInvocation"}}"#
+        )
+        .unwrap();
+        writeln!(
+            feed,
+            r#"{{"generation":"current","hook_event_name":"Stop","fullyIdle":true}}"#
+        )
+        .unwrap();
+        drain(&mut watcher, &mut transitions);
+        assert_eq!(transitions.len(), 4);
+        assert_eq!(watcher.observation.value.activity, Activity::Ready);
+        assert_eq!(
+            watcher.observation.value.outcome,
+            Some(TurnOutcome::Interrupted)
+        );
+
+        writeln!(
+            feed,
+            r#"{{"generation":"current","hook_event_name":"PreInvocation"}}"#
+        )
+        .unwrap();
+        writeln!(
+            feed,
+            r#"{{"generation":"current","hook_event_name":"Stop","fullyIdle":true}}"#
+        )
+        .unwrap();
+        watcher
+            .interrupt_signal()
+            .store(ESCAPE_INTERRUPT, Ordering::Release);
+        drain(&mut watcher, &mut transitions);
+        assert_eq!(transitions[4], (Activity::Working, None, "hook"));
+        assert_eq!(
+            transitions[5],
+            (Activity::Ready, Some(TurnOutcome::Completed), "hook")
+        );
+        assert_eq!(transitions.len(), 6);
     }
 
     #[test]

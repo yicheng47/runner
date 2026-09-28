@@ -1,9 +1,5 @@
 use super::logic::effort_options;
 use super::logic::ensure_runtime_present;
-use super::logic::parse_permission_mode;
-use super::logic::permission_mode_value;
-use super::logic::permission_modes;
-use super::logic::permission_options;
 use super::logic::resolve_role_edit;
 use super::logic::role_edit_runtime_options;
 use super::logic::role_permission_mode;
@@ -85,9 +81,6 @@ impl NativeRoot {
                         .update(cx, |input, input_cx| input.reset(command, input_cx));
                     form.model
                         .update(cx, |input, input_cx| input.reset("", input_cx));
-                    if !permission_modes(&next_runtime).contains(&form.permission_mode) {
-                        form.permission_mode = PermissionMode::Default;
-                    }
                 }
                 let model_placeholder =
                     runtime_model_placeholder(&form.runtimes, &next_runtime, None);
@@ -106,10 +99,6 @@ impl NativeRoot {
                 form.model_field.update(cx, |field, field_cx| {
                     field.set_suggestions(runtime_models(&form.runtimes, &next_runtime), field_cx);
                     field.set_disabled(next_runtime.is_empty(), field_cx);
-                });
-                form.permission_select.update(cx, |select, select_cx| {
-                    select.set_options(permission_options(&next_runtime), select_cx);
-                    select.set_value(permission_mode_value(form.permission_mode), select_cx);
                 });
             }
         }
@@ -227,7 +216,6 @@ impl NativeRoot {
                 "No enabled agents detected"
             })
         });
-        let permission_root = root.clone();
         let speed_root = root.clone();
         let speed_select = cx.new(|select_cx| {
             StyledSelect::new(
@@ -248,32 +236,12 @@ impl NativeRoot {
             .width(px(FIELD_WIDTH))
             .min_menu_width(px(FIELD_WIDTH))
         });
-        let permission_select = cx.new(|select_cx| {
-            StyledSelect::new(
-                "new-role-permission",
-                select_cx.focus_handle(),
-                permission_mode_value(PermissionMode::Auto),
-                permission_options(&runtime),
-                Rc::new(move |value, _, cx| {
-                    permission_root.update(cx, |this, cx| {
-                        if let Some(form) = this.role_surfaces.create.as_mut() {
-                            form.permission_mode = parse_permission_mode(&value);
-                            cx.notify();
-                        }
-                    });
-                }),
-                select_cx,
-            )
-            .width(px(FIELD_WIDTH))
-            .min_menu_width(px(FIELD_WIDTH))
-        });
         let scroll = ScrollHandle::new();
         let scroll_owner = cx.entity_id();
         let scrollbar = cx.new(|_| Scrollbar::app(scroll.clone(), scroll_owner));
         let browse_focus = cx.focus_handle();
         let args_hint_focus = cx.focus_handle();
         let model_hint_focus = cx.focus_handle();
-        let permission_hint_focus = cx.focus_handle();
         let close_focus = cx.focus_handle();
         let cancel_focus = cx.focus_handle();
         let submit_focus = cx.focus_handle();
@@ -309,7 +277,6 @@ impl NativeRoot {
         self.role_surfaces.create = Some(CreateRoleForm {
             runtimes,
             runtime,
-            permission_mode: PermissionMode::Auto,
             handle: handle.clone(),
             display_name,
             command,
@@ -321,13 +288,11 @@ impl NativeRoot {
             working_dir,
             system_prompt,
             runtime_select,
-            permission_select,
             scroll,
             scrollbar,
             browse_focus,
             args_hint_focus,
             model_hint_focus,
-            permission_hint_focus,
             close_focus,
             cancel_focus,
             submit_focus,
@@ -488,26 +453,6 @@ impl NativeRoot {
             .min_menu_width(px(ROLE_COLUMN_WIDTH))
         });
         let permission_mode = role_permission_mode(&role).unwrap_or(PermissionMode::Default);
-        let permission_root = root.clone();
-        let permission_select = cx.new(|select_cx| {
-            StyledSelect::new(
-                "edit-role-permission",
-                select_cx.focus_handle(),
-                permission_mode_value(permission_mode),
-                permission_options(&resolution.runtime),
-                Rc::new(move |value, _, cx| {
-                    permission_root.update(cx, |this, cx| {
-                        if let Some(form) = this.role_surfaces.edit.as_mut() {
-                            form.permission_mode = parse_permission_mode(&value);
-                            cx.notify();
-                        }
-                    });
-                }),
-                select_cx,
-            )
-            .width(px(ROLE_COLUMN_WIDTH))
-            .min_menu_width(px(320.))
-        });
         let mut subscriptions = vec![cx.observe(&display_name, |this, input, cx| {
             let valid = !input.read(cx).text().trim().is_empty();
             let Some(form) = this.role_surfaces.edit.as_mut() else {
@@ -540,7 +485,6 @@ impl NativeRoot {
             effort_select,
             speed: resolution.speed,
             speed_select,
-            permission_select,
             runtime_select,
             working_dir,
             system_prompt,
