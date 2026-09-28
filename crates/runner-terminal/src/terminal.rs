@@ -921,17 +921,23 @@ impl TerminalSession {
         *self.size.lock().unwrap()
     }
 
-    pub fn scroll(&self, delta_lines: i32, bypass_reporting: bool) {
+    pub fn scroll(&self, delta_lines: i32, bypass_reporting: bool, column: usize, row: usize) {
         let mode = *self.term.lock_unfair().mode();
-        match crate::mappings::encode_scroll(mode, delta_lines, bypass_reporting) {
+        match crate::mappings::encode_scroll(mode, delta_lines, bypass_reporting, column, row) {
             Some(bytes) => {
-                let _ = self.write_user_bytes(&bytes);
+                if !bytes.is_empty() {
+                    let _ = self.write_user_bytes(&bytes);
+                }
             }
             None => {
-                self.term.lock().scroll_display(Scroll::Delta(delta_lines));
-                (self.waker)();
+                self.scroll_local(delta_lines);
             }
         }
+    }
+
+    pub fn scroll_local(&self, delta_lines: i32) {
+        self.term.lock().scroll_display(Scroll::Delta(delta_lines));
+        (self.waker)();
     }
 
     pub fn scroll_to_bottom(&self) {
@@ -2710,6 +2716,24 @@ mod tests {
     }
 
     #[test]
+    fn unrepresentable_legacy_wheel_does_not_scroll_local_history() {
+        let temp = tempfile::tempdir().unwrap();
+        let core = test_core(temp.path());
+        let terminal =
+            TerminalSession::attach(core, "replay-race".into(), 80, 5, Arc::new(|| {})).unwrap();
+        terminal
+            .feed_output(&output(1, &"scrollback line\r\n".repeat(20)))
+            .unwrap();
+        terminal.feed_output(&output(2, "\x1b[?1000h")).unwrap();
+        assert!(terminal.scroll_state().history_lines > 0);
+
+        terminal.scroll(2, false, 223, 4);
+        assert_eq!(terminal.scroll_state().display_offset, 0);
+        terminal.scroll(2, true, 223, 4);
+        assert_eq!(terminal.scroll_state().display_offset, 2);
+    }
+
+    #[test]
     fn terminal_selection_matches_xterm_words_wraps_and_line_copy() {
         let temp = tempfile::tempdir().unwrap();
         let core = test_core(temp.path());
@@ -2747,7 +2771,7 @@ mod tests {
         );
         assert_eq!(terminal.selection_text().as_deref(), Some("foo/bar"));
         terminal.feed_output(&output(1, "\x1b[31m")).unwrap();
-        terminal.scroll(1, true);
+        terminal.scroll_local(1);
         assert_eq!(terminal.selection_text().as_deref(), Some("foo/bar"));
 
         terminal.start_selection(

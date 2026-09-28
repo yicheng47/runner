@@ -1726,7 +1726,6 @@ impl NativeRoot {
             let resize_owner = scrollable;
             let key_session_id = session_id.clone();
             let copy_session_id = session_id.clone();
-            let scroll_session_id = session_id.clone();
             let paste_session_id = session_id.clone();
             div()
                 .id(SharedString::from(format!("drawer-terminal-{session_id}")))
@@ -1756,11 +1755,6 @@ impl NativeRoot {
                             this.on_paste(&paste_session_id, action, window, cx);
                         }))
                 })
-                .when(scrollable, |surface| {
-                    surface.on_scroll_wheel(cx.listener(move |this, event, window, cx| {
-                        this.on_scroll(&scroll_session_id, event, window, cx);
-                    }))
-                })
                 .child(
                     div()
                         .relative()
@@ -1768,15 +1762,18 @@ impl NativeRoot {
                         .min_w(px(0.))
                         .min_h(px(0.))
                         .pr(runner_app::ui::terminal_scrollbar_gutter())
-                        .child(TerminalElement::new(
-                            terminal,
-                            terminal_interaction,
-                            terminal_input,
-                            terminal_focus,
-                            interactive,
-                            resize_owner,
-                            terminal_style,
-                        ))
+                        .child(
+                            TerminalElement::new(
+                                terminal,
+                                terminal_interaction,
+                                terminal_input,
+                                terminal_focus,
+                                interactive,
+                                resize_owner,
+                                terminal_style,
+                            )
+                            .scrollable(scrollable),
+                        )
                         .child(terminal_scrollbar),
                 )
                 .into_any_element()
@@ -2216,7 +2213,6 @@ impl NativeRoot {
                 let resize_owner = scrollable && layout.is_resize_owner(&pane_id, &session_id);
                 let key_session_id = session_id.clone();
                 let copy_session_id = session_id.clone();
-                let scroll_session_id = session_id.clone();
                 let paste_session_id = session_id.clone();
                 div()
                     .id(SharedString::from(format!("terminal-{session_id}")))
@@ -2246,11 +2242,6 @@ impl NativeRoot {
                                 this.on_paste(&paste_session_id, action, window, cx);
                             }))
                     })
-                    .when(scrollable, |surface| {
-                        surface.on_scroll_wheel(cx.listener(move |this, event, window, cx| {
-                            this.on_scroll(&scroll_session_id, event, window, cx);
-                        }))
-                    })
                     .child(
                         div()
                             .relative()
@@ -2258,15 +2249,18 @@ impl NativeRoot {
                             .min_w(px(0.))
                             .min_h(px(0.))
                             .pr(runner_app::ui::terminal_scrollbar_gutter())
-                            .child(TerminalElement::new(
-                                terminal,
-                                terminal_interaction,
-                                terminal_input,
-                                terminal_focus,
-                                interactive,
-                                resize_owner,
-                                terminal_style,
-                            ))
+                            .child(
+                                TerminalElement::new(
+                                    terminal,
+                                    terminal_interaction,
+                                    terminal_input,
+                                    terminal_focus,
+                                    interactive,
+                                    resize_owner,
+                                    terminal_style,
+                                )
+                                .scrollable(scrollable),
+                            )
                             .child(terminal_scrollbar),
                     )
                     .into_any_element()

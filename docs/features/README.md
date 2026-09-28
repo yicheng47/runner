@@ -6,6 +6,7 @@ Since 2026-09-01 a spec's number **is** its tracking issue number: file the issu
 
 ## Active
 
+- [724 — Preserve terminal wheel coordinates](./724-terminal-wheel-coordinates.md) — forward the actual pointer cell to mouse-reporting TUIs so Codex fullscreen transcripts scroll with a pinned prompt header; preserve ordinary scrollback and Shift bypass ([#724](https://github.com/yicheng47/runner/issues/724), P2; implementation mission).
 - [562 — Missions as containers](./562-mission-spawn.md) — the mission owns its roster, a mission starts from a crew or a role, and the lead or an outside seat spawns, lists, waits on and stops slots ([#562](https://github.com/yicheng47/runner/issues/562), P1, 0.13 headline with 704; plan under review).
 - [704 — Send a prompt from one session to another](./704-session-send.md) — `runner session send` and `session wait`, the terminal layer beside 562's missions: types into a running chat or terminal when it is idle, with a reply line, and stays off the bus ([#704](https://github.com/yicheng47/runner/issues/704), P1, 0.13 headline with 562; spec under review).
 - [393 — Role page redesign](./393-role-page.md) — a setup hero, a clamped prompt and the Chat now card folded into the header; first of the two page redesigns ([#393](https://github.com/yicheng47/runner/issues/393), P1, 0.12 release blocker).

@@ -29,9 +29,8 @@ use gpui::QuitMode;
 use gpui::{
     actions, div, point, prelude::*, px, relative, rems, size, AnyElement, App, Application,
     Bounds, ClipboardItem, Context, CursorStyle, DragMoveEvent, Entity, FocusHandle, Global,
-    KeyDownEvent, Menu, MenuItem, MouseButton, OsAction, Pixels, ScrollDelta, ScrollHandle,
-    ScrollWheelEvent, SharedString, Size, Subscription, SystemMenuType, TitlebarOptions, Window,
-    WindowBounds, WindowOptions,
+    KeyDownEvent, Menu, MenuItem, MouseButton, OsAction, Pixels, ScrollHandle, SharedString, Size,
+    Subscription, SystemMenuType, TitlebarOptions, Window, WindowBounds, WindowOptions,
 };
 use runner_app::bootstrap::{
     boot_core, native_paths, stop_running_sessions_on_quit, NativeMcpServer, NativePaths,
@@ -134,7 +133,6 @@ struct AttachedChat {
     _terminal_input_subscription: Subscription,
     _terminal_focus_subscription: Subscription,
     terminal_focus: FocusHandle,
-    scroll_accumulator: f32,
 }
 
 #[derive(Clone)]

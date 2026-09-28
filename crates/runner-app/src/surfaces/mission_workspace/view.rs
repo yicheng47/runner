@@ -611,7 +611,6 @@ impl MissionWorkspace {
             let terminal_focus = chat.terminal_focus.clone();
             let key_id = session_id.clone();
             let copy_id = session_id.clone();
-            let scroll_id = session_id.clone();
             let paste_id = session_id.clone();
             let root = cx.entity();
             let copy_root = root.clone();
@@ -647,15 +646,18 @@ impl MissionWorkspace {
                         .min_w(px(0.))
                         .min_h(px(0.))
                         .pr(runner_app::ui::terminal_scrollbar_gutter())
-                        .child(TerminalElement::new(
-                            terminal,
-                            terminal_interaction,
-                            terminal_input,
-                            terminal_focus,
-                            interactive,
-                            scrollable,
-                            terminal_style,
-                        ))
+                        .child(
+                            TerminalElement::new(
+                                terminal,
+                                terminal_interaction,
+                                terminal_input,
+                                terminal_focus,
+                                interactive,
+                                scrollable,
+                                terminal_style,
+                            )
+                            .scrollable(scrollable),
+                        )
                         .child(terminal_scrollbar),
                 );
             if interactive {
@@ -672,13 +674,6 @@ impl MissionWorkspace {
                             this.on_mission_paste(&paste_id, action, window, cx)
                         });
                     });
-            }
-            if scrollable {
-                surface = surface.on_scroll_wheel(move |event, window, cx| {
-                    root.update(cx, |this, cx| {
-                        this.on_mission_scroll(&scroll_id, event, window, cx)
-                    });
-                });
             }
             surface.into_any_element()
         } else {

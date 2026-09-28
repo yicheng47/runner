@@ -9,7 +9,7 @@ use std::time::Duration;
 use gpui::prelude::*;
 use gpui::{
     div, px, rems, svg, AnyElement, App, Context, Entity, FocusHandle, FontWeight, KeyDownEvent,
-    MouseButton, Render, ScrollDelta, ScrollWheelEvent, Task, Window,
+    MouseButton, Render, Task, Window,
 };
 use runner_app::terminal_ime::TerminalInput;
 use runner_app::ui::button::spinner;
@@ -206,7 +206,6 @@ struct UpdateTerminal {
     input: Entity<TerminalInput>,
     scrollbar: Entity<Scrollbar>,
     focus: FocusHandle,
-    scroll_accumulator: f32,
 }
 
 pub(crate) struct AgentUpdateDialog {
@@ -329,7 +328,6 @@ impl AgentUpdateDialog {
             scrollbar: cx.new(|_| Scrollbar::terminal(Arc::clone(&terminal))),
             terminal,
             focus,
-            scroll_accumulator: 0.,
         });
         self.phase = Phase::Running;
         self.tick(cx);
@@ -476,28 +474,6 @@ impl AgentUpdateDialog {
         }
     }
 
-    fn on_terminal_scroll(
-        &mut self,
-        event: &ScrollWheelEvent,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(attached) = self.terminal.as_mut() else {
-            return;
-        };
-        let lines = match event.delta {
-            ScrollDelta::Lines(point) => point.y,
-            ScrollDelta::Pixels(point) => f32::from(point.y) / f32::from(window.line_height()),
-        };
-        attached.scroll_accumulator += lines;
-        let whole = attached.scroll_accumulator.trunc() as i32;
-        if whole != 0 {
-            attached.scroll_accumulator -= whole as f32;
-            attached.terminal.scroll(whole, event.modifiers.shift);
-            cx.notify();
-        }
-    }
-
     fn render_terminal(&self, style: TerminalStyle, cx: &mut Context<Self>) -> AnyElement {
         let background = crate::terminal::element::to_hsla(style.palette.background, 1.);
         let Some(attached) = &self.terminal else {
@@ -517,9 +493,6 @@ impl AgentUpdateDialog {
             .pr_1()
             .bg(background)
             .on_action(cx.listener(|this, _: &Copy, _, cx| this.on_terminal_copy(cx)))
-            .on_scroll_wheel(
-                cx.listener(|this, event, window, cx| this.on_terminal_scroll(event, window, cx)),
-            )
             .when(running, |surface| {
                 surface
                     .on_key_down(cx.listener(|this, event, _, cx| this.on_terminal_key(event, cx)))
@@ -532,15 +505,18 @@ impl AgentUpdateDialog {
                     .min_w(px(0.))
                     .min_h(px(0.))
                     .pr(runner_app::ui::terminal_scrollbar_gutter())
-                    .child(TerminalElement::new(
-                        Arc::clone(&attached.terminal),
-                        attached.interaction.clone(),
-                        attached.input.clone(),
-                        attached.focus.clone(),
-                        running,
-                        running,
-                        style,
-                    ))
+                    .child(
+                        TerminalElement::new(
+                            Arc::clone(&attached.terminal),
+                            attached.interaction.clone(),
+                            attached.input.clone(),
+                            attached.focus.clone(),
+                            running,
+                            running,
+                            style,
+                        )
+                        .scrollable(true),
+                    )
                     .child(attached.scrollbar.clone()),
             )
             .into_any_element()

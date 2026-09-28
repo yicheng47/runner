@@ -1096,7 +1096,6 @@ impl NativeRoot {
                 _terminal_input_subscription: terminal_input_subscription,
                 _terminal_focus_subscription: terminal_focus_subscription,
                 terminal_focus,
-                scroll_accumulator: 0.,
             },
         );
         Ok(())
@@ -1443,29 +1442,6 @@ impl NativeRoot {
         };
         cx.write_to_clipboard(ClipboardItem::new_string(text));
         cx.stop_propagation();
-    }
-
-    pub(crate) fn on_scroll(
-        &mut self,
-        session_id: &str,
-        event: &ScrollWheelEvent,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(chat) = self.attached.get_mut(session_id) else {
-            return;
-        };
-        let lines = match event.delta {
-            ScrollDelta::Lines(point) => point.y,
-            ScrollDelta::Pixels(point) => f32::from(point.y) / f32::from(window.line_height()),
-        };
-        chat.scroll_accumulator += lines;
-        let whole = chat.scroll_accumulator.trunc() as i32;
-        if whole != 0 {
-            chat.scroll_accumulator -= whole as f32;
-            chat.terminal.scroll(whole, event.modifiers.shift);
-            cx.notify();
-        }
     }
 
     pub(crate) fn on_paste(

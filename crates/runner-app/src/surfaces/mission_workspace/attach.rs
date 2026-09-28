@@ -490,7 +490,6 @@ impl MissionWorkspace {
                 _terminal_input_subscription: terminal_input_subscription,
                 _terminal_focus_subscription: terminal_focus_subscription,
                 terminal_focus,
-                scroll_accumulator: 0.,
             },
         );
         Ok(())

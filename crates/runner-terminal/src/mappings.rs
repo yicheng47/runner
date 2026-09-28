@@ -223,9 +223,14 @@ fn encode_modified_special_key(key: &str, ctrl: bool, alt: bool, shift: bool) ->
 /// scroll their own transcript; alt-screen apps with DECSET 1007 get
 /// arrow keys; everything else returns `None` and the caller scrolls
 /// the local viewport. `bypass_reporting` (shift held, xterm
-/// convention) forces the viewport path. Reports carry cell (1;1) —
-/// the single-transcript agent TUIs we host ignore wheel coordinates.
-pub fn encode_scroll(mode: TermMode, delta_lines: i32, bypass_reporting: bool) -> Option<Vec<u8>> {
+/// convention) forces the viewport path.
+pub fn encode_scroll(
+    mode: TermMode,
+    delta_lines: i32,
+    bypass_reporting: bool,
+    column: usize,
+    row: usize,
+) -> Option<Vec<u8>> {
     if delta_lines == 0 || bypass_reporting {
         return None;
     }
@@ -233,10 +238,30 @@ pub fn encode_scroll(mode: TermMode, delta_lines: i32, bypass_reporting: bool) -
     let count = delta_lines.unsigned_abs() as usize;
     if mode.intersects(TermMode::MOUSE_MODE) {
         let button: u8 = if up { 64 } else { 65 };
+        let Some(column) = column.checked_add(1) else {
+            return Some(Vec::new());
+        };
+        let Some(row) = row.checked_add(1) else {
+            return Some(Vec::new());
+        };
         return Some(if mode.contains(TermMode::SGR_MOUSE) {
-            format!("\x1b[<{button};1;1M").into_bytes().repeat(count)
+            format!("\x1b[<{button};{column};{row}M")
+                .into_bytes()
+                .repeat(count)
         } else {
-            [0x1b, b'[', b'M', 32 + button, 33, 33].repeat(count)
+            let Some(column) = u8::try_from(column)
+                .ok()
+                .and_then(|value| value.checked_add(32))
+            else {
+                return Some(Vec::new());
+            };
+            let Some(row) = u8::try_from(row)
+                .ok()
+                .and_then(|value| value.checked_add(32))
+            else {
+                return Some(Vec::new());
+            };
+            [0x1b, b'[', b'M', 32 + button, column, row].repeat(count)
         });
     }
     if mode.contains(TermMode::ALT_SCREEN | TermMode::ALTERNATE_SCROLL) {
@@ -549,16 +574,36 @@ mod tests {
     fn wheel_reports_go_to_mouse_mode_apps() {
         let mode = TermMode::MOUSE_REPORT_CLICK | TermMode::SGR_MOUSE;
         assert_eq!(
-            encode_scroll(mode, 2, false),
-            Some(b"\x1b[<64;1;1M\x1b[<64;1;1M".to_vec())
+            encode_scroll(mode, 2, false, 7, 4),
+            Some(b"\x1b[<64;8;5M\x1b[<64;8;5M".to_vec())
         );
         assert_eq!(
-            encode_scroll(mode, -1, false),
-            Some(b"\x1b[<65;1;1M".to_vec())
+            encode_scroll(mode, -1, false, 7, 4),
+            Some(b"\x1b[<65;8;5M".to_vec())
         );
         assert_eq!(
-            encode_scroll(TermMode::MOUSE_REPORT_CLICK, 1, false),
+            encode_scroll(mode, 1, false, 0, 0),
+            Some(b"\x1b[<64;1;1M".to_vec())
+        );
+        assert_eq!(
+            encode_scroll(TermMode::MOUSE_REPORT_CLICK, 1, false, 0, 0),
             Some(vec![0x1b, b'[', b'M', 96, 33, 33])
+        );
+        assert_eq!(
+            encode_scroll(TermMode::MOUSE_REPORT_CLICK, -2, false, 7, 4),
+            Some([0x1b, b'[', b'M', 97, 40, 37].repeat(2))
+        );
+        assert_eq!(
+            encode_scroll(TermMode::MOUSE_REPORT_CLICK, 1, false, 222, 222),
+            Some(vec![0x1b, b'[', b'M', 96, 255, 255])
+        );
+        assert_eq!(
+            encode_scroll(TermMode::MOUSE_REPORT_CLICK, 1, false, 223, 4),
+            Some(Vec::new())
+        );
+        assert_eq!(
+            encode_scroll(TermMode::MOUSE_REPORT_CLICK, 1, false, 7, usize::MAX),
+            Some(Vec::new())
         );
     }
 
@@ -566,22 +611,25 @@ mod tests {
     fn alternate_scroll_sends_arrows_only_on_the_alt_screen() {
         let mode = TermMode::ALT_SCREEN | TermMode::ALTERNATE_SCROLL;
         assert_eq!(
-            encode_scroll(mode, 2, false),
+            encode_scroll(mode, 2, false, 7, 4),
             Some(b"\x1b[A\x1b[A".to_vec())
         );
         assert_eq!(
-            encode_scroll(mode | TermMode::APP_CURSOR, -1, false),
+            encode_scroll(mode | TermMode::APP_CURSOR, -1, false, 7, 4),
             Some(b"\x1bOB".to_vec())
         );
-        assert_eq!(encode_scroll(TermMode::ALTERNATE_SCROLL, 1, false), None);
+        assert_eq!(
+            encode_scroll(TermMode::ALTERNATE_SCROLL, 1, false, 7, 4),
+            None
+        );
     }
 
     #[test]
     fn viewport_scroll_wins_for_plain_apps_and_shift_bypass() {
-        assert_eq!(encode_scroll(TermMode::NONE, 3, false), None);
+        assert_eq!(encode_scroll(TermMode::NONE, 3, false, 7, 4), None);
         let mouse = TermMode::MOUSE_REPORT_CLICK | TermMode::SGR_MOUSE;
-        assert_eq!(encode_scroll(mouse, 3, true), None);
-        assert_eq!(encode_scroll(mouse, 0, false), None);
+        assert_eq!(encode_scroll(mouse, 3, true, 7, 4), None);
+        assert_eq!(encode_scroll(mouse, 0, false, 7, 4), None);
     }
 
     #[test]

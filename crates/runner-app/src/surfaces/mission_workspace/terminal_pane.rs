@@ -68,7 +68,6 @@ impl MissionWorkspace {
         let interactive = self.cached_mission_terminal_interactive(&session_id, cx);
         let key_id = session_id.clone();
         let copy_id = session_id.clone();
-        let scroll_id = session_id.clone();
         let paste_id = session_id.clone();
         let root = cx.entity();
         let copy_root = root.clone();
@@ -100,30 +99,27 @@ impl MissionWorkspace {
                     .min_w(px(0.))
                     .min_h(px(0.))
                     .pr(runner_app::ui::terminal_scrollbar_gutter())
-                    .child(TerminalElement::new(
-                        terminal,
-                        terminal_interaction,
-                        terminal_input,
-                        terminal_focus,
-                        interactive,
-                        true,
-                        self.terminal_style(cx),
-                    ))
+                    .child(
+                        TerminalElement::new(
+                            terminal,
+                            terminal_interaction,
+                            terminal_input,
+                            terminal_focus,
+                            interactive,
+                            true,
+                            self.terminal_style(cx),
+                        )
+                        .scrollable(interactive),
+                    )
                     .child(terminal_scrollbar),
             );
         if interactive {
             let key_root = root.clone();
-            let scroll_root = root.clone();
             let paste_root = root.clone();
             terminal_surface = terminal_surface
                 .on_key_down(move |event, window, cx| {
                     key_root.update(cx, |this, cx| {
                         this.on_mission_key_down(&key_id, event, window, cx)
-                    });
-                })
-                .on_scroll_wheel(move |event, window, cx| {
-                    scroll_root.update(cx, |this, cx| {
-                        this.on_mission_scroll(&scroll_id, event, window, cx)
                     });
                 })
                 .on_action(move |action: &Paste, window, cx| {

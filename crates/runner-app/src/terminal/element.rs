@@ -22,7 +22,8 @@ use gpui::{
     Context, CursorStyle, DispatchPhase, Element, ElementInputHandler, Entity, FocusHandle, Font,
     GlobalElementId, Hitbox, HitboxBehavior, Hsla, InspectorElementId, IntoElement, LayoutId,
     MouseButton as GpuiMouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point,
-    ShapedLine, SharedString, Style, TextRun, UnderlineStyle, Window,
+    ScrollDelta, ScrollWheelEvent, ShapedLine, SharedString, Style, TextRun, UnderlineStyle,
+    Window,
 };
 
 use runner_app::terminal_ime::TerminalInput;
@@ -102,6 +103,7 @@ struct LinkTooltip {
 
 pub(crate) struct TerminalInteraction {
     session: Arc<TerminalSession>,
+    scroll_accumulator: f32,
     drag: Option<DragState>,
     next_generation: u64,
     hovered_link: Option<TerminalLink>,
@@ -116,6 +118,7 @@ impl TerminalInteraction {
     pub(crate) fn new(session: Arc<TerminalSession>) -> Self {
         Self {
             session,
+            scroll_accumulator: 0.,
             drag: None,
             next_generation: 0,
             hovered_link: None,
@@ -132,6 +135,31 @@ impl TerminalInteraction {
             && self
                 .hover_since
                 .is_some_and(|since| since.elapsed() >= LINK_TOOLTIP_DELAY)
+    }
+
+    fn scroll_wheel(
+        &mut self,
+        event: &ScrollWheelEvent,
+        geometry: TerminalGeometry,
+        interactive: bool,
+        window: &Window,
+    ) -> bool {
+        let lines = match event.delta {
+            ScrollDelta::Lines(point) => point.y,
+            ScrollDelta::Pixels(point) => f32::from(point.y) / f32::from(window.line_height()),
+        };
+        let whole = accumulate_scroll(&mut self.scroll_accumulator, lines);
+        if whole == 0 {
+            return false;
+        }
+        if interactive {
+            let (column, row) = viewport_cell(geometry, event.position);
+            self.session
+                .scroll(whole, event.modifiers.shift, column, row);
+        } else {
+            self.session.scroll_local(whole);
+        }
+        true
     }
 
     fn link_tooltip(
@@ -477,7 +505,7 @@ impl TerminalInteraction {
             return true;
         }
 
-        self.session.scroll(drag.autoscroll, true);
+        self.session.scroll_local(drag.autoscroll);
         let display_offset = self.session.scroll_state().display_offset;
         let row = if drag.autoscroll > 0 {
             0
@@ -590,15 +618,11 @@ fn hit_test(
     geometry: TerminalGeometry,
     position: Point<Pixels>,
 ) -> TerminalHit {
-    let grid_width = f32::from(geometry.cell_width) * geometry.cols as f32;
-    let grid_height = f32::from(geometry.line_height) * geometry.rows as f32;
-    let local_x =
-        f32::from(position.x - geometry.bounds.left()).clamp(0., grid_width.max(1.) - 0.001);
-    let local_y =
-        f32::from(position.y - geometry.bounds.top()).clamp(0., grid_height.max(1.) - 0.001);
-    let raw_column = (local_x / f32::from(geometry.cell_width)) as usize;
-    let viewport_row = (local_y / f32::from(geometry.line_height)) as usize;
-
+    let (raw_column, viewport_row) = viewport_cell(geometry, position);
+    let local_x = f32::from(position.x - geometry.bounds.left()).clamp(
+        0.,
+        (f32::from(geometry.cell_width) * geometry.cols as f32).max(1.) - 0.001,
+    );
     let term = session.term.lock_unfair();
     let display_offset = term.grid().display_offset();
     let (column, side) = cell_and_side(local_x, f32::from(geometry.cell_width), raw_column);
@@ -608,6 +632,26 @@ fn hit_test(
         viewport_column: raw_column,
         viewport_row,
     }
+}
+
+fn viewport_cell(geometry: TerminalGeometry, position: Point<Pixels>) -> (usize, usize) {
+    let grid_width = f32::from(geometry.cell_width) * geometry.cols as f32;
+    let grid_height = f32::from(geometry.line_height) * geometry.rows as f32;
+    let local_x =
+        f32::from(position.x - geometry.bounds.left()).clamp(0., grid_width.max(1.) - 0.001);
+    let local_y =
+        f32::from(position.y - geometry.bounds.top()).clamp(0., grid_height.max(1.) - 0.001);
+    let raw_column = (local_x / f32::from(geometry.cell_width)) as usize;
+    let viewport_row = (local_y / f32::from(geometry.line_height)) as usize;
+
+    (raw_column, viewport_row)
+}
+
+fn accumulate_scroll(accumulator: &mut f32, lines: f32) -> i32 {
+    *accumulator += lines;
+    let whole = accumulator.trunc() as i32;
+    *accumulator -= whole as f32;
+    whole
 }
 
 pub(crate) fn to_hsla(rgb: Rgb, alpha: f32) -> Hsla {
@@ -622,6 +666,7 @@ pub struct TerminalElement {
     input: Entity<TerminalInput>,
     focus_handle: FocusHandle,
     interactive: bool,
+    scrollable: bool,
     resize_owner: bool,
     style: TerminalStyle,
 }
@@ -650,9 +695,15 @@ impl TerminalElement {
             input,
             focus_handle,
             interactive,
+            scrollable: false,
             resize_owner,
             style,
         }
+    }
+
+    pub fn scrollable(mut self, scrollable: bool) -> Self {
+        self.scrollable = scrollable;
+        self
     }
 
     fn register_mouse_listeners(
@@ -661,6 +712,24 @@ impl TerminalElement {
         hitbox: Hitbox,
         window: &mut Window,
     ) {
+        if self.scrollable {
+            let interaction = self.interaction.clone();
+            let interactive = self.interactive;
+            let scroll_hitbox = hitbox.clone();
+            let current_view = window.current_view();
+            window.on_mouse_event(move |event: &ScrollWheelEvent, phase, window, cx| {
+                if phase != DispatchPhase::Bubble || !scroll_hitbox.should_handle_scroll(window) {
+                    return;
+                }
+                let changed = interaction.update(cx, |interaction, _| {
+                    interaction.scroll_wheel(event, geometry, interactive, window)
+                });
+                if changed {
+                    cx.notify(current_view);
+                }
+                cx.stop_propagation();
+            });
+        }
         let interaction = self.interaction.clone();
         let focus_handle = self.focus_handle.clone();
         let interactive = self.interactive;
@@ -1411,10 +1480,443 @@ impl IntoElement for TerminalElement {
 
 #[cfg(test)]
 mod tests {
-    use alacritty_terminal::index::{Column, Line, Point as GridPoint, Side};
-    use gpui::{point, px, Bounds};
+    use std::collections::HashMap;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::{Arc, Mutex, RwLock};
 
-    use super::{autoscroll_amount, cell_and_side, link_modifier, point_for_viewport};
+    use alacritty_terminal::index::{Column, Line, Point as GridPoint, Side};
+    use gpui::prelude::*;
+    use gpui::{
+        div, point, px, Bounds, Context, Entity, FocusHandle, Render, TestAppContext,
+        VisualTestContext, Window,
+    };
+    use runner_backend::session::manager::OutputEvent;
+    use runner_backend::session::runtime::{
+        OutputStream, RuntimeOutput, RuntimeResult, RuntimeSession, SessionRuntime, SessionStatus,
+        SpawnSpec,
+    };
+    use runner_backend::{
+        db, event_bus, events, mcp, router, session, shell_path, windows, AppCore,
+    };
+    use runner_terminal::terminal::TerminalSession;
+
+    use super::{
+        accumulate_scroll, autoscroll_amount, cell_and_side, link_modifier, point_for_viewport,
+        viewport_cell, TerminalElement, TerminalGeometry, TerminalInput, TerminalInteraction,
+        TerminalStyle,
+    };
+    use alacritty_terminal::term::TermMode;
+    use runner_terminal::mappings::encode_scroll;
+
+    #[derive(Default)]
+    struct RecordingRuntime {
+        outputs: Mutex<HashMap<String, std::sync::mpsc::Sender<RuntimeOutput>>>,
+        writes: Mutex<Vec<(String, Vec<u8>)>>,
+    }
+
+    impl SessionRuntime for RecordingRuntime {
+        fn spawn(&self, spec: SpawnSpec) -> RuntimeResult<(RuntimeSession, OutputStream)> {
+            let (tx, rx) = std::sync::mpsc::channel();
+            self.outputs
+                .lock()
+                .unwrap()
+                .insert(spec.session_id.clone(), tx);
+            Ok((
+                RuntimeSession {
+                    runtime: "recording".into(),
+                    session_id: spec.session_id,
+                },
+                OutputStream::new(rx, Arc::new(AtomicBool::new(false))),
+            ))
+        }
+
+        fn stop(&self, session: &RuntimeSession) -> RuntimeResult<()> {
+            self.outputs.lock().unwrap().remove(&session.session_id);
+            Ok(())
+        }
+
+        fn send_bytes(&self, session: &RuntimeSession, bytes: &[u8]) -> RuntimeResult<()> {
+            self.writes
+                .lock()
+                .unwrap()
+                .push((session.session_id.clone(), bytes.to_vec()));
+            Ok(())
+        }
+
+        fn send_key(&self, session: &RuntimeSession, key: &str) -> RuntimeResult<()> {
+            self.send_bytes(session, key.as_bytes())
+        }
+
+        fn resize(&self, _: &RuntimeSession, _: u16, _: u16) -> RuntimeResult<()> {
+            Ok(())
+        }
+
+        fn status(&self, _: &RuntimeSession) -> RuntimeResult<Option<SessionStatus>> {
+            Ok(Some(SessionStatus {
+                alive: true,
+                ..Default::default()
+            }))
+        }
+    }
+
+    fn test_core(root: &std::path::Path, runtime: Arc<RecordingRuntime>) -> AppCore {
+        let app_data_dir = root.join("app-data");
+        std::fs::create_dir_all(&app_data_dir).unwrap();
+        let pool = Arc::new(db::open_pool(&app_data_dir.join("runner.db")).unwrap());
+        let runtime_shell_env = Arc::new(RwLock::new(shell_path::LoginShellEnv::default()));
+        let runtime_discovery =
+            Arc::new(RwLock::new(shell_path::DiscoveryState::startup(None, None)));
+        AppCore {
+            db: pool,
+            app_data_dir,
+            sessions: session::SessionManager::new(
+                Arc::clone(&runtime_shell_env),
+                Arc::clone(&runtime_discovery),
+                runtime,
+            ),
+            runtime_shell_env,
+            runtime_discovery,
+            usage: Arc::new(runner_backend::usage::UsageService::default()),
+            buses: event_bus::BusRegistry::new(),
+            routers: router::RouterRegistry::new(),
+            mission_grid_hint: Arc::new(Mutex::new(None)),
+            mcp: Arc::new(mcp::McpHandle::new()),
+            windows: Arc::new(windows::WindowRegistry::new()),
+            events: events::EventChannel::new(),
+            session_event_observer: Default::default(),
+            app_version: "0.0.0-test".into(),
+        }
+    }
+
+    fn spawn_terminal(
+        core: &AppCore,
+        role: &runner_backend::model::Role,
+        root: &std::path::Path,
+    ) -> Arc<TerminalSession> {
+        let spawned = core
+            .sessions
+            .spawn_direct(
+                role,
+                None,
+                None,
+                None,
+                None,
+                Some(root.to_str().unwrap()),
+                Some(80),
+                Some(24),
+                &core.app_data_dir,
+                Arc::clone(&core.db),
+                Arc::new(core.session_events()),
+                None,
+            )
+            .unwrap();
+        let terminal =
+            TerminalSession::attach(core.clone(), spawned.id.clone(), 80, 24, Arc::new(|| {}))
+                .unwrap();
+        terminal
+            .feed_output(&OutputEvent {
+                session_id: spawned.id,
+                mission_id: None,
+                seq: 1,
+                bytes: b"\x1b[?1000h\x1b[?1006h".to_vec(),
+            })
+            .unwrap();
+        terminal
+    }
+
+    #[derive(Clone)]
+    struct WheelPane {
+        terminal: Arc<TerminalSession>,
+        interaction: Entity<TerminalInteraction>,
+        input: Entity<TerminalInput>,
+        focus: FocusHandle,
+    }
+
+    struct WheelHost {
+        left: WheelPane,
+        right: WheelPane,
+        left_interactive: bool,
+        right_interactive: bool,
+        right_scrollable: bool,
+        font_size: f32,
+        gap: f32,
+    }
+
+    impl Render for WheelHost {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let style = TerminalStyle {
+                palette: runner_terminal::palette::RUNNER,
+                font: crate::app_settings::AppSettings::default()
+                    .terminal_font_family
+                    .font(),
+                font_size: self.font_size,
+                app_zoom: 1.,
+            };
+            div()
+                .size_full()
+                .flex()
+                .p(px(20.))
+                .gap(px(self.gap))
+                .child(
+                    div()
+                        .debug_selector(|| "WHEEL_LEFT".into())
+                        .w(px(260.))
+                        .h(px(180.))
+                        .p(px(10.))
+                        .child(
+                            TerminalElement::new(
+                                Arc::clone(&self.left.terminal),
+                                self.left.interaction.clone(),
+                                self.left.input.clone(),
+                                self.left.focus.clone(),
+                                self.left_interactive,
+                                true,
+                                style.clone(),
+                            )
+                            .scrollable(true),
+                        ),
+                )
+                .child(
+                    div()
+                        .debug_selector(|| "WHEEL_RIGHT".into())
+                        .w(px(260.))
+                        .h(px(180.))
+                        .p(px(10.))
+                        .child(
+                            TerminalElement::new(
+                                Arc::clone(&self.right.terminal),
+                                self.right.interaction.clone(),
+                                self.right.input.clone(),
+                                self.right.focus.clone(),
+                                self.right_interactive,
+                                true,
+                                style,
+                            )
+                            .scrollable(self.right_scrollable),
+                        ),
+                )
+        }
+    }
+
+    #[test]
+    fn rendered_wheels_target_one_pane_and_follow_its_current_geometry() {
+        use gpui::{size, ScrollDelta, ScrollWheelEvent};
+
+        let temp = tempfile::tempdir().unwrap();
+        let runtime = Arc::new(RecordingRuntime::default());
+        let core = test_core(temp.path(), Arc::clone(&runtime));
+        let role = runner_backend::ops::role::create(
+            &core.db.get().unwrap(),
+            runner_backend::ops::role::CreateRoleInput {
+                handle: "wheel-probe".into(),
+                display_name: "Wheel probe".into(),
+                runtime: runner_backend::model::Runtime::Trae,
+                command: "probe".into(),
+                args: Vec::new(),
+                working_dir: None,
+                system_prompt: None,
+                env: Default::default(),
+                model: None,
+                effort: None,
+                codex_speed: None,
+                permission_mode: runner_backend::router::runtime::PermissionMode::Auto,
+            },
+        )
+        .unwrap();
+        let left_terminal = spawn_terminal(&core, &role, temp.path());
+        let right_terminal = spawn_terminal(&core, &role, temp.path());
+        for terminal in [&left_terminal, &right_terminal] {
+            terminal
+                .feed_output(&OutputEvent {
+                    session_id: terminal.session_id().to_owned(),
+                    mission_id: None,
+                    seq: 2,
+                    bytes: "scrollback line\r\n".repeat(40).into_bytes(),
+                })
+                .unwrap();
+            assert!(terminal.scroll_state().history_lines > 0);
+        }
+        let right_id = right_terminal.session_id().to_owned();
+        let mut cx = TestAppContext::single();
+        let left = WheelPane {
+            interaction: cx.new(|_| TerminalInteraction::new(Arc::clone(&left_terminal))),
+            input: cx.new(|_| TerminalInput::new(Arc::clone(&left_terminal))),
+            focus: cx.update(|cx| cx.focus_handle()),
+            terminal: Arc::clone(&left_terminal),
+        };
+        let right = WheelPane {
+            interaction: cx.new(|_| TerminalInteraction::new(Arc::clone(&right_terminal))),
+            input: cx.new(|_| TerminalInput::new(Arc::clone(&right_terminal))),
+            focus: cx.update(|cx| cx.focus_handle()),
+            terminal: Arc::clone(&right_terminal),
+        };
+        let window = cx.add_window(|_, _| WheelHost {
+            left,
+            right,
+            left_interactive: true,
+            right_interactive: true,
+            right_scrollable: true,
+            font_size: 14.,
+            gap: 20.,
+        });
+        let mut visual = VisualTestContext::from_window(window.into(), &cx);
+        visual.simulate_resize(size(px(700.), px(300.)));
+        let right_bounds = visual.debug_bounds("WHEEL_RIGHT").unwrap();
+        let cell_width = visual.update(|window, _| {
+            let font = crate::app_settings::AppSettings::default()
+                .terminal_font_family
+                .font();
+            let id = window.text_system().resolve_font(&font);
+            window
+                .text_system()
+                .em_advance(id, px(14.))
+                .unwrap_or(px(8.4))
+        });
+        let body = point(
+            right_bounds.left() + px(10.) + cell_width * 7. + px(1.),
+            right_bounds.top()
+                + px(10.)
+                + px(14. * super::LINE_HEIGHT_FACTOR).round() * 4.
+                + px(1.),
+        );
+        let header = point(body.x, right_bounds.top() + px(11.));
+        let wheel = |position, delta| ScrollWheelEvent {
+            position,
+            delta: ScrollDelta::Lines(point(0., delta)),
+            ..Default::default()
+        };
+        visual.simulate_event(wheel(body, 1.));
+        assert_eq!(
+            runtime.writes.lock().unwrap().as_slice(),
+            &[(right_id.clone(), b"\x1b[<64;8;5M".to_vec())]
+        );
+        visual.simulate_event(wheel(header, 1.));
+        assert_eq!(
+            runtime.writes.lock().unwrap().last(),
+            Some(&(right_id.clone(), b"\x1b[<64;8;1M".to_vec()))
+        );
+        assert_eq!(runtime.writes.lock().unwrap().len(), 2);
+        visual.simulate_event(wheel(body, 0.5));
+        assert_eq!(runtime.writes.lock().unwrap().len(), 2);
+        let half_line = visual.update(|window, _| window.line_height() / 2.);
+        visual.simulate_event(ScrollWheelEvent {
+            position: body,
+            delta: ScrollDelta::Pixels(point(px(0.), half_line)),
+            ..Default::default()
+        });
+        assert_eq!(
+            runtime.writes.lock().unwrap().last(),
+            Some(&(right_id.clone(), b"\x1b[<64;8;5M".to_vec()))
+        );
+        assert_eq!(runtime.writes.lock().unwrap().len(), 3);
+
+        window
+            .update(&mut visual, |host, _, cx| {
+                host.font_size = 20.;
+                host.gap = 40.;
+                cx.notify();
+            })
+            .unwrap();
+        visual.refresh().unwrap();
+        let changed_bounds = visual.debug_bounds("WHEEL_RIGHT").unwrap();
+        assert_eq!(changed_bounds.left(), right_bounds.left() + px(20.));
+        let new_width = visual.update(|window, _| {
+            let font = crate::app_settings::AppSettings::default()
+                .terminal_font_family
+                .font();
+            let id = window.text_system().resolve_font(&font);
+            window
+                .text_system()
+                .em_advance(id, px(20.))
+                .unwrap_or(px(12.))
+        });
+        let changed_body = point(
+            changed_bounds.left() + px(10.) + new_width * 5. + px(1.),
+            changed_bounds.top()
+                + px(10.)
+                + px(20. * super::LINE_HEIGHT_FACTOR).round() * 3.
+                + px(1.),
+        );
+        visual.simulate_event(wheel(changed_body, 1.));
+        assert_eq!(
+            runtime.writes.lock().unwrap().last(),
+            Some(&(right_id.clone(), b"\x1b[<64;6;4M".to_vec()))
+        );
+        visual.simulate_event(ScrollWheelEvent {
+            position: changed_body,
+            delta: ScrollDelta::Lines(point(0., 1.)),
+            modifiers: gpui::Modifiers {
+                shift: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        assert_eq!(runtime.writes.lock().unwrap().len(), 4);
+        assert_eq!(right_terminal.scroll_state().display_offset, 1);
+
+        window
+            .update(&mut visual, |host, _, cx| {
+                host.right_scrollable = false;
+                host.left_interactive = false;
+                cx.notify();
+            })
+            .unwrap();
+        visual.refresh().unwrap();
+        visual.simulate_event(wheel(changed_body, 1.));
+        assert_eq!(runtime.writes.lock().unwrap().len(), 4);
+        let left_bounds = visual.debug_bounds("WHEEL_LEFT").unwrap();
+        visual.simulate_event(wheel(
+            point(left_bounds.left() + px(20.), left_bounds.top() + px(20.)),
+            1.,
+        ));
+        assert_eq!(runtime.writes.lock().unwrap().len(), 4);
+        assert_eq!(left_terminal.scroll_state().display_offset, 1);
+    }
+
+    #[test]
+    fn wheel_pointer_uses_displayed_pane_geometry_through_encoding() {
+        let geometry = TerminalGeometry {
+            bounds: Bounds::new(point(px(120.), px(80.)), gpui::size(px(200.), px(160.))),
+            cell_width: px(10.),
+            line_height: px(20.),
+            cols: 20,
+            rows: 8,
+        };
+        let header = viewport_cell(geometry, point(px(195.), px(85.)));
+        let content = viewport_cell(geometry, point(px(195.), px(165.)));
+        assert_eq!(header, (7, 0));
+        assert_eq!(content, (7, 4));
+        let mode = TermMode::MOUSE_REPORT_CLICK | TermMode::SGR_MOUSE;
+        assert_eq!(
+            encode_scroll(mode, 1, false, content.0, content.1),
+            Some(b"\x1b[<64;8;5M".to_vec())
+        );
+        assert_eq!(
+            encode_scroll(mode, 1, false, header.0, header.1),
+            Some(b"\x1b[<64;8;1M".to_vec())
+        );
+
+        let changed = TerminalGeometry {
+            cell_width: px(15.),
+            line_height: px(25.),
+            cols: 13,
+            rows: 6,
+            ..geometry
+        };
+        assert_eq!(viewport_cell(changed, point(px(195.), px(165.))), (5, 3));
+        assert_eq!(viewport_cell(changed, point(px(119.), px(79.))), (0, 0));
+        assert_eq!(viewport_cell(changed, point(px(500.), px(500.))), (12, 5));
+    }
+
+    #[test]
+    fn fractional_wheel_deltas_emit_only_accumulated_whole_lines() {
+        let mut accumulator = 0.;
+        assert_eq!(accumulate_scroll(&mut accumulator, 0.6), 0);
+        assert_eq!(accumulate_scroll(&mut accumulator, 0.6), 1);
+        assert!((accumulator - 0.2).abs() < 0.001);
+        assert_eq!(accumulate_scroll(&mut accumulator, -0.6), 0);
+        assert_eq!(accumulate_scroll(&mut accumulator, -0.6), -1);
+    }
 
     #[test]
     fn terminal_links_use_control_on_windows_and_preserve_macos_modifiers() {

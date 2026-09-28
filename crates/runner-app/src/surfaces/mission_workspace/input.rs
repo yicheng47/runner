@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use gpui::prelude::*;
-use gpui::{ClipboardItem, KeyDownEvent, ScrollDelta, ScrollWheelEvent, Window};
+use gpui::{ClipboardItem, KeyDownEvent, Window};
 use runner_terminal::input_state::ECHO_WINDOW;
 
 use super::*;
@@ -229,29 +229,6 @@ impl MissionWorkspace {
         };
         cx.write_to_clipboard(ClipboardItem::new_string(text));
         cx.stop_propagation();
-    }
-
-    pub(super) fn on_mission_scroll(
-        &mut self,
-        session_id: &str,
-        event: &ScrollWheelEvent,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(chat) = self.attached.get_mut(session_id) else {
-            return;
-        };
-        let lines = match event.delta {
-            ScrollDelta::Lines(point) => point.y,
-            ScrollDelta::Pixels(point) => f32::from(point.y) / f32::from(window.line_height()),
-        };
-        chat.scroll_accumulator += lines;
-        let whole = chat.scroll_accumulator.trunc() as i32;
-        if whole != 0 {
-            chat.scroll_accumulator -= whole as f32;
-            chat.terminal.scroll(whole, event.modifiers.shift);
-            cx.notify();
-        }
     }
 
     pub(super) fn on_mission_paste(
