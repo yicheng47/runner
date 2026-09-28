@@ -163,7 +163,7 @@ Runtime argv is composed by the adapter in `router/runtime.rs` from the stored r
 
 ### 3.3 Crew — *a configured team, composed of slots*
 
-A named, persistent group of **slots**. Carries the optional team-conventions addendum, its only prose. It does not run. It is blueprint. Every mission states its own goal; the crew's `purpose` and `goal` columns remain for the CLI's `--purpose` and `--goal` but reach neither the app nor a mission (#699).
+A named, persistent group of **slots**. Carries the optional team-conventions addendum, its only prose. It does not run. It is blueprint. Every mission states its own goal.
 
 Crews are composed of **slots**, not roles directly. A slot is the indirection that lets the same role participate in many crews:
 
@@ -473,7 +473,7 @@ Direct chats see *only* Layer 3 — the worker preamble's verbs and the team con
 
 ### 6.3 The lead's launch prompt
 
-Before registering mission sessions, MissionManager composes the lead's launch-prompt body — identity, the mission goal (`missions.goal_override` or `crews.goal`), the roster, the addendum, the known signal types from `runner_core::model::KnownSignalType`, and a reminder of the lead's job. The prompt is passed into the runtime adapter at spawn, so the opening `mission_goal` event remains a durable feed record but has no stdin-injection side effect. Pi's split makes the mission section the lead's only first turn; the rest is refreshed in its system-prompt file on later spawns.
+Before registering mission sessions, MissionManager composes the lead's launch-prompt body — identity, the mission goal (`missions.goal_override`, empty when unset), the roster, the addendum, the known signal types from `runner_core::model::KnownSignalType`, and a reminder of the lead's job. The prompt is passed into the runtime adapter at spawn, so the opening `mission_goal` event remains a durable feed record but has no stdin-injection side effect. Pi's split makes the mission section the lead's only first turn; the rest is refreshed in its system-prompt file on later spawns.
 
 ## 7. Coordination bus
 
@@ -612,8 +612,8 @@ runner role update <handle> [the same optional flags] | delete <handle>
 
 # crews; slots are addressed by handle
 runner crew list | show <crew>
-runner crew create <name> [--purpose <text>] [--goal <text>] [--conventions-file <path | ->]
-runner crew update <crew> [--name <name>] [--purpose <text>] [--goal <text>] [--conventions-file <path | ->]
+runner crew create <name> [--conventions-file <path | ->]
+runner crew update <crew> [--name <name>] [--conventions-file <path | ->]
 runner crew delete <crew>
 runner crew add <crew> <role> [--as <handle>] [--runtime <runtime>] [--model <model>] [--effort <effort>] [--speed inherit|standard|fast]
 runner crew set <crew> <handle> [--as <new handle>] [--runtime <runtime>] [--model <model>] [--effort <effort>] [--speed inherit|standard|fast]
@@ -697,12 +697,12 @@ On Windows, release builds add exactly the sidecar directory to `HKCU\Environmen
 
 ### 10.1 SQLite (config + session lifecycle)
 
+Migration `0025` removes the unused crew purpose and default goal columns. Older Runner versions still select those columns, so they cannot use a database after this migration. Downgrading requires a database backup made before migration; the column drop cannot be reversed to recover their contents.
+
 ```sql
 crews (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
-  purpose TEXT,                       -- CLI only; not shown or searched (#699)
-  goal TEXT,                          -- CLI only; never reaches a mission (#699)
   system_prompt_addendum TEXT,        -- Layer-2 team conventions; nullable
   created_at TEXT, updated_at TEXT
 );

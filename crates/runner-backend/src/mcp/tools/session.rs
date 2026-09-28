@@ -576,8 +576,6 @@ mod tests {
                 &crate::repo::crew::CrewRow {
                     id: "crew".into(),
                     name: "Pair".into(),
-                    purpose: None,
-                    goal: None,
                     system_prompt_addendum: None,
                     created_at: now,
                     updated_at: now,

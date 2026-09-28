@@ -20,8 +20,6 @@ use crate::{
 #[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
 pub struct CreateCrewInput {
     pub name: String,
-    pub purpose: Option<String>,
-    pub goal: Option<String>,
     /// Optional team-conventions text. Empty after trim → stored as NULL.
     /// Plain Option (not Option<Option>) because create has no "leave
     /// existing" semantic. See #54.
@@ -32,8 +30,6 @@ pub struct CreateCrewInput {
 #[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
 pub struct UpdateCrewInput {
     pub name: Option<String>,
-    pub purpose: Option<Option<String>>,
-    pub goal: Option<Option<String>>,
     /// Outer None = leave existing untouched; outer Some(inner) =
     /// write inner. Inner Some("") / whitespace-only collapses to
     /// NULL.
@@ -149,29 +145,9 @@ pub fn get(conn: &Connection, id: &str) -> Result<Crew> {
     repo::crew::get(conn, id)?.ok_or_else(|| Error::msg(format!("crew not found: {id}")))
 }
 
-/// Cap `crew.goal` at `MAX_MISSION_GOAL_BYTES`. The column is kept for
-/// the CLI's `--goal` but no longer reaches a mission: every mission
-/// states its own goal (#699).
-fn validate_crew_goal(goal: Option<&str>) -> Result<()> {
-    if let Some(g) = goal {
-        if g.len() > crate::ops::mission::MAX_MISSION_GOAL_BYTES {
-            return Err(Error::msg(format!(
-                "crew goal is {} bytes; max {} ({} KB). Trim the goal text or move \
-                 long-form context into the role brief / per-task messages.",
-                g.len(),
-                crate::ops::mission::MAX_MISSION_GOAL_BYTES,
-                crate::ops::mission::MAX_MISSION_GOAL_BYTES / 1024,
-            )));
-        }
-    }
-    Ok(())
-}
-
 /// Trim a text-with-default-NULL field. `None`, all-whitespace, or
 /// the empty string all collapse to `None` so the column never
-/// stores a degenerate "" value. Used for `system_prompt_addendum`;
-/// other text fields (purpose / goal) predate this helper and keep
-/// their raw-pass-through semantics for now.
+/// stores a degenerate "" value.
 fn normalize_addendum(raw: Option<String>) -> Option<String> {
     raw.map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
 }
@@ -181,7 +157,6 @@ pub fn create(conn: &Connection, input: CreateCrewInput) -> Result<Crew> {
     if name.is_empty() {
         return Err(Error::msg("crew name must not be empty"));
     }
-    validate_crew_goal(input.goal.as_deref())?;
     let id = new_id();
     let ts = now();
     let addendum = normalize_addendum(input.system_prompt_addendum);
@@ -190,8 +165,6 @@ pub fn create(conn: &Connection, input: CreateCrewInput) -> Result<Crew> {
         &repo::crew::CrewRow {
             id: id.clone(),
             name: name.to_string(),
-            purpose: input.purpose,
-            goal: input.goal,
             system_prompt_addendum: addendum,
             created_at: ts,
             updated_at: ts,
@@ -213,9 +186,6 @@ pub fn update(conn: &Connection, id: &str, input: UpdateCrewInput) -> Result<Cre
         }
         None => existing.name,
     };
-    let purpose = input.purpose.unwrap_or(existing.purpose);
-    let goal = input.goal.unwrap_or(existing.goal);
-    validate_crew_goal(goal.as_deref())?;
     let system_prompt_addendum = match input.system_prompt_addendum {
         Some(inner) => normalize_addendum(inner),
         None => existing.system_prompt_addendum,
@@ -226,8 +196,6 @@ pub fn update(conn: &Connection, id: &str, input: UpdateCrewInput) -> Result<Cre
         &repo::crew::CrewRow {
             id: id.to_string(),
             name,
-            purpose,
-            goal,
             system_prompt_addendum,
             created_at: existing.created_at,
             updated_at: now(),
@@ -296,47 +264,31 @@ mod tests {
     }
 
     #[test]
-    fn create_rejects_goal_over_cap() {
-        // Plan 0007: the CLI can still write crew.goal, and it keeps
-        // the mission goal's cap.
-        let pool = ctx();
-        let conn = pool.get().unwrap();
-        let oversized = "Y".repeat(crate::ops::mission::MAX_MISSION_GOAL_BYTES + 1);
-        let err = create(
-            &conn,
-            CreateCrewInput {
-                name: "Big".into(),
-                goal: Some(oversized),
-                ..Default::default()
-            },
-        )
-        .expect_err("oversize crew.goal must be rejected");
-        assert!(err.to_string().contains("goal"));
-    }
-
-    #[test]
-    fn update_rejects_goal_over_cap() {
+    fn crew_socket_schemas_and_output_omit_removed_fields() {
+        for schema in [
+            schemars::schema_for!(CreateCrewInput),
+            schemars::schema_for!(UpdateCrewInput),
+        ] {
+            let properties = serde_json::to_value(schema).unwrap()["properties"]
+                .as_object()
+                .unwrap()
+                .clone();
+            assert!(!properties.contains_key("purpose"));
+            assert!(!properties.contains_key("goal"));
+        }
         let pool = ctx();
         let conn = pool.get().unwrap();
         let crew = create(
             &conn,
             CreateCrewInput {
-                name: "Victim".into(),
+                name: "Crew".into(),
                 ..Default::default()
             },
         )
         .unwrap();
-        let oversized = "Y".repeat(crate::ops::mission::MAX_MISSION_GOAL_BYTES + 1);
-        let err = update(
-            &conn,
-            &crew.id,
-            UpdateCrewInput {
-                goal: Some(Some(oversized)),
-                ..Default::default()
-            },
-        )
-        .expect_err("oversize crew.goal must be rejected on update");
-        assert!(err.to_string().contains("goal"));
+        let output = serde_json::to_value(crew).unwrap();
+        assert!(output.get("purpose").is_none());
+        assert!(output.get("goal").is_none());
     }
 
     #[test]
@@ -378,8 +330,6 @@ mod tests {
             &conn,
             CreateCrewInput {
                 name: "Name Needle".into(),
-                purpose: Some("Purpose Needle".into()),
-                goal: Some("Goal Needle".into()),
                 system_prompt_addendum: Some("System Prompt Needle".into()),
             },
         )
@@ -415,12 +365,6 @@ mod tests {
             assert_eq!(page.filtered_count, 1, "query {query:?}");
             assert_eq!(page.items[0].crew.id, target.id, "query {query:?}");
             assert_eq!(page.items[0].members.len(), 1, "query {query:?}");
-        }
-        // Purpose and the default goal left the app (#699), so a search
-        // never matches text nobody can see.
-        for query in ["purpose needle", "goal needle"] {
-            let page = list_page(&conn, 1, 8, query).unwrap();
-            assert_eq!(page.filtered_count, 0, "query {query:?}");
         }
     }
 
@@ -460,8 +404,7 @@ mod tests {
             &conn,
             CreateCrewInput {
                 name: "Original".into(),
-                purpose: Some("keep me".into()),
-                ..Default::default()
+                system_prompt_addendum: Some("keep me".into()),
             },
         )
         .unwrap();
@@ -476,7 +419,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(updated.name, "Renamed");
-        assert_eq!(updated.purpose.as_deref(), Some("keep me"));
+        assert_eq!(updated.system_prompt_addendum.as_deref(), Some("keep me"));
     }
 
     #[test]
@@ -718,7 +661,6 @@ mod tests {
             CreateCrewInput {
                 name: "Conventional".into(),
                 system_prompt_addendum: Some("squash PRs against main".into()),
-                ..Default::default()
             },
         )
         .unwrap();
@@ -742,7 +684,6 @@ mod tests {
             CreateCrewInput {
                 name: "Blank".into(),
                 system_prompt_addendum: Some("   \n  ".into()),
-                ..Default::default()
             },
         )
         .unwrap();
@@ -763,7 +704,6 @@ mod tests {
             CreateCrewInput {
                 name: "Pre-filled".into(),
                 system_prompt_addendum: Some("convention".into()),
-                ..Default::default()
             },
         )
         .unwrap();
@@ -788,7 +728,6 @@ mod tests {
             CreateCrewInput {
                 name: "Keeper".into(),
                 system_prompt_addendum: Some("keep this".into()),
-                ..Default::default()
             },
         )
         .unwrap();

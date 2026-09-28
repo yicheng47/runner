@@ -67,6 +67,8 @@ use crate::error::Result;
 // override thinking effort independently of its runtime and model.
 // 0023: renames the stored runner entity and its foreign-key columns to
 // `roles` / `role_id`; direct sessions have referenced it since 0007.
+// 0025: removes unused crew purpose and default goal. Mission goals and
+// crew conventions remain in their own columns.
 pub(super) const MIGRATIONS: &[(i64, &str)] = &[
     (1, include_str!("../../migrations/0001_init.sql")),
     (
@@ -137,6 +139,10 @@ pub(super) const MIGRATIONS: &[(i64, &str)] = &[
     ),
     (23, include_str!("../../migrations/0023_roles.sql")),
     (24, include_str!("../../migrations/0024_codex_speed.sql")),
+    (
+        25,
+        include_str!("../../migrations/0025_drop_crew_purpose_goal.sql"),
+    ),
 ];
 
 pub(super) fn run_migrations(conn: &mut Connection) -> Result<()> {

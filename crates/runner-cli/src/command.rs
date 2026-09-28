@@ -205,13 +205,6 @@ enum RoleCommand {
 
 #[derive(Args, Debug, Default)]
 struct CrewCreateFields {
-    /// Stored for compatibility; Runner no longer shows or uses it.
-    #[arg(long)]
-    purpose: Option<String>,
-    /// Stored for compatibility; missions never read it. Give each mission
-    /// its goal with `mission start --goal`.
-    #[arg(long)]
-    goal: Option<String>,
     /// Read crew conventions from a file, or - for stdin.
     #[arg(long)]
     conventions_file: Option<PathBuf>,
@@ -222,13 +215,6 @@ struct CrewFields {
     /// New crew name.
     #[arg(long)]
     name: Option<String>,
-    /// Stored for compatibility and unused; pass an empty value to clear it.
-    #[arg(long)]
-    purpose: Option<String>,
-    /// Stored for compatibility; missions never read it. Pass an empty
-    /// value to clear it.
-    #[arg(long)]
-    goal: Option<String>,
     /// Read crew conventions from a file, or - for stdin.
     #[arg(long)]
     conventions_file: Option<PathBuf>,
@@ -2232,8 +2218,6 @@ fn role_fields(fields: &RoleFields, update: bool) -> Result<Value, CliError> {
 fn crew_fields(fields: &CrewFields) -> Result<Value, CliError> {
     let mut value = json!({});
     insert_string(&mut value, "name", fields.name.as_deref());
-    insert_string(&mut value, "purpose", fields.purpose.as_deref());
-    insert_string(&mut value, "goal", fields.goal.as_deref());
     if let Some(path) = fields.conventions_file.as_deref() {
         let text = read_file(path, "conventions")?;
         insert_value(&mut value, "system_prompt_addendum", json!(text));
@@ -2243,8 +2227,6 @@ fn crew_fields(fields: &CrewFields) -> Result<Value, CliError> {
 
 fn crew_create_fields(fields: &CrewCreateFields) -> Result<Value, CliError> {
     let mut value = json!({});
-    insert_clearable(&mut value, "purpose", fields.purpose.as_deref(), false);
-    insert_clearable(&mut value, "goal", fields.goal.as_deref(), false);
     if let Some(path) = fields.conventions_file.as_deref() {
         insert_value(
             &mut value,
@@ -3022,15 +3004,6 @@ mod tests {
         assert_eq!(update["effort"], json!(""));
         assert_eq!(update["system_prompt"], json!(""));
         assert_eq!(update["working_dir"], json!(""));
-
-        let fields = CrewFields {
-            purpose: Some(String::new()),
-            goal: Some(String::new()),
-            ..Default::default()
-        };
-        let update = crew_fields(&fields).unwrap();
-        assert_eq!(update["purpose"], json!(""));
-        assert_eq!(update["goal"], json!(""));
     }
 
     #[tokio::test]
@@ -3125,6 +3098,22 @@ mod tests {
             "turbo"
         ])
         .is_err());
+    }
+
+    #[test]
+    fn crew_commands_reject_removed_flags_before_connecting() {
+        for action in ["create", "update"] {
+            for flag in ["--purpose", "--goal"] {
+                let error = Cli::try_parse_from(["runner", "crew", action, "Peer", flag, "old"])
+                    .unwrap_err();
+                assert_eq!(error.exit_code(), 2, "{action} {flag}");
+                assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
+            }
+        }
+        assert!(Cli::try_parse_from([
+            "runner", "mission", "start", "--crew", "Peer", "--goal", "Ship"
+        ])
+        .is_ok());
     }
 
     #[test]
@@ -3484,14 +3473,9 @@ mod tests {
                 json!({"name": "Peer"}),
             ),
             (
-                vec!["crew", "update", "Peer", "--purpose", "ship"],
+                vec!["crew", "update", "Peer", "--name", "Renamed"],
                 vec!["crew_list", "crew_update"],
-                json!({"id": "crew-id", "input": {"purpose": "ship"}}),
-            ),
-            (
-                vec!["crew", "update", "Peer", "--purpose", ""],
-                vec!["crew_list", "crew_update"],
-                json!({"id": "crew-id", "input": {"purpose": ""}}),
+                json!({"id": "crew-id", "input": {"name": "Renamed"}}),
             ),
             (
                 vec!["crew", "delete", "Peer"],
@@ -3839,7 +3823,7 @@ mod tests {
             &["crew", "list"],
             &["crew", "show", "Peer"],
             &["crew", "create", "Peer"],
-            &["crew", "update", "Peer", "--purpose", "ship"],
+            &["crew", "update", "Peer", "--name", "Renamed"],
             &["crew", "delete", "Peer"],
             &["crew", "add", "Peer", "coder", "--as", "impl"],
             &["crew", "set", "Peer", "impl", "--effort", "high"],

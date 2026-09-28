@@ -540,7 +540,6 @@ impl CrewPageHarness {
             runner_backend::ops::crew::CreateCrewInput {
                 name: name.into(),
                 system_prompt_addendum: conventions.map(str::to_owned),
-                ..Default::default()
             },
         )
         .unwrap();

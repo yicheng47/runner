@@ -37,8 +37,6 @@ impl CodexSpeed {
 pub struct Crew {
     pub id: String,
     pub name: String,
-    pub purpose: Option<String>,
-    pub goal: Option<String>,
     /// Layer-2 team conventions text. Spliced between the platform
     /// preamble and the role persona on mission spawns only;
     /// direct chats ignore it. NULL / empty = no splice. See #54.

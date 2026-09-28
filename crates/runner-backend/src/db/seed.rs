@@ -85,8 +85,7 @@ pub(super) fn seed_defaults(conn: &mut Connection) -> Result<()> {
 /// creates and reads the copyable example prompts directly.
 fn seed_default_crew(tx: &rusqlite::Transaction) -> Result<()> {
     let addendum = SEED_CREW_ADDENDUM.trim_end_matches('\n');
-    // No purpose or default goal: neither reaches the app or a mission
-    // (#699). The conventions carry the crew's definition of done.
+    // The conventions carry the crew's definition of done.
     tx.execute(
         "INSERT INTO crews (
             id, name, system_prompt_addendum, created_at, updated_at

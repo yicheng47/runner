@@ -516,7 +516,6 @@ impl NativeRoot {
         let input = UpdateCrewInput {
             name: Some(name),
             system_prompt_addendum: Some(trimmed_option(form.conventions.read(cx).text())),
-            ..Default::default()
         };
         let crew_id = crew.id.clone();
         let core = self.core(cx).clone();

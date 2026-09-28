@@ -181,7 +181,6 @@ fn render_crew_list(value: &Value) -> Vec<String> {
 }
 
 fn render_crew(value: &Value) -> Vec<String> {
-    // Purpose and the stored goal reach neither the app nor a mission (#699).
     key_values(&[("NAME", value.get("name")), ("ID", value.get("id"))])
 }
 
@@ -896,7 +895,7 @@ mod tests {
     #[test]
     fn crew_views_hide_conventions_and_render_slots() {
         let crew = json!({
-            "id": "crew-id", "name": "Peer", "purpose": "Ship", "goal": null,
+            "id": "crew-id", "name": "Peer",
             "system_prompt_addendum": "multi\nline",
             "members": [
                 {"slot_handle": "coder", "runtime": "codex", "lead": true},

@@ -12,8 +12,6 @@ use super::{de_err, insert_sql, select_list, ser_err};
 pub struct CrewRow {
     pub id: String,
     pub name: String,
-    pub purpose: Option<String>,
-    pub goal: Option<String>,
     pub system_prompt_addendum: Option<String>,
     #[serde(with = "crate::repo::serde::rfc3339")]
     pub created_at: Timestamp,
@@ -24,29 +22,18 @@ pub struct CrewRow {
 pub const COLUMNS: &[&str] = &[
     "id",
     "name",
-    "purpose",
-    "goal",
     "system_prompt_addendum",
     "created_at",
     "updated_at",
 ];
 
-const UPDATE_FIELDS: &[&str] = &[
-    "name",
-    "purpose",
-    "goal",
-    "system_prompt_addendum",
-    "updated_at",
-    "id",
-];
+const UPDATE_FIELDS: &[&str] = &["name", "system_prompt_addendum", "updated_at", "id"];
 
 impl From<CrewRow> for Crew {
     fn from(r: CrewRow) -> Self {
         Crew {
             id: r.id,
             name: r.name,
-            purpose: r.purpose,
-            goal: r.goal,
             system_prompt_addendum: r.system_prompt_addendum,
             created_at: r.created_at,
             updated_at: r.updated_at,
@@ -59,8 +46,6 @@ impl From<&Crew> for CrewRow {
         CrewRow {
             id: c.id.clone(),
             name: c.name.clone(),
-            purpose: c.purpose.clone(),
-            goal: c.goal.clone(),
             system_prompt_addendum: c.system_prompt_addendum.clone(),
             created_at: c.created_at,
             updated_at: c.updated_at,
@@ -85,8 +70,6 @@ pub fn update(conn: &Connection, row: &CrewRow) -> rusqlite::Result<usize> {
     conn.execute(
         "UPDATE crews
             SET name = :name,
-                purpose = :purpose,
-                goal = :goal,
                 system_prompt_addendum = :system_prompt_addendum,
                 updated_at = :updated_at
           WHERE id = :id",
@@ -241,8 +224,6 @@ mod tests {
         CrewRow {
             id: "c-full".into(),
             name: "Full crew".into(),
-            purpose: Some("purpose".into()),
-            goal: Some("goal".into()),
             system_prompt_addendum: Some("squash PRs against main".into()),
             created_at: now,
             updated_at: now,
@@ -254,8 +235,6 @@ mod tests {
         CrewRow {
             id: "c-min".into(),
             name: "Minimal".into(),
-            purpose: None,
-            goal: None,
             system_prompt_addendum: None,
             created_at: now,
             updated_at: now,
@@ -281,9 +260,9 @@ mod tests {
         // and `+00:00` timestamp spellings must both parse.
         conn.execute(
             r#"INSERT INTO crews
-                (id, name, purpose, goal, system_prompt_addendum,
+                (id, name, system_prompt_addendum,
                  created_at, updated_at)
-             VALUES ('c-legacy', 'Legacy', NULL, 'ship it', NULL,
+             VALUES ('c-legacy', 'Legacy', NULL,
                      '2026-05-03T00:00:00Z', '2026-05-03T00:00:00+00:00')"#,
             [],
         )
@@ -294,7 +273,6 @@ mod tests {
             crew.created_at, crew.updated_at,
             "both spellings, same instant"
         );
-        assert_eq!(crew.goal.as_deref(), Some("ship it"));
     }
 
     #[test]

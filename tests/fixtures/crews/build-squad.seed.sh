@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Seed the runner DB with the Build squad crew + architect / designer /
-# impl / reviewer runners + their slots. Pulls system prompts from the
+# impl / reviewer roles + their slots. Pulls system prompts from the
 # sibling tests/fixtures/system-prompts/*.md files so a single source
 # of truth survives ad-hoc edits.
 #
@@ -54,10 +54,10 @@ REVIEWER_PROMPT="$(sed "s/'/''/g" "$PROMPTS_DIR/reviewer.md")"
 # `INSERT OR IGNORE` and this script's `INSERT OR REPLACE` operate on
 # the same rows.
 CREW_ID="01K000DEFAULT000BUILDSQUAD01"
-ARCHITECT_RUNNER_ID="01K000DEFAULT000RUNNERARCH01"
-DESIGNER_RUNNER_ID="01K000DEFAULT000RUNNERDESN01"
-IMPL_RUNNER_ID="01K000DEFAULT000RUNNERIMPL01"
-REVIEWER_RUNNER_ID="01K000DEFAULT000RUNNERREVW01"
+ARCHITECT_ROLE_ID="01K000DEFAULT000RUNNERARCH01"
+DESIGNER_ROLE_ID="01K000DEFAULT000RUNNERDESN01"
+IMPL_ROLE_ID="01K000DEFAULT000RUNNERIMPL01"
+REVIEWER_ROLE_ID="01K000DEFAULT000RUNNERREVW01"
 ARCHITECT_SLOT_ID="01K000DEFAULT000SLOTARCH0001"
 DESIGNER_SLOT_ID="01K000DEFAULT000SLOTDESN0001"
 IMPL_SLOT_ID="01K000DEFAULT000SLOTIMPL0001"
@@ -69,19 +69,17 @@ sqlite3 "$DB_PATH" <<SQL
 PRAGMA foreign_keys = ON;
 BEGIN;
 
-INSERT OR REPLACE INTO crews (id, name, purpose, goal, created_at, updated_at)
+INSERT OR REPLACE INTO crews (id, name, created_at, updated_at)
 VALUES (
   '$CREW_ID',
   'Build squad',
-  'Plan, build, and review a single feature end-to-end. Architect dispatches, implementer ships, reviewer gates merge.',
-  'Definition of done = code merged behind a green test suite and a clean review pass, with a one-paragraph human-readable summary posted as a broadcast.',
   '$NOW',
   '$NOW'
 );
 
-INSERT OR REPLACE INTO runners (id, handle, display_name, runtime, command, args_json, working_dir, system_prompt, env_json, model, effort, created_at, updated_at)
+INSERT OR REPLACE INTO roles (id, handle, display_name, runtime, command, args_json, working_dir, system_prompt, env_json, model, effort, created_at, updated_at)
 VALUES (
-  '$ARCHITECT_RUNNER_ID',
+  '$ARCHITECT_ROLE_ID',
   'architect',
   'Architect',
   'claude-code',
@@ -96,9 +94,9 @@ VALUES (
   '$NOW'
 );
 
-INSERT OR REPLACE INTO runners (id, handle, display_name, runtime, command, args_json, working_dir, system_prompt, env_json, model, effort, created_at, updated_at)
+INSERT OR REPLACE INTO roles (id, handle, display_name, runtime, command, args_json, working_dir, system_prompt, env_json, model, effort, created_at, updated_at)
 VALUES (
-  '$DESIGNER_RUNNER_ID',
+  '$DESIGNER_ROLE_ID',
   'designer',
   'Designer',
   'claude-code',
@@ -113,9 +111,9 @@ VALUES (
   '$NOW'
 );
 
-INSERT OR REPLACE INTO runners (id, handle, display_name, runtime, command, args_json, working_dir, system_prompt, env_json, model, effort, created_at, updated_at)
+INSERT OR REPLACE INTO roles (id, handle, display_name, runtime, command, args_json, working_dir, system_prompt, env_json, model, effort, created_at, updated_at)
 VALUES (
-  '$IMPL_RUNNER_ID',
+  '$IMPL_ROLE_ID',
   'impl',
   'Implementation',
   'claude-code',
@@ -130,9 +128,9 @@ VALUES (
   '$NOW'
 );
 
-INSERT OR REPLACE INTO runners (id, handle, display_name, runtime, command, args_json, working_dir, system_prompt, env_json, model, effort, created_at, updated_at)
+INSERT OR REPLACE INTO roles (id, handle, display_name, runtime, command, args_json, working_dir, system_prompt, env_json, model, effort, created_at, updated_at)
 VALUES (
-  '$REVIEWER_RUNNER_ID',
+  '$REVIEWER_ROLE_ID',
   'reviewer',
   'Reviewer',
   'claude-code',
@@ -147,27 +145,27 @@ VALUES (
   '$NOW'
 );
 
-INSERT OR REPLACE INTO slots (id, crew_id, runner_id, slot_handle, position, lead, added_at)
-VALUES ('$ARCHITECT_SLOT_ID', '$CREW_ID', '$ARCHITECT_RUNNER_ID', 'architect', 0, 1, '$NOW');
+INSERT OR REPLACE INTO slots (id, crew_id, role_id, slot_handle, position, lead, added_at)
+VALUES ('$ARCHITECT_SLOT_ID', '$CREW_ID', '$ARCHITECT_ROLE_ID', 'architect', 0, 1, '$NOW');
 
-INSERT OR REPLACE INTO slots (id, crew_id, runner_id, slot_handle, position, lead, added_at)
-VALUES ('$DESIGNER_SLOT_ID', '$CREW_ID', '$DESIGNER_RUNNER_ID', 'designer', 1, 0, '$NOW');
+INSERT OR REPLACE INTO slots (id, crew_id, role_id, slot_handle, position, lead, added_at)
+VALUES ('$DESIGNER_SLOT_ID', '$CREW_ID', '$DESIGNER_ROLE_ID', 'designer', 1, 0, '$NOW');
 
-INSERT OR REPLACE INTO slots (id, crew_id, runner_id, slot_handle, position, lead, added_at)
-VALUES ('$IMPL_SLOT_ID', '$CREW_ID', '$IMPL_RUNNER_ID', 'impl', 2, 0, '$NOW');
+INSERT OR REPLACE INTO slots (id, crew_id, role_id, slot_handle, position, lead, added_at)
+VALUES ('$IMPL_SLOT_ID', '$CREW_ID', '$IMPL_ROLE_ID', 'impl', 2, 0, '$NOW');
 
-INSERT OR REPLACE INTO slots (id, crew_id, runner_id, slot_handle, position, lead, added_at)
-VALUES ('$REVIEWER_SLOT_ID', '$CREW_ID', '$REVIEWER_RUNNER_ID', 'reviewer', 3, 0, '$NOW');
+INSERT OR REPLACE INTO slots (id, crew_id, role_id, slot_handle, position, lead, added_at)
+VALUES ('$REVIEWER_SLOT_ID', '$CREW_ID', '$REVIEWER_ROLE_ID', 'reviewer', 3, 0, '$NOW');
 
 COMMIT;
 SQL
 
-echo "seeded Build squad crew + runners + slots into $DB_PATH"
+echo "seeded Build squad crew + roles + slots into $DB_PATH"
 echo "  crew:       $CREW_ID"
-echo "  architect:  $ARCHITECT_RUNNER_ID (slot $ARCHITECT_SLOT_ID, lead, opus / xhigh)"
-echo "  designer:   $DESIGNER_RUNNER_ID (slot $DESIGNER_SLOT_ID, opus / xhigh)"
-echo "  impl:       $IMPL_RUNNER_ID (slot $IMPL_SLOT_ID, opus / xhigh)"
-echo "  reviewer:   $REVIEWER_RUNNER_ID (slot $REVIEWER_SLOT_ID, opus / xhigh)"
+echo "  architect:  $ARCHITECT_ROLE_ID (slot $ARCHITECT_SLOT_ID, lead, opus / xhigh)"
+echo "  designer:   $DESIGNER_ROLE_ID (slot $DESIGNER_SLOT_ID, opus / xhigh)"
+echo "  impl:       $IMPL_ROLE_ID (slot $IMPL_SLOT_ID, opus / xhigh)"
+echo "  reviewer:   $REVIEWER_ROLE_ID (slot $REVIEWER_SLOT_ID, opus / xhigh)"
 echo ""
 echo "next: launch the app and click 'Start mission' against the crew."
 echo "      mission rows aren't seeded — going through the real"

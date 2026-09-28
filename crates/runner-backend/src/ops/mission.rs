@@ -43,8 +43,7 @@ pub struct StartMissionInput {
     pub title: String,
     /// The mission's goal. When `None` the mission starts with an empty-goal
     /// event (valid — the human may post a `human_said` signal later instead
-    /// of setting a goal up front). The crew's stored `goal` column is never
-    /// read (#699).
+    /// of setting a goal up front).
     #[serde(default)]
     pub goal_override: Option<String>,
     /// Working directory exposed to every session as `$MISSION_CWD`.
@@ -291,8 +290,7 @@ pub fn start(
     let roster_for_sidecar = slot::list(&tx, &crew.id)?;
     write_roster_sidecar(&mission_dir, &roster_for_sidecar)?;
 
-    // The mission states its own goal; a crew's stored default never
-    // reaches the lead (#699).
+    // The mission states its own goal.
     let goal_text = input.goal_override.clone().unwrap_or_default();
 
     // Open the event log and emit the two opening events.
@@ -1643,12 +1641,11 @@ mod tests {
         );
     }
 
-    fn seed_crew(conn: &Connection, name: &str, goal: Option<&str>) -> String {
+    fn seed_crew(conn: &Connection, name: &str) -> String {
         let crew = crew::create(
             conn,
             CreateCrewInput {
                 name: name.into(),
-                goal: goal.map(String::from),
                 ..Default::default()
             },
         )
@@ -1685,7 +1682,7 @@ mod tests {
     }
 
     fn start_message_test_mission(conn: &mut Connection, app_data_dir: &Path) -> (String, String) {
-        let crew_id = seed_crew(conn, "Message crew", None);
+        let crew_id = seed_crew(conn, "Message crew");
         add_role(conn, &crew_id, "lead");
         add_role(conn, &crew_id, "reviewer");
         let mission = start(
@@ -1753,7 +1750,7 @@ mod tests {
         // refuses a goal_override over MAX_MISSION_GOAL_BYTES.
         let pool = pool();
         let mut conn = pool.get().unwrap();
-        let crew_id = seed_crew(&conn, "C", None);
+        let crew_id = seed_crew(&conn, "C");
         add_role(&mut conn, &crew_id, "lead");
         let tmp = tempfile::tempdir().unwrap();
 
@@ -1779,7 +1776,7 @@ mod tests {
     fn start_rejects_crew_with_no_roles() {
         let pool = pool();
         let mut conn = pool.get().unwrap();
-        let crew_id = seed_crew(&conn, "Empty", None);
+        let crew_id = seed_crew(&conn, "Empty");
         let tmp = tempfile::tempdir().unwrap();
 
         let err = start(
@@ -1806,7 +1803,7 @@ mod tests {
     fn start_rejects_empty_title() {
         let pool = pool();
         let mut conn = pool.get().unwrap();
-        let crew_id = seed_crew(&conn, "A", None);
+        let crew_id = seed_crew(&conn, "A");
         add_role(&mut conn, &crew_id, "coder");
         let tmp = tempfile::tempdir().unwrap();
 
@@ -1999,7 +1996,7 @@ mod tests {
         let state = crate::test_support::test_core_in(temp.path().to_path_buf());
         let (mission_id, slot_id) = {
             let mut conn = state.db.get().unwrap();
-            let crew_id = seed_crew(&conn, "Resume crew", None);
+            let crew_id = seed_crew(&conn, "Resume crew");
             let slot_id = add_role(&mut conn, &crew_id, "lead");
             let mission_id = start(
                 &mut conn,
@@ -2049,7 +2046,7 @@ mod tests {
         let state = crate::test_support::test_core_in(temp.path().to_path_buf());
         let mission_id = {
             let mut conn = state.db.get().unwrap();
-            let crew_id = seed_crew(&conn, "Partial resume crew", None);
+            let crew_id = seed_crew(&conn, "Partial resume crew");
             let good_slot = add_role(&mut conn, &crew_id, "good");
             let broken_slot = add_role(&mut conn, &crew_id, "broken");
             let mission_id = start(
@@ -2225,7 +2222,7 @@ mod tests {
     fn start_writes_two_opening_events_and_sidecar() {
         let pool = pool();
         let mut conn = pool.get().unwrap();
-        let crew_id = seed_crew(&conn, "Alpha", Some("Ship v0"));
+        let crew_id = seed_crew(&conn, "Alpha");
         add_role(&mut conn, &crew_id, "lead");
         let project = repo::project::create(&conn, "Runner", "/tmp/work").unwrap();
         let tmp = tempfile::tempdir().unwrap();
@@ -2248,7 +2245,7 @@ mod tests {
         assert_eq!(out.mission.project_id.as_deref(), Some(project.id.as_str()));
         assert_eq!(out.mission.cwd.as_deref(), Some("/tmp/work"));
         assert_eq!(out.mission.status, MissionStatus::Running);
-        // The crew's stored default goal no longer reaches a mission (#699).
+        // A mission without an explicit goal starts with an empty goal.
         assert_eq!(out.goal, "");
 
         // Event log has mission_start + mission_goal.
@@ -2291,7 +2288,7 @@ mod tests {
     fn start_infers_project_from_cwd_for_the_row_and_sidebar_node() {
         let pool = pool();
         let mut conn = pool.get().unwrap();
-        let crew_id = seed_crew(&conn, "Alpha", None);
+        let crew_id = seed_crew(&conn, "Alpha");
         add_role(&mut conn, &crew_id, "lead");
         let tmp = tempfile::tempdir().unwrap();
         let project_cwd = tmp.path().join("runner");
@@ -2331,7 +2328,7 @@ mod tests {
     fn start_in_the_root_scope_ignores_a_cwd_inside_a_project() {
         let pool = pool();
         let mut conn = pool.get().unwrap();
-        let crew_id = seed_crew(&conn, "Alpha", None);
+        let crew_id = seed_crew(&conn, "Alpha");
         add_role(&mut conn, &crew_id, "lead");
         let tmp = tempfile::tempdir().unwrap();
         let project_cwd = tmp.path().join("runner");
@@ -2368,7 +2365,7 @@ mod tests {
     fn start_explicit_cwd_overrides_project_default() {
         let pool = pool();
         let mut conn = pool.get().unwrap();
-        let crew_id = seed_crew(&conn, "Alpha", None);
+        let crew_id = seed_crew(&conn, "Alpha");
         add_role(&mut conn, &crew_id, "lead");
         let project = repo::project::create(&conn, "Runner", "/project").unwrap();
         let tmp = tempfile::tempdir().unwrap();
@@ -2394,7 +2391,7 @@ mod tests {
     fn start_records_the_permission_mode_it_spawned_with() {
         let pool = pool();
         let mut conn = pool.get().unwrap();
-        let crew_id = seed_crew(&conn, "Alpha", None);
+        let crew_id = seed_crew(&conn, "Alpha");
         add_role(&mut conn, &crew_id, "lead");
         let tmp = tempfile::tempdir().unwrap();
 
@@ -2434,7 +2431,7 @@ mod tests {
     fn start_unknown_project_creates_no_mission() {
         let pool = pool();
         let mut conn = pool.get().unwrap();
-        let crew_id = seed_crew(&conn, "Alpha", None);
+        let crew_id = seed_crew(&conn, "Alpha");
         add_role(&mut conn, &crew_id, "lead");
         let tmp = tempfile::tempdir().unwrap();
 
@@ -2464,10 +2461,10 @@ mod tests {
     }
 
     #[test]
-    fn start_override_beats_crew_default_goal() {
+    fn start_uses_explicit_mission_goal() {
         let pool = pool();
         let mut conn = pool.get().unwrap();
-        let crew_id = seed_crew(&conn, "A", Some("default goal"));
+        let crew_id = seed_crew(&conn, "A");
         add_role(&mut conn, &crew_id, "lead");
         let tmp = tempfile::tempdir().unwrap();
 
@@ -2489,10 +2486,10 @@ mod tests {
     }
 
     #[test]
-    fn a_resumed_lead_never_reads_the_crew_default_goal() {
+    fn a_resumed_lead_keeps_empty_mission_goal() {
         let pool = pool();
         let mut conn = pool.get().unwrap();
-        let crew_id = seed_crew(&conn, "A", Some("crew default goal"));
+        let crew_id = seed_crew(&conn, "A");
         add_role(&mut conn, &crew_id, "lead");
         let tmp = tempfile::tempdir().unwrap();
 
@@ -2533,7 +2530,6 @@ mod tests {
             system_prompt.unwrap_or_default(),
             first_turn.unwrap_or_default()
         );
-        assert!(!prompt.contains("crew default goal"), "{prompt}");
         assert!(prompt.contains("no goal set"), "{prompt}");
     }
 
@@ -2541,7 +2537,7 @@ mod tests {
     fn stop_marks_completed_and_appends_event() {
         let pool = pool();
         let mut conn = pool.get().unwrap();
-        let crew_id = seed_crew(&conn, "A", None);
+        let crew_id = seed_crew(&conn, "A");
         add_role(&mut conn, &crew_id, "lead");
         let tmp = tempfile::tempdir().unwrap();
 
@@ -2583,7 +2579,7 @@ mod tests {
     fn delete_refuses_non_archived_mission() {
         let pool = pool();
         let mut conn = pool.get().unwrap();
-        let crew_id = seed_crew(&conn, "A", None);
+        let crew_id = seed_crew(&conn, "A");
         add_role(&mut conn, &crew_id, "lead");
         let tmp = tempfile::tempdir().unwrap();
 
@@ -2615,7 +2611,7 @@ mod tests {
     fn delete_archived_removes_mission_and_session_rows() {
         let pool = pool();
         let mut conn = pool.get().unwrap();
-        let crew_id = seed_crew(&conn, "A", None);
+        let crew_id = seed_crew(&conn, "A");
         add_role(&mut conn, &crew_id, "lead");
         let tmp = tempfile::tempdir().unwrap();
 
@@ -2682,7 +2678,7 @@ mod tests {
         let pool = pool();
         let mut conn = pool.get().unwrap();
         foreign_keys_off(&conn);
-        let crew_id = seed_crew(&conn, "A", None);
+        let crew_id = seed_crew(&conn, "A");
         for mission in ["doomed", "kept"] {
             conn.execute(
                 "INSERT INTO missions
@@ -2744,7 +2740,7 @@ mod tests {
         let pool = pool();
         let mut conn = pool.get().unwrap();
         foreign_keys_off(&conn);
-        let crew_id = seed_crew(&conn, "A", None);
+        let crew_id = seed_crew(&conn, "A");
         for mission in ["m1", "m2"] {
             conn.execute(
                 "INSERT INTO missions (id, crew_id, title, status, started_at)
@@ -2789,7 +2785,7 @@ mod tests {
     fn stop_rejects_already_stopped_mission() {
         let pool = pool();
         let mut conn = pool.get().unwrap();
-        let crew_id = seed_crew(&conn, "A", None);
+        let crew_id = seed_crew(&conn, "A");
         add_role(&mut conn, &crew_id, "lead");
         let tmp = tempfile::tempdir().unwrap();
 
@@ -2822,7 +2818,7 @@ mod tests {
     fn restored_mission_archives_again_without_second_terminal_event() {
         let pool = pool();
         let mut conn = pool.get().unwrap();
-        let crew_id = seed_crew(&conn, "A", None);
+        let crew_id = seed_crew(&conn, "A");
         add_role(&mut conn, &crew_id, "lead");
         let tmp = tempfile::tempdir().unwrap();
 
@@ -2894,8 +2890,8 @@ mod tests {
     fn list_filters_by_crew_and_orders_by_started_at_desc() {
         let pool = pool();
         let mut conn = pool.get().unwrap();
-        let a = seed_crew(&conn, "A", None);
-        let b = seed_crew(&conn, "B", None);
+        let a = seed_crew(&conn, "A");
+        let b = seed_crew(&conn, "B");
         // C5.5: handles are globally unique — give each crew a distinct one.
         add_role(&mut conn, &a, "lead-a");
         add_role(&mut conn, &b, "lead-b");
@@ -2969,7 +2965,7 @@ mod tests {
         // produces a distinct live mission rather than rejecting.
         let pool = pool();
         let mut conn = pool.get().unwrap();
-        let crew_id = seed_crew(&conn, "A", None);
+        let crew_id = seed_crew(&conn, "A");
         add_role(&mut conn, &crew_id, "lead");
         let tmp = tempfile::tempdir().unwrap();
 
@@ -3050,7 +3046,7 @@ mod tests {
         let db_path = db_tmp.path().join("race.db");
         let pool = db::open_pool(&db_path).unwrap();
         let mut conn = pool.get().unwrap();
-        let crew_id = seed_crew(&conn, "A", None);
+        let crew_id = seed_crew(&conn, "A");
         add_role(&mut conn, &crew_id, "lead");
         let tmp = Arc::new(tempfile::tempdir().unwrap());
 
@@ -3124,7 +3120,7 @@ mod tests {
     fn read_events_returns_appended_in_order() {
         let pool = pool();
         let mut conn = pool.get().unwrap();
-        let crew_id = seed_crew(&conn, "A", Some("Ship v0"));
+        let crew_id = seed_crew(&conn, "A");
         add_role(&mut conn, &crew_id, "lead");
         let tmp = tempfile::tempdir().unwrap();
 
@@ -3160,7 +3156,7 @@ mod tests {
     fn mission_activity_from_log_defaults_busy_until_all_live_slots_idle() {
         let pool = pool();
         let mut conn = pool.get().unwrap();
-        let crew_id = seed_crew(&conn, "A", None);
+        let crew_id = seed_crew(&conn, "A");
         add_role(&mut conn, &crew_id, "lead");
         let tmp = tempfile::tempdir().unwrap();
 
@@ -3239,7 +3235,7 @@ mod tests {
     fn mission_activity_uses_running_slot_handles_only() {
         let pool = pool();
         let mut conn = pool.get().unwrap();
-        let crew_id = seed_crew(&conn, "A", None);
+        let crew_id = seed_crew(&conn, "A");
         let lead_slot_id = add_role(&mut conn, &crew_id, "lead");
         let worker_slot_id = add_role(&mut conn, &crew_id, "worker");
         let tmp = tempfile::tempdir().unwrap();
@@ -3321,7 +3317,7 @@ mod tests {
 
         let pool = pool();
         let mut conn = pool.get().unwrap();
-        let crew_id = seed_crew(&conn, "A", None);
+        let crew_id = seed_crew(&conn, "A");
         add_role(&mut conn, &crew_id, "lead");
         let tmp = tempfile::tempdir().unwrap();
 
@@ -3403,7 +3399,7 @@ mod tests {
 
         let pool = pool();
         let mut conn = pool.get().unwrap();
-        let crew_id = seed_crew(&conn, "A", None);
+        let crew_id = seed_crew(&conn, "A");
         add_role(&mut conn, &crew_id, "lead");
 
         let tmp = tempfile::tempdir().unwrap();
@@ -3443,7 +3439,7 @@ mod tests {
         // by direct URL still resolves through `get()`.
         let pool = pool();
         let mut conn = pool.get().unwrap();
-        let crew_id = seed_crew(&conn, "A", None);
+        let crew_id = seed_crew(&conn, "A");
         add_role(&mut conn, &crew_id, "lead");
         let tmp = tempfile::tempdir().unwrap();
 
@@ -3492,7 +3488,7 @@ mod tests {
         // the visibility-only path — #376).
         let pool = pool();
         let mut conn = pool.get().unwrap();
-        let crew_id = seed_crew(&conn, "A", None);
+        let crew_id = seed_crew(&conn, "A");
         add_role(&mut conn, &crew_id, "lead");
         let tmp = tempfile::tempdir().unwrap();
 
@@ -3525,7 +3521,7 @@ mod tests {
         // Simulate the production rollback path's UPDATE.
         let pool = pool();
         let mut conn = pool.get().unwrap();
-        let crew_id = seed_crew(&conn, "A", None);
+        let crew_id = seed_crew(&conn, "A");
         add_role(&mut conn, &crew_id, "lead");
         let tmp = tempfile::tempdir().unwrap();
 
@@ -3568,7 +3564,7 @@ mod tests {
         // and assert the backfill stamped archived_at = stopped_at.
         let pool = pool();
         let mut conn = pool.get().unwrap();
-        let crew_id = seed_crew(&conn, "A", None);
+        let crew_id = seed_crew(&conn, "A");
         add_role(&mut conn, &crew_id, "lead");
         let tmp = tempfile::tempdir().unwrap();
 
@@ -3631,7 +3627,7 @@ mod tests {
         // iteration is reproducible across restarts.
         let pool = pool();
         let mut conn = pool.get().unwrap();
-        let crew_id = seed_crew(&conn, "C", None);
+        let crew_id = seed_crew(&conn, "C");
         add_role(&mut conn, &crew_id, "lead");
         let tmp = tempfile::tempdir().unwrap();
 

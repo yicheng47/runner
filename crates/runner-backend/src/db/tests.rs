@@ -425,11 +425,11 @@ fn seed_defaults_inserts_pair_coding_crew_on_empty_db() {
         .unwrap();
     assert_eq!(lead_handle, "coder");
 
-    let (name, addendum, purpose, goal): (String, Option<String>, Option<String>, Option<String>) =
-        conn.query_row(
-            "SELECT name, system_prompt_addendum, purpose, goal FROM crews WHERE id = ?1",
+    let (name, addendum): (String, Option<String>) = conn
+        .query_row(
+            "SELECT name, system_prompt_addendum FROM crews WHERE id = ?1",
             params![SEED_CREW_ID],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .unwrap();
     assert_eq!(name, "Pair coding crew");
@@ -437,9 +437,6 @@ fn seed_defaults_inserts_pair_coding_crew_on_empty_db() {
         addendum.as_deref(),
         Some(SEED_CREW_ADDENDUM.trim_end_matches('\n'))
     );
-    // Neither reaches the app or a mission (#699); the conventions carry
-    // the definition of done the seed goal used to.
-    assert_eq!((purpose, goal), (None, None));
     assert!(SEED_CREW_ADDENDUM.contains("a task is done when"));
 
     let expected_args: Vec<String> = serde_json::from_str(SEED_ROLE_ARGS_JSON).unwrap();
@@ -1295,6 +1292,136 @@ fn migration_0024_adds_runtime_options_columns() {
             "{table}.{column}"
         );
     }
+}
+
+#[test]
+fn migration_0025_drops_only_unused_crew_fields() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("upgrade.db");
+    let mut conn = Connection::open(&path).unwrap();
+    conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+    run_migrations_up_to(&mut conn, 24).unwrap();
+    conn.execute(
+        "INSERT INTO crews (id, name, purpose, goal, system_prompt_addendum, created_at, updated_at)
+         VALUES ('c1', 'Original', 'old purpose', 'old goal', 'Keep conventions',
+                 '2026-09-01T00:00:00Z', '2026-09-02T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+    insert_role(&conn, "r1", "lead").unwrap();
+    insert_slot(&conn, "s1", "c1", "r1", "lead", 0, 1).unwrap();
+    conn.execute(
+        "INSERT INTO missions (id, crew_id, title, status, goal_override, started_at)
+         VALUES ('m1', 'c1', 'Mission', 'stopped', 'Mission goal', '2026-09-03T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+
+    run_migrations(&mut conn).unwrap();
+    run_migrations(&mut conn).unwrap();
+    let columns: Vec<String> = conn
+        .prepare("PRAGMA table_info(crews)")
+        .unwrap()
+        .query_map([], |row| row.get("name"))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert!(!columns
+        .iter()
+        .any(|name| name == "purpose" || name == "goal"));
+    let crew = crate::ops::crew::get(&conn, "c1").unwrap();
+    assert_eq!(crew.name, "Original");
+    assert_eq!(
+        crew.system_prompt_addendum.as_deref(),
+        Some("Keep conventions")
+    );
+    assert_eq!(crew.created_at.to_rfc3339(), "2026-09-01T00:00:00+00:00");
+    assert_eq!(crew.updated_at.to_rfc3339(), "2026-09-02T00:00:00+00:00");
+    let listed = crate::ops::crew::list(&conn).unwrap();
+    assert_eq!(
+        listed
+            .iter()
+            .find(|item| item.crew.id == "c1")
+            .unwrap()
+            .role_count,
+        1
+    );
+    assert_eq!(
+        crate::repo::slot::list_for_crew(&conn, "c1").unwrap().len(),
+        1
+    );
+    let mission_goal: String = conn
+        .query_row(
+            "SELECT goal_override FROM missions WHERE id = 'm1' AND crew_id = 'c1'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(mission_goal, "Mission goal");
+    let updated = crate::ops::crew::update(
+        &conn,
+        "c1",
+        crate::ops::crew::UpdateCrewInput {
+            name: Some("Renamed".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(updated.name, "Renamed");
+    assert_eq!(
+        updated.system_prompt_addendum.as_deref(),
+        Some("Keep conventions")
+    );
+    let created = crate::ops::crew::create(
+        &conn,
+        crate::ops::crew::CreateCrewInput {
+            name: "New".into(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        crate::ops::crew::get(&conn, &created.id).unwrap().name,
+        "New"
+    );
+    assert_eq!(crate::ops::crew::list(&conn).unwrap().len(), 2);
+    assert_eq!(
+        conn.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .unwrap(),
+        0
+    );
+
+    drop(conn);
+    let mut reopened = Connection::open(&path).unwrap();
+    run_migrations(&mut reopened).unwrap();
+    assert_eq!(
+        crate::ops::crew::get(&reopened, "c1").unwrap().name,
+        "Renamed"
+    );
+    assert_eq!(
+        crate::repo::slot::list_for_crew(&reopened, "c1")
+            .unwrap()
+            .len(),
+        1
+    );
+
+    let mut fresh = Connection::open_in_memory().unwrap();
+    run_migrations(&mut fresh).unwrap();
+    run_migrations(&mut fresh).unwrap();
+    let fresh_crew = crate::ops::crew::create(
+        &fresh,
+        crate::ops::crew::CreateCrewInput {
+            name: "Fresh".into(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        crate::ops::crew::get(&fresh, &fresh_crew.id).unwrap().name,
+        "Fresh"
+    );
 }
 
 #[test]
