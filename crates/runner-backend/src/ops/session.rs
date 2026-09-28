@@ -243,18 +243,44 @@ pub fn session_paste_image(bytes: Vec<u8>, mime_type: &str) -> Result<()> {
     }
 }
 
-/// POSIX paths of files referenced by the general pasteboard, in
-/// pasteboard order.
-///
-/// The consumer is the GPUI terminal paste path
-/// (`runner-app/src/chat.rs::on_paste`), which is M4 work: it should call
-/// this only after its image scan and plain-text check both come up empty,
-/// so file URLs fill the existing no-op paste case without changing image
-/// or text precedence.
+/// Paths of files referenced by the platform clipboard, in clipboard order.
 pub fn session_clipboard_file_paths() -> Vec<String> {
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
     {
-        Vec::new()
+        use windows_sys::Win32::{
+            System::{
+                DataExchange::{CloseClipboard, GetClipboardData, OpenClipboard},
+                Ole::CF_HDROP,
+            },
+            UI::Shell::DragQueryFileW,
+        };
+
+        // GPUI 0.3.3 passes a locked pointer to DragQueryFileW, which expects the HDROP handle.
+        if unsafe { OpenClipboard(std::ptr::null_mut()) } == 0 {
+            return Vec::new();
+        }
+        let paths = (|| {
+            let hdrop = unsafe { GetClipboardData(CF_HDROP as u32) };
+            if hdrop.is_null() {
+                return Vec::new();
+            }
+            let count = unsafe { DragQueryFileW(hdrop, u32::MAX, std::ptr::null_mut(), 0) };
+            (0..count)
+                .filter_map(|index| {
+                    let length = unsafe { DragQueryFileW(hdrop, index, std::ptr::null_mut(), 0) };
+                    if length == 0 {
+                        return None;
+                    }
+                    let mut buffer = vec![0u16; length as usize + 1];
+                    let copied = unsafe {
+                        DragQueryFileW(hdrop, index, buffer.as_mut_ptr(), buffer.len() as u32)
+                    };
+                    (copied > 0).then(|| String::from_utf16_lossy(&buffer[..copied as usize]))
+                })
+                .collect()
+        })();
+        unsafe { CloseClipboard() };
+        paths
     }
 
     #[cfg(target_os = "macos")]
@@ -279,6 +305,11 @@ pub fn session_clipboard_file_paths() -> Vec<String> {
                 Some(url.path()?.to_string())
             })
             .collect()
+    }
+
+    #[cfg(not(any(target_os = "macos", windows)))]
+    {
+        Vec::new()
     }
 }
 

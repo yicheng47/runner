@@ -19,7 +19,19 @@ pub fn resolve_terminal_paste(
         return Some(TerminalPaste::Image(image));
     }
 
-    let paths = file_paths();
+    let mut paths = file_paths();
+    if paths.is_empty() {
+        paths = item
+            .into_iter()
+            .flat_map(ClipboardItem::entries)
+            .filter_map(|entry| match entry {
+                ClipboardEntry::ExternalPaths(paths) => Some(paths.paths()),
+                ClipboardEntry::String(_) | ClipboardEntry::Image(_) => None,
+            })
+            .flatten()
+            .map(|path| path.to_string_lossy().into_owned())
+            .collect();
+    }
     if !paths.is_empty() {
         return Some(TerminalPaste::Text(format_pasted_paths(&paths)));
     }
