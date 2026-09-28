@@ -471,6 +471,20 @@ pub fn session_get_with_status(state: &AppCore, session_id: &str) -> Result<serd
     let object = row
         .as_object_mut()
         .ok_or_else(|| Error::msg("session row did not serialize as an object"))?;
+    let (speed, runtime) = {
+        let conn = state.db.get()?;
+        (
+            repo::session::get_row(&conn, session_id)?.and_then(|session| session.agent_speed),
+            repo::session::effective_runtime(&conn, session_id)?,
+        )
+    };
+    object.insert("agent_speed".into(), serde_json::to_value(speed)?);
+    if object
+        .get("agent_runtime")
+        .is_none_or(serde_json::Value::is_null)
+    {
+        object.insert("agent_runtime".into(), serde_json::to_value(runtime)?);
+    }
     object.insert(
         "agent_status".into(),
         serde_json::to_value(state.sessions.agent_status(session_id))?,
@@ -1002,12 +1016,30 @@ pub fn session_start_direct_impl(
     cols: Option<u16>,
     rows: Option<u16>,
 ) -> Result<StartDirectSessionOutput> {
+    session_start_direct_impl_with_speed(
+        state, role_id, runtime, model, effort, None, project_id, cwd, cols, rows,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn session_start_direct_impl_with_speed(
+    state: &AppCore,
+    role_id: String,
+    runtime: Option<String>,
+    model: Option<String>,
+    effort: Option<String>,
+    speed: Option<CodexSpeed>,
+    project_id: Option<String>,
+    cwd: Option<String>,
+    cols: Option<u16>,
+    rows: Option<u16>,
+) -> Result<StartDirectSessionOutput> {
     let (role, project_id, cwd) = {
         let conn = state.db.get()?;
         resolve_direct_start(&conn, &role_id, project_id.as_deref(), cwd)?
     };
     spawn_direct_chat(
-        state, &role, runtime, model, effort, None, project_id, cwd, cols, rows,
+        state, &role, runtime, model, effort, speed, project_id, cwd, cols, rows,
     )
 }
 

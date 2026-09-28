@@ -128,14 +128,22 @@ fn render_role_list(value: &Value) -> Vec<String> {
 }
 
 fn render_role(value: &Value) -> Vec<String> {
-    let mut lines = key_values(&[
+    let speed = Value::String(match value.get("codex_speed").and_then(Value::as_str) {
+        Some(speed) => speed.to_owned(),
+        None => "inherit (Codex config)".to_owned(),
+    });
+    let mut fields = vec![
         ("HANDLE", value.get("handle")),
         ("NAME", value.get("display_name")),
         ("RUNTIME", value.get("runtime")),
         ("MODEL", value.get("model")),
         ("EFFORT", value.get("effort")),
-        ("ID", value.get("id")),
-    ]);
+    ];
+    if value.get("runtime").and_then(Value::as_str) == Some("codex") {
+        fields.push(("SPEED", Some(&speed)));
+    }
+    fields.push(("ID", value.get("id")));
+    let mut lines = key_values(&fields);
     lines.push(String::new());
     lines.push("PROMPT".to_owned());
     match value.get("system_prompt").and_then(Value::as_str) {
@@ -204,6 +212,20 @@ fn render_crew_show(value: &Value) -> Vec<String> {
                     } else {
                         effective_slot_value(slot, role, "effort_override", "effort")
                     };
+                    let speed = if runtime == "codex" {
+                        match slot.get("codex_speed_override").and_then(Value::as_str) {
+                            Some(speed) => format!("{speed} (slot)"),
+                            None if !runtime_changed => {
+                                match role.get("codex_speed").and_then(Value::as_str) {
+                                    Some(speed) => format!("{speed} (role)"),
+                                    None => "inherit (Codex config)".to_owned(),
+                                }
+                            }
+                            None => "inherit (Codex config)".to_owned(),
+                        }
+                    } else {
+                        "-".to_owned()
+                    };
                     vec![
                         cell(slot.get("slot_handle")),
                         if slot.get("lead").and_then(Value::as_bool) == Some(true) {
@@ -215,6 +237,7 @@ fn render_crew_show(value: &Value) -> Vec<String> {
                         runtime,
                         model,
                         effort,
+                        speed,
                     ]
                 })
                 .collect::<Vec<_>>()
@@ -223,7 +246,9 @@ fn render_crew_show(value: &Value) -> Vec<String> {
     if !rows.is_empty() {
         lines.push(String::new());
         lines.extend(table(
-            &["HANDLE", "LEAD", "ROLE", "RUNTIME", "MODEL", "EFFORT"],
+            &[
+                "HANDLE", "LEAD", "ROLE", "RUNTIME", "MODEL", "EFFORT", "SPEED",
+            ],
             rows,
         ));
     }
@@ -539,11 +564,23 @@ fn render_session_show(value: &Value) -> Vec<String> {
         .map(|values| values.len().to_string())
         .unwrap_or_else(|| "0".into());
     let waits = Value::String(waits);
-    key_values(&[
+    let speed = Value::String(match value.get("agent_speed").and_then(Value::as_str) {
+        Some(speed) => format!("{speed} (session)"),
+        None if value.get("role_id").and_then(Value::as_str).is_some() => {
+            "inherit (role or slot)".to_owned()
+        }
+        None => "inherit (Codex config)".to_owned(),
+    });
+    let mut fields = vec![
         ("ID", value.get("session_id").or_else(|| value.get("id"))),
         ("MISSION", value.get("mission_id")),
         ("RUNTIME", value.get("agent_runtime")),
         ("ROLE", value.get("handle").or_else(|| value.get("role_id"))),
+    ];
+    if value.get("agent_runtime").and_then(Value::as_str) == Some("codex") {
+        fields.push(("SPEED", Some(&speed)));
+    }
+    fields.extend([
         ("ROW STATUS", value.get("status")),
         ("LIFECYCLE", status.get("lifecycle")),
         ("ACTIVITY", observation.get("activity")),
@@ -553,7 +590,8 @@ fn render_session_show(value: &Value) -> Vec<String> {
         ("DETAIL", observation.get("detail")),
         ("WAITS", Some(&waits)),
         ("CWD", value.get("cwd")),
-    ])
+    ]);
+    key_values(&fields)
 }
 
 fn render_confirmation(action: &str, value: &Value) -> Vec<String> {
@@ -845,6 +883,7 @@ mod tests {
                 "RUNTIME  codex",
                 "MODEL    -",
                 "EFFORT   high",
+                "SPEED    inherit (Codex config)",
                 "ID       role-id",
                 "",
                 "PROMPT",
@@ -889,9 +928,43 @@ mod tests {
                 "NAME  Peer",
                 "ID    crew-id",
                 "",
-                "HANDLE  LEAD  ROLE   RUNTIME  MODEL  EFFORT",
-                "coder   yes   coder  codex    gpt    high",
+                "HANDLE  LEAD  ROLE   RUNTIME  MODEL  EFFORT  SPEED",
+                "coder   yes   coder  codex    gpt    high    inherit (Codex config)",
             ]
+        );
+    }
+
+    #[test]
+    fn speed_readback_distinguishes_role_slot_and_session_choices() {
+        let role = json!({"handle": "coder", "display_name": "Coder", "runtime": "codex", "codex_speed": "fast"});
+        assert!(render_role(&role).contains(&"SPEED    fast".to_owned()));
+
+        let show = json!({
+            "crew": {"name": "Peer"},
+            "slots": [
+                {"slot_handle": "a", "role": role, "codex_speed_override": null},
+                {"slot_handle": "b", "runtime_override": "codex", "codex_speed_override": "standard", "role": {"handle": "peer", "runtime": "claude-code"}},
+                {"slot_handle": "c", "runtime_override": "codex", "codex_speed_override": null, "role": {"handle": "peer", "runtime": "claude-code", "codex_speed": "fast"}}
+            ]
+        });
+        let lines = render_crew_show(&show).join("\n");
+        assert!(lines.contains("fast (role)"));
+        assert!(lines.contains("standard (slot)"));
+        assert!(lines.contains("inherit (Codex config)"));
+
+        let session = json!({"session_id": "s1", "agent_runtime": "codex", "agent_speed": "fast", "role_id": "role"});
+        assert!(render_session_show(&session).contains(&"SPEED         fast (session)".to_owned()));
+        let inherited = json!({"id": "s2", "mission_id": "mission", "agent_runtime": "codex", "agent_speed": null, "role_id": "role"});
+        assert!(render_session_show(&inherited)
+            .iter()
+            .any(|line| line.contains("inherit (role or slot)")));
+        let response = ToolResponse {
+            value: session.clone(),
+            raw_json: serde_json::to_string(&session).unwrap(),
+        };
+        assert_eq!(
+            machine_lines(&response, true, false).unwrap(),
+            [serde_json::to_string(&session).unwrap()]
         );
     }
 

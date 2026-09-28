@@ -601,7 +601,7 @@ runner call <tool> [<json>]
 # projects and roles
 runner project list | show <project> | create <name> [--path <dir>] | rename <project> <name> | delete <project> [--force]
 runner role list | show <handle>
-runner role create <handle> --runtime <runtime> [--name <display name>] [--model <model>] [--effort <effort>]
+runner role create <handle> --runtime <runtime> [--name <display name>] [--model <model>] [--effort <effort>] [--speed inherit|standard|fast]
                    [--permission <mode>] [--prompt <text> | --prompt-file <path | ->]
                    [--arg <arg>]... [--env KEY=VALUE]... [--cwd <dir>]
 runner role update <handle> [the same optional flags] | delete <handle>
@@ -611,8 +611,8 @@ runner crew list | show <crew>
 runner crew create <name> [--purpose <text>] [--goal <text>] [--conventions-file <path | ->]
 runner crew update <crew> [--name <name>] [--purpose <text>] [--goal <text>] [--conventions-file <path | ->]
 runner crew delete <crew>
-runner crew add <crew> <role> [--as <handle>] [--runtime <runtime>] [--model <model>] [--effort <effort>]
-runner crew set <crew> <handle> [--as <new handle>] [--runtime <runtime>] [--model <model>] [--effort <effort>]
+runner crew add <crew> <role> [--as <handle>] [--runtime <runtime>] [--model <model>] [--effort <effort>] [--speed inherit|standard|fast]
+runner crew set <crew> <handle> [--as <new handle>] [--runtime <runtime>] [--model <model>] [--effort <effort>] [--speed inherit|standard|fast]
 runner crew remove <crew> <handle> | lead <crew> <handle> | order <crew> <handle> <handle>...
 
 # missions, chats, and sessions
@@ -624,7 +624,7 @@ runner mission rename <mission> <title> | move [<mission>] (--project <project> 
 runner mission feed [<mission>] [--follow] [--since <offset>] [--limit <n>] [--oldest-first]
                     [--types <kind,...> | --all] [--from <handle>]
 runner mission answer <mission> <question_id> <choice>
-runner chat start (<role> | --runtime <runtime>) [--model <model>] [--effort <effort>] [--project <project> | --cwd <dir>]
+runner chat start (<role> | --runtime <runtime>) [--model <model>] [--effort <effort>] [--speed inherit|standard|fast] [--project <project> | --cwd <dir>]
 runner session list | show <session> | stop <session> | archive <session> | resume <session> | restart <session>
 
 # mission-scoped
@@ -641,7 +641,7 @@ Every command accepts `--json` for JSON output and `-q` for result ids. stdout c
 
 Roles resolve by their unique handle. Crews and projects resolve by id or exact name; an ambiguous name exits 2 and prints the matching ids. Missions and sessions resolve by id or unique id prefix. `session_list` contains direct chats only, so a mission session can be resumed or restarted only by its full 26-character id, which passes through for backend validation. Active mission lookup comes from `mission_list`; because archived missions are absent from that tool, any full 26-character mission id is validated with `mission_get` and then passed to the requested tool. An active-only operation on an archived mission is therefore a tool refusal (exit 1), while a missing name, prefix or full mission id remains an unresolvable reference (exit 2).
 
-`mission start`, `chat start`, and `project create` default to the shell's current directory exactly unless a project or explicit directory is supplied. Relative paths are joined to that directory and normalized lexically by removing `.` and resolving `..`, without filesystem canonicalization. Long text accepts an inline flag or a file, and `-` reads stdin. On update/set commands, an empty optional value clears the field.
+`mission start`, `chat start`, and `project create` default to the shell's current directory exactly unless a project or explicit directory is supplied. Relative paths are joined to that directory and normalized lexically by removing `.` and resolving `..`, without filesystem canonicalization. Long text accepts an inline flag or a file, and `-` reads stdin. On update/set commands, an empty optional value clears the field. For Codex Speed, `inherit` clears a saved role or slot choice; omitting `--speed` preserves it on update/set and follows the role or Codex config for a new chat.
 
 Default output is command-aware rather than a generic JSON projection. List commands expose only their identifying and operational columns; show commands use key-value blocks plus noun-specific sections; mission feed emits one chronological line per event. Table cells collapse whitespace, truncate at a fixed width with an ellipsis, and render null as `-`. `--json` preserves the tool's JSON text verbatim and `-q` prints ids only.
 

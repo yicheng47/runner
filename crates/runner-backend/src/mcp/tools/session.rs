@@ -23,6 +23,10 @@ pub struct StartDirectSessionArgs {
     /// Optional reasoning effort for the selected role or runtime.
     #[serde(default)]
     pub effort: Option<String>,
+    /// Optional per-chat Codex Speed. Omit or null to inherit.
+    #[serde(default)]
+    #[schemars(with = "Option<String>")]
+    pub speed: Option<crate::model::CodexSpeed>,
     /// Optional project membership. Its cwd is used when cwd is omitted.
     #[serde(default)]
     pub project_id: Option<String>,
@@ -196,19 +200,20 @@ impl RunnerMcpHandler {
     ) -> Result<CallToolResult, ErrorData> {
         validate_start_source(args.role_id.as_deref(), args.runtime)?;
         let output = match (args.role_id, args.runtime) {
-            (Some(role_id), runtime) => session::session_start_direct_impl(
+            (Some(role_id), runtime) => session::session_start_direct_impl_with_speed(
                 &self.state,
                 role_id,
                 runtime.map(|runtime| runtime.to_string()),
                 args.model,
                 args.effort,
+                args.speed,
                 args.project_id,
                 args.cwd,
                 None,
                 None,
             )
             .map_err(command_error)?,
-            (None, Some(runtime)) => session::session_start_runtime(
+            (None, Some(runtime)) => session::session_start_runtime_with_speed(
                 &self.state,
                 runtime.key(),
                 crate::ops::project::ProjectScope::or_infer(args.project_id),
@@ -217,6 +222,7 @@ impl RunnerMcpHandler {
                 None,
                 args.model,
                 args.effort,
+                args.speed,
             )
             .map_err(command_error)?,
             (None, None) => unreachable!(),
@@ -390,6 +396,7 @@ mod tests {
                     runtime: None,
                     model: None,
                     effort: None,
+                    speed: None,
                     project_id: None,
                     cwd: None,
                 }))
@@ -425,6 +432,7 @@ mod tests {
                     runtime: Some(crate::model::Runtime::Codex),
                     model: None,
                     effort: None,
+                    speed: None,
                     project_id: None,
                     cwd: Some(cwd.to_string_lossy().into_owned()),
                 }))
@@ -436,6 +444,216 @@ mod tests {
         assert_eq!(output["project_id"], project.id);
         assert_project_row_and_tab(&handler, session_id, &project.id);
         session::session_kill(&handler.state, session_id).unwrap();
+    }
+
+    #[tokio::test]
+    async fn direct_tool_persists_speed_for_role_and_runtime_chats() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(temp.path().join("app-data")).unwrap();
+        let handler = tracking_handler(temp.path().join("app-data"));
+        {
+            let conn = handler.state.db.get().unwrap();
+            crate::test_support::insert_test_role(
+                &conn,
+                "role",
+                "coder",
+                "test",
+                std::env::current_exe().unwrap().to_string_lossy().as_ref(),
+            );
+            conn.execute(
+                "UPDATE roles SET runtime = 'codex', runtime_options_json = ?1 WHERE id = 'role'",
+                [crate::repo::serde::runtime_speed_json::value(Some(
+                    crate::model::CodexSpeed::Fast,
+                ))],
+            )
+            .unwrap();
+        }
+        for (role_id, speed, expected) in [
+            (Some("role"), None, None),
+            (
+                Some("role"),
+                Some(crate::model::CodexSpeed::Standard),
+                Some(crate::model::CodexSpeed::Standard),
+            ),
+            (
+                Some("role"),
+                Some(crate::model::CodexSpeed::Fast),
+                Some(crate::model::CodexSpeed::Fast),
+            ),
+            (None, None, None),
+            (
+                None,
+                Some(crate::model::CodexSpeed::Standard),
+                Some(crate::model::CodexSpeed::Standard),
+            ),
+            (
+                None,
+                Some(crate::model::CodexSpeed::Fast),
+                Some(crate::model::CodexSpeed::Fast),
+            ),
+        ] {
+            let output = result_json(
+                handler
+                    .session_start_direct(Parameters(StartDirectSessionArgs {
+                        role_id: role_id.map(str::to_owned),
+                        runtime: role_id.is_none().then_some(crate::model::Runtime::Codex),
+                        model: None,
+                        effort: None,
+                        speed,
+                        project_id: None,
+                        cwd: Some(temp.path().to_string_lossy().into_owned()),
+                    }))
+                    .await
+                    .unwrap(),
+            );
+            let session_id = output["id"].as_str().unwrap();
+            let detail = result_json(
+                handler
+                    .session_get(Parameters(SessionArgs {
+                        session_id: session_id.to_owned(),
+                    }))
+                    .await
+                    .unwrap(),
+            );
+            assert_eq!(
+                detail["agent_speed"],
+                serde_json::to_value(expected).unwrap()
+            );
+            session::session_kill(&handler.state, session_id).unwrap();
+            let row = {
+                let conn = handler.state.db.get().unwrap();
+                crate::repo::session::get_row(&conn, session_id)
+                    .unwrap()
+                    .unwrap()
+            };
+            assert_eq!(row.agent_speed, expected);
+        }
+
+        let output = result_json(
+            handler
+                .session_start_direct(Parameters(StartDirectSessionArgs {
+                    role_id: None,
+                    runtime: Some(crate::model::Runtime::ClaudeCode),
+                    model: None,
+                    effort: None,
+                    speed: Some(crate::model::CodexSpeed::Fast),
+                    project_id: None,
+                    cwd: Some(temp.path().to_string_lossy().into_owned()),
+                }))
+                .await
+                .unwrap(),
+        );
+        let session_id = output["id"].as_str().unwrap();
+        let conn = handler.state.db.get().unwrap();
+        assert_eq!(
+            crate::repo::session::get_row(&conn, session_id)
+                .unwrap()
+                .unwrap()
+                .agent_speed,
+            None
+        );
+        drop(conn);
+        session::session_kill(&handler.state, session_id).unwrap();
+    }
+
+    #[tokio::test]
+    async fn mission_session_detail_resolves_inherited_runtime_and_keeps_speed_source() {
+        let temp = tempfile::tempdir().unwrap();
+        let handler = tracking_handler(temp.path().join("app-data"));
+        {
+            let conn = handler.state.db.get().unwrap();
+            let now = chrono::Utc::now();
+            crate::test_support::insert_test_role(&conn, "role", "coder", "codex", "codex");
+            conn.execute(
+                "UPDATE roles SET runtime_options_json = ?1 WHERE id = 'role'",
+                [crate::repo::serde::runtime_speed_json::value(Some(
+                    crate::model::CodexSpeed::Standard,
+                ))],
+            )
+            .unwrap();
+            crate::repo::crew::insert(
+                &conn,
+                &crate::repo::crew::CrewRow {
+                    id: "crew".into(),
+                    name: "Pair".into(),
+                    purpose: None,
+                    goal: None,
+                    system_prompt_addendum: None,
+                    created_at: now,
+                    updated_at: now,
+                },
+            )
+            .unwrap();
+            crate::test_support::insert_test_slot(
+                &conn,
+                "explicit-slot",
+                "crew",
+                "role",
+                "explicit",
+                0,
+                true,
+            );
+            crate::test_support::insert_test_slot(
+                &conn,
+                "inherited-slot",
+                "crew",
+                "role",
+                "inherited",
+                1,
+                false,
+            );
+            conn.execute(
+                "UPDATE slots SET runtime_options_json = ?1 WHERE id = 'explicit-slot'",
+                [crate::repo::serde::runtime_speed_json::value(Some(
+                    crate::model::CodexSpeed::Fast,
+                ))],
+            )
+            .unwrap();
+            crate::repo::mission::insert(
+                &conn,
+                &crate::repo::mission::MissionRow {
+                    id: "mission".into(),
+                    crew_id: "crew".into(),
+                    project_id: None,
+                    title: "Speed".into(),
+                    status: crate::model::MissionStatus::Running,
+                    goal_override: None,
+                    cwd: None,
+                    started_at: now,
+                    stopped_at: None,
+                    pinned_at: None,
+                    archived_at: None,
+                },
+            )
+            .unwrap();
+            for (id, speed) in [
+                ("explicit", Some(crate::model::CodexSpeed::Fast)),
+                ("inherited", None),
+            ] {
+                let mut row =
+                    crate::test_support::test_session_row(id, crate::model::SessionStatus::Stopped);
+                row.mission_id = Some("mission".into());
+                row.role_id = Some("role".into());
+                row.slot_id = Some(format!("{id}-slot"));
+                row.agent_speed = speed;
+                crate::repo::session::insert(&conn, &row).unwrap();
+            }
+        }
+        for (id, speed) in [
+            ("explicit", Some(crate::model::CodexSpeed::Fast)),
+            ("inherited", None),
+        ] {
+            let detail = result_json(
+                handler
+                    .session_get(Parameters(SessionArgs {
+                        session_id: id.into(),
+                    }))
+                    .await
+                    .unwrap(),
+            );
+            assert_eq!(detail["agent_runtime"], "codex");
+            assert_eq!(detail["agent_speed"], serde_json::to_value(speed).unwrap());
+        }
     }
 
     #[test]

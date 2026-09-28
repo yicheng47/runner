@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use runner_cli::client::{ClientError, SocketClient, ToolResponse};
 use serde_json::{json, Value};
 
@@ -141,6 +141,9 @@ struct RoleFields {
     /// Reasoning effort; pass an empty value to clear it.
     #[arg(long)]
     effort: Option<String>,
+    /// Codex Speed: inherit, standard, or fast.
+    #[arg(long)]
+    speed: Option<SpeedArg>,
     /// Permission mode: default, accept_edits, auto, or bypass.
     #[arg(long)]
     permission: Option<String>,
@@ -159,6 +162,23 @@ struct RoleFields {
     /// Working directory; pass an empty value to clear it.
     #[arg(long)]
     cwd: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum SpeedArg {
+    Inherit,
+    Standard,
+    Fast,
+}
+
+impl SpeedArg {
+    fn value(self) -> Value {
+        match self {
+            Self::Inherit => Value::Null,
+            Self::Standard => json!("standard"),
+            Self::Fast => json!("fast"),
+        }
+    }
 }
 
 #[derive(Subcommand, Debug)]
@@ -250,6 +270,9 @@ enum CrewCommand {
         /// Override the role effort for this slot.
         #[arg(long)]
         effort: Option<String>,
+        /// Codex Speed override: inherit, standard, or fast.
+        #[arg(long)]
+        speed: Option<SpeedArg>,
     },
     /// Update one crew slot by handle.
     Set {
@@ -267,6 +290,9 @@ enum CrewCommand {
         /// Override the effort; pass an empty value to inherit.
         #[arg(long)]
         effort: Option<String>,
+        /// Codex Speed override: inherit, standard, or fast.
+        #[arg(long)]
+        speed: Option<SpeedArg>,
     },
     /// Remove a slot from a crew.
     Remove { crew: String, handle: String },
@@ -382,6 +408,9 @@ enum ChatCommand {
         /// Reasoning effort override.
         #[arg(long)]
         effort: Option<String>,
+        /// Codex Speed override: inherit, standard, or fast.
+        #[arg(long)]
+        speed: Option<SpeedArg>,
         /// Project ID or exact name whose directory the chat uses.
         #[arg(long, conflicts_with = "cwd")]
         project: Option<String>,
@@ -1221,6 +1250,7 @@ async fn run_crew(
             runtime,
             model,
             effort,
+            speed,
         } => {
             let crew = resolve_named(client, "crew", "crew_list", crew).await?;
             let role = resolve_role(client, role).await?;
@@ -1232,14 +1262,17 @@ async fn run_crew(
             insert_clearable(&mut args, "runtime_override", runtime.as_deref(), false);
             insert_clearable(&mut args, "model_override", model.as_deref(), false);
             let created = call(client, "slot_create", args).await?;
-            if let Some(effort) = effort {
+            if effort.is_some() || speed.is_some() {
                 let slot_id = id_from(&created.value)?;
+                let mut input = json!({});
+                insert_clearable(&mut input, "effort_override", effort.as_deref(), true);
+                insert_speed(&mut input, "codex_speed_override", *speed);
                 call(
                     client,
                     "slot_update",
                     json!({
                         "slot_id": slot_id,
-                        "input": {"effort_override": nullable(effort)},
+                        "input": input,
                     }),
                 )
                 .await
@@ -1254,6 +1287,7 @@ async fn run_crew(
             runtime,
             model,
             effort,
+            speed,
         } => {
             let crew = resolve_named(client, "crew", "crew_list", crew).await?;
             let slot = resolve_slot(client, &crew.id, handle).await?;
@@ -1262,6 +1296,7 @@ async fn run_crew(
             insert_clearable(&mut input, "runtime_override", runtime.as_deref(), true);
             insert_clearable(&mut input, "model_override", model.as_deref(), true);
             insert_clearable(&mut input, "effort_override", effort.as_deref(), true);
+            insert_speed(&mut input, "codex_speed_override", *speed);
             call(
                 client,
                 "slot_update",
@@ -1775,6 +1810,7 @@ async fn run_chat(
         runtime,
         model,
         effort,
+        speed,
         project,
         cwd,
     } = command;
@@ -1795,19 +1831,16 @@ async fn run_chat(
     } else {
         None
     };
-    call(
-        client,
-        "session_start_direct",
-        json!({
-            "role_id": role_id,
-            "runtime": runtime,
-            "model": model,
-            "effort": effort,
-            "project_id": project_id,
-            "cwd": cwd,
-        }),
-    )
-    .await
+    let mut args = json!({
+        "role_id": role_id,
+        "runtime": runtime,
+        "model": model,
+        "effort": effort,
+        "project_id": project_id,
+        "cwd": cwd,
+    });
+    insert_speed(&mut args, "speed", *speed);
+    call(client, "session_start_direct", args).await
 }
 
 async fn run_session(
@@ -2173,6 +2206,7 @@ fn role_fields(fields: &RoleFields, update: bool) -> Result<Value, CliError> {
     }
     insert_string(&mut value, "model", fields.model.as_deref());
     insert_string(&mut value, "effort", fields.effort.as_deref());
+    insert_speed(&mut value, "codex_speed", fields.speed);
     insert_string(&mut value, "permission_mode", fields.permission.as_deref());
     let prompt = read_text(
         fields.prompt.as_deref(),
@@ -2353,6 +2387,12 @@ fn insert_value(target: &mut Value, key: &str, value: Value) {
 fn insert_string(target: &mut Value, key: &str, value: Option<&str>) {
     if let Some(value) = value {
         insert_value(target, key, json!(value));
+    }
+}
+
+fn insert_speed(target: &mut Value, key: &str, speed: Option<SpeedArg>) {
+    if let Some(speed) = speed {
+        insert_value(target, key, speed.value());
     }
 }
 
@@ -2989,6 +3029,100 @@ mod tests {
         let update = crew_fields(&fields).unwrap();
         assert_eq!(update["purpose"], json!(""));
         assert_eq!(update["goal"], json!(""));
+    }
+
+    #[tokio::test]
+    async fn speed_flags_send_structured_values_and_preserve_omissions() {
+        for (flag, expected) in [
+            (None, None),
+            (Some("inherit"), Some(Value::Null)),
+            (Some("standard"), Some(json!("standard"))),
+            (Some("fast"), Some(json!("fast"))),
+        ] {
+            for (command, key, tool) in [
+                (
+                    vec!["role", "create", "coder", "--runtime", "codex"],
+                    "codex_speed",
+                    "role_create",
+                ),
+                (
+                    vec!["role", "update", "coder"],
+                    "codex_speed",
+                    "role_update",
+                ),
+                (
+                    vec!["crew", "add", "Peer", "coder"],
+                    "codex_speed_override",
+                    "slot_update",
+                ),
+                (
+                    vec!["crew", "set", "Peer", "impl"],
+                    "codex_speed_override",
+                    "slot_update",
+                ),
+                (
+                    vec!["chat", "start", "coder"],
+                    "speed",
+                    "session_start_direct",
+                ),
+                (
+                    vec!["chat", "start", "--runtime", "codex"],
+                    "speed",
+                    "session_start_direct",
+                ),
+            ] {
+                let mut args = vec!["runner"];
+                args.extend(command.iter().copied());
+                if let Some(flag) = flag {
+                    args.extend(["--speed", flag]);
+                }
+                let cli = Cli::try_parse_from(args).unwrap();
+                let client = RecordingClient::default();
+                run_connected(&client, &cli, &BusContext::OffBus)
+                    .await
+                    .unwrap();
+                let calls = client.calls.lock().unwrap();
+                if command[1] == "add" && flag.is_none() {
+                    assert!(calls.iter().all(|(name, _)| name != "slot_update"));
+                    continue;
+                }
+                let (_, request) = calls.iter().find(|(name, _)| name == tool).unwrap();
+                let fields = if tool == "role_update" || tool == "slot_update" {
+                    &request["input"]
+                } else {
+                    request
+                };
+                assert_eq!(fields.get(key), expected.as_ref(), "{tool}: {flag:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn speed_flag_help_lists_only_supported_choices() {
+        for command in [
+            &["role", "create"][..],
+            &["role", "update"],
+            &["crew", "add"],
+            &["crew", "set"],
+            &["chat", "start"],
+        ] {
+            let mut args = vec!["runner"];
+            args.extend_from_slice(command);
+            args.push("--help");
+            let help = Cli::try_parse_from(args).unwrap_err().to_string();
+            assert!(help.contains("--speed <SPEED>"), "{help}");
+            assert!(help.contains("inherit, standard, fast"), "{help}");
+        }
+        assert!(Cli::try_parse_from([
+            "runner",
+            "chat",
+            "start",
+            "--runtime",
+            "codex",
+            "--speed",
+            "turbo"
+        ])
+        .is_err());
     }
 
     #[test]
