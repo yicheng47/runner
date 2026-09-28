@@ -38,6 +38,7 @@ fn insert_role(conn: &Connection, id: &str, handle: &str) -> rusqlite::Result<us
             env_json: Some(Default::default()),
             model: None,
             effort: None,
+            codex_speed: None,
             created_at: timestamp,
             updated_at: timestamp,
         },
@@ -66,6 +67,7 @@ fn insert_slot(
             runtime_override: None,
             model_override: None,
             effort_override: None,
+            codex_speed_override: None,
             added_at: "2026-04-22T00:00:00Z".parse().unwrap(),
         },
     )
@@ -366,6 +368,7 @@ fn json_blob_columns_roundtrip() {
             env_json: Some(serde_json::from_value(env.clone()).unwrap()),
             model: None,
             effort: None,
+            codex_speed: None,
             created_at: timestamp,
             updated_at: timestamp,
         },
@@ -449,6 +452,7 @@ fn seed_defaults_inserts_pair_coding_crew_on_empty_db() {
                 && role.args == expected_args
                 && role.model.is_none()
                 && role.effort.is_none()
+                && role.codex_speed.is_none()
         })
         .count();
     assert_eq!(
@@ -1253,7 +1257,44 @@ fn stored_runtime_names_remain_readable_and_unchanged_without_a_migration() {
     let version: i64 = conn
         .query_row("SELECT MAX(version) FROM _migrations", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 23);
+    assert_eq!(version, MIGRATIONS.len() as i64);
+}
+
+#[test]
+fn migration_0024_adds_runtime_options_columns() {
+    let mut conn = Connection::open_in_memory().unwrap();
+    run_migrations_up_to(&mut conn, 23).unwrap();
+    conn.execute(
+        "INSERT INTO roles (id, handle, display_name, runtime, command, created_at, updated_at)
+         VALUES ('speed-role', 'speed-role', 'Speed role', 'codex', 'codex', '2026-09-28T00:00:00Z', '2026-09-28T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+    run_migrations(&mut conn).unwrap();
+    assert_eq!(
+        crate::repo::role::get(&conn, "speed-role")
+            .unwrap()
+            .unwrap()
+            .codex_speed,
+        None
+    );
+    for (table, column) in [
+        ("roles", "runtime_options_json"),
+        ("sessions", "runtime_options_json"),
+        ("slots", "runtime_options_json"),
+    ] {
+        let columns: Vec<String> = conn
+            .prepare(&format!("PRAGMA table_info({table})"))
+            .unwrap()
+            .query_map([], |row| row.get("name"))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert!(
+            columns.iter().any(|name| name == column),
+            "{table}.{column}"
+        );
+    }
 }
 
 #[test]

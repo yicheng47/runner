@@ -19,7 +19,7 @@ use super::logic::PictureCell;
 use super::*;
 use crate::surfaces::profile_page::PROFILE_COLUMN_WIDTH;
 use chrono::{TimeZone, Utc};
-use runner_backend::model::{Mission, MissionStatus, Role, Runtime, Slot};
+use runner_backend::model::{CodexSpeed, Mission, MissionStatus, Role, Runtime, Slot};
 use runner_backend::ops::crew::CrewMemberPreview;
 use runner_backend::ops::mission::MissionSummary;
 
@@ -40,6 +40,7 @@ fn slot_with_role(
             runtime_override: runtime_override.map(str::to_owned),
             model_override: model_override.map(str::to_owned),
             effort_override: effort_override.map(str::to_owned),
+            codex_speed_override: None,
             added_at: now,
         },
         role: Role {
@@ -54,6 +55,7 @@ fn slot_with_role(
             env: Default::default(),
             model: None,
             effort: None,
+            codex_speed: None,
             created_at: now,
             updated_at: now,
         },
@@ -206,6 +208,15 @@ fn slot_setup_marks_what_the_slot_overrides() {
     assert_eq!(setup.model.as_deref(), Some("opus[1m]"));
     assert_eq!(setup.effort.as_deref(), Some("xhigh"));
     assert!(!setup.overrides_any(), "inherited values are not overrides");
+
+    slot.role.codex_speed = Some(CodexSpeed::Fast);
+    let setup = slot_setup(&slot);
+    assert_eq!(setup.speed, Some(CodexSpeed::Fast));
+    assert!(!setup.speed_overridden);
+    slot.slot.codex_speed_override = Some(CodexSpeed::Standard);
+    let setup = slot_setup(&slot);
+    assert_eq!(setup.speed, Some(CodexSpeed::Standard));
+    assert!(setup.speed_overridden && setup.overrides_any());
 
     slot.slot.effort_override = Some("high".into());
     let setup = slot_setup(&slot);
@@ -482,6 +493,7 @@ impl CrewPageHarness {
                 env: Default::default(),
                 model: Some("opus".into()),
                 effort: Some("high".into()),
+                codex_speed: None,
                 permission_mode: runner_backend::router::runtime::PermissionMode::Default,
             },
         )
@@ -729,6 +741,97 @@ fn an_override_saves_to_the_slot_only_and_reset_restores_the_role() {
             .as_deref(),
         Some("opus")
     );
+}
+
+#[test]
+fn codex_slot_speed_edit_shows_credit_note_saves_and_resets() {
+    let mut page = crew_page_harness("crew-slot-speed");
+    let crew = page.crew("Speed", None, &["coder"]);
+    page.open_crew(&crew);
+    page.click("CREW_SLOT_ROW");
+    page.click("CREW_SLOT_EDIT_OVERRIDES");
+    assert!(page.visual.debug_bounds("CREW_SLOT_SPEED_EDIT").is_some());
+    page.click("CREW_SLOT_SPEED_EDIT");
+    page.click("STYLED_SELECT_OPTION_2");
+    assert!(page.visual.debug_bounds("CREW_SLOT_SPEED_NOTE").is_some());
+    page.click("CREW_SLOT_OVERRIDE_SAVE");
+    assert_eq!(
+        page.slots(&crew)[0].slot.codex_speed_override,
+        Some(CodexSpeed::Fast)
+    );
+    assert!(page.visual.debug_bounds("CREW_SLOT_SPEED_ROW").is_some());
+    assert_eq!(
+        runner_backend::ops::role::role_get_by_handle(&page.core, "coder")
+            .unwrap()
+            .codex_speed,
+        None
+    );
+    assert!(page.visual.debug_bounds("CREW_SLOT_SPEED_VIEW").is_some());
+    assert!(page
+        .visual
+        .debug_bounds("CREW_SLOT_SPEED_VIEW_NOTE")
+        .is_some());
+
+    page.click("CREW_SLOT_EDIT_OVERRIDES");
+    page.click("SLOT_RESET_SPEED");
+    page.click("CREW_SLOT_OVERRIDE_SAVE");
+    assert_eq!(page.slots(&crew)[0].slot.codex_speed_override, None);
+    assert_eq!(
+        page.read(|root| root.crew_surfaces.editor.slots[0].slot.codex_speed_override),
+        None
+    );
+
+    page.click("CREW_SLOT_EDIT_OVERRIDES");
+    page.update(|root, _, cx| root.select_slot_override_speed("fast", cx));
+    page.update(|root, _, cx| root.select_slot_override_runtime("claude-code".into(), cx));
+    assert_eq!(
+        page.read(|root| root
+            .crew_surfaces
+            .editor
+            .popup
+            .as_ref()
+            .unwrap()
+            .edit
+            .as_ref()
+            .unwrap()
+            .speed),
+        None
+    );
+    page.click("CREW_SLOT_OVERRIDE_SAVE");
+    assert_eq!(page.slots(&crew)[0].slot.codex_speed_override, None);
+}
+
+#[test]
+fn mission_slot_runtime_menu_selection_does_not_reenter_the_select() {
+    let mut page = crew_page_harness("crew-slot-runtime-menu");
+    let crew = page.crew("Runtime", None, &["coder"]);
+    page.open_crew(&crew);
+    page.click("CREW_SLOT_ROW");
+    page.click("CREW_SLOT_EDIT_OVERRIDES");
+    page.click("CREW_SLOT_RUNTIME_EDIT");
+    page.click("STYLED_SELECT_OPTION_1");
+    assert!(page.read(|root| root
+        .crew_surfaces
+        .editor
+        .popup
+        .as_ref()
+        .unwrap()
+        .edit
+        .as_ref()
+        .unwrap()
+        .runtime
+        .is_some()));
+}
+
+#[test]
+fn non_codex_slot_override_hides_speed() {
+    let mut page = crew_page_harness("crew-slot-no-speed");
+    page.role("claude", Runtime::ClaudeCode);
+    let crew = page.crew("Claude", None, &["claude"]);
+    page.open_crew(&crew);
+    page.click("CREW_SLOT_ROW");
+    page.click("CREW_SLOT_EDIT_OVERRIDES");
+    assert!(page.visual.debug_bounds("CREW_SLOT_SPEED_EDIT").is_none());
 }
 
 #[test]

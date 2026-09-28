@@ -15,7 +15,7 @@ use runner_app::ui::{
     focus_ring, Button, ButtonSize, ButtonVariant, IconButton, IconButtonSize, ModelField,
     RoleAvatar, SelectOption, StyledSelect, TextField,
 };
-use runner_backend::model::{Runtime, SlotWithRole};
+use runner_backend::model::{CodexSpeed, Runtime, SlotWithRole};
 use runner_backend::ops::slot::UpdateSlotInput;
 
 use super::*;
@@ -32,7 +32,23 @@ const POPUP_LABEL_WIDTH: f32 = 82.;
 /// A popup field: the popup less its padding and the label column.
 const POPUP_FIELD_WIDTH: f32 = POPUP_WIDTH - 2. * 16. - POPUP_LABEL_WIDTH;
 const RUNTIME_NOTE: &str =
-    "A different runtime starts from its own model and effort; set them here to override.";
+    "A different runtime starts from its own agent defaults; set overrides here.";
+
+fn speed_value(speed: Option<CodexSpeed>) -> &'static str {
+    match speed {
+        None => "",
+        Some(CodexSpeed::Standard) => "standard",
+        Some(CodexSpeed::Fast) => "fast",
+    }
+}
+
+fn speed_label(speed: Option<CodexSpeed>) -> &'static str {
+    match speed {
+        None => "Inherit",
+        Some(CodexSpeed::Standard) => "Standard",
+        Some(CodexSpeed::Fast) => "Fast",
+    }
+}
 
 /// A model or effort the slot does not set: the role's value on the role's
 /// own runtime, else the runtime's own default.
@@ -292,19 +308,25 @@ impl NativeRoot {
             .flex_col()
             .px_4()
             .py_2()
-            .child(override_row(
-                "Runtime",
-                form.runtime_select.clone().into_any_element(),
-                format!("role: {}", runtime_display_name(&slot.role.runtime)),
-                form.runtime.is_some().then(|| {
-                    reset(
-                        "slot-reset-runtime",
-                        &form.reset_focus[0],
-                        Self::reset_slot_override_runtime,
-                    )
-                }),
-                true,
-            ))
+            .child(
+                div()
+                    .when(cfg!(test), |row| {
+                        row.debug_selector(|| "CREW_SLOT_RUNTIME_EDIT".into())
+                    })
+                    .child(override_row(
+                        "Runtime",
+                        form.runtime_select.clone().into_any_element(),
+                        format!("role: {}", runtime_display_name(&slot.role.runtime)),
+                        form.runtime.is_some().then(|| {
+                            reset(
+                                "slot-reset-runtime",
+                                &form.reset_focus[0],
+                                Self::reset_slot_override_runtime,
+                            )
+                        }),
+                        true,
+                    )),
+            )
             .child(override_row(
                 "Model",
                 form.model_field.clone().into_any_element(),
@@ -329,8 +351,49 @@ impl NativeRoot {
                         Self::reset_slot_override_effort,
                     )
                 }),
-                false,
+                runtime == "codex",
             ))
+            .when(runtime == "codex", |rows| {
+                rows.child(
+                    div()
+                        .when(cfg!(test), |row| {
+                            row.debug_selector(|| "CREW_SLOT_SPEED_EDIT".into())
+                        })
+                        .child(override_row(
+                            "Speed",
+                            form.speed_select.clone().into_any_element(),
+                            if own_runtime {
+                                format!("role: {}", speed_label(slot.role.codex_speed))
+                            } else {
+                                "Codex default".into()
+                            },
+                            form.speed.map(|_| {
+                                reset(
+                                    "slot-reset-speed",
+                                    &form.reset_focus[3],
+                                    Self::reset_slot_override_speed,
+                                )
+                            }),
+                            false,
+                        )),
+                )
+                .children(
+                    (form
+                        .speed
+                        .or(own_runtime.then_some(slot.role.codex_speed).flatten())
+                        == Some(CodexSpeed::Fast))
+                    .then(|| {
+                        div()
+                            .when(cfg!(test), |note| {
+                                note.debug_selector(|| "CREW_SLOT_SPEED_NOTE".into())
+                            })
+                            .pl_4()
+                            .text_size(theme::text_meta())
+                            .text_color(theme::faint())
+                            .child("Fast uses more credits.")
+                    }),
+                )
+            })
             .children((!own_runtime).then(runtime_note))
             .children(form.error.clone().map(|error| {
                 div()
@@ -518,8 +581,9 @@ impl NativeRoot {
                 runtime_override.clone().unwrap_or_default(),
                 runtime_options,
                 Rc::new(move |value, _, cx| {
-                    runtime_root
-                        .update(cx, |this, cx| this.select_slot_override_runtime(value, cx));
+                    runtime_root.update(cx, |this, cx| {
+                        this.set_slot_override_runtime(value, false, cx)
+                    });
                 }),
                 select_cx,
             )
@@ -560,6 +624,28 @@ impl NativeRoot {
             .width(px(POPUP_FIELD_WIDTH))
             .min_menu_width(px(POPUP_FIELD_WIDTH))
         });
+        let speed = slot.slot.codex_speed_override;
+        let speed_root = cx.entity();
+        let speed_select = cx.new(|select_cx| {
+            StyledSelect::new(
+                "slot-override-speed",
+                select_cx.focus_handle(),
+                speed_value(speed),
+                vec![
+                    SelectOption::new("", "Inherit"),
+                    SelectOption::new("standard", "Standard"),
+                    SelectOption::new("fast", "Fast"),
+                ],
+                Rc::new(move |value, _, cx| {
+                    speed_root.update(cx, |this, cx| {
+                        this.set_slot_override_speed(&value, false, cx);
+                    });
+                }),
+                select_cx,
+            )
+            .width(px(POPUP_FIELD_WIDTH))
+            .min_menu_width(px(POPUP_FIELD_WIDTH))
+        });
         let subscriptions = vec![cx.observe(&model, |this, _, cx| {
             this.sync_slot_effort_choices(cx);
         })];
@@ -575,7 +661,14 @@ impl NativeRoot {
             model_field,
             effort,
             effort_select,
-            reset_focus: [cx.focus_handle(), cx.focus_handle(), cx.focus_handle()],
+            speed,
+            speed_select,
+            reset_focus: [
+                cx.focus_handle(),
+                cx.focus_handle(),
+                cx.focus_handle(),
+                cx.focus_handle(),
+            ],
             saving: false,
             error: None,
             _subscriptions: subscriptions,
@@ -658,6 +751,15 @@ impl NativeRoot {
     }
 
     pub(super) fn select_slot_override_runtime(&mut self, value: String, cx: &mut Context<Self>) {
+        self.set_slot_override_runtime(value, true, cx);
+    }
+
+    fn set_slot_override_runtime(
+        &mut self,
+        value: String,
+        sync_select: bool,
+        cx: &mut Context<Self>,
+    ) {
         let Some(slot) = self.popup_slot() else {
             return;
         };
@@ -675,13 +777,18 @@ impl NativeRoot {
         // unpinning the role's own runtime keeps them.
         if runtime != effective(&form.runtime) {
             form.effort.clear();
+            form.speed = None;
+            form.speed_select
+                .update(cx, |select, select_cx| select.set_value("", select_cx));
             form.model
                 .update(cx, |input, input_cx| input.reset("", input_cx));
         }
         form.runtime = next;
         let value = form.runtime.clone().unwrap_or_default();
-        form.runtime_select
-            .update(cx, |select, select_cx| select.set_value(value, select_cx));
+        if sync_select {
+            form.runtime_select
+                .update(cx, |select, select_cx| select.set_value(value, select_cx));
+        }
         self.request_model_catalog(&runtime, cx);
         self.sync_slot_model_choices(cx);
         self.sync_slot_effort_choices(cx);
@@ -704,6 +811,29 @@ impl NativeRoot {
             form.effort.clear();
         }
         self.sync_slot_effort_choices(cx);
+    }
+
+    fn reset_slot_override_speed(&mut self, cx: &mut Context<Self>) {
+        self.select_slot_override_speed("", cx);
+    }
+
+    pub(super) fn select_slot_override_speed(&mut self, value: &str, cx: &mut Context<Self>) {
+        self.set_slot_override_speed(value, true, cx);
+    }
+
+    fn set_slot_override_speed(&mut self, value: &str, sync_select: bool, cx: &mut Context<Self>) {
+        if let Some(form) = self.slot_override_form() {
+            form.speed = match value {
+                "standard" => Some(CodexSpeed::Standard),
+                "fast" => Some(CodexSpeed::Fast),
+                _ => None,
+            };
+            if sync_select {
+                form.speed_select
+                    .update(cx, |select, select_cx| select.set_value(value, select_cx));
+            }
+        }
+        cx.notify();
     }
 
     pub(crate) fn refresh_slot_override_runtimes(&mut self, cx: &mut Context<Self>) {
@@ -748,7 +878,7 @@ impl NativeRoot {
         cx.notify();
     }
 
-    /// Writes the three overrides to this slot only; the role never changes
+    /// Writes the overrides to this slot only; the role never changes
     /// here. A runtime left as it was is not sent, so a stored pin the
     /// catalog no longer knows survives an edit of the model or effort.
     pub(super) fn save_slot_overrides(&mut self, cx: &mut Context<Self>) {
@@ -784,6 +914,7 @@ impl NativeRoot {
             runtime_override,
             model_override: Some(trimmed_option(form.model.read(cx).text())),
             effort_override: Some(trimmed_option(&form.effort)),
+            codex_speed_override: Some(form.speed),
         };
         form.saving = true;
         form.error = None;
@@ -1005,8 +1136,36 @@ fn popup_view_rows(slot: &SlotWithRole) -> AnyElement {
                 setup.effort_overridden,
             ),
             format!("role: {}", role_value(slot.role.effort.as_deref())),
-            false,
+            setup.runtime == "codex",
         ))
+        .when(setup.runtime == "codex", |rows| {
+            rows.child(
+                div()
+                    .when(cfg!(test), |row| {
+                        row.debug_selector(|| "CREW_SLOT_SPEED_VIEW".into())
+                    })
+                    .child(row(
+                        "Speed",
+                        value(speed_label(setup.speed).into(), setup.speed_overridden),
+                        if own_runtime {
+                            format!("role: {}", speed_label(slot.role.codex_speed))
+                        } else {
+                            "Codex default".into()
+                        },
+                        false,
+                    )),
+            )
+            .children((setup.speed == Some(CodexSpeed::Fast)).then(|| {
+                div()
+                    .when(cfg!(test), |note| {
+                        note.debug_selector(|| "CREW_SLOT_SPEED_VIEW_NOTE".into())
+                    })
+                    .pl_4()
+                    .text_size(theme::text_meta())
+                    .text_color(theme::faint())
+                    .child("Fast uses more credits.")
+            }))
+        })
         .children((!own_runtime).then(runtime_note))
         .into_any_element()
 }

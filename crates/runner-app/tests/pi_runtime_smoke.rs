@@ -187,6 +187,7 @@ fn pi_real_binary_direct_mission_and_relaunch_resume() {
             )]),
             model: Some(model.clone()),
             effort: Some("off".into()),
+            codex_speed: None,
             permission_mode: PermissionMode::Default,
         },
     )

@@ -429,7 +429,7 @@ pub(super) fn lead_badge() -> AnyElement {
         .into_any_element()
 }
 
-/// A slot's effective runtime with its mark, then its model and effort, each
+/// A slot's effective runtime with its mark, then its model, effort, and Speed, each
 /// with a dot when the slot overrides it.
 pub(super) fn slot_setup_line(setup: &SlotSetup) -> gpui::Div {
     let icon = ChatIcon::for_runtime(&setup.runtime);
@@ -469,7 +469,7 @@ pub(super) fn slot_setup_line(setup: &SlotSetup) -> gpui::Div {
                 .child(runtime_display_name(&setup.runtime))
                 .children(setup.runtime_overridden.then(override_dot)),
         );
-    if setup.model.is_none() && setup.effort.is_none() {
+    if setup.model.is_none() && setup.effort.is_none() && setup.speed.is_none() {
         return line.child(separator()).child(
             div()
                 .flex_none()
@@ -484,6 +484,17 @@ pub(super) fn slot_setup_line(setup: &SlotSetup) -> gpui::Div {
         if let Some(text) = text {
             line = line.child(separator()).child(value(text, overridden));
         }
+    }
+    if let Some(speed) = setup.speed {
+        let label = match speed {
+            runner_backend::model::CodexSpeed::Standard => "Standard",
+            runner_backend::model::CodexSpeed::Fast => "Fast",
+        };
+        line = line.child(separator()).child(
+            value(label.into(), setup.speed_overridden).when(cfg!(test), |item| {
+                item.debug_selector(|| "CREW_SLOT_SPEED_ROW".into())
+            }),
+        );
     }
     line
 }

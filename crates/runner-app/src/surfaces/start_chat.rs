@@ -10,7 +10,7 @@ use gpui::{
     div, px, rems, AnyElement, Context, FontWeight, KeyDownEvent, PathPromptOptions, ScrollHandle,
     SharedString, Window,
 };
-use runner_backend::model::Role;
+use runner_backend::model::{CodexSpeed, Role};
 use runner_backend::ops::project::ProjectScope;
 use runner_backend::ops::runtime::{
     filter_selectable_runtime_catalog, RuntimeCatalogEntry, RuntimeCatalogOption,
@@ -94,6 +94,7 @@ enum StartChatSelection {
     RoleRuntime,
     Runtime,
     Effort,
+    Speed,
 }
 
 pub(crate) struct StartChatModal {
@@ -106,6 +107,7 @@ pub(crate) struct StartChatModal {
     runtime_name: Option<String>,
     role_runtime_override: Option<String>,
     effort: String,
+    speed: String,
     title: Entity<TextField>,
     cwd: Entity<TextField>,
     model: Entity<TextField>,
@@ -114,6 +116,7 @@ pub(crate) struct StartChatModal {
     role_runtime_select: Entity<StyledSelect>,
     runtime_select: Entity<StyledSelect>,
     effort_select: Entity<StyledSelect>,
+    speed_select: Entity<StyledSelect>,
     scroll_handle: ScrollHandle,
     scrollbar: Entity<Scrollbar>,
     role_mode_focus: FocusHandle,
@@ -159,6 +162,26 @@ impl StartChatModal {
         }
     }
 
+    fn codex_speed_visible(&self) -> bool {
+        match self.mode {
+            ChatMode::Role => {
+                self.role_runtime_override
+                    .as_deref()
+                    .or_else(|| self.selected_role().map(|role| role.runtime.as_str()))
+                    == Some("codex")
+            }
+            ChatMode::Runtime => self.runtime_name.as_deref() == Some("codex"),
+        }
+    }
+
+    fn effective_speed(&self) -> Option<CodexSpeed> {
+        parse_speed(&self.speed).or_else(|| {
+            (self.mode == ChatMode::Role && self.codex_speed_visible())
+                .then(|| self.selected_role().and_then(|role| role.codex_speed))
+                .flatten()
+        })
+    }
+
     fn can_submit(&self) -> bool {
         !self.submitting
             && match self.mode {
@@ -181,12 +204,14 @@ enum StartRequest {
         runtime: Option<String>,
         model: Option<String>,
         effort: Option<String>,
+        speed: Option<CodexSpeed>,
         cwd: Option<String>,
     },
     Runtime {
         runtime: String,
         model: Option<String>,
         effort: Option<String>,
+        speed: Option<CodexSpeed>,
         cwd: Option<String>,
     },
 }
@@ -785,6 +810,19 @@ impl NativeRoot {
             .width(px(232.))
             .min_menu_width(px(240.))
         });
+        let speed_handler = selection_handler(&root, StartChatSelection::Speed);
+        let speed_select = cx.new(|select_cx| {
+            StyledSelect::new(
+                "start-chat-speed",
+                select_cx.focus_handle(),
+                "inherit",
+                speed_options(None),
+                speed_handler,
+                select_cx,
+            )
+            .width(px(FIELD_WIDTH))
+            .min_menu_width(px(FIELD_WIDTH))
+        });
         let model_field = cx.new(|model_cx| ModelField::new(model_input.clone(), &[], model_cx));
         let scroll_handle = ScrollHandle::new();
         let scroll_owner = cx.entity_id();
@@ -813,6 +851,7 @@ impl NativeRoot {
             runtime_name,
             role_runtime_override: None,
             effort: String::new(),
+            speed: "inherit".into(),
             title: title_input,
             cwd: cwd_input,
             model: model_input,
@@ -821,6 +860,7 @@ impl NativeRoot {
             role_runtime_select,
             runtime_select,
             effort_select,
+            speed_select,
             scroll_handle,
             scrollbar,
             role_mode_focus,
@@ -983,6 +1023,7 @@ impl NativeRoot {
         modal.mode = mode;
         modal.role_runtime_override = None;
         modal.effort.clear();
+        modal.speed = "inherit".into();
         modal
             .model
             .update(cx, |input, input_cx| input.reset("", input_cx));
@@ -1040,6 +1081,7 @@ impl NativeRoot {
                 modal.role_runtime_select.update(cx, |select, select_cx| {
                     select.set_options(options, select_cx)
                 });
+                sync_runtime_controls(modal, cx);
             }
             StartChatSelection::RoleRuntime => {
                 modal.role_runtime_override = (!value.is_empty()).then(|| value.to_owned());
@@ -1063,6 +1105,7 @@ impl NativeRoot {
                 sync_runtime_controls(modal, cx);
             }
             StartChatSelection::Effort => modal.effort = value.to_owned(),
+            StartChatSelection::Speed => modal.speed = value.to_owned(),
         }
         if let Some(runtime) = self
             .start_chat_modal
@@ -1167,6 +1210,10 @@ impl NativeRoot {
         );
         let model = normalized_value(modal.model.read(cx).text());
         let effort = normalized_value(&modal.effort);
+        let speed = modal
+            .codex_speed_visible()
+            .then(|| parse_speed(&modal.speed))
+            .flatten();
         let title = user_chat_title(modal.title.read(cx));
         let scope = modal.scope.clone();
         let request = build_start_request(
@@ -1176,6 +1223,7 @@ impl NativeRoot {
             modal.role_runtime_override.as_deref(),
             model,
             effort,
+            speed,
             cwd,
         )
         .expect("validated start chat selection");
@@ -1213,13 +1261,15 @@ impl NativeRoot {
                     runtime,
                     model,
                     effort,
+                    speed,
                     cwd,
-                } => runner_backend::ops::session::session_start_direct(
+                } => runner_backend::ops::session::session_start_direct_with_speed(
                     self.core(cx),
                     role_id,
                     runtime,
                     model,
                     effort,
+                    speed,
                     scope,
                     cwd,
                     Some(initial_size.0),
@@ -1229,9 +1279,10 @@ impl NativeRoot {
                     runtime,
                     model,
                     effort,
+                    speed,
                     cwd,
                 } => {
-                    runner_backend::ops::session::session_start_runtime(
+                    runner_backend::ops::session::session_start_runtime_with_speed(
                         self.core(cx),
                         &runtime,
                         scope,
@@ -1240,6 +1291,7 @@ impl NativeRoot {
                         Some(initial_size.1),
                         model,
                         effort,
+                        speed,
                     )?
                     .session
                 }
@@ -1370,6 +1422,9 @@ impl NativeRoot {
                     modal.effort_select.clone(),
                     cx,
                 ))
+            })
+            .when(modal.codex_speed_visible(), |fields| {
+                fields.child(render_start_chat_speed_field(modal, cx))
             });
 
         let direct_fields = div()
@@ -1435,6 +1490,9 @@ impl NativeRoot {
                     modal.effort_select.clone(),
                     cx,
                 ))
+            })
+            .when(modal.codex_speed_visible(), |fields| {
+                fields.child(render_start_chat_speed_field(modal, cx))
             });
 
         let root = cx.entity();
@@ -1752,6 +1810,28 @@ fn option_select_options(options: &[RuntimeCatalogOption]) -> Vec<SelectOption> 
         .collect()
 }
 
+fn parse_speed(value: &str) -> Option<CodexSpeed> {
+    match value {
+        "standard" => Some(CodexSpeed::Standard),
+        "fast" => Some(CodexSpeed::Fast),
+        _ => None,
+    }
+}
+
+fn speed_options(role: Option<&Role>) -> Vec<SelectOption> {
+    let inherit = match role.and_then(|role| role.codex_speed) {
+        Some(CodexSpeed::Standard) => "Role default (Standard)",
+        Some(CodexSpeed::Fast) => "Role default (Fast)",
+        None if role.is_some() => "Role default (Inherit)",
+        None => "Inherit",
+    };
+    vec![
+        SelectOption::new("inherit", inherit),
+        SelectOption::new("standard", "Standard"),
+        SelectOption::new("fast", "Fast"),
+    ]
+}
+
 fn sync_runtime_controls(modal: &mut StartChatModal, cx: &mut Context<NativeRoot>) {
     let runtime = modal.active_runtime().cloned();
     let models = runtime
@@ -1771,6 +1851,22 @@ fn sync_runtime_controls(modal: &mut StartChatModal, cx: &mut Context<NativeRoot
         input.set_placeholder(placeholder, input_cx)
     });
     sync_effort_control(modal, cx);
+    sync_speed_control(modal, cx);
+}
+
+fn sync_speed_control(modal: &mut StartChatModal, cx: &mut Context<NativeRoot>) {
+    let visible = modal.codex_speed_visible();
+    if !visible {
+        modal.speed = "inherit".into();
+    }
+    let role = (modal.mode == ChatMode::Role && visible)
+        .then(|| modal.selected_role().filter(|role| role.runtime == "codex"))
+        .flatten();
+    modal.speed_select.update(cx, |select, select_cx| {
+        select.set_options(speed_options(role), select_cx);
+        select.set_value(modal.speed.clone(), select_cx);
+        select.set_disabled(modal.submitting || !visible, select_cx);
+    });
 }
 
 fn sync_effort_control(modal: &mut StartChatModal, cx: &mut Context<NativeRoot>) {
@@ -1844,6 +1940,9 @@ fn start_chat_focus_order(modal: &StartChatModal, cx: &Context<NativeRoot>) -> V
             order.push(modal.effort_select.read(cx).focus_handle());
         }
     }
+    if modal.codex_speed_visible() {
+        order.push(modal.speed_select.read(cx).focus_handle());
+    }
     order.push(modal.title.read(cx).focus_handle());
     order.push(modal.cwd.read(cx).focus_handle());
     order.push(modal.browse_focus.clone());
@@ -1890,6 +1989,37 @@ fn render_shared_model_effort_fields(
                 ),
             )
         })
+        .into_any_element()
+}
+
+fn render_start_chat_speed_field(modal: &StartChatModal, cx: &Context<NativeRoot>) -> AnyElement {
+    div()
+        .when(cfg!(test), |field| {
+            field.debug_selector(|| "START_CHAT_SPEED_FIELD".into())
+        })
+        .flex()
+        .flex_col()
+        .gap_1()
+        .child(
+            Field::new(
+                "start-chat-speed-field",
+                "Speed",
+                modal.speed_select.clone(),
+            )
+            .focus_target(modal.speed_select.read(cx).focus_handle())
+            .emphasized(true),
+        )
+        .children(
+            (modal.effective_speed() == Some(CodexSpeed::Fast)).then(|| {
+                div()
+                    .when(cfg!(test), |note| {
+                        note.debug_selector(|| "START_CHAT_SPEED_NOTE".into())
+                    })
+                    .text_size(theme::text_meta())
+                    .text_color(theme::faint())
+                    .child("Fast uses more credits.")
+            }),
+        )
         .into_any_element()
 }
 
@@ -2003,6 +2133,7 @@ fn normalized_value(value: &str) -> Option<String> {
     (!value.is_empty()).then(|| value.to_owned())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_start_request(
     mode: ChatMode,
     role_id: Option<&str>,
@@ -2010,6 +2141,7 @@ fn build_start_request(
     role_runtime_override: Option<&str>,
     model: Option<String>,
     effort: Option<String>,
+    speed: Option<CodexSpeed>,
     cwd: Option<String>,
 ) -> Option<StartRequest> {
     match mode {
@@ -2018,12 +2150,14 @@ fn build_start_request(
             runtime: role_runtime_override.map(str::to_owned),
             model: role_runtime_override.and(model),
             effort: role_runtime_override.and(effort),
+            speed,
             cwd,
         }),
         ChatMode::Runtime => runtime_name.map(|runtime| StartRequest::Runtime {
             runtime: runtime.to_owned(),
             model,
             effort,
+            speed,
             cwd,
         }),
     }
@@ -2046,9 +2180,8 @@ fn write_start_chat_mode(app_data_dir: &Path, mode: ChatMode) -> std::io::Result
 mod tests {
     use super::*;
 
-    #[cfg(windows)]
     #[test]
-    fn mode_selector_defaults_to_direct_and_keeps_its_width_when_switching() {
+    fn direct_chat_modal_shows_codex_speed_and_hides_it_for_other_runtimes() {
         let _theme = crate::theme_snapshot::ThemeGuard::new();
         use gpui::{size, Render, TestAppContext, VisualTestContext};
         use runner_backend::{db, event_bus, events, mcp, router, session, shell_path, windows};
@@ -2149,6 +2282,64 @@ mod tests {
             assert!((role.size.width - direct.size.width).abs() <= px(1.));
             assert!(role.size.width > px(200.));
         }
+
+        host.update(&mut window, |host, _, cx| {
+            host.0.update(cx, |root, cx| {
+                let modal = root.start_chat_modal.as_mut().unwrap();
+                modal.runtime_name = Some("codex".into());
+                sync_runtime_controls(modal, cx);
+                cx.notify();
+            });
+            cx.notify();
+        })
+        .unwrap();
+        window.run_until_parked();
+        assert!(window.debug_bounds("START_CHAT_SPEED_FIELD").is_some());
+        assert!(window.debug_bounds("START_CHAT_SPEED_NOTE").is_none());
+
+        host.update(&mut window, |host, _, cx| {
+            host.0.update(cx, |root, cx| {
+                root.select_start_chat_choice(StartChatSelection::Speed, "fast", cx);
+            });
+            cx.notify();
+        })
+        .unwrap();
+        window.run_until_parked();
+        assert!(window.debug_bounds("START_CHAT_SPEED_NOTE").is_some());
+
+        host.update(&mut window, |host, _, cx| {
+            host.0.update(cx, |root, cx| {
+                let modal = root.start_chat_modal.as_mut().unwrap();
+                modal.runtime_name = Some("claude-code".into());
+                sync_runtime_controls(modal, cx);
+                assert!(!modal.codex_speed_visible());
+                cx.notify();
+            });
+            cx.notify();
+        })
+        .unwrap();
+        window.run_until_parked();
+        assert_eq!(
+            host.read_with(&window, |host, cx| {
+                host.0
+                    .read(cx)
+                    .start_chat_modal
+                    .as_ref()
+                    .unwrap()
+                    .runtime_name
+                    .clone()
+            })
+            .unwrap(),
+            Some("claude-code".into())
+        );
+        assert_eq!(
+            host.read_with(&window, |host, cx| {
+                let modal = host.0.read(cx).start_chat_modal.as_ref().unwrap();
+                (modal.codex_speed_visible(), modal.speed.clone())
+            })
+            .unwrap(),
+            (false, "inherit".into())
+        );
     }
 
     #[test]
@@ -2308,6 +2499,7 @@ mod tests {
                 None,
                 Some("gpt-5.6-sol".into()),
                 Some("high".into()),
+                Some(CodexSpeed::Fast),
                 Some("/repo".into()),
             ),
             Some(StartRequest::Role {
@@ -2315,6 +2507,7 @@ mod tests {
                 runtime: None,
                 model: None,
                 effort: None,
+                speed: Some(CodexSpeed::Fast),
                 cwd: Some("/repo".into()),
             })
         );
@@ -2327,12 +2520,14 @@ mod tests {
                 Some("opus".into()),
                 Some("max".into()),
                 None,
+                None,
             ),
             Some(StartRequest::Role {
                 role_id: "coder".into(),
                 runtime: Some("claude-code".into()),
                 model: Some("opus".into()),
                 effort: Some("max".into()),
+                speed: None,
                 cwd: None,
             })
         );
@@ -2344,17 +2539,19 @@ mod tests {
                 Some("claude-code"),
                 Some("gpt-5.6-sol".into()),
                 Some("high".into()),
+                Some(CodexSpeed::Standard),
                 None,
             ),
             Some(StartRequest::Runtime {
                 runtime: "codex".into(),
                 model: Some("gpt-5.6-sol".into()),
                 effort: Some("high".into()),
+                speed: Some(CodexSpeed::Standard),
                 cwd: None,
             })
         );
         assert_eq!(
-            build_start_request(ChatMode::Role, None, None, None, None, None, None),
+            build_start_request(ChatMode::Role, None, None, None, None, None, None, None),
             None
         );
     }

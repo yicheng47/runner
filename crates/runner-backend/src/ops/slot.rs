@@ -18,7 +18,7 @@
 //     unique by the schema.
 //   - `slot_handle` is unique within a crew (schema-enforced).
 
-use crate::model::Runtime;
+use crate::model::{CodexSpeed, Runtime};
 use std::collections::HashMap;
 
 use chrono::Utc;
@@ -66,6 +66,10 @@ pub struct UpdateSlotInput {
     /// blank to inherit, or pass an effort level to override.
     #[serde(default, deserialize_with = "double_option")]
     pub effort_override: Option<Option<String>>,
+    /// Per-slot Codex Speed. Omit to preserve, pass `null` to inherit
+    /// the role choice, or pass `standard` / `fast` to override it.
+    #[serde(default, deserialize_with = "double_option")]
+    pub codex_speed_override: Option<Option<CodexSpeed>>,
 }
 
 /// Present-vs-missing deserializer for the clear/preserve/set field.
@@ -74,7 +78,7 @@ pub struct UpdateSlotInput {
 /// "preserve". Any present value — including `null` — lands here and
 /// wraps in `Some`; only a missing key falls through to
 /// `#[serde(default)]`.
-fn double_option<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+pub(crate) fn double_option<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
 where
     D: serde::Deserializer<'de>,
     T: Deserialize<'de>,
@@ -220,6 +224,7 @@ pub fn create(
             runtime_override,
             model_override,
             effort_override: None,
+            codex_speed_override: None,
             added_at,
         },
     )
@@ -270,6 +275,7 @@ pub fn update(
     let effort_override = input
         .effort_override
         .map(|value| normalize_override_value(value.as_deref()));
+    let speed_override = input.codex_speed_override;
     let role = role::get(conn, &existing.role_id)?;
     let final_runtime_override = runtime_override
         .clone()
@@ -294,6 +300,17 @@ pub fn update(
             existing.effort_override.clone()
         }
     });
+    let final_speed_override = if next_runtime == Runtime::Codex.key() {
+        speed_override.unwrap_or({
+            if engine_changed {
+                None
+            } else {
+                existing.codex_speed_override
+            }
+        })
+    } else {
+        None
+    };
 
     // Both fields commit atomically: a handle collision must not
     // leave a half-applied runtime change behind (or vice versa).
@@ -306,6 +323,9 @@ pub fn update(
     }
     if effort_override.is_some() || engine_changed {
         repo::slot::set_effort_override(&tx, slot_id, final_effort_override.as_deref())?;
+    }
+    if speed_override.is_some() || engine_changed || existing.codex_speed_override.is_some() {
+        repo::slot::set_codex_speed_override(&tx, slot_id, final_speed_override)?;
     }
     repo::slot::set_slot_handle(&tx, slot_id, &slot_handle).map_err(|e| {
         match e.sqlite_error_code() {
@@ -542,6 +562,7 @@ mod tests {
                 env: HashMap::new(),
                 model: None,
                 effort: None,
+                codex_speed: None,
                 permission_mode: crate::router::runtime::PermissionMode::Auto,
             },
         )
@@ -1065,6 +1086,103 @@ mod tests {
     }
 
     #[test]
+    fn codex_speed_override_round_trips_and_clears_with_runtime() {
+        let pool = pool();
+        let mut conn = pool.get().unwrap();
+        let crew = seed_crew(&conn, "Speed");
+        let role_id = seed_role(&conn, "speed");
+        let role = repo::role::get(&conn, &role_id).unwrap().unwrap();
+        let mut row = repo::role::RoleRow::from(&role);
+        row.runtime = "codex".into();
+        row.command = "codex".into();
+        row.codex_speed = Some(CodexSpeed::Fast);
+        repo::role::update(&conn, &row).unwrap();
+        let slot = create(&mut conn, &crew, &role_id, "speed", None, None).unwrap();
+        assert_eq!(slot.slot.codex_speed_override, None);
+
+        let standard = update(
+            &mut conn,
+            &slot.slot.id,
+            serde_json::from_str(r#"{"codex_speed_override":"standard"}"#).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            standard.slot.codex_speed_override,
+            Some(CodexSpeed::Standard)
+        );
+        assert_eq!(
+            list(&conn, &crew).unwrap()[0].slot.codex_speed_override,
+            Some(CodexSpeed::Standard)
+        );
+
+        let preserved = update(
+            &mut conn,
+            &slot.slot.id,
+            serde_json::from_str(r#"{"slot_handle":"speed-renamed"}"#).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            preserved.slot.codex_speed_override,
+            Some(CodexSpeed::Standard)
+        );
+
+        let inherited = update(
+            &mut conn,
+            &slot.slot.id,
+            serde_json::from_str(r#"{"codex_speed_override":null}"#).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(inherited.slot.codex_speed_override, None);
+
+        update(
+            &mut conn,
+            &slot.slot.id,
+            UpdateSlotInput {
+                codex_speed_override: Some(Some(CodexSpeed::Fast)),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let other_runtime = update(
+            &mut conn,
+            &slot.slot.id,
+            UpdateSlotInput {
+                runtime_override: Some(Some(Runtime::ClaudeCode)),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(other_runtime.slot.codex_speed_override, None);
+
+        let inheriting = create(&mut conn, &crew, &role_id, "inheriting", None, None).unwrap();
+        update(
+            &mut conn,
+            &inheriting.slot.id,
+            UpdateSlotInput {
+                codex_speed_override: Some(Some(CodexSpeed::Fast)),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        role::update(
+            &conn,
+            &role_id,
+            role::UpdateRoleInput {
+                runtime: Some(Runtime::ClaudeCode),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            repo::slot::get(&conn, &inheriting.slot.id)
+                .unwrap()
+                .unwrap()
+                .codex_speed_override,
+            None
+        );
+    }
+
+    #[test]
     fn slot_json_inputs_reject_unknown_runtime_overrides() {
         for runtime in ["codex", "aider-future"] {
             let input = serde_json::json!({
@@ -1094,6 +1212,7 @@ mod tests {
         assert_eq!(missing.runtime_override, None);
         assert_eq!(missing.model_override, None);
         assert_eq!(missing.effort_override, None);
+        assert_eq!(missing.codex_speed_override, None);
 
         let null: UpdateSlotInput = serde_json::from_str(r#"{"runtime_override": null}"#).unwrap();
         assert_eq!(null.runtime_override, Some(None));
@@ -1113,6 +1232,10 @@ mod tests {
         let effort_null: UpdateSlotInput =
             serde_json::from_str(r#"{"effort_override": null}"#).unwrap();
         assert_eq!(effort_null.effort_override, Some(None));
+
+        let speed_null: UpdateSlotInput =
+            serde_json::from_str(r#"{"codex_speed_override": null}"#).unwrap();
+        assert_eq!(speed_null.codex_speed_override, Some(None));
 
         let effort_set: UpdateSlotInput =
             serde_json::from_str(r#"{"effort_override": "high"}"#).unwrap();

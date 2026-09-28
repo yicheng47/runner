@@ -353,6 +353,7 @@ fn create_test_role_with_args(
             env: Default::default(),
             model: Some("opus".into()),
             effort: None,
+            codex_speed: None,
             permission_mode: runner_backend::router::runtime::PermissionMode::AcceptEdits,
         },
     )
@@ -780,6 +781,7 @@ fn a_legacy_shell_role_saves_only_after_an_agent_is_picked() {
             env_json: Some(Default::default()),
             model: None,
             effort: None,
+            codex_speed: None,
             created_at: timestamp,
             updated_at: timestamp,
         },
@@ -945,6 +947,104 @@ fn save_in_place_goes_through_the_shared_submit() {
     );
     let shown = page.read(|root| root.role_surfaces.detail.role.clone().unwrap());
     assert_eq!(shown.display_name, "Renamed coder");
+}
+
+#[test]
+fn codex_speed_edit_reloads_and_runtime_switch_clears_it() {
+    use runner_backend::model::CodexSpeed;
+    let mut page = role_page_harness("role-codex-speed");
+    let role = runner_backend::ops::role::role_create(
+        &page.core,
+        serde_json::from_value(serde_json::json!({
+            "handle": "speed-coder",
+            "display_name": "Speed coder",
+            "runtime": "codex",
+            "command": "codex",
+            "codex_speed": "fast"
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    page.open_role("speed-coder");
+    assert!(page.visual.debug_bounds("ROLE_SPEED_DETAIL").is_some());
+    page.host
+        .update(&mut page.visual, |root, window, cx| {
+            root.open_role_edit(role.clone(), window, cx)
+        })
+        .unwrap();
+    page.visual.run_until_parked();
+    assert!(page.visual.debug_bounds("ROLE_SPEED_EDIT").is_some());
+    assert_eq!(
+        page.read(|root| root.role_surfaces.edit.as_ref().unwrap().speed.clone()),
+        "fast"
+    );
+    page.host
+        .update(&mut page.visual, |root, _, cx| {
+            let form = root.role_surfaces.edit.as_mut().unwrap();
+            form.speed = "standard".into();
+            form.speed_select
+                .update(cx, |select, cx| select.set_value("standard", cx));
+            cx.notify();
+        })
+        .unwrap();
+    page.click("ROLE_EDIT_SAVE");
+    let stored = runner_backend::ops::role::role_get(&page.core, &role.id).unwrap();
+    assert_eq!(stored.codex_speed, Some(CodexSpeed::Standard));
+    page.host
+        .update(&mut page.visual, |root, window, cx| {
+            root.open_role_edit(stored, window, cx);
+            root.select_role_edit_runtime("claude-code".into(), cx);
+        })
+        .unwrap();
+    page.visual.run_until_parked();
+    assert_eq!(
+        page.read(|root| root.role_surfaces.edit.as_ref().unwrap().speed.clone()),
+        "inherit"
+    );
+    page.click("ROLE_EDIT_SAVE");
+    let stored = runner_backend::ops::role::role_get(&page.core, &role.id).unwrap();
+    assert_eq!(stored.runtime, "claude-code");
+    assert_eq!(stored.codex_speed, None);
+}
+
+#[test]
+fn create_role_fast_speed_shows_credit_note_and_resets_on_runtime_switch() {
+    let mut page = role_page_harness("role-create-speed");
+    page.host
+        .update(&mut page.visual, |root, window, cx| {
+            root.open_create_role(window, cx);
+            root.select_create_role_runtime("codex".into(), cx);
+        })
+        .unwrap();
+    assert_eq!(
+        page.read(|root| root.role_surfaces.create.as_ref().unwrap().speed.clone()),
+        "inherit"
+    );
+    page.host
+        .update(&mut page.visual, |root, _, cx| {
+            let form = root.role_surfaces.create.as_mut().unwrap();
+            form.speed = "fast".into();
+            form.speed_select
+                .update(cx, |select, cx| select.set_value("fast", cx));
+            cx.notify();
+        })
+        .unwrap();
+    page.visual.run_until_parked();
+    assert!(
+        page.visual.debug_bounds("NEW_ROLE_SPEED_NOTE").is_some(),
+        "Fast credit note must be visible without opening a tooltip"
+    );
+    page.host
+        .update(&mut page.visual, |root, _, cx| {
+            root.select_create_role_runtime("claude-code".into(), cx)
+        })
+        .unwrap();
+    let (runtime, speed) = page.read(|root| {
+        let form = root.role_surfaces.create.as_ref().unwrap();
+        (form.runtime.clone(), form.speed.clone())
+    });
+    assert_eq!(runtime, "claude-code");
+    assert_eq!(speed, "inherit");
 }
 
 #[test]

@@ -21,6 +21,7 @@ use gpui::{
     Window,
 };
 use runner_app::ui::{focus_ring, Button, ButtonVariant, RoleAvatar, WorkingDirField};
+use runner_backend::model::CodexSpeed;
 use runner_backend::model::Role;
 use runner_backend::ops::role::RoleActivity;
 use runner_backend::ops::slot::CrewMembership;
@@ -300,6 +301,30 @@ impl NativeRoot {
                         .flex_1(),
                     ),
             )
+            .children((role.runtime == "codex").then(|| {
+                setup_row(
+                    "Speed",
+                    setup_value(
+                        match role.codex_speed {
+                            None => "Inherit",
+                            Some(CodexSpeed::Standard) => "Standard",
+                            Some(CodexSpeed::Fast) => "Fast",
+                        },
+                        column,
+                        false,
+                        role.codex_speed.is_none(),
+                    ),
+                )
+                .when(cfg!(test), |row| {
+                    row.debug_selector(|| "ROLE_SPEED_DETAIL".into())
+                })
+                .children((role.codex_speed == Some(CodexSpeed::Fast)).then(|| {
+                    div()
+                        .text_size(theme::text_meta())
+                        .text_color(theme::faint())
+                        .child("Fast uses more credits.")
+                }))
+            }))
             .children(role_permission_mode(&role).map(|mode| {
                 setup_row(
                     "Permissions",
@@ -472,6 +497,18 @@ impl NativeRoot {
                     ))
                     .child(edit_row("Model", form.model_field.clone()))
                     .children(has_efforts.then(|| edit_row("Effort", form.effort_select.clone())))
+                    .children((form.runtime == "codex").then(|| {
+                        edit_row("Speed", form.speed_select.clone())
+                            .when(cfg!(test), |row| {
+                                row.debug_selector(|| "ROLE_SPEED_EDIT".into())
+                            })
+                            .children((form.speed == "fast").then(|| {
+                                div()
+                                    .text_size(theme::text_meta())
+                                    .text_color(theme::faint())
+                                    .child("Fast uses more credits.")
+                            }))
+                    }))
                     .children(has_permissions.then(|| {
                         edit_row("Permissions", form.permission_select.clone()).child(
                             // Wraps at the column's width from the first sizing

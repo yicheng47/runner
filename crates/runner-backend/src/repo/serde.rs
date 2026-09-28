@@ -84,3 +84,48 @@ pub mod json_text_opt {
             .transpose()
     }
 }
+
+pub mod runtime_speed_json {
+    use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
+
+    use crate::model::CodexSpeed;
+
+    #[derive(Serialize, Deserialize)]
+    struct RuntimeOptions {
+        #[serde(default)]
+        codex: Option<CodexOptions>,
+    }
+
+    #[derive(Serialize, Deserialize)]
+    struct CodexOptions {
+        #[serde(default)]
+        speed: Option<CodexSpeed>,
+    }
+
+    pub fn value(speed: Option<CodexSpeed>) -> Option<String> {
+        speed.map(|speed| {
+            serde_json::to_string(&RuntimeOptions {
+                codex: Some(CodexOptions { speed: Some(speed) }),
+            })
+            .expect("runtime options serialize")
+        })
+    }
+
+    pub fn serialize<S: Serializer>(speed: &Option<CodexSpeed>, s: S) -> Result<S::Ok, S::Error> {
+        match value(*speed) {
+            Some(text) => s.serialize_some(&text),
+            None => s.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<CodexSpeed>, D::Error> {
+        let raw: Option<String> = Option::deserialize(d)?;
+        raw.map(|text| {
+            serde_json::from_str::<RuntimeOptions>(&text)
+                .map(|options| options.codex.and_then(|codex| codex.speed))
+                .map_err(de::Error::custom)
+        })
+        .transpose()
+        .map(Option::flatten)
+    }
+}

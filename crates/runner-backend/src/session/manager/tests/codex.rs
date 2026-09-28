@@ -1,6 +1,66 @@
 use super::*;
 
 #[test]
+fn codex_speed_follows_role_args_for_direct_and_mission_spawns() {
+    use crate::model::CodexSpeed;
+    let root = tempfile::tempdir().unwrap();
+    for mission in [false, true] {
+        for key in [None, Some("11111111-1111-4111-8111-111111111111")] {
+            for (speed, tier) in [
+                (None, None),
+                (Some(CodexSpeed::Standard), Some("default")),
+                (Some(CodexSpeed::Fast), Some("fast")),
+            ] {
+                let mut role = role("codex", &["-c", "service_tier=manual"]);
+                role.runtime = "codex".into();
+                role.codex_speed = speed;
+                let mut spec = SpawnSpec {
+                    codex_pending_turn: None,
+                    session_id: "speed-spawn".into(),
+                    cwd: None,
+                    command: role.command.clone(),
+                    args: role.args.clone(),
+                    env: BTreeMap::new(),
+                    mission,
+                    shim_dir: None,
+                    bundled_bin_dir: None,
+                    shell_path: None,
+                    initial_size: None,
+                };
+                SessionManager::apply_runtime_args(
+                    &mut spec,
+                    &role,
+                    &router::runtime::resume_plan(Some(Runtime::Codex), key),
+                    root.path(),
+                    None,
+                    Some("first turn"),
+                    None,
+                );
+                let tiers = spec
+                    .args
+                    .windows(2)
+                    .filter_map(|pair| {
+                        (pair[0] == "-c")
+                            .then(|| pair[1].strip_prefix("service_tier="))
+                            .flatten()
+                    })
+                    .collect::<Vec<_>>();
+                match tier {
+                    Some(tier) => assert_eq!(tiers, ["manual", tier]),
+                    None => assert_eq!(tiers, ["manual"]),
+                }
+                if let Some(key) = key {
+                    assert_eq!(&spec.args[..2], &["resume", key]);
+                    assert!(!spec.args.contains(&"first turn".to_string()));
+                } else {
+                    assert_eq!(spec.args.last().map(String::as_str), Some("first turn"));
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn codex_spawn_composes_hooks_without_changing_user_home_and_respects_overrides() {
     use crate::session::codex_status::{GENERATION_ENV, PATH_ENV};
     let root = tempfile::tempdir().unwrap();

@@ -415,6 +415,7 @@ fn role(command: &str, args: &[&str]) -> Role {
         env: HashMap::new(),
         model: None,
         effort: None,
+        codex_speed: None,
         created_at: Utc::now(),
         updated_at: Utc::now(),
     }
@@ -439,6 +440,7 @@ fn slot_for(role: &Role) -> crate::model::Slot {
         runtime_override: None,
         model_override: None,
         effort_override: None,
+        codex_speed_override: None,
         added_at: Utc::now(),
     }
 }

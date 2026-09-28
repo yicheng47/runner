@@ -17,6 +17,22 @@ pub use runner_core::model::{Event, EventDraft, EventKind, SignalType};
 pub type Timestamp = DateTime<Utc>;
 pub type Ulid = String;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum CodexSpeed {
+    Standard,
+    Fast,
+}
+
+impl CodexSpeed {
+    pub fn service_tier(self) -> &'static str {
+        match self {
+            Self::Standard => "default",
+            Self::Fast => "fast",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Crew {
     pub id: String,
@@ -62,6 +78,8 @@ pub struct Role {
     /// the agent's own default. Column lives in `0001_init.sql`.
     #[serde(default)]
     pub effort: Option<String>,
+    #[serde(default)]
+    pub codex_speed: Option<CodexSpeed>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
 }
@@ -92,6 +110,8 @@ pub struct Slot {
     /// resolution, with the same inheritance semantics as model.
     #[serde(default)]
     pub effort_override: Option<String>,
+    #[serde(default)]
+    pub codex_speed_override: Option<CodexSpeed>,
     pub added_at: Timestamp,
 }
 

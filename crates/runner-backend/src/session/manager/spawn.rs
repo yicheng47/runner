@@ -1,5 +1,5 @@
 use super::*;
-use crate::model::Runtime;
+use crate::model::{CodexSpeed, Runtime};
 
 use std::io::{BufRead, BufReader, Read};
 use std::process::{Command, Stdio};
@@ -744,6 +744,7 @@ impl SessionManager {
             plan.resuming,
             role.model.as_deref(),
             role.effort.as_deref(),
+            role.codex_speed,
             system_prompt_path
                 .map(|path| path.to_string_lossy())
                 .as_deref(),
@@ -824,6 +825,9 @@ impl SessionManager {
         // 527): converge the row's permission flags to the setting,
         // leaving every other arg alone. Direct chats never pass here.
         let mut role = resolution.effective.unwrap_or_else(|| role.clone());
+        if Runtime::parse(&role.runtime) == Some(Runtime::Codex) {
+            role.codex_speed = slot.codex_speed_override.or(role.codex_speed);
+        }
         role.args = router::runtime::apply_mission_permission_mode(
             Runtime::parse(&role.runtime),
             &role.args,
@@ -942,6 +946,9 @@ impl SessionManager {
                 row.agent_model = role.model.clone();
                 row.agent_effort = role.effort.clone();
             }
+            row.agent_speed = (Runtime::parse(&role.runtime) == Some(Runtime::Codex))
+                .then_some(slot.codex_speed_override)
+                .flatten();
             crate::repo::session::insert(&conn, &row)?;
             Ok(())
         })();
@@ -1398,11 +1405,46 @@ impl SessionManager {
         events: Arc<dyn SessionEvents>,
         first_turn: Option<String>,
     ) -> Result<SpawnedSession> {
+        self.spawn_direct_with_speed(
+            role,
+            runtime_override,
+            model_override,
+            effort_override,
+            None,
+            project_id,
+            cwd,
+            cols,
+            rows,
+            app_data_dir,
+            pool,
+            events,
+            first_turn,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn spawn_direct_with_speed(
+        self: &Arc<Self>,
+        role: &Role,
+        runtime_override: Option<&str>,
+        model_override: Option<&str>,
+        effort_override: Option<&str>,
+        speed_override: Option<CodexSpeed>,
+        project_id: Option<&str>,
+        cwd: Option<&str>,
+        cols: Option<u16>,
+        rows: Option<u16>,
+        app_data_dir: &Path,
+        pool: Arc<DbPool>,
+        events: Arc<dyn SessionEvents>,
+        first_turn: Option<String>,
+    ) -> Result<SpawnedSession> {
         self.spawn_direct_inner(
             role,
             runtime_override,
             model_override,
             effort_override,
+            speed_override,
             Some(role.id.as_str()),
             project_id,
             cwd,
@@ -1434,6 +1476,7 @@ impl SessionManager {
             None,
             None,
             None,
+            None,
             project_id,
             cwd,
             cols,
@@ -1453,6 +1496,7 @@ impl SessionManager {
         runtime_override: Option<&str>,
         model_override: Option<&str>,
         effort_override: Option<&str>,
+        speed_override: Option<CodexSpeed>,
         persisted_role_id: Option<&str>,
         project_id: Option<&str>,
         cwd: Option<&str>,
@@ -1472,6 +1516,10 @@ impl SessionManager {
         let agent_options_overridden = resolution.effective.is_some();
         let mut role =
             self.resolve_role_executable(resolution.effective.as_ref().unwrap_or(role), &pool)?;
+        let speed_override = (Runtime::parse(&role.runtime) == Some(Runtime::Codex))
+            .then_some(speed_override)
+            .flatten();
+        role.codex_speed = speed_override.or(role.codex_speed);
         // Permission posture belongs to MissionPermissionMode (feature
         // 596): attended chats strip the row's permission flags and
         // append nothing, leaving every other arg alone.
@@ -1568,6 +1616,11 @@ impl SessionManager {
                 row.agent_model = role.model.clone();
                 row.agent_effort = role.effort.clone();
             }
+            row.agent_speed = if persisted_role_id.is_none() {
+                role.codex_speed
+            } else {
+                speed_override
+            };
             crate::repo::session::insert(&conn, &row)?;
             Ok(())
         })();
@@ -1867,6 +1920,7 @@ impl SessionManager {
                 &pool,
             )?
         };
+        role.codex_speed = source.agent_speed.or(role.codex_speed);
 
         // Permission posture belongs to MissionPermissionMode (feature
         // 596): a fork is still an attended chat, so strip permission
@@ -1945,6 +1999,7 @@ impl SessionManager {
             row.agent_command.clone_from(&source.agent_command);
             row.agent_model.clone_from(&source.agent_model);
             row.agent_effort.clone_from(&source.agent_effort);
+            row.agent_speed = source.agent_speed;
             row.last_cols = initial_size.map(|(cols, _)| cols);
             row.last_rows = initial_size.map(|(_, rows)| rows);
             crate::repo::session::insert(&conn, &row)?;
@@ -2452,6 +2507,7 @@ impl SessionManager {
                 &pool,
             )?
         };
+        role.codex_speed = snap.agent_speed.or(role.codex_speed);
 
         // Permission posture belongs to MissionPermissionMode (feature
         // 596): resumed chats are attended, including runtime-only

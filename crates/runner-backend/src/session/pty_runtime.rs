@@ -3758,6 +3758,7 @@ mod tests {
                 Some("xhigh"),
                 None,
                 None,
+                None,
             ));
             args.extend([
                 "--add-dir".to_owned(),

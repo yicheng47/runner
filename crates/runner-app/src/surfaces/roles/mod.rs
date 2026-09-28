@@ -62,6 +62,8 @@ struct CreateRoleForm {
     args: Entity<TextField>,
     model: Entity<TextField>,
     model_field: Entity<ModelField>,
+    speed: String,
+    speed_select: Entity<StyledSelect>,
     working_dir: Entity<TextField>,
     system_prompt: Entity<TextField>,
     runtime_select: Entity<RuntimeSelect>,
@@ -97,6 +99,8 @@ struct RoleEditForm {
     model_field: Entity<ModelField>,
     effort: String,
     effort_select: Entity<StyledSelect>,
+    speed: String,
+    speed_select: Entity<StyledSelect>,
     permission_select: Entity<StyledSelect>,
     runtime_select: Entity<RuntimeSelect>,
     working_dir: Entity<TextField>,
@@ -173,4 +177,5 @@ struct RoleEditResolution {
     command: String,
     model: String,
     effort: String,
+    speed: String,
 }

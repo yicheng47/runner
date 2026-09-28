@@ -94,7 +94,7 @@ struct SlotPopup {
     edit: Option<SlotOverrideForm>,
 }
 
-/// Edit overrides: the slot's runtime, model and effort, saved to the slot.
+/// Edit overrides saved to the slot.
 struct SlotOverrideForm {
     runtimes: Vec<RuntimeCatalogEntry>,
     /// The runtime override; `None` runs the role's runtime.
@@ -105,8 +105,10 @@ struct SlotOverrideForm {
     /// The effort override; empty inherits.
     effort: String,
     effort_select: Entity<StyledSelect>,
-    /// Reset for the runtime, the model and the effort.
-    reset_focus: [FocusHandle; 3],
+    speed: Option<runner_backend::model::CodexSpeed>,
+    speed_select: Entity<StyledSelect>,
+    /// Reset for runtime, model, effort and Speed.
+    reset_focus: [FocusHandle; 4],
     saving: bool,
     error: Option<String>,
     _subscriptions: Vec<Subscription>,

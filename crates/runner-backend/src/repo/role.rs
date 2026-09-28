@@ -17,7 +17,7 @@ use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_rusqlite::{from_row, to_params_named, to_params_named_with_fields};
 
-use crate::model::{Role, Timestamp};
+use crate::model::{CodexSpeed, Role, Timestamp};
 
 use super::{de_err, insert_sql, select_list, ser_err};
 
@@ -36,6 +36,11 @@ pub struct RoleRow {
     pub env_json: Option<HashMap<String, String>>,
     pub model: Option<String>,
     pub effort: Option<String>,
+    #[serde(
+        rename = "runtime_options_json",
+        with = "crate::repo::serde::runtime_speed_json"
+    )]
+    pub codex_speed: Option<CodexSpeed>,
     #[serde(with = "crate::repo::serde::rfc3339")]
     pub created_at: Timestamp,
     #[serde(with = "crate::repo::serde::rfc3339")]
@@ -54,6 +59,7 @@ pub const COLUMNS: &[&str] = &[
     "env_json",
     "model",
     "effort",
+    "runtime_options_json",
     "created_at",
     "updated_at",
 ];
@@ -71,6 +77,7 @@ const UPDATE_FIELDS: &[&str] = &[
     "env_json",
     "model",
     "effort",
+    "runtime_options_json",
     "updated_at",
     "id",
 ];
@@ -89,6 +96,7 @@ impl From<RoleRow> for Role {
             env: r.env_json.unwrap_or_default(),
             model: r.model,
             effort: r.effort,
+            codex_speed: r.codex_speed,
             created_at: r.created_at,
             updated_at: r.updated_at,
         }
@@ -109,6 +117,7 @@ impl From<&Role> for RoleRow {
             env_json: Some(r.env.clone()),
             model: r.model.clone(),
             effort: r.effort.clone(),
+            codex_speed: r.codex_speed,
             created_at: r.created_at,
             updated_at: r.updated_at,
         }
@@ -138,6 +147,7 @@ pub fn update(conn: &Connection, row: &RoleRow) -> rusqlite::Result<usize> {
                 env_json = :env_json,
                 model = :model,
                 effort = :effort,
+                runtime_options_json = :runtime_options_json,
                 updated_at = :updated_at
           WHERE id = :id",
         to_params_named_with_fields(row, UPDATE_FIELDS)
@@ -274,7 +284,7 @@ pub fn clear_inheriting_slot_agent_overrides(
 ) -> rusqlite::Result<usize> {
     conn.execute(
         "UPDATE slots
-            SET model_override = NULL, effort_override = NULL
+            SET model_override = NULL, effort_override = NULL, runtime_options_json = NULL
           WHERE role_id = ?1 AND runtime_override IS NULL",
         rusqlite::params![role_id],
     )
@@ -398,6 +408,7 @@ mod tests {
             env_json: Some(HashMap::from([("FOO".to_string(), "bar".to_string())])),
             model: Some("gpt-5".into()),
             effort: Some("high".into()),
+            codex_speed: Some(CodexSpeed::Fast),
             created_at: now,
             updated_at: now,
         }
@@ -417,6 +428,7 @@ mod tests {
             env_json: Some(HashMap::new()),
             model: None,
             effort: None,
+            codex_speed: None,
             created_at: now,
             updated_at: now,
         }
@@ -431,6 +443,14 @@ mod tests {
             let read = get(&conn, &row.id).unwrap().unwrap();
             assert_eq!(RoleRow::from(&read), row);
         }
+        let stored: String = conn
+            .query_row(
+                "SELECT runtime_options_json FROM roles WHERE id = 'r-full'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored, r#"{"codex":{"speed":"fast"}}"#);
     }
 
     #[test]

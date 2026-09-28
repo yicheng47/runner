@@ -414,6 +414,7 @@ mod tests {
                     env_json: Some(Default::default()),
                     model: None,
                     effort: None,
+                    codex_speed: None,
                     created_at: timestamp,
                     updated_at: timestamp,
                 },

@@ -76,6 +76,11 @@ pub struct SessionRowDb {
     pub agent_command: Option<String>,
     pub agent_model: Option<String>,
     pub agent_effort: Option<String>,
+    #[serde(
+        rename = "runtime_options_json",
+        with = "crate::repo::serde::runtime_speed_json"
+    )]
+    pub agent_speed: Option<crate::model::CodexSpeed>,
     pub last_cols: Option<u16>,
     pub last_rows: Option<u16>,
     /// Nonzero for both pending and in-flight launch-resume work.
@@ -112,6 +117,7 @@ impl SessionRowDb {
             agent_command: None,
             agent_model: None,
             agent_effort: None,
+            agent_speed: None,
             last_cols: None,
             last_rows: None,
             resume_on_launch: false,
@@ -145,6 +151,7 @@ pub const COLUMNS: &[&str] = &[
     "agent_command",
     "agent_model",
     "agent_effort",
+    "runtime_options_json",
     "last_cols",
     "last_rows",
     "resume_on_launch",
@@ -1065,6 +1072,7 @@ mod tests {
             agent_command: Some("codex".into()),
             agent_model: Some("gpt-5.6-sol".into()),
             agent_effort: Some("max".into()),
+            agent_speed: Some(crate::model::CodexSpeed::Fast),
             last_cols: Some(132),
             last_rows: Some(41),
             resume_on_launch: true,
@@ -1177,6 +1185,14 @@ mod tests {
             insert(&conn, &row).unwrap();
             assert_eq!(get_row(&conn, &row.id).unwrap().unwrap(), row);
         }
+        let stored: String = conn
+            .query_row(
+                "SELECT runtime_options_json FROM sessions WHERE id = 'sess-full'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored, r#"{"codex":{"speed":"fast"}}"#);
     }
 
     #[test]

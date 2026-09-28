@@ -9,7 +9,7 @@
 // PTY output flows synchronously to the native terminal registry; lifecycle
 // events continue over the app event channel.
 
-use crate::model::Runtime;
+use crate::model::{CodexSpeed, Runtime};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
@@ -1007,7 +1007,7 @@ pub fn session_start_direct_impl(
         resolve_direct_start(&conn, &role_id, project_id.as_deref(), cwd)?
     };
     spawn_direct_chat(
-        state, &role, runtime, model, effort, project_id, cwd, cols, rows,
+        state, &role, runtime, model, effort, None, project_id, cwd, cols, rows,
     )
 }
 
@@ -1018,6 +1018,7 @@ fn spawn_direct_chat(
     runtime: Option<String>,
     model: Option<String>,
     effort: Option<String>,
+    speed: Option<CodexSpeed>,
     project_id: Option<String>,
     effective_cwd: Option<String>,
     cols: Option<u16>,
@@ -1028,11 +1029,12 @@ fn spawn_direct_chat(
     let emitter: Arc<dyn SessionEvents> = Arc::new(state.session_events());
     let session = state
         .sessions
-        .spawn_direct(
+        .spawn_direct_with_speed(
             role,
             runtime.as_deref(),
             model.as_deref(),
             effort.as_deref(),
+            speed,
             project_id.as_deref(),
             effective_cwd.as_deref(),
             cols,
@@ -1062,12 +1064,30 @@ pub fn session_start_direct(
     cols: Option<u16>,
     rows: Option<u16>,
 ) -> Result<SpawnedSession> {
+    session_start_direct_with_speed(
+        state, role_id, runtime, model, effort, None, scope, cwd, cols, rows,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn session_start_direct_with_speed(
+    state: &AppCore,
+    role_id: String,
+    runtime: Option<String>,
+    model: Option<String>,
+    effort: Option<String>,
+    speed: Option<CodexSpeed>,
+    scope: ProjectScope,
+    cwd: Option<String>,
+    cols: Option<u16>,
+    rows: Option<u16>,
+) -> Result<SpawnedSession> {
     let (role, project_id, cwd) = {
         let conn = state.db.get()?;
         resolve_direct_start_in(&conn, &role_id, &scope, cwd)?
     };
     Ok(spawn_direct_chat(
-        state, &role, runtime, model, effort, project_id, cwd, cols, rows,
+        state, &role, runtime, model, effort, speed, project_id, cwd, cols, rows,
     )?
     .session)
 }
@@ -1083,11 +1103,29 @@ pub fn session_start_runtime(
     model: Option<String>,
     effort: Option<String>,
 ) -> Result<StartDirectSessionOutput> {
+    session_start_runtime_with_speed(state, runtime, scope, cwd, cols, rows, model, effort, None)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn session_start_runtime_with_speed(
+    state: &AppCore,
+    runtime: &str,
+    scope: ProjectScope,
+    cwd: Option<String>,
+    cols: Option<u16>,
+    rows: Option<u16>,
+    model: Option<String>,
+    effort: Option<String>,
+    speed: Option<CodexSpeed>,
+) -> Result<StartDirectSessionOutput> {
     let (project_id, cwd) = {
         let conn = state.db.get()?;
         project::resolve_scope(&conn, &scope, cwd)?
     };
-    let role = runtime_direct_role(runtime, None, model.as_deref(), effort.as_deref())?;
+    let mut role = runtime_direct_role(runtime, None, model.as_deref(), effort.as_deref())?;
+    if runtime == Runtime::Codex.key() {
+        role.codex_speed = speed;
+    }
     let emitter: Arc<dyn SessionEvents> = Arc::new(state.session_events());
     let spawned = state
         .sessions

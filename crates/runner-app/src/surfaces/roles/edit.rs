@@ -45,6 +45,12 @@ impl NativeRoot {
                 .update(cx, |input, input_cx| input.reset(command, input_cx));
         }
         form.runtime = next_runtime.clone();
+        if next_runtime != "codex" {
+            form.speed = "inherit".into();
+            form.speed_select.update(cx, |select, select_cx| {
+                select.set_value("inherit", select_cx)
+            });
+        }
         let model_placeholder = runtime_model_placeholder(&form.runtimes, &next_runtime, None);
         form.model.update(cx, |input, input_cx| {
             input.set_placeholder(model_placeholder, input_cx)
@@ -205,6 +211,7 @@ impl NativeRoot {
             env: None,
             model: Some(trimmed_option(form.model.read(cx).text())),
             effort: Some(trimmed_option(&form.effort)),
+            codex_speed: Some(super::logic::parse_speed(&form.speed)),
             permission_mode: (!permission_modes(&form.runtime).is_empty())
                 .then_some(form.permission_mode),
         };

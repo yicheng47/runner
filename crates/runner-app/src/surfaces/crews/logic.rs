@@ -224,6 +224,17 @@ pub(super) fn slot_command_summary(slot: &SlotWithRole) -> String {
         if let Some(effort) = slot.slot.effort_override.as_deref() {
             overrides.push(format!("effort {effort}"));
         }
+        if runtime == "codex" {
+            if let Some(speed) = slot.slot.codex_speed_override {
+                overrides.push(format!(
+                    "speed {}",
+                    match speed {
+                        runner_backend::model::CodexSpeed::Standard => "Standard",
+                        runner_backend::model::CodexSpeed::Fast => "Fast",
+                    }
+                ));
+            }
+        }
         return if overrides.is_empty() {
             format!("{command} (runtime defaults)")
         } else {
@@ -243,6 +254,17 @@ pub(super) fn slot_command_summary(slot: &SlotWithRole) -> String {
     }
     if let Some(effort) = slot.slot.effort_override.as_deref() {
         overrides.push(format!("effort {effort}"));
+    }
+    if slot.role.runtime == "codex" {
+        if let Some(speed) = slot.slot.codex_speed_override {
+            overrides.push(format!(
+                "speed {}",
+                match speed {
+                    runner_backend::model::CodexSpeed::Standard => "Standard",
+                    runner_backend::model::CodexSpeed::Fast => "Fast",
+                }
+            ));
+        }
     }
     if overrides.is_empty() {
         command
@@ -364,11 +386,16 @@ pub(super) struct SlotSetup {
     pub(super) model_overridden: bool,
     pub(super) effort: Option<String>,
     pub(super) effort_overridden: bool,
+    pub(super) speed: Option<runner_backend::model::CodexSpeed>,
+    pub(super) speed_overridden: bool,
 }
 
 impl SlotSetup {
     pub(super) fn overrides_any(&self) -> bool {
-        self.runtime_overridden || self.model_overridden || self.effort_overridden
+        self.runtime_overridden
+            || self.model_overridden
+            || self.effort_overridden
+            || self.speed_overridden
     }
 }
 
@@ -397,6 +424,16 @@ pub(super) fn slot_setup(slot: &SlotWithRole) -> SlotSetup {
         slot.slot.effort_override.as_deref(),
         slot.role.effort.as_deref(),
     );
+    let speed = if runtime == "codex" {
+        slot.slot.codex_speed_override.or(if own_runtime {
+            slot.role.codex_speed
+        } else {
+            None
+        })
+    } else {
+        None
+    };
+    let speed_overridden = runtime == "codex" && slot.slot.codex_speed_override.is_some();
     SlotSetup {
         runtime_overridden,
         own_runtime,
@@ -405,6 +442,8 @@ pub(super) fn slot_setup(slot: &SlotWithRole) -> SlotSetup {
         model_overridden,
         effort,
         effort_overridden,
+        speed,
+        speed_overridden,
     }
 }
 

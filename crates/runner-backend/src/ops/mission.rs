@@ -1673,6 +1673,7 @@ mod tests {
                 env: std::collections::HashMap::new(),
                 model: None,
                 effort: None,
+                codex_speed: None,
                 permission_mode: crate::router::runtime::PermissionMode::Auto,
             },
         )

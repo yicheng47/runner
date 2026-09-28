@@ -1,0 +1,19 @@
+# 740 — Codex speed on roles
+
+Implement [#740](https://github.com/yicheng47/runner/issues/740) against the [feature spec](../../features/740-codex-role-speed.md), committed on `main` at `d79d752`. Jason explicitly asked for this implementation mission. Work only on the existing `feat/740-codex-role-speed` branch in `/Users/jason/repos/yicheng47/runner/.worktrees/feat-740-codex-role-speed`. Do not create another branch or checkout, edit the root checkout or another worktree, or share their Cargo target directories. Pencil was unavailable while preparing the spec; its create, edit and detail layout is the design reference for this mission. Do not edit `.pen` files from the worktree.
+
+## Deliverable
+
+Add a Codex-only Speed setting to role create/edit: Inherit (default), Standard and Fast. Show Speed in the Codex role detail, with a visible credit-use note for Fast. Persist it on the role while preserving existing model, effort and Args behavior. Clear the setting if the role's runtime changes away from Codex.
+
+For Codex launches, Inherit emits no service-tier override; Standard emits `-c service_tier=default`; Fast emits `-c service_tier=fast`. Confirm that `default` is supported by the installed Codex CLI or its matching upstream source. Append the explicit choice after custom role Args so it wins over a manual `service_tier` Arg, while Inherit leaves that Arg alone. Use the shared launch path so fresh and resumed direct chats and mission slots behave alike, without changing `resume <key>` or first-prompt ordering. Do not emit a Speed override for another effective runtime. Avoid changes to global Codex config or in-terminal `/fast` commands. If a CLI compatibility finding changes the Standard value, report evidence before implementing a different mapping.
+
+Relevant areas inspected before the mission: `crates/runner-app/src/surfaces/roles/{create,detail,edit,forms,logic,mod}.rs`; backend role model/repo/ops and migrations; `router/runtime.rs::trailing_runtime_args`; `session/manager/spawn.rs` shared argument assembly. Codex 0.157.1 reports `fast_mode` stable and enabled via `codex features list`; the spec links OpenAI's speed documentation and Codex service-tier source. Preserve existing custom Args, hooks, permissions and role/runtime override behavior.
+
+## Review and checks
+
+The coder sends the feature-branch working-tree diff, affected paths and check results to the reviewer through Runner before any implementation commit, push or PR. The reviewer returns must-fix findings with file:line pointers; iterate until `NO REMAINING MUST-FIX ISSUES`. No extra agents or crews.
+
+Cover migration/default, create/edit/reload, runtime switch, role detail, argv precedence with manual Args, fresh/resumed direct and mission launches, and non-Codex runtime isolation with focused tests. Run `cargo test --locked -p runner-backend --profile ci --no-fail-fast`, relevant `runner-app` tests, `cargo clippy --locked --workspace --all-targets --profile ci -- -D warnings`, `cargo fmt --all --check` and `git diff --check`; report exit codes. Inspect the create/edit/detail UI in the development app if available without disrupting another dev instance, and report any visual check left for Jason.
+
+After clean review, squash the brief and implementation into one commit on current `origin/main` with an imperative subject. Push the branch and open a PR against `main` with `Closes #740`, implementation summary, tests and any visual limitation. Keep the PR to one commit, drive macOS and Windows CI green, and route non-trivial fixes back through reviewer. Do not merge, delete the branch or worktree, cut a nightly or release, or include a Claude session URL in the PR body. The final Runner handoff states the PR URL, review verdict, CI results, changed files, checks and remaining manual verification.

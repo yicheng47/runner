@@ -2,6 +2,7 @@ use super::logic::create_role_can_submit;
 use super::logic::create_role_focus_order;
 use super::logic::create_role_form_is_composing;
 use super::logic::error_banner;
+use super::logic::parse_speed;
 use super::logic::permission_mode_description;
 use super::logic::permission_mode_value;
 use super::logic::permission_modes;
@@ -39,6 +40,12 @@ impl NativeRoot {
             return;
         }
         form.runtime = runtime.clone();
+        if runtime != "codex" {
+            form.speed = "inherit".into();
+            form.speed_select.update(cx, |select, select_cx| {
+                select.set_value("inherit", select_cx)
+            });
+        }
         let command = runtime_entry(&form.runtimes, &runtime)
             .map(|entry| entry.command.clone())
             .unwrap_or_default();
@@ -135,6 +142,7 @@ impl NativeRoot {
             env: HashMap::new(),
             model: trimmed_option(form.model.read(cx).text()),
             effort: None,
+            codex_speed: parse_speed(&form.speed),
             permission_mode: form.permission_mode,
         };
         let core = self.core(cx).clone();
@@ -297,6 +305,25 @@ impl NativeRoot {
                         form.model_hint_focus.clone(),
                     ),
             )
+            .children((form.runtime == "codex").then(|| {
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(
+                        Field::new("new-role-speed", "Speed", form.speed_select.clone())
+                            .focus_target(form.speed_select.read(cx).focus_handle()),
+                    )
+                    .children((form.speed == "fast").then(|| {
+                        div()
+                            .when(cfg!(test), |note| {
+                                note.debug_selector(|| "NEW_ROLE_SPEED_NOTE".into())
+                            })
+                            .text_size(theme::text_meta())
+                            .text_color(theme::faint())
+                            .child("Fast uses more credits.")
+                    }))
+            }))
             .children((!permission_modes(&form.runtime).is_empty()).then(|| {
                 Field::new(
                     "new-role-permission-mode",

@@ -20,7 +20,7 @@ use ulid::Ulid as UlidGen;
 
 use crate::{
     error::{Error, Result},
-    model::{Role, Timestamp},
+    model::{CodexSpeed, Role, Timestamp},
     repo, AppCore,
 };
 
@@ -42,6 +42,9 @@ pub struct CreateRoleInput {
     pub model: Option<String>,
     #[serde(default)]
     pub effort: Option<String>,
+    #[serde(default)]
+    #[schemars(with = "Option<String>")]
+    pub codex_speed: Option<CodexSpeed>,
     /// Permission mode the role-edit form's dropdown chose. Mapped
     /// to concrete flags on the row's `args` column at create time
     /// via `router::runtime::apply_permission_mode`. Defaults to
@@ -78,6 +81,9 @@ pub struct UpdateRoleInput {
     pub env: Option<HashMap<String, String>>,
     pub model: Option<Option<String>>,
     pub effort: Option<Option<String>>,
+    #[serde(default, deserialize_with = "super::slot::double_option")]
+    #[schemars(with = "Option<String>")]
+    pub codex_speed: Option<Option<CodexSpeed>>,
     /// Form's "Permission mode" segmented control. `Some(mode)`
     /// rewrites the runtime's permission flags to the canonical args
     /// for that mode (replacing any prior occurrence so duplicates
@@ -304,6 +310,9 @@ pub fn create(conn: &Connection, input: CreateRoleInput) -> Result<Role> {
                 .effort
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty()),
+            codex_speed: (input.runtime == Runtime::Codex)
+                .then_some(input.codex_speed)
+                .flatten(),
             created_at: ts,
             updated_at: ts,
         },
@@ -397,6 +406,11 @@ pub fn update(conn: &Connection, id: &str, input: UpdateRoleInput) -> Result<Rol
             })
         })
         .unwrap_or(existing.effort);
+    let codex_speed = if runtime == Runtime::Codex.key() {
+        input.codex_speed.unwrap_or(existing.codex_speed)
+    } else {
+        None
+    };
 
     let tx = conn.unchecked_transaction()?;
     repo::role::update(
@@ -413,6 +427,7 @@ pub fn update(conn: &Connection, id: &str, input: UpdateRoleInput) -> Result<Rol
             env_json: Some(env),
             model,
             effort,
+            codex_speed,
             created_at: existing.created_at,
             updated_at: now(),
         },
@@ -572,6 +587,7 @@ mod tests {
                 effort: None,
                 // Auto is the form default, but a no-op for trae, so
                 // existing tests that expect `args == []` keep passing.
+                codex_speed: None,
                 permission_mode: PermissionMode::Auto,
             },
         )
@@ -584,6 +600,81 @@ mod tests {
         let conn = pool.get().unwrap();
         let r = make(&conn, "alpha");
         assert_eq!(r.handle, "alpha");
+    }
+
+    #[test]
+    fn codex_speed_round_trips_and_clears_on_runtime_change() {
+        let pool = ctx();
+        let conn = pool.get().unwrap();
+        let role = create(
+            &conn,
+            serde_json::from_value(serde_json::json!({
+                "handle": "speed",
+                "display_name": "Speed",
+                "runtime": "codex",
+                "command": "codex",
+                "codex_speed": "fast"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(role.codex_speed, Some(CodexSpeed::Fast));
+        assert_eq!(
+            get(&conn, &role.id).unwrap().codex_speed,
+            Some(CodexSpeed::Fast)
+        );
+        let role = update(
+            &conn,
+            &role.id,
+            serde_json::from_value(serde_json::json!({"codex_speed": null})).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(role.codex_speed, None);
+        let role = update(
+            &conn,
+            &role.id,
+            serde_json::from_value(serde_json::json!({"codex_speed": "fast"})).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(role.codex_speed, Some(CodexSpeed::Fast));
+        assert_eq!(list(&conn).unwrap()[0].codex_speed, Some(CodexSpeed::Fast));
+        let role = update(
+            &conn,
+            &role.id,
+            serde_json::from_value(serde_json::json!({"display_name": "Speed renamed"})).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(role.codex_speed, Some(CodexSpeed::Fast));
+        let role = update(
+            &conn,
+            &role.id,
+            UpdateRoleInput {
+                codex_speed: Some(Some(CodexSpeed::Standard)),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(role.codex_speed, Some(CodexSpeed::Standard));
+        let role = update(
+            &conn,
+            &role.id,
+            UpdateRoleInput {
+                runtime: Some(Runtime::ClaudeCode),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(role.codex_speed, None);
+        let role = update(
+            &conn,
+            &role.id,
+            UpdateRoleInput {
+                runtime: Some(Runtime::Codex),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(role.codex_speed, None);
     }
 
     #[test]
@@ -663,6 +754,7 @@ mod tests {
                 env: HashMap::new(),
                 model: Some("model-needle".into()),
                 effort: Some("effort-needle".into()),
+                codex_speed: None,
                 permission_mode: PermissionMode::Auto,
             },
         )
@@ -778,6 +870,7 @@ mod tests {
                 env: HashMap::new(),
                 model: None,
                 effort: None,
+                codex_speed: None,
                 permission_mode: PermissionMode::Auto,
             },
         )
@@ -824,6 +917,7 @@ mod tests {
                 env: HashMap::new(),
                 model: None,
                 effort: None,
+                codex_speed: None,
                 permission_mode: PermissionMode::Auto,
             },
         )
@@ -875,6 +969,7 @@ mod tests {
                 env_json: Some(HashMap::new()),
                 model: None,
                 effort: None,
+                codex_speed: None,
                 created_at: ts,
                 updated_at: ts,
             },
@@ -1203,6 +1298,7 @@ mod tests {
                 env: HashMap::new(),
                 model: None,
                 effort: None,
+                codex_speed: None,
                 permission_mode: PermissionMode::Bypass,
             },
         )
@@ -1236,6 +1332,7 @@ mod tests {
                 env: HashMap::new(),
                 model: None,
                 effort: None,
+                codex_speed: None,
                 permission_mode: PermissionMode::Bypass,
             },
         )
@@ -1266,6 +1363,7 @@ mod tests {
                 env: HashMap::new(),
                 model: None,
                 effort: None,
+                codex_speed: None,
                 permission_mode: PermissionMode::Auto,
             },
         )
@@ -1313,6 +1411,7 @@ mod tests {
                 env: HashMap::new(),
                 model: None,
                 effort: None,
+                codex_speed: None,
                 permission_mode: PermissionMode::AcceptEdits,
             },
         )
@@ -1353,6 +1452,7 @@ mod tests {
                 env: HashMap::new(),
                 model: None,
                 effort: None,
+                codex_speed: None,
                 permission_mode: PermissionMode::Default,
             },
         )
@@ -1384,6 +1484,7 @@ mod tests {
                 env: HashMap::new(),
                 model: None,
                 effort: None,
+                codex_speed: None,
                 permission_mode: PermissionMode::Bypass,
             },
         )
@@ -1415,6 +1516,7 @@ mod tests {
                 env: HashMap::new(),
                 model: None,
                 effort: None,
+                codex_speed: None,
                 permission_mode: PermissionMode::Bypass,
             },
         )
@@ -1442,6 +1544,7 @@ mod tests {
                 env: HashMap::new(),
                 model: None,
                 effort: None,
+                codex_speed: None,
                 permission_mode: PermissionMode::Bypass,
             },
         )
@@ -1524,6 +1627,7 @@ mod tests {
                 env: HashMap::new(),
                 model: None,
                 effort: None,
+                codex_speed: None,
                 permission_mode: PermissionMode::Bypass,
             },
         )
@@ -1587,6 +1691,7 @@ mod tests {
                 env: HashMap::new(),
                 model: None,
                 effort: None,
+                codex_speed: None,
                 permission_mode: PermissionMode::Bypass,
             },
         )
@@ -1629,6 +1734,7 @@ mod tests {
                 env: HashMap::new(),
                 model: None,
                 effort: None,
+                codex_speed: None,
                 permission_mode: PermissionMode::Bypass,
             },
         )
@@ -1703,6 +1809,7 @@ mod tests {
                 env: Default::default(),
                 model: None,
                 effort: None,
+                codex_speed: None,
                 permission_mode: crate::router::runtime::PermissionMode::AcceptEdits,
             },
         )
@@ -1732,6 +1839,7 @@ mod tests {
                 env: None,
                 model: None,
                 effort: None,
+                codex_speed: None,
                 permission_mode: None,
             },
         )

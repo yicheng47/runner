@@ -136,6 +136,7 @@ pub(super) const MIGRATIONS: &[(i64, &str)] = &[
         include_str!("../../migrations/0022_session_live_title.sql"),
     ),
     (23, include_str!("../../migrations/0023_roles.sql")),
+    (24, include_str!("../../migrations/0024_codex_speed.sql")),
 ];
 
 pub(super) fn run_migrations(conn: &mut Connection) -> Result<()> {

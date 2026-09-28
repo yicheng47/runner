@@ -176,12 +176,14 @@ fn mission_spawn_with_slot_override_uses_registry_engine_and_records_runtime() {
     role.runtime = "codex".into();
     role.model = Some("gpt-5-codex".into());
     role.effort = Some("high".into());
+    role.codex_speed = Some(crate::model::CodexSpeed::Fast);
     role.env.insert("FOO".into(), "bar".into());
     let mut slot = slot_for(&role);
     slot.id = slot_id;
     slot.runtime_override = Some("claude-code".into());
     slot.model_override = Some("opus".into());
     slot.effort_override = Some("max".into());
+    slot.codex_speed_override = Some(crate::model::CodexSpeed::Fast);
 
     let fake = fake_runtime();
     let mgr = mgr_with_fake(None, Arc::clone(&fake));
@@ -217,6 +219,7 @@ fn mission_spawn_with_slot_override_uses_registry_engine_and_records_runtime() {
         .args
         .windows(2)
         .any(|w| w[0] == "--effort" && w[1] == "max"));
+    assert!(!spec.args.iter().any(|arg| arg.starts_with("service_tier=")));
     assert!(
         spec.args
             .windows(2)
@@ -255,7 +258,139 @@ fn mission_spawn_with_slot_override_uses_registry_engine_and_records_runtime() {
     assert_effective_command(agent_command.as_deref().unwrap(), "claude");
     assert_eq!(agent_model.as_deref(), Some("opus"));
     assert_eq!(agent_effort.as_deref(), Some("max"));
+    assert_eq!(
+        crate::repo::session::get_row(&pool.get().unwrap(), &spawned.id)
+            .unwrap()
+            .unwrap()
+            .agent_speed,
+        None
+    );
 
+    mgr.kill(&spawned.id).unwrap();
+}
+
+#[test]
+fn mission_slot_speed_overrides_role_and_manual_args_on_spawn_and_resume() {
+    use crate::model::CodexSpeed;
+
+    let pool = pool_with_schema();
+    let mission_row = mission();
+    let role_id = ulid::Ulid::new().to_string();
+    let slot_id = insert_crew_role(&pool, &mission_row.id, &role_id);
+    let mut role = role("codex-custom", &["-c", "service_tier=fast"]);
+    role.id = role_id;
+    role.runtime = "codex".into();
+    role.codex_speed = Some(CodexSpeed::Fast);
+    update_role_row(&pool.get().unwrap(), &role);
+    let mut slot = slot_for(&role);
+    slot.id = slot_id;
+    slot.codex_speed_override = Some(CodexSpeed::Standard);
+
+    let fake = fake_runtime();
+    let mgr = mgr_with_fake(None, Arc::clone(&fake));
+    let spawned = mgr
+        .spawn(
+            &mission_row,
+            &role,
+            &slot,
+            fixture_tmp_dir(),
+            PathBuf::from("/dev/null"),
+            Arc::clone(&pool),
+            capture(),
+            None,
+        )
+        .unwrap();
+    let first = fake.last_spawn_spec().unwrap();
+    let tiers = first
+        .args
+        .windows(2)
+        .filter_map(|args| {
+            (args[0] == "-c")
+                .then(|| args[1].strip_prefix("service_tier="))
+                .flatten()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(tiers, ["fast", "default"]);
+    assert_eq!(
+        crate::repo::session::get_row(&pool.get().unwrap(), &spawned.id)
+            .unwrap()
+            .unwrap()
+            .agent_speed,
+        Some(CodexSpeed::Standard)
+    );
+
+    mgr.kill(&spawned.id).unwrap();
+    pool.get()
+        .unwrap()
+        .execute(
+            "UPDATE sessions SET agent_session_key = ?2 WHERE id = ?1",
+            params![spawned.id, "11111111-1111-4111-8111-111111111111"],
+        )
+        .unwrap();
+    mgr.resume(
+        &spawned.id,
+        None,
+        None,
+        fixture_tmp_dir(),
+        Arc::clone(&pool),
+        capture(),
+    )
+    .unwrap();
+    let resumed = fake.last_spawn_spec().unwrap();
+    assert_eq!(
+        &resumed.args[..2],
+        &["resume", "11111111-1111-4111-8111-111111111111"]
+    );
+    assert!(resumed
+        .args
+        .windows(2)
+        .any(|args| args == ["-c", "service_tier=default"]));
+    mgr.kill(&spawned.id).unwrap();
+}
+
+#[test]
+fn mission_slot_speed_applies_when_slot_switches_to_codex() {
+    use crate::model::CodexSpeed;
+
+    let pool = pool_with_schema();
+    let mission_row = mission();
+    let role_id = ulid::Ulid::new().to_string();
+    let slot_id = insert_crew_role(&pool, &mission_row.id, &role_id);
+    let mut role = role("claude-custom", &["--custom-flag"]);
+    role.id = role_id;
+    role.runtime = "claude-code".into();
+    update_role_row(&pool.get().unwrap(), &role);
+    let mut slot = slot_for(&role);
+    slot.id = slot_id;
+    slot.runtime_override = Some("codex".into());
+    slot.codex_speed_override = Some(CodexSpeed::Fast);
+
+    let fake = fake_runtime();
+    let mgr = mgr_with_fake(None, Arc::clone(&fake));
+    let spawned = mgr
+        .spawn(
+            &mission_row,
+            &role,
+            &slot,
+            fixture_tmp_dir(),
+            PathBuf::from("/dev/null"),
+            Arc::clone(&pool),
+            capture(),
+            None,
+        )
+        .unwrap();
+    let spec = fake.last_spawn_spec().unwrap();
+    assert_effective_command(&spec.command, "codex");
+    assert!(!spec.args.contains(&"--custom-flag".to_string()));
+    assert!(spec
+        .args
+        .windows(2)
+        .any(|args| args == ["-c", "service_tier=fast"]));
+    let row = crate::repo::session::get_row(&pool.get().unwrap(), &spawned.id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.agent_runtime.as_deref(), Some("codex"));
+    assert_eq!(row.agent_speed, Some(CodexSpeed::Fast));
     mgr.kill(&spawned.id).unwrap();
 }
 

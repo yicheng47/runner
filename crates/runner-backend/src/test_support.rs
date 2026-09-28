@@ -99,6 +99,7 @@ pub(crate) fn insert_test_role(
             env_json: Some(Default::default()),
             model: None,
             effort: None,
+            codex_speed: None,
             created_at: now,
             updated_at: now,
         },
@@ -127,6 +128,7 @@ pub(crate) fn insert_test_slot(
             runtime_override: None,
             model_override: None,
             effort_override: None,
+            codex_speed_override: None,
             added_at: Utc::now(),
         },
     )

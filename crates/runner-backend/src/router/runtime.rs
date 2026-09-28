@@ -969,12 +969,19 @@ pub fn trailing_runtime_args(
     plan_resuming: bool,
     model: Option<&str>,
     effort: Option<&str>,
+    codex_speed: Option<crate::model::CodexSpeed>,
     system_prompt: Option<&str>,
     first_turn: Option<&str>,
 ) -> Vec<String> {
     let mut out = model_effort_args(runtime, model, effort);
     if runtime == Some(Runtime::Codex) {
         out.extend(["-c".into(), "check_for_update_on_startup=false".into()]);
+        if let Some(speed) = codex_speed {
+            out.extend([
+                "-c".into(),
+                format!("service_tier={}", speed.service_tier()),
+            ]);
+        }
     }
     if runtime == Some(Runtime::Copilot) {
         out.push("--no-auto-update".into());
@@ -2210,6 +2217,7 @@ mod tests {
                 plan_resuming,
                 Some("gpt-5-codex"),
                 Some("high"),
+                None,
                 Some("be helpful"),
                 None,
             );
@@ -2449,6 +2457,7 @@ mod tests {
             false,
             None,
             None,
+            None,
             Some("/tmp/prompt.md"),
             Some("== Mission ==\nGoal"),
         );
@@ -2469,6 +2478,7 @@ mod tests {
             root.path(),
             "runner-session",
             true,
+            None,
             None,
             None,
             Some("/tmp/prompt.md"),
@@ -3305,6 +3315,7 @@ mod tests {
             false,
             Some("claude-opus-4-7"),
             Some("xhigh"),
+            None,
             Some("be helpful"),
             None,
         );
@@ -3316,6 +3327,7 @@ mod tests {
             true,
             Some("claude-opus-4-7"),
             Some("xhigh"),
+            None,
             Some("be helpful"),
             None,
         );
@@ -3347,6 +3359,7 @@ mod tests {
                 false,
                 Some("model-x"),
                 Some("high"),
+                None,
                 Some("persona"),
                 Some(body),
             );
@@ -3370,6 +3383,7 @@ mod tests {
                 true,
                 Some("model-x"),
                 Some("high"),
+                None,
                 Some("persona"),
                 Some(body),
             );

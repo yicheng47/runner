@@ -1722,6 +1722,7 @@ pub(crate) fn resolve_runtime_override(
         // role's model/effort belong to the original runtime.
         effective.model = None;
         effective.effort = None;
+        effective.codex_speed = None;
     }
     if model_override.is_some() {
         effective.model = model_override.map(ToOwned::to_owned);
@@ -1781,6 +1782,7 @@ pub(crate) fn runtime_direct_role(
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(ToOwned::to_owned),
+        codex_speed: None,
         created_at: now,
         updated_at: now,
     })

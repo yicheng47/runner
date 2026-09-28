@@ -149,6 +149,7 @@ fn insert_seed_role(
             env_json: Some(Default::default()),
             model: None,
             effort: None,
+            codex_speed: None,
             created_at: timestamp,
             updated_at: timestamp,
         },
@@ -176,6 +177,7 @@ fn insert_seed_slot(
             runtime_override: None,
             model_override: None,
             effort_override: None,
+            codex_speed_override: None,
             added_at: SEED_TIMESTAMP.parse().expect("valid seed timestamp"),
         },
     )?;

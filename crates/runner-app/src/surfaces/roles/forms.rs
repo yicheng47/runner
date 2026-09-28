@@ -11,6 +11,7 @@ use super::logic::role_visible_args;
 use super::logic::runtime_entry;
 use super::logic::runtime_model_placeholder;
 use super::logic::runtime_models;
+use super::logic::speed_options;
 use super::logic::validate_role_handle;
 use std::rc::Rc;
 
@@ -71,6 +72,12 @@ impl NativeRoot {
                     .unwrap_or_default();
                 if next_runtime != form.runtime {
                     form.runtime.clone_from(&next_runtime);
+                    if next_runtime != "codex" {
+                        form.speed = "inherit".into();
+                        form.speed_select.update(cx, |select, select_cx| {
+                            select.set_value("inherit", select_cx)
+                        });
+                    }
                     let command = runtime_entry(&form.runtimes, &next_runtime)
                         .map(|runtime| runtime.command.clone())
                         .unwrap_or_default();
@@ -220,6 +227,26 @@ impl NativeRoot {
             })
         });
         let permission_root = root.clone();
+        let speed_root = root.clone();
+        let speed_select = cx.new(|select_cx| {
+            StyledSelect::new(
+                "new-role-speed",
+                select_cx.focus_handle(),
+                "inherit",
+                speed_options(),
+                Rc::new(move |value, _, cx| {
+                    speed_root.update(cx, |this, cx| {
+                        if let Some(form) = this.role_surfaces.create.as_mut() {
+                            form.speed = value;
+                            cx.notify();
+                        }
+                    });
+                }),
+                select_cx,
+            )
+            .width(px(FIELD_WIDTH))
+            .min_menu_width(px(FIELD_WIDTH))
+        });
         let permission_select = cx.new(|select_cx| {
             StyledSelect::new(
                 "new-role-permission",
@@ -288,6 +315,8 @@ impl NativeRoot {
             args,
             model,
             model_field,
+            speed: "inherit".into(),
+            speed_select,
             working_dir,
             system_prompt,
             runtime_select,
@@ -437,6 +466,26 @@ impl NativeRoot {
             .width(px(ROLE_COLUMN_WIDTH))
             .min_menu_width(px(ROLE_COLUMN_WIDTH))
         });
+        let speed_root = root.clone();
+        let speed_select = cx.new(|select_cx| {
+            StyledSelect::new(
+                "edit-role-speed",
+                select_cx.focus_handle(),
+                resolution.speed.clone(),
+                speed_options(),
+                Rc::new(move |value, _, cx| {
+                    speed_root.update(cx, |this, cx| {
+                        if let Some(form) = this.role_surfaces.edit.as_mut() {
+                            form.speed = value;
+                            cx.notify();
+                        }
+                    });
+                }),
+                select_cx,
+            )
+            .width(px(ROLE_COLUMN_WIDTH))
+            .min_menu_width(px(ROLE_COLUMN_WIDTH))
+        });
         let permission_mode = role_permission_mode(&role).unwrap_or(PermissionMode::Default);
         let permission_root = root.clone();
         let permission_select = cx.new(|select_cx| {
@@ -488,6 +537,8 @@ impl NativeRoot {
             model_field,
             effort: resolution.effort,
             effort_select,
+            speed: resolution.speed,
+            speed_select,
             permission_select,
             runtime_select,
             working_dir,

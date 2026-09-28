@@ -2347,6 +2347,7 @@ mod tests {
                     env: Default::default(),
                     model: None,
                     effort: None,
+                    codex_speed: None,
                     permission_mode: runner_backend::router::runtime::PermissionMode::Auto,
                 },
             )
@@ -2435,6 +2436,7 @@ mod tests {
                 env: Default::default(),
                 model: None,
                 effort: None,
+                codex_speed: None,
                 permission_mode: runner_backend::router::runtime::PermissionMode::Auto,
             },
         )

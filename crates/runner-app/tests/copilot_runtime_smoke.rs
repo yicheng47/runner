@@ -126,6 +126,7 @@ fn copilot_real_binary_direct_mission_and_relaunch_resume() {
             env: HashMap::from([("COPILOT_HOME".into(), home.to_string_lossy().into_owned())]),
             model: Some("gpt-5.4-mini".into()),
             effort: Some("low".into()),
+            codex_speed: None,
             permission_mode: PermissionMode::Default,
         },
     )

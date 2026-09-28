@@ -1,4 +1,5 @@
 use super::*;
+use crate::model::CodexSpeed;
 
 #[test]
 fn runtime_direct_role_applies_model_and_effort() {
@@ -330,6 +331,181 @@ fn runtime_direct_spawn_persists_model_and_effort() {
     assert_eq!(stored.2.as_deref(), Some("gpt-5.6-sol"));
     assert_eq!(stored.3.as_deref(), Some("max"));
 
+    mgr.kill(&spawned.id).unwrap();
+}
+
+#[test]
+fn runtime_direct_speed_survives_resume() {
+    let pool = pool_with_schema();
+    let mut configured = runtime_direct_role("codex", Some("/bin/sh"), None, None).unwrap();
+    configured.codex_speed = Some(CodexSpeed::Fast);
+    let fake = fake_runtime();
+    let mgr = mgr_with_fake(None, Arc::clone(&fake));
+    let spawned = mgr
+        .spawn_runtime_direct(
+            &configured,
+            None,
+            Some(fixture_tmp_dir().to_str().unwrap()),
+            None,
+            None,
+            fixture_tmp_dir(),
+            Arc::clone(&pool),
+            capture(),
+        )
+        .unwrap();
+    let first = fake.last_spawn_spec().unwrap();
+    assert!(first
+        .args
+        .windows(2)
+        .any(|args| args == ["-c", "service_tier=fast"]));
+    let row = crate::repo::session::get_row(&pool.get().unwrap(), &spawned.id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.agent_speed, Some(CodexSpeed::Fast));
+
+    mgr.kill(&spawned.id).unwrap();
+    pool.get()
+        .unwrap()
+        .execute(
+            "UPDATE sessions SET agent_session_key = ?2 WHERE id = ?1",
+            params![spawned.id, "11111111-1111-4111-8111-111111111111"],
+        )
+        .unwrap();
+    mgr.resume_on_launch(
+        &spawned.id,
+        None,
+        None,
+        fixture_tmp_dir(),
+        Arc::clone(&pool),
+        capture(),
+    )
+    .unwrap();
+    let resumed = fake.last_spawn_spec().unwrap();
+    assert!(resumed
+        .args
+        .windows(2)
+        .any(|args| args == ["-c", "service_tier=fast"]));
+    mgr.kill(&spawned.id).unwrap();
+}
+
+#[test]
+fn role_direct_speed_override_wins_over_role_args_and_survives_resume() {
+    let pool = pool_with_schema();
+    let role_id = ulid::Ulid::new().to_string();
+    crate::test_support::insert_test_role(
+        &pool.get().unwrap(),
+        &role_id,
+        "speed-override",
+        "codex",
+        "/bin/sh",
+    );
+    let mut configured = role("/bin/sh", &["-c", "service_tier=fast"]);
+    configured.id = role_id;
+    configured.runtime = "codex".into();
+    configured.codex_speed = Some(CodexSpeed::Fast);
+    let fake = fake_runtime();
+    let mgr = mgr_with_fake(None, Arc::clone(&fake));
+    let spawned = mgr
+        .spawn_direct_with_speed(
+            &configured,
+            None,
+            None,
+            None,
+            Some(CodexSpeed::Standard),
+            None,
+            Some(fixture_tmp_dir().to_str().unwrap()),
+            None,
+            None,
+            fixture_tmp_dir(),
+            Arc::clone(&pool),
+            capture(),
+            None,
+        )
+        .unwrap();
+    let first = fake.last_spawn_spec().unwrap();
+    let tiers = first
+        .args
+        .windows(2)
+        .filter_map(|args| {
+            (args[0] == "-c")
+                .then(|| args[1].strip_prefix("service_tier="))
+                .flatten()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(tiers, ["fast", "default"]);
+    let row = crate::repo::session::get_row(&pool.get().unwrap(), &spawned.id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.agent_speed, Some(CodexSpeed::Standard));
+
+    mgr.kill(&spawned.id).unwrap();
+    pool.get()
+        .unwrap()
+        .execute(
+            "UPDATE sessions SET agent_session_key = ?2 WHERE id = ?1",
+            params![spawned.id, "11111111-1111-4111-8111-111111111111"],
+        )
+        .unwrap();
+    mgr.resume(
+        &spawned.id,
+        None,
+        None,
+        fixture_tmp_dir(),
+        Arc::clone(&pool),
+        capture(),
+    )
+    .unwrap();
+    let resumed = fake.last_spawn_spec().unwrap();
+    assert!(resumed
+        .args
+        .windows(2)
+        .any(|args| args == ["-c", "service_tier=default"]));
+    mgr.kill(&spawned.id).unwrap();
+}
+
+#[test]
+fn direct_speed_override_is_ignored_for_other_runtimes() {
+    let pool = pool_with_schema();
+    let role_id = ulid::Ulid::new().to_string();
+    crate::test_support::insert_test_role(
+        &pool.get().unwrap(),
+        &role_id,
+        "claude-speed",
+        "claude-code",
+        "/bin/sh",
+    );
+    let mut configured = role("/bin/sh", &[]);
+    configured.id = role_id;
+    configured.runtime = "claude-code".into();
+    let fake = fake_runtime();
+    let mgr = mgr_with_fake(None, Arc::clone(&fake));
+    let spawned = mgr
+        .spawn_direct_with_speed(
+            &configured,
+            None,
+            None,
+            None,
+            Some(CodexSpeed::Fast),
+            None,
+            Some(fixture_tmp_dir().to_str().unwrap()),
+            None,
+            None,
+            fixture_tmp_dir(),
+            Arc::clone(&pool),
+            capture(),
+            None,
+        )
+        .unwrap();
+    assert!(!fake
+        .last_spawn_spec()
+        .unwrap()
+        .args
+        .iter()
+        .any(|arg| arg.contains("service_tier")));
+    let row = crate::repo::session::get_row(&pool.get().unwrap(), &spawned.id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.agent_speed, None);
     mgr.kill(&spawned.id).unwrap();
 }
 

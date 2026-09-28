@@ -1,4 +1,4 @@
-use runner_backend::model::Runtime;
+use runner_backend::model::{CodexSpeed, Runtime};
 
 use chrono::{DateTime, TimeZone};
 use gpui::prelude::*;
@@ -28,7 +28,40 @@ pub(super) fn resolve_role_edit(role: &Role) -> RoleEditResolution {
         command: role.command.clone(),
         model: role.model.clone().unwrap_or_default(),
         effort: role.effort.clone().unwrap_or_default(),
+        speed: speed_value(role.codex_speed).to_string(),
     }
+}
+
+pub(super) fn speed_value(speed: Option<CodexSpeed>) -> &'static str {
+    match speed {
+        None => "inherit",
+        Some(CodexSpeed::Standard) => "standard",
+        Some(CodexSpeed::Fast) => "fast",
+    }
+}
+
+pub(super) fn parse_speed(value: &str) -> Option<CodexSpeed> {
+    match value {
+        "standard" => Some(CodexSpeed::Standard),
+        "fast" => Some(CodexSpeed::Fast),
+        _ => None,
+    }
+}
+
+pub(super) fn speed_options() -> Vec<SelectOption> {
+    ["inherit", "standard", "fast"]
+        .into_iter()
+        .map(|value| {
+            SelectOption::new(
+                value,
+                match value {
+                    "standard" => "Standard",
+                    "fast" => "Fast",
+                    _ => "Inherit",
+                },
+            )
+        })
+        .collect()
 }
 
 pub(crate) fn ensure_runtime_present(
@@ -313,6 +346,9 @@ pub(super) fn create_role_focus_order(
         form.model_hint_focus.clone(),
         form.model.read(cx).focus_handle(),
     ];
+    if form.runtime == "codex" {
+        order.extend([form.speed_select.read(cx).focus_handle()]);
+    }
     if !permission_modes(&form.runtime).is_empty() {
         order.extend([
             form.permission_hint_focus.clone(),
@@ -338,6 +374,7 @@ pub(super) fn role_edit_is_dirty(form: &RoleEditForm, cx: &Context<NativeRoot>) 
         || role_edit_args(form, cx) != role_visible_args(role)
         || trimmed_option(form.model.read(cx).text()) != stored(&role.model)
         || trimmed_option(&form.effort) != stored(&role.effort)
+        || parse_speed(&form.speed) != role.codex_speed
         || (!permission_modes(&form.runtime).is_empty()
             && Some(form.permission_mode) != role_permission_mode(role))
         || trimmed_option(form.working_dir.read(cx).text()) != stored(&role.working_dir)

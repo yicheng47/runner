@@ -382,6 +382,7 @@ fn role(handle: &str, runtime: &str) -> Role {
         env: HashMap::new(),
         model: None,
         effort: None,
+        codex_speed: None,
         created_at: Utc::now(),
         updated_at: Utc::now(),
     }
@@ -400,6 +401,7 @@ fn slot_with_role(handle: &str, lead: bool) -> SlotWithRole {
             runtime_override: None,
             model_override: None,
             effort_override: None,
+            codex_speed_override: None,
             added_at: Utc::now(),
         },
         role,
