@@ -2257,13 +2257,14 @@ fn crew_create_fields(fields: &CrewCreateFields) -> Result<Value, CliError> {
 
 fn runtime_command(runtime: &str) -> Result<&'static str, CliError> {
     match runtime {
-        "claude-code" => Ok("claude"),
         "codex" => Ok("codex"),
-        "trae" => Ok("traecli"),
-        "copilot" => Ok("copilot"),
+        "claude-code" => Ok("claude"),
+        "antigravity" => Ok("agy"),
         "pi" => Ok("pi"),
+        "copilot" => Ok("copilot"),
+        "trae" => Ok("traecli"),
         other => Err(CliError::usage(format!(
-            "unknown role runtime {other:?}; expected claude-code, codex, trae, copilot, or pi"
+            "unknown role runtime {other:?}; expected codex, claude-code, antigravity, pi, copilot, or trae"
         ))),
     }
 }
@@ -3015,6 +3016,7 @@ mod tests {
             runtime_command(fields.runtime.as_deref().unwrap()).unwrap(),
             "traecli"
         );
+        assert_eq!(runtime_command("antigravity").unwrap(), "agy");
         let update = role_fields(&fields, true).unwrap();
         assert_eq!(update["model"], json!(""));
         assert_eq!(update["effort"], json!(""));

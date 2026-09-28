@@ -1,15 +1,22 @@
-use gpui::Hsla;
+use gpui::prelude::*;
+use gpui::{img, svg, AnyElement, DefiniteLength, Hsla};
 use runner_backend::model::Runtime;
 
+use crate::assets::antigravity_icon_source;
 use crate::theme;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct ChatIcon {
-    pub path: &'static str,
+    path: &'static str,
     tint: Option<Hsla>,
 }
 
 impl ChatIcon {
+    #[cfg(test)]
+    pub fn asset_path(self) -> &'static str {
+        self.path
+    }
+
     pub fn generic(path: &'static str) -> Self {
         Self { path, tint: None }
     }
@@ -38,6 +45,7 @@ impl ChatIcon {
             Some(Runtime::Trae) => ("trae.svg", gpui::rgb(0x32f08c).into()),
             Some(Runtime::Copilot) => ("copilot.svg", gpui::rgb(0x8534f3).into()),
             Some(Runtime::Pi) => ("pi.svg", theme::text()),
+            Some(Runtime::Antigravity) => ("antigravity-icon.png", theme::text()),
             Some(Runtime::Shell) => return Self::accented("square-terminal.svg"),
             None => return Self::generic("message-square.svg"),
         };
@@ -52,6 +60,24 @@ impl ChatIcon {
             None => fallback,
             Some(tint) if live => tint,
             Some(_) => theme::with_alpha(theme::text(), 0.45),
+        }
+    }
+
+    pub fn render(self, size: impl Into<DefiniteLength>, color: Hsla, live: bool) -> AnyElement {
+        let size = size.into();
+        if self.path == "antigravity-icon.png" {
+            img(antigravity_icon_source())
+                .size(size)
+                .flex_none()
+                .opacity(if live { 1. } else { 0.45 })
+                .into_any_element()
+        } else {
+            svg()
+                .path(self.path)
+                .size(size)
+                .flex_none()
+                .text_color(color)
+                .into_any_element()
         }
     }
 }
@@ -74,6 +100,7 @@ mod tests {
                 ("trae", "trae.svg", gpui::rgb(0x32f08c).into()),
                 ("copilot", "copilot.svg", gpui::rgb(0x8534f3).into()),
                 ("pi", "pi.svg", theme::text()),
+                ("antigravity", "antigravity-icon.png", theme::text()),
             ] {
                 let icon = ChatIcon::for_runtime(runtime);
                 assert_eq!(icon.path, path);

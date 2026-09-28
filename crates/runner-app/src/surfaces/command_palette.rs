@@ -505,13 +505,11 @@ impl Render for CommandPaletteState {
                             .flex()
                             .items_center()
                             .gap(rems(10. / 16.))
-                            .child(
-                                svg()
-                                    .path(icon.path)
-                                    .size(rems(14. / 16.))
-                                    .flex_none()
-                                    .text_color(icon.color(theme::muted(), item.live)),
-                            )
+                            .child(icon.render(
+                                rems(14. / 16.),
+                                icon.color(theme::muted(), item.live),
+                                item.live,
+                            ))
                             .child(
                                 div()
                                     .min_w(px(0.))
@@ -816,6 +814,7 @@ mod tests {
             ("trae", "trae.svg"),
             ("copilot", "copilot.svg"),
             ("pi", "pi.svg"),
+            ("antigravity", "antigravity-icon.png"),
             ("shell", "square-terminal.svg"),
             ("unknown", "message-square.svg"),
         ] {
@@ -828,10 +827,10 @@ mod tests {
                 chat.status = status;
                 let items = palette_items(&[], std::slice::from_ref(&chat), &[], &[], None);
                 let result = items.iter().find(|item| item.id == "session").unwrap();
-                assert_eq!(result.icon().path, path);
+                assert_eq!(result.icon().asset_path(), path);
                 assert_eq!(result.runtime.as_deref(), Some(runtime));
                 assert_eq!(result.live, status == SessionStatus::Running);
-                assert_eq!(items[0].icon().path, "square-terminal.svg");
+                assert_eq!(items[0].icon().asset_path(), "square-terminal.svg");
                 assert_eq!(items[0].icon().color(theme::muted(), false), theme::muted());
             }
         }

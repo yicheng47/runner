@@ -1087,13 +1087,7 @@ fn popup_view_rows(slot: &SlotWithRole) -> AnyElement {
         .gap(rems(6. / 16.))
         .text_size(theme::text_body())
         .text_color(theme::text())
-        .child(
-            svg()
-                .flex_none()
-                .path(icon.path)
-                .size(rems(13. / 16.))
-                .text_color(icon.color(theme::muted(), true)),
-        )
+        .child(icon.render(rems(13. / 16.), icon.color(theme::muted(), true), true))
         .child(
             div()
                 .min_w(px(0.))

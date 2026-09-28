@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use gpui::prelude::*;
 use gpui::{
-    div, px, rems, svg, AnyElement, App, Context, Entity, FocusHandle, FontWeight, KeyDownEvent,
+    div, px, rems, AnyElement, App, Context, Entity, FocusHandle, FontWeight, KeyDownEvent,
     MouseButton, Render, Task, Window,
 };
 use runner_app::terminal_ime::TerminalInput;
@@ -669,13 +669,11 @@ impl Render for AgentUpdateDialog {
                             .flex()
                             .items_center()
                             .gap(rems(12. / 16.))
-                            .child(
-                                svg()
-                                    .path(mark.path)
-                                    .size(rems(20. / 16.))
-                                    .flex_none()
-                                    .text_color(mark.color(theme::text(), true)),
-                            )
+                            .child(mark.render(
+                                rems(20. / 16.),
+                                mark.color(theme::text(), true),
+                                true,
+                            ))
                             .child(
                                 div()
                                     .min_w(px(0.))

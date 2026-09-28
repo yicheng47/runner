@@ -483,18 +483,17 @@ impl NativeRoot {
                 .as_ref()
                 .map(|entry| entry.agent_runtime.as_str()),
         );
+        let header_live = focused_entry
+            .as_ref()
+            .is_some_and(|entry| entry.status == SessionStatus::Running);
         let header = WorkspaceHeader::new(
             px(self.workspace_titlebar_padding(window, cx)),
-            header_icon.path,
-            label,
-        )
-        .icon_color(
-            header_icon.color(
-                theme::accent(),
-                focused_entry
-                    .as_ref()
-                    .is_some_and(|entry| entry.status == SessionStatus::Running),
+            header_icon.render(
+                rems(15. / 16.),
+                header_icon.color(theme::accent(), header_live),
+                header_live,
             ),
+            label,
         )
         .sidebar_toggle(sidebar_toggle)
         .title_actions(title_actions)
@@ -2030,20 +2029,18 @@ impl NativeRoot {
                     .flex_1()
                     .flex()
                     .items_center()
-                    .child(
-                        svg()
-                            .path(icon.path)
-                            .size(rems(12. / 16.))
-                            .flex_none()
-                            .text_color(icon.color(
-                                if focused {
-                                    theme::accent()
-                                } else {
-                                    theme::faint()
-                                },
-                                entry.status == SessionStatus::Running,
-                            )),
-                    )
+                    .child(icon.render(
+                        rems(12. / 16.),
+                        icon.color(
+                            if focused {
+                                theme::accent()
+                            } else {
+                                theme::faint()
+                            },
+                            entry.status == SessionStatus::Running,
+                        ),
+                        entry.status == SessionStatus::Running,
+                    ))
                     .child(name)
                     .children(menu)
                     .children(status.map(|status| {
@@ -2081,13 +2078,7 @@ impl NativeRoot {
                     .flex_1()
                     .flex()
                     .items_center()
-                    .child(
-                        svg()
-                            .path(pane_identity_icon(None).path)
-                            .size(rems(12. / 16.))
-                            .flex_none()
-                            .text_color(theme::faint()),
-                    )
+                    .child(pane_identity_icon(None).render(rems(12. / 16.), theme::faint(), false))
                     .child(
                         div()
                             .ml_2()
@@ -3147,7 +3138,7 @@ mod tests {
             );
         }
 
-        for runtime in ["trae", "copilot"] {
+        for runtime in ["trae", "copilot", "antigravity"] {
             let entry = direct_session(runtime, false, false);
             assert_eq!(
                 header_fork_state(Some(&entry), false),
@@ -3186,25 +3177,35 @@ mod tests {
 
     #[test]
     fn pane_identity_branches_for_chat_terminal_and_empty_panes() {
-        assert_eq!(pane_identity_icon(Some("codex")).path, "openai.svg");
-        assert_eq!(pane_identity_icon(Some("claude-code")).path, "claude.svg");
-        assert_eq!(pane_identity_icon(Some("trae")).path, "trae.svg");
-        assert_eq!(pane_identity_icon(Some("copilot")).path, "copilot.svg");
-        assert_eq!(pane_identity_icon(Some("pi")).path, "pi.svg");
+        assert_eq!(pane_identity_icon(Some("codex")).asset_path(), "openai.svg");
         assert_eq!(
-            pane_identity_icon(Some("unknown")).path,
+            pane_identity_icon(Some("claude-code")).asset_path(),
+            "claude.svg"
+        );
+        assert_eq!(pane_identity_icon(Some("trae")).asset_path(), "trae.svg");
+        assert_eq!(
+            pane_identity_icon(Some("copilot")).asset_path(),
+            "copilot.svg"
+        );
+        assert_eq!(pane_identity_icon(Some("pi")).asset_path(), "pi.svg");
+        assert_eq!(
+            pane_identity_icon(Some("antigravity")).asset_path(),
+            "antigravity-icon.png"
+        );
+        assert_eq!(
+            pane_identity_icon(Some("unknown")).asset_path(),
             "message-square.svg"
         );
         assert!(pane_identity_shows_status("codex"));
 
         assert_eq!(
-            pane_identity_icon(Some("shell")).path,
+            pane_identity_icon(Some("shell")).asset_path(),
             "square-terminal.svg"
         );
         assert!(!pane_identity_shows_status("shell"));
         assert!(!side_panel_open(true, true));
 
-        assert_eq!(pane_identity_icon(None).path, "square-dashed.svg");
+        assert_eq!(pane_identity_icon(None).asset_path(), "square-dashed.svg");
         assert_eq!(pane_close_behavior(None), PaneCloseBehavior::LayoutOnly);
     }
 
@@ -3225,24 +3226,25 @@ mod tests {
             (Some("trae"), "trae.svg"),
             (Some("copilot"), "copilot.svg"),
             (Some("pi"), "pi.svg"),
+            (Some("antigravity"), "antigravity-icon.png"),
             (Some("unknown"), "message-square.svg"),
             (None, "message-square.svg"),
         ] {
             assert_eq!(
-                workspace_header_icon(true, Some("session"), runtime).path,
+                workspace_header_icon(true, Some("session"), runtime).asset_path(),
                 "columns-2.svg"
             );
             assert_eq!(
-                workspace_header_icon(false, Some("session"), runtime).path,
+                workspace_header_icon(false, Some("session"), runtime).asset_path(),
                 path
             );
         }
         assert_eq!(
-            workspace_header_icon(false, None, None).path,
+            workspace_header_icon(false, None, None).asset_path(),
             "square-dashed.svg"
         );
         assert_eq!(
-            workspace_header_icon(true, None, None).path,
+            workspace_header_icon(true, None, None).asset_path(),
             "columns-2.svg"
         );
     }

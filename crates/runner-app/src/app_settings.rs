@@ -914,11 +914,14 @@ mod tests {
         assert!(settings.is_agent_enabled(Runtime::Codex, true));
         assert!(settings.is_agent_enabled(Runtime::Copilot, true));
         assert!(settings.is_agent_enabled(Runtime::Pi, true));
+        assert!(settings.is_agent_enabled(Runtime::Antigravity, true));
+        assert!(settings.is_agent_enabled(Runtime::Trae, true));
+        settings.disabled_agents.insert("antigravity".into());
+        settings.disabled_agents.insert("trae".into());
+        assert!(!settings.is_agent_enabled(Runtime::Antigravity, true));
+        assert!(!settings.is_agent_enabled(Runtime::Trae, true));
         settings.disabled_agents.insert("copilot".into());
         assert!(!settings.is_agent_enabled(Runtime::Copilot, true));
-        assert!(!settings.is_agent_enabled(Runtime::Trae, false));
-        settings.enabled_agents.insert("trae".into());
-        assert!(settings.is_agent_enabled(Runtime::Trae, false));
         settings.disabled_agents.insert("codex".into());
         assert!(!settings.is_agent_enabled(Runtime::Codex, true));
     }

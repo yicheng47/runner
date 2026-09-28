@@ -452,13 +452,7 @@ pub(super) fn slot_setup_line(setup: &SlotSetup) -> gpui::Div {
         .overflow_hidden()
         .whitespace_nowrap()
         .text_size(theme::text_ui())
-        .child(
-            svg()
-                .flex_none()
-                .path(icon.path)
-                .size(rems(12. / 16.))
-                .text_color(icon.color(theme::muted(), true)),
-        )
+        .child(icon.render(rems(12. / 16.), icon.color(theme::muted(), true), true))
         .child(
             div()
                 .flex_none()

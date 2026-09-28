@@ -228,24 +228,48 @@ agent 使用 `--json`；不加时，列表和详情命令会为人显示表格�
 
 ## 支持的 Agent
 
-| | Claude Code | Codex | GitHub Copilot CLI | pi |
-| --- | :---: | :---: | :---: | :---: |
-| 聊天、mission、重启后恢复会话 | ✓ | ✓ | ✓ | ✓ |
-| 在 Windows 上运行 | ✓ | ✓ | ✓ ¹ | ✓ ² |
-| 分叉聊天 | ✓ | ✓ | — | ✓ |
-| 由 agent 自身的 hook 驱动 Working / Idle 状态 | ✓ | ✓ | ✓ | ✓ |
-| Needs you：显示审批和提问对话框 | ✓ | — | ✓ | 仅来自扩展 |
-| 从 CLI 读取模型列表 | ✓ | ✓ | — | ✓ |
-| 在 Settings → Agents 中更新 | ✓ | ✓ | ✓ | ✓ |
-| 权限模式 | Default · Accept edits · Auto · Bypass | Default · Auto · Bypass | Default · Accept edits · Bypass | — |
-| Skills 面板 | 目录 + 开关 | 目录 + 开关 | 目录 + 开关 | 目录 |
-| 已安装 Runner skill | ✓ | ✓ | ✓ | ✓ |
-| 终端渲染有夹具测试覆盖 | ✓ | ✓ | — | — |
+| | Codex | Claude Code | Antigravity CLI | pi | GitHub Copilot CLI |
+| --- | :---: | :---: | :---: | :---: | :---: |
+| 聊天、mission、重启后恢复会话 | ✓ | ✓ | ✓ | ✓ | ✓ |
+| 会话内切换对话后更新 Runner 的恢复 ID | ✓ | ✓ | — | ✓ | — |
+| 在 Windows 上运行 | ✓ | ✓ | ✓ ¹ | ✓ ² | ✓ |
+| 分叉聊天 | ✓ | ✓ | — | ✓ | — |
+| 由 agent 自身的 hook 驱动 Working / Idle 状态 | ✓ | ✓ | 仅 macOS | ✓ | ✓ |
+| Needs you：显示审批和提问对话框 | — | ✓ | — | 仅来自扩展 | ✓ |
+| 从 CLI 读取模型列表 | ✓ | ✓ | — | ✓ | — |
+| 在 Settings → Agents 中更新 | ✓ | ✓ | — | ✓ | ✓ |
+| 在 Runner 的用量弹窗中查看用量 | ✓ | ✓ | — | — | — |
+| 权限模式 | Default · Auto · Bypass | Default · Accept edits · Auto · Bypass | Default · Accept edits · Bypass | — | Default · Accept edits · Bypass |
+| Skills 面板 | 目录 + 开关 | 目录 + 开关 | 目录 | 目录 | 目录 + 开关 |
+| 已安装 Runner skill | ✓ | ✓ | — | ✓ | ✓ |
+| 终端渲染有夹具测试覆盖 | ✓ | ✓ | — | — | — |
 
-¹ GitHub Copilot CLI 在 Windows 上原生运行，但尚未在 Windows 上做过冒烟测试。
+¹ Antigravity CLI 尚未在 Windows 上做过冒烟测试。
 ² pi 在 Windows 上原生运行，但尚未在 Windows 上做过冒烟测试；它的 bash 工具需要 Git for Windows。
 
-Claude Code 和 Codex 是主要支持的 agent，启动和催促时序做过调优。GitHub Copilot CLI 需要 Copilot 订阅。pi 使用你已经配置好的模型提供商。欢迎提 [issue](https://github.com/yicheng47/runner/issues)。
+### Antigravity CLI 支持清单
+
+这个分支已在 macOS 上**实现 9 项能力**；实际运行验证见[冒烟测试清单](./docs/tests/644-antigravity-smoke.md)。
+
+- [x] 直接聊天和 crew mission 槽位。
+- [x] 在首轮消息中传入角色人设。
+- [x] 捕获会话 ID、重启后恢复，以及原会话丢失时重新开始。
+- [x] 静态模型列表及各模型支持的 effort 级别。
+- [x] mission 支持 Default、Accept edits、Bypass 权限模式；直接聊天使用 Default，并在启动前预置信任工作目录。
+- [x] macOS 上由 hook 驱动的 Working、Idle 和 Response failed 状态。
+- [x] 在 Settings → Agents 中检测 CLI 并显示版本。
+- [x] Settings 中的 Skills 目录和 stdio MCP 服务器注册。
+- [x] 侧边栏中的全彩厂商图标。
+
+仍待完成：
+
+- [ ] 对恢复会话、权限、hook 和 MCP 行为进行 macOS 实机冒烟测试。
+- [ ] 录制 Antigravity 终端夹具，并验证滚轮行为。
+- [ ] 在 Runner 的用量弹窗中显示 Antigravity 配额（`agy` 自带 `/usage` 面板）。
+- [ ] agy 在运行中的聊天里通过 `/clear`（`/new`）、`/resume` 或 `/fork` 切换对话后，跟踪当前对话 ID。
+- [ ] 在 Windows 上对 Antigravity CLI 做冒烟测试。
+
+Claude Code 和 Codex 是主要支持的 agent，启动和催促时序做过调优。GitHub Copilot CLI 需要 Copilot 订阅。pi 使用你已经配置好的模型提供商。Antigravity CLI 使用 Google 账号登录，并在启动时自行更新，所以没有 **Update** 按钮。欢迎提 [issue](https://github.com/yicheng47/runner/issues)。
 
 agent 的命令行工具需要单独安装。Runner 会在 `PATH` 上检测它们，也可以在 **Settings → Agents** 里为每个 agent 单独指定可执行文件；这里还会显示每个 CLI 的版本，有新版本发布时出现 **Update** 按钮，在终端里运行该 CLI 自带的更新命令。在 Windows 上，Claude Code 和 pi 的 bash 工具需要 Git for Windows；通过 npm 安装的 CLI 需要 Node.js。PowerShell 7 可选。agent 在 Windows 上原生运行，不需要 WSL。
 

@@ -25,6 +25,40 @@ fn runtime_with_defaults(
 }
 
 #[test]
+fn role_edit_restores_disabled_runtimes_in_selector_order() {
+    let page = role_page_harness("role-runtime-order");
+    let mut role = create_test_role(&page.core, "restored-runtime", None);
+    role.runtime = "codex".into();
+    let mut runtimes = runner_backend::ops::runtime::runtime_catalog(&page.core)
+        .unwrap()
+        .into_iter()
+        .filter(|entry| !matches!(entry.name, Runtime::Codex | Runtime::Pi))
+        .map(|mut entry| {
+            entry.available = true;
+            entry
+        })
+        .collect();
+
+    super::logic::ensure_runtime_present(&page.core, &mut runtimes, &role.runtime);
+    super::logic::ensure_runtime_present(&page.core, &mut runtimes, "pi");
+    let options = super::logic::role_edit_runtime_options(&runtimes, &role, "pi");
+    assert_eq!(
+        options
+            .iter()
+            .map(|option| option.value.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "codex",
+            "claude-code",
+            "antigravity",
+            "pi",
+            "copilot",
+            "trae"
+        ]
+    );
+}
+
+#[test]
 fn role_handle_validation_matches_the_shipped_contract() {
     for valid in ["", "a", "0", "coder-2", "coder_2", &"a".repeat(32)] {
         assert_eq!(validate_role_handle(valid), None, "{valid}");
@@ -77,7 +111,14 @@ fn trae_does_not_offer_a_mode_it_cannot_write() {
 
     // Every offered mode describes itself.
     assert!(permission_modes("pi").is_empty());
-    for runtime in ["claude-code", "codex", "trae", "copilot", "pi"] {
+    for runtime in [
+        "claude-code",
+        "codex",
+        "trae",
+        "copilot",
+        "pi",
+        "antigravity",
+    ] {
         for mode in permission_modes(runtime) {
             assert!(
                 !permission_mode_description(runtime, *mode).is_empty(),
@@ -103,6 +144,33 @@ fn copilot_offers_only_the_three_supported_permission_modes_with_the_approved_co
     assert_eq!(permission_mode_description("copilot", PermissionMode::Default), "Copilot's own manual mode: read-only tools run, writes and shell commands ask. Governed by defaultPermissionMode in ~/.copilot/settings.json.");
     assert_eq!(permission_mode_description("copilot", PermissionMode::AcceptEdits), "File creates and edits run without asking; shell commands, URLs and paths outside the cwd still prompt.");
     assert_eq!(permission_mode_description("copilot", PermissionMode::Bypass), "Every tool, path and URL is allowed. Same flag for the app-wide mission permission mode; chats never carry it (#596).");
+}
+
+#[test]
+fn antigravity_offers_default_accept_edits_and_bypass_with_its_own_copy() {
+    use super::logic::{permission_mode_description, permission_modes};
+    use runner_backend::router::runtime::PermissionMode;
+    assert_eq!(
+        permission_modes("antigravity"),
+        [
+            PermissionMode::Default,
+            PermissionMode::AcceptEdits,
+            PermissionMode::Bypass
+        ]
+    );
+    assert!(permission_mode_description("antigravity", PermissionMode::Auto).is_empty());
+    assert!(
+        permission_mode_description("antigravity", PermissionMode::Default)
+            .contains("toolPermission")
+    );
+    assert!(
+        permission_mode_description("antigravity", PermissionMode::AcceptEdits)
+            .contains("--mode accept-edits")
+    );
+    assert!(
+        permission_mode_description("antigravity", PermissionMode::Bypass)
+            .contains("--dangerously-skip-permissions")
+    );
 }
 
 #[test]
@@ -829,7 +897,7 @@ fn a_legacy_shell_role_saves_only_after_an_agent_is_picked() {
     assert_eq!(
         page.read(|root| root.role_surfaces.edit.as_ref().unwrap().error.clone()),
         Some(
-            "unknown runtime 'shell' — valid runtimes: codex, claude-code, copilot, pi, trae"
+            "unknown runtime 'shell' — valid runtimes: codex, claude-code, antigravity, pi, copilot, trae"
                 .into()
         )
     );

@@ -256,6 +256,39 @@ fn the_runtime_select_leads_with_the_roles_default() {
 }
 
 #[test]
+fn slot_runtime_select_restores_role_and_override_in_selector_order() {
+    let page = crew_page_harness("slot-runtime-order");
+    let mut runtimes = runner_backend::ops::runtime::runtime_catalog(&page.core)
+        .unwrap()
+        .into_iter()
+        .filter(|entry| !matches!(entry.name, Runtime::Codex | Runtime::Pi))
+        .map(|mut entry| {
+            entry.available = true;
+            entry
+        })
+        .collect();
+
+    crate::surfaces::roles::logic::ensure_runtime_present(&page.core, &mut runtimes, "codex");
+    crate::surfaces::roles::logic::ensure_runtime_present(&page.core, &mut runtimes, "pi");
+    let options = slot_runtime_options(&runtimes, "codex", "pi");
+    assert_eq!(
+        options
+            .iter()
+            .map(|option| option.value.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "",
+            "codex",
+            "claude-code",
+            "antigravity",
+            "pi",
+            "copilot",
+            "trae"
+        ]
+    );
+}
+
+#[test]
 fn list_cells_count_runtimes_in_slot_order_and_summarize_the_crew() {
     let member = |handle: &str, runtime: &str, lead: bool| CrewMemberPreview {
         slot_handle: handle.into(),

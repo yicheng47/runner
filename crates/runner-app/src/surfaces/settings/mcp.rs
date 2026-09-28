@@ -32,7 +32,21 @@ fn registered_clients(entry: &McpServerEntry) -> Vec<McpClientId> {
 }
 
 fn source_client(entry: &McpServerEntry) -> Option<McpClientId> {
-    registered_clients(entry).first().copied()
+    // Copy fallback priority is independent of the runtime menu order.
+    [
+        McpClientId::ClaudeCode,
+        McpClientId::Codex,
+        McpClientId::Trae,
+        McpClientId::Copilot,
+        McpClientId::Antigravity,
+    ]
+    .into_iter()
+    .find(|client| {
+        entry
+            .clients
+            .get(client)
+            .is_some_and(|slot| slot.registered)
+    })
 }
 
 fn server_toggle_on(entry: &McpServerEntry, client: McpClientId) -> bool {
@@ -126,7 +140,13 @@ fn copy_hint(entry: &McpServerEntry, client: McpClientId) -> Option<String> {
         return None;
     }
     let source = source_client(entry)?;
-    entry.clients[&source].definition.is_none().then(|| {
+    let copyable = match &entry.clients[&source].definition {
+        None => false,
+        // Antigravity CLI's HTTP entry shape is unprobed (#644); the backend refuses it.
+        Some(McpServerDefinition::Http { .. }) => client != McpClientId::Antigravity,
+        Some(McpServerDefinition::Stdio { .. }) => true,
+    };
+    (!copyable).then(|| {
         format!(
             "This transport cannot be copied. Add it with {}'s CLI.",
             client.label()
@@ -735,7 +755,7 @@ impl McpDetail {
             self.viewing,
             name,
             self.editor.read(cx).text(),
-            !self.also.is_empty(),
+            &self.also.iter().copied().collect::<Vec<_>>(),
         )
         .map_err(|e| e.to_string())
     }
@@ -1023,11 +1043,7 @@ impl McpDetail {
                         .child(format!(
                             "{} · {}",
                             client.label(),
-                            if matches!(client, McpClientId::ClaudeCode | McpClientId::Copilot) {
-                                "JSON"
-                            } else {
-                                "TOML"
-                            }
+                            if client.is_json() { "JSON" } else { "TOML" }
                         )),
                 )
             })
@@ -1306,7 +1322,7 @@ mod tests {
                     env: BTreeMap::from([("TOKEN".into(), "secret-value".into())]),
                 };
                 let registered = client != McpClientId::Trae;
-                let text = if matches!(client, McpClientId::ClaudeCode | McpClientId::Copilot) {
+                let text = if client.is_json() {
                     serde_json::to_string_pretty(&definition.to_claude()).unwrap()
                 } else {
                     format!(
@@ -1430,9 +1446,10 @@ mod tests {
         assert_eq!(
             registered_clients(github),
             [
-                McpClientId::ClaudeCode,
                 McpClientId::Codex,
-                McpClientId::Copilot
+                McpClientId::ClaudeCode,
+                McpClientId::Antigravity,
+                McpClientId::Copilot,
             ]
         );
         assert!(conflict_caption(github, McpClientId::ClaudeCode)
@@ -1456,6 +1473,20 @@ mod tests {
             .unwrap()
             .contains("TRAE CLI's CLI"));
         assert!(copy_hint(&unsupported, McpClientId::ClaudeCode).is_none());
+
+        let mut http = entry("web", false);
+        for client in McpClientId::ALL {
+            let slot = http.clients.get_mut(&client).unwrap();
+            slot.registered = client == McpClientId::ClaudeCode;
+            slot.definition = Some(McpServerDefinition::Http {
+                url: "https://example.com/mcp".into(),
+                headers: BTreeMap::new(),
+            });
+        }
+        assert!(copy_hint(&http, McpClientId::Antigravity)
+            .unwrap()
+            .contains("Antigravity CLI's CLI"));
+        assert!(copy_hint(&http, McpClientId::Copilot).is_none());
     }
 
     #[test]
@@ -1482,15 +1513,33 @@ mod tests {
     #[test]
     fn runtime_dropdown_filters_unavailable_disabled_and_unknown_agents() {
         let mut settings = AppSettings::default();
+        let mut all_runtimes = runtimes();
+        all_runtimes
+            .iter_mut()
+            .find(|runtime| runtime.name == runner_backend::model::Runtime::Trae)
+            .unwrap()
+            .available = true;
+        assert_eq!(
+            available_clients(&all_runtimes, &settings),
+            [
+                McpClientId::Codex,
+                McpClientId::ClaudeCode,
+                McpClientId::Antigravity,
+                McpClientId::Copilot,
+                McpClientId::Trae,
+            ]
+        );
         assert_eq!(
             available_clients(&runtimes(), &settings),
             [
-                McpClientId::ClaudeCode,
                 McpClientId::Codex,
-                McpClientId::Copilot
+                McpClientId::ClaudeCode,
+                McpClientId::Antigravity,
+                McpClientId::Copilot,
             ]
         );
         settings.disabled_agents.insert("claude-code".into());
+        settings.disabled_agents.insert("antigravity".into());
         assert_eq!(
             available_clients(&runtimes(), &settings),
             [McpClientId::Codex, McpClientId::Copilot]
@@ -1551,6 +1600,15 @@ mod tests {
                     .is_err_and(|e| e.contains("cannot be translated")));
                 detail.also.clear();
                 assert!(detail.validation(cx).is_ok());
+                detail.editor.update(cx, |e, cx| {
+                    e.reset(r#"{"type":"http","url":"https://example.test"}"#, cx)
+                });
+                detail.also.insert(McpClientId::Codex);
+                assert!(detail.validation(cx).is_ok());
+                detail.also.insert(McpClientId::Antigravity);
+                assert!(detail
+                    .validation(cx)
+                    .is_err_and(|e| e.contains("Turn off Also update for Antigravity CLI")));
             });
         })
         .unwrap();

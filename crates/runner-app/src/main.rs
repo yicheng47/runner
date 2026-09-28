@@ -166,13 +166,11 @@ impl Render for PaneDrag {
             .shadow_lg()
             .text_size(theme::text_ui())
             .text_color(theme::text())
-            .child(
-                gpui::svg()
-                    .path(self.icon.path)
-                    .size(rems(12. / 16.))
-                    .flex_none()
-                    .text_color(self.icon.color(theme::text(), self.live)),
-            )
+            .child(self.icon.render(
+                rems(12. / 16.),
+                self.icon.color(theme::text(), self.live),
+                self.live,
+            ))
             .child(div().min_w(px(0.)).truncate().child(self.label.clone()))
     }
 }

@@ -1,5 +1,5 @@
 use gpui::prelude::*;
-use gpui::{div, px, rems, svg, AnyElement, FontWeight, Hsla, Pixels, SharedString};
+use gpui::{div, px, rems, AnyElement, FontWeight, Pixels, SharedString};
 
 use crate::theme;
 
@@ -9,8 +9,7 @@ pub const CAPTION_BUTTON_WIDTH: f32 = 46.;
 
 pub struct WorkspaceHeader {
     left_padding: Pixels,
-    icon: SharedString,
-    icon_color: Option<Hsla>,
+    icon: AnyElement,
     title: SharedString,
     sidebar_toggle: Option<AnyElement>,
     title_actions: Vec<AnyElement>,
@@ -18,15 +17,10 @@ pub struct WorkspaceHeader {
 }
 
 impl WorkspaceHeader {
-    pub fn new(
-        left_padding: Pixels,
-        icon: impl Into<SharedString>,
-        title: impl Into<SharedString>,
-    ) -> Self {
+    pub fn new(left_padding: Pixels, icon: AnyElement, title: impl Into<SharedString>) -> Self {
         Self {
             left_padding,
-            icon: icon.into(),
-            icon_color: None,
+            icon,
             title: title.into(),
             sidebar_toggle: None,
             title_actions: Vec::new(),
@@ -36,11 +30,6 @@ impl WorkspaceHeader {
 
     pub fn sidebar_toggle(mut self, toggle: Option<AnyElement>) -> Self {
         self.sidebar_toggle = toggle;
-        self
-    }
-
-    pub fn icon_color(mut self, color: Hsla) -> Self {
-        self.icon_color = Some(color);
         self
     }
 
@@ -69,13 +58,7 @@ impl WorkspaceHeader {
             .flex()
             .items_center()
             .gap_3()
-            .child(
-                svg()
-                    .path(self.icon)
-                    .size(rems(15. / 16.))
-                    .flex_none()
-                    .text_color(self.icon_color.unwrap_or_else(theme::accent)),
-            )
+            .child(self.icon)
             .child(
                 div()
                     .min_w(px(0.))

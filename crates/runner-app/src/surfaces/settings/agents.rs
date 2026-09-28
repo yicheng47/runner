@@ -699,13 +699,7 @@ impl AgentsPane {
                     .flex()
                     .items_center()
                     .gap(rems(10. / 16.))
-                    .child(
-                        svg()
-                            .path(mark.path)
-                            .size(rems(1.))
-                            .flex_none()
-                            .text_color(mark.color(theme::text(), true)),
-                    )
+                    .child(mark.render(rems(1.), mark.color(theme::text(), true), true))
                     .child(
                         div()
                             .text_size(theme::text_body())
@@ -847,13 +841,7 @@ impl AgentsPane {
                             .flex_wrap()
                             .items_center()
                             .gap(rems(10. / 16.))
-                            .child(
-                                svg()
-                                    .path(mark.path)
-                                    .size(rems(1.))
-                                    .flex_none()
-                                    .text_color(mark.color(theme::text(), true)),
-                            )
+                            .child(mark.render(rems(1.), mark.color(theme::text(), true), true))
                             .child(
                                 div()
                                     .text_size(theme::text_body())
@@ -1963,8 +1951,9 @@ mod tests {
         for selector in [
             "AGENT_CARD_codex",
             "AGENT_CARD_claude-code",
-            "AGENT_CARD_copilot",
+            "AGENT_CARD_antigravity",
             "AGENT_CARD_pi",
+            "AGENT_CARD_copilot",
             "AGENT_CARD_trae",
         ] {
             let card = window.debug_bounds(selector).unwrap();

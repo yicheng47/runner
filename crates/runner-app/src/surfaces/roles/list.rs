@@ -609,13 +609,7 @@ fn role_table_cell(
             cell.flex()
                 .items_center()
                 .gap(rems(6. / 16.))
-                .child(
-                    svg()
-                        .flex_none()
-                        .path(icon.path)
-                        .size(rems(12. / 16.))
-                        .text_color(icon.color(theme::muted(), true)),
-                )
+                .child(icon.render(rems(12. / 16.), icon.color(theme::muted(), true), true))
                 .child(text(
                     runtime_display_name(&item.role.runtime),
                     false,

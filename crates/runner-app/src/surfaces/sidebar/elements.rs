@@ -354,12 +354,7 @@ pub(super) fn project_row_label(label: String) -> AnyElement {
 }
 
 pub(super) fn sidebar_icon(icon: ChatIcon, live: bool) -> AnyElement {
-    svg()
-        .path(icon.path)
-        .size(rems(12. / 16.))
-        .flex_none()
-        .text_color(sidebar_icon_color(icon, live))
-        .into_any_element()
+    icon.render(rems(12. / 16.), sidebar_icon_color(icon, live), live)
 }
 
 pub(super) fn sidebar_icon_color(icon: ChatIcon, live: bool) -> Hsla {

@@ -164,21 +164,23 @@ pub enum SessionStatus {
 #[serde(rename_all = "kebab-case")]
 #[schemars(inline)]
 pub enum Runtime {
-    ClaudeCode,
     Codex,
-    Trae,
-    Copilot,
+    ClaudeCode,
+    Antigravity,
     Pi,
+    Copilot,
+    Trae,
     Shell,
 }
 
 impl Runtime {
-    pub const ALL: [Self; 6] = [
-        Self::ClaudeCode,
+    pub const ALL: [Self; 7] = [
         Self::Codex,
-        Self::Trae,
-        Self::Copilot,
+        Self::ClaudeCode,
+        Self::Antigravity,
         Self::Pi,
+        Self::Copilot,
+        Self::Trae,
         Self::Shell,
     ];
 
@@ -189,6 +191,7 @@ impl Runtime {
             Self::Trae => "trae",
             Self::Copilot => "copilot",
             Self::Pi => "pi",
+            Self::Antigravity => "antigravity",
             Self::Shell => "shell",
         }
     }
@@ -216,6 +219,7 @@ mod tests {
             (Runtime::Trae, "trae"),
             (Runtime::Copilot, "copilot"),
             (Runtime::Pi, "pi"),
+            (Runtime::Antigravity, "antigravity"),
             (Runtime::Shell, "shell"),
         ] {
             let json = format!("\"{key}\"");

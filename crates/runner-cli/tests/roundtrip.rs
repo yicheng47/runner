@@ -584,7 +584,7 @@ fn role_runtime_shell_is_a_usage_error() {
         assert_eq!(out.status.code(), Some(2), "{args:?}");
         assert_eq!(
             String::from_utf8_lossy(&out.stderr),
-            "unknown role runtime \"shell\"; expected claude-code, codex, trae, copilot, or pi\n",
+            "unknown role runtime \"shell\"; expected codex, claude-code, antigravity, pi, copilot, or trae\n",
             "{args:?}"
         );
     }

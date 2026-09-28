@@ -120,6 +120,7 @@ impl NativeRoot {
             form.agents_error = agents_error;
             if catalog_loaded {
                 let mut runtimes = selectable;
+                ensure_runtime_present(&core, &mut runtimes, &form.role.runtime);
                 ensure_runtime_present(&core, &mut runtimes, &form.runtime);
                 form.runtimes = runtimes;
                 let options = role_edit_runtime_options(&form.runtimes, &form.role, &form.runtime);

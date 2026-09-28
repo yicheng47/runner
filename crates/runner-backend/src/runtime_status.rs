@@ -561,8 +561,9 @@ mod tests {
             vec![
                 (Runtime::Codex, "Codex", "codex"),
                 (Runtime::ClaudeCode, "Claude Code", "claude"),
-                (Runtime::Copilot, "GitHub Copilot CLI", "copilot"),
+                (Runtime::Antigravity, "Antigravity CLI", "agy"),
                 (Runtime::Pi, "pi", "pi"),
+                (Runtime::Copilot, "GitHub Copilot CLI", "copilot"),
                 (Runtime::Trae, "TRAE CLI", "traecli"),
             ],
         );

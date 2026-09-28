@@ -317,12 +317,7 @@ fn usage_section(
                 .flex()
                 .items_center()
                 .gap_2()
-                .child(
-                    svg()
-                        .path(icon.path)
-                        .size(px(16.))
-                        .text_color(icon.color(theme::text(), true)),
-                )
+                .child(icon.render(px(16.), icon.color(theme::text(), true), true))
                 .child(
                     div()
                         .text_size(theme::text_title())

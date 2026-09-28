@@ -445,7 +445,10 @@ impl SessionManager {
         cwd: Option<&Path>,
         copilot_home: Option<&str>,
     ) {
-        if !matches!(runtime, Some(Runtime::Codex | Runtime::Copilot)) {
+        if !matches!(
+            runtime,
+            Some(Runtime::Codex | Runtime::Copilot | Runtime::Antigravity)
+        ) {
             return;
         }
         let Some(cwd) = cwd else {
@@ -454,10 +457,12 @@ impl SessionManager {
             );
             return;
         };
-        let result = if runtime == Some(Runtime::Copilot) {
-            crate::session::copilot_trust::seed_project_trust(cwd, copilot_home)
-        } else {
-            crate::session::codex_trust::seed_project_trust(cwd)
+        let result = match runtime {
+            Some(Runtime::Copilot) => {
+                crate::session::copilot_trust::seed_project_trust(cwd, copilot_home)
+            }
+            Some(Runtime::Antigravity) => crate::session::agy_trust::seed_project_trust(cwd),
+            _ => crate::session::codex_trust::seed_project_trust(cwd),
         };
         if let Err(e) = result {
             log::warn!(
@@ -689,6 +694,22 @@ impl SessionManager {
                 uuid::Uuid::new_v4().to_string(),
             );
         }
+        if runtime == Some(Runtime::Antigravity) {
+            crate::session::agy_capture::prepare_log(app_data_dir, &spec.session_id);
+            if crate::session::hook_feed::hooks_supported(runtime, cfg!(windows)) {
+                spec.env.insert(
+                    crate::session::agy_status::PATH_ENV.into(),
+                    crate::session::hook_feed::hook_path(&crate::session::hook_feed::status_path(
+                        app_data_dir,
+                        &spec.session_id,
+                    )),
+                );
+                spec.env.insert(
+                    crate::session::agy_status::GENERATION_ENV.into(),
+                    uuid::Uuid::new_v4().to_string(),
+                );
+            }
+        }
         if runtime == Some(Runtime::Pi)
             && crate::session::hook_feed::hooks_supported(Some(Runtime::Pi), cfg!(windows))
         {
@@ -776,6 +797,34 @@ impl SessionManager {
             return (Some(first_turn), None);
         }
         (Some(marked_first_turn), Some(marker))
+    }
+
+    /// Tails an Antigravity spawn's `--log-file` for the conversation id agy
+    /// assigns on the first message (spec 644 decision 1). Every agy spawn
+    /// gets one, a resume included: agy may still start a new conversation.
+    #[allow(clippy::too_many_arguments)]
+    fn start_antigravity_capture(
+        runtime: Option<Runtime>,
+        session_id: &str,
+        mission_id: Option<String>,
+        app_data_dir: &Path,
+        row_started_at: &str,
+        stop: Arc<AtomicBool>,
+        pool: &Arc<DbPool>,
+        events: &Arc<dyn SessionEvents>,
+    ) {
+        if runtime != Some(Runtime::Antigravity) {
+            return;
+        }
+        crate::session::agy_capture::spawn_capture(crate::session::agy_capture::CaptureRequest {
+            session_id: session_id.to_owned(),
+            mission_id,
+            log_path: crate::session::agy_capture::log_path(app_data_dir, session_id),
+            expected_row_started_at: row_started_at.to_owned(),
+            stop,
+            pool: Arc::clone(pool),
+            events: Arc::clone(events),
+        });
     }
 
     /// Sync part of a mission-slot spawn: validates inputs, composes
@@ -1173,6 +1222,16 @@ impl SessionManager {
                 event_log,
             });
         let stop = output.stop_flag();
+        Self::start_antigravity_capture(
+            Runtime::parse(&role.runtime),
+            &session_id,
+            Some(mission.id.clone()),
+            &app_data_dir,
+            &row_started_at,
+            Arc::clone(&stop),
+            &pool,
+            &events,
+        );
         let runtime_session_for_log = rt_session.session_id.clone();
         self.install_handle(
             &session_id,
@@ -1716,6 +1775,16 @@ impl SessionManager {
             None
         };
 
+        Self::start_antigravity_capture(
+            Runtime::parse(&role.runtime),
+            &session_id,
+            None,
+            app_data_dir,
+            &started_at,
+            output.stop_flag(),
+            &pool,
+            &events,
+        );
         self.install_handle(
             &session_id,
             SessionHandle {
@@ -1784,6 +1853,7 @@ impl SessionManager {
                     | Runtime::Trae
                     | Runtime::Copilot
                     | Runtime::Pi
+                    | Runtime::Antigravity
             )
         ) && !plan.resuming
             && first_turn.is_some()
@@ -1824,6 +1894,7 @@ impl SessionManager {
                     | Runtime::Trae
                     | Runtime::Copilot
                     | Runtime::Pi
+                    | Runtime::Antigravity
             )
         ) && !plan.resuming
             && crate::session::launch::is_windows_batch(&role.command)
@@ -2549,8 +2620,14 @@ impl SessionManager {
                 key,
                 &role.env,
             ),
+            (Some(Runtime::Antigravity), Some(key)) => {
+                !router::runtime::antigravity_conversation_exists(key)
+            }
             (Some(Runtime::ClaudeCode | Runtime::Copilot | Runtime::Pi), None)
-            | (Some(Runtime::Codex | Runtime::Trae | Runtime::Shell) | None, _) => false,
+            | (
+                Some(Runtime::Codex | Runtime::Trae | Runtime::Antigravity | Runtime::Shell) | None,
+                _,
+            ) => false,
         };
         if conversation_missing && !allow_fresh_fallback && runtime != Some(Runtime::Pi) {
             return Err(Error::msg(format!(
@@ -2710,10 +2787,12 @@ impl SessionManager {
                     )
                 }
             } else {
+                // A fresh agy conversation has no persona unless it is resent: agy
+                // takes no system prompt, and its lost conversation held the first turn.
                 router::prompt::split_session_prompt(
                     runtime,
                     router::prompt::SessionPromptKind::Direct,
-                    (runtime == Some(Runtime::Pi))
+                    matches!(runtime, Some(Runtime::Pi | Runtime::Antigravity))
                         .then(|| {
                             router::prompt::compose_direct_first_turn(role.system_prompt.as_deref())
                         })
@@ -2861,6 +2940,16 @@ impl SessionManager {
                 }
             })
         });
+        Self::start_antigravity_capture(
+            Runtime::parse(&role.runtime),
+            session_id,
+            snap.mission_id.clone(),
+            app_data_dir,
+            &started_at,
+            output.stop_flag(),
+            &pool,
+            &events,
+        );
         self.install_handle(
             session_id,
             SessionHandle {

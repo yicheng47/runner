@@ -23,6 +23,8 @@ const MESSAGE_CIRCLE: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBo
 const CIRCLE_ALERT: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 8v4m0 4h.01"/></svg>"#;
 const CIRCLE_QUESTION_MARK: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 3-3 3m.1 4h.01"/></svg>"#;
 const APP_ICON: &[u8] = include_bytes!("../../../assets/icon.png");
+// Source: https://www.antigravity.google/press (Icon - Full Color)
+const ANTIGRAVITY_ICON: &[u8] = include_bytes!("../../../assets/antigravity-icon.png");
 
 const BRAND_MARK: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 72 72"><path d="M14 22l14 14-14 14" fill="none" stroke="currentColor" stroke-width="9" stroke-linecap="round" stroke-linejoin="round" opacity=".28"/><path d="M29 22l14 14-14 14" fill="none" stroke="currentColor" stroke-width="9" stroke-linecap="round" stroke-linejoin="round" opacity=".55"/><path d="M44 22l14 14-14 14" fill="none" stroke="currentColor" stroke-width="9.6" stroke-linecap="round" stroke-linejoin="round"/></svg>"#;
 const PANEL_LEFT_HIDDEN: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 9v6"/></svg>"#;
@@ -105,6 +107,7 @@ MIT License
 Copyright (c) 2026 Lovecast Inc. (Claude and OpenAI marks from Orca)
 Copyright (c) 2023 LobeHub (Trae and Copilot marks)
 Copyright (c) 2025 Mario Zechner (pi mark traced from pi.dev/logo.svg)
+Copyright (c) 2025 thesvg.org (Antigravity vector)
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -139,6 +142,7 @@ const PI: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="-2 -2 28 
 
 const ASSETS: &[(&str, &[u8])] = &[
     ("app-icon.png", APP_ICON),
+    ("antigravity-icon.png", ANTIGRAVITY_ICON),
     ("brand-mark.svg", BRAND_MARK),
     ("panel-left-hidden.svg", PANEL_LEFT_HIDDEN),
     ("panel-left-open.svg", PANEL_LEFT_OPEN),
@@ -320,6 +324,10 @@ pub fn app_icon_source() -> ImageSource {
     ImageSource::Resource(Resource::Embedded("app-icon.png".into()))
 }
 
+pub fn antigravity_icon_source() -> ImageSource {
+    ImageSource::Resource(Resource::Embedded("antigravity-icon.png".into()))
+}
+
 impl AssetSource for Assets {
     fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
         Ok(ASSETS
@@ -346,6 +354,14 @@ mod tests {
         assert!(matches!(
             app_icon_source(),
             ImageSource::Resource(Resource::Embedded(path)) if path.as_ref() == "app-icon.png"
+        ));
+    }
+
+    #[test]
+    fn antigravity_icon_uses_the_embedded_asset_loader() {
+        assert!(matches!(
+            antigravity_icon_source(),
+            ImageSource::Resource(Resource::Embedded(path)) if path.as_ref() == "antigravity-icon.png"
         ));
     }
 
@@ -408,6 +424,12 @@ mod tests {
                 assert!(svg.contains("fill-rule=\"evenodd\""));
             }
         }
+    }
+
+    #[test]
+    fn antigravity_color_icon_is_bundled() {
+        let icon = Assets.load("antigravity-icon.png").unwrap().unwrap();
+        assert!(icon.starts_with(b"\x89PNG\r\n\x1a\n"));
     }
 
     #[test]

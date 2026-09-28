@@ -603,12 +603,16 @@ fn tab_and_mission_menus_have_the_trimmed_item_lists() {
         (Some("trae"), "trae.svg"),
         (Some("copilot"), "copilot.svg"),
         (Some("pi"), "pi.svg"),
+        (Some("antigravity"), "antigravity-icon.png"),
         (Some("unknown"), "message-square.svg"),
         (None, "message-square.svg"),
     ] {
-        assert_eq!(sidebar_tab_icon(1, runtime).path, path);
+        assert_eq!(sidebar_tab_icon(1, runtime).asset_path(), path);
         for panes in [2, 3, 4] {
-            assert_eq!(sidebar_tab_icon(panes, runtime).path, "columns-2.svg");
+            assert_eq!(
+                sidebar_tab_icon(panes, runtime).asset_path(),
+                "columns-2.svg"
+            );
         }
     }
 
@@ -890,10 +894,12 @@ fn sidebar_fork_menu_target_exposes_enabled_and_disabled_single_chats() {
     assert!(trae_entries[2].0.disabled);
     assert_eq!(trae_entries[2].0.description, None);
 
-    let copilot_members = vec![direct_session("chat", "copilot", SessionStatus::Running)];
-    let copilot_target = sidebar_fork_menu_target(&layout, &copilot_members).unwrap();
-    assert!(copilot_target.disabled);
-    assert_eq!(copilot_target.description, None);
+    for runtime in ["copilot", "antigravity"] {
+        let members = vec![direct_session("chat", runtime, SessionStatus::Running)];
+        let target = sidebar_fork_menu_target(&layout, &members).unwrap();
+        assert!(target.disabled, "{runtime}");
+        assert_eq!(target.description, None, "{runtime}");
+    }
 
     let shell_members = vec![direct_session("chat", "shell", SessionStatus::Running)];
     assert!(sidebar_fork_menu_target(&layout, &shell_members).is_none());
@@ -1007,8 +1013,8 @@ fn sidebar_icons_use_text_opacity_for_liveness_and_provider_tints_only_while_liv
 
 #[test]
 fn project_header_icon_follows_expansion_state() {
-    assert_eq!(project_header_icon(true).path, "folder.svg");
-    assert_eq!(project_header_icon(false).path, "folder-open.svg");
+    assert_eq!(project_header_icon(true).asset_path(), "folder.svg");
+    assert_eq!(project_header_icon(false).asset_path(), "folder-open.svg");
 }
 
 #[test]

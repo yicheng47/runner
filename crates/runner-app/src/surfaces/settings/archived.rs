@@ -394,13 +394,11 @@ impl ArchivedPane {
             .cursor(CursorStyle::PointingHand)
             .hover(|row| row.bg(theme::with_alpha(theme::raised(), 0.4)))
             .focus(|row| row.bg(theme::with_alpha(theme::raised(), 0.4)))
-            .child(
-                svg()
-                    .path(item.icon().path)
-                    .size(rems(14. / 16.))
-                    .flex_none()
-                    .text_color(item.icon().color(theme::faint(), false)),
-            )
+            .child(item.icon().render(
+                rems(14. / 16.),
+                item.icon().color(theme::faint(), false),
+                false,
+            ))
             .child(
                 div()
                     .min_w_0()
@@ -853,11 +851,12 @@ mod tests {
             ("trae", "trae.svg"),
             ("copilot", "copilot.svg"),
             ("pi", "pi.svg"),
+            ("antigravity", "antigravity-icon.png"),
         ] {
             chat.agent_runtime = runtime.into();
             let items = merge_archived_items(&[], std::slice::from_ref(&chat));
             assert_eq!(items[0].runtime.as_deref(), Some(runtime));
-            assert_eq!(items[0].icon().path, path);
+            assert_eq!(items[0].icon().asset_path(), path);
             assert_eq!(
                 items[0].icon().color(theme::faint(), false),
                 theme::with_alpha(theme::text(), 0.45)
@@ -873,8 +872,8 @@ mod tests {
             )],
             &[chat],
         );
-        assert_eq!(items[0].icon().path, "message-square.svg");
-        assert_eq!(items[1].icon().path, "rocket.svg");
+        assert_eq!(items[0].icon().asset_path(), "message-square.svg");
+        assert_eq!(items[1].icon().asset_path(), "rocket.svg");
         assert_eq!(items[1].icon().color(theme::faint(), false), theme::faint());
     }
 

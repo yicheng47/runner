@@ -262,13 +262,7 @@ impl NativeRoot {
                     .flex()
                     .items_center()
                     .gap(rems(6. / 16.))
-                    .child(
-                        svg()
-                            .flex_none()
-                            .path(icon.path)
-                            .size(rems(12. / 16.))
-                            .text_color(icon.color(theme::muted(), true)),
-                    )
+                    .child(icon.render(rems(12. / 16.), icon.color(theme::muted(), true), true))
                     .child(setup_value(
                         runtime_display_name(&role.runtime),
                         column - 18.,

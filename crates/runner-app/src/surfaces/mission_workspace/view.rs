@@ -420,7 +420,7 @@ impl MissionWorkspace {
         });
         let row = WorkspaceHeader::new(
             px(self.workspace_titlebar_padding(window, cx)),
-            "flag.svg",
+            ChatIcon::mission().render(rems(15. / 16.), theme::accent(), true),
             title,
         )
         .sidebar_toggle(self.render_open_sidebar_button(cx))

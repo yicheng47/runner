@@ -486,6 +486,55 @@ fn runtime_catalog_options() -> Vec<RuntimeCatalogEntry> {
             efforts: claude_efforts,
         },
         RuntimeCatalogEntry {
+            name: Runtime::Antigravity,
+            display_name: "Antigravity CLI".into(),
+            command: "agy".into(),
+            native_fork: crate::router::runtime::supports_native_fork(Some(Runtime::Antigravity)),
+            description: "Google Antigravity CLI (signs in with a Google account)".into(),
+            install_url: "https://antigravity.google/docs/cli/reference".into(),
+            default_enabled: true,
+            available: false,
+            default_model: None,
+            default_effort: None,
+            models: std::iter::once(default_model_option())
+                .chain(crate::router::runtime::ANTIGRAVITY_MODELS.iter().map(
+                    |(model, efforts)| RuntimeCatalogOption {
+                        supported_efforts: Some(
+                            efforts.iter().map(|effort| (*effort).into()).collect(),
+                        ),
+                        ..plain_option(model, model)
+                    },
+                ))
+                .collect(),
+            efforts: std::iter::once(default_effort())
+                .chain(
+                    crate::router::runtime::ANTIGRAVITY_EFFORTS
+                        .iter()
+                        .map(|effort| plain_option(effort, effort)),
+                )
+                .collect(),
+        },
+        RuntimeCatalogEntry {
+            name: Runtime::Pi,
+            display_name: "pi".into(),
+            command: "pi".into(),
+            native_fork: crate::router::runtime::supports_native_fork(Some(Runtime::Pi)),
+            description: "pi coding agent (bring your own model provider)".into(),
+            install_url: "https://github.com/earendil-works/pi".into(),
+            default_enabled: true,
+            available: false,
+            default_model: None,
+            default_effort: None,
+            models: vec![default_model_option()],
+            efforts: std::iter::once(default_effort())
+                .chain(
+                    ["off", "minimal", "low", "medium", "high", "xhigh", "max"]
+                        .into_iter()
+                        .map(|effort| plain_option(effort, effort)),
+                )
+                .collect(),
+        },
+        RuntimeCatalogEntry {
             name: Runtime::Copilot,
             display_name: "GitHub Copilot CLI".into(),
             command: "copilot".into(),
@@ -540,33 +589,13 @@ fn runtime_catalog_options() -> Vec<RuntimeCatalogEntry> {
                 .collect(),
         },
         RuntimeCatalogEntry {
-            name: Runtime::Pi,
-            display_name: "pi".into(),
-            command: "pi".into(),
-            native_fork: crate::router::runtime::supports_native_fork(Some(Runtime::Pi)),
-            description: "pi coding agent (bring your own model provider)".into(),
-            install_url: "https://github.com/earendil-works/pi".into(),
-            default_enabled: true,
-            available: false,
-            default_model: None,
-            default_effort: None,
-            models: vec![default_model_option()],
-            efforts: std::iter::once(default_effort())
-                .chain(
-                    ["off", "minimal", "low", "medium", "high", "xhigh", "max"]
-                        .into_iter()
-                        .map(|effort| plain_option(effort, effort)),
-                )
-                .collect(),
-        },
-        RuntimeCatalogEntry {
             name: Runtime::Trae,
             display_name: "TRAE CLI".into(),
             command: "traecli".into(),
             native_fork: crate::router::runtime::supports_native_fork(Some(Runtime::Trae)),
             description: String::new(),
             install_url: String::new(),
-            default_enabled: cfg!(target_os = "macos"),
+            default_enabled: true,
             available: false,
             default_model: None,
             default_effort: None,
@@ -621,27 +650,44 @@ mod tests {
             .unwrap();
         assert_eq!(pi.command, "pi");
         assert!(pi.native_fork);
+        let agy = definitions
+            .iter()
+            .find(|runtime| runtime.name == Runtime::Antigravity)
+            .unwrap();
+        assert_eq!(agy.display_name, "Antigravity CLI");
+        assert_eq!(agy.command, "agy");
+        assert!(!agy.native_fork);
 
         let catalog = runtime_catalog_options();
+        let expected = [
+            Runtime::Codex,
+            Runtime::ClaudeCode,
+            Runtime::Antigravity,
+            Runtime::Pi,
+            Runtime::Copilot,
+            Runtime::Trae,
+        ];
+        assert_eq!(
+            definitions
+                .iter()
+                .map(|runtime| runtime.name)
+                .collect::<Vec<_>>(),
+            expected
+        );
+        assert_eq!(&Runtime::ALL[..6], &expected);
         assert_eq!(
             catalog
                 .iter()
                 .map(|runtime| runtime.name)
                 .collect::<Vec<_>>(),
-            [
-                Runtime::Codex,
-                Runtime::ClaudeCode,
-                Runtime::Copilot,
-                Runtime::Pi,
-                Runtime::Trae,
-            ]
+            expected
         );
         assert!(catalog[0].default_enabled);
         assert!(catalog[1].default_enabled);
         assert!(catalog[2].default_enabled);
-        assert_eq!(catalog[2].models[1].value, "auto");
-        assert_eq!(catalog[2].models.len(), 28);
-        assert_eq!(catalog[4].default_enabled, cfg!(target_os = "macos"));
+        assert_eq!(catalog[4].models[1].value, "auto");
+        assert_eq!(catalog[4].models.len(), 28);
+        assert!(catalog[4].default_enabled);
         assert!(catalog[3].default_enabled);
         assert!(catalog[3].native_fork);
         assert_eq!(catalog[3].models.len(), 1);
@@ -654,7 +700,7 @@ mod tests {
             ["", "off", "minimal", "low", "medium", "high", "xhigh", "max"]
         );
         assert_eq!(
-            catalog[2]
+            catalog[4]
                 .efforts
                 .iter()
                 .map(|effort| effort.value.as_str())
@@ -688,13 +734,50 @@ mod tests {
             ["", "low", "medium", "high", "xhigh", "max", "ultra"]
         );
         assert_eq!(
-            catalog[4]
+            catalog[5]
                 .efforts
                 .iter()
                 .map(|effort| effort.value.as_str())
                 .collect::<Vec<_>>(),
             ["", "low", "medium", "high", "xhigh"]
         );
+
+        let agy = &catalog[2];
+        assert_eq!(agy.command, "agy");
+        assert!(!agy.native_fork);
+        assert!(agy.default_enabled);
+        assert_eq!(
+            agy.models
+                .iter()
+                .map(|model| model.value.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "",
+                "gemini-3.8-flash",
+                "gemini-3.7-flash",
+                "gemini-3.6-flash",
+                "gemini-3.1-pro",
+                "claude-sonnet-4-6",
+                "claude-opus-4-6-thinking",
+                "gpt-oss-120b-medium",
+            ]
+        );
+        let efforts = |model: &str| {
+            agy.efforts_for_model(model)
+                .into_iter()
+                .map(|effort| effort.value)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(efforts(""), [""]);
+        assert_eq!(efforts("gemini-3.8-flash"), ["", "low", "medium", "high"]);
+        assert_eq!(efforts("gemini-3.1-pro"), ["", "low", "high"]);
+        for model in [
+            "claude-sonnet-4-6",
+            "claude-opus-4-6-thinking",
+            "gpt-oss-120b-medium",
+        ] {
+            assert_eq!(efforts(model), [""], "{model}");
+        }
     }
 
     #[test]
@@ -707,22 +790,14 @@ mod tests {
         for runtime in &mut catalog {
             runtime.available = true;
         }
-        let expected = if cfg!(target_os = "macos") {
-            vec![
-                Runtime::Codex,
-                Runtime::ClaudeCode,
-                Runtime::Copilot,
-                Runtime::Pi,
-                Runtime::Trae,
-            ]
-        } else {
-            vec![
-                Runtime::Codex,
-                Runtime::ClaudeCode,
-                Runtime::Copilot,
-                Runtime::Pi,
-            ]
-        };
+        let expected = vec![
+            Runtime::Codex,
+            Runtime::ClaudeCode,
+            Runtime::Antigravity,
+            Runtime::Pi,
+            Runtime::Copilot,
+            Runtime::Trae,
+        ];
         assert_eq!(
             filter_selectable_runtime_catalog(catalog.clone(), None)
                 .iter()
