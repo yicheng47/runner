@@ -610,6 +610,7 @@ struct SessionState {
     hook_status_armed: bool,
     provisional_idle: bool,
     local_input_pending: bool,
+    bracketed_paste: bool,
     observed_input: Option<ObservedInput>,
     last_local_input_at: Option<Instant>,
     delivery_gate: Arc<DeliveryGate>,
@@ -639,6 +640,7 @@ impl SessionState {
             && !self.hook_status_armed
             && !self.provisional_idle
             && !self.local_input_pending
+            && !self.bracketed_paste
             && self.observed_input.is_none()
             && self.last_local_input_at.is_none()
             && self.mission_status_sink.is_none()
@@ -1015,6 +1017,15 @@ impl SessionManager {
         Ok(router::DeliveryReservation::Ready(delivery.generation))
     }
 
+    pub fn report_bracketed_paste(&self, session_id: &str, enabled: bool) {
+        if let Some(session) = self.session_state(session_id) {
+            let mut session = session.lock().unwrap();
+            if session.handle.is_some() {
+                session.bracketed_paste = enabled;
+            }
+        }
+    }
+
     pub fn report_input_state(&self, session_id: &str, observation: InputObservation) {
         let Some(session) = self.session_state(session_id) else {
             return;
@@ -1102,6 +1113,7 @@ impl SessionManager {
             delivery.cancelled_tickets.clear();
             gate.ready.notify_all();
             state.local_input_pending = false;
+            state.bracketed_paste = false;
             state.observed_input = None;
             state.last_local_input_at = None;
             state.handle = Some(handle);

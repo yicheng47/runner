@@ -207,7 +207,7 @@ fn reconciliation_tick_honors_per_handle_backoff() {
     let backoff = Duration::from_secs(120);
 
     assert_eq!(router.reconcile_inbox_at(now, backoff), 1);
-    wait_until(Duration::from_millis(300), || {
+    wait_until(super::SUBMIT_DELAY + Duration::from_millis(300), || {
         !router
             .state
             .lock()
@@ -242,7 +242,7 @@ fn reconciliation_tick_quiesces_after_watermark_advance() {
     });
     router.set_status("impl".into(), super::SessionActivityState::Idle);
     assert_eq!(router.reconcile_inbox_at(now, Duration::from_secs(120)), 1);
-    wait_until(Duration::from_millis(300), || {
+    wait_until(super::SUBMIT_DELAY + Duration::from_millis(300), || {
         !router
             .state
             .lock()
@@ -291,7 +291,7 @@ fn reconciliation_clock_stops_with_mission_and_skips_stopped_sessions() {
     wait_until(Duration::from_millis(100), || {
         injector.submitted_bodies_for("S-IMPL").len() == 1
     });
-    wait_until(Duration::from_millis(300), || {
+    wait_until(super::SUBMIT_DELAY + Duration::from_millis(300), || {
         !router
             .state
             .lock()
@@ -314,7 +314,7 @@ fn reconciliation_clock_stops_with_mission_and_skips_stopped_sessions() {
     wait_until(Duration::from_millis(100), || {
         injector.submitted_bodies_for("S-IMPL").len() == 1
     });
-    wait_until(Duration::from_millis(300), || {
+    wait_until(super::SUBMIT_DELAY + Duration::from_millis(300), || {
         !router
             .state
             .lock()

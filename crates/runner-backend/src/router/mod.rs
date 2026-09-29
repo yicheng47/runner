@@ -192,7 +192,9 @@ pub(crate) struct RosterRow {
     lead: bool,
 }
 
-const SUBMIT_DELAY: Duration = Duration::from_millis(80);
+// Windows Codex reads console key events even for bracketed paste. Leave its
+// paste-burst Enter suppression time to expire before submitting (#753).
+const SUBMIT_DELAY: Duration = Duration::from_millis(if cfg!(windows) { 300 } else { 80 });
 const INPUT_CLEAR_FLUSH_GRACE: Duration = Duration::from_millis(500);
 const RECONCILIATION_TICK_INTERVAL: Duration = Duration::from_secs(30);
 const RECONCILIATION_RENUDGE_BACKOFF: Duration = Duration::from_secs(2 * 60);

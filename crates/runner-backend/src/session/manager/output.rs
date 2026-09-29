@@ -429,8 +429,16 @@ impl SessionManager {
         else {
             return Ok(false);
         };
+        let bracketed_paste = session.bracketed_paste;
         drop(session);
-        self.write_stdin_bytes(&rt_session, bytes)?;
+        if bracketed_paste && !bytes.is_empty() && bytes != b"\r" {
+            let mut paste = b"\x1b[200~".to_vec();
+            paste.extend(bytes.iter().copied().filter(|byte| *byte != 0x1b));
+            paste.extend_from_slice(b"\x1b[201~");
+            self.runtime.send_bytes(&rt_session, &paste)?;
+        } else {
+            self.write_stdin_bytes(&rt_session, bytes)?;
+        }
         drop(delivery);
         if bytes == b"\r" {
             self.capture_codex_session_key(session_id);

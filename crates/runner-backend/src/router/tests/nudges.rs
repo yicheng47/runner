@@ -143,9 +143,10 @@ fn deferred_nudges_coalesce_while_relays_preserve_order() {
     assert!(injector.pushes_for("S-IMPL").is_empty());
 
     injector.clear_pending("S-IMPL");
-    wait_until(Duration::from_secs(1), || {
-        injector.submitted_bodies_for("S-IMPL").len() == 3
-    });
+    wait_until(
+        super::INPUT_CLEAR_FLUSH_GRACE + 3 * super::SUBMIT_DELAY + Duration::from_millis(300),
+        || injector.submitted_bodies_for("S-IMPL").len() == 3,
+    );
     let bodies = injector.submitted_bodies_for("S-IMPL");
     assert!(bodies[0].contains("2 new messages"));
     assert_eq!(bodies[1], "relay one");
@@ -200,7 +201,7 @@ fn blocked_empty_body_does_not_flush_a_stray_enter() {
     assert!(injector.pushes_for("S-IMPL").is_empty());
 
     router.inject_and_submit("impl", b"").unwrap();
-    wait_until(Duration::from_millis(250), || {
+    wait_until(super::SUBMIT_DELAY + Duration::from_millis(250), || {
         injector.pushes_for("S-IMPL") == ["\r"]
     });
 }
