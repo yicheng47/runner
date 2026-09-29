@@ -776,10 +776,6 @@ impl TerminalSession {
     }
 
     fn publish_parsed(&self, input_observation: Option<InputObservation>) {
-        self.core.sessions.report_bracketed_paste(
-            &self.session_id,
-            self.mode().contains(TermMode::BRACKETED_PASTE),
-        );
         if let Some(observation) = input_observation {
             self.core
                 .sessions
@@ -2322,93 +2318,6 @@ mod tests {
                 ..Default::default()
             }))
         }
-    }
-
-    #[test]
-    fn reserved_delivery_uses_the_hidden_terminals_negotiated_paste_mode() {
-        let temp = tempfile::tempdir().unwrap();
-        let runtime = Arc::new(RecordingRuntime::default());
-        let core = test_core_with_runtime(temp.path(), Arc::clone(&runtime) as _);
-        let bridge = TerminalBridge::new(core.clone(), Arc::new(|| {})).unwrap();
-        let role = runner_backend::ops::role::create(
-            &core.db.get().unwrap(),
-            runner_backend::ops::role::CreateRoleInput {
-                handle: "probe".into(),
-                display_name: "Probe".into(),
-                runtime: runner_backend::model::Runtime::Trae,
-                command: "probe".into(),
-                args: Vec::new(),
-                working_dir: None,
-                system_prompt: None,
-                env: Default::default(),
-                model: None,
-                effort: None,
-                codex_speed: None,
-                permission_mode: runner_backend::router::runtime::PermissionMode::Auto,
-            },
-        )
-        .unwrap();
-        let spawned = core
-            .sessions
-            .spawn_direct(
-                &role,
-                None,
-                None,
-                None,
-                None,
-                Some(temp.path().to_str().unwrap()),
-                Some(80),
-                Some(24),
-                &core.app_data_dir,
-                Arc::clone(&core.db),
-                Arc::new(core.session_events()),
-                None,
-            )
-            .unwrap();
-        let terminal = bridge.session(&spawned.id).unwrap();
-        assert_eq!(terminal.viewers.load(Ordering::Acquire), 0);
-        let body = "[inbox] hello — 世界\nsecond line\x1b[201~";
-        for (index, (output, bracketed)) in [
-            ("", false),
-            ("\x1b[?20", false),
-            ("04h", true),
-            ("\x1b[?2004l", false),
-            ("\x1b[?2004h", true),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            terminal
-                .feed_output(&OutputEvent {
-                    session_id: spawned.id.clone(),
-                    mission_id: None,
-                    seq: index as u64 + 1,
-                    bytes: output.as_bytes().to_vec(),
-                })
-                .unwrap();
-            let token = match core.sessions.reserve_delivery(&spawned.id).unwrap() {
-                runner_backend::router::DeliveryReservation::Ready(token) => token,
-                other => panic!("expected reservation, got {other:?}"),
-            };
-            assert!(core
-                .sessions
-                .inject_reserved(&spawned.id, token, body.as_bytes())
-                .unwrap());
-            assert!(core
-                .sessions
-                .inject_reserved(&spawned.id, token, b"\r")
-                .unwrap());
-            core.sessions.finish_delivery(&spawned.id, token);
-            let expected = if bracketed {
-                crate::mappings::encode_paste(body, true)
-            } else {
-                body.as_bytes().to_vec()
-            };
-            assert!(runtime.writes().ends_with(&[expected, b"Enter".to_vec()]));
-        }
-        core.sessions.inject_stdin(&spawned.id, b"x").unwrap();
-        assert_eq!(runtime.writes().last().unwrap(), b"x");
-        core.sessions.kill(&spawned.id).unwrap();
     }
 
     /// The terminal is the only thing answering a session's queries,

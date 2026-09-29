@@ -80,7 +80,6 @@ impl SessionManager {
                     state.hook_status_armed = false;
                     state.provisional_idle = false;
                     state.local_input_pending = false;
-                    state.bracketed_paste = false;
                     state.observed_input = None;
                     state.last_local_input_at = None;
                     state.mission_status_sink = None;
@@ -305,7 +304,6 @@ impl SessionManager {
                 state.hook_status_armed = false;
                 state.provisional_idle = false;
                 state.local_input_pending = false;
-                state.bracketed_paste = false;
                 state.observed_input = None;
                 state.last_local_input_at = None;
                 state.mission_status_sink = None;

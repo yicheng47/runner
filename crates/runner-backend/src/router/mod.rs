@@ -192,8 +192,8 @@ pub(crate) struct RosterRow {
     lead: bool,
 }
 
-// Windows Codex reads console key events even for bracketed paste. Leave its
-// paste-burst Enter suppression time to expire before submitting (#753).
+// Windows Codex suppresses Enter after rapid input. Let its paste-burst
+// suppression window expire before submitting (#753).
 const SUBMIT_DELAY: Duration = Duration::from_millis(if cfg!(windows) { 300 } else { 80 });
 const INPUT_CLEAR_FLUSH_GRACE: Duration = Duration::from_millis(500);
 const RECONCILIATION_TICK_INTERVAL: Duration = Duration::from_secs(30);

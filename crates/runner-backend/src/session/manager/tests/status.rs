@@ -133,7 +133,6 @@ fn direct_chat_typing_stays_idle_until_submit() {
     wait_for_session_status_event(&cap, &spawned.id, SessionActivityState::Idle);
     cap.status.lock().unwrap().clear();
 
-    mgr.report_bracketed_paste(&spawned.id, true);
     let token = match mgr.reserve_delivery(&spawned.id).unwrap() {
         router::DeliveryReservation::Ready(token) => token,
         other => panic!("expected delivery reservation, got {other:?}"),
@@ -187,7 +186,7 @@ fn direct_chat_typing_stays_idle_until_submit() {
     second.join().unwrap();
     let writes = fake.bytes_writes();
     assert!(writes.ends_with(&[
-        (spawned.id.clone(), b"\x1b[200~[inbox]\x1b[201~".to_vec()),
+        (spawned.id.clone(), b"[inbox]".to_vec()),
         (spawned.id.clone(), b"h".to_vec()),
         (spawned.id.clone(), b"e".to_vec()),
     ]));
