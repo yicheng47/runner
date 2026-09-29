@@ -854,7 +854,7 @@ mod tests {
     }
 
     #[test]
-    fn terminal_fonts_use_an_explicit_cjk_fallback_chain() {
+    fn terminal_fonts_use_the_platform_fallback_chain() {
         for family in [TerminalFontFamily::JetBrainsMono, TerminalFontFamily::Menlo] {
             let font = family.font();
             assert_eq!(font.family.as_ref(), family.family());
@@ -866,7 +866,7 @@ mod tests {
             #[cfg(not(windows))]
             assert_eq!(
                 font.fallbacks.unwrap().fallback_list(),
-                ["PingFang SC", "Microsoft YaHei", "sans-serif"]
+                ["Microsoft YaHei", "sans-serif"]
             );
         }
     }
@@ -890,7 +890,7 @@ mod tests {
     }
 
     #[test]
-    fn app_font_is_inter_with_the_cjk_fallback_chain() {
+    fn app_font_is_inter_with_the_platform_fallback_chain() {
         let inter = app_font();
         assert_eq!(inter.family.as_ref(), "Inter");
         #[cfg(windows)]
@@ -903,9 +903,7 @@ mod tests {
             inter.fallbacks.unwrap().fallback_list(),
             [
                 "Inter Variable",
-                ".SystemUIFont",
                 "Segoe UI",
-                "PingFang SC",
                 "Microsoft YaHei",
                 "sans-serif"
             ]
