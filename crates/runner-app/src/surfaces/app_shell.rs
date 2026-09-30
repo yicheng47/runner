@@ -228,27 +228,19 @@ fn weekly_usage_percent(runtime: Runtime, usage: Option<&AgentUsage>) -> Option<
         .map(|window| window.used_percent)
 }
 
-fn visible_usage_runtimes(
-    recent: &[Runtime],
-    installed: &[Runtime],
-    enabled: &[Runtime],
-) -> Vec<Runtime> {
-    let mut selected: Vec<_> = recent
-        .iter()
-        .copied()
-        .filter(|runtime| installed.contains(runtime) && enabled.contains(runtime))
-        .take(3)
-        .collect();
-    if selected.is_empty() {
-        selected = Runtime::ALL
-            .into_iter()
-            .filter(|runtime| installed.contains(runtime) && enabled.contains(runtime))
-            .take(3)
-            .collect();
-    }
+/// The runtimes the usage pill and popover show: usage-capable, installed and
+/// enabled in Settings, whether or not they have run a session (#752), in
+/// `Runtime::ALL` order.
+fn visible_usage_runtimes(installed: &[Runtime], enabled: &[Runtime]) -> Vec<Runtime> {
     Runtime::ALL
         .into_iter()
-        .filter(|runtime| selected.contains(runtime))
+        .filter(|runtime| {
+            matches!(
+                runtime,
+                Runtime::ClaudeCode | Runtime::Codex | Runtime::Antigravity
+            ) && installed.contains(runtime)
+                && enabled.contains(runtime)
+        })
         .collect()
 }
 
@@ -630,12 +622,11 @@ impl NativeRoot {
                         .bg(theme::accent())
                 })),
         );
+        let visible =
+            visible_usage_runtimes(&self.usage_installed, &self.settings(cx).model_runtimes());
         let sections: Vec<AnyElement> = [Runtime::ClaudeCode, Runtime::Codex, Runtime::Antigravity]
             .into_iter()
-            .filter(|runtime| {
-                self.usage_installed.contains(runtime)
-                    && self.settings(cx).model_runtimes().contains(runtime)
-            })
+            .filter(|runtime| visible.contains(runtime))
             .map(|runtime| match runtime {
                 Runtime::ClaudeCode => usage_section(
                     runtime,
@@ -1042,8 +1033,7 @@ impl NativeRoot {
             )
         });
         let enabled = self.settings(cx).model_runtimes();
-        let visible_usage_runtimes =
-            visible_usage_runtimes(&self.usage_recent, &self.usage_installed, &enabled);
+        let visible_usage_runtimes = visible_usage_runtimes(&self.usage_installed, &enabled);
         let show_usage = !visible_usage_runtimes.is_empty() && !self.sidebar_collapsed;
         let anchor_owner = cx.entity();
         let usage_pill = show_usage.then(|| {
@@ -2091,24 +2081,35 @@ mod tests {
     }
 
     #[test]
-    fn usage_pill_selects_recent_runtimes_but_displays_runtime_order() {
-        let recent = [Runtime::Antigravity, Runtime::ClaudeCode, Runtime::Codex];
+    fn usage_runtimes_are_installed_enabled_and_usage_capable_in_runtime_order() {
+        let all = [Runtime::Antigravity, Runtime::ClaudeCode, Runtime::Codex];
+        // An installed, enabled runtime shows without ever having run a session.
         assert_eq!(
-            visible_usage_runtimes(&recent, &recent, &recent),
+            visible_usage_runtimes(&all, &all),
             [Runtime::Codex, Runtime::ClaudeCode, Runtime::Antigravity]
         );
         assert_eq!(
-            visible_usage_runtimes(&recent, &[Runtime::Codex, Runtime::Antigravity], &recent),
+            visible_usage_runtimes(&[Runtime::Antigravity], &all),
+            [Runtime::Antigravity]
+        );
+        // Uninstalled and disabled runtimes do not.
+        assert_eq!(
+            visible_usage_runtimes(&[Runtime::Codex, Runtime::Antigravity], &all),
             [Runtime::Codex, Runtime::Antigravity]
         );
         assert_eq!(
-            visible_usage_runtimes(&[], &recent, &recent),
-            [Runtime::Codex, Runtime::ClaudeCode, Runtime::Antigravity]
+            visible_usage_runtimes(&all, &[Runtime::ClaudeCode, Runtime::Codex]),
+            [Runtime::Codex, Runtime::ClaudeCode]
         );
+        // A runtime without usage never shows, even if installed and enabled.
+        let with_copilot = [Runtime::Copilot, Runtime::Pi, Runtime::Codex];
         assert_eq!(
-            visible_usage_runtimes(&[Runtime::Copilot], &recent, &recent),
-            [Runtime::Codex, Runtime::ClaudeCode, Runtime::Antigravity]
+            visible_usage_runtimes(&with_copilot, &with_copilot),
+            [Runtime::Codex]
         );
+        assert!(visible_usage_runtimes(&[], &all).is_empty());
+        assert!(visible_usage_runtimes(&all, &[]).is_empty());
+        assert!(visible_usage_runtimes(&[Runtime::Copilot], &[Runtime::Copilot]).is_empty());
     }
 
     #[test]

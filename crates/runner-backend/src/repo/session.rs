@@ -868,20 +868,6 @@ pub fn list_recent_direct(conn: &Connection) -> rusqlite::Result<Vec<DirectSessi
     rows.collect()
 }
 
-pub fn recently_used_runtimes(conn: &Connection) -> rusqlite::Result<Vec<String>> {
-    let mut stmt = conn.prepare(
-        "SELECT COALESCE(s.agent_runtime, r.runtime) AS agent
-           FROM sessions s
-          LEFT JOIN roles r ON r.id = s.role_id
-          WHERE COALESCE(s.agent_runtime, r.runtime) IS NOT NULL
-            AND s.started_at IS NOT NULL
-          GROUP BY agent
-          ORDER BY MAX(COALESCE(s.stopped_at, s.started_at)) DESC",
-    )?;
-    let rows = stmt.query_map([], |row| row.get(0))?;
-    rows.collect()
-}
-
 /// Archived direct sessions, newest-archived first — the Settings →
 /// Archived pane's chat list. Same row shape and direct-chat scoping as
 /// `list_recent_direct`; archived mission-slot rows stay off this
@@ -1050,40 +1036,6 @@ mod tests {
             ],
         )
         .unwrap();
-    }
-
-    #[test]
-    fn recently_used_runtimes_includes_missions_and_effective_overrides() {
-        let pool = db::open_in_memory().unwrap();
-        let conn = pool.get().unwrap();
-        seed_role(&conn, "r1", "coder");
-        conn.execute(
-            "UPDATE roles SET runtime = 'claude-code' WHERE id = 'r1'",
-            [],
-        )
-        .unwrap();
-        conn.execute_batch(
-            "INSERT INTO crews (id, name, created_at, updated_at)
-             VALUES ('c1', 'Crew', '2026-09-01T00:00:00Z', '2026-09-01T00:00:00Z');
-             INSERT INTO missions (id, crew_id, title, status, started_at)
-             VALUES ('m1', 'c1', 'Mission', 'stopped', '2026-09-02T00:00:00Z');",
-        )
-        .unwrap();
-        conn.execute_batch(
-            "INSERT INTO sessions (id, role_id, status, started_at)
-             VALUES ('old-role', 'r1', 'stopped', '2026-09-01T00:00:00Z');
-             INSERT INTO sessions (id, mission_id, role_id, status, started_at, stopped_at, agent_runtime)
-             VALUES ('mission-override', 'm1', 'r1', 'stopped', '2026-09-02T00:00:00Z', '2026-09-05T00:00:00Z', 'antigravity');
-             INSERT INTO sessions (id, status, started_at, agent_runtime)
-             VALUES ('direct', 'running', '2026-09-04T00:00:00Z', 'codex');
-             INSERT INTO sessions (id, status, agent_runtime)
-             VALUES ('never-started', 'crashed', 'trae');",
-        )
-        .unwrap();
-        assert_eq!(
-            recently_used_runtimes(&conn).unwrap(),
-            ["antigravity", "codex", "claude-code"]
-        );
     }
 
     fn take_resume_id(conn: &mut Connection) -> Option<String> {
