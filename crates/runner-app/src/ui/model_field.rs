@@ -16,12 +16,19 @@ use crate::ui::select::{
     option_menu, option_menu_width, OptionMenuStyle, SelectAction, SelectOption, SelectState,
 };
 
+/// What the override dot takes at the text's right: the dot and the gaps
+/// either side of it.
+const MARKER_WIDTH: f32 = 14.;
+
 pub struct ModelField {
     input: Entity<TextField>,
     suggestions: Vec<SelectOption>,
     state: SelectState,
     anchor_bounds: Option<Bounds<Pixels>>,
     disabled: bool,
+    /// An amber dot inside the field's right edge: the value overrides
+    /// another's.
+    marker: bool,
     menu_scroll: ScrollHandle,
     menu_scrollbar: Entity<Scrollbar>,
 }
@@ -49,6 +56,7 @@ impl ModelField {
             state: SelectState::default(),
             anchor_bounds: None,
             disabled: false,
+            marker: false,
             menu_scroll,
             menu_scrollbar,
         }
@@ -64,20 +72,36 @@ impl ModelField {
         cx: &mut Context<Self>,
     ) {
         self.suggestions = model_options(suggestions);
-        self.input.update(cx, |input, input_cx| {
-            input.set_right_padding(
-                if self.suggestions.is_empty() {
-                    10.
-                } else {
-                    32.
-                },
-                input_cx,
-            )
-        });
+        self.sync_padding(cx);
         if self.suggestions.is_empty() {
             self.state.close();
         }
         cx.notify();
+    }
+
+    /// Shows or hides the override dot, keeping the text clear of it.
+    pub fn set_marker(&mut self, marker: bool, cx: &mut Context<Self>) {
+        if self.marker != marker {
+            self.marker = marker;
+            self.sync_padding(cx);
+            cx.notify();
+        }
+    }
+
+    /// The width the chevron takes at the right edge, or the plain padding.
+    fn edge_width(&self) -> f32 {
+        if self.suggestions.is_empty() {
+            10.
+        } else {
+            32.
+        }
+    }
+
+    fn sync_padding(&self, cx: &mut Context<Self>) {
+        let padding = self.edge_width() + if self.marker { MARKER_WIDTH } else { 0. };
+        self.input.update(cx, |input, input_cx| {
+            input.set_right_padding(padding, input_cx)
+        });
     }
 
     pub fn set_disabled(&mut self, disabled: bool, cx: &mut Context<Self>) {
@@ -170,6 +194,25 @@ impl Render for ModelField {
                 click_entity.update(cx, |field, cx| field.toggle(cx));
             })
             .child(self.input.clone())
+            .when(self.marker, |field| {
+                field.child(
+                    div()
+                        .debug_selector(|| "MODEL_FIELD_MARK".into())
+                        .absolute()
+                        .top_0()
+                        .bottom_0()
+                        .right(rems((self.edge_width() + 4.) / 16.))
+                        .flex()
+                        .items_center()
+                        .child(
+                            div()
+                                .flex_none()
+                                .size(rems(6. / 16.))
+                                .rounded_full()
+                                .bg(theme::warning()),
+                        ),
+                )
+            })
             .when(has_suggestions, |field| {
                 field.child(
                     div()
@@ -255,10 +298,12 @@ mod tests {
 
     impl Render for FieldHost {
         fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-            div()
-                .size_full()
-                .p_4()
-                .child(div().w(px(272.)).child(self.field.clone()))
+            div().size_full().p_4().child(
+                div()
+                    .debug_selector(|| "MODEL_FIELD_HOST".into())
+                    .w(px(272.))
+                    .child(self.field.clone()),
+            )
         }
     }
 
@@ -269,6 +314,47 @@ mod tests {
             description: Some(description.into()),
             supported_efforts: None,
         }
+    }
+
+    /// The override dot takes a slot at the text's right, so a long value
+    /// ends before it instead of running underneath.
+    #[test]
+    fn the_override_marker_reserves_room_at_the_texts_right() {
+        fn padding(input: &Entity<TextField>, cx: &VisualTestContext) -> f32 {
+            input.read_with(cx, |input, _| input.text_right_padding())
+        }
+        let mut cx = TestAppContext::single();
+        let window = cx.add_window(|window, cx| {
+            window.resize(gpui::size(px(1200.), px(900.)));
+            let input = cx.new(|cx| TextField::new(cx.focus_handle(), "", "", true));
+            let field = cx.new(|cx| ModelField::new(input, &[option("a", "A", "First")], cx));
+            FieldHost { field }
+        });
+        cx.run_until_parked();
+        let field = window.read_with(&cx, |host, _| host.field.clone()).unwrap();
+        let input = field.read_with(&cx, |field, _| field.input());
+        let mut visual = VisualTestContext::from_window(window.into(), &cx);
+        assert_eq!(padding(&input, &visual), 32.);
+
+        field.update(&mut visual, |field, cx| field.set_marker(true, cx));
+        visual.run_until_parked();
+        assert_eq!(padding(&input, &visual), 32. + MARKER_WIDTH);
+        let host = visual.debug_bounds("MODEL_FIELD_HOST").unwrap();
+        let mark = visual.debug_bounds("MODEL_FIELD_MARK").unwrap();
+        // The dot sits in the strip the padding reserves, left of the chevron.
+        assert!(
+            mark.left() >= host.right() - px(32. + MARKER_WIDTH),
+            "{mark:?} in {host:?}"
+        );
+        assert!(
+            mark.right() <= host.right() - px(32.),
+            "{mark:?} in {host:?}"
+        );
+
+        field.update(&mut visual, |field, cx| field.set_suggestions(&[], cx));
+        assert_eq!(padding(&input, &visual), 10. + MARKER_WIDTH);
+        field.update(&mut visual, |field, cx| field.set_marker(false, cx));
+        assert_eq!(padding(&input, &visual), 10.);
     }
 
     /// The model suggestions open the select's own menu: a centred check,

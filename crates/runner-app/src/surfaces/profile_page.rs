@@ -143,6 +143,32 @@ pub(crate) fn override_dot() -> Div {
         .bg(theme::warning())
 }
 
+/// A text control that a click, Enter or Space activates, such as Reset.
+pub(crate) fn text_action(
+    id: &'static str,
+    focus: &gpui::FocusHandle,
+    on_press: impl Fn(&mut Window, &mut gpui::App) + 'static,
+) -> gpui::Stateful<Div> {
+    let on_press = Rc::new(on_press);
+    let key_press = Rc::clone(&on_press);
+    div()
+        .id(id)
+        .track_focus(focus)
+        .tab_index(0)
+        .flex()
+        .items_center()
+        .rounded(rems(3. / 16.))
+        .cursor_pointer()
+        .focus_visible(|action| action.shadow(focus_ring(theme::border_strong())))
+        .on_click(move |_, window, cx| on_press(window, cx))
+        .on_key_down(move |event: &KeyDownEvent, window, cx| {
+            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                cx.stop_propagation();
+                key_press(window, cx);
+            }
+        })
+}
+
 /// The profile column and the card column. The cards wrap under the profile
 /// when the page is too narrow for both; with `stretch`, the card column runs
 /// the profile column's height.

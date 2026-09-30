@@ -1552,6 +1552,11 @@ impl TextField {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn text_right_padding(&self) -> f32 {
+        self.right_padding
+    }
+
     pub fn set_right_padding(&mut self, right_padding: f32, cx: &mut Context<Self>) {
         if self.right_padding != right_padding {
             self.right_padding = right_padding;
@@ -2400,6 +2405,7 @@ pub struct Field {
     id: SharedString,
     label: SharedString,
     hint: Option<(SharedString, FocusHandle)>,
+    tag: Option<SharedString>,
     subtitle: Option<SharedString>,
     error: Option<SharedString>,
     focus_target: Option<FocusHandle>,
@@ -2417,6 +2423,7 @@ impl Field {
             id: id.into(),
             label: label.into(),
             hint: None,
+            tag: None,
             subtitle: None,
             error: None,
             focus_target: None,
@@ -2427,6 +2434,12 @@ impl Field {
 
     pub fn hint(mut self, hint: impl Into<SharedString>, focus: FocusHandle) -> Self {
         self.hint = Some((hint.into(), focus));
+        self
+    }
+
+    /// A faint word after the label, such as `optional`.
+    pub fn tag(mut self, tag: impl Into<SharedString>) -> Self {
+        self.tag = Some(tag.into());
         self
     }
 
@@ -2464,7 +2477,21 @@ impl RenderOnce for Field {
             .flex()
             .flex_col()
             .gap(rems(if self.emphasized { 6. / 16. } else { 4. / 16. }))
-            .child(label)
+            .child(match self.tag {
+                Some(tag) => div()
+                    .flex()
+                    .items_center()
+                    .gap(rems(6. / 16.))
+                    .child(label)
+                    .child(
+                        div()
+                            .text_size(theme::text_ui())
+                            .text_color(theme::faint())
+                            .child(tag),
+                    )
+                    .into_any_element(),
+                None => label.into_any_element(),
+            })
             .child(self.child)
             .children(self.subtitle.map(|subtitle| {
                 div()

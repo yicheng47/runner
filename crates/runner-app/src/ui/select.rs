@@ -19,6 +19,42 @@ use crate::ui::scrollbar::{app_scrollbar_gutter, Scrollbar};
 
 pub type SelectHandler = Rc<dyn Fn(String, &mut Window, &mut App)>;
 
+/// A mark drawn before an option's label, at the size the row asks for: a
+/// role's avatar or a provider's mark. Options compare by the key, which must
+/// name everything the mark draws.
+#[derive(Clone)]
+pub struct SelectLeading {
+    key: SharedString,
+    draw: Rc<dyn Fn(f32) -> AnyElement>,
+}
+
+impl SelectLeading {
+    pub fn new(key: impl Into<SharedString>, draw: impl Fn(f32) -> AnyElement + 'static) -> Self {
+        Self {
+            key: key.into(),
+            draw: Rc::new(draw),
+        }
+    }
+
+    fn draw(&self, size: f32) -> AnyElement {
+        (self.draw)(size)
+    }
+}
+
+impl PartialEq for SelectLeading {
+    fn eq(&self, other: &Self) -> bool {
+        self.key == other.key
+    }
+}
+
+impl Eq for SelectLeading {}
+
+impl std::fmt::Debug for SelectLeading {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("SelectLeading").field(&self.key).finish()
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SelectOption {
     pub value: String,
@@ -27,6 +63,10 @@ pub struct SelectOption {
     pub danger: bool,
     pub disabled: bool,
     pub swatch: Option<u32>,
+    pub leading: Option<SelectLeading>,
+    /// The trigger carries an amber dot while this option is chosen: a value
+    /// that overrides another's.
+    pub marked: bool,
 }
 
 impl SelectOption {
@@ -38,7 +78,19 @@ impl SelectOption {
             danger: false,
             disabled: false,
             swatch: None,
+            leading: None,
+            marked: false,
         }
+    }
+
+    pub fn leading(mut self, leading: SelectLeading) -> Self {
+        self.leading = Some(leading);
+        self
+    }
+
+    pub fn marked(mut self, marked: bool) -> Self {
+        self.marked = marked;
+        self
     }
 
     pub fn description(mut self, description: impl Into<SharedString>) -> Self {
@@ -145,6 +197,8 @@ pub struct StyledSelect {
     width: Pixels,
     min_menu_width: Pixels,
     detailed: bool,
+    picker: bool,
+    full_width: bool,
     runtime_style: bool,
     monospace: bool,
     disabled: bool,
@@ -177,6 +231,8 @@ impl StyledSelect {
             width: px(160.),
             min_menu_width: px(240.),
             detailed: false,
+            picker: false,
+            full_width: false,
             runtime_style: false,
             monospace: false,
             disabled: false,
@@ -226,6 +282,29 @@ impl StyledSelect {
 
     pub fn detailed(mut self, detailed: bool) -> Self {
         self.detailed = detailed;
+        self
+    }
+
+    /// Fills the width of whatever holds the select, which then sizes it.
+    pub fn full_width(mut self, full_width: bool) -> Self {
+        self.full_width = full_width;
+        self
+    }
+
+    pub fn is_disabled(&self) -> bool {
+        self.disabled
+    }
+
+    /// The option the select currently shows, if it holds one.
+    pub fn selected(&self) -> Option<&SelectOption> {
+        self.options.get(self.selected_index())
+    }
+
+    /// Draws the trigger as the head of a card that supplies the border: the
+    /// chosen option's mark at 40 px, its label and its description in
+    /// monospace, and an up-down chevron. The menu keeps the trigger's width.
+    pub fn picker(mut self, picker: bool) -> Self {
+        self.picker = picker;
         self
     }
 
@@ -362,20 +441,32 @@ impl Render for StyledSelect {
         let label = selected
             .map(|option| option.label.clone())
             .unwrap_or_else(|| self.placeholder.clone());
-        let description = self
-            .detailed
+        let stacked = self.detailed || self.picker;
+        let description = stacked
             .then(|| selected.and_then(|option| option.description.clone()))
             .flatten();
         let swatch = selected.and_then(|option| option.swatch);
+        let leading = selected.and_then(|option| option.leading.clone());
+        let marked = selected.is_some_and(|option| option.marked);
+        let picker = self.picker;
         let open = self.state.is_open();
         let entity = cx.entity();
         let click_entity = entity.clone();
         let click_focus = self.focus_handle.clone();
-        let height = if self.detailed { 52. } else { 34. };
+        let height = if picker {
+            60.
+        } else if self.detailed {
+            52.
+        } else {
+            34.
+        };
         let mut root = div()
             .id(self.id.clone())
             .relative()
-            .w(rems(f32::from(self.width) / 16.))
+            .when(self.picker || self.full_width, |root| root.w_full())
+            .when(!(self.picker || self.full_width), |root| {
+                root.w(rems(f32::from(self.width) / 16.))
+            })
             .track_focus(&self.focus_handle)
             .tab_index(0)
             .tab_stop(!self.disabled)
@@ -387,33 +478,53 @@ impl Render for StyledSelect {
                     .track_focus(&self.focus_handle)
                     .w_full()
                     .h(rems(height / 16.))
-                    .px(rems(if self.detailed { 12. / 16. } else { 10. / 16. }))
+                    .px(rems(if stacked { 12. / 16. } else { 10. / 16. }))
                     .flex()
                     .items_center()
-                    .gap_2()
-                    .rounded(rems(if self.detailed { 6. / 16. } else { 4. / 16. }))
-                    .border_1()
-                    .border_color(if self.error.is_some() {
-                        theme::danger()
-                    } else if open {
-                        theme::faint()
-                    } else if self.detailed {
-                        theme::border()
-                    } else {
-                        theme::border_strong()
+                    .gap(rems(if picker { 12. / 16. } else { 8. / 16. }))
+                    .when(picker, |trigger| {
+                        trigger
+                            .rounded_tl(rems(7. / 16.))
+                            .rounded_tr(rems(7. / 16.))
                     })
-                    .bg(theme::bg())
+                    .when(!picker, |trigger| {
+                        trigger
+                            .rounded(rems(if self.detailed { 6. / 16. } else { 4. / 16. }))
+                            .border_1()
+                            .border_color(if self.error.is_some() {
+                                theme::danger()
+                            } else if open {
+                                theme::faint()
+                            } else if self.detailed {
+                                theme::border()
+                            } else {
+                                theme::border_strong()
+                            })
+                            .bg(theme::bg())
+                    })
                     .opacity(if self.disabled { 0.6 } else { 1. })
                     .when(!self.disabled, |trigger| {
                         trigger
                             .cursor_pointer()
-                            .hover(|trigger| trigger.border_color(theme::faint()))
+                            .hover(move |trigger| {
+                                if picker {
+                                    trigger.bg(theme::raised())
+                                } else {
+                                    trigger.border_color(theme::faint())
+                                }
+                            })
                             .on_click(move |_, window, cx| {
                                 click_focus.focus(window);
                                 click_entity.update(cx, |select, cx| select.toggle(cx));
                             })
                     })
-                    .focus_visible(|style| style.border_color(theme::faint()))
+                    .focus_visible(move |style| {
+                        if picker {
+                            style.bg(theme::raised())
+                        } else {
+                            style.border_color(theme::faint())
+                        }
+                    })
                     .children(swatch.map(|color| {
                         div()
                             .size(rems(12. / 16.))
@@ -421,8 +532,10 @@ impl Render for StyledSelect {
                             .rounded(rems(2. / 16.))
                             .bg(rgb(color))
                     }))
+                    .children(leading.map(|leading| leading.draw(if picker { 40. } else { 13. })))
                     .child(
                         div()
+                            .debug_selector(|| "STYLED_SELECT_TEXT".into())
                             .flex_1()
                             .min_w(px(0.))
                             .flex()
@@ -431,12 +544,14 @@ impl Render for StyledSelect {
                             .child(
                                 div()
                                     .truncate()
-                                    .text_size(if self.detailed {
+                                    .text_size(if picker {
+                                        theme::text_lead()
+                                    } else if self.detailed {
                                         theme::text_body()
                                     } else {
                                         theme::text_title()
                                     })
-                                    .font_weight(if self.detailed {
+                                    .font_weight(if stacked {
                                         FontWeight::SEMIBOLD
                                     } else {
                                         FontWeight::NORMAL
@@ -450,19 +565,34 @@ impl Render for StyledSelect {
                             .children(description.map(|description| {
                                 div()
                                     .truncate()
-                                    .text_size(theme::text_meta())
+                                    .when(picker, |line| {
+                                        line.font_family(theme::UI_MONOSPACE_FONT)
+                                            .text_size(theme::text_ui())
+                                    })
+                                    .when(!picker, |line| line.text_size(theme::text_meta()))
                                     .text_color(theme::muted())
                                     .child(description)
                             })),
                     )
+                    .children(marked.then(|| {
+                        // Its own slot in the row: the label ends before it.
+                        div()
+                            .debug_selector(|| "STYLED_SELECT_MARK".into())
+                            .flex_none()
+                            .size(rems(6. / 16.))
+                            .rounded_full()
+                            .bg(theme::warning())
+                    }))
                     .child(
                         svg()
-                            .path(if open {
+                            .path(if picker {
+                                "chevrons-up-down.svg"
+                            } else if open {
                                 "chevron-up.svg"
                             } else {
                                 "chevron-down.svg"
                             })
-                            .size(rems(14. / 16.))
+                            .size(rems(if picker { 1. } else { 14. / 16. }))
                             .flex_none()
                             .text_color(theme::faint()),
                     ),
@@ -485,9 +615,10 @@ impl Render for StyledSelect {
                 &self.value,
                 self.state.highlighted(),
                 OptionMenuStyle {
-                    detailed: self.detailed,
+                    detailed: self.detailed || self.picker,
                     monospace: self.monospace,
                     runtime_style: self.runtime_style,
+                    mono_description: self.picker,
                 },
                 &self.menu_scroll,
                 self.menu_scrollbar.clone(),
@@ -499,11 +630,15 @@ impl Render for StyledSelect {
             let dismiss: DismissHandler = Rc::new(move |_, cx| {
                 dismiss_entity.update(cx, |select, cx| select.close(cx));
             });
-            let width = option_menu_width(
-                &self.options,
-                anchor.size.width.max(self.min_menu_width * zoom),
-                zoom,
-            );
+            let width = if self.picker {
+                PopupWidth::Fixed(anchor.size.width)
+            } else {
+                option_menu_width(
+                    &self.options,
+                    anchor.size.width.max(self.min_menu_width * zoom),
+                    zoom,
+                )
+            };
             root = root.child(popup_layer_sized(anchor, window, width, menu, dismiss));
         }
         root
@@ -518,6 +653,8 @@ pub(crate) struct OptionMenuStyle {
     pub monospace: bool,
     /// Every row reads at full contrast, as a runtime list does.
     pub runtime_style: bool,
+    /// Descriptions in monospace, for a list of commands or handles.
+    pub mono_description: bool,
 }
 
 pub(crate) type OptionHandler = Rc<dyn Fn(usize, &mut Window, &mut App)>;
@@ -557,7 +694,7 @@ pub(crate) fn option_menu(
             .flex()
             .items_center()
             .gap_2()
-            .when(stacked, |row| row.items_start())
+            .when(stacked && option.leading.is_none(), |row| row.items_start())
             .when(style.detailed, |row| row.rounded(rems(4. / 16.)))
             .opacity(if option.disabled { 0.5 } else { 1. })
             .when(active || highlighted, |row| {
@@ -584,6 +721,12 @@ pub(crate) fn option_menu(
                     .bg(rgb(color))
                     .when(stacked, |swatch| swatch.mt(rems(2. / 16.)))
             }))
+            .children(
+                option
+                    .leading
+                    .as_ref()
+                    .map(|leading| leading.draw(if style.detailed { 28. } else { 13. })),
+            )
             .child(
                 div()
                     .flex_1()
@@ -609,6 +752,9 @@ pub(crate) fn option_menu(
                     .children(option.description.map(|description| {
                         div()
                             .text_size(theme::text_meta())
+                            .when(style.mono_description, |line| {
+                                line.font_family(theme::UI_MONOSPACE_FONT)
+                            })
                             .text_color(if style.detailed {
                                 theme::muted()
                             } else {

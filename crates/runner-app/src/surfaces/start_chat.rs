@@ -7,8 +7,8 @@ use std::rc::Rc;
 use anyhow::bail;
 use gpui::prelude::*;
 use gpui::{
-    div, px, rems, AnyElement, Context, FontWeight, KeyDownEvent, PathPromptOptions, ScrollHandle,
-    SharedString, Window,
+    div, px, rems, svg, AnyElement, Context, Div, FontWeight, KeyDownEvent, PathPromptOptions,
+    ScrollHandle, SharedString, Window,
 };
 use runner_backend::model::{CodexSpeed, Role};
 use runner_backend::ops::project::ProjectScope;
@@ -18,16 +18,23 @@ use runner_backend::ops::runtime::{
 
 use runner_app::ui::{
     effective_working_dir, working_dir_placeholder, working_dir_text_field, Button, ButtonVariant,
-    Field, IconButton, Modal, ModelField, OverlayWidth, Scrollbar, SelectHandler, SelectOption,
-    StyledSelect, TextField, WorkingDirField,
+    Field, IconButton, Modal, ModelField, OverlayWidth, RoleAvatar, Scrollbar, SelectHandler,
+    SelectLeading, SelectOption, StyledSelect, TextField, WorkingDirField,
 };
 
+use super::profile_page::{column_text, section_label, text_action};
+use super::roles::logic::role_setting_label;
 use super::*;
+use crate::chat_icon::ChatIcon;
 use crate::*;
 
 const START_CHAT_MODE_FILE: &str = "start-chat-mode";
 const MODAL_WIDTH: f32 = 560.;
-const FIELD_WIDTH: f32 = 476.;
+const CARD_PADDING: f32 = 12.;
+const COLUMN_GAP: f32 = 12.;
+const EFFORT_COLUMN_WIDTH: f32 = 160.;
+const SPEED_COLUMN_WIDTH: f32 = 104.;
+const ROLE_HINT: &str = "Starts with the role's settings. Change any of them for this chat only.";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ChatMode {
@@ -105,7 +112,11 @@ pub(crate) struct StartChatModal {
     runtimes: Vec<RuntimeCatalogEntry>,
     role_id: Option<String>,
     runtime_name: Option<String>,
+    /// The agent a role chat runs on when it is not the role's own; picking
+    /// the role's own agent clears it.
     role_runtime_override: Option<String>,
+    /// The Effort and Speed the controls show; `baseline_effort` and
+    /// `baseline_speed` are what leaves them untouched.
     effort: String,
     speed: String,
     title: Entity<TextField>,
@@ -121,6 +132,8 @@ pub(crate) struct StartChatModal {
     scrollbar: Entity<Scrollbar>,
     role_mode_focus: FocusHandle,
     direct_mode_focus: FocusHandle,
+    /// One Reset per role control, in `ResetKind` order.
+    reset_focus: [FocusHandle; 4],
     browse_focus: FocusHandle,
     close_focus: FocusHandle,
     cancel_focus: FocusHandle,
@@ -140,46 +153,113 @@ impl StartChatModal {
     }
 
     fn selected_runtime(&self) -> Option<&RuntimeCatalogEntry> {
-        self.runtime_name.as_deref().and_then(|name| {
-            self.runtimes
-                .iter()
-                .find(|runtime| runtime.name.key() == name)
-        })
+        self.runtime_name
+            .as_deref()
+            .and_then(|name| self.runtime_entry(name))
     }
 
-    fn override_runtime(&self) -> Option<&RuntimeCatalogEntry> {
-        self.role_runtime_override.as_deref().and_then(|name| {
-            self.runtimes
-                .iter()
-                .find(|runtime| runtime.name.key() == name)
-        })
+    fn runtime_entry(&self, name: &str) -> Option<&RuntimeCatalogEntry> {
+        self.runtimes
+            .iter()
+            .find(|runtime| runtime.name.key() == name)
+    }
+
+    /// The agent a role chat runs on: the override, else the role's own.
+    fn role_agent(&self) -> Option<&str> {
+        self.role_runtime_override
+            .as_deref()
+            .or_else(|| self.selected_role().map(|role| role.runtime.as_str()))
+    }
+
+    /// Whether a role chat runs on the role's own agent, where the controls
+    /// start from the role's model, effort and speed.
+    fn on_own_agent(&self) -> bool {
+        self.role_runtime_override.is_none()
     }
 
     fn active_runtime(&self) -> Option<&RuntimeCatalogEntry> {
         match self.mode {
-            ChatMode::Role => self.override_runtime(),
+            ChatMode::Role => self.role_agent().and_then(|name| self.runtime_entry(name)),
             ChatMode::Runtime => self.selected_runtime(),
         }
     }
 
     fn codex_speed_visible(&self) -> bool {
         match self.mode {
-            ChatMode::Role => {
-                self.role_runtime_override
-                    .as_deref()
-                    .or_else(|| self.selected_role().map(|role| role.runtime.as_str()))
-                    == Some("codex")
-            }
+            ChatMode::Role => self.role_agent() == Some("codex"),
             ChatMode::Runtime => self.runtime_name.as_deref() == Some("codex"),
         }
     }
 
     fn effective_speed(&self) -> Option<CodexSpeed> {
-        parse_speed(&self.speed).or_else(|| {
-            (self.mode == ChatMode::Role && self.codex_speed_visible())
-                .then(|| self.selected_role().and_then(|role| role.codex_speed))
-                .flatten()
-        })
+        self.codex_speed_visible()
+            .then(|| parse_speed(&self.speed))
+            .flatten()
+    }
+
+    /// The Effort that leaves the control untouched: the role's on its own
+    /// agent, else the agent's default, else none known.
+    fn baseline_effort(&self) -> String {
+        let runtime = self.active_runtime();
+        inheriting_role(self)
+            .and_then(|role| trimmed(role.effort.as_deref()))
+            .map(str::to_owned)
+            .or_else(|| {
+                let runtime = runtime?;
+                runtime
+                    .default_effort
+                    .clone()
+                    .filter(|effort| runtime.efforts.iter().any(|option| option.value == *effort))
+            })
+            .unwrap_or_default()
+    }
+
+    /// The Speed that leaves the control untouched: the role's on its own
+    /// Codex agent, else Inherit.
+    fn baseline_speed(&self) -> String {
+        match inheriting_role(self)
+            .filter(|role| role.runtime == "codex")
+            .and_then(|role| role.codex_speed)
+        {
+            Some(CodexSpeed::Standard) => "standard",
+            Some(CodexSpeed::Fast) => "fast",
+            None => "inherit",
+        }
+        .into()
+    }
+
+    /// The model the request carries: the one typed, unless it is the role's
+    /// own, which leaves the control untouched.
+    fn model_override(&self, cx: &App) -> Option<String> {
+        let role_model = inheriting_role(self).and_then(|role| trimmed(role.model.as_deref()));
+        normalized_value(self.model.read(cx).text())
+            .filter(|text| Some(text.as_str()) != role_model)
+    }
+
+    fn effort_override(&self) -> Option<String> {
+        (!self.effort.is_empty() && self.effort != self.baseline_effort())
+            .then(|| self.effort.clone())
+    }
+
+    fn speed_override(&self) -> Option<CodexSpeed> {
+        (self.speed != self.baseline_speed())
+            .then(|| self.effective_speed())
+            .flatten()
+    }
+
+    /// The role controls that differ from the role's own setup. On the role's
+    /// own agent that is the model, effort and speed changed; on another agent
+    /// it is the agent alone, whose defaults the rest start from.
+    fn role_overrides(&self, cx: &App) -> RoleOverrides {
+        let inheriting = inheriting_role(self).is_some();
+        RoleOverrides {
+            runtime: self.mode == ChatMode::Role
+                && self.selected_role().is_some()
+                && !self.on_own_agent(),
+            model: inheriting && self.model_override(cx).is_some(),
+            effort: inheriting && self.effort_override().is_some(),
+            speed: inheriting && self.speed_override().is_some(),
+        }
     }
 
     fn can_submit(&self) -> bool {
@@ -195,6 +275,24 @@ impl StartChatModal {
             || self.cwd.read(cx).is_composing()
             || self.model.read(cx).is_composing()
     }
+}
+
+/// Which role controls carry an override, each with its amber dot and Reset.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct RoleOverrides {
+    runtime: bool,
+    model: bool,
+    effort: bool,
+    speed: bool,
+}
+
+/// A role control's Reset, in `StartChatModal::reset_focus` order.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ResetKind {
+    Runtime,
+    Model,
+    Effort,
+    Speed,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -744,6 +842,9 @@ impl NativeRoot {
         let root = cx.entity();
         let role_handler = selection_handler(&root, StartChatSelection::Role);
         let roles = self.app_store.read(cx).roles.clone();
+        let selected_role = role_id
+            .as_deref()
+            .and_then(|id| roles.iter().find(|role| role.id == id));
         let role_select = cx.new(|select_cx| {
             StyledSelect::new(
                 "start-chat-role",
@@ -753,35 +854,25 @@ impl NativeRoot {
                 role_handler,
                 select_cx,
             )
-            .width(px(FIELD_WIDTH))
-            .min_menu_width(px(FIELD_WIDTH))
-            .detailed(true)
-            .monospace(true)
+            .picker(true)
             .placeholder("No roles yet")
             .disabled(roles.is_empty())
         });
-        let role_runtime_options = role_runtime_options(
-            &runtimes,
-            role_id.as_deref().and_then(|id| {
-                self.app_store
-                    .read(cx)
-                    .roles
-                    .iter()
-                    .find(|role| role.id == id)
-            }),
-        );
+        let role_runtime_options = role_runtime_options(&runtimes, selected_role);
         let role_runtime_handler = selection_handler(&root, StartChatSelection::RoleRuntime);
         let role_runtime_select = cx.new(|select_cx| {
             StyledSelect::new(
                 "start-chat-role-runtime",
                 select_cx.focus_handle(),
-                "",
+                selected_role
+                    .map(|role| role.runtime.clone())
+                    .unwrap_or_default(),
                 role_runtime_options,
                 role_runtime_handler,
                 select_cx,
             )
-            .width(px(FIELD_WIDTH))
-            .min_menu_width(px(FIELD_WIDTH))
+            .full_width(true)
+            .min_menu_width(px(200.))
         });
         let runtime_handler = selection_handler(&root, StartChatSelection::Runtime);
         let runtime_select = cx.new(|select_cx| {
@@ -793,8 +884,7 @@ impl NativeRoot {
                 runtime_handler,
                 select_cx,
             )
-            .width(px(FIELD_WIDTH))
-            .min_menu_width(px(FIELD_WIDTH))
+            .picker(true)
             .disabled(runtimes.is_empty())
         });
         let effort_handler = selection_handler(&root, StartChatSelection::Effort);
@@ -807,8 +897,8 @@ impl NativeRoot {
                 effort_handler,
                 select_cx,
             )
-            .width(px(232.))
-            .min_menu_width(px(240.))
+            .full_width(true)
+            .min_menu_width(px(200.))
         });
         let speed_handler = selection_handler(&root, StartChatSelection::Speed);
         let speed_select = cx.new(|select_cx| {
@@ -816,12 +906,12 @@ impl NativeRoot {
                 "start-chat-speed",
                 select_cx.focus_handle(),
                 "inherit",
-                speed_options(None),
+                speed_options(None, false),
                 speed_handler,
                 select_cx,
             )
-            .width(px(FIELD_WIDTH))
-            .min_menu_width(px(FIELD_WIDTH))
+            .full_width(true)
+            .min_menu_width(px(160.))
         });
         let model_field = cx.new(|model_cx| ModelField::new(model_input.clone(), &[], model_cx));
         let scroll_handle = ScrollHandle::new();
@@ -829,15 +919,20 @@ impl NativeRoot {
         let scrollbar = cx.new(|_| Scrollbar::app(scroll_handle.clone(), scroll_owner));
         let role_mode_focus = cx.focus_handle();
         let direct_mode_focus = cx.focus_handle();
+        let reset_focus = std::array::from_fn(|_| cx.focus_handle());
         let browse_focus = cx.focus_handle();
         let close_focus = cx.focus_handle();
         let cancel_focus = cx.focus_handle();
         let submit_focus = cx.focus_handle();
         let title_focus = title_input.read(cx).focus_handle();
+        // The model's dot, note and reset live outside the field, so the form
+        // redraws with it.
         let model_subscription = cx.observe(&model_input, |this, _, cx| {
             if let Some(modal) = this.start_chat_modal.as_mut() {
+                sync_model_marker(modal, cx);
                 sync_effort_control(modal, cx);
             }
+            cx.notify();
         });
 
         self.sidebar_preview_open = false;
@@ -865,6 +960,7 @@ impl NativeRoot {
             scrollbar,
             role_mode_focus,
             direct_mode_focus,
+            reset_focus,
             browse_focus,
             close_focus,
             cancel_focus,
@@ -876,7 +972,7 @@ impl NativeRoot {
             _model_subscription: model_subscription,
         });
         if let Some(modal) = self.start_chat_modal.as_mut() {
-            sync_runtime_controls(modal, cx);
+            restore_baseline(modal, cx);
         }
         title_focus.focus(window);
         if let Some(runtime) = self
@@ -902,6 +998,8 @@ impl NativeRoot {
         modal.agents_error = agents_error;
 
         if catalog_loaded {
+            // A control the user has not changed follows the refreshed defaults.
+            let effort_untouched = modal.effort == modal.baseline_effort();
             modal.runtimes = runtimes;
             if modal.role_runtime_override.as_ref().is_some_and(|name| {
                 !modal
@@ -922,14 +1020,6 @@ impl NativeRoot {
                     .first()
                     .map(|runtime| runtime.name.to_string());
             }
-            if modal.runtime_name != previous_runtime
-                || modal.role_runtime_override != previous_override
-            {
-                modal.effort.clear();
-                modal
-                    .model
-                    .update(cx, |input, input_cx| input.reset("", input_cx));
-            }
             if modal.mode == ChatMode::Runtime && modal.runtime_name != previous_runtime {
                 let derived = modal
                     .selected_runtime()
@@ -941,17 +1031,17 @@ impl NativeRoot {
                 select.set_options(runtime_options(&modal.runtimes), select_cx);
                 select.set_value(modal.runtime_name.clone().unwrap_or_default(), select_cx);
             });
-            modal.role_runtime_select.update(cx, |select, select_cx| {
-                select.set_options(
-                    role_runtime_options(&modal.runtimes, modal.selected_role()),
-                    select_cx,
-                );
-                select.set_value(
-                    modal.role_runtime_override.clone().unwrap_or_default(),
-                    select_cx,
-                );
-            });
-            sync_runtime_controls(modal, cx);
+            sync_role_runtime_select(modal, cx);
+            if modal.runtime_name != previous_runtime
+                || modal.role_runtime_override != previous_override
+            {
+                restore_baseline(modal, cx);
+            } else {
+                if effort_untouched {
+                    modal.effort = modal.baseline_effort();
+                }
+                sync_runtime_controls(modal, cx);
+            }
         }
         cx.notify();
     }
@@ -971,10 +1061,6 @@ impl NativeRoot {
             return;
         }
         modal.runtime_name = runtime_name;
-        modal.effort.clear();
-        modal
-            .model
-            .update(cx, |input, input_cx| input.reset("", input_cx));
         if modal.mode == ChatMode::Runtime {
             let derived = modal
                 .selected_runtime()
@@ -985,7 +1071,7 @@ impl NativeRoot {
         modal.runtime_select.update(cx, |select, select_cx| {
             select.set_value(modal.runtime_name.clone().unwrap_or_default(), select_cx)
         });
-        sync_runtime_controls(modal, cx);
+        restore_baseline(modal, cx);
         cx.notify();
     }
 
@@ -1021,13 +1107,7 @@ impl NativeRoot {
             return;
         }
         modal.mode = mode;
-        modal.role_runtime_override = None;
-        modal.effort.clear();
-        modal.speed = "inherit".into();
-        modal
-            .model
-            .update(cx, |input, input_cx| input.reset("", input_cx));
-        sync_runtime_controls(modal, cx);
+        clear_role_overrides(modal, cx);
         let derived = match mode {
             ChatMode::Role => modal
                 .selected_role()
@@ -1077,32 +1157,30 @@ impl NativeRoot {
                 modal.cwd.update(cx, |input, input_cx| {
                     input.set_placeholder(placeholder, input_cx)
                 });
-                let options = role_runtime_options(&modal.runtimes, modal.selected_role());
-                modal.role_runtime_select.update(cx, |select, select_cx| {
-                    select.set_options(options, select_cx)
-                });
-                sync_runtime_controls(modal, cx);
+                // Overrides are on top of one role's setup: another role
+                // starts from its own.
+                clear_role_overrides(modal, cx);
             }
             StartChatSelection::RoleRuntime => {
-                modal.role_runtime_override = (!value.is_empty()).then(|| value.to_owned());
-                modal.effort.clear();
-                modal
-                    .model
-                    .update(cx, |input, input_cx| input.reset("", input_cx));
-                sync_runtime_controls(modal, cx);
+                let own = modal
+                    .selected_role()
+                    .is_some_and(|role| role.runtime == value);
+                let next = (!own && !value.is_empty()).then(|| value.to_owned());
+                // This runs inside the Runtime select's own choose, which holds
+                // the select: it already shows the pick, so it is not synced.
+                if next != modal.role_runtime_override {
+                    modal.role_runtime_override = next;
+                    restore_baseline(modal, cx);
+                }
             }
             StartChatSelection::Runtime => {
                 modal.runtime_name = Some(value.to_owned());
-                modal.effort.clear();
-                modal
-                    .model
-                    .update(cx, |input, input_cx| input.reset("", input_cx));
                 let derived = modal
                     .selected_runtime()
                     .map(|runtime| default_title_for_runtime(&runtime.display_name))
                     .unwrap_or_default();
                 update_auto_title(&modal.title, derived, cx);
-                sync_runtime_controls(modal, cx);
+                restore_baseline(modal, cx);
             }
             StartChatSelection::Effort => modal.effort = value.to_owned(),
             StartChatSelection::Speed => modal.speed = value.to_owned(),
@@ -1208,17 +1286,17 @@ impl NativeRoot {
                     .is_some_and(|path| !path.trim().is_empty()),
             &self.settings(cx).default_working_dir,
         );
-        let model = normalized_value(modal.model.read(cx).text());
-        let effort = normalized_value(&modal.effort);
-        let speed = modal
-            .codex_speed_visible()
-            .then(|| parse_speed(&modal.speed))
-            .flatten();
+        // A control still showing its starting value is untouched.
+        let model = modal.model_override(cx);
+        let effort = modal.effort_override();
+        let speed = modal.speed_override();
         let title = user_chat_title(modal.title.read(cx));
         let scope = modal.scope.clone();
         let request = build_start_request(
             modal.mode,
-            modal.selected_role().map(|role| role.id.as_str()),
+            modal
+                .selected_role()
+                .map(|role| (role.id.as_str(), role.runtime.as_str())),
             modal.selected_runtime().map(|runtime| runtime.name.key()),
             modal.role_runtime_override.as_deref(),
             model,
@@ -1372,128 +1450,20 @@ impl NativeRoot {
         cx.notify();
     }
 
-    pub(crate) fn render_start_chat_modal(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub(crate) fn render_start_chat_modal(
+        &self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let modal = self.start_chat_modal.as_ref().expect("modal is open");
-        let active_runtime = modal.active_runtime().cloned();
         let mode = modal.mode;
         let submitting = modal.submitting;
         let can_submit = modal.can_submit();
-        let settings_root = cx.entity();
+        let form_width = OverlayWidth::Custom(MODAL_WIDTH).body_width(window);
+        let layout = CardLayout::new(form_width);
 
-        let role_fields = div()
-            .flex()
-            .flex_col()
-            .gap_5()
-            .child(
-                Field::new(
-                    "start-chat-role-field",
-                    "Role",
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap_1()
-                        .child(modal.role_select.clone())
-                        .when(modal.roles.is_empty(), |field| {
-                            field.child(
-                                div()
-                                    .text_size(theme::text_meta())
-                                    .text_color(theme::warning())
-                                    .child("No roles yet. Create one from the Roles page first."),
-                            )
-                        }),
-                )
-                .focus_target(modal.role_select.read(cx).focus_handle())
-                .emphasized(true),
-            )
-            .child(
-                Field::new(
-                    "start-chat-role-agent-field",
-                    "Agent",
-                    modal.role_runtime_select.clone(),
-                )
-                    .focus_target(modal.role_runtime_select.read(cx).focus_handle())
-                    .emphasized(true)
-                    .subtitle("Overriding runs this role on another agent; its model and effort become configurable below."),
-            )
-            .when_some(modal.override_runtime().cloned(), |fields, runtime| {
-                fields.child(render_shared_model_effort_fields(
-                    &runtime,
-                    modal.model_field.clone(),
-                    modal.effort_select.clone(),
-                    cx,
-                ))
-            })
-            .when(modal.codex_speed_visible(), |fields| {
-                fields.child(render_start_chat_speed_field(modal, cx))
-            });
-
-        let direct_fields = div()
-            .flex()
-            .flex_col()
-            .gap_5()
-            .child(
-                Field::new(
-                    "start-chat-direct-agent-field",
-                    "Agent",
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap_1()
-                        .child(modal.runtime_select.clone())
-                        .when(modal.runtimes.is_empty(), |field| {
-                            field.child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .text_size(theme::text_meta())
-                                    .text_color(theme::warning())
-                                    .when(modal.agents_checking, |message| {
-                                        message.child("Detecting agents…")
-                                    })
-                                    .when(!modal.agents_checking, |message| {
-                                        let root = settings_root.clone();
-                                        message.child("No enabled agents detected. ").child(
-                                            div()
-                                                .id("start-chat-open-agent-settings")
-                                                .cursor_pointer()
-                                                .text_color(theme::warning())
-                                                .hover(|link| link.text_color(theme::text()))
-                                                .child("Configure one in Settings → Agents.")
-                                                .on_click(move |_, window, cx| {
-                                                    root.update(cx, |this, cx| {
-                                                        this.start_chat_modal = None;
-                                                        this.enter_settings_route(
-                                                            Some("agents"),
-                                                            window,
-                                                            cx,
-                                                        );
-                                                    });
-                                                }),
-                                        )
-                                    }),
-                            )
-                        })
-                        .children(modal.agents_error.clone().map(|error| {
-                            div()
-                                .text_size(theme::text_meta())
-                                .text_color(theme::danger())
-                                .child(error)
-                        })),
-                )
-                .focus_target(modal.runtime_select.read(cx).focus_handle())
-                .emphasized(true),
-            )
-            .when_some(active_runtime, |fields, runtime| {
-                fields.child(render_shared_model_effort_fields(
-                    &runtime,
-                    modal.model_field.clone(),
-                    modal.effort_select.clone(),
-                    cx,
-                ))
-            })
-            .when(modal.codex_speed_visible(), |fields| {
-                fields.child(render_start_chat_speed_field(modal, cx))
-            });
+        let role_fields = self.render_role_fields(modal, layout, cx);
+        let direct_fields = self.render_direct_fields(modal, layout, cx);
 
         let root = cx.entity();
         let browse_root = root.clone();
@@ -1501,7 +1471,7 @@ impl NativeRoot {
             .debug_selector(|| "START_CHAT_FORM".into())
             .flex()
             .flex_col()
-            .when(cfg!(windows), |content| content.w(rems(FIELD_WIDTH / 16.)))
+            .when(cfg!(windows), |content| content.w(rems(form_width / 16.)))
             .gap_5()
             .on_key_down(cx.listener(Self::on_start_chat_key_down))
             .children(modal.error.as_ref().map(|error| {
@@ -1544,14 +1514,14 @@ impl NativeRoot {
                     )),
             )
             .child(match mode {
-                ChatMode::Role => role_fields.into_any_element(),
-                ChatMode::Runtime => direct_fields.into_any_element(),
+                ChatMode::Role => role_fields,
+                ChatMode::Runtime => direct_fields,
             })
             .child(
                 Field::new("start-chat-title-field", "Chat name", modal.title.clone())
                     .focus_target(modal.title.read(cx).focus_handle())
                     .emphasized(true)
-                    .subtitle("Optional. Leave blank to use the default label."),
+                    .tag("optional"),
             )
             .child(
                 Field::new(
@@ -1568,7 +1538,7 @@ impl NativeRoot {
                 )
                 .focus_target(modal.cwd.read(cx).focus_handle())
                 .emphasized(true)
-                .subtitle("Leave blank to use the default working directory."),
+                .subtitle(working_dir_hint(mode, modal.selected_role())),
             );
 
         let close_root = root.clone();
@@ -1653,6 +1623,284 @@ impl NativeRoot {
         })
         .scrollbar(modal.scroll_handle.clone(), modal.scrollbar.clone())
         .footer(footer)
+        .into_any_element()
+    }
+
+    /// Puts one role control back to the role's value and hands focus to it,
+    /// since its Reset goes with the override.
+    fn reset_start_chat_control(
+        &mut self,
+        kind: ResetKind,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(modal) = self.start_chat_modal.as_mut() else {
+            return;
+        };
+        if modal.submitting {
+            return;
+        }
+        let focus = match kind {
+            ResetKind::Runtime => {
+                modal.role_runtime_override = None;
+                sync_role_runtime_select(modal, cx);
+                restore_baseline(modal, cx);
+                modal.role_runtime_select.read(cx).focus_handle()
+            }
+            ResetKind::Model => {
+                modal
+                    .model
+                    .update(cx, |input, input_cx| input.reset("", input_cx));
+                modal.model.read(cx).focus_handle()
+            }
+            ResetKind::Effort => {
+                modal.effort = modal.baseline_effort();
+                sync_effort_control(modal, cx);
+                modal.effort_select.read(cx).focus_handle()
+            }
+            ResetKind::Speed => {
+                modal.speed = modal.baseline_speed();
+                sync_speed_control(modal, cx);
+                modal.speed_select.read(cx).focus_handle()
+            }
+        };
+        focus.focus(window);
+        if let Some(runtime) = self
+            .start_chat_modal
+            .as_ref()
+            .and_then(|modal| modal.active_runtime())
+        {
+            self.request_model_catalog(runtime.name.key(), cx);
+        }
+        cx.notify();
+    }
+
+    fn render_role_fields(
+        &self,
+        modal: &StartChatModal,
+        layout: CardLayout,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let mut card = card(layout).child(modal.role_select.clone());
+        let role = modal.selected_role();
+        if let Some(role) = role {
+            card = card.child(self.render_role_setup(modal, role, layout, cx));
+        }
+        let mut field = Field::new(
+            "start-chat-role-field",
+            "Role",
+            div()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .child(card)
+                .when(modal.roles.is_empty(), |field| {
+                    field.child(
+                        div()
+                            .text_size(theme::text_meta())
+                            .text_color(theme::warning())
+                            .child("No roles yet. Create one from the Roles page first."),
+                    )
+                }),
+        )
+        .focus_target(modal.role_select.read(cx).focus_handle())
+        .emphasized(true);
+        if role.is_some() {
+            field = field.subtitle(ROLE_HINT);
+        }
+        field.into_any_element()
+    }
+
+    /// The role's Runtime, Model and Effort as controls filled with the role's
+    /// values; an override adds the amber dot and, under the control, the
+    /// role's value with Reset.
+    fn render_role_setup(
+        &self,
+        modal: &StartChatModal,
+        role: &Role,
+        layout: CardLayout,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let third = layout.third();
+        let root = cx.entity();
+        let overrides = modal.role_overrides(cx);
+        let own = modal.on_own_agent();
+        let agent = modal.role_agent().unwrap_or(&role.runtime).to_owned();
+        let runtime = modal.active_runtime();
+        let effort_available = runtime.is_some_and(|runtime| !runtime.efforts.is_empty());
+        let note = |label: &'static str, kind: ResetKind, changed: bool, value: String| {
+            changed.then(|| {
+                override_note(
+                    label,
+                    third,
+                    format!("role: {value}"),
+                    reset_action(&root, &modal.reset_focus[kind as usize], kind),
+                )
+            })
+        };
+        let row = || div().flex().items_start().gap(rems(COLUMN_GAP / 16.));
+        let controls = row()
+            .child(setup_field(
+                third,
+                "Runtime",
+                modal.role_runtime_select.clone(),
+                note(
+                    "Runtime",
+                    ResetKind::Runtime,
+                    overrides.runtime,
+                    runtime_display_name(&modal.runtimes, &role.runtime),
+                ),
+            ))
+            .child(setup_field(
+                third,
+                "Model",
+                div().w_full().child(modal.model_field.clone()),
+                note(
+                    "Model",
+                    ResetKind::Model,
+                    overrides.model,
+                    model_placeholder(Some(role), runtime),
+                ),
+            ))
+            .when(effort_available, |controls| {
+                controls.child(setup_field(
+                    third,
+                    "Effort",
+                    modal.effort_select.clone(),
+                    note(
+                        "Effort",
+                        ResetKind::Effort,
+                        overrides.effort,
+                        role_setting_label(Some(&modal.baseline_effort())).0,
+                    ),
+                ))
+            });
+        card_section()
+            .when(cfg!(test), |section| {
+                section.debug_selector(|| "START_CHAT_SETUP".into())
+            })
+            .child(controls)
+            .when(modal.codex_speed_visible(), |section| {
+                section.child(row().child(render_speed_column(
+                    modal,
+                    third,
+                    note(
+                        "Speed",
+                        ResetKind::Speed,
+                        overrides.speed,
+                        speed_label(role.codex_speed).into(),
+                    ),
+                )))
+            })
+            .children(speed_note(modal))
+            .children((!own).then(|| {
+                let note = agent_note(
+                    &runtime_display_name(&modal.runtimes, &agent),
+                    &runtime_display_name(&modal.runtimes, &role.runtime),
+                    trimmed(role.model.as_deref()),
+                    trimmed(role.effort.as_deref()),
+                );
+                div()
+                    .w(rems(layout.content / 16.))
+                    .text_size(theme::text_ui())
+                    .text_color(theme::faint())
+                    .child(note)
+            }))
+            .into_any_element()
+    }
+
+    fn render_direct_fields(
+        &self,
+        modal: &StartChatModal,
+        layout: CardLayout,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let settings_root = cx.entity();
+        let mut card = card(layout).child(modal.runtime_select.clone());
+        if let Some(runtime) = modal.active_runtime() {
+            let has_effort = !runtime.efforts.is_empty();
+            let has_speed = modal.codex_speed_visible();
+            card = card.child(
+                card_section()
+                    .when(cfg!(test), |section| {
+                        section.debug_selector(|| "START_CHAT_SETUP".into())
+                    })
+                    .child(
+                        div()
+                            .flex()
+                            .items_start()
+                            .gap(rems(COLUMN_GAP / 16.))
+                            .child(setup_field(
+                                layout.model(has_effort, has_speed),
+                                "Model",
+                                div().w_full().child(modal.model_field.clone()),
+                                None,
+                            ))
+                            .when(has_effort, |row| {
+                                row.child(setup_field(
+                                    EFFORT_COLUMN_WIDTH,
+                                    "Effort",
+                                    modal.effort_select.clone(),
+                                    None,
+                                ))
+                            })
+                            .when(has_speed, |row| {
+                                row.child(render_speed_column(modal, SPEED_COLUMN_WIDTH, None))
+                            }),
+                    )
+                    .children(speed_note(modal)),
+            );
+        }
+        Field::new(
+            "start-chat-direct-agent-field",
+            "Agent",
+            div()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .child(card)
+                .when(modal.runtimes.is_empty(), |field| {
+                    field.child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .text_size(theme::text_meta())
+                            .text_color(theme::warning())
+                            .when(modal.agents_checking, |message| {
+                                message.child("Detecting agents…")
+                            })
+                            .when(!modal.agents_checking, |message| {
+                                let root = settings_root.clone();
+                                message.child("No enabled agents detected. ").child(
+                                    div()
+                                        .id("start-chat-open-agent-settings")
+                                        .cursor_pointer()
+                                        .text_color(theme::warning())
+                                        .hover(|link| link.text_color(theme::text()))
+                                        .child("Configure one in Settings → Agents.")
+                                        .on_click(move |_, window, cx| {
+                                            root.update(cx, |this, cx| {
+                                                this.start_chat_modal = None;
+                                                this.enter_settings_route(
+                                                    Some("agents"),
+                                                    window,
+                                                    cx,
+                                                );
+                                            });
+                                        }),
+                                )
+                            }),
+                    )
+                })
+                .children(modal.agents_error.clone().map(|error| {
+                    div()
+                        .text_size(theme::text_meta())
+                        .text_color(theme::danger())
+                        .child(error)
+                })),
+        )
+        .focus_target(modal.runtime_select.read(cx).focus_handle())
+        .emphasized(true)
         .into_any_element()
     }
 
@@ -1772,29 +2020,85 @@ fn role_options(roles: &[Role]) -> Vec<SelectOption> {
     roles
         .iter()
         .map(|role| {
-            SelectOption::new(role.id.clone(), format!("@{}", role.handle))
-                .description(summarize_role(role))
+            SelectOption::new(role.id.clone(), role.display_name.clone())
+                .description(format!("@{}", role.handle))
+                .leading(role_leading(&role.handle))
         })
         .collect()
 }
 
+fn role_leading(handle: &str) -> SelectLeading {
+    let seed = handle.to_owned();
+    SelectLeading::new(format!("role:{handle}"), move |size| {
+        RoleAvatar::new(seed.clone(), size).into_any_element()
+    })
+}
+
+/// A provider's mark: bare at text size, on a raised tile from a card row up.
+fn runtime_mark(runtime: &str, size: f32) -> AnyElement {
+    let icon = ChatIcon::for_runtime(runtime);
+    let color = icon.color(theme::muted(), true);
+    if size < 24. {
+        return icon.render(rems(size / 16.), color, true);
+    }
+    div()
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .size(rems(size / 16.))
+        .rounded(rems((size * 0.2).round() / 16.))
+        .bg(theme::raised())
+        .child(icon.render(rems(size / 2. / 16.), color, true))
+        .into_any_element()
+}
+
+fn runtime_leading(runtime: &str) -> SelectLeading {
+    let name = runtime.to_owned();
+    SelectLeading::new(format!("runtime:{runtime}"), move |size| {
+        runtime_mark(&name, size)
+    })
+}
+
+/// The agents a picker offers: the name, the command in monospace under it,
+/// and the provider's mark.
 fn runtime_options(runtimes: &[RuntimeCatalogEntry]) -> Vec<SelectOption> {
     runtimes
         .iter()
-        .map(|runtime| SelectOption::new(runtime.name.to_string(), runtime.display_name.clone()))
+        .map(|runtime| {
+            SelectOption::new(runtime.name.to_string(), runtime.display_name.clone())
+                .description(runtime.command.clone())
+                .leading(runtime_leading(runtime.name.key()))
+        })
         .collect()
 }
 
+/// The agents a role chat can run on: every selectable one, plus the role's
+/// own when it is not. The role's own is the untouched choice.
 fn role_runtime_options(
     runtimes: &[RuntimeCatalogEntry],
     role: Option<&Role>,
 ) -> Vec<SelectOption> {
-    let suffix = role
-        .map(|role| format!(" ({})", runtime_display_name(runtimes, &role.runtime)))
-        .unwrap_or_default();
-    std::iter::once(SelectOption::new("", format!("Role default{suffix}")))
-        .chain(runtime_options(runtimes))
-        .collect()
+    let mut options = runtime_options(runtimes)
+        .into_iter()
+        .map(|option| SelectOption {
+            description: None,
+            marked: role.is_some_and(|role| role.runtime != option.value),
+            ..option
+        })
+        .collect::<Vec<_>>();
+    if let Some(role) =
+        role.filter(|role| options.iter().all(|option| option.value != role.runtime))
+    {
+        options.push(
+            SelectOption::new(
+                role.runtime.clone(),
+                runtime_display_name(runtimes, &role.runtime),
+            )
+            .leading(runtime_leading(&role.runtime)),
+        );
+    }
+    options
 }
 
 fn option_select_options(options: &[RuntimeCatalogOption]) -> Vec<SelectOption> {
@@ -1818,18 +2122,95 @@ fn parse_speed(value: &str) -> Option<CodexSpeed> {
     }
 }
 
-fn speed_options(role: Option<&Role>) -> Vec<SelectOption> {
-    let inherit = match role.and_then(|role| role.codex_speed) {
-        Some(CodexSpeed::Standard) => "Role default (Standard)",
-        Some(CodexSpeed::Fast) => "Role default (Fast)",
-        None if role.is_some() => "Role default (Inherit)",
+fn speed_label(speed: Option<CodexSpeed>) -> &'static str {
+    match speed {
         None => "Inherit",
+        Some(CodexSpeed::Standard) => "Standard",
+        Some(CodexSpeed::Fast) => "Fast",
+    }
+}
+
+/// Speed's choices. A role that sets a speed has no Inherit: it could not undo
+/// the role's value. On the role's own Codex agent a choice that differs from
+/// `baseline` carries the amber dot.
+fn speed_options(baseline: Option<&str>, role_sets_speed: bool) -> Vec<SelectOption> {
+    let option = |value: &'static str, label: &'static str| {
+        SelectOption::new(value, label).marked(baseline.is_some_and(|baseline| baseline != value))
     };
-    vec![
-        SelectOption::new("inherit", inherit),
-        SelectOption::new("standard", "Standard"),
-        SelectOption::new("fast", "Fast"),
-    ]
+    let mut options = Vec::new();
+    if !role_sets_speed {
+        options.push(option("inherit", "Inherit"));
+    }
+    options.push(option("standard", "Standard"));
+    options.push(option("fast", "Fast"));
+    options
+}
+
+fn trimmed(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|value| !value.is_empty())
+}
+
+/// What a blank Model reads: the role's model while the chat runs on the
+/// role's own agent, else the agent's default, else `default`.
+fn model_placeholder(role: Option<&Role>, runtime: Option<&RuntimeCatalogEntry>) -> String {
+    role.and_then(|role| trimmed(role.model.as_deref()))
+        .or_else(|| runtime.and_then(|runtime| trimmed(runtime.default_model.as_deref())))
+        .unwrap_or("default")
+        .to_owned()
+}
+
+/// The role whose model, effort and speed the controls start from: only the
+/// role the chat runs on the agent of.
+fn inheriting_role(modal: &StartChatModal) -> Option<&Role> {
+    (modal.mode == ChatMode::Role && modal.on_own_agent())
+        .then(|| modal.selected_role())
+        .flatten()
+}
+
+/// The model that will reach the launch: the one typed, else the role's own,
+/// which the backend keeps when only an effort is overridden. An agent's
+/// default model shown as the placeholder is not one: nothing is sent for it.
+fn launch_model(modal: &StartChatModal, cx: &App) -> Option<String> {
+    normalized_value(modal.model.read(cx).text()).or_else(|| {
+        inheriting_role(modal)
+            .and_then(|role| trimmed(role.model.as_deref()))
+            .map(str::to_owned)
+    })
+}
+
+/// Whether the agent drops an effort that has no model beside it. The launch
+/// gives Antigravity `--effort` only together with `--model`, and only for a
+/// pair its catalog lists, so its effort waits for a model that reaches the
+/// launch.
+fn effort_needs_launch_model(runtime: &RuntimeCatalogEntry) -> bool {
+    runtime.name == runner_backend::model::Runtime::Antigravity
+}
+
+fn sync_role_runtime_select(modal: &StartChatModal, cx: &mut Context<NativeRoot>) {
+    let options = role_runtime_options(&modal.runtimes, modal.selected_role());
+    let value = modal.role_agent().unwrap_or_default().to_owned();
+    modal.role_runtime_select.update(cx, |select, select_cx| {
+        select.set_options(options, select_cx);
+        select.set_value(value, select_cx);
+    });
+}
+
+/// Back to the role's own setup: its agent, model, effort and speed.
+fn clear_role_overrides(modal: &mut StartChatModal, cx: &mut Context<NativeRoot>) {
+    modal.role_runtime_override = None;
+    sync_role_runtime_select(modal, cx);
+    restore_baseline(modal, cx);
+}
+
+/// Every control back to what it starts from: no model typed, and the Effort
+/// and Speed that leave them untouched.
+fn restore_baseline(modal: &mut StartChatModal, cx: &mut Context<NativeRoot>) {
+    modal
+        .model
+        .update(cx, |input, input_cx| input.reset("", input_cx));
+    modal.effort = modal.baseline_effort();
+    modal.speed = modal.baseline_speed();
+    sync_runtime_controls(modal, cx);
 }
 
 fn sync_runtime_controls(modal: &mut StartChatModal, cx: &mut Context<NativeRoot>) {
@@ -1842,16 +2223,22 @@ fn sync_runtime_controls(modal: &mut StartChatModal, cx: &mut Context<NativeRoot
         field.set_suggestions(models, field_cx);
         field.set_disabled(modal.submitting || runtime.is_none(), field_cx);
     });
-    let placeholder = runtime
-        .as_ref()
-        .and_then(|runtime| runtime.default_model.as_deref())
-        .map(|model| format!("default ({model})"))
-        .unwrap_or_else(|| "default".into());
+    let placeholder = model_placeholder(inheriting_role(modal), runtime.as_ref());
     modal.model.update(cx, |input, input_cx| {
         input.set_placeholder(placeholder, input_cx)
     });
+    sync_model_marker(modal, cx);
     sync_effort_control(modal, cx);
     sync_speed_control(modal, cx);
+}
+
+/// The model carries the override dot while a role chat on the role's own
+/// agent has a model other than the role's.
+fn sync_model_marker(modal: &StartChatModal, cx: &mut Context<NativeRoot>) {
+    let marked = modal.role_overrides(cx).model;
+    modal
+        .model_field
+        .update(cx, |field, field_cx| field.set_marker(marked, field_cx));
 }
 
 fn sync_speed_control(modal: &mut StartChatModal, cx: &mut Context<NativeRoot>) {
@@ -1859,36 +2246,66 @@ fn sync_speed_control(modal: &mut StartChatModal, cx: &mut Context<NativeRoot>) 
     if !visible {
         modal.speed = "inherit".into();
     }
-    let role = (modal.mode == ChatMode::Role && visible)
-        .then(|| modal.selected_role().filter(|role| role.runtime == "codex"))
-        .flatten();
+    let baseline = modal.baseline_speed();
+    let role = inheriting_role(modal).filter(|role| role.runtime == "codex");
+    let options = speed_options(
+        role.map(|_| baseline.as_str()),
+        role.is_some_and(|role| role.codex_speed.is_some()),
+    );
+    if !options.iter().any(|option| option.value == modal.speed) {
+        modal.speed = baseline;
+    }
     modal.speed_select.update(cx, |select, select_cx| {
-        select.set_options(speed_options(role), select_cx);
+        select.set_options(options, select_cx);
         select.set_value(modal.speed.clone(), select_cx);
         select.set_disabled(modal.submitting || !visible, select_cx);
     });
 }
 
+/// Effort's choices: the agent's levels for the model the chat will run (its
+/// default model when none is set, every level when that is unknown too), the
+/// role's own level even when the catalog does not list it, and a blank
+/// `default` only while no level is known to start from. An agent that drops
+/// an effort without a model offers none until one reaches the launch. On the
+/// role's own agent a choice other than the role's carries the amber dot.
 fn sync_effort_control(modal: &mut StartChatModal, cx: &mut Context<NativeRoot>) {
-    let mut efforts = modal
+    let baseline = modal.baseline_effort();
+    let inherits = inheriting_role(modal).is_some();
+    let launch = launch_model(modal, cx);
+    let levels = modal
         .active_runtime()
-        .map(|runtime| runtime.efforts_for_model(modal.model.read(cx).text()))
-        .unwrap_or_default();
-    if let Some(effort) = modal
-        .active_runtime()
-        .and_then(|runtime| runtime.default_effort.as_deref())
-    {
-        if let Some(option) = efforts.iter_mut().find(|option| option.value.is_empty()) {
-            option.label = format!("Default ({effort})");
-        }
+        .map(|runtime| {
+            let needs_model = effort_needs_launch_model(runtime);
+            let default_model = (!needs_model)
+                .then(|| trimmed(runtime.default_model.as_deref()))
+                .flatten();
+            match launch.as_deref().or(default_model) {
+                Some(model) => runtime.efforts_for_model(model),
+                None if needs_model => Vec::new(),
+                None => runtime.efforts.clone(),
+            }
+        })
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|level| !level.value.is_empty())
+        .collect::<Vec<_>>();
+    let mut options = option_select_options(&levels);
+    if baseline.is_empty() {
+        options.insert(0, SelectOption::new("", "default"));
+    } else if !levels.iter().any(|level| level.value == baseline) {
+        options.insert(0, SelectOption::new(baseline.clone(), baseline.clone()));
     }
-    if !efforts.iter().any(|option| option.value == modal.effort) {
-        modal.effort.clear();
+    for option in &mut options {
+        option.marked = inherits && option.value != baseline;
     }
+    if !options.iter().any(|option| option.value == modal.effort) {
+        modal.effort = baseline;
+    }
+    let disabled = modal.submitting || options.len() <= 1;
     modal.effort_select.update(cx, |select, select_cx| {
-        select.set_options(option_select_options(&efforts), select_cx);
+        select.set_options(options, select_cx);
         select.set_value(modal.effort.clone(), select_cx);
-        select.set_disabled(modal.submitting || efforts.len() <= 1, select_cx);
+        select.set_disabled(disabled, select_cx);
     });
 }
 
@@ -1915,33 +2332,62 @@ fn set_start_chat_controls_disabled(
     sync_runtime_controls(modal, cx);
 }
 
-fn start_chat_focus_order(modal: &StartChatModal, cx: &Context<NativeRoot>) -> Vec<FocusHandle> {
+fn start_chat_focus_order(modal: &StartChatModal, cx: &App) -> Vec<FocusHandle> {
     let mut order = vec![
         modal.close_focus.clone(),
         modal.direct_mode_focus.clone(),
         modal.role_mode_focus.clone(),
     ];
+    let controls = |order: &mut Vec<FocusHandle>| {
+        if let Some(runtime) = modal.active_runtime() {
+            order.push(modal.model.read(cx).focus_handle());
+            if !runtime.efforts.is_empty() {
+                order.push(modal.effort_select.read(cx).focus_handle());
+            }
+        }
+        if modal.codex_speed_visible() {
+            order.push(modal.speed_select.read(cx).focus_handle());
+        }
+    };
     match modal.mode {
         ChatMode::Role => {
             if !modal.roles.is_empty() {
                 order.push(modal.role_select.read(cx).focus_handle());
             }
-            order.push(modal.role_runtime_select.read(cx).focus_handle());
+            if modal.selected_role().is_some() {
+                order.push(modal.role_runtime_select.read(cx).focus_handle());
+                controls(&mut order);
+                let overrides = modal.role_overrides(cx);
+                for (shown, focus) in [
+                    (
+                        overrides.runtime,
+                        &modal.reset_focus[ResetKind::Runtime as usize],
+                    ),
+                    (
+                        overrides.model,
+                        &modal.reset_focus[ResetKind::Model as usize],
+                    ),
+                    (
+                        overrides.effort,
+                        &modal.reset_focus[ResetKind::Effort as usize],
+                    ),
+                    (
+                        overrides.speed,
+                        &modal.reset_focus[ResetKind::Speed as usize],
+                    ),
+                ] {
+                    if shown {
+                        order.push(focus.clone());
+                    }
+                }
+            }
         }
         ChatMode::Runtime => {
             if !modal.runtimes.is_empty() {
                 order.push(modal.runtime_select.read(cx).focus_handle());
             }
+            controls(&mut order);
         }
-    }
-    if let Some(runtime) = modal.active_runtime() {
-        order.push(modal.model.read(cx).focus_handle());
-        if !runtime.efforts.is_empty() {
-            order.push(modal.effort_select.read(cx).focus_handle());
-        }
-    }
-    if modal.codex_speed_visible() {
-        order.push(modal.speed_select.read(cx).focus_handle());
     }
     order.push(modal.title.read(cx).focus_handle());
     order.push(modal.cwd.read(cx).focus_handle());
@@ -1953,74 +2399,213 @@ fn start_chat_focus_order(modal: &StartChatModal, cx: &Context<NativeRoot>) -> V
     order
 }
 
-fn render_shared_model_effort_fields(
-    runtime: &RuntimeCatalogEntry,
-    model: Entity<ModelField>,
-    effort: Entity<StyledSelect>,
-    cx: &Context<NativeRoot>,
-) -> AnyElement {
-    let has_effort = !runtime.efforts.is_empty();
-    let model_input = model.read(cx).input();
-    let model_focus = model_input.read(cx).focus_handle();
-    let effort_focus = effort.read(cx).focus_handle();
+/// Column widths inside a card, from the width the modal leaves its form.
+#[derive(Clone, Copy)]
+struct CardLayout {
+    /// The card's own width, border included.
+    outer: f32,
+    /// The width inside the border and the card's padding.
+    content: f32,
+}
+
+impl CardLayout {
+    fn new(form_width: f32) -> Self {
+        Self {
+            outer: form_width.floor(),
+            content: form_width.floor() - 2. - 2. * CARD_PADDING,
+        }
+    }
+
+    /// Runtime, Model and Effort of a role chat.
+    fn third(self) -> f32 {
+        ((self.content - 2. * COLUMN_GAP) / 3.).floor()
+    }
+
+    /// Direct's Model fills what its Effort and Speed leave.
+    fn model(self, effort: bool, speed: bool) -> f32 {
+        let taken = if effort {
+            EFFORT_COLUMN_WIDTH + COLUMN_GAP
+        } else {
+            0.
+        } + if speed {
+            SPEED_COLUMN_WIDTH + COLUMN_GAP
+        } else {
+            0.
+        };
+        self.content - taken
+    }
+}
+
+/// A role or an agent: who the chat is with on top, how it runs underneath.
+fn card(layout: CardLayout) -> Div {
+    div()
+        .when(cfg!(test), |card| {
+            card.debug_selector(|| "START_CHAT_CARD".into())
+        })
+        .w(rems(layout.outer / 16.))
+        .flex()
+        .flex_col()
+        .rounded(rems(8. / 16.))
+        .border_1()
+        .border_color(theme::border())
+        .bg(theme::bg())
+}
+
+fn card_section() -> Div {
     div()
         .flex()
-        .items_start()
-        .gap_3()
-        .child(
-            div()
-                .w(rems(if has_effort {
-                    232. / 16.
-                } else {
-                    FIELD_WIDTH / 16.
-                }))
-                .child(
-                    Field::new("start-chat-model-field", "Model", model)
-                        .focus_target(model_focus)
-                        .emphasized(true),
-                ),
-        )
-        .when(has_effort, |fields| {
-            fields.child(
-                div().w(rems(232. / 16.)).child(
-                    Field::new("start-chat-effort-field", "Thinking effort", effort)
-                        .focus_target(effort_focus)
-                        .emphasized(true),
-                ),
-            )
+        .flex_col()
+        .gap(rems(COLUMN_GAP / 16.))
+        .px(rems(CARD_PADDING / 16.))
+        .py(rems(CARD_PADDING / 16.))
+        .border_t_1()
+        .border_color(theme::border())
+}
+
+/// A labelled column of a card, with a note under the control while it
+/// overrides the role's value.
+fn setup_field(
+    width: f32,
+    label: &'static str,
+    control: impl IntoElement,
+    note: Option<AnyElement>,
+) -> Div {
+    div()
+        .when(cfg!(test), |field| {
+            field.debug_selector(move || format!("START_CHAT_FIELD {label}"))
         })
+        .w(rems(width / 16.))
+        .flex_none()
+        .flex()
+        .flex_col()
+        .gap(rems(6. / 16.))
+        .child(section_label(label))
+        .child(control)
+        .children(note)
+}
+
+/// What Reset takes of a column's width, and the gap before it.
+const RESET_WIDTH: f32 = 50.;
+const RESET_GAP: f32 = 8.;
+
+/// The role's value under an overridden control, with its Reset.
+fn override_note(
+    label: &'static str,
+    width: f32,
+    text: String,
+    reset: gpui::Stateful<Div>,
+) -> AnyElement {
+    let selector = format!("START_CHAT_NOTE {label} {text}");
+    div()
+        .flex()
+        .items_center()
+        .gap(rems(RESET_GAP / 16.))
+        .child(
+            column_text(text, width - RESET_WIDTH - RESET_GAP)
+                .when(cfg!(test), |note| {
+                    note.debug_selector(move || selector.clone())
+                })
+                .text_size(theme::text_meta())
+                .text_color(theme::faint()),
+        )
+        .child(reset)
         .into_any_element()
 }
 
-fn render_start_chat_speed_field(modal: &StartChatModal, cx: &Context<NativeRoot>) -> AnyElement {
-    div()
-        .when(cfg!(test), |field| {
-            field.debug_selector(|| "START_CHAT_SPEED_FIELD".into())
-        })
-        .flex()
-        .flex_col()
-        .gap_1()
-        .child(
-            Field::new(
-                "start-chat-speed-field",
-                "Speed",
-                modal.speed_select.clone(),
-            )
-            .focus_target(modal.speed_select.read(cx).focus_handle())
-            .emphasized(true),
-        )
-        .children(
-            (modal.effective_speed() == Some(CodexSpeed::Fast)).then(|| {
-                div()
-                    .when(cfg!(test), |note| {
-                        note.debug_selector(|| "START_CHAT_SPEED_NOTE".into())
-                    })
-                    .text_size(theme::text_meta())
-                    .text_color(theme::faint())
-                    .child("Fast uses more credits.")
-            }),
-        )
-        .into_any_element()
+/// A control's Reset: restores that one value to the role's.
+fn reset_action(
+    root: &Entity<NativeRoot>,
+    focus: &FocusHandle,
+    kind: ResetKind,
+) -> gpui::Stateful<Div> {
+    let root = root.clone();
+    text_action(
+        match kind {
+            ResetKind::Runtime => "start-chat-reset-runtime",
+            ResetKind::Model => "start-chat-reset-model",
+            ResetKind::Effort => "start-chat-reset-effort",
+            ResetKind::Speed => "start-chat-reset-speed",
+        },
+        focus,
+        move |window, cx| {
+            root.update(cx, |this, cx| {
+                this.reset_start_chat_control(kind, window, cx)
+            });
+        },
+    )
+    .when(cfg!(test), move |reset| {
+        reset.debug_selector(move || format!("START_CHAT_RESET {kind:?}"))
+    })
+    .flex_none()
+    .gap(rems(6. / 16.))
+    .text_size(theme::text_ui())
+    .text_color(theme::muted())
+    .hover(|reset| reset.text_color(theme::text()))
+    .child(
+        svg()
+            .flex_none()
+            .path("rotate-ccw.svg")
+            .size(rems(11. / 16.))
+            .text_color(theme::muted()),
+    )
+    .child("Reset")
+}
+
+fn render_speed_column(modal: &StartChatModal, width: f32, note: Option<AnyElement>) -> Div {
+    setup_field(
+        width,
+        "Speed",
+        div()
+            .when(cfg!(test), |field| {
+                field.debug_selector(|| "START_CHAT_SPEED_FIELD".into())
+            })
+            .child(modal.speed_select.clone()),
+        note,
+    )
+}
+
+fn speed_note(modal: &StartChatModal) -> Option<Div> {
+    (modal.effective_speed() == Some(CodexSpeed::Fast)).then(|| {
+        div()
+            .when(cfg!(test), |note| {
+                note.debug_selector(|| "START_CHAT_SPEED_NOTE".into())
+            })
+            .text_size(theme::text_meta())
+            .text_color(theme::faint())
+            .child("Fast uses more credits.")
+    })
+}
+
+/// Why a role's model and effort are not on show once another agent is
+/// picked.
+fn agent_note(
+    agent: &str,
+    role_agent: &str,
+    role_model: Option<&str>,
+    role_effort: Option<&str>,
+) -> String {
+    let start = format!("{agent} starts from its own model and effort.");
+    match (role_model, role_effort) {
+        (Some(model), Some(effort)) => format!(
+            "{start} The role's {model} and {effort} belong to {role_agent} and don't carry over."
+        ),
+        (Some(value), None) | (None, Some(value)) => {
+            format!("{start} The role's {value} belongs to {role_agent} and doesn't carry over.")
+        }
+        (None, None) => start,
+    }
+}
+
+/// Where a blank Working directory starts.
+fn working_dir_hint(mode: ChatMode, role: Option<&Role>) -> &'static str {
+    match mode {
+        ChatMode::Role
+            if role.is_some_and(|role| trimmed(role.working_dir.as_deref()).is_some()) =>
+        {
+            "Blank starts in the role's directory."
+        }
+        _ => "Blank starts in your default directory.",
+    }
 }
 
 pub(crate) fn load_selectable_runtimes(
@@ -2047,14 +2632,6 @@ pub(crate) fn load_selectable_runtimes(
         }
         Err(error) => (Vec::new(), checking, Some(error.to_string())),
     }
-}
-
-fn summarize_role(role: &Role) -> String {
-    format!(
-        "{} · {}",
-        role.runtime,
-        role.working_dir.as_deref().unwrap_or("no working dir")
-    )
 }
 
 fn runtime_display_name(runtimes: &[RuntimeCatalogEntry], name: &str) -> String {
@@ -2133,10 +2710,14 @@ fn normalized_value(value: &str) -> Option<String> {
     (!value.is_empty()).then(|| value.to_owned())
 }
 
+/// The launch request. A role chat with nothing overridden sends no override;
+/// a model or effort changed on the role's own agent sends that agent with the
+/// changed values, which the backend resolves by keeping the role's others;
+/// another agent goes with its own defaults.
 #[allow(clippy::too_many_arguments)]
 fn build_start_request(
     mode: ChatMode,
-    role_id: Option<&str>,
+    role: Option<(&str, &str)>,
     runtime_name: Option<&str>,
     role_runtime_override: Option<&str>,
     model: Option<String>,
@@ -2145,11 +2726,13 @@ fn build_start_request(
     cwd: Option<String>,
 ) -> Option<StartRequest> {
     match mode {
-        ChatMode::Role => role_id.map(|role_id| StartRequest::Role {
+        ChatMode::Role => role.map(|(role_id, role_runtime)| StartRequest::Role {
             role_id: role_id.to_owned(),
-            runtime: role_runtime_override.map(str::to_owned),
-            model: role_runtime_override.and(model),
-            effort: role_runtime_override.and(effort),
+            runtime: role_runtime_override
+                .or((model.is_some() || effort.is_some()).then_some(role_runtime))
+                .map(str::to_owned),
+            model,
+            effort,
             speed,
             cwd,
         }),
@@ -2180,23 +2763,35 @@ fn write_start_chat_mode(app_data_dir: &Path, mode: ChatMode) -> std::io::Result
 mod tests {
     use super::*;
 
-    #[test]
-    fn direct_chat_modal_shows_codex_speed_and_hides_it_for_other_runtimes() {
-        let _theme = crate::theme_snapshot::ThemeGuard::new();
-        use gpui::{size, Render, TestAppContext, VisualTestContext};
-        use runner_backend::{db, event_bus, events, mcp, router, session, shell_path, windows};
-        use std::sync::{Mutex, RwLock};
-
-        struct ModalHost(Entity<NativeRoot>);
-        impl Render for ModalHost {
-            fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-                div().size_full().child(
-                    self.0
-                        .update(cx, |root, cx| root.render_start_chat_modal(cx)),
-                )
-            }
+    struct ModalHost(Entity<NativeRoot>);
+    impl Render for ModalHost {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            div().size_full().child(
+                self.0
+                    .update(cx, |root, cx| root.render_start_chat_modal(window, cx)),
+            )
         }
+    }
 
+    struct ModalHarness {
+        visual: VisualTestContext,
+        host: WindowHandle<ModalHost>,
+        _cx: TestAppContext,
+        _temp: tempfile::TempDir,
+        _theme: crate::theme_snapshot::ThemeGuard,
+    }
+
+    /// A modal window that opens already holding `roles` and `runtimes`, so no
+    /// frame is drawn from the machine's own catalog: a test frame keeps every
+    /// debug selector it ever drew.
+    fn modal_harness(
+        width: f32,
+        height: f32,
+        roles: Vec<Role>,
+        runtimes: Vec<RuntimeCatalogEntry>,
+        mode: ChatMode,
+    ) -> ModalHarness {
+        let theme = crate::theme_snapshot::ThemeGuard::new();
         let temp = tempfile::tempdir().unwrap();
         let runtime_shell_env = Arc::new(RwLock::new(shell_path::LoginShellEnv::default()));
         let runtime_discovery =
@@ -2241,7 +2836,6 @@ mod tests {
         cx.set_global(GlobalAppStore(store.clone()));
         cx.set_global(WindowLayoutCheckpoint::default());
         let host = cx.add_window(|window, cx| {
-            window.resize(size(px(1200.), px(1000.)));
             let root = cx.new(|cx| {
                 NativeRoot::new(
                     "test-chat-modal".into(),
@@ -2255,91 +2849,1132 @@ mod tests {
             });
             root.update(cx, |root, cx| {
                 root.open_start_chat_modal(ChatTarget::NewTab, None, None, window, cx);
-                assert_eq!(
-                    root.start_chat_modal.as_ref().unwrap().mode,
-                    ChatMode::Runtime
+                seed_modal(
+                    root.start_chat_modal.as_mut().unwrap(),
+                    roles,
+                    runtimes,
+                    mode,
+                    cx,
                 );
             });
             ModalHost(root)
         });
         cx.run_until_parked();
-        let mut window = VisualTestContext::from_window(host.into(), &cx);
-        for mode in [ChatMode::Runtime, ChatMode::Role, ChatMode::Runtime] {
-            host.update(&mut window, |host, _, cx| {
-                host.0
-                    .update(cx, |root, cx| root.set_start_chat_mode(mode, cx));
+        let visual = VisualTestContext::from_window(host.into(), &cx);
+        visual.simulate_resize(size(px(width), px(height)));
+        visual.run_until_parked();
+        ModalHarness {
+            visual,
+            host,
+            _cx: cx,
+            _temp: temp,
+            _theme: theme,
+        }
+    }
+
+    /// Puts roles and agents in the modal as a loaded catalog would.
+    fn seed_modal(
+        modal: &mut StartChatModal,
+        roles: Vec<Role>,
+        runtimes: Vec<RuntimeCatalogEntry>,
+        mode: ChatMode,
+        cx: &mut Context<NativeRoot>,
+    ) {
+        modal.roles = roles;
+        modal.runtimes = runtimes;
+        modal.role_id = modal.roles.first().map(|role| role.id.clone());
+        modal.runtime_name = modal
+            .runtimes
+            .first()
+            .map(|runtime| runtime.name.to_string());
+        modal.mode = mode;
+        modal.role_select.update(cx, |select, select_cx| {
+            select.set_options(role_options(&modal.roles), select_cx);
+            select.set_value(modal.role_id.clone().unwrap_or_default(), select_cx);
+            select.set_disabled(modal.roles.is_empty(), select_cx);
+        });
+        modal.runtime_select.update(cx, |select, select_cx| {
+            select.set_options(runtime_options(&modal.runtimes), select_cx);
+            select.set_value(modal.runtime_name.clone().unwrap_or_default(), select_cx);
+            select.set_disabled(modal.runtimes.is_empty(), select_cx);
+        });
+        sync_role_runtime_select(modal, cx);
+        restore_baseline(modal, cx);
+    }
+
+    impl ModalHarness {
+        fn act(&mut self, f: impl FnOnce(&mut NativeRoot, &mut Window, &mut Context<NativeRoot>)) {
+            self.host
+                .update(&mut self.visual, |host, window, cx| {
+                    host.0.update(cx, |root, cx| f(root, window, cx));
+                    cx.notify();
+                })
+                .unwrap();
+            self.visual.run_until_parked();
+        }
+
+        fn edit(&mut self, f: impl FnOnce(&mut StartChatModal, &mut Context<NativeRoot>)) {
+            self.act(|root, _, cx| {
+                f(root.start_chat_modal.as_mut().unwrap(), cx);
                 cx.notify();
+            });
+        }
+
+        fn read<R>(&self, f: impl FnOnce(&StartChatModal, &App) -> R) -> R {
+            self.host
+                .read_with(&self.visual, |host, cx| {
+                    f(host.0.read(cx).start_chat_modal.as_ref().unwrap(), cx)
+                })
+                .unwrap()
+        }
+
+        fn bounds(&mut self, selector: &str) -> Option<gpui::Bounds<gpui::Pixels>> {
+            self.visual
+                .debug_bounds(Box::leak(selector.to_owned().into_boxed_str()))
+        }
+
+        /// Opens the focused select with the keyboard and picks by key, the
+        /// way a person does: through `StyledSelect::choose`, which holds the
+        /// select while it calls back.
+        fn pick(&mut self, select: fn(&StartChatModal, &App) -> FocusHandle, keys: &str) {
+            let handle = self.read(select);
+            self.act(move |_, window, _| handle.focus(window));
+            self.visual.simulate_keystrokes(keys);
+            self.visual.run_until_parked();
+        }
+
+        /// Picks as the select would, minus the keyboard: it holds the choice
+        /// itself before it calls back.
+        fn choose(&mut self, selection: StartChatSelection, value: &str) {
+            let value = value.to_owned();
+            self.act(move |root, _, cx| {
+                let modal = root.start_chat_modal.as_ref().unwrap();
+                let select = match selection {
+                    StartChatSelection::Role => &modal.role_select,
+                    StartChatSelection::RoleRuntime => &modal.role_runtime_select,
+                    StartChatSelection::Runtime => &modal.runtime_select,
+                    StartChatSelection::Effort => &modal.effort_select,
+                    StartChatSelection::Speed => &modal.speed_select,
+                }
+                .clone();
+                select.update(cx, |select, cx| select.set_value(value.clone(), cx));
+                root.select_start_chat_choice(selection, &value, cx);
+            });
+        }
+
+        fn type_model(&mut self, text: &'static str) {
+            self.edit(|modal, cx| modal.model.update(cx, |input, cx| input.set_text(text, cx)));
+        }
+
+        /// Clicks a control's Reset, as a person does.
+        fn reset(&mut self, kind: ResetKind) {
+            let bounds = self
+                .bounds(&format!("START_CHAT_RESET {kind:?}"))
+                .expect("the control shows its Reset");
+            self.visual
+                .simulate_click(bounds.center(), gpui::Modifiers::default());
+            self.visual.run_until_parked();
+        }
+
+        /// The label the Effort control shows, and whether it carries the dot.
+        fn effort_choice(&self) -> (String, bool) {
+            self.read(|modal, cx| {
+                let option = modal.effort_select.read(cx).selected().unwrap();
+                (option.label.to_string(), option.marked)
             })
-            .unwrap();
-            window.run_until_parked();
-            let form = window.debug_bounds("START_CHAT_FORM").unwrap();
-            let modes = window.debug_bounds("START_CHAT_MODES").unwrap();
-            let role = window.debug_bounds("START_CHAT_ROLE_MODE").unwrap();
-            let direct = window.debug_bounds("START_CHAT_DIRECT_MODE").unwrap();
+        }
+
+        fn effort_disabled(&self) -> bool {
+            self.read(|modal, cx| modal.effort_select.read(cx).is_disabled())
+        }
+
+        fn overrides(&self) -> RoleOverrides {
+            self.read(|modal, cx| modal.role_overrides(cx))
+        }
+    }
+
+    use gpui::{size, Render, TestAppContext, VisualTestContext, WindowHandle};
+    use runner_backend::{db, event_bus, events, mcp, router, session, shell_path, windows};
+    use std::sync::{Mutex, RwLock};
+
+    fn test_role(handle: &str, runtime: &str) -> Role {
+        Role {
+            id: format!("role-{handle}"),
+            handle: handle.into(),
+            display_name: format!("Role {handle}"),
+            runtime: runtime.into(),
+            command: runtime.into(),
+            args: Vec::new(),
+            working_dir: None,
+            system_prompt: None,
+            env: Default::default(),
+            model: None,
+            effort: None,
+            codex_speed: None,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        }
+    }
+
+    /// Claude Code and Codex as a detected catalog offers them.
+    fn agents() -> Vec<RuntimeCatalogEntry> {
+        let mut claude = runtime("claude-code", &["", "low", "high", "xhigh"]);
+        claude.display_name = "Claude Code".into();
+        claude.command = "claude".into();
+        claude.default_effort = Some("high".into());
+        let mut codex = runtime("codex", &["", "low", "medium"]);
+        codex.display_name = "Codex".into();
+        codex.default_model = Some("gpt-5.5".into());
+        codex.default_effort = Some("medium".into());
+        vec![claude, codex]
+    }
+
+    /// Antigravity as the catalog lists it: a default model, and levels per model.
+    fn antigravity() -> RuntimeCatalogEntry {
+        let mut agy = runtime("antigravity", &["", "low", "medium", "high"]);
+        agy.display_name = "Antigravity CLI".into();
+        agy.command = "agy".into();
+        agy.default_model = Some("gemini-3.1-pro".into());
+        agy.models = vec![RuntimeCatalogOption {
+            value: "gemini-3.1-pro".into(),
+            label: "Gemini 3.1 Pro".into(),
+            description: None,
+            supported_efforts: Some(vec!["low".into(), "high".into()]),
+        }];
+        agy
+    }
+
+    fn claude_role() -> Role {
+        Role {
+            model: Some("opus[1m]".into()),
+            effort: Some("xhigh".into()),
+            ..test_role("impl-claude", "claude-code")
+        }
+    }
+
+    fn codex_role() -> Role {
+        Role {
+            codex_speed: Some(CodexSpeed::Fast),
+            ..test_role("impl-codex", "codex")
+        }
+    }
+
+    #[test]
+    fn mode_switch_and_direct_speed_follow_the_selected_agent() {
+        let mut modal = modal_harness(1200., 1000., Vec::new(), agents(), ChatMode::Runtime);
+        for mode in [ChatMode::Runtime, ChatMode::Role, ChatMode::Runtime] {
+            modal.act(move |root, _, cx| root.set_start_chat_mode(mode, cx));
+            let form = modal.bounds("START_CHAT_FORM").unwrap();
+            let modes = modal.bounds("START_CHAT_MODES").unwrap();
+            let role = modal.bounds("START_CHAT_ROLE_MODE").unwrap();
+            let direct = modal.bounds("START_CHAT_DIRECT_MODE").unwrap();
             assert!(direct.origin.x < role.origin.x);
-            assert!(modes.size.width >= px(FIELD_WIDTH), "{mode:?}: {modes:?}");
+            assert!(modes.size.width >= px(480.), "{mode:?}: {modes:?}");
             assert_eq!(modes.size.width, form.size.width, "{mode:?}: {form:?}");
             assert!((role.size.width - direct.size.width).abs() <= px(1.));
             assert!(role.size.width > px(200.));
         }
+        assert!(!modal.read(|modal, _| modal.codex_speed_visible()));
 
-        host.update(&mut window, |host, _, cx| {
-            host.0.update(cx, |root, cx| {
-                let modal = root.start_chat_modal.as_mut().unwrap();
-                modal.runtime_name = Some("codex".into());
-                sync_runtime_controls(modal, cx);
-                cx.notify();
-            });
-            cx.notify();
-        })
-        .unwrap();
-        window.run_until_parked();
-        assert!(window.debug_bounds("START_CHAT_SPEED_FIELD").is_some());
-        assert!(window.debug_bounds("START_CHAT_SPEED_NOTE").is_none());
+        modal.choose(StartChatSelection::Runtime, "codex");
+        assert!(modal.bounds("START_CHAT_SPEED_FIELD").is_some());
+        assert!(modal.bounds("START_CHAT_SPEED_NOTE").is_none());
+        modal.choose(StartChatSelection::Speed, "fast");
+        assert!(modal.bounds("START_CHAT_SPEED_NOTE").is_some());
 
-        host.update(&mut window, |host, _, cx| {
-            host.0.update(cx, |root, cx| {
-                root.select_start_chat_choice(StartChatSelection::Speed, "fast", cx);
-            });
-            cx.notify();
-        })
-        .unwrap();
-        window.run_until_parked();
-        assert!(window.debug_bounds("START_CHAT_SPEED_NOTE").is_some());
-
-        host.update(&mut window, |host, _, cx| {
-            host.0.update(cx, |root, cx| {
-                let modal = root.start_chat_modal.as_mut().unwrap();
-                modal.runtime_name = Some("claude-code".into());
-                sync_runtime_controls(modal, cx);
-                assert!(!modal.codex_speed_visible());
-                cx.notify();
-            });
-            cx.notify();
-        })
-        .unwrap();
-        window.run_until_parked();
+        modal.choose(StartChatSelection::Runtime, "claude-code");
         assert_eq!(
-            host.read_with(&window, |host, cx| {
-                host.0
-                    .read(cx)
-                    .start_chat_modal
-                    .as_ref()
-                    .unwrap()
-                    .runtime_name
-                    .clone()
-            })
-            .unwrap(),
-            Some("claude-code".into())
-        );
-        assert_eq!(
-            host.read_with(&window, |host, cx| {
-                let modal = host.0.read(cx).start_chat_modal.as_ref().unwrap();
-                (modal.codex_speed_visible(), modal.speed.clone())
-            })
-            .unwrap(),
+            modal.read(|modal, _| (modal.codex_speed_visible(), modal.speed.clone())),
             (false, "inherit".into())
         );
+    }
+
+    #[test]
+    fn a_role_chat_with_untouched_overrides_sends_none() {
+        let role = Some(("coder", "claude-code"));
+        assert_eq!(
+            build_start_request(
+                ChatMode::Role,
+                role,
+                Some("codex"),
+                None,
+                None,
+                None,
+                None,
+                Some("/repo".into()),
+            ),
+            Some(StartRequest::Role {
+                role_id: "coder".into(),
+                runtime: None,
+                model: None,
+                effort: None,
+                speed: None,
+                cwd: Some("/repo".into()),
+            })
+        );
+        // Speed alone does not pin the role's agent.
+        assert_eq!(
+            build_start_request(
+                ChatMode::Role,
+                role,
+                None,
+                None,
+                None,
+                None,
+                Some(CodexSpeed::Fast),
+                None
+            ),
+            Some(StartRequest::Role {
+                role_id: "coder".into(),
+                runtime: None,
+                model: None,
+                effort: None,
+                speed: Some(CodexSpeed::Fast),
+                cwd: None,
+            })
+        );
+    }
+
+    #[test]
+    fn a_model_or_effort_changed_on_the_roles_agent_sends_that_agent_with_the_change() {
+        let role = Some(("coder", "claude-code"));
+        for (model, effort) in [
+            (Some("sonnet"), None),
+            (None, Some("low")),
+            (Some("sonnet"), Some("low")),
+        ] {
+            assert_eq!(
+                build_start_request(
+                    ChatMode::Role,
+                    role,
+                    None,
+                    None,
+                    model.map(Into::into),
+                    effort.map(Into::into),
+                    None,
+                    None,
+                ),
+                Some(StartRequest::Role {
+                    role_id: "coder".into(),
+                    runtime: Some("claude-code".into()),
+                    model: model.map(Into::into),
+                    effort: effort.map(Into::into),
+                    speed: None,
+                    cwd: None,
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn another_agent_goes_with_its_own_defaults_and_direct_chats_start_as_before() {
+        assert_eq!(
+            build_start_request(
+                ChatMode::Role,
+                Some(("coder", "claude-code")),
+                None,
+                Some("codex"),
+                None,
+                None,
+                None,
+                None,
+            ),
+            Some(StartRequest::Role {
+                role_id: "coder".into(),
+                runtime: Some("codex".into()),
+                model: None,
+                effort: None,
+                speed: None,
+                cwd: None,
+            })
+        );
+        assert_eq!(
+            build_start_request(
+                ChatMode::Runtime,
+                Some(("coder", "claude-code")),
+                Some("codex"),
+                Some("claude-code"),
+                Some("gpt-5.6-sol".into()),
+                Some("high".into()),
+                Some(CodexSpeed::Standard),
+                None,
+            ),
+            Some(StartRequest::Runtime {
+                runtime: "codex".into(),
+                model: Some("gpt-5.6-sol".into()),
+                effort: Some("high".into()),
+                speed: Some(CodexSpeed::Standard),
+                cwd: None,
+            })
+        );
+        assert_eq!(
+            build_start_request(ChatMode::Role, None, None, None, None, None, None, None),
+            None
+        );
+    }
+
+    #[test]
+    fn an_untouched_role_chat_shows_the_roles_values_and_sends_no_override() {
+        let mut modal = modal_harness(1200., 1000., vec![claude_role()], agents(), ChatMode::Role);
+        assert!(modal.bounds("START_CHAT_SETUP").is_some());
+        assert_eq!(modal.overrides(), RoleOverrides::default());
+        modal.read(|modal, cx| {
+            assert_eq!(modal.model_override(cx), None);
+            assert_eq!(modal.effort_override(), None);
+            assert_eq!(modal.speed_override(), None);
+            assert_eq!(modal.role_runtime_override, None);
+            assert_eq!(modal.effort, "xhigh");
+            assert_eq!(
+                model_placeholder(inheriting_role(modal), modal.active_runtime()),
+                "opus[1m]"
+            );
+        });
+        assert_eq!(modal.effort_choice(), ("xhigh".into(), false));
+
+        // A control still showing the role's value is untouched, however it got there.
+        modal.type_model("opus[1m]");
+        modal.choose(StartChatSelection::Effort, "low");
+        modal.choose(StartChatSelection::Effort, "xhigh");
+        assert_eq!(modal.overrides(), RoleOverrides::default());
+        modal.read(|modal, cx| {
+            assert_eq!(modal.model_override(cx), None);
+            assert_eq!(modal.effort_override(), None);
+        });
+    }
+
+    #[test]
+    fn a_changed_value_carries_the_dot_and_its_reset_restores_only_that_value() {
+        let mut modal = modal_harness(1200., 1000., vec![claude_role()], agents(), ChatMode::Role);
+        modal.type_model("sonnet");
+        modal.choose(StartChatSelection::Effort, "low");
+        assert_eq!(
+            modal.overrides(),
+            RoleOverrides {
+                runtime: false,
+                model: true,
+                effort: true,
+                speed: false
+            }
+        );
+        assert!(modal.bounds("MODEL_FIELD_MARK").is_some());
+        assert_eq!(modal.effort_choice(), ("low".into(), true));
+        assert!(modal
+            .bounds("START_CHAT_NOTE Model role: opus[1m]")
+            .is_some());
+        assert!(modal.bounds("START_CHAT_NOTE Effort role: xhigh").is_some());
+
+        modal.reset(ResetKind::Model);
+        modal.read(|modal, cx| {
+            assert_eq!(modal.model.read(cx).text(), "");
+            assert_eq!(modal.effort, "low", "Reset restores one value only");
+        });
+        assert_eq!(
+            modal.overrides(),
+            RoleOverrides {
+                effort: true,
+                ..RoleOverrides::default()
+            }
+        );
+
+        modal.reset(ResetKind::Effort);
+        assert_eq!(modal.read(|modal, _| modal.effort.clone()), "xhigh");
+        assert_eq!(modal.effort_choice(), ("xhigh".into(), false));
+        assert_eq!(modal.overrides(), RoleOverrides::default());
+    }
+
+    #[test]
+    fn choosing_the_roles_own_agent_is_not_an_override() {
+        let mut modal = modal_harness(1200., 1000., vec![claude_role()], agents(), ChatMode::Role);
+        modal.choose(StartChatSelection::RoleRuntime, "codex");
+        assert_eq!(
+            modal.read(|modal, _| modal.role_runtime_override.clone()),
+            Some("codex".into())
+        );
+        modal.choose(StartChatSelection::RoleRuntime, "claude-code");
+        modal.read(|modal, cx| {
+            assert_eq!(modal.role_runtime_override, None);
+            assert_eq!(modal.role_runtime_select.read(cx).value(), "claude-code");
+        });
+        assert_eq!(modal.overrides(), RoleOverrides::default());
+    }
+
+    #[test]
+    fn another_role_starts_from_its_own_setup() {
+        let other = Role {
+            model: Some("gpt-5.5".into()),
+            ..test_role("other", "codex")
+        };
+        let mut modal = modal_harness(
+            1200.,
+            1000.,
+            vec![claude_role(), other.clone()],
+            agents(),
+            ChatMode::Role,
+        );
+        modal.choose(StartChatSelection::RoleRuntime, "codex");
+        modal.type_model("gpt-5.6-sol");
+        modal.choose(StartChatSelection::Role, &other.id);
+        modal.read(|modal, cx| {
+            assert_eq!(modal.role_runtime_override, None);
+            assert_eq!(modal.model.read(cx).text(), "");
+            assert_eq!(modal.effort, "medium", "the codex agent's own default");
+        });
+        assert_eq!(modal.overrides(), RoleOverrides::default());
+    }
+
+    #[test]
+    fn another_agent_shows_its_own_defaults_at_full_contrast_and_only_runtime_carries_the_dot() {
+        let mut modal = modal_harness(1200., 1000., vec![claude_role()], agents(), ChatMode::Role);
+        modal.choose(StartChatSelection::RoleRuntime, "codex");
+        assert_eq!(
+            modal.overrides(),
+            RoleOverrides {
+                runtime: true,
+                ..RoleOverrides::default()
+            }
+        );
+        assert!(modal.read(|modal, cx| {
+            modal
+                .role_runtime_select
+                .read(cx)
+                .selected()
+                .unwrap()
+                .marked
+        }));
+        assert!(modal
+            .bounds("START_CHAT_NOTE Runtime role: Claude Code")
+            .is_some());
+        assert!(modal.bounds("START_CHAT_RESET Runtime").is_some());
+        modal.read(|modal, cx| {
+            assert!(inheriting_role(modal).is_none());
+            // The agent's defaults, not the role's model and effort.
+            assert_eq!(
+                model_placeholder(inheriting_role(modal), modal.active_runtime()),
+                "gpt-5.5"
+            );
+            assert_eq!(modal.effort, "medium");
+            assert_eq!(modal.model_override(cx), None);
+            assert_eq!(modal.effort_override(), None);
+        });
+        assert_eq!(modal.effort_choice(), ("medium".into(), false));
+
+        // Changing the agent's model is not the role's to override: no dot.
+        modal.type_model("gpt-5.6-sol");
+        assert!(modal.bounds("MODEL_FIELD_MARK").is_none());
+        modal.read(|modal, cx| {
+            assert_eq!(modal.model_override(cx), Some("gpt-5.6-sol".into()));
+        });
+
+        modal.reset(ResetKind::Runtime);
+        modal.read(|modal, cx| {
+            assert_eq!(modal.role_runtime_override, None);
+            assert_eq!(modal.model.read(cx).text(), "");
+            assert_eq!(modal.effort, "xhigh");
+            assert_eq!(modal.role_runtime_select.read(cx).value(), "claude-code");
+        });
+        assert_eq!(modal.overrides(), RoleOverrides::default());
+    }
+
+    #[test]
+    fn a_role_without_a_model_or_effort_starts_from_its_agents_defaults() {
+        let modal = modal_harness(
+            1200.,
+            1000.,
+            vec![test_role("plain", "claude-code")],
+            agents(),
+            ChatMode::Role,
+        );
+        modal.read(|modal, cx| {
+            assert_eq!(
+                model_placeholder(inheriting_role(modal), modal.active_runtime()),
+                "default",
+                "no concrete default is known"
+            );
+            assert_eq!(modal.effort, "high", "the agent's default effort");
+            assert_eq!(modal.effort_override(), None);
+            assert_eq!(modal.model_override(cx), None);
+        });
+        assert_eq!(modal.effort_choice(), ("high".into(), false));
+        drop(modal);
+
+        // No default effort known: the control reads `default`, never a blank.
+        let mut claude = agents().remove(0);
+        claude.default_effort = None;
+        let modal = modal_harness(
+            1200.,
+            1000.,
+            vec![test_role("plain", "claude-code")],
+            vec![claude],
+            ChatMode::Role,
+        );
+        assert_eq!(modal.effort_choice(), ("default".into(), false));
+        modal.read(|modal, _| assert_eq!(modal.effort, ""));
+    }
+
+    #[test]
+    fn a_default_or_role_value_reads_as_a_value_the_placeholders_never_wrap_it() {
+        let claude_agent = agents().remove(0);
+        let codex = agents().remove(1);
+        assert_eq!(
+            model_placeholder(Some(&claude_role()), Some(&claude_agent)),
+            "opus[1m]"
+        );
+        assert_eq!(model_placeholder(None, Some(&codex)), "gpt-5.5");
+        assert_eq!(
+            model_placeholder(Some(&test_role("plain", "codex")), Some(&codex)),
+            "gpt-5.5"
+        );
+        assert_eq!(model_placeholder(None, Some(&claude_agent)), "default");
+        assert_eq!(model_placeholder(None, None), "default");
+
+        let values = |options: Vec<SelectOption>| {
+            options
+                .iter()
+                .map(|option| (option.value.clone(), option.marked))
+                .collect::<Vec<_>>()
+        };
+        // A role that sets a speed cannot be told to inherit: no such choice.
+        assert_eq!(
+            values(speed_options(Some("fast"), true)),
+            [("standard".to_owned(), true), ("fast".to_owned(), false)]
+        );
+        assert_eq!(
+            values(speed_options(Some("inherit"), false)),
+            [
+                ("inherit".to_owned(), false),
+                ("standard".to_owned(), true),
+                ("fast".to_owned(), true)
+            ]
+        );
+        assert_eq!(
+            values(speed_options(None, false)),
+            [
+                ("inherit".to_owned(), false),
+                ("standard".to_owned(), false),
+                ("fast".to_owned(), false)
+            ]
+        );
+    }
+
+    #[test]
+    fn effort_is_changeable_without_typing_a_model() {
+        // Direct on an agent whose default model is not known.
+        let mut modal = modal_harness(1200., 1000., Vec::new(), agents(), ChatMode::Runtime);
+        assert_eq!(modal.effort_choice(), ("high".into(), false));
+        modal.pick(
+            |modal, cx| modal.effort_select.read(cx).focus_handle(),
+            "enter down enter",
+        );
+        modal.read(|modal, _| {
+            assert_eq!(modal.effort, "xhigh");
+            assert_eq!(modal.effort_override(), Some("xhigh".into()));
+        });
+        drop(modal);
+
+        // And on a role that has no model of its own.
+        let mut modal = modal_harness(
+            1200.,
+            1000.,
+            vec![test_role("plain", "claude-code")],
+            agents(),
+            ChatMode::Role,
+        );
+        modal.pick(
+            |modal, cx| modal.effort_select.read(cx).focus_handle(),
+            "enter up enter",
+        );
+        modal.read(|modal, _| {
+            assert_eq!(modal.effort, "low");
+            assert_eq!(modal.effort_override(), Some("low".into()));
+        });
+        assert!(modal.overrides().effort);
+    }
+
+    /// The launch gives Antigravity `--effort` only beside `--model`, so an
+    /// effort with no model that reaches the launch would be shown and dropped.
+    /// A default model in the placeholder does not reach it.
+    #[test]
+    fn antigravity_effort_waits_for_a_model_that_reaches_the_launch() {
+        let effort_picker: fn(&StartChatModal, &App) -> FocusHandle =
+            |modal, cx| modal.effort_select.read(cx).focus_handle();
+
+        // Direct: the default model is on show, but nothing is sent for it.
+        let mut modal = modal_harness(
+            1200.,
+            1000.,
+            Vec::new(),
+            vec![antigravity()],
+            ChatMode::Runtime,
+        );
+        modal.read(|modal, _| {
+            assert_eq!(
+                model_placeholder(inheriting_role(modal), modal.active_runtime()),
+                "gemini-3.1-pro"
+            );
+        });
+        assert_eq!(modal.effort_choice(), ("default".into(), false));
+        // No key is sent to it: Enter on a disabled select would submit the form.
+        assert!(modal.effort_disabled());
+        modal.read(|modal, _| {
+            assert_eq!(modal.effort, "");
+            assert_eq!(modal.effort_override(), None);
+        });
+
+        // A typed model is a pair the launch keeps.
+        modal.type_model("gemini-3.1-pro");
+        assert!(!modal.effort_disabled());
+        modal.pick(effort_picker, "enter down enter");
+        modal.read(|modal, cx| {
+            assert_eq!(modal.effort_override(), Some("low".into()));
+            assert_eq!(modal.model_override(cx), Some("gemini-3.1-pro".into()));
+        });
+        // Its levels are the model's own: no medium.
+        modal.pick(effort_picker, "enter down enter");
+        assert_eq!(modal.read(|modal, _| modal.effort.clone()), "high");
+
+        // Clearing the model takes the effort with it.
+        modal.type_model("");
+        assert!(modal.effort_disabled());
+        modal.read(|modal, _| {
+            assert_eq!(modal.effort, "");
+            assert_eq!(modal.effort_override(), None);
+        });
+        drop(modal);
+
+        // A role with no model of its own has nothing for an effort to ride on.
+        let modal = modal_harness(
+            1200.,
+            1000.,
+            vec![test_role("plain", "antigravity")],
+            vec![antigravity()],
+            ChatMode::Role,
+        );
+        assert!(modal.effort_disabled());
+        modal.read(|modal, _| assert_eq!(modal.effort_override(), None));
+        assert!(!modal.overrides().effort);
+        drop(modal);
+
+        // A role's model reaches the launch, so its effort can change.
+        let mut modal = modal_harness(
+            1200.,
+            1000.,
+            vec![Role {
+                model: Some("gemini-3.1-pro".into()),
+                ..test_role("pro", "antigravity")
+            }],
+            vec![antigravity()],
+            ChatMode::Role,
+        );
+        modal.pick(effort_picker, "enter down enter");
+        modal.read(|modal, cx| {
+            assert_eq!(modal.effort_override(), Some("low".into()));
+            assert_eq!(modal.model_override(cx), None, "the role's model is kept");
+        });
+        drop(modal);
+
+        // Another role sent to Antigravity has no model until one is typed.
+        let mut modal = modal_harness(
+            1200.,
+            1000.,
+            vec![claude_role()],
+            [agents(), vec![antigravity()]].concat(),
+            ChatMode::Role,
+        );
+        modal.choose(StartChatSelection::RoleRuntime, "antigravity");
+        assert!(modal.effort_disabled());
+        modal.read(|modal, _| assert_eq!(modal.effort_override(), None));
+        modal.type_model("gemini-3.1-pro");
+        assert!(!modal.effort_disabled());
+        modal.pick(effort_picker, "enter down enter");
+        modal.read(|modal, _| assert_eq!(modal.effort_override(), Some("low".into())));
+    }
+
+    #[test]
+    fn speed_shows_for_codex_roles_codex_overrides_and_direct_codex() {
+        // A Codex role's speed is a control from the start.
+        let mut modal = modal_harness(1200., 1000., vec![codex_role()], agents(), ChatMode::Role);
+        assert!(modal.read(|modal, _| modal.codex_speed_visible()));
+        assert!(modal.bounds("START_CHAT_SPEED_FIELD").is_some());
+        assert!(modal.bounds("START_CHAT_SPEED_NOTE").is_some());
+        modal.read(|modal, cx| {
+            let option = modal.speed_select.read(cx).selected().unwrap();
+            assert_eq!((option.label.as_ref(), option.marked), ("Fast", false));
+            assert_eq!(modal.speed_override(), None);
+        });
+        modal.choose(StartChatSelection::Speed, "standard");
+        assert_eq!(
+            modal.overrides(),
+            RoleOverrides {
+                speed: true,
+                ..RoleOverrides::default()
+            }
+        );
+        assert!(modal.bounds("START_CHAT_NOTE Speed role: Fast").is_some());
+        modal.reset(ResetKind::Speed);
+        modal.read(|modal, _| {
+            assert_eq!(modal.speed, "fast");
+            assert_eq!(modal.speed_override(), None);
+        });
+        drop(modal);
+
+        // A Claude role gains it by choosing Codex.
+        let mut modal = modal_harness(1200., 1000., vec![claude_role()], agents(), ChatMode::Role);
+        assert!(!modal.read(|modal, _| modal.codex_speed_visible()));
+        modal.choose(StartChatSelection::RoleRuntime, "codex");
+        assert!(modal.read(|modal, _| modal.codex_speed_visible()));
+        assert!(modal.bounds("START_CHAT_SPEED_FIELD").is_some());
+        modal.read(|modal, cx| {
+            let option = modal.speed_select.read(cx).selected().unwrap();
+            assert_eq!((option.label.as_ref(), option.marked), ("Inherit", false));
+        });
+        drop(modal);
+
+        // Direct chats show it for Codex only.
+        let mut modal = modal_harness(1200., 1000., Vec::new(), agents(), ChatMode::Runtime);
+        assert!(!modal.read(|modal, _| modal.codex_speed_visible()));
+        modal.choose(StartChatSelection::Runtime, "codex");
+        assert!(modal.read(|modal, _| modal.codex_speed_visible()));
+        assert!(modal.bounds("START_CHAT_SPEED_FIELD").is_some());
+    }
+
+    /// The pick goes through `StyledSelect::choose`, which holds the select
+    /// while it calls back: a callback that touches that select again panics.
+    #[test]
+    fn every_select_takes_a_pick_made_from_its_open_menu() {
+        let other = test_role("other", "codex");
+        let mut modal = modal_harness(
+            1200.,
+            1000.,
+            vec![claude_role(), other.clone()],
+            agents(),
+            ChatMode::Role,
+        );
+        let role_picker: fn(&StartChatModal, &App) -> FocusHandle =
+            |modal, cx| modal.role_select.read(cx).focus_handle();
+        modal.pick(role_picker, "enter down enter");
+        assert_eq!(
+            modal.read(|modal, _| modal.role_id.clone()),
+            Some(other.id.clone())
+        );
+        modal.pick(role_picker, "enter up enter");
+        assert_eq!(
+            modal.read(|modal, _| modal.role_id.clone()),
+            Some(claude_role().id)
+        );
+
+        let agent: fn(&StartChatModal, &App) -> FocusHandle =
+            |modal, cx| modal.role_runtime_select.read(cx).focus_handle();
+        // The role's own agent again is no override; another is.
+        modal.pick(agent, "enter enter");
+        assert_eq!(
+            modal.read(|modal, _| modal.role_runtime_override.clone()),
+            None
+        );
+        modal.pick(agent, "enter down enter");
+        assert_eq!(
+            modal.read(|modal, _| modal.role_runtime_override.clone()),
+            Some("codex".into())
+        );
+        modal.read(|modal, cx| {
+            assert_eq!(modal.role_runtime_select.read(cx).value(), "codex");
+        });
+        modal.pick(agent, "enter up enter");
+        modal.read(|modal, cx| {
+            assert_eq!(modal.role_runtime_override, None);
+            assert_eq!(modal.role_runtime_select.read(cx).value(), "claude-code");
+        });
+
+        // xhigh is the role's; up two levels is low.
+        modal.pick(
+            |modal, cx| modal.effort_select.read(cx).focus_handle(),
+            "enter up up enter",
+        );
+        assert_eq!(modal.read(|modal, _| modal.effort.clone()), "low");
+        assert_eq!(modal.effort_choice(), ("low".into(), true));
+        drop(modal);
+
+        let mut modal = modal_harness(1200., 1000., vec![codex_role()], agents(), ChatMode::Role);
+        modal.pick(
+            |modal, cx| modal.speed_select.read(cx).focus_handle(),
+            "enter up enter",
+        );
+        assert_eq!(modal.read(|modal, _| modal.speed.clone()), "standard");
+        drop(modal);
+
+        let mut modal = modal_harness(1200., 1000., Vec::new(), agents(), ChatMode::Runtime);
+        modal.pick(
+            |modal, cx| modal.runtime_select.read(cx).focus_handle(),
+            "enter down enter",
+        );
+        assert_eq!(
+            modal.read(|modal, _| modal.runtime_name.clone()),
+            Some("codex".into())
+        );
+    }
+
+    /// The override dot has a slot of its own in a control, so a long value
+    /// ends before it rather than running underneath.
+    #[test]
+    fn a_long_overridden_value_ends_before_the_dot() {
+        let mut claude = agents().remove(0);
+        claude.efforts.push(RuntimeCatalogOption {
+            value: "an-effort-level-far-too-long-for-its-narrow-column".into(),
+            label: "an-effort-level-far-too-long-for-its-narrow-column".into(),
+            description: None,
+            supported_efforts: None,
+        });
+        let mut modal = modal_harness(
+            640.,
+            480.,
+            vec![claude_role()],
+            vec![claude],
+            ChatMode::Role,
+        );
+        modal.choose(
+            StartChatSelection::Effort,
+            "an-effort-level-far-too-long-for-its-narrow-column",
+        );
+        // Effort is the last select drawn, so its selectors are the ones held.
+        let text = modal.bounds("STYLED_SELECT_TEXT").unwrap();
+        let mark = modal.bounds("STYLED_SELECT_MARK").unwrap();
+        let trigger = modal.bounds("STYLED_SELECT_TRIGGER").unwrap();
+        assert!(text.right() <= mark.left(), "{text:?} {mark:?}");
+        assert!(mark.right() <= trigger.right(), "{mark:?} {trigger:?}");
+
+        // A long model reserves the same strip at the text field's right.
+        modal.type_model("a-model-name-that-is-far-too-long-for-its-narrow-column-to-hold");
+        let mark = modal.bounds("MODEL_FIELD_MARK").unwrap();
+        let field = modal.bounds("START_CHAT_FIELD Model").unwrap();
+        assert!(
+            mark.left() >= field.left() && mark.right() <= field.right(),
+            "{mark:?} in {field:?}"
+        );
+    }
+
+    #[test]
+    fn tab_order_runs_from_the_picker_through_the_controls_and_resets() {
+        let mut modal = modal_harness(1200., 1000., vec![codex_role()], agents(), ChatMode::Role);
+        let order = |modal: &ModalHarness| {
+            modal.read(|modal, cx| {
+                let handles = start_chat_focus_order(modal, cx);
+                let resets = |kind: ResetKind| modal.reset_focus[kind as usize].clone();
+                let names = [
+                    ("close", modal.close_focus.clone()),
+                    ("direct", modal.direct_mode_focus.clone()),
+                    ("role", modal.role_mode_focus.clone()),
+                    ("role picker", modal.role_select.read(cx).focus_handle()),
+                    ("runtime", modal.role_runtime_select.read(cx).focus_handle()),
+                    ("model", modal.model.read(cx).focus_handle()),
+                    ("effort", modal.effort_select.read(cx).focus_handle()),
+                    ("speed", modal.speed_select.read(cx).focus_handle()),
+                    ("reset runtime", resets(ResetKind::Runtime)),
+                    ("reset model", resets(ResetKind::Model)),
+                    ("reset effort", resets(ResetKind::Effort)),
+                    ("reset speed", resets(ResetKind::Speed)),
+                    ("agent picker", modal.runtime_select.read(cx).focus_handle()),
+                    ("name", modal.title.read(cx).focus_handle()),
+                    ("directory", modal.cwd.read(cx).focus_handle()),
+                    ("browse", modal.browse_focus.clone()),
+                    ("cancel", modal.cancel_focus.clone()),
+                    ("start", modal.submit_focus.clone()),
+                ];
+                handles
+                    .iter()
+                    .map(|handle| {
+                        names
+                            .iter()
+                            .find(|(_, named)| named == handle)
+                            .map_or("?", |(name, _)| *name)
+                    })
+                    .collect::<Vec<_>>()
+            })
+        };
+        let head = ["close", "direct", "role", "role picker"];
+        let tail = ["name", "directory", "browse", "cancel", "start"];
+        assert_eq!(
+            order(&modal),
+            [
+                &head[..],
+                &["runtime", "model", "effort", "speed"],
+                &tail[..]
+            ]
+            .concat()
+        );
+
+        // A Reset joins the order after every control, in control order.
+        modal.type_model("gpt-5.6-sol");
+        modal.choose(StartChatSelection::Speed, "standard");
+        assert_eq!(
+            order(&modal),
+            [
+                &head[..],
+                &[
+                    "runtime",
+                    "model",
+                    "effort",
+                    "speed",
+                    "reset model",
+                    "reset speed"
+                ],
+                &tail[..]
+            ]
+            .concat()
+        );
+
+        modal.act(|root, _, cx| root.set_start_chat_mode(ChatMode::Runtime, cx));
+        assert_eq!(
+            order(&modal),
+            [
+                &["close", "direct", "role", "agent picker", "model", "effort"][..],
+                &tail[..]
+            ]
+            .concat()
+        );
+    }
+
+    #[test]
+    fn empty_states_draw_the_picker_alone() {
+        // No roles yet.
+        let mut modal = modal_harness(1200., 1000., Vec::new(), agents(), ChatMode::Role);
+        assert!(modal.bounds("START_CHAT_CARD").is_some());
+        assert!(modal.bounds("START_CHAT_SETUP").is_none());
+        modal.read(|modal, _| assert!(!modal.can_submit()));
+        drop(modal);
+
+        // No enabled agents.
+        let mut modal = modal_harness(1200., 1000., Vec::new(), Vec::new(), ChatMode::Runtime);
+        assert!(modal.bounds("START_CHAT_CARD").is_some());
+        assert!(modal.bounds("START_CHAT_SETUP").is_none());
+        modal.read(|modal, cx| {
+            assert!(!modal.can_submit());
+            assert!(start_chat_focus_order(modal, cx)
+                .iter()
+                .all(|handle| *handle != modal.runtime_select.read(cx).focus_handle()));
+        });
+    }
+
+    #[test]
+    fn resets_are_inert_while_starting() {
+        let mut modal = modal_harness(1200., 1000., vec![claude_role()], agents(), ChatMode::Role);
+        modal.type_model("sonnet");
+        modal.edit(|modal, cx| {
+            modal.submitting = true;
+            set_start_chat_controls_disabled(modal, true, cx);
+        });
+        modal.act(|root, window, cx| root.reset_start_chat_control(ResetKind::Model, window, cx));
+        modal.read(|modal, cx| assert_eq!(modal.model.read(cx).text(), "sonnet"));
+    }
+
+    #[test]
+    fn the_working_directory_hint_names_where_a_blank_field_starts() {
+        let mut with_dir = test_role("dir", "claude-code");
+        with_dir.working_dir = Some("/repo".into());
+        let without = test_role("none", "claude-code");
+        assert_eq!(
+            working_dir_hint(ChatMode::Role, Some(&with_dir)),
+            "Blank starts in the role's directory."
+        );
+        assert_eq!(
+            working_dir_hint(ChatMode::Role, Some(&without)),
+            "Blank starts in your default directory."
+        );
+        assert_eq!(
+            working_dir_hint(ChatMode::Runtime, Some(&with_dir)),
+            "Blank starts in your default directory."
+        );
+    }
+
+    #[test]
+    fn the_agent_note_says_which_role_values_do_not_carry_over() {
+        assert_eq!(
+            agent_note("Codex", "Claude Code", Some("opus[1m]"), Some("xhigh")),
+            "Codex starts from its own model and effort. The role's opus[1m] and xhigh belong to Claude Code and don't carry over."
+        );
+        assert_eq!(
+            agent_note("Codex", "Claude Code", None, Some("xhigh")),
+            "Codex starts from its own model and effort. The role's xhigh belongs to Claude Code and doesn't carry over."
+        );
+        assert_eq!(
+            agent_note("Codex", "Claude Code", None, None),
+            "Codex starts from its own model and effort."
+        );
+    }
+
+    #[test]
+    fn card_columns_fit_the_width_the_modal_leaves_the_form() {
+        let layout = CardLayout::new(510.);
+        assert_eq!(layout.content, 484.);
+        assert!(3. * layout.third() + 2. * COLUMN_GAP <= layout.content);
+        assert_eq!(layout.model(false, false), layout.content);
+        assert_eq!(
+            layout.model(true, true) + EFFORT_COLUMN_WIDTH + SPEED_COLUMN_WIDTH + 2. * COLUMN_GAP,
+            layout.content
+        );
+    }
+
+    /// The modal keeps its width in the smallest window, scrolls, and lets
+    /// nothing run past the card or the panel.
+    #[test]
+    fn the_modal_fits_a_640_by_480_window_without_clipping_sideways() {
+        let long = Role {
+            display_name: "A role whose display name is far too long to fit a picker".repeat(3),
+            handle: "a-handle-that-goes-on-and-on-and-on-and-on-and-on-and-on".into(),
+            model: Some("a-model-name-that-is-longer-than-its-column-can-hold".into()),
+            ..codex_role()
+        };
+        let mut modal = modal_harness(640., 480., vec![long], agents(), ChatMode::Role);
+        let fits = |modal: &mut ModalHarness, fields: &[&str]| {
+            let panel = modal.bounds("MODAL_PANEL").unwrap();
+            assert_eq!(panel.size.width, px(560.));
+            assert!(
+                panel.left() >= px(0.) && panel.right() <= px(640.),
+                "{panel:?}"
+            );
+            assert!(panel.size.height <= px(480. * 0.85 + 1.), "{panel:?}");
+            let card = modal.bounds("START_CHAT_CARD").unwrap();
+            assert!(
+                card.left() >= panel.left() + px(24.),
+                "{card:?} in {panel:?}"
+            );
+            assert!(
+                card.right() <= panel.right() - px(24.),
+                "{card:?} in {panel:?}"
+            );
+            for field in fields {
+                let bounds = modal.bounds(&format!("START_CHAT_FIELD {field}")).unwrap();
+                assert!(
+                    bounds.left() >= card.left() && bounds.right() <= card.right(),
+                    "{field}: {bounds:?} in {card:?}"
+                );
+            }
+        };
+        fits(&mut modal, &["Runtime", "Model", "Effort", "Speed"]);
+        let picker = modal.bounds("STYLED_SELECT_TRIGGER").unwrap();
+        let card = modal.bounds("START_CHAT_CARD").unwrap();
+        assert!(
+            picker.left() >= card.left() && picker.right() <= card.right(),
+            "a long name truncates inside the picker: {picker:?} in {card:?}"
+        );
+        assert!(
+            modal.read(|modal, _| modal.scroll_handle.max_offset().height) > px(0.),
+            "the tall form scrolls"
+        );
+
+        // Overridden: notes and Resets sit inside their columns too.
+        modal.type_model("a-model-name-that-is-far-too-long-for-its-narrow-column-to-hold");
+        modal.choose(StartChatSelection::Speed, "standard");
+        fits(&mut modal, &["Runtime", "Model", "Effort", "Speed"]);
+        for reset in [ResetKind::Model, ResetKind::Speed] {
+            let reset = modal
+                .bounds(&format!("START_CHAT_RESET {reset:?}"))
+                .unwrap();
+            let card = modal.bounds("START_CHAT_CARD").unwrap();
+            assert!(reset.right() <= card.right(), "{reset:?} in {card:?}");
+        }
+
+        modal.act(|root, _, cx| root.set_start_chat_mode(ChatMode::Runtime, cx));
+        modal.choose(StartChatSelection::Runtime, "codex");
+        fits(&mut modal, &["Model", "Effort", "Speed"]);
     }
 
     #[test]
@@ -2487,73 +4122,6 @@ mod tests {
         );
         assert!(effort_options_for_runtime(&runtimes, "trae").is_empty());
         assert!(effort_options_for_runtime(&runtimes, "missing").is_empty());
-    }
-
-    #[test]
-    fn start_request_applies_overrides_only_to_the_active_runtime() {
-        assert_eq!(
-            build_start_request(
-                ChatMode::Role,
-                Some("coder"),
-                Some("codex"),
-                None,
-                Some("gpt-5.6-sol".into()),
-                Some("high".into()),
-                Some(CodexSpeed::Fast),
-                Some("/repo".into()),
-            ),
-            Some(StartRequest::Role {
-                role_id: "coder".into(),
-                runtime: None,
-                model: None,
-                effort: None,
-                speed: Some(CodexSpeed::Fast),
-                cwd: Some("/repo".into()),
-            })
-        );
-        assert_eq!(
-            build_start_request(
-                ChatMode::Role,
-                Some("coder"),
-                Some("codex"),
-                Some("claude-code"),
-                Some("opus".into()),
-                Some("max".into()),
-                None,
-                None,
-            ),
-            Some(StartRequest::Role {
-                role_id: "coder".into(),
-                runtime: Some("claude-code".into()),
-                model: Some("opus".into()),
-                effort: Some("max".into()),
-                speed: None,
-                cwd: None,
-            })
-        );
-        assert_eq!(
-            build_start_request(
-                ChatMode::Runtime,
-                Some("coder"),
-                Some("codex"),
-                Some("claude-code"),
-                Some("gpt-5.6-sol".into()),
-                Some("high".into()),
-                Some(CodexSpeed::Standard),
-                None,
-            ),
-            Some(StartRequest::Runtime {
-                runtime: "codex".into(),
-                model: Some("gpt-5.6-sol".into()),
-                effort: Some("high".into()),
-                speed: Some(CodexSpeed::Standard),
-                cwd: None,
-            })
-        );
-        assert_eq!(
-            build_start_request(ChatMode::Role, None, None, None, None, None, None, None),
-            None
-        );
     }
 
     #[test]

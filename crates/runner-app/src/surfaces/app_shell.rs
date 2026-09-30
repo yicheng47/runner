@@ -704,7 +704,7 @@ impl NativeRoot {
         let modal = self
             .start_chat_modal
             .is_some()
-            .then(|| self.render_start_chat_modal(cx));
+            .then(|| self.render_start_chat_modal(window, cx));
         let chat_rename_modal = (self.route == AppRoute::Chat)
             .then_some(self.chat_rename_modal.as_ref())
             .flatten()

@@ -30,6 +30,14 @@ impl OverlayWidth {
         }
     }
 
+    /// The design-pixel width a `Modal` of this width leaves its body: the
+    /// panel the window allows, less its border and the body's side padding.
+    pub fn body_width(self, window: &Window) -> f32 {
+        let rem = window.rem_size();
+        let panel = self.panel_width(rem, window.viewport_size().width - rem * 2.);
+        f32::from(panel - px(2.)) * 16. / f32::from(rem) - 48.
+    }
+
     // The rem-scaled design width, clamped to what the window leaves the
     // panel. Modal and Drawer spell their widths out in pixels because
     // their centering row probes the panel at min-content, where a

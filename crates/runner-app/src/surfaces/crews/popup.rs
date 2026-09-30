@@ -12,15 +12,15 @@ use gpui::{
     Window,
 };
 use runner_app::ui::{
-    focus_ring, Button, ButtonSize, ButtonVariant, IconButton, IconButtonSize, ModelField,
-    RoleAvatar, SelectOption, StyledSelect, TextField,
+    Button, ButtonSize, ButtonVariant, IconButton, IconButtonSize, ModelField, RoleAvatar,
+    SelectOption, StyledSelect, TextField,
 };
 use runner_backend::model::{CodexSpeed, Runtime, SlotWithRole};
 use runner_backend::ops::slot::UpdateSlotInput;
 
 use super::*;
 use crate::chat_icon::ChatIcon;
-use crate::surfaces::profile_page::{override_dot, plural};
+use crate::surfaces::profile_page::{override_dot, plural, text_action};
 use crate::surfaces::roles::logic::{
     effort_options, ensure_runtime_present, runtime_display_name, runtime_models,
 };
@@ -228,7 +228,7 @@ impl NativeRoot {
                                     .child(slot.role.display_name.clone()),
                             )
                             .child(
-                                popup_action(
+                                text_action(
                                     "crew-slot-popup-open-role",
                                     &open_role_focus,
                                     move |window, cx| {
@@ -285,7 +285,7 @@ impl NativeRoot {
                      focus: &FocusHandle,
                      action: fn(&mut NativeRoot, &mut Context<NativeRoot>)| {
             let root = root.clone();
-            popup_action(id, focus, move |_, cx| root.update(cx, action))
+            text_action(id, focus, move |_, cx| root.update(cx, action))
                 .when(cfg!(test), move |reset| {
                     reset.debug_selector(move || id.to_uppercase().replace('-', "_"))
                 })
@@ -469,7 +469,7 @@ impl NativeRoot {
             )
             .child(div().flex_1())
             .child(
-                popup_action("crew-slot-remove", &remove_focus, move |window, cx| {
+                text_action("crew-slot-remove", &remove_focus, move |window, cx| {
                     let slot = remove_slot.clone();
                     remove_root.update(cx, |this, cx| {
                         this.close_slot_popup(window, cx);
@@ -1249,30 +1249,4 @@ fn popup_command_and_prompt(slot: &SlotWithRole) -> AnyElement {
                 .into_any_element(),
         })
         .into_any_element()
-}
-
-/// A text control in the popup that a click, Enter or Space activates.
-fn popup_action(
-    id: &'static str,
-    focus: &FocusHandle,
-    on_press: impl Fn(&mut Window, &mut gpui::App) + 'static,
-) -> gpui::Stateful<gpui::Div> {
-    let on_press = Rc::new(on_press);
-    let key_press = Rc::clone(&on_press);
-    div()
-        .id(id)
-        .track_focus(focus)
-        .tab_index(0)
-        .flex()
-        .items_center()
-        .rounded(rems(3. / 16.))
-        .cursor_pointer()
-        .focus_visible(|action| action.shadow(focus_ring(theme::border_strong())))
-        .on_click(move |_, window, cx| on_press(window, cx))
-        .on_key_down(move |event: &KeyDownEvent, window, cx| {
-            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                cx.stop_propagation();
-                key_press(window, cx);
-            }
-        })
 }

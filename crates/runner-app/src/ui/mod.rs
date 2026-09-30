@@ -50,7 +50,8 @@ pub use scrollbar::{
     app_scrollbar_gutter, terminal_scrollbar_gutter, Scrollbar, ScrollbarKind, ScrollbarMetrics,
 };
 pub use select::{
-    runtime_select_options, RuntimeSelect, SelectHandler, SelectOption, SelectState, StyledSelect,
+    runtime_select_options, RuntimeSelect, SelectHandler, SelectLeading, SelectOption, SelectState,
+    StyledSelect,
 };
 pub use session_control::{SessionControl, SessionControlKind, SessionControlVariant};
 pub use session_overlay::{SessionOverlay, SessionOverlayKind};
