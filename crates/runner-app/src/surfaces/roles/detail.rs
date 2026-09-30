@@ -28,7 +28,7 @@ pub(super) use crate::surfaces::profile_page::column_text;
 use crate::surfaces::profile_page::{
     breadcrumb, caption, card, card_column, card_meta, clamped_markdown, dot_note, editing_tag,
     markdown_editor_body, markdown_mode_switch, page_columns, page_container, profile_column,
-    section, section_label,
+    section, section_label, setup_row, setup_value,
 };
 use crate::*;
 
@@ -788,31 +788,6 @@ fn role_activity_lines(
                 .text_color(theme::faint())
                 .child(short_id(&role.id)),
         )
-        .into_any_element()
-}
-
-fn setup_row(label: &'static str, value: AnyElement) -> Div {
-    div()
-        .min_w(px(0.))
-        .flex()
-        .flex_col()
-        .gap(rems(3. / 16.))
-        .child(section_label(label))
-        .child(value)
-}
-
-fn setup_value(
-    value: impl Into<SharedString>,
-    width: f32,
-    monospace: bool,
-    dim: bool,
-) -> AnyElement {
-    column_text(value, width)
-        .text_size(theme::text_body())
-        .text_color(if dim { theme::faint() } else { theme::text() })
-        .when(monospace, |value| {
-            value.font_family(theme::UI_MONOSPACE_FONT)
-        })
         .into_any_element()
 }
 

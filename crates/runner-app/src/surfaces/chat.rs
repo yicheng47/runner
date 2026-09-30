@@ -2361,6 +2361,8 @@ mod tests {
             handle: Some("coder".into()),
             agent_runtime: runtime.into(),
             agent_command: runtime.into(),
+            agent_model: None,
+            agent_effort: None,
             display_name: runtime.into(),
             status: SessionStatus::Running,
             title: None,

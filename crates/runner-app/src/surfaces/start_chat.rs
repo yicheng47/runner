@@ -25,7 +25,7 @@ use runner_app::ui::{
 use super::profile_page::{column_text, section_label, text_action};
 use super::roles::logic::role_setting_label;
 use super::*;
-use crate::chat_icon::ChatIcon;
+use crate::chat_icon::runtime_mark;
 use crate::*;
 
 const START_CHAT_MODE_FILE: &str = "start-chat-mode";
@@ -2035,25 +2035,6 @@ fn role_leading(handle: &str) -> SelectLeading {
     SelectLeading::new(format!("role:{handle}"), move |size| {
         RoleAvatar::new(seed.clone(), size).into_any_element()
     })
-}
-
-/// A provider's mark: bare at text size, on a raised tile from a card row up.
-fn runtime_mark(runtime: &str, size: f32) -> AnyElement {
-    let icon = ChatIcon::for_runtime(runtime);
-    let color = icon.color(theme::muted(), true);
-    if size < 24. {
-        return icon.render(rems(size / 16.), color, true);
-    }
-    div()
-        .flex_none()
-        .flex()
-        .items_center()
-        .justify_center()
-        .size(rems(size / 16.))
-        .rounded(rems((size * 0.2).round() / 16.))
-        .bg(theme::raised())
-        .child(icon.render(rems(size / 2. / 16.), color, true))
-        .into_any_element()
 }
 
 fn runtime_leading(runtime: &str) -> SelectLeading {

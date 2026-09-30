@@ -346,6 +346,80 @@ fn create_test_role_with_args(
     .unwrap()
 }
 
+#[test]
+fn selected_chat_panel_refreshes_after_a_shared_role_edit() {
+    use crate::surfaces::AppRoute;
+    use runner_backend::ops::role::{role_list, role_update, UpdateRoleInput};
+
+    let mut page = role_page_harness("chat-panel-role-edit");
+    let role = create_test_role(&page.core, "panel-role", None);
+    let conn = page.core.db.get().unwrap();
+    conn.execute(
+        "INSERT INTO sessions (id, role_id, status) VALUES ('panel-chat', ?1, 'stopped')",
+        [&role.id],
+    )
+    .unwrap();
+    runner_backend::repo::node::create_tab(
+        &conn,
+        None,
+        "",
+        0,
+        &runner_app::pane_layout::PaneLayout::single(Some("panel-chat"), &["panel-chat".into()])
+            .serialize()
+            .unwrap(),
+    )
+    .unwrap();
+    let nodes = runner_backend::repo::node::list(&conn).unwrap();
+    let roles = role_list(&page.core).unwrap();
+    page.host
+        .update(&mut page.visual, |root, _, cx| {
+            root.app_store.update(cx, |store, cx| {
+                store.replace_roles(roles, cx);
+                store.replace_nodes(nodes, cx);
+                store.refresh_sessions(cx);
+            });
+            root.apply_tab_rows(cx);
+            root.tabs.activate_session("panel-chat");
+            root.route = AppRoute::Chat;
+            root.sync_active_chat_detail(cx);
+            cx.notify();
+        })
+        .unwrap();
+    page.visual
+        .simulate_resize(gpui::size(gpui::px(1200.), gpui::px(900.)));
+    page.visual.run_until_parked();
+    assert!(page.visual.debug_bounds("COLUMN_TEXT opus").is_some());
+    assert!(page.visual.debug_bounds("COLUMN_TEXT default").is_some());
+    assert!(page.visual.debug_bounds("COLUMN_TEXT sonnet").is_none());
+    assert!(page.visual.debug_bounds("COLUMN_TEXT high").is_none());
+
+    role_update(
+        &page.core,
+        &role.id,
+        UpdateRoleInput {
+            model: Some(Some("sonnet".into())),
+            effort: Some(Some("high".into())),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let roles = role_list(&page.core).unwrap();
+    page.host
+        .update(&mut page.visual, |root, _, cx| {
+            root.app_store
+                .update(cx, |store, cx| store.replace_roles(roles, cx));
+        })
+        .unwrap();
+    page.visual.run_until_parked();
+    assert_eq!(
+        page.read(|root| root.active_focused_session_id())
+            .as_deref(),
+        Some("panel-chat")
+    );
+    assert!(page.visual.debug_bounds("COLUMN_TEXT sonnet").is_some());
+    assert!(page.visual.debug_bounds("COLUMN_TEXT high").is_some());
+}
+
 impl RolePageHarness {
     fn open_role(&mut self, handle: &str) {
         let handle = handle.to_owned();

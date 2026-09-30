@@ -8,10 +8,14 @@ use runner_app::ui::{
 };
 use runner_backend::model::Runtime;
 
+use crate::chat_icon::runtime_mark;
 use crate::surfaces::chat_lifecycle::{
     ended_subtitle, resolve_pane_overlay, shell_exited_subtitle, PaneOverlayState, TransitionKind,
 };
+use crate::surfaces::profile_page::{column_text, setup_row, setup_value};
+use crate::surfaces::roles::logic::{role_setting_label, runtime_display_name};
 use crate::surfaces::sidebar::direct_chat_display_status;
+use runner_app::ui::RoleAvatar;
 
 const CHAT_PANEL_TRANSITION_MS: u64 = 200;
 pub(crate) const UNFOCUSED_PANE_OPACITY: f32 = 0.7;
@@ -979,137 +983,7 @@ impl NativeRoot {
             cx,
         );
         let content = if let Some(detail) = detail {
-            let (
-                section_label,
-                identity,
-                identity_monospace,
-                badge,
-                description,
-                command,
-                cwd,
-                system_prompt,
-            ) = if let Some(role) = role.as_ref() {
-                (
-                    "Role",
-                    format!("@{}", role.handle),
-                    true,
-                    role.runtime.clone(),
-                    (!role.display_name.is_empty()).then(|| role.display_name.clone()),
-                    role.command.clone(),
-                    role.working_dir.clone(),
-                    role.system_prompt.clone(),
-                )
-            } else {
-                (
-                    "Runtime",
-                    detail.display_name.clone(),
-                    false,
-                    detail.agent_runtime.clone(),
-                    None,
-                    detail.agent_command.clone(),
-                    detail.cwd.clone(),
-                    None,
-                )
-            };
-            div()
-                .flex()
-                .flex_col()
-                .gap(rems(18. / 16.))
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap(rems(10. / 16.))
-                        .child(side_panel_label(section_label))
-                        .child(
-                            div()
-                                .flex()
-                                .flex_col()
-                                .gap(rems(10. / 16.))
-                                .rounded_lg()
-                                .border_1()
-                                .border_color(theme::border_strong())
-                                .bg(theme::bg())
-                                .p(rems(14. / 16.))
-                                .child(
-                                    div()
-                                        .flex()
-                                        .items_center()
-                                        .gap_2()
-                                        .child(
-                                            div()
-                                                .when(identity_monospace, |identity| {
-                                                    identity.font_family(theme::UI_MONOSPACE_FONT)
-                                                })
-                                                .text_size(theme::text_title())
-                                                .font_weight(FontWeight::SEMIBOLD)
-                                                .text_color(theme::text())
-                                                .child(identity),
-                                        )
-                                        .child(runtime_badge(badge)),
-                                )
-                                .children(description.map(|description| {
-                                    div()
-                                        .text_size(theme::text_ui())
-                                        .text_color(theme::muted())
-                                        .child(description)
-                                }))
-                                .child(div().h(rems(1. / 16.)).w_full().bg(theme::border()))
-                                .child(
-                                    div()
-                                        .flex()
-                                        .flex_col()
-                                        .gap(rems(6. / 16.))
-                                        .child(side_panel_row("cmd", side_panel_value(command)))
-                                        .children(cwd.map(|cwd| {
-                                            side_panel_row("cwd", side_panel_value(cwd))
-                                        }))
-                                        .child(side_panel_row(
-                                            "session_key",
-                                            div()
-                                                .flex_1()
-                                                .min_w(px(0.))
-                                                .flex()
-                                                .items_start()
-                                                .gap(rems(6. / 16.))
-                                                .child(
-                                                    div()
-                                                        .flex_1()
-                                                        .min_w(px(0.))
-                                                        .font_family(theme::UI_MONOSPACE_FONT)
-                                                        .text_color(theme::muted())
-                                                        .child(
-                                                            detail
-                                                                .agent_session_key
-                                                                .clone()
-                                                                .unwrap_or_else(|| "NULL".into()),
-                                                        ),
-                                                )
-                                                .child(session_key_copy),
-                                        )),
-                                ),
-                        ),
-                )
-                .children(system_prompt.map(|prompt| {
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap_2()
-                        .child(side_panel_label("System prompt"))
-                        .child(
-                            div()
-                                .rounded_md()
-                                .border_1()
-                                .border_color(theme::border_strong())
-                                .bg(theme::bg())
-                                .p_3()
-                                .text_size(theme::text_ui())
-                                .line_height(rems(20. / 16.))
-                                .text_color(theme::muted())
-                                .child(prompt),
-                        )
-                }))
-                .into_any_element()
+            chat_panel_content(detail, role.as_ref(), width, session_key_copy)
         } else {
             div()
                 .text_size(theme::text_ui())
@@ -2903,18 +2777,196 @@ fn pane_action_items_for(
     items
 }
 
-fn runtime_badge(label: impl Into<SharedString>) -> AnyElement {
-    let label = label.into();
+fn chat_panel_content(
+    detail: &DirectSessionEntry,
+    role: Option<&runner_backend::model::Role>,
+    width: f32,
+    session_key_copy: Entity<CopyValueButton>,
+) -> AnyElement {
+    let column = width - 2. * 20. - 2. * 14. - 2.;
+    let section_label = if role.is_some() { "Role" } else { "Runtime" };
+    let cwd = detail
+        .cwd
+        .clone()
+        .or_else(|| role.and_then(|role| role.working_dir.clone()));
+    let system_prompt = role.and_then(|role| role.system_prompt.clone());
     div()
-        .flex_none()
-        .rounded(rems(3. / 16.))
-        .bg(theme::border_strong())
-        .px(rems(6. / 16.))
-        .py(rems(1. / 16.))
-        .font_weight(FontWeight::BOLD)
-        .text_size(theme::text_micro())
-        .text_color(theme::muted())
-        .child(label.to_uppercase())
+        .flex()
+        .flex_col()
+        .gap(rems(18. / 16.))
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap(rems(10. / 16.))
+                .child(side_panel_label(section_label))
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_4()
+                        .rounded_lg()
+                        .border_1()
+                        .border_color(theme::border_strong())
+                        .bg(theme::bg())
+                        .p(rems(14. / 16.))
+                        .child(chat_panel_setup(detail, role, column))
+                        .child(div().h(rems(1. / 16.)).w_full().bg(theme::border()))
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap(rems(6. / 16.))
+                                .child(side_panel_row(
+                                    "cmd",
+                                    side_panel_value(detail.agent_command.clone()),
+                                ))
+                                .children(
+                                    cwd.map(|cwd| side_panel_row("cwd", side_panel_value(cwd))),
+                                )
+                                .child(side_panel_row(
+                                    "session_key",
+                                    div()
+                                        .flex_1()
+                                        .min_w(px(0.))
+                                        .flex()
+                                        .items_start()
+                                        .gap(rems(6. / 16.))
+                                        .child(
+                                            div()
+                                                .flex_1()
+                                                .min_w(px(0.))
+                                                .font_family(theme::UI_MONOSPACE_FONT)
+                                                .text_color(theme::muted())
+                                                .child(
+                                                    detail
+                                                        .agent_session_key
+                                                        .clone()
+                                                        .unwrap_or_else(|| "NULL".into()),
+                                                ),
+                                        )
+                                        .child(session_key_copy),
+                                )),
+                        ),
+                ),
+        )
+        .children(system_prompt.map(|prompt| {
+            div()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .child(side_panel_label("System prompt"))
+                .child(
+                    div()
+                        .rounded_md()
+                        .border_1()
+                        .border_color(theme::border_strong())
+                        .bg(theme::bg())
+                        .p_3()
+                        .text_size(theme::text_ui())
+                        .line_height(rems(20. / 16.))
+                        .text_color(theme::muted())
+                        .child(prompt),
+                )
+        }))
+        .into_any_element()
+}
+
+fn chat_panel_setup(
+    detail: &DirectSessionEntry,
+    role: Option<&runner_backend::model::Role>,
+    column: f32,
+) -> AnyElement {
+    let identity_width = column - 40. - 12.;
+    let half_column = (column - 16.) / 2.;
+    let (model, model_default) = role_setting_label(detail.agent_model.as_deref());
+    let (effort, effort_default) = role_setting_label(detail.agent_effort.as_deref());
+    let identity = div()
+        .flex()
+        .items_center()
+        .gap(rems(12. / 16.))
+        .child(
+            div()
+                .flex_none()
+                .size(rems(40. / 16.))
+                .when(cfg!(test), |identity| {
+                    identity.debug_selector(|| {
+                        role.map(|role| format!("CHAT_PANEL_AVATAR {}", role.handle))
+                            .unwrap_or_else(|| format!("CHAT_PANEL_MARK {}", detail.agent_runtime))
+                    })
+                })
+                .child(if let Some(role) = role {
+                    RoleAvatar::new(role.handle.clone(), 40.).into_any_element()
+                } else {
+                    runtime_mark(&detail.agent_runtime, 40.)
+                }),
+        )
+        .child(
+            div()
+                .min_w(px(0.))
+                .flex()
+                .flex_col()
+                .gap(rems(3. / 16.))
+                .child(
+                    column_text(
+                        role.map(|role| role.display_name.clone())
+                            .unwrap_or_else(|| runtime_display_name(&detail.agent_runtime)),
+                        identity_width,
+                    )
+                    .text_size(theme::text_title())
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(theme::text()),
+                )
+                .children(role.map(|role| {
+                    column_text(format!("@{}", role.handle), identity_width)
+                        .font_family(theme::UI_MONOSPACE_FONT)
+                        .text_size(theme::text_ui())
+                        .text_color(theme::muted())
+                })),
+        );
+    div()
+        .min_w(px(0.))
+        .flex()
+        .flex_col()
+        .gap(rems(14. / 16.))
+        .child(identity)
+        .children(role.map(|_| {
+            setup_row(
+                "RUNTIME",
+                div()
+                    .min_w(px(0.))
+                    .flex()
+                    .items_center()
+                    .gap(rems(6. / 16.))
+                    .child(runtime_mark(&detail.agent_runtime, 12.))
+                    .child(setup_value(
+                        runtime_display_name(&detail.agent_runtime),
+                        column - 18.,
+                        false,
+                        false,
+                    ))
+                    .into_any_element(),
+            )
+        }))
+        .child(
+            div()
+                .flex()
+                .gap_4()
+                .child(
+                    setup_row(
+                        "MODEL",
+                        setup_value(model, half_column, !model_default, model_default),
+                    )
+                    .flex_1(),
+                )
+                .child(
+                    setup_row(
+                        "EFFORT",
+                        setup_value(effort, half_column, !effort_default, effort_default),
+                    )
+                    .flex_1(),
+                ),
+        )
         .into_any_element()
 }
 
@@ -2942,6 +2994,9 @@ fn side_panel_value(value: String) -> AnyElement {
         .min_w(px(0.))
         .font_family(theme::UI_MONOSPACE_FONT)
         .text_color(theme::muted())
+        .when(cfg!(test), |column| {
+            column.debug_selector(|| format!("CHAT_PANEL_META {value}"))
+        })
         .child(value)
         .into_any_element()
 }
@@ -3002,7 +3057,7 @@ mod tests {
         MIN_SPLIT_PANE_HEIGHT, MIN_SPLIT_PANE_WIDTH, TOO_SMALL_TO_SPLIT, UNFOCUSED_PANE_OPACITY,
     };
     use crate::keymap;
-    use gpui::{point, px, size, Bounds};
+    use gpui::{point, px, size, AppContext, Bounds};
     use runner_app::pane_layout::{DropSide, PaneLayout, SplitOrientation};
     use runner_backend::model::SessionStatus;
     use runner_backend::ops::session::DirectSessionEntry;
@@ -3015,6 +3070,8 @@ mod tests {
             handle: None,
             agent_runtime: runtime.into(),
             agent_command: runtime.into(),
+            agent_model: None,
+            agent_effort: None,
             display_name: runtime.into(),
             status: SessionStatus::Running,
             title: None,
@@ -3028,6 +3085,202 @@ mod tests {
             agent_session_key: forkable.then(|| "key".into()),
             pinned: false,
             archived_at: None,
+        }
+    }
+
+    fn panel_role() -> runner_backend::model::Role {
+        runner_backend::model::Role {
+            id: "role-architect".into(),
+            handle: "architect".into(),
+            display_name: "Architect".into(),
+            runtime: "claude-code".into(),
+            command: "claude".into(),
+            args: Vec::new(),
+            working_dir: None,
+            system_prompt: None,
+            env: Default::default(),
+            model: Some("fable".into()),
+            effort: Some("xhigh".into()),
+            codex_speed: None,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        }
+    }
+
+    struct ChatPanel {
+        detail: DirectSessionEntry,
+        role: Option<runner_backend::model::Role>,
+        width: f32,
+        copy: gpui::Entity<runner_app::ui::CopyValueButton>,
+    }
+
+    impl gpui::Render for ChatPanel {
+        fn render(
+            &mut self,
+            _: &mut gpui::Window,
+            _: &mut gpui::Context<Self>,
+        ) -> impl gpui::IntoElement {
+            use gpui::prelude::*;
+            gpui::div()
+                .w(gpui::rems(self.width / 16.))
+                .p_5()
+                .child(super::chat_panel_content(
+                    &self.detail,
+                    self.role.as_ref(),
+                    self.width,
+                    self.copy.clone(),
+                ))
+        }
+    }
+
+    fn panel_harness(
+        detail: DirectSessionEntry,
+        role: Option<runner_backend::model::Role>,
+        width: f32,
+    ) -> (gpui::TestAppContext, gpui::VisualTestContext) {
+        let mut cx = gpui::TestAppContext::single();
+        let window = cx.add_window(move |_, cx| ChatPanel {
+            copy: cx.new(|cx| {
+                runner_app::ui::CopyValueButton::new(cx.focus_handle(), None, "Copy session_key")
+            }),
+            detail,
+            role,
+            width,
+        });
+        let visual = gpui::VisualTestContext::from_window(window.into(), &cx);
+        visual.simulate_resize(size(px(500.), px(800.)));
+        visual.run_until_parked();
+        (cx, visual)
+    }
+
+    #[test]
+    fn role_chat_panel_renders_avatar_runtime_model_and_effort() {
+        let _theme = crate::theme_snapshot::ThemeGuard::new();
+        let mut detail = direct_session("claude-code", true, true);
+        detail.agent_model = Some("fable".into());
+        detail.agent_effort = Some("xhigh".into());
+        let (_cx, mut visual) = panel_harness(detail, Some(panel_role()), 320.);
+        let avatar = visual.debug_bounds("CHAT_PANEL_AVATAR architect").unwrap();
+        assert_eq!(avatar.size, size(px(40.), px(40.)));
+        for text in [
+            "COLUMN_TEXT Architect",
+            "COLUMN_TEXT @architect",
+            "COLUMN_TEXT Claude Code",
+            "COLUMN_TEXT fable",
+            "COLUMN_TEXT xhigh",
+        ] {
+            assert!(
+                visual.debug_bounds(text).is_some(),
+                "missing rendered {text}"
+            );
+        }
+        assert!(visual.debug_bounds("SETUP_ROW RUNTIME").is_some());
+        let model = visual.debug_bounds("SETUP_ROW MODEL").unwrap();
+        let effort = visual.debug_bounds("SETUP_ROW EFFORT").unwrap();
+        assert_eq!(model.top(), effort.top());
+        assert_eq!(model.size.width, effort.size.width);
+    }
+
+    #[test]
+    fn runtime_chat_panel_renders_mark_and_defaults_without_runtime_row() {
+        let _theme = crate::theme_snapshot::ThemeGuard::new();
+        for variant in [
+            crate::theme::ThemeVariant::Carbon,
+            crate::theme::ThemeVariant::RunnerLight,
+        ] {
+            crate::theme::set_active_variant(variant);
+            for (model, effort, default_row) in [
+                (None, None, "SETUP_ROW EFFORT"),
+                (None, Some("xhigh"), "SETUP_ROW MODEL"),
+                (Some("gpt-5.6-sol"), None, "SETUP_ROW EFFORT"),
+            ] {
+                let mut detail = direct_session("codex", true, true);
+                detail.agent_model = model.map(str::to_owned);
+                detail.agent_effort = effort.map(str::to_owned);
+                let (_cx, mut visual) = panel_harness(detail, None, 320.);
+                let mark = visual.debug_bounds("CHAT_PANEL_MARK codex").unwrap();
+                assert_eq!(mark.size, size(px(40.), px(40.)));
+                assert!(visual.debug_bounds("COLUMN_TEXT Codex").is_some());
+                assert!(visual.debug_bounds("SETUP_ROW RUNTIME").is_none());
+                let model = visual.debug_bounds("SETUP_ROW MODEL").unwrap();
+                let effort = visual.debug_bounds("SETUP_ROW EFFORT").unwrap();
+                let row = visual.debug_bounds(default_row).unwrap();
+                let default = visual.debug_bounds("COLUMN_TEXT default").unwrap();
+                assert_eq!(model.top(), effort.top());
+                assert_eq!(model.size, effort.size);
+                assert!(default.top() >= row.top() && default.bottom() <= row.bottom());
+            }
+        }
+    }
+
+    #[test]
+    fn role_chat_panel_renders_effective_runtime_and_command_override() {
+        let _theme = crate::theme_snapshot::ThemeGuard::new();
+        let mut detail = direct_session("codex", true, true);
+        detail.agent_command = "codex-override".into();
+        detail.agent_model = Some("gpt-5.6-sol".into());
+        detail.agent_effort = Some("high".into());
+        let (_cx, mut visual) = panel_harness(detail, Some(panel_role()), 320.);
+        assert!(visual.debug_bounds("COLUMN_TEXT Codex").is_some());
+        assert!(visual.debug_bounds("COLUMN_TEXT Claude Code").is_none());
+        assert!(visual
+            .debug_bounds("CHAT_PANEL_META codex-override")
+            .is_some());
+        assert!(visual.debug_bounds("CHAT_PANEL_META claude").is_none());
+        assert!(visual.debug_bounds("COLUMN_TEXT gpt-5.6-sol").is_some());
+        assert!(visual.debug_bounds("COLUMN_TEXT high").is_some());
+    }
+
+    #[test]
+    fn role_chat_panel_renders_chat_cwd_with_legacy_role_fallback() {
+        let _theme = crate::theme_snapshot::ThemeGuard::new();
+        for (chat_cwd, role_cwd, expected) in [
+            (Some("/chat"), Some("/role"), "CHAT_PANEL_META /chat"),
+            (Some("/chat"), None, "CHAT_PANEL_META /chat"),
+            (None, Some("/role"), "CHAT_PANEL_META /role"),
+        ] {
+            let mut detail = direct_session("claude-code", true, true);
+            detail.cwd = chat_cwd.map(str::to_owned);
+            let mut role = panel_role();
+            role.working_dir = role_cwd.map(str::to_owned);
+            let (_cx, mut visual) = panel_harness(detail, Some(role), 320.);
+            assert!(
+                visual.debug_bounds(expected).is_some(),
+                "missing rendered {expected}"
+            );
+            if chat_cwd.is_some() {
+                assert!(visual.debug_bounds("CHAT_PANEL_META /role").is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn chat_panel_identity_and_setup_fit_at_minimum_width() {
+        let _theme = crate::theme_snapshot::ThemeGuard::new();
+        let mut role = panel_role();
+        role.display_name = "A very long architect display name that must truncate".into();
+        role.handle = "a-very-long-architect-handle".into();
+        let mut detail = direct_session("antigravity", false, false);
+        detail.agent_model = Some("a-very-long-model-name-that-must-truncate".into());
+        detail.agent_effort = Some("xhigh".into());
+        let (_cx, mut visual) =
+            panel_harness(detail, Some(role), crate::app_settings::CHAT_PANEL_MIN);
+        for text in [
+            "COLUMN_TEXT A very long architect display name that must truncate",
+            "COLUMN_TEXT @a-very-long-architect-handle",
+            "COLUMN_TEXT Antigravity CLI",
+            "COLUMN_TEXT a-very-long-model-name-that-must-truncate",
+            "COLUMN_TEXT xhigh",
+        ] {
+            let bounds = visual
+                .debug_bounds(text)
+                .unwrap_or_else(|| panic!("missing rendered {text}"));
+            assert!(bounds.size.width > px(0.), "{text}: {bounds:?}");
+            assert!(
+                bounds.left() >= px(35.) && bounds.right() <= px(165.),
+                "{text}: {bounds:?}"
+            );
+            assert!(bounds.size.height <= px(24.), "{text} wrapped: {bounds:?}");
         }
     }
 

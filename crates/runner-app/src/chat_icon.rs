@@ -1,5 +1,5 @@
 use gpui::prelude::*;
-use gpui::{img, svg, AnyElement, DefiniteLength, Hsla};
+use gpui::{div, img, rems, svg, AnyElement, DefiniteLength, Hsla};
 use runner_backend::model::Runtime;
 
 use crate::assets::antigravity_icon_source;
@@ -80,6 +80,25 @@ impl ChatIcon {
                 .into_any_element()
         }
     }
+}
+
+/// A provider's mark: bare at text size, on a raised tile from a card row up.
+pub(crate) fn runtime_mark(runtime: &str, size: f32) -> AnyElement {
+    let icon = ChatIcon::for_runtime(runtime);
+    let color = icon.color(theme::muted(), true);
+    if size < 24. {
+        return icon.render(rems(size / 16.), color, true);
+    }
+    div()
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .size(rems(size / 16.))
+        .rounded(rems((size * 0.2).round() / 16.))
+        .bg(theme::raised())
+        .child(icon.render(rems(size / 2. / 16.), color, true))
+        .into_any_element()
 }
 
 #[cfg(test)]

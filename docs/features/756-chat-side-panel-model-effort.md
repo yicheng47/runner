@@ -19,7 +19,7 @@ However, it does not show the model or thinking effort that the chat is running 
 - **Identity**: the card leads with a 40 px identity. A role chat shows the role's `RoleAvatar` seeded with its handle, the display name and `@handle` in mono. A runtime chat shows the provider mark on a raised tile, as the Start Chat modal's `runtime_mark` draws it, and the runtime's name. The uppercase runtime text badge goes.
 - **Setup**: under the identity, laid out like the role page's setup rows (label over value). A role chat shows **Runtime** (the provider mark and name), then **Model** and **Effort** side by side. A runtime chat shows only Model and Effort, since its identity already names the runtime.
 - An unset model or effort reads `default` in the faint UI font, as the role page does through `role_setting_label`; set values are mono.
-- `cmd`, `cwd` and `session_key` with its copy button stay under the divider, unchanged. The system prompt section is unchanged.
+- `cmd`, `cwd` and `session_key` with its copy button stay under the divider with the same layout. Command and cwd come from the chat entry so they describe what the chat runs; only legacy rows without a cwd fall back to the role's working directory. The system prompt section is unchanged.
 - Support both role-backed and runtime-only direct chats.
 
 ## Non-goals

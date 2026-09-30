@@ -24,8 +24,8 @@ use crate::{
     },
     repo,
     session::manager::{
-        runtime_direct_role, SessionActivityState, SessionEvents, SessionUpdatedEvent,
-        SpawnedSession,
+        resolve_runtime_override, runtime_direct_role, SessionActivityState, SessionEvents,
+        SessionUpdatedEvent, SpawnedSession,
     },
     AppCore,
 };
@@ -333,6 +333,12 @@ pub struct DirectSessionEntry {
     pub handle: Option<String>,
     pub agent_runtime: String,
     pub agent_command: String,
+    /// Effective model on resume, with blank values normalized to None.
+    /// Filled by `session_get`; recent and archived lists return None.
+    pub agent_model: Option<String>,
+    /// Effective effort on resume, with blank values normalized to None.
+    /// Filled by `session_get`; recent and archived lists return None.
+    pub agent_effort: Option<String>,
     pub display_name: String,
     pub status: SessionStatus,
     /// User-authored label. NULL → frontend derives a default from
@@ -437,6 +443,8 @@ fn direct_entry_from_repo(
         handle,
         agent_runtime,
         agent_command,
+        agent_model: None,
+        agent_effort: None,
         display_name,
         status: d.row.status,
         title: d.row.title,
@@ -538,7 +546,33 @@ pub fn session_last_size(state: &AppCore, session_id: &str) -> Result<Option<(u1
 
 fn get_direct(conn: &rusqlite::Connection, session_id: &str) -> Result<Option<DirectSessionEntry>> {
     repo::session::get_direct(conn, session_id)?
-        .map(|d| direct_entry_from_repo(d, /*ship_key*/ true))
+        .map(|mut d| {
+            let (model, effort) = if let Some(role_id) = d.row.role_id.as_deref() {
+                let role = role::get(conn, role_id)?;
+                let effective = resolve_runtime_override(
+                    &role,
+                    d.row.agent_runtime.as_deref(),
+                    d.row.agent_model.as_deref(),
+                    d.row.agent_effort.as_deref(),
+                )?
+                .effective
+                .unwrap_or(role);
+                d.row.agent_runtime = Some(effective.runtime);
+                d.row.agent_command = Some(effective.command);
+                (effective.model, effective.effort)
+            } else {
+                (d.row.agent_model.take(), d.row.agent_effort.take())
+            };
+            let normalize = |value: Option<String>| {
+                value
+                    .map(|value| value.trim().to_owned())
+                    .filter(|value| !value.is_empty())
+            };
+            let mut entry = direct_entry_from_repo(d, /*ship_key*/ true)?;
+            entry.agent_model = normalize(model);
+            entry.agent_effort = normalize(effort);
+            Ok(entry)
+        })
         .transpose()
 }
 
@@ -1894,6 +1928,111 @@ mod tests {
         let row = get_direct(&conn, &id).unwrap().unwrap();
         assert_eq!(row.agent_session_key.as_deref(), Some(key.as_str()));
         assert!(row.resumable);
+    }
+
+    #[test]
+    fn session_get_runtime_chat_model_and_effort() {
+        let pool = db::open_in_memory().unwrap();
+        let conn = pool.get().unwrap();
+        for (id, model, effort, expected_model, expected_effort) in [
+            (
+                "set",
+                Some(" gpt-5.6-sol "),
+                Some(" xhigh "),
+                Some("gpt-5.6-sol"),
+                Some("xhigh"),
+            ),
+            ("unset", None, None, None, None),
+            ("blank", Some("  "), Some("\t"), None, None),
+        ] {
+            let mut session = crate::test_support::test_session_row(id, SessionStatus::Stopped);
+            session.agent_runtime = Some("codex".into());
+            session.agent_command = Some("codex".into());
+            session.agent_model = model.map(str::to_owned);
+            session.agent_effort = effort.map(str::to_owned);
+            repo::session::insert(&conn, &session).unwrap();
+            let entry = get_direct(&conn, id).unwrap().unwrap();
+            assert_eq!(entry.agent_model.as_deref(), expected_model);
+            assert_eq!(entry.agent_effort.as_deref(), expected_effort);
+        }
+        for row in repo::session::list_recent_direct(&conn).unwrap() {
+            let entry = direct_entry_from_repo(row, false).unwrap();
+            assert_eq!(entry.agent_model, None);
+            assert_eq!(entry.agent_effort, None);
+        }
+    }
+
+    #[test]
+    fn session_get_role_chat_follows_current_role_settings() {
+        let pool = db::open_in_memory().unwrap();
+        let conn = pool.get().unwrap();
+        let role_id = seed_role(&conn);
+        let id = insert_direct_session(&conn, &role_id, false);
+        for (model, effort, expected_model, expected_effort) in [
+            ("fable", "xhigh", Some("fable"), Some("xhigh")),
+            ("sonnet", "high", Some("sonnet"), Some("high")),
+            ("  ", "\t", None, None),
+        ] {
+            conn.execute(
+                "UPDATE roles SET model = ?2, effort = ?3 WHERE id = ?1",
+                params![role_id, model, effort],
+            )
+            .unwrap();
+            let entry = get_direct(&conn, &id).unwrap().unwrap();
+            assert_eq!(entry.agent_model.as_deref(), expected_model);
+            assert_eq!(entry.agent_effort.as_deref(), expected_effort);
+        }
+    }
+
+    #[test]
+    fn session_get_role_chat_model_only_override_matches_resume() {
+        let pool = db::open_in_memory().unwrap();
+        let conn = pool.get().unwrap();
+        let role_id = seed_role(&conn);
+        conn.execute(
+            "UPDATE roles SET model = 'fable', effort = 'high' WHERE id = ?1",
+            [&role_id],
+        )
+        .unwrap();
+        let mut session =
+            crate::test_support::test_session_row("model-override", SessionStatus::Stopped);
+        session.role_id = Some(role_id.clone());
+        session.agent_model = Some("sonnet".into());
+        session.agent_effort = Some("high".into());
+        repo::session::insert(&conn, &session).unwrap();
+        conn.execute(
+            "UPDATE roles SET model = 'opus', effort = 'xhigh' WHERE id = ?1",
+            [&role_id],
+        )
+        .unwrap();
+        let entry = get_direct(&conn, "model-override").unwrap().unwrap();
+        assert_eq!(entry.agent_model.as_deref(), Some("sonnet"));
+        assert_eq!(entry.agent_effort.as_deref(), Some("high"));
+    }
+
+    #[test]
+    fn session_get_role_chat_runtime_override_uses_new_runtime_defaults() {
+        let pool = db::open_in_memory().unwrap();
+        let conn = pool.get().unwrap();
+        let role_id = seed_role(&conn);
+        conn.execute("UPDATE roles SET runtime = 'claude-code', command = 'claude', model = 'fable', effort = 'xhigh' WHERE id = ?1", [&role_id]).unwrap();
+        for (id, model, effort) in [
+            ("defaults", None, None),
+            ("chosen", Some("gpt-5.6-sol"), Some("high")),
+        ] {
+            let mut session = crate::test_support::test_session_row(id, SessionStatus::Stopped);
+            session.role_id = Some(role_id.clone());
+            session.agent_runtime = Some("codex".into());
+            session.agent_command = Some("old-command".into());
+            session.agent_model = model.map(str::to_owned);
+            session.agent_effort = effort.map(str::to_owned);
+            repo::session::insert(&conn, &session).unwrap();
+            let entry = get_direct(&conn, id).unwrap().unwrap();
+            assert_eq!(entry.agent_runtime, "codex");
+            assert_eq!(entry.agent_command, "codex");
+            assert_eq!(entry.agent_model.as_deref(), model);
+            assert_eq!(entry.agent_effort.as_deref(), effort);
+        }
     }
 
     #[test]

@@ -151,6 +151,8 @@ fn direct_session(id: &str, runtime: &str, status: SessionStatus) -> DirectSessi
         handle: None,
         agent_runtime: runtime.into(),
         agent_command: runtime.into(),
+        agent_model: None,
+        agent_effort: None,
         display_name: runtime.into(),
         status,
         title: None,

@@ -1009,6 +1009,14 @@ impl NativeRoot {
         if reactions.prune_window_state {
             self.prune_store_dependent_window_state(cx);
         }
+        if revisions.roles != previous.roles
+            && self
+                .active_chat_detail
+                .as_ref()
+                .is_some_and(|detail| detail.role_id.is_some())
+        {
+            self.sync_active_chat_detail(cx);
+        }
         if reactions.reload_role_surfaces {
             match self.route.clone() {
                 AppRoute::Roles => self.load_role_page(cx),

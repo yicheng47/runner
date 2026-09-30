@@ -794,6 +794,8 @@ mod tests {
             handle: Some("coder".into()),
             agent_runtime: "codex".into(),
             agent_command: "codex".into(),
+            agent_model: None,
+            agent_effort: None,
             display_name: "Codex".into(),
             status: SessionStatus::Running,
             title: Some("Renamed chat".into()),

@@ -510,7 +510,42 @@ pub(crate) fn section_label(label: impl Into<SharedString>) -> AnyElement {
 /// column's first sizing pass offers none (a 0 px width), which left every
 /// value as a bare "…". An explicit width makes that first pass the real one.
 pub(crate) fn column_text(text: impl Into<SharedString>, width: f32) -> Div {
-    div().w(rems(width / 16.)).truncate().child(text.into())
+    let text = text.into();
+    div()
+        .w(rems(width / 16.))
+        .truncate()
+        .when(cfg!(test), |column| {
+            column.debug_selector(|| format!("COLUMN_TEXT {text}"))
+        })
+        .child(text)
+}
+
+pub(crate) fn setup_row(label: &'static str, value: AnyElement) -> Div {
+    div()
+        .min_w(px(0.))
+        .flex()
+        .flex_col()
+        .gap(rems(3. / 16.))
+        .when(cfg!(test), |row| {
+            row.debug_selector(|| format!("SETUP_ROW {label}"))
+        })
+        .child(section_label(label))
+        .child(value)
+}
+
+pub(crate) fn setup_value(
+    value: impl Into<SharedString>,
+    width: f32,
+    monospace: bool,
+    dim: bool,
+) -> AnyElement {
+    column_text(value, width)
+        .text_size(theme::text_body())
+        .text_color(if dim { theme::faint() } else { theme::text() })
+        .when(monospace, |value| {
+            value.font_family(theme::UI_MONOSPACE_FONT)
+        })
+        .into_any_element()
 }
 
 pub(crate) fn plural(count: i64, singular: &str, plural: &str) -> String {
