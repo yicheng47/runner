@@ -102,8 +102,8 @@ impl AgentsPane {
                         "enter" => {
                             let shell = enter_shell.clone();
                             window.defer(cx, move |window, cx| {
-                                let _ =
-                                    shell.update(cx, |root, _| root.focus_settings_page(window));
+                                let _ = shell
+                                    .update(cx, |root, cx| root.focus_settings_page(window, cx));
                             });
                             true
                         }
@@ -832,11 +832,12 @@ impl AgentsPane {
                     .flex()
                     .flex_wrap()
                     .items_center()
-                    .justify_between()
                     .gap(rems(10. / 16.))
                     .child(
                         div()
                             .debug_selector(|| format!("AGENT_IDENTITY_{}", runtime.name))
+                            .min_w_0()
+                            .max_w_full()
                             .flex()
                             .flex_wrap()
                             .items_center()
@@ -2268,15 +2269,20 @@ mod tests {
         for rem in [16., 20.8] {
             for width in [320., 480., 760.] {
                 pane.update(&mut window, |_, window, _| {
-                    window.resize(gpui::size(px(width), px(1200.)));
                     window.set_rem_size(px(rem));
                     window.refresh();
                 })
                 .unwrap();
+                window.simulate_resize(gpui::size(px(width), px(1200.)));
                 window.run_until_parked();
                 let header = window.debug_bounds("AGENT_HEADER_copilot").unwrap();
                 let identity = window.debug_bounds("AGENT_IDENTITY_copilot").unwrap();
                 let actions = window.debug_bounds("AGENT_ACTIONS_copilot").unwrap();
+                assert!(header.left() >= px(0.) && header.right() <= px(width));
+                if width == 320. {
+                    assert!(identity.size.height > px(26. * rem / 16.));
+                    assert!(identity.bottom() <= actions.top());
+                }
                 for bounds in [identity, actions] {
                     assert!(
                         header.left() <= bounds.left()

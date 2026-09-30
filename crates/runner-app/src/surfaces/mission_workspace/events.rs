@@ -206,7 +206,7 @@ impl MissionWorkspace {
                                 self.drawer_exit_codes
                                     .insert(session_id.to_owned(), exit_code);
                                 if drawer_session_should_take_focus(&self.layout, session_id) {
-                                    self.drawer_focus.focus(window);
+                                    self.drawer_focus.focus(window, cx);
                                 }
                             }
                         }

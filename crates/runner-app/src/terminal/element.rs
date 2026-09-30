@@ -22,8 +22,8 @@ use gpui::{
     Context, CursorStyle, DispatchPhase, Element, ElementInputHandler, Entity, FocusHandle, Font,
     GlobalElementId, Hitbox, HitboxBehavior, Hsla, InspectorElementId, IntoElement, LayoutId,
     MouseButton as GpuiMouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point,
-    ScrollDelta, ScrollWheelEvent, ShapedLine, SharedString, Style, TextRun, UnderlineStyle,
-    Window,
+    ScrollDelta, ScrollWheelEvent, ShapedLine, SharedString, Style, TextAlign, TextRun,
+    UnderlineStyle, Window,
 };
 
 use runner_app::terminal_ime::TerminalInput;
@@ -738,7 +738,7 @@ impl TerminalElement {
             if phase != DispatchPhase::Bubble || !down_hitbox.is_hovered(window) {
                 return;
             }
-            focus_handle.focus(window);
+            focus_handle.focus(window, cx);
             interaction.update(cx, |interaction, interaction_cx| {
                 interaction.mouse_down(event, geometry, interactive, interaction_cx);
             });
@@ -1381,7 +1381,14 @@ impl Element for TerminalElement {
             cell.paint(window);
         }
         for (origin, line) in &prepaint.lines {
-            let _ = line.paint(*origin, prepaint.line_height, window, cx);
+            let _ = line.paint(
+                *origin,
+                prepaint.line_height,
+                TextAlign::Left,
+                None,
+                window,
+                cx,
+            );
         }
         if let Some((cursor_bounds, line, background)) = &prepaint.marked_text {
             window.with_content_mask(Some(ContentMask { bounds }), |window| {
@@ -1392,7 +1399,14 @@ impl Element for TerminalElement {
                     ),
                     *background,
                 ));
-                let _ = line.paint(cursor_bounds.origin, prepaint.line_height, window, cx);
+                let _ = line.paint(
+                    cursor_bounds.origin,
+                    prepaint.line_height,
+                    TextAlign::Left,
+                    None,
+                    window,
+                    cx,
+                );
             });
         } else if let Some((cursor_bounds, shape)) = prepaint.cursor {
             let focused = self.focus_handle.is_focused(window);
@@ -1409,7 +1423,14 @@ impl Element for TerminalElement {
                                 cell.paint(window);
                             }
                             if let Some((origin, line)) = &prepaint.cursor_text {
-                                let _ = line.paint(*origin, prepaint.line_height, window, cx);
+                                let _ = line.paint(
+                                    *origin,
+                                    prepaint.line_height,
+                                    TextAlign::Left,
+                                    None,
+                                    window,
+                                    cx,
+                                );
                             }
                         },
                     );

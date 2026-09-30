@@ -1132,8 +1132,8 @@ fn the_popups_text_actions_answer_enter_and_space() {
         page.update(|_, _, cx| cx.notify());
     };
     let press = |page: &mut CrewPageHarness, focus: fn(&SlotPopup) -> FocusHandle, key: &str| {
-        page.update(|root, window, _| {
-            focus(root.crew_surfaces.editor.popup.as_ref().unwrap()).focus(window)
+        page.update(|root, window, cx| {
+            focus(root.crew_surfaces.editor.popup.as_ref().unwrap()).focus(window, cx)
         });
         page.visual.simulate_keystrokes(key);
         page.visual.run_until_parked();
@@ -1240,7 +1240,7 @@ fn a_lowercased_handle_undoes_to_before_the_keystroke_and_redoes() {
     let text =
         |page: &mut CrewPageHarness| page.update(|_, _, cx| handle.read(cx).text().to_owned());
     let suggested = text(&mut page);
-    page.update(|_, window, cx| handle.read(cx).focus_handle().focus(window));
+    page.update(|_, window, cx| handle.read(cx).focus_handle().focus(window, cx));
 
     page.visual.simulate_input("A");
     page.visual.run_until_parked();

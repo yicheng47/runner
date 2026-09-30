@@ -974,7 +974,7 @@ impl NativeRoot {
         if let Some(modal) = self.start_chat_modal.as_mut() {
             restore_baseline(modal, cx);
         }
-        title_focus.focus(window);
+        title_focus.focus(window, cx);
         self.refresh_start_chat_models(cx);
         cx.notify();
     }
@@ -1665,7 +1665,7 @@ impl NativeRoot {
                 modal.speed_select.read(cx).focus_handle()
             }
         };
-        focus.focus(window);
+        focus.focus(window, cx);
         if kind == ResetKind::Runtime {
             if let Some(runtime) = self
                 .start_chat_modal
@@ -1939,8 +1939,8 @@ impl NativeRoot {
             .rounded_md()
             .text_size(theme::text_ui())
             .font_weight(FontWeight::SEMIBOLD)
-            .on_mouse_down(MouseButton::Left, move |_, window, _| {
-                click_focus.focus(window);
+            .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                click_focus.focus(window, cx);
             })
             .text_color(if active == mode {
                 theme::text()
@@ -2921,7 +2921,7 @@ mod tests {
         /// select while it calls back.
         fn pick(&mut self, select: fn(&StartChatModal, &App) -> FocusHandle, keys: &str) {
             let handle = self.read(select);
-            self.act(move |_, window, _| handle.focus(window));
+            self.act(move |_, window, cx| handle.focus(window, cx));
             self.visual.simulate_keystrokes(keys);
             self.visual.run_until_parked();
         }
@@ -2954,6 +2954,8 @@ mod tests {
             let bounds = self
                 .bounds(&format!("START_CHAT_RESET {kind:?}"))
                 .expect("the control shows its Reset");
+            let content = self.bounds("MODAL_CONTENT").expect("modal content");
+            assert!(content.contains(&bounds.origin) && content.contains(&bounds.bottom_right()));
             self.visual
                 .simulate_click(bounds.center(), gpui::Modifiers::default());
             self.visual.run_until_parked();
@@ -3957,7 +3959,7 @@ mod tests {
             "a long name truncates inside the picker: {picker:?} in {card:?}"
         );
         assert!(
-            modal.read(|modal, _| modal.scroll_handle.max_offset().height) > px(0.),
+            modal.read(|modal, _| modal.scroll_handle.max_offset().y) > px(0.),
             "the tall form scrolls"
         );
 

@@ -27,7 +27,7 @@ impl NativeRoot {
             submitting: false,
             error: None,
         });
-        focus.focus(window);
+        focus.focus(window, cx);
         cx.notify();
     }
 
@@ -41,7 +41,7 @@ impl NativeRoot {
             return;
         }
         self.crew_surfaces.create = None;
-        window.focus(&self.root_focus);
+        window.focus(&self.root_focus, cx);
         cx.notify();
     }
 

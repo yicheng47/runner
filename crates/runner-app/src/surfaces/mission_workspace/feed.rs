@@ -299,7 +299,7 @@ impl MissionWorkspace {
                     head: position,
                 });
                 self.feed_selecting = true;
-                window.focus(&self.root_focus);
+                window.focus(&self.root_focus, cx);
                 cx.notify();
             }
             FeedSelectionPhase::Extend if self.feed_selecting => {

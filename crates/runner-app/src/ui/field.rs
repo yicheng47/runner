@@ -1200,7 +1200,7 @@ impl Element for TextFieldElement {
                 px(0.)
             };
             if delta != px(0.) {
-                let max = scroll_handle.max_offset().height;
+                let max = scroll_handle.max_offset().y;
                 let y = (offset.y + delta).clamp(-max, px(0.));
                 origin.y += y - offset.y;
                 offset.y = y;
@@ -1828,7 +1828,7 @@ impl TextField {
         if self.disabled {
             return;
         }
-        self.focus_handle.focus(window);
+        self.focus_handle.focus(window, cx);
         let (position, row_end) = self
             .index_for_point(event.position, event.click_count >= 2, window)
             .unwrap_or((self.buffer.text.len(), false));
@@ -1915,7 +1915,7 @@ impl TextField {
             return false;
         };
         let offset = self.scroll_handle.offset();
-        let max = self.scroll_handle.max_offset().height;
+        let max = self.scroll_handle.max_offset().y;
         let y = (offset.y + step).clamp(-max, px(0.));
         if y == offset.y {
             return false;
@@ -2336,8 +2336,8 @@ impl RenderOnce for Label {
             .when_some(focus_target, |label, focus| {
                 label.cursor(CursorStyle::PointingHand).on_mouse_down(
                     MouseButton::Left,
-                    move |_, window, _| {
-                        focus.focus(window);
+                    move |_, window, cx| {
+                        focus.focus(window, cx);
                     },
                 )
             })
@@ -2363,10 +2363,11 @@ impl RenderOnce for Label {
                                 offset: gpui::point(px(0.), px(0.)),
                                 blur_radius: px(0.),
                                 spread_radius: px(1.),
+                                inset: false,
                             }])
                         })
                         .on_mouse_down(MouseButton::Left, move |_, window, cx| {
-                            hint_focus.focus(window);
+                            hint_focus.focus(window, cx);
                             cx.stop_propagation();
                         })
                         .child(

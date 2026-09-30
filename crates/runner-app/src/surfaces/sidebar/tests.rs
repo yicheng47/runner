@@ -40,7 +40,7 @@ impl Render for SidebarRenameTest {
                     .id("outside-rename")
                     .h(px(40.))
                     .w_full()
-                    .on_click(|_, window, _| window.blur())
+                    .on_click(|_, window, cx| window.blur(cx))
                     .debug_selector(|| "OUTSIDE_RENAME".into()),
             )
     }
@@ -1042,10 +1042,10 @@ fn sidebar_scroll_layout_reports_overflow_and_fills_short_lists() {
     window.run_until_parked();
 
     let viewport = f32::from(scroll.bounds().size.height);
-    let max_offset = f32::from(scroll.max_offset().height);
+    let max_offset = f32::from(scroll.max_offset().y);
     let block_wrapper_viewport = f32::from(block_wrapper_scroll.bounds().size.height);
-    let block_wrapper_max_offset = f32::from(block_wrapper_scroll.max_offset().height);
-    let constrained_section_max_offset = f32::from(constrained_section_scroll.max_offset().height);
+    let block_wrapper_max_offset = f32::from(block_wrapper_scroll.max_offset().y);
+    let constrained_section_max_offset = f32::from(constrained_section_scroll.max_offset().y);
     let constrained_chats_height = f32::from(
         window
             .debug_bounds("TEST_CHATS_test-constrained-section-sidebar-node-scroll")

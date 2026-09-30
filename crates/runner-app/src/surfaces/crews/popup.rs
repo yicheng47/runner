@@ -7,9 +7,9 @@ use std::rc::Rc;
 
 use gpui::prelude::*;
 use gpui::{
-    anchored, div, linear_color_stop, linear_gradient, point, px, rems, svg, AnchoredPositionMode,
-    AnyElement, Context, Corner, FocusHandle, FontWeight, KeyDownEvent, MouseButton, SharedString,
-    Window,
+    anchored, div, linear_color_stop, linear_gradient, point, px, rems, svg, Anchor,
+    AnchoredPositionMode, AnyElement, Context, FocusHandle, FontWeight, KeyDownEvent, MouseButton,
+    SharedString, Window,
 };
 use runner_app::ui::{
     Button, ButtonSize, ButtonVariant, IconButton, IconButtonSize, ModelField, RoleAvatar,
@@ -120,7 +120,7 @@ impl NativeRoot {
                         body.debug_selector(|| "CREW_SLOT_POPUP_BODY".into())
                     })
                     .min_h(px(0.))
-                    .flex_shrink()
+                    .flex_shrink(1.)
                     .overflow_y_scroll()
                     .child(match popup.edit.as_ref() {
                         Some(form) => self.render_popup_override_rows(&slot, form, cx),
@@ -159,7 +159,7 @@ impl NativeRoot {
                 .child(
                     anchored()
                         .position(point(anchor.right() + rem, anchor.top() - rem * 0.5))
-                        .anchor(Corner::TopLeft)
+                        .anchor(Anchor::TopLeft)
                         .position_mode(AnchoredPositionMode::Window)
                         .snap_to_window_with_margin(rem * 0.5)
                         .child(panel),
@@ -675,7 +675,7 @@ impl NativeRoot {
         });
         self.sync_slot_model_choices(cx);
         self.sync_slot_effort_choices(cx);
-        focus.focus(window);
+        focus.focus(window, cx);
         cx.notify();
     }
 

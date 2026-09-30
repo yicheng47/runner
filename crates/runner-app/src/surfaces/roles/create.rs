@@ -70,7 +70,7 @@ impl NativeRoot {
             return;
         }
         self.role_surfaces.create = None;
-        window.focus(&self.root_focus);
+        window.focus(&self.root_focus, cx);
         cx.notify();
     }
 

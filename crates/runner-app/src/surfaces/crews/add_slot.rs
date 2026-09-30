@@ -126,7 +126,7 @@ impl NativeRoot {
             error: None,
             _subscriptions: subscriptions,
         });
-        focus.focus(window);
+        focus.focus(window, cx);
         self.load_add_slot_roles(cx);
         cx.notify();
     }
@@ -309,7 +309,7 @@ impl NativeRoot {
             return;
         }
         self.crew_surfaces.add_slot = None;
-        window.focus(&self.root_focus);
+        window.focus(&self.root_focus, cx);
         cx.notify();
     }
 

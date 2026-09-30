@@ -745,8 +745,8 @@ fn settings_select(
 }
 
 impl NativeRoot {
-    pub(crate) fn focus_settings_page(&self, window: &mut Window) {
-        self.settings_page.focus.focus(window);
+    pub(crate) fn focus_settings_page(&self, window: &mut Window, cx: &mut App) {
+        self.settings_page.focus.focus(window, cx);
     }
 
     pub(crate) fn shortcut_recording_active(&self) -> bool {
@@ -973,7 +973,7 @@ impl NativeRoot {
             | SettingsPane::Terminal
             | SettingsPane::Shortcuts => {}
         }
-        window.focus(&self.settings_page.focus);
+        window.focus(&self.settings_page.focus, cx);
         cx.notify();
     }
 
@@ -1416,6 +1416,7 @@ impl NativeRoot {
                     offset: gpui::point(px(0.), px(0.)),
                     blur_radius: px(0.),
                     spread_radius: px(2.),
+                    inset: false,
                 }])
             })
             .child(
@@ -1753,7 +1754,9 @@ impl NativeRoot {
         self.settings_page.shortcut_recording = Some(id);
         self.settings_page.shortcut_conflict = None;
         self.rebuild_key_bindings(true, cx);
-        self.settings_page.shortcut_recording_focus.focus(window);
+        self.settings_page
+            .shortcut_recording_focus
+            .focus(window, cx);
         cx.notify();
     }
 
@@ -1767,7 +1770,7 @@ impl NativeRoot {
         }
         self.settings_page.shortcut_conflict = None;
         self.rebuild_key_bindings(false, cx);
-        self.settings_page.focus.focus(window);
+        self.settings_page.focus.focus(window, cx);
         cx.notify();
     }
 
@@ -1827,7 +1830,7 @@ impl NativeRoot {
         self.settings_page.shortcut_recording = None;
         self.settings_page.shortcut_conflict = None;
         self.rebuild_key_bindings(false, cx);
-        self.settings_page.focus.focus(window);
+        self.settings_page.focus.focus(window, cx);
         cx.notify();
     }
 
@@ -1861,7 +1864,7 @@ impl NativeRoot {
         });
         self.settings_page.shortcut_conflict = None;
         self.rebuild_key_bindings(false, cx);
-        self.settings_page.focus.focus(window);
+        self.settings_page.focus.focus(window, cx);
         cx.notify();
     }
 
@@ -1876,7 +1879,7 @@ impl NativeRoot {
         self.settings_page.shortcut_recording = None;
         self.settings_page.shortcut_conflict = None;
         self.rebuild_key_bindings(false, cx);
-        self.settings_page.focus.focus(window);
+        self.settings_page.focus.focus(window, cx);
         cx.notify();
     }
 
@@ -2974,9 +2977,10 @@ mod tests {
         .unwrap();
         window.run_until_parked();
         assert!(window.debug_bounds("SETTINGS_TERMINAL_THEME").is_none());
-        // gpui-ce 0.3.3 never clears `debug_bounds` between frames, so the
-        // preview's selectors linger from the Appearance frame; the pane's own
-        // selector and the font row prove the Terminal pane is what rendered.
+        // GPUI clears `debug_bounds` each frame; Appearance selectors must be gone.
+        for selector in ["SETTINGS_APPEARANCE_LIGHT", "SETTINGS_APPEARANCE_DARK"] {
+            assert!(window.debug_bounds(selector).is_none(), "{selector}");
+        }
         let pane = window.debug_bounds("SETTINGS_TERMINAL_PANE").unwrap();
         let font = window.debug_bounds("SETTINGS_TERMINAL_FONT").unwrap();
         assert!(
@@ -3226,7 +3230,7 @@ mod tests {
                 // right-anchored, top-inset track by where a click jumps the
                 // scroll: above the thumb jumps to the top, below it to the
                 // bottom, and a click outside the gutter changes nothing.
-                let max = scroll.max_offset().height;
+                let max = scroll.max_offset().y;
                 assert!(max > px(0.), "{label}: the pane should overflow");
                 let inside_left = px(width - GUTTER * zoom + 1.);
                 let outside_left = px(width - GUTTER * zoom - 1.);

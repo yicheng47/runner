@@ -246,7 +246,7 @@ mod tests {
         let subtitle = window
             .debug_bounds("DUPLICATE_SUBJECT_SUBTITLE")
             .expect("subtitle bounds");
-        assert_eq!(card.bottom() - actions.bottom(), px(31.5));
+        assert_eq!(card.bottom() - actions.bottom(), px(32.));
         assert_eq!(title.size.width, subtitle.size.width);
         assert!(subtitle.size.height > px(26.));
         assert!(subtitle.right() < card.right());

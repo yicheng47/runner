@@ -272,7 +272,7 @@ impl StyledSelect {
 
     /// How far the open menu can scroll; zero when every option is in view.
     pub fn menu_scroll_range(&self) -> Pixels {
-        self.menu_scroll.max_offset().height
+        self.menu_scroll.max_offset().y
     }
 
     pub fn min_menu_width(mut self, width: Pixels) -> Self {
@@ -514,7 +514,7 @@ impl Render for StyledSelect {
                                 }
                             })
                             .on_click(move |_, window, cx| {
-                                click_focus.focus(window);
+                                click_focus.focus(window, cx);
                                 click_entity.update(cx, |select, cx| select.toggle(cx));
                             })
                     })
@@ -849,7 +849,7 @@ pub(crate) fn option_menu(
 
 /// Whether the list has anything to scroll, past sub-pixel rounding.
 fn menu_scrolls(scroll: &ScrollHandle) -> bool {
-    scroll.max_offset().height >= px(1.)
+    scroll.max_offset().y >= px(1.)
 }
 
 /// Renders the view being drawn once more, for an element whose look depends
@@ -995,11 +995,7 @@ mod tests {
                 "{rem}: the check is centered in its row: {check:?} {row:?}"
             );
             let max_offset = select.read_with(&visual, |select, _| select.menu_scroll.max_offset());
-            assert_eq!(
-                max_offset.height,
-                px(0.),
-                "{rem}: three options never scroll"
-            );
+            assert_eq!(max_offset.y, px(0.), "{rem}: three options never scroll");
             assert!(
                 row.right() >= menu.right() - px(2.),
                 "{rem}: with nothing to scroll no scrollbar lane is kept: {row:?} in {menu:?}"

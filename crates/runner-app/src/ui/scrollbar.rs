@@ -118,7 +118,7 @@ impl Scrollbar {
             ScrollbarKind::App,
             Rc::new(move || {
                 let viewport = f32::from(read_handle.bounds().size.height);
-                let maximum = f32::from(read_handle.max_offset().height).max(0.);
+                let maximum = f32::from(read_handle.max_offset().y).max(0.);
                 ScrollbarMetrics {
                     viewport,
                     content: viewport + maximum,
@@ -127,7 +127,7 @@ impl Scrollbar {
             }),
             Rc::new(move |position, cx| {
                 let offset = write_handle.offset();
-                let maximum = f32::from(write_handle.max_offset().height).max(0.);
+                let maximum = f32::from(write_handle.max_offset().y).max(0.);
                 write_handle.set_offset(Point::new(offset.x, px(-position.clamp(0., maximum))));
                 cx.notify(owner);
             }),

@@ -258,7 +258,10 @@ impl MissionWorkspace {
         if let Some(post) = transition.post {
             self.post_mission_composer(post, window, cx);
         } else {
-            self.composer_input.read(cx).focus_handle().focus(window);
+            self.composer_input
+                .read(cx)
+                .focus_handle()
+                .focus(window, cx);
             cx.notify();
         }
     }
@@ -275,7 +278,10 @@ impl MissionWorkspace {
         self.composer = select_composer_target(handle);
         self.composer_input
             .update(cx, |input, input_cx| input.reset("", input_cx));
-        self.composer_input.read(cx).focus_handle().focus(window);
+        self.composer_input
+            .read(cx)
+            .focus_handle()
+            .focus(window, cx);
         cx.notify();
     }
 
@@ -284,7 +290,10 @@ impl MissionWorkspace {
             return;
         }
         self.composer.target = None;
-        self.composer_input.read(cx).focus_handle().focus(window);
+        self.composer_input
+            .read(cx)
+            .focus_handle()
+            .focus(window, cx);
         cx.notify();
     }
 
@@ -359,7 +368,10 @@ impl MissionWorkspace {
                         this.error = Some(action_failure("send the mission message", error));
                     }
                 }
-                this.composer_input.read(cx).focus_handle().focus(window);
+                this.composer_input
+                    .read(cx)
+                    .focus_handle()
+                    .focus(window, cx);
                 cx.notify();
             });
         })

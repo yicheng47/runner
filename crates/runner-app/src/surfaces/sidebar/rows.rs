@@ -390,7 +390,7 @@ impl Sidebar {
                 this.submit_sidebar_rename(window, cx);
             }));
         self.rename = Some(SidebarRename { target, input });
-        focus.focus(window);
+        focus.focus(window, cx);
         cx.notify();
     }
 

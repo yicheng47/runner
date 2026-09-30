@@ -64,7 +64,7 @@ impl NativeRoot {
         self.role_surfaces.context_menu = None;
         self.crew_surfaces.context_menu = None;
         self.set_route(route, cx);
-        window.focus(&self.root_focus);
+        window.focus(&self.root_focus, cx);
         cx.notify();
     }
 

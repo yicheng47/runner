@@ -777,6 +777,14 @@ mod tests {
     use chrono::TimeDelta;
 
     #[test]
+    fn http_client_accepts_captured_socks_proxy() {
+        let mut env = LoginShellEnv::default();
+        env.vars
+            .insert("ALL_PROXY".into(), "socks5h://127.0.0.1:1080".into());
+        http_client(&env).expect("a captured SOCKS proxy should build without a network request");
+    }
+
+    #[test]
     fn parses_recorded_answers_by_duration_and_scope() {
         let codex = serde_json::json!({"rateLimits":{"primary":{"usedPercent":27,"windowDurationMins":10080,"resetsAt":1770000000},"secondary":{"usedPercent":4,"windowDurationMins":300,"resetsAt":1770000000}}});
         let windows = parse_codex(&codex).unwrap();

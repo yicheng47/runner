@@ -27,10 +27,10 @@ use futures::StreamExt as _;
 #[cfg(target_os = "macos")]
 use gpui::QuitMode;
 use gpui::{
-    actions, div, point, prelude::*, px, relative, rems, size, AnyElement, App, Application,
-    Bounds, ClipboardItem, Context, CursorStyle, DragMoveEvent, Entity, FocusHandle, Global,
-    KeyDownEvent, Menu, MenuItem, MouseButton, OsAction, Pixels, ScrollHandle, SharedString, Size,
-    Subscription, SystemMenuType, TitlebarOptions, Window, WindowBounds, WindowOptions,
+    actions, div, point, prelude::*, px, relative, rems, size, AnyElement, App, Bounds,
+    ClipboardItem, Context, CursorStyle, DragMoveEvent, Entity, FocusHandle, Global, KeyDownEvent,
+    Menu, MenuItem, MouseButton, OsAction, Pixels, ScrollHandle, SharedString, Size, Subscription,
+    SystemMenuType, TitlebarOptions, Window, WindowBounds, WindowOptions,
 };
 use runner_app::bootstrap::{
     boot_core, native_paths, stop_running_sessions_on_quit, NativeMcpServer, NativePaths,
@@ -914,23 +914,23 @@ impl NativeRoot {
             AppRoute::Mission(mission_id) => root.open_mission(mission_id, window, cx),
             AppRoute::Roles => {
                 root.load_role_page(cx);
-                window.focus(&root.root_focus);
+                window.focus(&root.root_focus, cx);
             }
             AppRoute::RoleDetail(handle) => {
                 root.load_role_detail(handle, cx);
-                window.focus(&root.root_focus);
+                window.focus(&root.root_focus, cx);
             }
             AppRoute::Crews => {
                 root.load_crew_page(cx);
-                window.focus(&root.root_focus);
+                window.focus(&root.root_focus, cx);
             }
             AppRoute::CrewEditor(crew_id) => {
                 root.load_crew_editor(crew_id, cx);
-                window.focus(&root.root_focus);
+                window.focus(&root.root_focus, cx);
             }
             AppRoute::Settings => {
                 root.enter_settings_pane(SettingsPane::General, window, cx);
-                window.focus(&root.root_focus);
+                window.focus(&root.root_focus, cx);
             }
             AppRoute::Chat | AppRoute::ArchivedChat => {}
         }
@@ -1247,7 +1247,12 @@ fn run() -> Result<()> {
     let shutdown_core = core.clone();
     let ui_settings_path = settings_path(&paths.app_data_dir);
 
-    let application = Application::new().with_assets(Assets);
+    #[cfg(target_os = "macos")]
+    let application = gpui_platform::application();
+    #[cfg(windows)]
+    let application =
+        gpui::Application::with_platform(Rc::new(gpui_windows::WindowsPlatform::new(false)?));
+    let application = application.with_assets(Assets);
     #[cfg(target_os = "macos")]
     let application = application.with_quit_mode(QuitMode::Explicit);
     application.on_reopen(handle_reopen);
@@ -1436,6 +1441,7 @@ pub(crate) fn app_menus() -> Vec<Menu> {
     vec![
         Menu {
             name: "Runner".into(),
+            disabled: false,
             items: vec![
                 MenuItem::action("Check for Updates…", CheckForUpdates),
                 MenuItem::separator(),
@@ -1450,10 +1456,12 @@ pub(crate) fn app_menus() -> Vec<Menu> {
         },
         Menu {
             name: "File".into(),
+            disabled: false,
             items: vec![MenuItem::action("New Window", NewWindow)],
         },
         Menu {
             name: "Edit".into(),
+            disabled: false,
             items: vec![
                 MenuItem::os_action("Undo", Undo, OsAction::Undo),
                 MenuItem::os_action("Redo", Redo, OsAction::Redo),
@@ -1466,10 +1474,12 @@ pub(crate) fn app_menus() -> Vec<Menu> {
         },
         Menu {
             name: "View".into(),
+            disabled: false,
             items: vec![MenuItem::action("Enter Full Screen", ToggleFullscreen)],
         },
         Menu {
             name: "Window".into(),
+            disabled: false,
             items: vec![
                 MenuItem::action("Minimize", Minimize),
                 MenuItem::action("Maximize", Maximize),

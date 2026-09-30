@@ -122,7 +122,7 @@ impl NativeRoot {
             submit_focus: cx.focus_handle(),
             _subscriptions: subscriptions,
         });
-        crew_focus.focus(window);
+        crew_focus.focus(window, cx);
         cx.notify();
 
         let core = self.core(cx).clone();
@@ -227,7 +227,7 @@ impl NativeRoot {
             return;
         }
         self.start_mission_modal = None;
-        window.focus(&self.root_focus);
+        window.focus(&self.root_focus, cx);
         cx.notify();
     }
 

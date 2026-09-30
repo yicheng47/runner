@@ -48,7 +48,7 @@ impl NativeRoot {
             settings.sidebar_projects_open = true;
             true
         });
-        cwd_focus.focus(window);
+        cwd_focus.focus(window, cx);
         cx.notify();
     }
 
@@ -172,7 +172,7 @@ impl NativeRoot {
         if deleting_active_chat {
             self.set_route(AppRoute::Roles, cx);
             self.load_role_page(cx);
-            window.focus(&self.root_focus);
+            window.focus(&self.root_focus, cx);
         }
         self.project_delete_busy = true;
         let core = self.core(cx).clone();

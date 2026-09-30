@@ -507,6 +507,7 @@ fn usage_popover_panel(
             color: gpui::black().opacity(0.25),
             blur_radius: px(16.),
             spread_radius: px(0.),
+            inset: false,
             offset: point(px(0.), px(4.)),
         }])
         .when(cfg!(test), |panel| {
@@ -517,7 +518,7 @@ fn usage_popover_panel(
             div()
                 .id("usage-popover-body")
                 .min_h(px(0.))
-                .flex_shrink()
+                .flex_shrink(1.)
                 .overflow_y_scroll()
                 .scrollbar_width(px(0.))
                 .when(cfg!(test), |body| {
@@ -1369,6 +1370,7 @@ impl NativeRoot {
                             offset: point(px(0.), px(8. * zoom)),
                             blur_radius: px(24. * zoom),
                             spread_radius: px(0.),
+                            inset: false,
                         }])
                         .cursor_pointer()
                         .occlude()
@@ -1634,7 +1636,7 @@ impl NativeRoot {
             AppRoute::Mission(mission_id) => self.open_mission(mission_id, window, cx),
             AppRoute::ArchivedChat => {
                 self.set_route(AppRoute::ArchivedChat, cx);
-                self.chat_focus.focus(window);
+                self.chat_focus.focus(window, cx);
                 cx.notify();
             }
         }

@@ -305,7 +305,7 @@ impl NativeRoot {
             error: None,
             _subscriptions: subscriptions,
         });
-        handle.read(cx).focus_handle().focus(window);
+        handle.read(cx).focus_handle().focus(window, cx);
         cx.notify();
     }
 
@@ -499,7 +499,7 @@ impl NativeRoot {
             _subscriptions: subscriptions,
         });
         self.sync_role_edit_efforts(cx);
-        display_name.read(cx).focus_handle().focus(window);
+        display_name.read(cx).focus_handle().focus(window, cx);
         cx.notify();
     }
 }

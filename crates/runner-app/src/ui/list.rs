@@ -209,6 +209,7 @@ impl Render for SearchInput {
                                 offset: gpui::point(px(0.), px(0.)),
                                 blur_radius: px(0.),
                                 spread_radius: px(2.),
+                                inset: false,
                             }])
                     })
                     .on_click(move |_, _, cx| {
@@ -315,6 +316,7 @@ impl RenderOnce for Pager {
                                         offset: gpui::point(px(0.), px(0.)),
                                         blur_radius: px(0.),
                                         spread_radius: px(2.),
+                                        inset: false,
                                     }])
                                 })
                                 .hover(|button| {
@@ -382,6 +384,7 @@ fn pager_icon_button(
                 offset: gpui::point(px(0.), px(0.)),
                 blur_radius: px(0.),
                 spread_radius: px(2.),
+                inset: false,
             }])
         })
         .child(icon);

@@ -277,6 +277,7 @@ fn stepper_button(
                 offset: gpui::point(px(0.), px(0.)),
                 blur_radius: px(0.),
                 spread_radius: px(2.),
+                inset: false,
             }])
         })
         .child(icon);

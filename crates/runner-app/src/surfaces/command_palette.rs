@@ -318,7 +318,7 @@ impl CommandPaletteState {
         self.input
             .update(cx, |input, input_cx| input.reset("", input_cx));
         self.open = true;
-        self.input.read(cx).focus_handle().focus(window);
+        self.input.read(cx).focus_handle().focus(window, cx);
         cx.notify();
     }
 
@@ -328,7 +328,7 @@ impl CommandPaletteState {
         }
         self.open = false;
         if let Some(focus) = self.previous_focus.take() {
-            focus.focus(window);
+            focus.focus(window, cx);
         }
         cx.notify();
     }
@@ -384,7 +384,7 @@ impl CommandPaletteState {
         self.open = false;
         let previous_focus = self.previous_focus.take();
         if let Some(focus) = previous_focus.as_ref() {
-            focus.focus(window);
+            focus.focus(window, cx);
         }
         let navigated = self.shell.upgrade().is_some_and(|shell| {
             shell.update(cx, |shell, shell_cx| match destination {
@@ -424,7 +424,7 @@ impl CommandPaletteState {
         if !navigated {
             self.open = true;
             self.previous_focus = previous_focus;
-            self.input.read(cx).focus_handle().focus(window);
+            self.input.read(cx).focus_handle().focus(window, cx);
         }
         cx.notify();
     }
@@ -598,6 +598,7 @@ impl Render for CommandPaletteState {
                         offset: point(px(0.), px(14.)),
                         blur_radius: px(40.),
                         spread_radius: px(0.),
+                        inset: false,
                     }])
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .child(

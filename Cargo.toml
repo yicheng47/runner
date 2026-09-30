@@ -31,7 +31,16 @@ uuid = { version = "1", features = ["v4"] }
 [profile.dev.package."*"]
 opt-level = 2
 
-[profile.dev.package.gpui-ce]
+[profile.dev.package.gpui-pre]
+opt-level = 3
+
+[profile.dev.package.gpui-pre-macos]
+opt-level = 3
+
+[profile.dev.package.gpui-pre-windows]
+opt-level = 3
+
+[profile.dev.package.gpui-pre-apple]
 opt-level = 3
 
 [profile.dev.package.taffy]
@@ -45,7 +54,7 @@ debug = "line-tables-only"
 [profile.ci.package."*"]
 opt-level = 1
 
-[profile.ci.package.gpui-ce]
+[profile.ci.package.gpui-pre]
 opt-level = 1
 
 [profile.ci.package.taffy]

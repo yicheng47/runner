@@ -95,7 +95,7 @@ Crate boundaries are in [`AGENTS.md`](../../AGENTS.md); this is the shape *insid
 
 | Layer | Choice | Why |
 |---|---|---|
-| UI framework | **GPUI** (`gpui-ce` 0.3.3, Metal) | Zed's retained-mode Rust UI: entities + elements, one process with the core, native text shaping and IME. Replaced Tauri + React in the 2026-08 rewrite. |
+| UI framework | **GPUI** (`gpui-pre` 0.3.7, `zed@1a28cff`, Metal / DirectX) | A crates.io snapshot of upstream Zed's retained-mode Rust UI: entities + elements, one process with the core, native text shaping and IME. Replaced Tauri + React in the 2026-08 rewrite. |
 | Terminal model | **`alacritty_terminal` 0.26** | Grid, VTE parser, scrollback with reflow, selection, mouse/alt-screen modes. The same model Zed embeds. |
 | Terminal renderer | custom GPUI element (`runner-app/src/terminal/element.rs`) | Walks the `Term` grid per frame, shapes runs through GPUI's text system; bundled JetBrainsMono Nerd Font Mono is the default face, Menlo the alternative. |
 | Application core | **Rust** crate `runner-backend`, UI-agnostic | SQLite, session manager, event bus, router, MCP server. The same crate could host another front end; the app crate is a consumer. |
@@ -109,6 +109,8 @@ Crate boundaries are in [`AGENTS.md`](../../AGENTS.md); this is the shape *insid
 | Updater | **Sparkle 2.9.5** via `objc2` (`updater` feature) | `SPUStandardUpdaterController`, EdDSA-signed appcasts on GitHub Releases, with separate production and nightly feeds — see §14. |
 | Packaging | `script/bundle-mac` | `.app` assembly, Developer ID codesign, notarization, DMG; `CFBundleVersion` is the build stamp. |
 | Input | GPUI key dispatch + native IME (`terminal_ime.rs`) | Pinyin composition in the terminal was the hard requirement of the rewrite. |
+
+**GPUI bumps.** Pin every direct `gpui-pre-*` dependency to the same exact release and move the pins together. The release's crates.io description names its Zed commit; read that commit's source when checking API and behavior changes. Keep `gpui-pre-platform` on macOS with `font-kit`, and use `gpui-pre-windows` directly with default features disabled on Windows. Re-check the defaults and the CI step “Verify Runner manifest and icon” after each bump: enabling GPUI's `windows-manifest` would embed a second manifest beside Runner's own `longPathAware` manifest.
 
 **Platform target.** macOS on Apple Silicon and Windows x64. Intel Macs are not supported and no Intel build is planned: universal packaging shipped in `v0.6.0` and `v0.6.1` and was dropped for download size — 43 MB universal against 19 MB arm64 (Jason, 2026-08-25). Windows has shipped since `0.8.0`: every production release carries a signed `Runner-Setup-…-x64.exe` beside the arm64 DMG. Both platforms develop from `main` and both CI jobs run on every pull request, but only `Rust / macOS` is a required check, so a Windows break does not block the merge button — read that job before merging. See [Windows development](./windows.md) and §14. Platform window chrome lives in `crates/runner-app/src/platform_ui/{macos,windows}.rs` with fonts in the adjacent `fonts_{macos,windows}.rs`, selected at compile time; everything else is shared, and a Unix-only mechanism needs a `cfg` arm rather than an assumption. Linux is out of scope.
 
@@ -908,7 +910,7 @@ A panic in a PTY reader thread only affects that session: the forwarder ends, th
 - An agent that won't learn to call CLI tools.
 - NDJSON append atomicity breaking on an exotic filesystem (NFS, iCloud-synced). App data must be on a local POSIX filesystem.
 - A target platform where `portable-pty` semantics differ meaningfully from POSIX PTYs (Windows).
-- A GPUI API break: `gpui-ce` is pinned (0.3.3) and upgraded deliberately; the terminal element and IME integration are the surfaces most exposed to it.
+- A GPUI API break: `gpui-pre` is pinned exactly (0.3.7) and bumped deliberately; the terminal element and IME integration are the surfaces most exposed to it.
 
 ## 14. Program state — line, landing, channels
 

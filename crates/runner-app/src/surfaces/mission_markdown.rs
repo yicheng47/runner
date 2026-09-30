@@ -1115,18 +1115,20 @@ mod tests {
 
     impl Render for MarkdownSpacingTest {
         fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-            div()
-                .w(px(280.))
-                .debug_selector(|| "MISSION_MARKDOWN_SPACING".into())
-                .child(render_markdown(
-                    "spacing-test",
-                    "First paragraph\n\nSecond paragraph\n\n# Heading",
-                    cx.entity_id(),
-                    None,
-                    theme::raised(),
-                    None,
-                    cx,
-                ))
+            div().child(
+                div()
+                    .w(px(280.))
+                    .debug_selector(|| "MISSION_MARKDOWN_SPACING".into())
+                    .child(render_markdown(
+                        "spacing-test",
+                        "First paragraph\n\nSecond paragraph\n\n# Heading",
+                        cx.entity_id(),
+                        None,
+                        theme::raised(),
+                        None,
+                        cx,
+                    )),
+            )
         }
     }
 

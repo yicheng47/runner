@@ -31,7 +31,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 unicode-segmentation = "1"
 
 [target.'cfg(target_os = "macos")'.dependencies]
-gpui = { package = "gpui-ce", version = "0.3" }
+gpui = { package = "gpui-pre", version = "=0.3.7" }
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.7", features = ["font-kit"] }
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", default-features = false, features = ["NSApplication", "NSButton", "NSControl", "NSImage", "NSResponder", "NSScreen", "NSView", "NSWindow"] }
 objc2-foundation = { version = "0.3", default-features = false, features = ["NSArray", "NSData", "NSDate", "NSDateFormatter", "NSDictionary", "NSError", "NSFormatter", "NSGeometry", "NSString"] }
@@ -40,15 +41,17 @@ raw-window-handle = "0.6"
 [target.'cfg(windows)'.dependencies]
 minisign-verify = "0.2"
 # Keep gpui's defaults except windows-manifest; resync when its defaults change.
-gpui = { package = "gpui-ce", version = "0.3", default-features = false, features = ["font-kit", "wayland", "x11"] }
-reqwest = { package = "zed-reqwest", version = "0.12.15-zed", default-features = false, features = ["blocking", "json", "rustls-tls-native-roots"] }
+gpui = { package = "gpui-pre", version = "=0.3.7", default-features = false, features = ["font-kit", "wayland", "x11"] }
+# gpui-pre-platform would re-enable windows-manifest alongside Runner's manifest.
+gpui_windows = { package = "gpui-pre-windows", version = "=0.3.7", default-features = false }
+reqwest = { package = "zed-reqwest", version = "0.12.15-zed", default-features = false, features = ["blocking", "json", "rustls-tls-native-roots", "socks"] }
 
 [target.'cfg(windows)'.dev-dependencies]
-gpui = { package = "gpui-ce", version = "0.3", default-features = false, features = ["test-support"] }
+gpui = { package = "gpui-pre", version = "=0.3.7", default-features = false, features = ["test-support"] }
 
 [target.'cfg(windows)'.build-dependencies]
 winresource = "0.1"
 
 [target.'cfg(target_os = "macos")'.dev-dependencies]
 font-kit = { package = "zed-font-kit", version = "0.14.1-zed" }
-gpui = { package = "gpui-ce", version = "0.3", features = ["test-support"] }
+gpui = { package = "gpui-pre", version = "=0.3.7", features = ["test-support"] }

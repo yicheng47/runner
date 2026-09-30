@@ -81,7 +81,7 @@ For a mission slot, "displayed" means the mission workspace is showing that slot
 
 ### Dock bounce and taskbar flash
 
-gpui-ce 0.3.3 has no `request_attention`, so this goes in a `platform_ui` function next to the window chrome. On macOS it calls `NSApplication requestUserAttention:` with `NSInformationalRequest`, which bounces the Dock icon once. On Windows it calls `FlashWindowEx` with `FLASHW_TRAY | FLASHW_TIMERNOFG` on the Runner window, which flashes until the window comes forward. It fires with a popup only when Runner is not the active app, and the Off setting disables it too.
+`gpui-pre` 0.3.7 has `Window::request_attention`, available since #733. This spec originally placed attention requests in a `platform_ui` function next to the window chrome; #701 should decide whether to use the upstream API or keep that native implementation. On macOS it calls `NSApplication requestUserAttention:` with `NSInformationalRequest`, which bounces the Dock icon once. On Windows it calls `FlashWindowEx` with `FLASHW_TRAY | FLASHW_TIMERNOFG` on the Runner window, which flashes until the window comes forward. It fires with a popup only when Runner is not the active app, and the Off setting disables it too.
 
 ### Setting
 
@@ -93,7 +93,7 @@ Settings → General (`surfaces/settings_page.rs:1965`) gains a row, **Notify wh
 - **Trigger detection**: a pure function from the previous and next `AppStore::session_statuses` (`app_store.rs:254`), plus the newly appended mission events, to a list of `(session_id, reason)`. It runs on the refreshes that `StoreRefreshKind::for_event` already routes (`session/status`, and `event/appended` for `human_question`), so the backend and the socket do not change. Keeping it pure keeps the edge rules unit-testable.
 - **Window options**: copy Zed's: `focus: false`, `show: true`, `kind: WindowKind::PopUp`, `is_movable: false`, `display_id`, a transparent background, client decorations and no titlebar.
 - **Popups are not Runner windows**: they must never register in the `WindowRegistry`, claim a subject or count as focused. The window-activation path has to ignore them, so that clicking View does not remap which window owns a session before the routing runs.
-- **Platform checks**: in gpui-ce, `WindowKind::PopUp` sets extended window styles on Windows (`platform/windows/window.rs:407`) and `NSPopUpWindowLevel` on macOS (`platform/mac/window.rs:805`). Two things are unverified:
+- **Platform checks**: in `gpui-pre` 0.3.7, `WindowKind::PopUp` sets extended window styles on Windows (`gpui-pre-windows/src/window.rs:489`) and `NSPopUpWindowLevel` on macOS (`gpui-pre-macos/src/window.rs:1228`). Two things are unverified:
   - that the Windows popup stays out of the taskbar and Alt-Tab;
   - that the macOS popup appears over another app's fullscreen Space.
 

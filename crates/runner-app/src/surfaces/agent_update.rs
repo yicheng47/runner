@@ -231,7 +231,7 @@ impl AgentUpdateDialog {
     ) -> Self {
         let previous_focus = window.focused(cx);
         let focus = cx.focus_handle();
-        focus.focus(window);
+        focus.focus(window, cx);
         Self {
             request,
             app_store,
@@ -290,9 +290,9 @@ impl AgentUpdateDialog {
         self._tasks = vec![started, wakes, ticks];
     }
 
-    pub(crate) fn restore_focus(&self, window: &mut Window) {
+    pub(crate) fn restore_focus(&self, window: &mut Window, cx: &mut App) {
         if let Some(focus) = &self.previous_focus {
-            focus.focus(window);
+            focus.focus(window, cx);
         }
     }
 
@@ -320,7 +320,7 @@ impl AgentUpdateDialog {
             cursor_shape(&settings),
         );
         let focus = cx.focus_handle();
-        focus.focus(window);
+        focus.focus(window, cx);
         self.terminal = Some(UpdateTerminal {
             _view: terminal.view(),
             interaction: cx.new(|_| TerminalInteraction::new(Arc::clone(&terminal))),
@@ -737,7 +737,7 @@ impl NativeRoot {
 
     pub(crate) fn close_agent_update(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(dialog) = self.agent_update.take() {
-            dialog.read(cx).restore_focus(window);
+            dialog.update(cx, |dialog, cx| dialog.restore_focus(window, cx));
         }
         cx.notify();
     }
@@ -899,11 +899,11 @@ mod tests {
         let dialog_slot: Rc<std::cell::RefCell<Option<Entity<AgentUpdateDialog>>>> = Rc::default();
         let closing = Rc::clone(&dialog_slot);
         let window = cx.add_window(|window, cx| {
-            // Like `NativeRoot::close_agent_update`, the handler reads the
+            // Like `NativeRoot::close_agent_update`, the handler updates the
             // dialog, which panics if it runs while the dialog is updating.
             let close: CloseHandler = Rc::new(move |window, cx| {
                 if let Some(dialog) = closing.borrow().as_ref() {
-                    dialog.read(cx).restore_focus(window);
+                    dialog.update(cx, |dialog, cx| dialog.restore_focus(window, cx));
                 }
                 counter.set(counter.get() + 1);
             });

@@ -247,7 +247,7 @@ impl NativeRoot {
             remove_focus: cx.focus_handle(),
             edit: None,
         });
-        focus.focus(window);
+        focus.focus(window, cx);
         cx.notify();
     }
 
@@ -262,7 +262,7 @@ impl NativeRoot {
             return;
         }
         if editor.popup.take().is_some() {
-            window.focus(&self.root_focus);
+            window.focus(&self.root_focus, cx);
             cx.notify();
         }
     }

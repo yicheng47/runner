@@ -488,7 +488,7 @@ impl NativeRoot {
             saving: false,
             _subscriptions: subscriptions,
         });
-        focus.focus(window);
+        focus.focus(window, cx);
         cx.notify();
     }
 
@@ -498,7 +498,7 @@ impl NativeRoot {
             return;
         }
         editor.edit = None;
-        window.focus(&self.root_focus);
+        window.focus(&self.root_focus, cx);
         cx.notify();
     }
 

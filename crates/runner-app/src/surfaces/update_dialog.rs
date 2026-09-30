@@ -173,7 +173,7 @@ impl UpdateDialog {
     ) -> Self {
         let previous_focus = window.focused(cx);
         let focus = cx.focus_handle();
-        focus.focus(window);
+        focus.focus(window, cx);
         let subscription = cx.observe(&updater, |_, _, cx| cx.notify());
         Self {
             updater,
@@ -186,9 +186,9 @@ impl UpdateDialog {
         }
     }
 
-    pub(crate) fn restore_focus(&self, window: &mut Window) {
+    pub(crate) fn restore_focus(&self, window: &mut Window, cx: &mut App) {
         if let Some(focus) = &self.previous_focus {
-            focus.focus(window);
+            focus.focus(window, cx);
         }
     }
 
@@ -443,7 +443,7 @@ impl NativeRoot {
 
     pub(crate) fn close_update_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(dialog) = self.update_dialog.take() {
-            dialog.read(cx).restore_focus(window);
+            dialog.update(cx, |dialog, cx| dialog.restore_focus(window, cx));
         }
         cx.notify();
     }

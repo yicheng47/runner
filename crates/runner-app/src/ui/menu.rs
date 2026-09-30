@@ -2,9 +2,9 @@ use std::rc::Rc;
 
 use gpui::prelude::*;
 use gpui::{
-    anchored, canvas, deferred, div, point, px, rems, svg, AnchoredPositionMode, AnyElement, App,
-    Bounds, Context, Corner, ElementId, Entity, FocusHandle, FontWeight, KeyDownEvent, MouseButton,
-    Pixels, Render, ScrollHandle, SharedString, Window,
+    anchored, canvas, deferred, div, point, px, rems, svg, Anchor, AnchoredPositionMode,
+    AnyElement, App, Bounds, Context, ElementId, Entity, FocusHandle, FontWeight, KeyDownEvent,
+    MouseButton, Pixels, Render, ScrollHandle, SharedString, Window,
 };
 
 use crate::theme;
@@ -830,7 +830,7 @@ fn context_menu_layer(
             .child(
                 anchored()
                     .position(point(left, top))
-                    .anchor(Corner::TopLeft)
+                    .anchor(Anchor::TopLeft)
                     .position_mode(AnchoredPositionMode::Window)
                     .snap_to_window_with_margin(edge)
                     .child(menu),

@@ -627,9 +627,9 @@ impl SkillDetail {
                 self.scroll.set_offset(gpui::point(px(0.), px(0.)));
                 self.overview_scroll.set_offset(gpui::point(px(0.), px(0.)));
                 if editing {
-                    self.editor.read(cx).focus_handle().focus(window);
+                    self.editor.read(cx).focus_handle().focus(window, cx);
                 } else {
-                    self.focus.focus(window);
+                    self.focus.focus(window, cx);
                 }
             }
             Err(error) => cx.emit(CatalogUpdate(Err(error))),
@@ -694,7 +694,7 @@ impl SkillDetail {
             self.editor
                 .update(cx, |editor, cx| editor.reset(skill.text.clone(), cx));
             self.editing = true;
-            self.editor.read(cx).focus_handle().focus(window);
+            self.editor.read(cx).focus_handle().focus(window, cx);
             cx.notify();
         }
     }
@@ -710,7 +710,7 @@ impl SkillDetail {
                 .is_some_and(|skill| dirty_buffer(&skill.text, self.editor.read(cx).text()))
         {
             self.confirming = true;
-            self.focus.focus(window);
+            self.focus.focus(window, cx);
             cx.notify();
         } else if self.editing {
             self.discard_edit(window, cx);
@@ -729,7 +729,7 @@ impl SkillDetail {
         self.source = false;
         self.error = None;
         self.scroll.set_offset(gpui::point(px(0.), px(0.)));
-        self.focus.focus(window);
+        self.focus.focus(window, cx);
         cx.notify();
     }
 
@@ -739,14 +739,14 @@ impl SkillDetail {
         self.confirming = false;
         self.error = None;
         if let Some(focus) = self.previous_focus.take() {
-            focus.focus(window);
+            focus.focus(window, cx);
         }
         cx.notify();
     }
 
     fn cancel_discard(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.confirming = false;
-        self.editor.read(cx).focus_handle().focus(window);
+        self.editor.read(cx).focus_handle().focus(window, cx);
         cx.notify();
     }
 
@@ -789,7 +789,7 @@ impl SkillDetail {
                     Ok((skill, catalogs)) => {
                         this.skill = Some(skill);
                         this.editing = false;
-                        this.focus.focus(window);
+                        this.focus.focus(window, cx);
                         this.source = false;
                         this.scroll.set_offset(gpui::point(px(0.), px(0.)));
                         cx.emit(CatalogUpdate(Ok(catalogs)));

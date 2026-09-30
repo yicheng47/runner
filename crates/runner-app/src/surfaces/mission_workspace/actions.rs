@@ -133,7 +133,7 @@ impl MissionWorkspace {
             return;
         }
         self.restart_confirm = Some(session_id.to_owned());
-        self.root_focus.focus(window);
+        self.root_focus.focus(window, cx);
         cx.notify();
     }
 
@@ -282,7 +282,7 @@ impl MissionWorkspace {
             return;
         }
         self.stop_all_confirm = true;
-        self.root_focus.focus(window);
+        self.root_focus.focus(window, cx);
         cx.notify();
     }
 
@@ -326,7 +326,7 @@ impl MissionWorkspace {
             return;
         }
         self.stopping = true;
-        self.root_focus.focus(window);
+        self.root_focus.focus(window, cx);
         cx.notify();
         let core = self.core(cx).clone();
         let stop_id = mission_id.clone();
@@ -399,7 +399,7 @@ impl MissionWorkspace {
                 cx,
             );
         }
-        self.root_focus.focus(window);
+        self.root_focus.focus(window, cx);
         cx.notify();
         let core = self.core(cx).clone();
         let resume_id = mission_id.clone();
@@ -488,7 +488,7 @@ impl MissionWorkspace {
         }
         self.archiving = true;
         self.set_sidebar_archiving(&mission_id, true, cx);
-        self.root_focus.focus(window);
+        self.root_focus.focus(window, cx);
         cx.notify();
         let core = self.core(cx).clone();
         let archive_id = mission_id.clone();
@@ -557,7 +557,7 @@ impl MissionWorkspace {
             submitting: false,
             error: None,
         });
-        input_focus.focus(window);
+        input_focus.focus(window, cx);
         cx.notify();
     }
 

@@ -616,7 +616,7 @@ impl McpDetail {
         self.error = None;
         self.scroll.set_offset(gpui::point(px(0.), px(0.)));
         self.overview_scroll.set_offset(gpui::point(px(0.), px(0.)));
-        self.focus.focus(window);
+        self.focus.focus(window, cx);
         cx.notify();
     }
 
@@ -742,7 +742,7 @@ impl McpDetail {
         self.editor.update(cx, |editor, cx| editor.reset(text, cx));
         self.editing = true;
         self.error = None;
-        self.editor.read(cx).focus_handle().focus(window);
+        self.editor.read(cx).focus_handle().focus(window, cx);
         cx.notify();
     }
 
@@ -801,13 +801,13 @@ impl McpDetail {
         }
         if self.editing && self.editor.read(cx).text() != self.original {
             self.confirming = true;
-            self.focus.focus(window);
+            self.focus.focus(window, cx);
         } else if self.editing {
             self.discard_edit(window, cx);
         } else {
             self.name = None;
             if let Some(focus) = self.previous_focus.take() {
-                focus.focus(window);
+                focus.focus(window, cx);
             }
         }
         cx.notify();
@@ -819,13 +819,13 @@ impl McpDetail {
         self.editing = false;
         self.confirming = false;
         self.error = None;
-        self.focus.focus(window);
+        self.focus.focus(window, cx);
         cx.notify();
     }
 
     fn cancel_discard(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.confirming = false;
-        self.editor.read(cx).focus_handle().focus(window);
+        self.editor.read(cx).focus_handle().focus(window, cx);
         cx.notify();
     }
 

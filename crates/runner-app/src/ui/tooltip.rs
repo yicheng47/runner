@@ -3,9 +3,9 @@ use std::time::Duration;
 
 use gpui::prelude::*;
 use gpui::{
-    anchored, deferred, div, point, px, rems, AnchoredPositionMode, AnyElement, AnyView, App,
-    Corner, ElementId, FocusHandle, FontWeight, IntoElement, Render, RenderOnce, SharedString,
-    Task, Window,
+    anchored, deferred, div, point, px, rems, Anchor, AnchoredPositionMode, AnyElement, AnyView,
+    App, ElementId, FocusHandle, FontWeight, IntoElement, Render, RenderOnce, SharedString, Task,
+    Window,
 };
 
 use crate::theme;
@@ -139,7 +139,7 @@ impl RenderOnce for Tooltip {
                 trigger.child(
                     deferred(
                         anchored()
-                            .anchor(Corner::BottomLeft)
+                            .anchor(Anchor::BottomLeft)
                             .position_mode(AnchoredPositionMode::Local)
                             .offset(point(px(0.), px(-6. * zoom)))
                             .child(tooltip_content(self.content)),

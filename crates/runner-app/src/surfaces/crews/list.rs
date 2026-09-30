@@ -553,7 +553,7 @@ impl NativeRoot {
         });
         let focus = menu.read(cx).focus_handle();
         self.crew_surfaces.context_menu = Some(menu);
-        focus.focus(window);
+        focus.focus(window, cx);
         cx.notify();
     }
 

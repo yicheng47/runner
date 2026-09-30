@@ -440,7 +440,7 @@ impl MissionWorkspace {
     }
 
     pub(super) fn feed_is_near_bottom(&self) -> bool {
-        let maximum = f32::from(self.feed_scroll.max_offset().height).max(0.);
+        let maximum = f32::from(self.feed_scroll.max_offset().y).max(0.);
         let position = (-f32::from(self.feed_scroll.offset().y)).clamp(0., maximum);
         maximum - position < 80.
     }

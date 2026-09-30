@@ -190,7 +190,7 @@ impl Render for ModelField {
                 if disabled || event.button != MouseButton::Left {
                     return;
                 }
-                click_focus.focus(window);
+                click_focus.focus(window, cx);
                 click_entity.update(cx, |field, cx| field.toggle(cx));
             })
             .child(self.input.clone())

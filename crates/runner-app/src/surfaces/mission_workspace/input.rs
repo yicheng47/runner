@@ -78,7 +78,7 @@ impl MissionWorkspace {
             self.feed_scroll.scroll_to_bottom();
             self.feed_has_new_messages = false;
         }
-        window.focus(&self.root_focus);
+        window.focus(&self.root_focus, cx);
         cx.notify();
     }
 
@@ -148,7 +148,7 @@ impl MissionWorkspace {
         if self.active_tab == MissionTab::Session(session_id.to_owned()) {
             self.clear_feed_selection();
             self.active_tab = MissionTab::Feed;
-            window.focus(&self.root_focus);
+            window.focus(&self.root_focus, cx);
         }
         self.attached.remove(session_id);
         cx.notify();
@@ -313,7 +313,7 @@ impl MissionWorkspace {
             terminal.reset_input_state(reset_guard);
         })
         .detach();
-        chat.terminal_focus.focus(window);
+        chat.terminal_focus.focus(window, cx);
         cx.notify();
     }
 }

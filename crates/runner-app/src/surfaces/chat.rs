@@ -123,7 +123,7 @@ impl NativeRoot {
         self.archived_session_key_copy
             .update(cx, |copy, copy_cx| copy.set_value(session_key, copy_cx));
         self.set_route(AppRoute::ArchivedChat, cx);
-        self.chat_focus.focus(window);
+        self.chat_focus.focus(window, cx);
         cx.notify();
     }
 
@@ -276,11 +276,11 @@ impl NativeRoot {
                             .and_then(PaneLayout::active_drawer_shell)
                             == Some(session_id.as_str())
                         {
-                            self.drawer_focus.focus(window);
+                            self.drawer_focus.focus(window, cx);
                         } else if self.active_focused_session_id().as_deref()
                             == Some(session_id.as_str())
                         {
-                            self.chat_focus.focus(window);
+                            self.chat_focus.focus(window, cx);
                             self.mark_active_tab_viewed(window, cx);
                         }
                     }
@@ -434,7 +434,7 @@ impl NativeRoot {
         if self.route == AppRoute::Chat
             && self.active_focused_session_id().as_deref() == Some(session_id)
         {
-            self.chat_focus.focus(window);
+            self.chat_focus.focus(window, cx);
         }
         let tracked_id = session_id.to_owned();
         cx.spawn_in(window, async move |weak, cx| loop {
@@ -520,7 +520,7 @@ impl NativeRoot {
         if self.route == AppRoute::Chat
             && self.active_focused_session_id().as_deref() == Some(session_id)
         {
-            self.chat_focus.focus(window);
+            self.chat_focus.focus(window, cx);
         }
         cx.notify();
         let core = self.core(cx).clone();
@@ -544,7 +544,7 @@ impl NativeRoot {
                 if this.route == AppRoute::Chat
                     && this.active_focused_session_id().as_deref() == Some(target.as_str())
                 {
-                    this.chat_focus.focus(window);
+                    this.chat_focus.focus(window, cx);
                 }
                 cx.notify();
             });
@@ -763,7 +763,7 @@ impl NativeRoot {
             submitting: false,
             error: None,
         });
-        input_focus.focus(window);
+        input_focus.focus(window, cx);
         cx.notify();
     }
 
@@ -874,7 +874,7 @@ impl NativeRoot {
             original: value,
             input,
         });
-        focus.focus(window);
+        focus.focus(window, cx);
         cx.notify();
     }
 
@@ -908,7 +908,7 @@ impl NativeRoot {
             Err(error) => {
                 self.chat_error = Some(error.to_string());
                 if let Some(rename) = self.pane_rename.as_ref() {
-                    rename.input.read(cx).focus_handle().focus(window);
+                    rename.input.read(cx).focus_handle().focus(window, cx);
                 }
             }
         }
@@ -1212,18 +1212,18 @@ impl NativeRoot {
             && !self.session_lifecycle_disabled(session_id, cx)
     }
 
-    pub(crate) fn focus_active_terminal(&self, window: &mut Window, cx: &App) {
+    pub(crate) fn focus_active_terminal(&self, window: &mut Window, cx: &mut App) {
         let Some(session_id) = self.active_focused_session_id() else {
-            self.chat_focus.focus(window);
+            self.chat_focus.focus(window, cx);
             return;
         };
         if self.session_is_interactive(&session_id, cx) {
             if let Some(chat) = self.attached.get(&session_id) {
-                chat.terminal_focus.focus(window);
+                chat.terminal_focus.focus(window, cx);
                 return;
             }
         }
-        self.chat_focus.focus(window);
+        self.chat_focus.focus(window, cx);
     }
 
     pub(crate) fn activate_tab(
@@ -1339,12 +1339,12 @@ impl NativeRoot {
             .and_then(|entry| entry.role_id.clone());
         if self.session_is_interactive(session_id, cx) {
             if let Some(chat) = self.attached.get(session_id) {
-                chat.terminal_focus.focus(window);
+                chat.terminal_focus.focus(window, cx);
             } else {
-                self.chat_focus.focus(window);
+                self.chat_focus.focus(window, cx);
             }
         } else {
-            self.chat_focus.focus(window);
+            self.chat_focus.focus(window, cx);
         }
         self.mark_active_tab_viewed(window, cx);
         self.record_current_runtime_location();
@@ -1358,12 +1358,12 @@ impl NativeRoot {
     ) {
         if self.session_is_interactive(session_id, cx) {
             if let Some(chat) = self.attached.get(session_id) {
-                chat.terminal_focus.focus(window);
+                chat.terminal_focus.focus(window, cx);
             } else {
-                self.drawer_focus.focus(window);
+                self.drawer_focus.focus(window, cx);
             }
         } else {
-            self.drawer_focus.focus(window);
+            self.drawer_focus.focus(window, cx);
         }
     }
 
@@ -1568,7 +1568,7 @@ impl NativeRoot {
                         if this.route == AppRoute::Chat
                             && this.active_focused_session_id().as_deref() == Some(target.as_str())
                         {
-                            this.chat_focus.focus(window);
+                            this.chat_focus.focus(window, cx);
                         }
                     }
                 }

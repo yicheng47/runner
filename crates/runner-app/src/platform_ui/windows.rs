@@ -284,7 +284,7 @@ mod tests {
         let mut cx = gpui::TestAppContext::single();
         let window = cx.add_window(|window, cx| {
             let focus = cx.focus_handle();
-            focus.focus(window);
+            focus.focus(window, cx);
             UpdateTriggerTestView {
                 focus,
                 updater: cx.new(|cx| Updater::new(false, PathBuf::new(), cx)),

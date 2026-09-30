@@ -39,7 +39,7 @@ impl MissionWorkspace {
         self.mission_id_copy.update(cx, |copy, copy_cx| {
             copy.set_value(Some(mission_id.clone()), copy_cx)
         });
-        window.focus(&self.root_focus);
+        window.focus(&self.root_focus, cx);
         cx.notify();
 
         let loading_id = mission_id.clone();
@@ -606,7 +606,7 @@ impl MissionWorkspace {
             self.primary_label = primary;
             if secondary {
                 self.attached.clear();
-                window.focus(&self.root_focus);
+                window.focus(&self.root_focus, cx);
             } else if let Err(error) = self.ensure_mission_terminals_attached(window, cx) {
                 self.error = Some(error.to_string());
             }
@@ -616,35 +616,35 @@ impl MissionWorkspace {
         }
     }
 
-    pub(super) fn focus_active_mission_terminal(&self, window: &mut Window, cx: &App) {
+    pub(super) fn focus_active_mission_terminal(&self, window: &mut Window, cx: &mut App) {
         if self.rename_modal.is_some() || self.stop_all_confirm || self.restart_confirm.is_some() {
             return;
         }
         let MissionTab::Session(session_id) = &self.active_tab else {
-            window.focus(&self.root_focus);
+            window.focus(&self.root_focus, cx);
             return;
         };
         if self.mission_terminal_interactive(session_id, cx) {
             if let Some(chat) = self.attached.get(session_id) {
-                chat.terminal_focus.focus(window);
+                chat.terminal_focus.focus(window, cx);
                 return;
             }
         }
-        window.focus(&self.root_focus);
+        window.focus(&self.root_focus, cx);
     }
 
     pub(super) fn focus_mission_drawer_terminal(
         &self,
         session_id: &str,
         window: &mut Window,
-        cx: &App,
+        cx: &mut App,
     ) {
         if self.mission_terminal_interactive(session_id, cx) {
             if let Some(chat) = self.attached.get(session_id) {
-                chat.terminal_focus.focus(window);
+                chat.terminal_focus.focus(window, cx);
                 return;
             }
         }
-        self.drawer_focus.focus(window);
+        self.drawer_focus.focus(window, cx);
     }
 }

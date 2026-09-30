@@ -61,7 +61,7 @@ Runner 是一个原生桌面应用，用来让命令行编码 agent **一起**�
 - **Chat** — 单个 agent 跑在一个真实终端里，不需要 mission；标签页可以一直分栏到窗口放不下为止。
 - **CLI** — 上面的一切也都有对应命令，agent、脚本和终端前的人都可以自己驱动 Runner。
 
-用 Rust 写成，基于 [gpui-ce](https://github.com/gpui-ce/gpui-ce)（[Zed](https://zed.dev) GPUI 的社区分支），终端网格用 `alacritty_terminal`，状态存在 SQLite。没有 webview。一切都在你自己的机器上运行和保存。
+用 Rust 写成，通过 [gpui-pre](https://github.com/longbridge/gpui-kit) 使用 [Zed](https://zed.dev) 的 GPUI，终端网格用 `alacritty_terminal`，状态存在 SQLite。没有 webview。一切都在你自己的机器上运行和保存。
 
 ## 下载
 
@@ -301,7 +301,7 @@ agent 的命令行工具需要单独安装。Runner 会在 `PATH` 上检测它�
 
 ## 致谢
 
-- **[GPUI](https://github.com/zed-industries/zed/tree/main/crates/gpui)** 与 **[gpui-ce](https://github.com/gpui-ce/gpui-ce)** — UI 构建在 gpui-ce 之上，这个社区分支让 Zed 的 GPU 加速 UI 框架能在 Zed 之外发布和使用。感谢 Zed 团队构建并开源了这个框架，感谢 gpui-ce 维护者们把它延续下去；Zed 的终端 crate 是 Runner 终端分层的架构参考。
+- **[GPUI](https://github.com/zed-industries/zed/tree/main/crates/gpui)** 与 **[gpui-pre](https://github.com/longbridge/gpui-kit)** — UI 使用 Zed GPU 加速 UI 框架的 crates.io 快照。感谢 Zed 团队构建并开源了 GPUI，感谢 gpui-kit 和 Jason Lee（huacnlee）发布 gpui-pre；Zed 的终端 crate 是 Runner 终端分层的架构参考。
 - **[alacritty_terminal](https://github.com/alacritty/alacritty)** — 每一栏底下的终端网格、解析器和回滚。
 - **[xterm.js](https://github.com/xtermjs/xterm.js)** — 程序化绘制的制表符字形表按其 MIT 声明转录自 WebGL 插件（`crates/runner-app/LICENSE.xterm`）。
 - **[Windows Terminal ConPTY](https://github.com/microsoft/terminal)** — Windows 构建按 MIT 声明内置了微软的 `conpty.dll` 和 `OpenConsole.exe`（`crates/runner-app/LICENSE.conpty`）。

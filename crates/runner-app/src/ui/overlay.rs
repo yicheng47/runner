@@ -158,7 +158,7 @@ impl RenderOnce for Modal {
                             current,
                             event.keystroke.modifiers.shift,
                         );
-                        focus_order[index].focus(window);
+                        focus_order[index].focus(window, cx);
                     }
                     _ => {}
                 }
@@ -194,18 +194,19 @@ impl RenderOnce for Modal {
                         div()
                             .relative()
                             .min_h(px(0.))
-                            .flex_1()
-                            .when(fixed_height, |body| {
-                                body.flex().flex_col().overflow_hidden()
-                            })
+                            .flex_auto()
+                            .flex()
+                            .flex_col()
+                            .when(fixed_height, |body| body.overflow_hidden())
                             .child(
                                 div()
                                     .id("modal-scroll-content")
                                     .w(content_width)
-                                    .h_full()
+                                    .min_h_0()
+                                    .flex_auto()
                                     .overflow_y_scroll()
                                     .when(fixed_height, |body| {
-                                        body.flex().flex_col().min_h_0().overflow_hidden()
+                                        body.h_full().flex().flex_col().overflow_hidden()
                                     })
                                     .when_some(scroll_handle, |body, handle| {
                                         body.scrollbar_width(px(0.)).track_scroll(&handle)
@@ -327,7 +328,7 @@ impl RenderOnce for Drawer {
                             current,
                             event.keystroke.modifiers.shift,
                         );
-                        focus_order[index].focus(window);
+                        focus_order[index].focus(window, cx);
                     }
                     _ => {}
                 }
@@ -690,6 +691,7 @@ fn confirm_action_button(
                 offset: gpui::point(px(0.), px(0.)),
                 blur_radius: px(0.),
                 spread_radius: px(2.),
+                inset: false,
             }])
         })
         .child(label);
@@ -969,7 +971,7 @@ mod tests {
                     if !editing {
                         window
                             .update(&mut visual, |host, _, _| {
-                                assert!(host.scroll.max_offset().height > px(500.))
+                                assert!(host.scroll.max_offset().y > px(500.))
                             })
                             .unwrap();
                     }

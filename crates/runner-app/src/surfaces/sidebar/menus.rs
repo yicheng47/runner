@@ -91,7 +91,7 @@ impl Sidebar {
         });
         let focus = menu.read(cx).focus_handle();
         self.context_menu = Some(menu);
-        focus.focus(window);
+        focus.focus(window, cx);
         self.schedule_shell_notify(cx);
         cx.notify();
     }
