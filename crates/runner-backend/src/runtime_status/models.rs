@@ -89,6 +89,7 @@ struct RuntimeModels {
     loaded: bool,
     cached: Option<CatalogRecord>,
     in_flight: bool,
+    refresh_queued: bool,
     last_attempt: Option<(ModelSource, i64)>,
 }
 
@@ -102,11 +103,21 @@ impl ModelDiscovery {
             .map(|record| &record.catalog)
     }
 
+    pub(crate) fn queue_refresh(&mut self, runtimes: &[Runtime]) {
+        for &runtime in runtimes
+            .iter()
+            .filter(|runtime| DISCOVERY_RUNTIMES.contains(runtime))
+        {
+            self.runtimes.entry(runtime).or_default().refresh_queued = true;
+        }
+    }
+
     fn begin(&mut self, runtime: Runtime, source: &ModelSource, force: bool, now: i64) -> bool {
         let state = self.runtimes.entry(runtime).or_default();
         if state.in_flight {
             return false;
         }
+        let force = std::mem::take(&mut state.refresh_queued) || force;
         let recent = |at| (0..REFRESH_SECONDS).contains(&now.saturating_sub(at));
         if !force
             && (state

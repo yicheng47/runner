@@ -47,6 +47,25 @@ fn cache_ttl_coalescing_and_failure_cooldown() {
 }
 
 #[test]
+fn queued_refresh_bypasses_the_cache_ttl_once_discovery_is_ready() {
+    let source = source(Runtime::Codex, "/missing/codex");
+    let mut state = ModelDiscovery::default();
+    assert!(state.begin(Runtime::Codex, &source, false, 100));
+    state.finish(Runtime::Codex, source.clone(), 100, Some(catalog("cached")));
+
+    state.queue_refresh(&[Runtime::Codex, Runtime::Trae]);
+    assert!(state.begin(Runtime::Codex, &source, false, 101));
+    state.finish(Runtime::Codex, source.clone(), 101, None);
+    assert!(!state.begin(Runtime::Codex, &source, false, 102));
+
+    state.queue_refresh(&[Runtime::Codex]);
+    assert!(state.begin(Runtime::Codex, &source, true, 103));
+    state.finish(Runtime::Codex, source.clone(), 103, None);
+    assert!(!state.begin(Runtime::Codex, &source, false, 104));
+    assert!(!state.runtimes.contains_key(&Runtime::Trae));
+}
+
+#[test]
 fn existing_offline_cache_survives_the_smaller_schema() {
     let pool = crate::db::open_in_memory().unwrap();
     let source = source(Runtime::Codex, "/missing/codex");
@@ -162,6 +181,85 @@ mod process_tests {
             assert!(Instant::now() < deadline, "query did not finish");
             std::thread::sleep(Duration::from_millis(10));
         }
+    }
+
+    #[tokio::test]
+    async fn ui_requests_honor_ttl_and_do_not_repeat_queries_after_changed_events() {
+        let fixture = Fixture::new(
+            Runtime::Codex,
+            r#"d="$(dirname "$0")"
+printf . >> "$d/calls"
+test ! -f "$d/fail" || exit 1
+printf '%s' '{"models":[{"slug":"cached-model","visibility":"list"}]}'"#,
+        );
+        let mut core = crate::test_support::test_core();
+        core.db = Arc::clone(&fixture.pool);
+        core.runtime_shell_env = Arc::clone(&fixture.env);
+        core.runtime_discovery = Arc::clone(&fixture.discovery);
+        crate::runtime_status::apply_discovery_result(
+            &core.db,
+            &core.runtime_shell_env,
+            &core.runtime_discovery,
+            crate::shell_path::DiscoveryResult {
+                shell: None,
+                outcome: crate::shell_path::DiscoveryOutcome::Ok,
+                duration_ms: 0,
+                env: LoginShellEnv::default(),
+            },
+        )
+        .unwrap();
+        let mut events = core.events.subscribe();
+        let calls = || std::fs::read_to_string(fixture.dir.path().join("calls")).unwrap();
+        let in_flight =
+            || fixture.discovery.read().unwrap().models.runtimes[&Runtime::Codex].in_flight;
+
+        crate::ops::runtime::runtime_request_models(&core, &[Runtime::Codex]);
+        let changed = tokio::time::timeout(Duration::from_secs(10), events.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(changed.name, "runtime/changed");
+        assert_eq!(calls(), ".");
+        for _ in 0..3 {
+            crate::ops::runtime::runtime_request_models(&core, &[Runtime::Codex]);
+            assert!(!in_flight());
+        }
+        assert_eq!(calls(), ".");
+        assert!(matches!(
+            events.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+        ));
+
+        crate::ops::runtime::runtime_refresh_models(&core, &[Runtime::Codex]);
+        let changed = tokio::time::timeout(Duration::from_secs(10), events.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(changed.name, "runtime/changed");
+        assert_eq!(calls(), "..");
+        crate::ops::runtime::runtime_request_models(&core, &[Runtime::Codex]);
+        assert!(!in_flight());
+        assert_eq!(calls(), "..");
+
+        fixture
+            .discovery
+            .write()
+            .unwrap()
+            .models
+            .runtimes
+            .get_mut(&Runtime::Codex)
+            .unwrap()
+            .cached
+            .as_mut()
+            .unwrap()
+            .captured_at -= REFRESH_SECONDS;
+        std::fs::write(fixture.dir.path().join("fail"), "").unwrap();
+        crate::ops::runtime::runtime_refresh_models(&core, &[Runtime::Codex]);
+        wait_until(|| !in_flight());
+        assert_eq!(calls(), "...");
+        crate::ops::runtime::runtime_request_models(&core, &[Runtime::Codex]);
+        assert!(!in_flight());
+        assert_eq!(calls(), "...");
     }
 
     #[test]

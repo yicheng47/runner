@@ -215,7 +215,18 @@ pub fn runtime_update_start(
     state.sessions.spawn_unlisted(spec, &state.db, events)
 }
 
+/// Requests model catalogs in the background, honoring the cache TTL.
 pub fn runtime_request_models(state: &AppCore, runtimes: &[Runtime]) {
+    request_models(state, runtimes, false);
+}
+
+/// Refreshes model catalogs after an explicit Start Chat action, bypassing
+/// the cache TTL. Queries coalesce with one already in flight.
+pub fn runtime_refresh_models(state: &AppCore, runtimes: &[Runtime]) {
+    request_models(state, runtimes, true);
+}
+
+fn request_models(state: &AppCore, runtimes: &[Runtime], force: bool) {
     // A source is only identifiable once executable discovery has resolved
     // the launch environment. Until then the persisted catalogs still publish.
     let ready = state
@@ -228,7 +239,22 @@ pub fn runtime_request_models(state: &AppCore, runtimes: &[Runtime]) {
             &state.runtime_discovery,
             &state.events,
         );
-        return;
+        let queued = state
+            .runtime_discovery
+            .write()
+            .map_or(true, |mut discovery| {
+                if discovery.checking || discovery.result.is_none() {
+                    if force {
+                        discovery.models.queue_refresh(runtimes);
+                    }
+                    true
+                } else {
+                    false
+                }
+            });
+        if queued {
+            return;
+        }
     }
     crate::runtime_status::models::request(
         &state.db,
@@ -236,7 +262,7 @@ pub fn runtime_request_models(state: &AppCore, runtimes: &[Runtime]) {
         &state.runtime_discovery,
         &state.events,
         runtimes,
-        false,
+        force,
     );
 }
 

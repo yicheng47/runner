@@ -975,14 +975,19 @@ impl NativeRoot {
             restore_baseline(modal, cx);
         }
         title_focus.focus(window);
+        self.refresh_start_chat_models(cx);
+        cx.notify();
+    }
+
+    fn refresh_start_chat_models(&self, cx: &Context<Self>) {
         if let Some(runtime) = self
             .start_chat_modal
             .as_ref()
             .and_then(|modal| modal.active_runtime())
+            .filter(|runtime| self.settings(cx).model_runtimes().contains(&runtime.name))
         {
-            self.request_model_catalog(runtime.name.key(), cx);
+            runner_backend::ops::runtime::runtime_refresh_models(self.core(cx), &[runtime.name]);
         }
-        cx.notify();
     }
 
     pub(crate) fn refresh_start_chat_runtimes(&mut self, cx: &mut Context<Self>) {
@@ -1124,13 +1129,7 @@ impl NativeRoot {
             input.set_placeholder(placeholder, input_cx)
         });
         let _ = write_start_chat_mode(&app_data_dir, mode);
-        if let Some(runtime) = self
-            .start_chat_modal
-            .as_ref()
-            .and_then(|modal| modal.active_runtime())
-        {
-            self.request_model_catalog(runtime.name.key(), cx);
-        }
+        self.refresh_start_chat_models(cx);
         cx.notify();
     }
 
@@ -1140,6 +1139,12 @@ impl NativeRoot {
         value: &str,
         cx: &mut Context<Self>,
     ) {
+        let refresh_models = matches!(
+            selection,
+            StartChatSelection::Role
+                | StartChatSelection::RoleRuntime
+                | StartChatSelection::Runtime
+        );
         let default_working_dir = self.settings(cx).default_working_dir.clone();
         let Some(modal) = self.start_chat_modal.as_mut() else {
             return;
@@ -1185,12 +1190,8 @@ impl NativeRoot {
             StartChatSelection::Effort => modal.effort = value.to_owned(),
             StartChatSelection::Speed => modal.speed = value.to_owned(),
         }
-        if let Some(runtime) = self
-            .start_chat_modal
-            .as_ref()
-            .and_then(|modal| modal.active_runtime())
-        {
-            self.request_model_catalog(runtime.name.key(), cx);
+        if refresh_models {
+            self.refresh_start_chat_models(cx);
         }
         cx.notify();
     }
@@ -1665,12 +1666,14 @@ impl NativeRoot {
             }
         };
         focus.focus(window);
-        if let Some(runtime) = self
-            .start_chat_modal
-            .as_ref()
-            .and_then(|modal| modal.active_runtime())
-        {
-            self.request_model_catalog(runtime.name.key(), cx);
+        if kind == ResetKind::Runtime {
+            if let Some(runtime) = self
+                .start_chat_modal
+                .as_ref()
+                .and_then(|modal| modal.active_runtime())
+            {
+                self.request_model_catalog(runtime.name.key(), cx);
+            }
         }
         cx.notify();
     }
@@ -1759,7 +1762,7 @@ impl NativeRoot {
                     "Model",
                     ResetKind::Model,
                     overrides.model,
-                    model_placeholder(Some(role), runtime),
+                    model_placeholder(Some(role)),
                 ),
             ))
             .when(effort_available, |controls| {
@@ -2150,11 +2153,10 @@ fn trimmed(value: Option<&str>) -> Option<&str> {
     value.map(str::trim).filter(|value| !value.is_empty())
 }
 
-/// What a blank Model reads: the role's model while the chat runs on the
-/// role's own agent, else the agent's default, else `default`.
-fn model_placeholder(role: Option<&Role>, runtime: Option<&RuntimeCatalogEntry>) -> String {
+/// What a blank Model reads: the role's explicit model while the chat runs on
+/// the role's own agent, else `default` because no model reaches the launch.
+fn model_placeholder(role: Option<&Role>) -> String {
     role.and_then(|role| trimmed(role.model.as_deref()))
-        .or_else(|| runtime.and_then(|runtime| trimmed(runtime.default_model.as_deref())))
         .unwrap_or("default")
         .to_owned()
 }
@@ -2168,8 +2170,8 @@ fn inheriting_role(modal: &StartChatModal) -> Option<&Role> {
 }
 
 /// The model that will reach the launch: the one typed, else the role's own,
-/// which the backend keeps when only an effort is overridden. An agent's
-/// default model shown as the placeholder is not one: nothing is sent for it.
+/// which the backend keeps when only an effort is overridden. The `default`
+/// placeholder is not one: nothing is sent for it.
 fn launch_model(modal: &StartChatModal, cx: &App) -> Option<String> {
     normalized_value(modal.model.read(cx).text()).or_else(|| {
         inheriting_role(modal)
@@ -2223,7 +2225,7 @@ fn sync_runtime_controls(modal: &mut StartChatModal, cx: &mut Context<NativeRoot
         field.set_suggestions(models, field_cx);
         field.set_disabled(modal.submitting || runtime.is_none(), field_cx);
     });
-    let placeholder = model_placeholder(inheriting_role(modal), runtime.as_ref());
+    let placeholder = model_placeholder(inheriting_role(modal));
     modal.model.update(cx, |input, input_cx| {
         input.set_placeholder(placeholder, input_cx)
     });
@@ -3208,6 +3210,25 @@ mod tests {
             })
         );
         assert_eq!(
+            build_start_request(
+                ChatMode::Runtime,
+                None,
+                Some("codex"),
+                None,
+                None,
+                None,
+                None,
+                None,
+            ),
+            Some(StartRequest::Runtime {
+                runtime: "codex".into(),
+                model: None,
+                effort: None,
+                speed: None,
+                cwd: None,
+            })
+        );
+        assert_eq!(
             build_start_request(ChatMode::Role, None, None, None, None, None, None, None),
             None
         );
@@ -3224,10 +3245,8 @@ mod tests {
             assert_eq!(modal.speed_override(), None);
             assert_eq!(modal.role_runtime_override, None);
             assert_eq!(modal.effort, "xhigh");
-            assert_eq!(
-                model_placeholder(inheriting_role(modal), modal.active_runtime()),
-                "opus[1m]"
-            );
+            assert_eq!(model_placeholder(inheriting_role(modal)), "opus[1m]");
+            assert!(modal.model.read(cx).placeholder_uses_value_style());
         });
         assert_eq!(modal.effort_choice(), ("xhigh".into(), false));
 
@@ -3347,11 +3366,9 @@ mod tests {
         assert!(modal.bounds("START_CHAT_RESET Runtime").is_some());
         modal.read(|modal, cx| {
             assert!(inheriting_role(modal).is_none());
-            // The agent's defaults, not the role's model and effort.
-            assert_eq!(
-                model_placeholder(inheriting_role(modal), modal.active_runtime()),
-                "gpt-5.5"
-            );
+            // The agent's defaults, not the role's model and effort. The
+            // model stays generic because no concrete value reaches launch.
+            assert_eq!(model_placeholder(inheriting_role(modal)), "default");
             assert_eq!(modal.effort, "medium");
             assert_eq!(modal.model_override(cx), None);
             assert_eq!(modal.effort_override(), None);
@@ -3386,13 +3403,14 @@ mod tests {
         );
         modal.read(|modal, cx| {
             assert_eq!(
-                model_placeholder(inheriting_role(modal), modal.active_runtime()),
+                model_placeholder(inheriting_role(modal)),
                 "default",
-                "no concrete default is known"
+                "the role does not pin a model"
             );
             assert_eq!(modal.effort, "high", "the agent's default effort");
             assert_eq!(modal.effort_override(), None);
             assert_eq!(modal.model_override(cx), None);
+            assert!(modal.model.read(cx).placeholder_uses_value_style());
         });
         assert_eq!(modal.effort_choice(), ("high".into(), false));
         drop(modal);
@@ -3412,21 +3430,26 @@ mod tests {
     }
 
     #[test]
-    fn a_default_or_role_value_reads_as_a_value_the_placeholders_never_wrap_it() {
-        let claude_agent = agents().remove(0);
-        let codex = agents().remove(1);
-        assert_eq!(
-            model_placeholder(Some(&claude_role()), Some(&claude_agent)),
-            "opus[1m]"
+    fn direct_model_placeholder_does_not_expose_the_cached_default() {
+        let modal = modal_harness(
+            1200.,
+            1000.,
+            Vec::new(),
+            vec![agents().remove(1)],
+            ChatMode::Runtime,
         );
-        assert_eq!(model_placeholder(None, Some(&codex)), "gpt-5.5");
-        assert_eq!(
-            model_placeholder(Some(&test_role("plain", "codex")), Some(&codex)),
-            "gpt-5.5"
-        );
-        assert_eq!(model_placeholder(None, Some(&claude_agent)), "default");
-        assert_eq!(model_placeholder(None, None), "default");
+        modal.read(|modal, cx| {
+            assert_eq!(
+                modal.active_runtime().unwrap().default_model.as_deref(),
+                Some("gpt-5.5")
+            );
+            assert_eq!(model_placeholder(inheriting_role(modal)), "default");
+            assert!(modal.model.read(cx).placeholder_uses_value_style());
+        });
+    }
 
+    #[test]
+    fn speed_options_mark_values_that_override_the_role() {
         let values = |options: Vec<SelectOption>| {
             options
                 .iter()
@@ -3492,13 +3515,13 @@ mod tests {
 
     /// The launch gives Antigravity `--effort` only beside `--model`, so an
     /// effort with no model that reaches the launch would be shown and dropped.
-    /// A default model in the placeholder does not reach it.
+    /// The `default` placeholder does not reach it.
     #[test]
     fn antigravity_effort_waits_for_a_model_that_reaches_the_launch() {
         let effort_picker: fn(&StartChatModal, &App) -> FocusHandle =
             |modal, cx| modal.effort_select.read(cx).focus_handle();
 
-        // Direct: the default model is on show, but nothing is sent for it.
+        // Direct: the runtime default is not pinned by the placeholder.
         let mut modal = modal_harness(
             1200.,
             1000.,
@@ -3507,10 +3530,7 @@ mod tests {
             ChatMode::Runtime,
         );
         modal.read(|modal, _| {
-            assert_eq!(
-                model_placeholder(inheriting_role(modal), modal.active_runtime()),
-                "gemini-3.1-pro"
-            );
+            assert_eq!(model_placeholder(inheriting_role(modal)), "default");
         });
         assert_eq!(modal.effort_choice(), ("default".into(), false));
         // No key is sent to it: Enter on a disabled select would submit the form.

@@ -1552,6 +1552,10 @@ impl TextField {
         }
     }
 
+    pub fn placeholder_uses_value_style(&self) -> bool {
+        self.placeholder_as_value
+    }
+
     #[cfg(test)]
     pub(crate) fn text_right_padding(&self) -> f32 {
         self.right_padding
