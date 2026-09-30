@@ -14,7 +14,7 @@ use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::test::TermSize;
 use alacritty_terminal::term::{Config, Term, TermMode};
-use alacritty_terminal::vte::ansi::{CursorShape, CursorStyle, Processor};
+use alacritty_terminal::vte::ansi::{CursorShape, CursorStyle, KeyboardModes, Processor};
 use anyhow::{Context as _, Result};
 use regex::Regex;
 use runner_backend::model::Runtime;
@@ -106,6 +106,22 @@ const SCHEME_SUBSCRIBE: &[u8] = b"\x1b[?2031h";
 const SCHEME_UNSUBSCRIBE: &[u8] = b"\x1b[?2031l";
 const SCHEME_QUERY: &[u8] = b"\x1b[?996n";
 const SCHEME_PROBE_UNSUPPORTED: &str = "\x1b[?2031;0$y";
+
+/// `alacritty_terminal` answers `CSI ? u` with every flag the app pushed.
+/// Runner implements only the disambiguate level, so the session masks the
+/// answer down to that bit: an app detects a partial implementation by
+/// pushing flags and reading back which stuck, and would otherwise wait for
+/// key-up, repeat or all-keys events that never come. The answer is built
+/// at the query's position in the output, so masking that text keeps a
+/// batched push, query and pop honest, where reading the live mode from the
+/// reply worker would answer every query in the chunk from its last byte.
+fn kitty_flags_reply(text: &str) -> Option<KeyboardModes> {
+    let flags = text.strip_prefix("\x1b[?")?.strip_suffix('u')?;
+    if !flags.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    Some(KeyboardModes::from_bits_truncate(flags.parse().ok()?))
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SchemeSequence {
@@ -379,6 +395,17 @@ pub struct TerminalOutputActivity {
     pub last_output_at: Option<Instant>,
 }
 
+/// `alacritty_terminal` leaves the kitty keyboard protocol off by default,
+/// which drops an app's `CSI ? u` query, so pi, Claude Code and Codex fall
+/// back to legacy key decoding. `configure` rebuilds the config from here
+/// too, or it would switch the protocol back off.
+fn term_config() -> Config {
+    Config {
+        kitty_keyboard: true,
+        ..Config::default()
+    }
+}
+
 impl TerminalSession {
     pub fn attach(
         core: AppCore,
@@ -435,7 +462,7 @@ impl TerminalSession {
             waker: Arc::clone(&waker),
         };
         let term = Arc::new(FairMutex::new(Term::new(
-            Config::default(),
+            term_config(),
             &TermSize::new(cols as usize, rows as usize),
             proxy,
         )));
@@ -519,7 +546,13 @@ impl TerminalSession {
                             };
                             write(format!("\x1b[?2031;{state}$y").as_bytes());
                         }
-                        Event::PtyWrite(text) => write(text.as_bytes()),
+                        Event::PtyWrite(text) => match kitty_flags_reply(&text) {
+                            Some(flags) => {
+                                let honored = flags & KeyboardModes::DISAMBIGUATE_ESC_CODES;
+                                write(format!("\x1b[?{}u", honored.bits()).as_bytes());
+                            }
+                            None => write(text.as_bytes()),
+                        },
                         Event::ColorRequest(index, format) => {
                             let palette = *terminal_palette.lock().unwrap();
                             let rgb = term_for_events
@@ -651,7 +684,7 @@ impl TerminalSession {
                 shape: cursor_shape,
                 blinking: true,
             },
-            ..Config::default()
+            ..term_config()
         });
         (self.waker)();
     }
@@ -820,12 +853,8 @@ impl TerminalSession {
         let input = InputEvent::Key {
             kind: crate::mappings::classify_key(key, ctrl, alt, shift, key_char),
         };
-        let app_cursor = self
-            .term
-            .lock_unfair()
-            .mode()
-            .contains(TermMode::APP_CURSOR);
-        match crate::mappings::encode_key(key, ctrl, alt, shift, key_char, app_cursor) {
+        let mode = *self.term.lock_unfair().mode();
+        match crate::mappings::encode_key(key, ctrl, alt, shift, key_char, mode) {
             Some(bytes) => {
                 self.observe_input(&input);
                 self.write_user_bytes(&bytes)?;
@@ -1045,20 +1074,19 @@ impl TerminalSession {
             return;
         }
 
-        let app_cursor = mode.contains(TermMode::APP_CURSOR);
         let mut bytes = Vec::new();
         if mode.contains(TermMode::ALT_SCREEN) {
             let vertical = row as i32 - cursor.line.0;
             let key = if vertical < 0 { "up" } else { "down" };
             if let Some(sequence) =
-                crate::mappings::encode_key(key, false, false, false, None, app_cursor)
+                crate::mappings::encode_key(key, false, false, false, None, mode)
             {
                 bytes.extend(sequence.repeat(vertical.unsigned_abs() as usize));
             }
             let horizontal = column as i64 - cursor.column.0 as i64;
             let key = if horizontal < 0 { "left" } else { "right" };
             if let Some(sequence) =
-                crate::mappings::encode_key(key, false, false, false, None, app_cursor)
+                crate::mappings::encode_key(key, false, false, false, None, mode)
             {
                 bytes.extend(sequence.repeat(horizontal.unsigned_abs() as usize));
             }
@@ -1068,7 +1096,7 @@ impl TerminalSession {
             let delta = target_index - cursor_index;
             let key = if delta < 0 { "left" } else { "right" };
             if let Some(sequence) =
-                crate::mappings::encode_key(key, false, false, false, None, app_cursor)
+                crate::mappings::encode_key(key, false, false, false, None, mode)
             {
                 bytes.extend(sequence.repeat(delta.unsigned_abs() as usize));
             }
@@ -2401,6 +2429,174 @@ mod tests {
             assert_eq!(writes[0], background);
             assert_eq!(writes[1], b"\x1b[?6c");
             core.sessions.kill(&spawned.id).ok();
+        }
+    }
+
+    /// #755: Runner answers the kitty keyboard query, follows the app's
+    /// push and pop, and keeps doing so after `configure`. While the app has
+    /// the protocol on, Shift+Enter and the chords whose legacy bytes a
+    /// strict decoder stops recognising (pi's Alt+Enter and Alt+D) go out
+    /// as `CSI u`; outside it they keep their legacy bytes. The answer to a
+    /// query names only the flag Runner implements, whatever the app pushed.
+    #[test]
+    fn keys_follow_the_apps_kitty_keyboard_mode() {
+        let temp = tempfile::tempdir().unwrap();
+        let runtime = Arc::new(RecordingRuntime::default());
+        let core = test_core_with_runtime(temp.path(), Arc::clone(&runtime) as _);
+        let bridge = TerminalBridge::new(core.clone(), Arc::new(|| {})).unwrap();
+        let role = runner_backend::ops::role::create(
+            &core.db.get().unwrap(),
+            runner_backend::ops::role::CreateRoleInput {
+                handle: "probe".into(),
+                display_name: "Probe".into(),
+                runtime: runner_backend::model::Runtime::Trae,
+                command: "probe".into(),
+                args: Vec::new(),
+                working_dir: None,
+                system_prompt: None,
+                env: Default::default(),
+                model: None,
+                effort: None,
+                codex_speed: None,
+                permission_mode: runner_backend::router::runtime::PermissionMode::Auto,
+            },
+        )
+        .unwrap();
+        let spawned = core
+            .sessions
+            .spawn_direct(
+                &role,
+                None,
+                None,
+                None,
+                None,
+                Some(temp.path().to_str().unwrap()),
+                Some(80),
+                Some(24),
+                &core.app_data_dir,
+                Arc::clone(&core.db),
+                Arc::new(core.session_events()),
+                None,
+            )
+            .unwrap();
+        let session = bridge.session(&spawned.id).unwrap();
+        let wait_for = |count: usize| {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while runtime.writes().len() < count && std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            runtime.writes()
+        };
+        let shift_enter = || session.send_key("enter", false, false, true, None).unwrap();
+        let alt_enter = || session.send_key("enter", false, true, false, None).unwrap();
+        let alt_d = || {
+            session
+                .send_key("d", false, true, false, Some("∂"))
+                .unwrap()
+        };
+
+        shift_enter();
+        alt_enter();
+        alt_d();
+        assert_eq!(
+            wait_for(3),
+            [b"\x1b\r".to_vec(), b"\x1b\r".to_vec(), b"\x1bd".to_vec()],
+            "legacy until the app opts in"
+        );
+
+        runtime.push_output(b"\x1b[>7u\x1b[?u");
+        assert_eq!(
+            wait_for(4)[3],
+            b"\x1b[?1u",
+            "only the disambiguate bit of the pushed 7 is acknowledged"
+        );
+        shift_enter();
+        alt_enter();
+        alt_d();
+        session
+            .send_key("escape", false, false, false, None)
+            .unwrap();
+        session.send_key("c", true, false, false, None).unwrap();
+        assert_eq!(
+            wait_for(9)[4..],
+            [
+                b"\x1b[13;2u".to_vec(),
+                b"\x1b[13;3u".to_vec(),
+                b"\x1b[100;3u".to_vec(),
+                b"\x1b[27u".to_vec(),
+                b"\x1b[99;5u".to_vec(),
+            ]
+        );
+
+        session.configure(3, CursorShape::Beam);
+        alt_d();
+        assert_eq!(
+            wait_for(10)[9],
+            b"\x1b[100;3u",
+            "configure keeps the protocol on"
+        );
+
+        runtime.push_output(b"\x1b[<1u\x1b[?u");
+        assert_eq!(wait_for(11)[10], b"\x1b[?0u");
+        alt_enter();
+        alt_d();
+        assert_eq!(
+            wait_for(13)[11..],
+            [b"\x1b\r".to_vec(), b"\x1bd".to_vec()],
+            "legacy again once the app pops"
+        );
+
+        runtime.push_output(b"\x1b[>31u\x1b[?u");
+        assert_eq!(
+            wait_for(14)[13],
+            b"\x1b[?1u",
+            "event, alternate, all-keys and text flags are not acknowledged"
+        );
+        shift_enter();
+        assert_eq!(wait_for(15)[14], b"\x1b[13;2u");
+
+        runtime.push_output(b"\x1b[<1u\x1b[>8u\x1b[?u");
+        assert_eq!(
+            wait_for(16)[15],
+            b"\x1b[?0u",
+            "all-keys alone is not the disambiguate level"
+        );
+        shift_enter();
+        assert_eq!(wait_for(17)[16], b"\x1b\r");
+
+        // Batched in one chunk, each query is answered from the mode at its
+        // own position, not from wherever the chunk ends.
+        runtime.push_output(b"\x1b[<u\x1b[>1u\x1b[?u\x1b[<u\x1b[?u");
+        assert_eq!(
+            wait_for(19)[17..],
+            [b"\x1b[?1u".to_vec(), b"\x1b[?0u".to_vec()],
+            "push, query, pop, query"
+        );
+        runtime.push_output(b"\x1b[?u\x1b[>1u\x1b[?u\x1b[<u");
+        assert_eq!(
+            wait_for(21)[19..],
+            [b"\x1b[?0u".to_vec(), b"\x1b[?1u".to_vec()],
+            "query, push, query"
+        );
+        core.sessions.kill(&spawned.id).ok();
+    }
+
+    #[test]
+    fn only_kitty_flag_queries_are_masked() {
+        use super::kitty_flags_reply;
+        let bits = |text| kitty_flags_reply(text).map(|flags| flags.bits());
+        assert_eq!(bits("\x1b[?0u"), Some(0));
+        assert_eq!(bits("\x1b[?31u"), Some(31));
+        for other in [
+            "\x1b[?u",
+            "\x1b[?6c",
+            "\x1b[?2031;0$y",
+            "\x1b[0n",
+            "\x1b[?1;2u",
+            "\x1b[?999u",
+        ] {
+            assert_eq!(bits(other), None, "{other:?}");
         }
     }
 

@@ -72,17 +72,23 @@ enum MouseAction {
 }
 
 /// Encode a non-text keystroke (or ctrl-chord) into PTY bytes.
-/// `app_cursor` selects the DECCKM application-cursor sequences for the
-/// arrow keys. Returns `None` when the key is not ours to handle (the
-/// caller lets the event propagate, e.g. to a global binding).
+/// `mode` selects the DECCKM application-cursor sequences for the arrow
+/// keys and the kitty key forms an app has opted into. Returns `None` when
+/// the key is not ours to handle (the caller lets the event propagate,
+/// e.g. to a global binding).
 pub fn encode_key(
     key: &str,
     ctrl: bool,
     alt: bool,
     shift: bool,
     key_char: Option<&str>,
-    app_cursor: bool,
+    mode: TermMode,
 ) -> Option<Vec<u8>> {
+    if mode.contains(TermMode::DISAMBIGUATE_ESC_CODES) {
+        if let Some(bytes) = encode_kitty_key(key, ctrl, alt, shift) {
+            return Some(bytes);
+        }
+    }
     if key == "enter" && shift && !ctrl && !alt {
         return Some(b"\x1b\r".to_vec());
     }
@@ -113,10 +119,10 @@ pub fn encode_key(
             "backspace" => b"\x7f",
             "tab" => b"\t",
             "escape" => b"\x1b",
-            "up" if app_cursor => b"\x1bOA",
-            "down" if app_cursor => b"\x1bOB",
-            "right" if app_cursor => b"\x1bOC",
-            "left" if app_cursor => b"\x1bOD",
+            "up" if mode.contains(TermMode::APP_CURSOR) => b"\x1bOA",
+            "down" if mode.contains(TermMode::APP_CURSOR) => b"\x1bOB",
+            "right" if mode.contains(TermMode::APP_CURSOR) => b"\x1bOC",
+            "left" if mode.contains(TermMode::APP_CURSOR) => b"\x1bOD",
             "up" => b"\x1b[A",
             "down" => b"\x1b[B",
             "right" => b"\x1b[C",
@@ -167,6 +173,47 @@ pub fn encode_key(
         bytes.insert(0, 0x1b);
     }
     Some(bytes)
+}
+
+/// The kitty keyboard protocol's "disambiguate escape codes" level, for an
+/// app that pushed it. Esc and every chord whose legacy bytes are
+/// ambiguous become `CSI code ; mods u`, with the unshifted codepoint and
+/// `mods = 1 + shift + 2*alt + 4*ctrl`. A strict decoder such as pi stops
+/// reading `ESC d` as Alt+D once the protocol is on, and reads `ESC CR` as
+/// Shift+Enter, so these chords cannot keep their legacy bytes. Plain and
+/// shifted text, unmodified Enter/Tab/Backspace and the functional keys keep
+/// their existing encodings. A chord the legacy path leaves to the app stays
+/// unhandled here too.
+fn encode_kitty_key(key: &str, ctrl: bool, alt: bool, shift: bool) -> Option<Vec<u8>> {
+    let modified_named = (alt || shift) && !ctrl;
+    let (code, csi_u) = match key {
+        "escape" => (27, !ctrl),
+        "enter" => (13, modified_named),
+        "tab" => (9, modified_named),
+        "backspace" => (127, modified_named),
+        "space" => (32, ctrl || alt),
+        _ => {
+            let mut chars = key.chars();
+            let (Some(c), None) = (chars.next(), chars.next()) else {
+                return None;
+            };
+            let ctrl_has_legacy_form =
+                c.is_ascii_alphabetic() || matches!(c, '@' | '[' | '\\' | ']');
+            (
+                c.to_ascii_lowercase() as u32,
+                alt || (ctrl && ctrl_has_legacy_form),
+            )
+        }
+    };
+    if !csi_u {
+        return None;
+    }
+    let mods = 1 + u8::from(shift) + 2 * u8::from(alt) + 4 * u8::from(ctrl);
+    Some(if mods > 1 {
+        format!("\x1b[{code};{mods}u").into_bytes()
+    } else {
+        format!("\x1b[{code}u").into_bytes()
+    })
 }
 
 /// xterm's modified form for the keys whose plain sequence already
@@ -266,14 +313,7 @@ pub fn encode_scroll(
     }
     if mode.contains(TermMode::ALT_SCREEN | TermMode::ALTERNATE_SCROLL) {
         let key = if up { "up" } else { "down" };
-        let arrow = encode_key(
-            key,
-            false,
-            false,
-            false,
-            None,
-            mode.contains(TermMode::APP_CURSOR),
-        )?;
+        let arrow = encode_key(key, false, false, false, None, mode)?;
         return Some(arrow.repeat(count));
     }
     None
@@ -449,19 +489,19 @@ mod tests {
     #[test]
     fn option_letter_chords_use_the_plain_key() {
         assert_eq!(
-            encode_key("b", false, true, false, Some("∫"), false),
+            encode_key("b", false, true, false, Some("∫"), TermMode::empty()),
             Some(b"\x1bb".to_vec())
         );
         assert_eq!(
-            encode_key("f", false, true, false, Some("ƒ"), false),
+            encode_key("f", false, true, false, Some("ƒ"), TermMode::empty()),
             Some(b"\x1bf".to_vec())
         );
         assert_eq!(
-            encode_key("d", false, true, false, Some("∂"), false),
+            encode_key("d", false, true, false, Some("∂"), TermMode::empty()),
             Some(b"\x1bd".to_vec())
         );
         assert_eq!(
-            encode_key("d", false, true, true, Some("Î"), false),
+            encode_key("d", false, true, true, Some("Î"), TermMode::empty()),
             Some(b"\x1bD".to_vec())
         );
     }
@@ -471,65 +511,65 @@ mod tests {
         // Option+Right must never be ESC ESC [ C — crossterm reads that as
         // Esc then the text "[C".
         assert_eq!(
-            encode_key("right", false, true, false, None, false),
+            encode_key("right", false, true, false, None, TermMode::empty()),
             Some(b"\x1b[1;3C".to_vec())
         );
         assert_eq!(
-            encode_key("left", false, true, false, None, true),
+            encode_key("left", false, true, false, None, TermMode::APP_CURSOR),
             Some(b"\x1b[1;3D".to_vec())
         );
         assert_eq!(
-            encode_key("right", false, false, true, None, false),
+            encode_key("right", false, false, true, None, TermMode::empty()),
             Some(b"\x1b[1;2C".to_vec())
         );
         assert_eq!(
-            encode_key("right", true, false, false, None, false),
+            encode_key("right", true, false, false, None, TermMode::empty()),
             Some(b"\x1b[1;5C".to_vec())
         );
         assert_eq!(
-            encode_key("up", true, true, true, None, false),
+            encode_key("up", true, true, true, None, TermMode::empty()),
             Some(b"\x1b[1;8A".to_vec())
         );
         assert_eq!(
-            encode_key("home", false, true, false, None, false),
+            encode_key("home", false, true, false, None, TermMode::empty()),
             Some(b"\x1b[1;3H".to_vec())
         );
         assert_eq!(
-            encode_key("end", false, false, true, None, false),
+            encode_key("end", false, false, true, None, TermMode::empty()),
             Some(b"\x1b[1;2F".to_vec())
         );
         assert_eq!(
-            encode_key("delete", false, true, false, None, false),
+            encode_key("delete", false, true, false, None, TermMode::empty()),
             Some(b"\x1b[3;3~".to_vec())
         );
         assert_eq!(
-            encode_key("pageup", false, false, true, None, false),
+            encode_key("pageup", false, false, true, None, TermMode::empty()),
             Some(b"\x1b[5;2~".to_vec())
         );
         assert_eq!(
-            encode_key("f1", false, true, false, None, false),
+            encode_key("f1", false, true, false, None, TermMode::empty()),
             Some(b"\x1b[1;3P".to_vec())
         );
         assert_eq!(
-            encode_key("f5", true, false, false, None, false),
+            encode_key("f5", true, false, false, None, TermMode::empty()),
             Some(b"\x1b[15;5~".to_vec())
         );
         // Unmodified keys keep their plain and DECCKM forms.
         assert_eq!(
-            encode_key("right", false, false, false, None, false),
+            encode_key("right", false, false, false, None, TermMode::empty()),
             Some(b"\x1b[C".to_vec())
         );
         assert_eq!(
-            encode_key("right", false, false, false, None, true),
+            encode_key("right", false, false, false, None, TermMode::APP_CURSOR),
             Some(b"\x1bOC".to_vec())
         );
         // Keys whose sequence does not start with ESC keep the ESC prefix.
         assert_eq!(
-            encode_key("backspace", false, true, false, None, false),
+            encode_key("backspace", false, true, false, None, TermMode::empty()),
             Some(b"\x1b\x7f".to_vec())
         );
         assert_eq!(
-            encode_key("enter", false, true, false, None, false),
+            encode_key("enter", false, true, false, None, TermMode::empty()),
             Some(b"\x1b\r".to_vec())
         );
     }
@@ -537,11 +577,11 @@ mod tests {
     #[test]
     fn shift_tab_is_backtab_and_navigation() {
         assert_eq!(
-            encode_key("tab", false, false, true, None, false),
+            encode_key("tab", false, false, true, None, TermMode::empty()),
             Some(b"\x1b[Z".to_vec())
         );
         assert_eq!(
-            encode_key("tab", false, false, false, None, false),
+            encode_key("tab", false, false, false, None, TermMode::empty()),
             Some(b"\t".to_vec())
         );
         assert_eq!(
@@ -557,15 +597,15 @@ mod tests {
     #[test]
     fn option_letter_fix_does_not_change_other_key_paths() {
         assert_eq!(
-            encode_key("b", false, false, false, Some("∫"), false),
+            encode_key("b", false, false, false, Some("∫"), TermMode::empty()),
             Some("∫".as_bytes().to_vec())
         );
         assert_eq!(
-            encode_key("b", true, true, false, Some("∫"), false),
+            encode_key("b", true, true, false, Some("∫"), TermMode::empty()),
             Some(b"\x1b\x02".to_vec())
         );
         assert_eq!(
-            encode_key("1", false, true, false, Some("¡"), false),
+            encode_key("1", false, true, false, Some("¡"), TermMode::empty()),
             Some("\x1b¡".as_bytes().to_vec())
         );
     }
@@ -746,15 +786,15 @@ mod tests {
     #[test]
     fn function_keys_keep_their_terminal_sequences() {
         assert_eq!(
-            encode_key("f1", false, false, false, None, false),
+            encode_key("f1", false, false, false, None, TermMode::empty()),
             Some(b"\x1bOP".to_vec())
         );
         assert_eq!(
-            encode_key("f12", false, false, false, None, false),
+            encode_key("f12", false, false, false, None, TermMode::empty()),
             Some(b"\x1b[24~".to_vec())
         );
         assert_eq!(
-            encode_key("f20", false, false, false, None, false),
+            encode_key("f20", false, false, false, None, TermMode::empty()),
             Some(b"\x1b[34~".to_vec())
         );
     }
@@ -762,12 +802,90 @@ mod tests {
     #[test]
     fn shift_enter_uses_runner_multiline_sequence() {
         assert_eq!(
-            encode_key("enter", false, false, true, None, false),
+            encode_key("enter", false, false, true, None, TermMode::empty()),
             Some(b"\x1b\r".to_vec())
         );
         assert_eq!(
-            encode_key("enter", false, false, false, None, false),
+            encode_key("enter", false, false, false, None, TermMode::empty()),
             Some(b"\r".to_vec())
         );
+    }
+
+    /// `(key, ctrl, alt, shift, key_char, bytes)`
+    type KeyCase = (
+        &'static str,
+        bool,
+        bool,
+        bool,
+        Option<&'static str>,
+        &'static str,
+    );
+
+    fn assert_kitty_keys(cases: &[KeyCase]) {
+        for &(key, ctrl, alt, shift, key_char, expected) in cases {
+            assert_eq!(
+                encode_key(
+                    key,
+                    ctrl,
+                    alt,
+                    shift,
+                    key_char,
+                    TermMode::DISAMBIGUATE_ESC_CODES
+                ),
+                Some(expected.as_bytes().to_vec()),
+                "{key} ctrl={ctrl} alt={alt} shift={shift}"
+            );
+        }
+    }
+
+    #[test]
+    fn kitty_disambiguate_encodes_ambiguous_chords_as_csi_u() {
+        assert_kitty_keys(&[
+            ("escape", false, false, false, None, "\x1b[27u"),
+            ("escape", false, true, false, None, "\x1b[27;3u"),
+            ("enter", false, false, true, None, "\x1b[13;2u"),
+            ("enter", false, true, false, None, "\x1b[13;3u"),
+            ("tab", false, false, true, None, "\x1b[9;2u"),
+            ("tab", false, true, false, None, "\x1b[9;3u"),
+            ("backspace", false, false, true, None, "\x1b[127;2u"),
+            ("backspace", false, true, false, None, "\x1b[127;3u"),
+            ("d", false, true, false, Some("∂"), "\x1b[100;3u"),
+            ("d", false, true, true, Some("Î"), "\x1b[100;4u"),
+            ("1", false, true, false, Some("¡"), "\x1b[49;3u"),
+            ("space", false, true, false, None, "\x1b[32;3u"),
+            ("c", true, false, false, None, "\x1b[99;5u"),
+            ("c", true, false, true, None, "\x1b[99;6u"),
+            ("c", true, true, false, None, "\x1b[99;7u"),
+            ("[", true, false, false, None, "\x1b[91;5u"),
+            ("space", true, false, false, None, "\x1b[32;5u"),
+        ]);
+    }
+
+    #[test]
+    fn kitty_disambiguate_leaves_text_and_functional_keys_alone() {
+        assert_kitty_keys(&[
+            ("enter", false, false, false, None, "\r"),
+            ("tab", false, false, false, None, "\t"),
+            ("backspace", false, false, false, None, "\x7f"),
+            ("a", false, false, false, Some("a"), "a"),
+            ("a", false, false, true, Some("A"), "A"),
+            ("1", false, false, true, Some("!"), "!"),
+            ("up", false, false, false, None, "\x1b[A"),
+            ("right", false, true, false, None, "\x1b[1;3C"),
+            ("delete", true, false, false, None, "\x1b[3;5~"),
+            ("f5", false, false, false, None, "\x1b[15~"),
+        ]);
+    }
+
+    #[test]
+    fn kitty_disambiguate_does_not_claim_chords_the_legacy_path_declines() {
+        let kitty = TermMode::DISAMBIGUATE_ESC_CODES;
+        for key in ["enter", "tab", "escape", "1"] {
+            assert_eq!(encode_key(key, true, false, false, None, kitty), None);
+            assert_eq!(
+                encode_key(key, true, false, false, None, TermMode::empty()),
+                None
+            );
+        }
     }
 }
