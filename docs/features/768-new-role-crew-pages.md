@@ -3,6 +3,7 @@
 > Tracking issue: [#768](https://github.com/yicheng47/runner/issues/768)
 > Priority: P2, 0.12. Platforms: macOS and Windows.
 > History: filed 2026-09-30 as "New role and New crew modals were left out of the role/crew redesign". Jason chose the page approach over a redesigned modal the same day, and signed off the design.
+> Smoke-test changes: on 2026-10-01, Jason requested a generated avatar before a handle is entered and effort selection while Model is set to default. These updates supersede the initial empty role tile and default-model effort restriction; the supplied PNGs show the original design.
 
 ## Motivation
 
@@ -22,11 +23,12 @@ A redesigned modal would be a third copy of the same fields, next to the role pa
 
 **New role** (`jXUZc`), the role page's edit layout (`render_role_edit_page`):
 
-- **Avatar**: `RoleAvatar` at the page's size, seeded with the handle as it is typed. With no handle yet, an empty tile like the new crew's.
+- **Avatar**: `RoleAvatar` at the page's size. Before a handle is entered, show a generated preview that stays stable for that draft. Seed the avatar with the handle as it is typed; clearing the handle restores the same draft preview. The saved role's avatar remains seeded by its handle.
 - **Display name**: the edit page's large name field.
 - **Handle**: an editable mono field with a faint `@` prefix under the name, and under it the hint "Lowercase letters, digits, - and _. The handle can't change later." A handle error (today's `handle_error`) replaces the hint in the danger colour.
 - **Actions**: **Create role**, primary, full width, with a `plus` icon, then Cancel. Create is disabled until the form can submit (today's `create_role_can_submit`) and reads "Creating…" while submitting. The unsaved-changes note does not appear.
 - **Setup**: Runtime, Model, Effort, Speed (Codex only, with "Fast uses more credits."), Command, Args and Working directory with Browse, the same controls and behaviour as the edit page. **Effort is new to creating a role**: today the modal always sends `effort: None`. Changing the runtime resets the command, model placeholder, effort options and speed as the create form does today.
+- **Default model and effort**, on both the creating and edit pages: Effort can be selected while Model is set to default. Use the runtime's configured default model for capability filtering when known; otherwise offer the runtime's effort levels. An explicit model keeps its own supported-effort filtering. Saving an effort override with default Model sends the effort without a model override. Changing runtime resets the effort selection.
 - **Prompt**: the system prompt editor card (Markdown and Preview, the line and size meta updating as it is typed), empty with a placeholder, and the edit page's caption under it.
 - **Hidden** while creating: Crews using this role, and the activity and id lines.
 - **Create** saves (`CreateRoleInput`, now with `effort`) and lands on the new role's page in view mode, as today. **Cancel** returns to where New role was opened. A backend error shows as today's error banner, at the top of the profile column.
@@ -54,5 +56,5 @@ A redesigned modal would be a third copy of the same fields, next to the role pa
 ## Verification
 
 - `runner-app` tests pass, extended for the creating states, the routes, and the removal of the modals; workspace clippy is clean.
-- Manual pass: New role from the list, from the empty state and from Add slot's Create role; a handle error; a Codex role with Speed and an effort; Create landing on the role page; Cancel. New crew with conventions, Create landing on the crew page and adding a slot there; Cancel. Back and forward through both; the 640 × 480 window; both themes.
+- Manual pass: New role from the list, from the empty state and from Add slot's Create role; the initial avatar preview, live handle changes and clearing back to the preview; a handle error; a Codex role with Speed and an effort, including default Model in create and edit; Create landing on the role page; Cancel. New crew with conventions, Create landing on the crew page and adding a slot there; Cancel. Back and forward through both; the 640 × 480 window; both themes.
 - macOS and Windows.

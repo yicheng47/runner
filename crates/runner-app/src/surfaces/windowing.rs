@@ -181,9 +181,9 @@ impl NativeRoot {
                     .map(|session_id| format!("/chats/{session_id}"))
                     .unwrap_or_else(|| "/chats".into()),
             ),
-            AppRoute::Roles => Some("/roles".into()),
+            AppRoute::Roles | AppRoute::NewRole => Some("/roles".into()),
             AppRoute::RoleDetail(handle) => Some(format!("/roles/{handle}")),
-            AppRoute::Crews => Some("/crews".into()),
+            AppRoute::Crews | AppRoute::NewCrew => Some("/crews".into()),
             AppRoute::CrewEditor(crew_id) => Some(format!("/crews/{crew_id}")),
             AppRoute::Mission(mission_id) => Some(format!("/missions/{mission_id}")),
             AppRoute::Settings => Some("/settings".into()),

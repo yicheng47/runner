@@ -126,7 +126,7 @@ impl NativeRoot {
     ) -> AnyElement {
         match self.route {
             AppRoute::Crews => self.render_crews_page(window, cx),
-            AppRoute::CrewEditor(_) => self.render_crew_editor(window, cx),
+            AppRoute::NewCrew | AppRoute::CrewEditor(_) => self.render_crew_editor(window, cx),
             _ => div().into_any_element(),
         }
     }
@@ -200,24 +200,24 @@ impl NativeRoot {
                 .text_color(theme::accent()),
             "No crews yet",
             "A crew is a team of roles: slots, one lead, and the conventions they share. Make one to start missions from it.",
-            Button::new("empty-new-crew", "+ New crew")
+            div().when(cfg!(test), |entry| entry.debug_selector(|| "EMPTY_NEW_CREW".into())).child(Button::new("empty-new-crew", "+ New crew")
                 .variant(ButtonVariant::Primary)
                 .on_press(move |window, cx| {
                     empty_create_root.update(cx, |this, cx| {
                         this.open_create_crew(window, cx)
                     });
-                }),
+                })),
         );
         PaginatedListPage::new(
             "Crews",
             div().child(
                 "Teams of roles you start missions from: slots, one lead, and the conventions they share.",
             ),
-            Button::new("new-crew", "+ New crew")
+            div().when(cfg!(test), |entry| entry.debug_selector(|| "NEW_CREW".into())).child(Button::new("new-crew", "+ New crew")
                 .variant(ButtonVariant::Primary)
                 .on_press(move |window, cx| {
                     create_root.update(cx, |this, cx| this.open_create_crew(window, cx));
-                }),
+                })),
             "crews",
             empty_state,
             self.crew_surfaces.search.clone(),

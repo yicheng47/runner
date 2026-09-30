@@ -341,7 +341,6 @@ impl NativeRoot {
             return;
         }
         self.crew_surfaces.add_slot = None;
-        self.open_roles(window, cx);
         self.open_create_role(window, cx);
     }
 
@@ -608,7 +607,7 @@ impl NativeRoot {
                             .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
                             .child(
                                 div()
-                                    .id("add-slot-create-role")
+                                    .id("add-slot-create-role").when(cfg!(test), |link| link.debug_selector(|| "ADD_SLOT_CREATE_ROLE".into()))
                                     .tab_index(0)
                                     .cursor_pointer()
                                     .border_b_1()

@@ -35,6 +35,9 @@ impl NativeRoot {
         column: f32,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let creating = self.route == AppRoute::NewCrew
+            || (self.route == AppRoute::Settings
+                && self.settings_return_route == AppRoute::NewCrew);
         let add_root = cx.entity();
         let any_override = slots.iter().any(|slot| slot_setup(slot).overrides_any());
         section()
@@ -46,15 +49,35 @@ impl NativeRoot {
                     .justify_between()
                     .gap_3()
                     .child(section_label(format!("Slots · {}", slots.len())))
-                    .child(text_action(
-                        "add-crew-slot",
-                        "+ Add slot",
-                        move |window, cx| {
+                    .child(if creating {
+                        div()
+                            .text_size(theme::text_ui())
+                            .text_color(theme::faint())
+                            .child("+ Add slot")
+                            .into_any_element()
+                    } else {
+                        text_action("add-crew-slot", "+ Add slot", move |window, cx| {
                             add_root.update(cx, |this, cx| this.open_add_slot(window, cx));
-                        },
-                    )),
+                        })
+                    }),
             )
-            .child(self.render_slot_list(slots, slot_text_width(column), cx))
+            .child(if creating {
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .text_size(theme::text_body())
+                    .text_color(theme::muted())
+                    .child("Add roles as slots once the crew exists.")
+                    .child(
+                        div()
+                            .text_color(theme::faint())
+                            .child("The first slot leads."),
+                    )
+                    .into_any_element()
+            } else {
+                self.render_slot_list(slots, slot_text_width(column), cx)
+            })
             .children(any_override.then(|| {
                 dot_note("overridden for this slot").when(cfg!(test), |legend| {
                     legend.debug_selector(|| "CREW_SLOT_LEGEND".into())

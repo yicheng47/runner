@@ -1,7 +1,5 @@
 use super::logic::create_role_can_submit;
-use super::logic::create_role_focus_order;
 use super::logic::create_role_form_is_composing;
-use super::logic::error_banner;
 use super::logic::parse_speed;
 use super::logic::runtime_entry;
 use super::logic::runtime_model_placeholder;
@@ -11,17 +9,12 @@ use super::logic::trimmed_option;
 use super::logic::RoleFormKind;
 use runner_backend::model::Runtime;
 use std::collections::HashMap;
-use std::rc::Rc;
 
 use gpui::prelude::*;
-use gpui::{div, px, rems, AnyElement, Context, FontWeight, KeyDownEvent, Window};
-use runner_app::ui::{
-    Button, ButtonVariant, Field, IconButton, Modal, OverlayWidth, WorkingDirField,
-};
+use gpui::{Context, KeyDownEvent, Window};
 use runner_backend::ops::role::CreateRoleInput;
 use runner_backend::router::runtime::PermissionMode;
 
-use super::*;
 use crate::*;
 
 impl NativeRoot {
@@ -32,10 +25,12 @@ impl NativeRoot {
         let Some(form) = self.role_surfaces.create.as_mut() else {
             return;
         };
+        let form = &mut form.fields;
         if form.runtime == runtime || form.submitting {
             return;
         }
         form.runtime = runtime.clone();
+        form.effort.clear();
         if runtime != "codex" {
             form.speed = "inherit".into();
             form.speed_select.update(cx, |select, select_cx| {
@@ -56,11 +51,12 @@ impl NativeRoot {
             field.set_suggestions(runtime_models(&form.runtimes, &runtime), field_cx);
             field.set_disabled(runtime.is_empty(), field_cx);
         });
+        self.sync_create_role_efforts(cx);
         self.request_model_catalog(&runtime, cx);
         cx.notify();
     }
 
-    fn close_create_role(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn close_create_role(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self
             .role_surfaces
             .create
@@ -69,12 +65,17 @@ impl NativeRoot {
         {
             return;
         }
-        self.role_surfaces.create = None;
-        window.focus(&self.root_focus, cx);
+        let route = self
+            .role_surfaces
+            .create
+            .take()
+            .map(|form| form.return_route)
+            .unwrap_or(AppRoute::Roles);
+        self.open_page_route(route, window, cx);
         cx.notify();
     }
 
-    fn on_create_role_key_down(
+    pub(super) fn on_create_role_key_down(
         &mut self,
         event: &KeyDownEvent,
         window: &mut Window,
@@ -95,7 +96,7 @@ impl NativeRoot {
         }
     }
 
-    fn browse_create_role_cwd(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn browse_create_role_cwd(&mut self, cx: &mut Context<Self>) {
         let Some(input) = self
             .role_surfaces
             .create
@@ -108,7 +109,7 @@ impl NativeRoot {
         self.browse_role_form_cwd(input, RoleFormKind::Create, cx);
     }
 
-    fn submit_create_role(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn submit_create_role(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(form) = self.role_surfaces.create.as_mut() else {
             return;
         };
@@ -130,7 +131,7 @@ impl NativeRoot {
             system_prompt: trimmed_option(form.system_prompt.read(cx).text()),
             env: HashMap::new(),
             model: trimmed_option(form.model.read(cx).text()),
-            effort: None,
+            effort: trimmed_option(&form.effort),
             codex_speed: parse_speed(&form.speed),
             permission_mode: PermissionMode::Default,
         };
@@ -164,219 +165,5 @@ impl NativeRoot {
         })
         .detach();
         cx.notify();
-    }
-
-    pub(super) fn render_create_role_modal(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let form = self
-            .role_surfaces
-            .create
-            .as_ref()
-            .expect("create role form");
-        let submitting = form.submitting;
-        let can_submit = create_role_can_submit(form);
-        let handle_error = form.handle_error;
-        let root = cx.entity();
-        let close_root = root.clone();
-        let cancel_root = root.clone();
-        let submit_root = root.clone();
-        let browse_root = root.clone();
-        let title = div()
-            .flex()
-            .items_center()
-            .justify_between()
-            .gap_4()
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(rems(2. / 16.))
-                    .child(
-                        div()
-                            .text_size(theme::text_heading())
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child("New role"),
-                    )
-                    .child(
-                        div()
-                            .text_size(theme::text_ui())
-                            .font_weight(FontWeight::NORMAL)
-                            .text_color(theme::muted())
-                            .child("Reusable across crews and chats."),
-                    ),
-            )
-            .child(
-                IconButton::new("close-create-role", "close.svg")
-                    .focus_handle(form.close_focus.clone())
-                    .tooltip("Close new role")
-                    .disabled(submitting)
-                    .on_press(move |window, cx| {
-                        close_root.update(cx, |this, cx| this.close_create_role(window, cx));
-                    }),
-            );
-        let handle_input = div()
-            .w_full()
-            .flex()
-            .items_center()
-            .rounded(rems(4. / 16.))
-            .border_1()
-            .border_color(if handle_error.is_some() {
-                theme::danger()
-            } else {
-                theme::border_strong()
-            })
-            .bg(theme::bg())
-            .px(rems(10. / 16.))
-            .py(rems(6. / 16.))
-            .text_size(theme::text_title())
-            .child(
-                div()
-                    .pr_1()
-                    .font_family(theme::UI_MONOSPACE_FONT)
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(theme::faint())
-                    .child("@"),
-            )
-            .child(div().min_w(px(0.)).flex_1().child(form.handle.clone()));
-        let body = div()
-            .flex()
-            .flex_col()
-            .gap_5()
-            .on_key_down(cx.listener(Self::on_create_role_key_down))
-            .children(form.error.clone().map(error_banner))
-            .child(
-                Field::new("new-role-handle", "Handle", handle_input)
-                    .focus_target(form.handle.read(cx).focus_handle())
-                    .when_some(handle_error, |field, error| field.error(error)),
-            )
-            .child(
-                Field::new(
-                    "new-role-display-name",
-                    "Display name",
-                    form.display_name.clone(),
-                )
-                .focus_target(form.display_name.read(cx).focus_handle()),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .child(
-                        Field::new("new-role-runtime", "Agent", form.runtime_select.clone())
-                            .focus_target(form.runtime_select.read(cx).focus_handle()),
-                    )
-                    .children(form.agents_error.clone().map(|error| {
-                        div()
-                            .text_size(theme::text_meta())
-                            .text_color(theme::danger())
-                            .child(error)
-                    })),
-            )
-            .child(
-                Field::new("new-role-command", "Command", form.command.clone())
-                    .focus_target(form.command.read(cx).focus_handle()),
-            )
-            .child(
-                Field::new("new-role-args", "Args", form.args.clone())
-                    .focus_target(form.args.read(cx).focus_handle())
-                    .hint(
-                        "extra flags · whitespace-separated",
-                        form.args_hint_focus.clone(),
-                    ),
-            )
-            .child(
-                Field::new("new-role-model", "Model", form.model_field.clone())
-                    .focus_target(form.model.read(cx).focus_handle())
-                    .hint(
-                        "optional · blank uses the agent's own model · type a name or pick an alias",
-                        form.model_hint_focus.clone(),
-                    ),
-            )
-            .children((form.runtime == "codex").then(|| {
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .child(
-                        Field::new("new-role-speed", "Speed", form.speed_select.clone())
-                            .focus_target(form.speed_select.read(cx).focus_handle()),
-                    )
-                    .children((form.speed == "fast").then(|| {
-                        div()
-                            .when(cfg!(test), |note| {
-                                note.debug_selector(|| "NEW_ROLE_SPEED_NOTE".into())
-                            })
-                            .text_size(theme::text_meta())
-                            .text_color(theme::faint())
-                            .child("Fast uses more credits.")
-                    }))
-            }))
-            .child(
-                Field::new(
-                    "new-role-working-dir",
-                    "Working directory",
-                    WorkingDirField::new(
-                        form.working_dir.clone(),
-                        submitting,
-                        Rc::new(move |_, cx| {
-                            browse_root.update(cx, |this, cx| {
-                                this.browse_create_role_cwd(cx)
-                            });
-                        }),
-                    )
-                    .browse_focus(form.browse_focus.clone()),
-                )
-                .focus_target(form.working_dir.read(cx).focus_handle()),
-            )
-            .child(
-                Field::new(
-                    "new-role-system-prompt",
-                    "Default system prompt",
-                    form.system_prompt.clone(),
-                )
-                .focus_target(form.system_prompt.read(cx).focus_handle()),
-            );
-        let footer = div()
-            .flex()
-            .items_center()
-            .gap_2()
-            .child(
-                Button::new("cancel-create-role", "Cancel")
-                    .focus_handle(form.cancel_focus.clone())
-                    .disabled(submitting)
-                    .on_press(move |window, cx| {
-                        cancel_root.update(cx, |this, cx| this.close_create_role(window, cx));
-                    }),
-            )
-            .child(
-                Button::new(
-                    "submit-create-role",
-                    if submitting {
-                        "Creating…"
-                    } else {
-                        "Create role"
-                    },
-                )
-                .focus_handle(form.submit_focus.clone())
-                .variant(ButtonVariant::Primary)
-                .disabled(!can_submit)
-                .on_press(move |window, cx| {
-                    submit_root.update(cx, |this, cx| this.submit_create_role(window, cx));
-                }),
-            );
-        let modal_root = root;
-        Modal::new(
-            title,
-            body,
-            Rc::new(move |window, cx| {
-                modal_root.update(cx, |this, cx| this.close_create_role(window, cx));
-            }),
-        )
-        .width(OverlayWidth::Custom(FORM_WIDTH))
-        .busy(submitting)
-        .focus_order(create_role_focus_order(form, cx))
-        .scrollbar(form.scroll.clone(), form.scrollbar.clone())
-        .footer(footer)
-        .into_any_element()
     }
 }

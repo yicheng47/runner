@@ -30,6 +30,7 @@ impl NativeRoot {
         }
         let next_runtime = value;
         if next_runtime != form.runtime {
+            form.effort.clear();
             form.model
                 .update(cx, |input, input_cx| input.reset("", input_cx));
             let command = if next_runtime == form.role.runtime {
@@ -67,6 +68,15 @@ impl NativeRoot {
     /// The role page's in-place editor lives only on its own role's page, so a
     /// route that leaves it discards the draft, as Cancel does.
     pub(crate) fn drop_role_edit_for_route(&mut self, route: &AppRoute) {
+        if !matches!(route, AppRoute::NewRole | AppRoute::Settings)
+            && !self
+                .role_surfaces
+                .create
+                .as_ref()
+                .is_some_and(|form| form.submitting)
+        {
+            self.role_surfaces.create = None;
+        }
         let stale = self.role_surfaces.edit.as_ref().is_some_and(|form| {
             !form.submitting
                 && !matches!(route, AppRoute::Settings)

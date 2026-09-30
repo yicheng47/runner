@@ -12,10 +12,8 @@ use super::logic::validate_role_handle;
 use std::rc::Rc;
 
 use gpui::prelude::*;
-use gpui::{px, Context, ScrollHandle, Window};
-use runner_app::ui::{
-    working_dir_text_field, ModelField, RuntimeSelect, Scrollbar, StyledSelect, TextField,
-};
+use gpui::{px, Context, Window};
+use runner_app::ui::{working_dir_text_field, ModelField, StyledSelect, TextField};
 use runner_backend::model::Role;
 use runner_backend::router::runtime::PermissionMode;
 
@@ -44,6 +42,26 @@ impl NativeRoot {
         });
     }
 
+    pub(super) fn sync_create_role_efforts(&mut self, cx: &mut Context<Self>) {
+        let Some(form) = self.role_surfaces.create.as_mut() else {
+            return;
+        };
+        let form = &mut form.fields;
+        let options = super::logic::create_role_effort_options(
+            &form.runtimes,
+            &form.runtime,
+            form.model.read(cx).text(),
+        );
+        if !options.iter().any(|option| option.value == form.effort) {
+            form.effort.clear();
+        }
+        form.effort_select.update(cx, |select, cx| {
+            select.set_disabled(form.submitting || options.len() <= 1, cx);
+            select.set_options(options, cx);
+            select.set_value(form.effort.clone(), cx);
+        });
+    }
+
     pub(crate) fn refresh_role_form_runtimes(&mut self, cx: &mut Context<Self>) {
         let (selectable, agents_checking, agents_error) =
             crate::surfaces::start_chat::load_selectable_runtimes(self.core(cx), self.settings(cx));
@@ -55,6 +73,7 @@ impl NativeRoot {
         };
 
         if let Some(form) = self.role_surfaces.create.as_mut() {
+            let form = &mut form.fields;
             form.agents_checking = agents_checking;
             form.agents_error.clone_from(&agents_error);
             if catalog_loaded {
@@ -68,6 +87,7 @@ impl NativeRoot {
                     .unwrap_or_default();
                 if next_runtime != form.runtime {
                     form.runtime.clone_from(&next_runtime);
+                    form.effort.clear();
                     if next_runtime != "codex" {
                         form.speed = "inherit".into();
                         form.speed_select.update(cx, |select, select_cx| {
@@ -128,14 +148,18 @@ impl NativeRoot {
                 });
             }
         }
+        self.sync_create_role_efforts(cx);
         self.sync_role_edit_efforts(cx);
         cx.notify();
     }
 
     pub(crate) fn open_create_role(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.role_surfaces.create.is_some() {
+            self.enter_entity_route(AppRoute::NewRole, window, cx);
             return;
         }
+        let return_route = self.route.clone();
+        self.enter_entity_route(AppRoute::NewRole, window, cx);
         let (runtimes, agents_checking, agents_error) =
             crate::surfaces::start_chat::load_selectable_runtimes(self.core(cx), self.settings(cx));
         let runtime = runtimes
@@ -153,7 +177,7 @@ impl NativeRoot {
         handle.update(cx, |input, input_cx| input.set_bare(true, input_cx));
         let display_name = cx.new(|input_cx| {
             TextField::new(input_cx.focus_handle(), "", "Architect", false)
-                .text_size(theme::text_title())
+                .text_size(theme::text_display())
         });
         let command = cx.new(|input_cx| {
             let mut input = TextField::new(input_cx.focus_handle(), command, "", true)
@@ -162,7 +186,7 @@ impl NativeRoot {
             input
         });
         let args = cx.new(|input_cx| {
-            TextField::new(input_cx.focus_handle(), "", "--mcp-debug", true)
+            TextField::new(input_cx.focus_handle(), "", "Extra flags", true)
                 .text_size(theme::text_title())
         });
         let model = cx.new(|input_cx| {
@@ -184,19 +208,21 @@ impl NativeRoot {
                 .text_size(theme::text_body())
         });
         let system_prompt = cx.new(|input_cx| {
-            TextField::textarea(
+            let mut input = TextField::textarea(
                 input_cx.focus_handle(),
                 "",
-                "You are the architect for this crew. When a mission starts, decompose the goal into 2–4 tasks and assign each to a @handle in the crew.",
-                5,
+                "What this role does, how it works and what it hands back. Markdown works.",
+                6,
                 true,
             )
-            .text_size(theme::text_body())
+            .text_size(theme::text_body());
+            input.set_bare(true, input_cx);
+            input.fill_height().with_scrollbar(input_cx)
         });
         let root = cx.entity();
         let runtime_root = root.clone();
         let runtime_select = cx.new(|select_cx| {
-            RuntimeSelect::runtime(
+            StyledSelect::runtime(
                 "new-role-runtime",
                 select_cx.focus_handle(),
                 runtime.clone(),
@@ -206,15 +232,35 @@ impl NativeRoot {
                 }),
                 select_cx,
             )
-            .width(px(FIELD_WIDTH))
-            .min_menu_width(px(FIELD_WIDTH))
-            .detailed(true)
+            .width(px(ROLE_COLUMN_WIDTH))
+            .min_menu_width(px(ROLE_COLUMN_WIDTH))
             .disabled(runtimes.is_empty())
             .placeholder(if agents_checking {
                 "Detecting agents…"
             } else {
                 "No enabled agents detected"
             })
+        });
+        let effort_root = root.clone();
+        let effort_select = cx.new(|select_cx| {
+            StyledSelect::new(
+                "new-role-effort",
+                select_cx.focus_handle(),
+                "",
+                super::logic::create_role_effort_options(&runtimes, &runtime, ""),
+                Rc::new(move |value, _, cx| {
+                    effort_root.update(cx, |this, cx| {
+                        if let Some(form) = this.role_surfaces.create.as_mut() {
+                            form.effort = value;
+                            cx.notify();
+                        }
+                    });
+                }),
+                select_cx,
+            )
+            .full_width(true)
+            .width(px(ROLE_COLUMN_WIDTH))
+            .min_menu_width(px(ROLE_COLUMN_WIDTH))
         });
         let speed_root = root.clone();
         let speed_select = cx.new(|select_cx| {
@@ -233,16 +279,10 @@ impl NativeRoot {
                 }),
                 select_cx,
             )
-            .width(px(FIELD_WIDTH))
-            .min_menu_width(px(FIELD_WIDTH))
+            .width(px(ROLE_COLUMN_WIDTH))
+            .min_menu_width(px(ROLE_COLUMN_WIDTH))
         });
-        let scroll = ScrollHandle::new();
-        let scroll_owner = cx.entity_id();
-        let scrollbar = cx.new(|_| Scrollbar::app(scroll.clone(), scroll_owner));
         let browse_focus = cx.focus_handle();
-        let args_hint_focus = cx.focus_handle();
-        let model_hint_focus = cx.focus_handle();
-        let close_focus = cx.focus_handle();
         let cancel_focus = cx.focus_handle();
         let submit_focus = cx.focus_handle();
         let mut subscriptions = Vec::new();
@@ -258,11 +298,9 @@ impl NativeRoot {
             let Some(form) = this.role_surfaces.create.as_mut() else {
                 return;
             };
-            if form.handle_empty != empty || form.handle_error != error {
-                form.handle_empty = empty;
-                form.handle_error = error;
-                cx.notify();
-            }
+            form.handle_empty = empty;
+            form.handle_error = error;
+            cx.notify();
         }));
         subscriptions.push(cx.observe(&display_name, |this, input, cx| {
             let valid = !input.read(cx).text().trim().is_empty();
@@ -274,38 +312,46 @@ impl NativeRoot {
                 cx.notify();
             }
         }));
+        subscriptions.push(cx.observe(&model, |this, _, cx| this.sync_create_role_efforts(cx)));
+        for input in [&display_name, &args, &model, &working_dir, &system_prompt] {
+            subscriptions.push(cx.observe(input, |_, _, cx| cx.notify()));
+        }
+        self.role_surfaces.prompt_preview = false;
+        let focus = display_name.read(cx).focus_handle();
         self.role_surfaces.create = Some(CreateRoleForm {
-            runtimes,
-            runtime,
+            return_route,
             handle: handle.clone(),
-            display_name,
-            command,
-            args,
-            model,
-            model_field,
-            speed: "inherit".into(),
-            speed_select,
-            working_dir,
-            system_prompt,
-            runtime_select,
-            scroll,
-            scrollbar,
-            browse_focus,
-            args_hint_focus,
-            model_hint_focus,
-            close_focus,
-            cancel_focus,
-            submit_focus,
             handle_empty: true,
             handle_error: None,
-            display_name_valid: false,
-            submitting: false,
-            agents_checking,
-            agents_error,
-            error: None,
-            _subscriptions: subscriptions,
+            fields: RoleFormFields {
+                runtimes,
+                runtime,
+                display_name,
+                command,
+                args,
+                model,
+                model_field,
+                effort: String::new(),
+                effort_select,
+                speed: "inherit".into(),
+                speed_select,
+                working_dir,
+                system_prompt,
+                prompt_mode_focus: [cx.focus_handle(), cx.focus_handle()],
+                runtime_select,
+                browse_focus,
+                cancel_focus,
+                submit_focus,
+                display_name_valid: false,
+                submitting: false,
+                agents_checking,
+                agents_error,
+                error: None,
+                _subscriptions: subscriptions,
+            },
         });
-        handle.read(cx).focus_handle().focus(window, cx);
+        self.sync_create_role_efforts(cx);
+        focus.focus(window, cx);
         cx.notify();
     }
 
@@ -429,6 +475,7 @@ impl NativeRoot {
                 }),
                 select_cx,
             )
+            .full_width(true)
             .width(px(ROLE_COLUMN_WIDTH))
             .min_menu_width(px(ROLE_COLUMN_WIDTH))
         });
@@ -473,30 +520,33 @@ impl NativeRoot {
         }
         self.role_surfaces.edit = Some(RoleEditForm {
             role,
-            runtimes,
-            runtime: resolution.runtime,
             permission_mode,
-            display_name: display_name.clone(),
-            command,
-            args,
-            model,
-            model_field,
-            effort: resolution.effort,
-            effort_select,
-            speed: resolution.speed,
-            speed_select,
-            runtime_select,
-            working_dir,
-            system_prompt,
-            browse_focus: cx.focus_handle(),
-            cancel_focus: cx.focus_handle(),
-            submit_focus: cx.focus_handle(),
-            display_name_valid: true,
-            submitting: false,
-            agents_checking,
-            agents_error,
-            error: None,
-            _subscriptions: subscriptions,
+            fields: RoleFormFields {
+                runtimes,
+                runtime: resolution.runtime,
+                display_name: display_name.clone(),
+                command,
+                args,
+                model,
+                model_field,
+                effort: resolution.effort,
+                effort_select,
+                speed: resolution.speed,
+                speed_select,
+                runtime_select,
+                working_dir,
+                system_prompt,
+                prompt_mode_focus: [cx.focus_handle(), cx.focus_handle()],
+                browse_focus: cx.focus_handle(),
+                cancel_focus: cx.focus_handle(),
+                submit_focus: cx.focus_handle(),
+                display_name_valid: true,
+                submitting: false,
+                agents_checking,
+                agents_error,
+                error: None,
+                _subscriptions: subscriptions,
+            },
         });
         self.sync_role_edit_efforts(cx);
         display_name.read(cx).focus_handle().focus(window, cx);

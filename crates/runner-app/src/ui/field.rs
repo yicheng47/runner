@@ -2163,7 +2163,7 @@ impl Render for TextField {
                     .border_color(input_border_color(&self.validation, focused))
                     .bg(theme::bg())
             })
-            .track_focus(&self.focus_handle)
+            .track_focus(&self.focus_handle.clone().tab_stop(!self.disabled))
             .key_context("TextInput")
             .tab_index(0)
             .tab_stop(!self.disabled)

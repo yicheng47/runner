@@ -31,8 +31,10 @@ pub(crate) enum AppRoute {
     #[default]
     Chat,
     Roles,
+    NewRole,
     RoleDetail(String),
     Crews,
+    NewCrew,
     CrewEditor(String),
     Mission(String),
     ArchivedChat,
@@ -1452,7 +1454,12 @@ impl NativeRoot {
     ) -> Option<AnyElement> {
         if !matches!(
             self.route,
-            AppRoute::Roles | AppRoute::RoleDetail(_) | AppRoute::Crews | AppRoute::CrewEditor(_)
+            AppRoute::Roles
+                | AppRoute::NewRole
+                | AppRoute::RoleDetail(_)
+                | AppRoute::Crews
+                | AppRoute::NewCrew
+                | AppRoute::CrewEditor(_)
         ) {
             return None;
         }
@@ -1630,8 +1637,10 @@ impl NativeRoot {
                 cx.notify();
             }
             AppRoute::Roles => self.open_roles(window, cx),
+            AppRoute::NewRole => self.open_create_role(window, cx),
             AppRoute::RoleDetail(handle) => self.open_role_detail(handle, window, cx),
             AppRoute::Crews => self.open_crews(window, cx),
+            AppRoute::NewCrew => self.open_create_crew(window, cx),
             AppRoute::CrewEditor(crew_id) => self.open_crew_editor(crew_id, window, cx),
             AppRoute::Mission(mission_id) => self.open_mission(mission_id, window, cx),
             AppRoute::ArchivedChat => {

@@ -54,6 +54,12 @@ impl NativeRoot {
         let location = match &self.route {
             AppRoute::Chat => self.active_focused_session_id().map(RuntimeLocation::Chat),
             AppRoute::Mission(mission_id) => Some(RuntimeLocation::Mission(mission_id.clone())),
+            AppRoute::Roles
+            | AppRoute::NewRole
+            | AppRoute::RoleDetail(_)
+            | AppRoute::Crews
+            | AppRoute::NewCrew
+            | AppRoute::CrewEditor(_) => Some(RuntimeLocation::Entity(self.route.clone())),
             _ => None,
         };
         let Some(location) = location else {
@@ -93,6 +99,7 @@ impl NativeRoot {
             let next_index = candidate as usize;
             let location = self.runtime_navigation_history[next_index].clone();
             let available = match &location {
+                RuntimeLocation::Entity(_) => true,
                 RuntimeLocation::Chat(session_id) => self
                     .app_store
                     .read(cx)
@@ -109,6 +116,10 @@ impl NativeRoot {
             if available {
                 self.runtime_navigation_index = Some(next_index);
                 let navigated = match location {
+                    RuntimeLocation::Entity(route) => {
+                        self.open_page_route(route, window, cx);
+                        true
+                    }
                     RuntimeLocation::Chat(session_id) => {
                         self.open_chat_session(&session_id, window, cx)
                     }
@@ -123,6 +134,28 @@ impl NativeRoot {
                 self.runtime_navigation_index = Some(index);
             }
             candidate += direction;
+        }
+    }
+
+    pub(crate) fn open_page_route(
+        &mut self,
+        route: AppRoute,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match route {
+            AppRoute::Roles => self.open_roles(window, cx),
+            AppRoute::NewRole => self.open_create_role(window, cx),
+            AppRoute::RoleDetail(handle) => self.open_role_detail(handle, window, cx),
+            AppRoute::Crews => self.open_crews(window, cx),
+            AppRoute::NewCrew => self.open_create_crew(window, cx),
+            AppRoute::CrewEditor(id) => self.open_crew_editor(id, window, cx),
+            AppRoute::Mission(id) => self.open_mission(id, window, cx),
+            route => {
+                self.set_route(route, cx);
+                window.focus(&self.root_focus, cx);
+                cx.notify();
+            }
         }
     }
 

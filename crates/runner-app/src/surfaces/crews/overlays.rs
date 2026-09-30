@@ -100,9 +100,6 @@ impl NativeRoot {
     ) -> Vec<AnyElement> {
         let mut overlays = Vec::new();
         overlays.extend(self.render_slot_popup(window, cx));
-        if self.crew_surfaces.create.is_some() {
-            overlays.push(self.render_create_crew_modal(cx));
-        }
         if self.crew_surfaces.add_slot.is_some() {
             overlays.push(self.render_add_slot_modal(cx));
         }

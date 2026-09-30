@@ -12,7 +12,9 @@ use crate::chat_icon::runtime_mark;
 use crate::surfaces::chat_lifecycle::{
     ended_subtitle, resolve_pane_overlay, shell_exited_subtitle, PaneOverlayState, TransitionKind,
 };
-use crate::surfaces::profile_page::{column_text, setup_row, setup_value};
+use crate::surfaces::profile_page::{
+    clamped_markdown, column_text, prompt_meta, setup_row, setup_value, ClickHandler,
+};
 use crate::surfaces::roles::logic::{role_setting_label, runtime_display_name};
 use crate::surfaces::sidebar::direct_chat_display_status;
 use runner_app::ui::RoleAvatar;
@@ -276,6 +278,11 @@ impl NativeRoot {
         if panel_animating {
             window.request_animation_frame();
         }
+        self.reset_chat_panel_prompt(
+            self.archived_chat_detail
+                .as_ref()
+                .map(|chat| chat.session_id.clone()),
+        );
         let side_panel = self.render_chat_side_panel(
             self.archived_chat_detail.as_ref(),
             self.archived_session_key_copy.clone(),
@@ -633,6 +640,11 @@ impl NativeRoot {
         if panel_animating {
             window.request_animation_frame();
         }
+        self.reset_chat_panel_prompt(
+            self.active_chat_detail
+                .as_ref()
+                .map(|chat| chat.session_id.clone()),
+        );
         let side_panel = self.render_chat_side_panel(
             self.active_chat_detail.as_ref(),
             self.session_key_copy.clone(),
@@ -923,6 +935,13 @@ impl NativeRoot {
         }
     }
 
+    pub(crate) fn reset_chat_panel_prompt(&mut self, selected: Option<String>) {
+        if self.chat_panel_prompt_session != selected {
+            self.chat_panel_prompt_session = selected;
+            self.chat_panel_prompt_expanded = false;
+        }
+    }
+
     fn render_chat_side_panel(
         &self,
         detail: Option<&DirectSessionEntry>,
@@ -983,7 +1002,27 @@ impl NativeRoot {
             cx,
         );
         let content = if let Some(detail) = detail {
-            chat_panel_content(detail, role.as_ref(), width, session_key_copy)
+            let open_root = cx.entity();
+            let toggle_root = cx.entity();
+            let actions = ChatPanelActions {
+                open_role: role.as_ref().map(|role| {
+                    let handle = role.handle.clone();
+                    Rc::new(move |window: &mut Window, cx: &mut App| {
+                        open_root.update(cx, |this, cx| {
+                            this.open_role_detail(handle.clone(), window, cx)
+                        });
+                    }) as ClickHandler
+                }),
+                toggle_prompt: Rc::new(move |_, cx| {
+                    toggle_root.update(cx, |this, cx| {
+                        this.chat_panel_prompt_expanded = !this.chat_panel_prompt_expanded;
+                        cx.notify();
+                    });
+                }),
+                expanded: self.chat_panel_prompt_expanded,
+                view: cx.entity_id(),
+            };
+            chat_panel_content(detail, role.as_ref(), width, session_key_copy, actions, cx)
         } else {
             div()
                 .text_size(theme::text_ui())
@@ -2777,11 +2816,20 @@ fn pane_action_items_for(
     items
 }
 
+struct ChatPanelActions {
+    open_role: Option<ClickHandler>,
+    toggle_prompt: ClickHandler,
+    expanded: bool,
+    view: gpui::EntityId,
+}
+
 fn chat_panel_content(
     detail: &DirectSessionEntry,
     role: Option<&runner_backend::model::Role>,
     width: f32,
     session_key_copy: Entity<CopyValueButton>,
+    actions: ChatPanelActions,
+    cx: &App,
 ) -> AnyElement {
     let column = width - 2. * 20. - 2. * 14. - 2.;
     let section_label = if role.is_some() { "Role" } else { "Runtime" };
@@ -2789,7 +2837,9 @@ fn chat_panel_content(
         .cwd
         .clone()
         .or_else(|| role.and_then(|role| role.working_dir.clone()));
-    let system_prompt = role.and_then(|role| role.system_prompt.clone());
+    let system_prompt = role
+        .and_then(|role| role.system_prompt.as_deref())
+        .filter(|text| !text.trim().is_empty());
     div()
         .flex()
         .flex_col()
@@ -2799,7 +2849,46 @@ fn chat_panel_content(
                 .flex()
                 .flex_col()
                 .gap(rems(10. / 16.))
-                .child(side_panel_label(section_label))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .gap_2()
+                        .child(side_panel_label(section_label))
+                        .children(actions.open_role.map(|on_open| {
+                            let key_open = on_open.clone();
+                            div()
+                                .id("chat-panel-open-role")
+                                .when(cfg!(test), |link| {
+                                    link.debug_selector(|| "CHAT_PANEL_OPEN_ROLE".into())
+                                })
+                                .tab_index(0)
+                                .flex_none()
+                                .flex()
+                                .items_center()
+                                .gap_1()
+                                .text_size(theme::text_ui())
+                                .text_color(theme::muted())
+                                .cursor_pointer()
+                                .hover(|link| link.text_color(theme::text()))
+                                .focus_visible(|link| link.text_color(theme::text()).underline())
+                                .on_click(move |_, window, cx| on_open(window, cx))
+                                .on_key_down(move |event: &KeyDownEvent, window, cx| {
+                                    if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                                        cx.stop_propagation();
+                                        key_open(window, cx);
+                                    }
+                                })
+                                .child("Open role")
+                                .child(
+                                    svg()
+                                        .path("arrow-up-right.svg")
+                                        .size(rems(12. / 16.))
+                                        .text_color(theme::muted()),
+                                )
+                        })),
+                )
                 .child(
                     div()
                         .flex()
@@ -2836,6 +2925,7 @@ fn chat_panel_content(
                                             div()
                                                 .flex_1()
                                                 .min_w(px(0.))
+                                                .truncate()
                                                 .font_family(theme::UI_MONOSPACE_FONT)
                                                 .text_color(theme::muted())
                                                 .child(
@@ -2855,7 +2945,26 @@ fn chat_panel_content(
                 .flex()
                 .flex_col()
                 .gap_2()
-                .child(side_panel_label("System prompt"))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .gap_2()
+                        .child(side_panel_label("System prompt"))
+                        .child(
+                            div()
+                                .when(cfg!(test), |meta| {
+                                    meta.debug_selector(|| "CHAT_PANEL_PROMPT_META".into())
+                                })
+                                .min_w(px(0.))
+                                .truncate()
+                                .font_family(theme::UI_MONOSPACE_FONT)
+                                .text_size(theme::text_caption())
+                                .text_color(theme::faint())
+                                .child(prompt_meta(prompt)),
+                        ),
+                )
                 .child(
                     div()
                         .rounded_md()
@@ -2866,7 +2975,16 @@ fn chat_panel_content(
                         .text_size(theme::text_ui())
                         .line_height(rems(20. / 16.))
                         .text_color(theme::muted())
-                        .child(prompt),
+                        .child(clamped_markdown(
+                            &format!("chat-panel-prompt-{}", detail.session_id),
+                            prompt,
+                            actions.expanded,
+                            theme::bg(),
+                            "CHAT_PANEL_PROMPT",
+                            actions.toggle_prompt,
+                            actions.view,
+                            cx,
+                        )),
                 )
         }))
         .into_any_element()
@@ -2972,6 +3090,10 @@ fn chat_panel_setup(
 
 fn side_panel_label(label: &'static str) -> AnyElement {
     div()
+        .when(cfg!(test), |label_row| {
+            label_row.debug_selector(|| format!("CHAT_PANEL_LABEL {label}"))
+        })
+        .flex_none()
         .font_weight(FontWeight::SEMIBOLD)
         .text_size(theme::text_caption())
         .text_color(theme::faint())
@@ -2990,6 +3112,7 @@ fn side_panel_key(label: &'static str) -> AnyElement {
 
 fn side_panel_value(value: String) -> AnyElement {
     div()
+        .truncate()
         .flex_1()
         .min_w(px(0.))
         .font_family(theme::UI_MONOSPACE_FONT)
@@ -3118,7 +3241,7 @@ mod tests {
         fn render(
             &mut self,
             _: &mut gpui::Window,
-            _: &mut gpui::Context<Self>,
+            cx: &mut gpui::Context<Self>,
         ) -> impl gpui::IntoElement {
             use gpui::prelude::*;
             gpui::div()
@@ -3129,6 +3252,16 @@ mod tests {
                     self.role.as_ref(),
                     self.width,
                     self.copy.clone(),
+                    super::ChatPanelActions {
+                        open_role: self.role.as_ref().map(|_| {
+                            std::rc::Rc::new(|_: &mut gpui::Window, _: &mut gpui::App| {})
+                                as super::ClickHandler
+                        }),
+                        toggle_prompt: std::rc::Rc::new(|_, _| {}),
+                        expanded: false,
+                        view: cx.entity_id(),
+                    },
+                    cx,
                 ))
         }
     }
@@ -3151,6 +3284,40 @@ mod tests {
         visual.simulate_resize(size(px(500.), px(800.)));
         visual.run_until_parked();
         (cx, visual)
+    }
+
+    #[test]
+    fn panel_prompt_only_shows_nonblank_text_and_only_long_prompts_have_a_toggle() {
+        let _theme = crate::theme_snapshot::ThemeGuard::new();
+        for prompt in ["", " \n ", "# Short\n\nPrompt", &"line\n".repeat(60)] {
+            let mut role = panel_role();
+            role.system_prompt = Some(prompt.into());
+            let (_cx, mut visual) = panel_harness(
+                direct_session("codex", true, true),
+                Some(role),
+                crate::app_settings::CHAT_PANEL_MIN,
+            );
+            let link = visual.debug_bounds("CHAT_PANEL_OPEN_ROLE").unwrap();
+            let label = visual.debug_bounds("CHAT_PANEL_LABEL Role").unwrap();
+            assert!((label.center().y - link.center().y).abs() <= gpui::px(1.));
+            assert!(link.right() <= gpui::px(crate::app_settings::CHAT_PANEL_MIN));
+            if !prompt.trim().is_empty() {
+                let label = visual
+                    .debug_bounds("CHAT_PANEL_LABEL System prompt")
+                    .unwrap();
+                let meta = visual.debug_bounds("CHAT_PANEL_PROMPT_META").unwrap();
+                assert!((label.center().y - meta.center().y).abs() <= gpui::px(1.));
+                assert!(meta.right() <= gpui::px(crate::app_settings::CHAT_PANEL_MIN));
+            }
+            assert_eq!(
+                visual.debug_bounds("CHAT_PANEL_PROMPT_TEXT").is_some(),
+                !prompt.trim().is_empty()
+            );
+            assert_eq!(
+                visual.debug_bounds("CHAT_PANEL_PROMPT_TOGGLE").is_some(),
+                prompt.lines().count() > crate::surfaces::profile_page::PREVIEW_LINES
+            );
+        }
     }
 
     #[test]
@@ -3198,6 +3365,8 @@ mod tests {
                 detail.agent_model = model.map(str::to_owned);
                 detail.agent_effort = effort.map(str::to_owned);
                 let (_cx, mut visual) = panel_harness(detail, None, 320.);
+                assert!(visual.debug_bounds("CHAT_PANEL_OPEN_ROLE").is_none());
+                assert!(visual.debug_bounds("CHAT_PANEL_PROMPT_TEXT").is_none());
                 let mark = visual.debug_bounds("CHAT_PANEL_MARK codex").unwrap();
                 assert_eq!(mark.size, size(px(40.), px(40.)));
                 assert!(visual.debug_bounds("COLUMN_TEXT Codex").is_some());

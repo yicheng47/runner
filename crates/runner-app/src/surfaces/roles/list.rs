@@ -211,8 +211,10 @@ impl NativeRoot {
         match route {
             AppRoute::Chat => self.render_active_tab(window, cx),
             AppRoute::Roles => self.render_roles_page(window, cx),
-            AppRoute::RoleDetail(_) => self.render_role_detail(window, cx),
-            AppRoute::Crews | AppRoute::CrewEditor(_) => self.render_crew_surface(window, cx),
+            AppRoute::NewRole | AppRoute::RoleDetail(_) => self.render_role_detail(window, cx),
+            AppRoute::Crews | AppRoute::NewCrew | AppRoute::CrewEditor(_) => {
+                self.render_crew_surface(window, cx)
+            }
             AppRoute::Mission(_) => self.mission_workspace.clone().into_any_element(),
             AppRoute::ArchivedChat => self.render_archived_chat(window, cx),
             AppRoute::Settings => self.render_active_tab(window, cx),
@@ -288,24 +290,24 @@ impl NativeRoot {
                 .text_color(theme::accent()),
             "No roles yet",
             "A role is a reusable CLI agent — claude-code, codex, a custom shell — that crews pull in. Add one to start composing crews.",
-            Button::new("empty-new-role", "+ New role")
+            div().when(cfg!(test), |entry| entry.debug_selector(|| "EMPTY_NEW_ROLE".into())).child(Button::new("empty-new-role", "+ New role")
                 .variant(ButtonVariant::Primary)
                 .on_press(move |window, cx| {
                     empty_create_root.update(cx, |this, cx| {
                         this.open_create_role(window, cx)
                     });
-                }),
+                })),
         );
         PaginatedListPage::new(
             "Roles",
             div().child(
                 "The setups your chats and crews run on: a runtime, a model, an effort and a brief.",
             ),
-            Button::new("new-role", "+ New role")
+            div().when(cfg!(test), |entry| entry.debug_selector(|| "NEW_ROLE".into())).child(Button::new("new-role", "+ New role")
                 .variant(ButtonVariant::Primary)
                 .on_press(move |window, cx| {
                     create_root.update(cx, |this, cx| this.open_create_role(window, cx));
-                }),
+                })),
             "roles",
             empty_state,
             self.role_surfaces.search.clone(),

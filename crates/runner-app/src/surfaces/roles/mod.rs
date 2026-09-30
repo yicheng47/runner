@@ -13,9 +13,7 @@ use std::rc::Rc;
 
 use gpui::prelude::*;
 use gpui::{Context, Entity, FocusHandle, ScrollHandle, Subscription};
-use runner_app::ui::{
-    ContextMenu, ModelField, RuntimeSelect, Scrollbar, SearchInput, StyledSelect, TextField,
-};
+use runner_app::ui::{ContextMenu, ModelField, Scrollbar, SearchInput, StyledSelect, TextField};
 use runner_backend::model::Role;
 use runner_backend::ops::role::{RoleActivity, RoleWithActivity};
 use runner_backend::ops::runtime::RuntimeCatalogEntry;
@@ -25,8 +23,6 @@ use runner_backend::router::runtime::PermissionMode;
 use crate::list_controls::ListControls;
 use crate::*;
 
-const FORM_WIDTH: f32 = 576.;
-const FIELD_WIDTH: f32 = 528.;
 /// The role page's left column, which holds the profile, setup and crews.
 const ROLE_COLUMN_WIDTH: f32 = crate::surfaces::profile_page::PROFILE_COLUMN_WIDTH;
 
@@ -53,42 +49,33 @@ struct RoleDeleteConfirm {
 }
 
 struct CreateRoleForm {
-    runtimes: Vec<RuntimeCatalogEntry>,
-    runtime: String,
+    fields: RoleFormFields,
+    return_route: AppRoute,
     handle: Entity<TextField>,
-    display_name: Entity<TextField>,
-    command: Entity<TextField>,
-    args: Entity<TextField>,
-    model: Entity<TextField>,
-    model_field: Entity<ModelField>,
-    speed: String,
-    speed_select: Entity<StyledSelect>,
-    working_dir: Entity<TextField>,
-    system_prompt: Entity<TextField>,
-    runtime_select: Entity<RuntimeSelect>,
-    scroll: ScrollHandle,
-    scrollbar: Entity<Scrollbar>,
-    browse_focus: FocusHandle,
-    args_hint_focus: FocusHandle,
-    model_hint_focus: FocusHandle,
-    close_focus: FocusHandle,
-    cancel_focus: FocusHandle,
-    submit_focus: FocusHandle,
     handle_empty: bool,
     handle_error: Option<&'static str>,
-    display_name_valid: bool,
-    submitting: bool,
-    agents_checking: bool,
-    agents_error: Option<String>,
-    error: Option<String>,
-    _subscriptions: Vec<Subscription>,
+}
+
+impl CreateRoleForm {
+    fn avatar_seed(&self, cx: &gpui::App) -> String {
+        let handle = self.handle.read(cx).text();
+        if handle.is_empty() {
+            format!("new-role-{}", self.handle.entity_id())
+        } else {
+            handle.to_owned()
+        }
+    }
 }
 
 struct RoleEditForm {
     role: Role,
+    fields: RoleFormFields,
+    permission_mode: PermissionMode,
+}
+
+struct RoleFormFields {
     runtimes: Vec<RuntimeCatalogEntry>,
     runtime: String,
-    permission_mode: PermissionMode,
     display_name: Entity<TextField>,
     command: Entity<TextField>,
     args: Entity<TextField>,
@@ -98,9 +85,10 @@ struct RoleEditForm {
     effort_select: Entity<StyledSelect>,
     speed: String,
     speed_select: Entity<StyledSelect>,
-    runtime_select: Entity<RuntimeSelect>,
+    runtime_select: Entity<StyledSelect>,
     working_dir: Entity<TextField>,
     system_prompt: Entity<TextField>,
+    prompt_mode_focus: [FocusHandle; 2],
     browse_focus: FocusHandle,
     cancel_focus: FocusHandle,
     submit_focus: FocusHandle,
@@ -110,6 +98,32 @@ struct RoleEditForm {
     agents_error: Option<String>,
     error: Option<String>,
     _subscriptions: Vec<Subscription>,
+}
+
+impl std::ops::Deref for CreateRoleForm {
+    type Target = RoleFormFields;
+    fn deref(&self) -> &Self::Target {
+        &self.fields
+    }
+}
+
+impl std::ops::DerefMut for CreateRoleForm {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.fields
+    }
+}
+
+impl std::ops::Deref for RoleEditForm {
+    type Target = RoleFormFields;
+    fn deref(&self) -> &Self::Target {
+        &self.fields
+    }
+}
+
+impl std::ops::DerefMut for RoleEditForm {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.fields
+    }
 }
 
 pub(crate) struct RoleSurfaces {

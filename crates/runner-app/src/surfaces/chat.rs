@@ -380,7 +380,8 @@ impl NativeRoot {
     }
 
     pub(crate) fn sync_active_chat_detail(&mut self, cx: &mut Context<Self>) {
-        let Some(session_id) = self.active_focused_session_id() else {
+        let selected = self.active_focused_session_id();
+        let Some(session_id) = selected else {
             return;
         };
         self.active_chat_detail =

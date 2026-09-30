@@ -20,9 +20,6 @@ impl NativeRoot {
         if let Some(menu) = self.crew_surfaces.context_menu.clone() {
             overlays.push(menu.into_any_element());
         }
-        if self.role_surfaces.create.is_some() {
-            overlays.push(self.render_create_role_modal(cx));
-        }
         if self.role_surfaces.delete_confirm.is_some() {
             overlays.push(self.render_role_delete_confirm(cx));
         }

@@ -467,15 +467,14 @@ impl Render for StyledSelect {
             .when(!(self.picker || self.full_width), |root| {
                 root.w(rems(f32::from(self.width) / 16.))
             })
-            .track_focus(&self.focus_handle)
-            .tab_index(0)
-            .tab_stop(!self.disabled)
             .on_key_down(cx.listener(Self::on_key_down))
             .child(
                 div()
                     .id("styled-select-trigger")
                     .debug_selector(|| "STYLED_SELECT_TRIGGER".into())
-                    .track_focus(&self.focus_handle)
+                    .track_focus(&self.focus_handle.clone().tab_stop(!self.disabled))
+                    .tab_index(0)
+                    .tab_stop(!self.disabled)
                     .w_full()
                     .h(rems(height / 16.))
                     .px(rems(if stacked { 12. / 16. } else { 10. / 16. }))

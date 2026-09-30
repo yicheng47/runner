@@ -2,7 +2,7 @@ use runner_backend::model::{CodexSpeed, Runtime};
 
 use chrono::{DateTime, TimeZone};
 use gpui::prelude::*;
-use gpui::{div, AnyElement, Context, FocusHandle};
+use gpui::{div, AnyElement, Context};
 use runner_app::ui::SelectOption;
 use runner_backend::model::Role;
 use runner_backend::ops::role::RoleActivity;
@@ -166,7 +166,13 @@ pub(crate) fn effort_options(
     model: &str,
 ) -> Vec<SelectOption> {
     runtime_entry(runtimes, runtime)
-        .map(|runtime| runtime.efforts_for_model(model))
+        .map(|runtime| {
+            if edits_slot {
+                runtime.efforts_for_model(model)
+            } else {
+                role_model_efforts(runtime, model)
+            }
+        })
         .unwrap_or_default()
         .iter()
         .map(|option| {
@@ -190,6 +196,43 @@ pub(crate) fn effort_options(
             select
         })
         .collect()
+}
+
+pub(super) fn create_role_effort_options(
+    runtimes: &[RuntimeCatalogEntry],
+    runtime: &str,
+    model: &str,
+) -> Vec<SelectOption> {
+    runtime_entry(runtimes, runtime)
+        .map(|entry| role_model_efforts(entry, model))
+        .unwrap_or_default()
+        .iter()
+        .map(|option| {
+            let label = if option.value.is_empty() {
+                runtime_default_effort_label(runtimes, runtime)
+            } else {
+                option.label.clone()
+            };
+            let mut select = SelectOption::new(option.value.clone(), label);
+            if let Some(description) = &option.description {
+                select = select.description(description.clone());
+            }
+            select
+        })
+        .collect()
+}
+
+fn role_model_efforts(runtime: &RuntimeCatalogEntry, model: &str) -> Vec<RuntimeCatalogOption> {
+    let model = if model.trim().is_empty() {
+        runtime.default_model.as_deref().unwrap_or_default()
+    } else {
+        model
+    };
+    if model.trim().is_empty() {
+        runtime.efforts.clone()
+    } else {
+        runtime.efforts_for_model(model)
+    }
 }
 
 pub(super) fn permission_modes(runtime: &str) -> &'static [PermissionMode] {
@@ -260,36 +303,6 @@ pub(super) fn create_role_can_submit(form: &CreateRoleForm) -> bool {
         && form.handle_error.is_none()
         && form.display_name_valid
         && runtime_entry(&form.runtimes, &form.runtime).is_some()
-}
-
-pub(super) fn create_role_focus_order(
-    form: &CreateRoleForm,
-    cx: &Context<NativeRoot>,
-) -> Vec<FocusHandle> {
-    if form.submitting {
-        return Vec::new();
-    }
-    let mut order = vec![
-        form.close_focus.clone(),
-        form.handle.read(cx).focus_handle(),
-        form.display_name.read(cx).focus_handle(),
-        form.runtime_select.read(cx).focus_handle(),
-        form.args_hint_focus.clone(),
-        form.args.read(cx).focus_handle(),
-        form.model_hint_focus.clone(),
-        form.model.read(cx).focus_handle(),
-    ];
-    if form.runtime == "codex" {
-        order.extend([form.speed_select.read(cx).focus_handle()]);
-    }
-    order.extend([
-        form.working_dir.read(cx).focus_handle(),
-        form.browse_focus.clone(),
-        form.system_prompt.read(cx).focus_handle(),
-        form.cancel_focus.clone(),
-        form.submit_focus.clone(),
-    ]);
-    order
 }
 
 /// Whether the in-place editor holds anything a save would write.

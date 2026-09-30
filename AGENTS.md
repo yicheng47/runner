@@ -99,7 +99,9 @@ Work stays inside its own worktree. When several are live at once, treat the oth
 
 ## Crew Missions
 
-A crew mission ends in an open pull request, never a merge. The crew works on its own branch in its own worktree, commits, pushes, opens the PR against `main`, and drives CI green on both platforms; then it stops. It does not merge the PR, delete its branch or worktree, or cut a nightly or release. Jason reviews the PR and does the final merge. Every mission brief states this in its authorization section, and a crew whose brief is silent on it follows this rule anyway.
+A crew mission ends in an open pull request by default. The crew works on its own branch in its own worktree, commits, pushes, opens the PR against `main`, and drives CI green on both platforms; then it stops. Jason reviews the PR and does the final merge, or explicitly asks the crew to merge after review and CI are clean. Crews do not cut a nightly or release without explicit authorization. Every mission brief states this in its authorization section, and a crew whose brief is silent on it follows this rule anyway.
+
+An explicit merge request includes GitHub's configured automatic deletion of the merged remote branch; no separate confirmation is needed. Local branch and worktree cleanup still requires explicit authorization.
 
 A mission runs in its worktree. Before starting it, create the worktree as described under Worktrees and commit the brief on its branch; then start the mission with the worktree as its directory, `runner mission start --crew <crew> --cwd <repo>/.worktrees/<flattened-branch> …`, not `--project runner`. Every slot's agent and shell then start in the worktree instead of the root checkout, the mission still lands under the runner project because the project is inferred from the directory, and the brief names the same path.
 

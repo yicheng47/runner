@@ -227,8 +227,14 @@ impl WorkspaceEntry {
         }
         match self {
             Self::NewTab => unreachable!(),
-            Self::Role => matches!(route, AppRoute::Roles | AppRoute::RoleDetail(_)),
-            Self::Crew => matches!(route, AppRoute::Crews | AppRoute::CrewEditor(_)),
+            Self::Role => matches!(
+                route,
+                AppRoute::Roles | AppRoute::NewRole | AppRoute::RoleDetail(_)
+            ),
+            Self::Crew => matches!(
+                route,
+                AppRoute::Crews | AppRoute::NewCrew | AppRoute::CrewEditor(_)
+            ),
         }
     }
 }

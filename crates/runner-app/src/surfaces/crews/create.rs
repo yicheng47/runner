@@ -1,29 +1,50 @@
-use super::logic::error_banner;
 use std::rc::Rc;
 
 use gpui::prelude::*;
-use gpui::{div, rems, AnyElement, Context, FontWeight, KeyDownEvent, Window};
-use runner_app::ui::{
-    Button, ButtonVariant, ConfirmDialog, Field, IconButton, Modal, OverlayWidth, TextField,
-};
+use gpui::{AnyElement, Context, KeyDownEvent, Window};
+use runner_app::ui::{ConfirmDialog, TextField};
 use runner_backend::ops::crew::CreateCrewInput;
 
 use super::*;
 use crate::*;
 
 impl NativeRoot {
-    pub(super) fn open_create_crew(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn open_create_crew(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.crew_surfaces.create.is_some() {
+            self.enter_entity_route(AppRoute::NewCrew, window, cx);
             return;
         }
-        let name =
-            cx.new(|input_cx| TextField::new(input_cx.focus_handle(), "", "roles-feature", false));
+        let return_route = self.route.clone();
+        self.enter_entity_route(AppRoute::NewCrew, window, cx);
+        let name = cx.new(|input_cx| {
+            TextField::new(input_cx.focus_handle(), "", "Crew name", false)
+                .text_size(theme::text_display())
+        });
+        let conventions = cx.new(|input_cx| {
+            let mut input = TextField::textarea(
+                input_cx.focus_handle(),
+                "",
+                "How this crew works together: branches, reviews, reporting. Markdown works.",
+                6,
+                true,
+            )
+            .text_size(theme::text_body());
+            input.set_bare(true, input_cx);
+            input.fill_height().with_scrollbar(input_cx)
+        });
+        let subscriptions = [&name, &conventions]
+            .into_iter()
+            .map(|input| cx.observe(input, |_, _, cx| cx.notify()))
+            .collect();
+        self.crew_surfaces.editor.conventions_preview = false;
         let focus = name.read(cx).focus_handle();
         self.crew_surfaces.create = Some(CreateCrewForm {
             name,
-            close_focus: cx.focus_handle(),
-            cancel_focus: cx.focus_handle(),
-            submit_focus: cx.focus_handle(),
+            conventions,
+            mode_focus: [cx.focus_handle(), cx.focus_handle()],
+            action_focus: [cx.focus_handle(), cx.focus_handle()],
+            return_route,
+            _subscriptions: subscriptions,
             submitting: false,
             error: None,
         });
@@ -31,7 +52,7 @@ impl NativeRoot {
         cx.notify();
     }
 
-    fn close_create_crew(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn close_create_crew(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self
             .crew_surfaces
             .create
@@ -40,30 +61,35 @@ impl NativeRoot {
         {
             return;
         }
-        self.crew_surfaces.create = None;
-        window.focus(&self.root_focus, cx);
+        let route = self
+            .crew_surfaces
+            .create
+            .take()
+            .map(|form| form.return_route)
+            .unwrap_or(AppRoute::Crews);
+        self.open_page_route(route, window, cx);
         cx.notify();
     }
 
-    fn on_create_crew_key_down(
+    pub(super) fn on_create_crew_key_down(
         &mut self,
         event: &KeyDownEvent,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if event.keystroke.key == "enter"
-            && self
-                .crew_surfaces
-                .create
-                .as_ref()
-                .is_some_and(|form| !form.name.read(cx).is_composing())
+            && self.crew_surfaces.create.as_ref().is_some_and(|form| {
+                !form.name.read(cx).is_composing()
+                    && !form.conventions.read(cx).is_composing()
+                    && form.name.read(cx).focus_handle().is_focused(window)
+            })
         {
             cx.stop_propagation();
             self.submit_create_crew(window, cx);
         }
     }
 
-    fn submit_create_crew(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn submit_create_crew(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(form) = self.crew_surfaces.create.as_mut() else {
             return;
         };
@@ -80,7 +106,7 @@ impl NativeRoot {
         form.error = None;
         let input = CreateCrewInput {
             name,
-            ..Default::default()
+            system_prompt_addendum: super::logic::trimmed_option(form.conventions.read(cx).text()),
         };
         let core = self.core(cx).clone();
         let task = cx.background_spawn(async move {
@@ -107,113 +133,6 @@ impl NativeRoot {
         })
         .detach();
         cx.notify();
-    }
-
-    pub(super) fn render_create_crew_modal(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let form = self
-            .crew_surfaces
-            .create
-            .as_ref()
-            .expect("create crew form");
-        let submitting = form.submitting;
-        let can_submit = !submitting;
-        let root = cx.entity();
-        let close_root = root.clone();
-        let cancel_root = root.clone();
-        let submit_root = root.clone();
-        let title = div()
-            .flex()
-            .items_center()
-            .justify_between()
-            .gap_4()
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(rems(2. / 16.))
-                    .child(
-                        div()
-                            .text_size(theme::text_heading())
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child("New crew"),
-                    )
-                    .child(
-                        div()
-                            .text_size(theme::text_ui())
-                            .font_weight(FontWeight::NORMAL)
-                            .text_color(theme::muted())
-                            .child("Roles that work missions together."),
-                    ),
-            )
-            .child(
-                IconButton::new("close-create-crew", "close.svg")
-                    .focus_handle(form.close_focus.clone())
-                    .tooltip("Close new crew")
-                    .disabled(submitting)
-                    .on_press(move |window, cx| {
-                        close_root.update(cx, |this, cx| this.close_create_crew(window, cx));
-                    }),
-            );
-        let body = div()
-            .flex()
-            .flex_col()
-            .gap_4()
-            .on_key_down(cx.listener(Self::on_create_crew_key_down))
-            .children(form.error.clone().map(error_banner))
-            .child(
-                Field::new("crew-name", "Name", form.name.clone())
-                    .focus_target(form.name.read(cx).focus_handle()),
-            );
-        let footer = div()
-            .flex()
-            .items_center()
-            .gap_2()
-            .child(
-                Button::new("cancel-create-crew", "Cancel")
-                    .focus_handle(form.cancel_focus.clone())
-                    .disabled(submitting)
-                    .on_press(move |window, cx| {
-                        cancel_root.update(cx, |this, cx| this.close_create_crew(window, cx));
-                    }),
-            )
-            .child(
-                Button::new(
-                    "submit-create-crew",
-                    if submitting {
-                        "Creating…"
-                    } else {
-                        "Create crew"
-                    },
-                )
-                .focus_handle(form.submit_focus.clone())
-                .variant(ButtonVariant::Primary)
-                .disabled(!can_submit)
-                .on_press(move |window, cx| {
-                    submit_root.update(cx, |this, cx| this.submit_create_crew(window, cx));
-                }),
-            );
-        let modal_root = root;
-        Modal::new(
-            title,
-            body,
-            Rc::new(move |window, cx| {
-                modal_root.update(cx, |this, cx| this.close_create_crew(window, cx));
-            }),
-        )
-        .width(OverlayWidth::Md)
-        .busy(submitting)
-        .focus_order(if submitting {
-            Vec::new()
-        } else {
-            vec![
-                form.close_focus.clone(),
-                form.name.read(cx).focus_handle(),
-                form.cancel_focus.clone(),
-                form.submit_focus.clone(),
-            ]
-        })
-        .footer(footer)
-        .into_any_element()
     }
 
     pub(super) fn render_crew_delete_confirm(&self, cx: &mut Context<Self>) -> AnyElement {

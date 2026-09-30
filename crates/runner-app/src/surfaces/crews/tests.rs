@@ -1262,3 +1262,234 @@ fn a_lowercased_handle_undoes_to_before_the_keystroke_and_redoes() {
     page.visual.run_until_parked();
     assert_eq!(text(&mut page), format!("{suggested}a"));
 }
+
+#[test]
+fn new_crew_entry_points_use_a_page_and_cancel_returns_to_the_list() {
+    use crate::surfaces::AppRoute;
+    for entry in ["NEW_CREW", "EMPTY_NEW_CREW"] {
+        let mut page = crew_page_harness("new-crew-entry");
+        page.update(|root, window, cx| root.open_crews(window, cx));
+        let count = runner_backend::ops::crew::crew_list(&page.core, 1, 20, "")
+            .unwrap()
+            .total_count;
+        if entry == "EMPTY_NEW_CREW" {
+            page.update(|root, _, cx| {
+                let list = &mut root.crew_surfaces.list;
+                list.items.clear();
+                list.total_count = 0;
+                list.filtered_count = 0;
+                cx.notify();
+            });
+        }
+        page.click(entry);
+        assert_eq!(page.read(|root| root.route.clone()), AppRoute::NewCrew);
+        for selector in [
+            "CREW_NEW_TAG",
+            "EMPTY_PROFILE_TILE",
+            "CREW_EDIT_IN_PLACE",
+            "CREW_CONVENTIONS_CARD",
+        ] {
+            assert!(
+                page.visual.debug_bounds(selector).is_some(),
+                "missing {selector}"
+            );
+        }
+        assert!(page.visual.debug_bounds("CREW_MISSIONS_CARD").is_none());
+        assert!(page.visual.debug_bounds("CREW_DETAILS").is_none());
+        assert!(page.visual.debug_bounds("CREW_EDIT_DIRTY").is_none());
+        page.update(|root, window, cx| {
+            assert!(root.render_crew_overlays(window, cx).is_empty());
+            root.open_add_slot(window, cx);
+            assert!(root.crew_surfaces.add_slot.is_none());
+        });
+        page.click("CREW_EDIT_SAVE");
+        assert_eq!(
+            runner_backend::ops::crew::crew_list(&page.core, 1, 20, "")
+                .unwrap()
+                .total_count,
+            count
+        );
+        page.click("CREW_EDIT_CANCEL");
+        assert_eq!(page.read(|root| root.route.clone()), AppRoute::Crews);
+    }
+}
+
+#[test]
+fn new_crew_saves_conventions_opens_view_mode_and_allows_slots() {
+    use crate::surfaces::AppRoute;
+    let mut page = crew_page_harness("new-crew-submit");
+    page.role("new-crew-coder", Runtime::Codex);
+    page.update(|root, window, cx| {
+        root.open_create_crew(window, cx);
+        let form = root.crew_surfaces.create.as_ref().unwrap();
+        form.name.update(cx, |input, cx| input.set_text("Pair", cx));
+        form.conventions.update(cx, |input, cx| {
+            input.set_text("# Reviews\n\nUse the feed.", cx)
+        });
+    });
+    page.click("CREW_EDIT_SAVE");
+    let item = runner_backend::ops::crew::crew_list(&page.core, 1, 20, "")
+        .unwrap()
+        .items
+        .into_iter()
+        .find(|item| item.crew.name == "Pair")
+        .unwrap();
+    let crew = runner_backend::ops::crew::crew_get(&page.core, &item.crew.id).unwrap();
+    assert_eq!(
+        crew.system_prompt_addendum.as_deref(),
+        Some("# Reviews\n\nUse the feed.")
+    );
+    assert_eq!(
+        page.read(|root| root.route.clone()),
+        AppRoute::CrewEditor(crew.id.clone())
+    );
+    assert!(page.read(
+        |root| root.crew_surfaces.create.is_none() && root.crew_surfaces.editor.edit.is_none()
+    ));
+    page.update(|root, window, cx| root.open_add_slot(window, cx));
+    assert!(page.read(|root| root.crew_surfaces.add_slot.is_some()));
+}
+
+#[test]
+fn crew_edit_tabs_through_actions_slots_and_conventions() {
+    let mut page = crew_page_harness("crew-edit-tab-order");
+    let crew = page.crew("Pair", Some("Review the diff."), &["lead", "reviewer"]);
+    page.open_crew(&crew);
+    page.click("CREW_EDIT");
+    for index in 0..2 {
+        page.visual.simulate_keystrokes("tab");
+        page.update(|root, window, _| {
+            let form = root.crew_surfaces.editor.edit.as_ref().unwrap();
+            assert!(form.action_focus[index].is_focused(window));
+        });
+    }
+    page.visual.simulate_keystrokes("tab");
+    let add_slot_focus = page.update(|_, window, cx| window.focused(cx).unwrap());
+    let mut slot_focus = Vec::new();
+    for _ in 0..2 {
+        page.visual.simulate_keystrokes("tab");
+        slot_focus.push(page.update(|_, window, cx| window.focused(cx).unwrap()));
+    }
+    for index in 0..2 {
+        page.visual.simulate_keystrokes("tab");
+        page.update(|root, window, _| {
+            let form = root.crew_surfaces.editor.edit.as_ref().unwrap();
+            assert!(form.mode_focus[index].is_focused(window));
+        });
+    }
+    page.visual.simulate_keystrokes("tab");
+    page.update(|root, window, cx| {
+        let form = root.crew_surfaces.editor.edit.as_ref().unwrap();
+        assert!(form.conventions.read(cx).focus_handle().is_focused(window));
+    });
+    for (index, focus) in slot_focus.iter().enumerate() {
+        page.update(|_, window, cx| focus.focus(window, cx));
+        page.visual.simulate_keystrokes("enter");
+        page.visual.run_until_parked();
+        assert_eq!(
+            page.popup_slot(),
+            Some(page.slots(&crew)[index].slot.id.clone())
+        );
+        page.visual.simulate_keystrokes("escape");
+        page.visual.run_until_parked();
+    }
+    page.update(|_, window, cx| add_slot_focus.focus(window, cx));
+    page.visual.simulate_keystrokes("enter");
+    page.visual.run_until_parked();
+    assert!(page.read(|root| root.crew_surfaces.add_slot.is_some()));
+}
+
+#[test]
+fn new_crew_tabs_skip_disabled_create_and_reach_the_breadcrumb() {
+    use crate::surfaces::AppRoute;
+    let mut page = crew_page_harness("new-crew-breadcrumb-keyboard");
+    page.update(|root, window, cx| root.open_create_crew(window, cx));
+    page.visual.simulate_keystrokes("tab");
+    page.update(|root, window, _| {
+        assert!(root.crew_surfaces.create.as_ref().unwrap().action_focus[1].is_focused(window));
+    });
+    page.visual.simulate_keystrokes("shift-tab shift-tab enter");
+    page.visual.run_until_parked();
+    assert_eq!(page.read(|root| root.route.clone()), AppRoute::Crews);
+}
+
+#[test]
+fn add_slot_create_role_opens_its_page_and_cancel_returns_to_the_crew() {
+    use crate::surfaces::AppRoute;
+    let mut page = crew_page_harness("new-role-from-slot");
+    let crew = page.crew("Pair", None, &["coder"]);
+    page.open_crew(&crew);
+    page.update(|root, window, cx| root.open_add_slot(window, cx));
+    page.click("ADD_SLOT_CREATE_ROLE");
+    assert_eq!(page.read(|root| root.route.clone()), AppRoute::NewRole);
+    assert!(page.read(|root| root.crew_surfaces.add_slot.is_none()));
+    page.click("ROLE_EDIT_CANCEL");
+    assert_eq!(
+        page.read(|root| root.route.clone()),
+        AppRoute::CrewEditor(crew)
+    );
+}
+
+#[test]
+fn new_crew_layout_fits_the_minimum_window_in_both_themes() {
+    let mut page = crew_page_harness("new-crew-small");
+    page.update(|root, window, cx| root.open_create_crew(window, cx));
+    page.visual
+        .simulate_resize(gpui::size(gpui::px(640.), gpui::px(480.)));
+    for variant in [
+        theme::ThemeVariant::Carbon,
+        theme::ThemeVariant::RunnerLight,
+    ] {
+        theme::set_active_variant(variant);
+        page.update(|_, _, cx| cx.notify());
+        let profile = page.visual.debug_bounds("CREW_PAGE_PROFILE").unwrap();
+        let cards = page.visual.debug_bounds("CREW_PAGE_CARDS").unwrap();
+        assert!(profile.right() <= gpui::px(640.));
+        assert!(cards.right() <= gpui::px(640.));
+        assert!(cards.top() >= profile.bottom());
+    }
+}
+
+#[test]
+fn new_crew_enter_is_ime_safe_and_conventions_enter_does_not_submit() {
+    use gpui::EntityInputHandler;
+    let mut page = crew_page_harness("new-crew-keyboard");
+    page.update(|root, window, cx| root.open_create_crew(window, cx));
+    page.update(|root, window, cx| {
+        root.crew_surfaces
+            .create
+            .as_ref()
+            .unwrap()
+            .name
+            .update(cx, |input, cx| {
+                input.replace_and_mark_text_in_range(None, "Pair", Some(4..4), window, cx)
+            });
+    });
+    page.visual.simulate_keystrokes("enter escape");
+    page.visual.run_until_parked();
+    assert!(page.read(|root| root.crew_surfaces.create.is_some()));
+    page.update(|root, window, cx| {
+        let form = root.crew_surfaces.create.as_ref().unwrap();
+        form.name.update(cx, |input, cx| {
+            input.replace_text_in_range(None, "Keyboard crew", window, cx)
+        });
+        form.conventions.read(cx).focus_handle().focus(window, cx);
+    });
+    page.visual.simulate_input("Conventions");
+    page.visual.simulate_keystrokes("enter");
+    page.visual.run_until_parked();
+    assert!(page.read(|root| root.crew_surfaces.create.is_some()));
+    page.update(|root, window, cx| {
+        root.crew_surfaces
+            .create
+            .as_ref()
+            .unwrap()
+            .name
+            .read(cx)
+            .focus_handle()
+            .focus(window, cx)
+    });
+    page.visual.simulate_keystrokes("enter");
+    page.visual.run_until_parked();
+    assert!(page.read(|root| matches!(root.route, crate::surfaces::AppRoute::CrewEditor(_))));
+}

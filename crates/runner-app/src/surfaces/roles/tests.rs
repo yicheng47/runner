@@ -92,6 +92,44 @@ fn runtime_default_labels_include_known_values() {
 }
 
 #[test]
+fn default_role_model_offers_efforts_and_filters_known_capabilities() {
+    use runner_backend::ops::runtime::RuntimeCatalogOption;
+    let mut runtime = runtime_with_defaults(Some("limited-model"), None);
+    runtime.efforts = ["", "low", "high"]
+        .into_iter()
+        .map(|value| RuntimeCatalogOption {
+            value: value.into(),
+            label: value.into(),
+            description: None,
+            supported_efforts: None,
+        })
+        .collect();
+    runtime.models = vec![RuntimeCatalogOption {
+        value: "limited-model".into(),
+        label: "Limited".into(),
+        description: None,
+        supported_efforts: Some(vec!["low".into()]),
+    }];
+    let values = |runtime: &RuntimeCatalogEntry, model| {
+        super::logic::create_role_effort_options(std::slice::from_ref(runtime), "codex", model)
+            .into_iter()
+            .map(|option| option.value)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(values(&runtime, ""), ["", "low"]);
+    assert_eq!(values(&runtime, "  "), ["", "low"]);
+    assert_eq!(values(&runtime, "custom-model"), ["", "low", "high"]);
+    runtime.default_model = None;
+    assert_eq!(values(&runtime, ""), ["", "low", "high"]);
+    assert_eq!(values(&runtime, "limited-model"), ["", "low"]);
+    runtime.default_model = Some("custom-default".into());
+    assert_eq!(values(&runtime, ""), ["", "low", "high"]);
+    runtime.default_model = Some("limited-model".into());
+    runtime.models[0].supported_efforts = Some(Vec::new());
+    assert_eq!(values(&runtime, ""), [""]);
+}
+
+#[test]
 fn prompt_meta_counts_lines_and_size() {
     use super::logic::prompt_meta;
 
@@ -386,7 +424,7 @@ fn selected_chat_panel_refreshes_after_a_shared_role_edit() {
         })
         .unwrap();
     page.visual
-        .simulate_resize(gpui::size(gpui::px(1200.), gpui::px(900.)));
+        .simulate_resize(gpui::size(gpui::px(3000.), gpui::px(900.)));
     page.visual.run_until_parked();
     assert!(page.visual.debug_bounds("COLUMN_TEXT opus").is_some());
     assert!(page.visual.debug_bounds("COLUMN_TEXT default").is_some());
@@ -1312,4 +1350,688 @@ fn the_setup_section_ends_at_its_last_row_in_view_and_edit() {
             }
         }
     }
+}
+
+#[test]
+fn new_role_entry_points_use_a_page_and_cancel_returns_to_the_list() {
+    use crate::surfaces::AppRoute;
+    for entry in ["NEW_ROLE", "EMPTY_NEW_ROLE"] {
+        let mut page = role_page_harness("new-role-entry");
+        page.host
+            .update(&mut page.visual, |root, window, cx| {
+                root.open_roles(window, cx)
+            })
+            .unwrap();
+        page.visual.run_until_parked();
+        if entry == "EMPTY_NEW_ROLE" {
+            page.host
+                .update(&mut page.visual, |root, _, cx| {
+                    let list = &mut root.role_surfaces.list;
+                    list.items.clear();
+                    list.total_count = 0;
+                    list.filtered_count = 0;
+                    cx.notify();
+                })
+                .unwrap();
+            page.visual.run_until_parked();
+        }
+        page.click(entry);
+        assert_eq!(page.read(|root| root.route.clone()), AppRoute::NewRole);
+        for selector in [
+            "ROLE_NEW_TAG",
+            "ROLE_EDIT_IN_PLACE",
+            "ROLE_NAME_FIELD",
+            "ROLE_CREATE_HANDLE",
+            "ROLE_CREATE_AVATAR",
+            "ROLE_PROMPT_CARD",
+        ] {
+            assert!(
+                page.visual.debug_bounds(selector).is_some(),
+                "missing {selector}"
+            );
+        }
+        assert!(page.visual.debug_bounds("ROLE_CREWS_SECTION").is_none());
+        assert!(page.visual.debug_bounds("ROLE_ACTIVITY_LINES").is_none());
+        assert!(page.visual.debug_bounds("ROLE_EDIT_DIRTY").is_none());
+        assert!(page.visual.debug_bounds("EMPTY_PROFILE_TILE").is_none());
+        page.host
+            .update(&mut page.visual, |root, window, cx| {
+                assert!(root.render_entity_overlays(window, cx).is_empty())
+            })
+            .unwrap();
+        page.click("ROLE_EDIT_CANCEL");
+        assert_eq!(page.read(|root| root.route.clone()), AppRoute::Roles);
+        assert!(page.read(|root| root.role_surfaces.create.is_none()));
+    }
+}
+
+#[test]
+fn new_role_avatar_preview_is_stable_until_the_handle_is_typed() {
+    let mut page = role_page_harness("new-role-avatar-preview");
+    let initial = page
+        .host
+        .update(&mut page.visual, |root, window, cx| {
+            root.open_create_role(window, cx);
+            root.role_surfaces.create.as_ref().unwrap().avatar_seed(cx)
+        })
+        .unwrap();
+    page.visual.run_until_parked();
+    assert!(!initial.is_empty());
+    assert!(page.visual.debug_bounds("ROLE_CREATE_AVATAR").is_some());
+    assert!(page.visual.debug_bounds("EMPTY_PROFILE_TILE").is_none());
+    page.host
+        .update(&mut page.visual, |root, _, cx| {
+            root.role_surfaces
+                .create
+                .as_ref()
+                .unwrap()
+                .display_name
+                .update(cx, |field, cx| field.set_text("Preview coder", cx));
+        })
+        .unwrap();
+    page.visual.run_until_parked();
+    page.host
+        .update(&mut page.visual, |root, _, cx| {
+            let form = root.role_surfaces.create.as_ref().unwrap();
+            assert_eq!(form.avatar_seed(cx), initial);
+            form.handle
+                .update(cx, |field, cx| field.set_text("preview-coder", cx));
+        })
+        .unwrap();
+    page.visual.run_until_parked();
+    page.host
+        .update(&mut page.visual, |root, _, cx| {
+            let form = root.role_surfaces.create.as_ref().unwrap();
+            assert_eq!(form.avatar_seed(cx), "preview-coder");
+            form.handle.update(cx, |field, cx| field.set_text("", cx));
+        })
+        .unwrap();
+    page.visual.run_until_parked();
+    page.host
+        .update(&mut page.visual, |root, window, cx| {
+            assert_eq!(
+                root.role_surfaces.create.as_ref().unwrap().avatar_seed(cx),
+                initial
+            );
+            root.close_create_role(window, cx);
+            root.open_create_role(window, cx);
+            assert_ne!(
+                root.role_surfaces.create.as_ref().unwrap().avatar_seed(cx),
+                initial
+            );
+        })
+        .unwrap();
+}
+
+#[test]
+fn role_edit_saves_effort_with_default_model_and_resets_it_on_runtime_change() {
+    let mut page = role_page_harness("edit-default-model-effort");
+    let role = create_test_role(&page.core, "default-effort-role", None);
+    page.open_role("default-effort-role");
+    page.host
+        .update(&mut page.visual, |root, window, cx| {
+            root.open_role_edit(role, window, cx);
+            let form = root.role_surfaces.edit.as_mut().unwrap();
+            form.model.update(cx, |field, cx| field.set_text("", cx));
+            form.effort = "high".into();
+        })
+        .unwrap();
+    page.visual.run_until_parked();
+    page.host
+        .update(&mut page.visual, |root, _, cx| {
+            let form = root.role_surfaces.edit.as_ref().unwrap();
+            assert!(form.model.read(cx).text().is_empty());
+            assert!(!form.effort_select.read(cx).is_disabled());
+            assert_eq!(form.effort, "high");
+        })
+        .unwrap();
+    page.click("ROLE_EDIT_SAVE");
+    let saved =
+        runner_backend::ops::role::role_get_by_handle(&page.core, "default-effort-role").unwrap();
+    assert_eq!(saved.model, None);
+    assert_eq!(saved.effort.as_deref(), Some("high"));
+    page.host
+        .update(&mut page.visual, |root, window, cx| {
+            root.open_role_edit(saved, window, cx);
+            root.role_surfaces.edit.as_mut().unwrap().runtimes =
+                runner_backend::ops::runtime::runtime_catalog(&page.core).unwrap();
+            root.select_role_edit_runtime("codex".into(), cx);
+            assert!(root.role_surfaces.edit.as_ref().unwrap().effort.is_empty());
+        })
+        .unwrap();
+}
+
+#[test]
+fn new_role_saves_effort_speed_and_prompt_then_opens_view_mode() {
+    use crate::surfaces::AppRoute;
+    for model_override in [Some("gpt-5.6-sol"), None] {
+        let mut page = role_page_harness("new-role-submit");
+        page.host
+            .update(&mut page.visual, |root, window, cx| {
+                root.open_create_role(window, cx)
+            })
+            .unwrap();
+        page.visual.run_until_parked();
+        page.host
+            .update(&mut page.visual, |root, _, cx| {
+                let form = root.role_surfaces.create.as_mut().unwrap();
+                form.runtimes = runner_backend::ops::runtime::runtime_catalog(&page.core).unwrap();
+                root.select_create_role_runtime("codex".into(), cx);
+                let form = root.role_surfaces.create.as_mut().unwrap();
+                form.handle
+                    .update(cx, |input, cx| input.set_text("new-coder", cx));
+                form.display_name
+                    .update(cx, |input, cx| input.set_text("New coder", cx));
+                form.system_prompt
+                    .update(cx, |input, cx| input.set_text("# Build\n\nShip it.", cx));
+                form.model.update(cx, |input, cx| {
+                    input.set_text(model_override.unwrap_or_default(), cx)
+                });
+                form.effort = "high".into();
+                form.speed = "fast".into();
+                cx.notify();
+            })
+            .unwrap();
+        page.visual.run_until_parked();
+        assert!(page.visual.debug_bounds("ROLE_CREATE_AVATAR").is_some());
+        let model = page.visual.debug_bounds("ROLE_EDIT_ROW Model").unwrap();
+        let effort = page.visual.debug_bounds("ROLE_EDIT_ROW Effort").unwrap();
+        assert_eq!(model.top(), effort.top());
+        assert_eq!(model.size.width, effort.size.width);
+        assert!(page.visual.debug_bounds("ROLE_SPEED_EDIT").is_some());
+        page.host
+            .update(&mut page.visual, |root, _, cx| {
+                let form = root.role_surfaces.create.as_ref().unwrap();
+                assert!(!form.effort_select.read(cx).is_disabled());
+                assert_eq!(form.effort, "high");
+            })
+            .unwrap();
+        assert!(page.read(|root| super::logic::create_role_can_submit(
+            root.role_surfaces.create.as_ref().unwrap()
+        )));
+        page.click("ROLE_EDIT_SAVE");
+        let role = runner_backend::ops::role::role_get_by_handle(&page.core, "new-coder").unwrap();
+        assert_eq!(role.effort.as_deref(), Some("high"));
+        assert_eq!(role.model.as_deref(), model_override);
+        assert_eq!(
+            role.codex_speed,
+            Some(runner_backend::model::CodexSpeed::Fast)
+        );
+        assert_eq!(role.system_prompt.as_deref(), Some("# Build\n\nShip it."));
+        assert_eq!(
+            page.read(|root| root.route.clone()),
+            AppRoute::RoleDetail("new-coder".into())
+        );
+        assert!(page
+            .read(|root| root.role_surfaces.create.is_none() && root.role_surfaces.edit.is_none()));
+    }
+}
+
+#[test]
+fn new_role_validation_and_runtime_changes_keep_creation_safe() {
+    let mut page = role_page_harness("new-role-validation");
+    page.host
+        .update(&mut page.visual, |root, window, cx| {
+            root.open_create_role(window, cx)
+        })
+        .unwrap();
+    page.visual.run_until_parked();
+    page.host
+        .update(&mut page.visual, |root, _, cx| {
+            let form = root.role_surfaces.create.as_mut().unwrap();
+            form.runtimes = runner_backend::ops::runtime::runtime_catalog(&page.core).unwrap();
+            form.handle
+                .update(cx, |input, cx| input.set_text("bad!", cx));
+            form.display_name
+                .update(cx, |input, cx| input.set_text("Bad", cx));
+            cx.notify();
+        })
+        .unwrap();
+    page.visual.run_until_parked();
+    assert!(page.read(|root| root
+        .role_surfaces
+        .create
+        .as_ref()
+        .unwrap()
+        .handle_error
+        .is_some()));
+    assert!(!page.read(|root| super::logic::create_role_can_submit(
+        root.role_surfaces.create.as_ref().unwrap()
+    )));
+    page.host
+        .update(&mut page.visual, |root, window, cx| {
+            root.submit_create_role(window, cx)
+        })
+        .unwrap();
+    page.visual.run_until_parked();
+    assert!(runner_backend::ops::role::role_get_by_handle(&page.core, "bad!").is_err());
+    page.host
+        .update(&mut page.visual, |root, _, cx| {
+            root.select_create_role_runtime("codex".into(), cx);
+            root.role_surfaces.create.as_mut().unwrap().effort = "xhigh".into();
+            root.select_create_role_runtime("pi".into(), cx);
+            assert!(root
+                .role_surfaces
+                .create
+                .as_ref()
+                .unwrap()
+                .effort
+                .is_empty());
+        })
+        .unwrap();
+}
+
+#[test]
+fn creating_routes_support_history_and_discard_drafts_when_leaving() {
+    use crate::surfaces::AppRoute;
+    let mut page = role_page_harness("creating-history");
+    page.host
+        .update(&mut page.visual, |root, window, cx| {
+            assert_eq!(root.route, AppRoute::Roles);
+            root.open_create_role(window, cx);
+            root.role_surfaces
+                .create
+                .as_ref()
+                .unwrap()
+                .display_name
+                .update(cx, |field, cx| field.set_text("Draft", cx));
+            root.navigate_runtime_page(-1, window, cx);
+            assert_eq!(root.route, AppRoute::Roles);
+            assert!(root.role_surfaces.create.is_none());
+            root.navigate_runtime_page(1, window, cx);
+            assert_eq!(root.route, AppRoute::NewRole);
+            assert_eq!(
+                root.role_surfaces
+                    .create
+                    .as_ref()
+                    .unwrap()
+                    .display_name
+                    .read(cx)
+                    .text(),
+                ""
+            );
+            root.open_crews(window, cx);
+            root.open_create_crew(window, cx);
+            root.navigate_runtime_page(-1, window, cx);
+            assert_eq!(root.route, AppRoute::Crews);
+            root.navigate_runtime_page(1, window, cx);
+            assert_eq!(root.route, AppRoute::NewCrew);
+            root.navigate_runtime_page(-1, window, cx);
+            assert_eq!(root.route, AppRoute::Crews);
+        })
+        .unwrap();
+    page.visual.run_until_parked();
+}
+
+#[test]
+fn new_role_layout_fits_the_minimum_window_in_both_themes() {
+    let mut page = role_page_harness("new-role-small");
+    page.host
+        .update(&mut page.visual, |root, window, cx| {
+            root.open_create_role(window, cx)
+        })
+        .unwrap();
+    page.visual
+        .simulate_resize(gpui::size(gpui::px(640.), gpui::px(480.)));
+    for variant in [
+        theme::ThemeVariant::Carbon,
+        theme::ThemeVariant::RunnerLight,
+    ] {
+        theme::set_active_variant(variant);
+        page.host
+            .update(&mut page.visual, |_, _, cx| cx.notify())
+            .unwrap();
+        page.visual.run_until_parked();
+        let profile = page.visual.debug_bounds("ROLE_PAGE_PROFILE").unwrap();
+        let prompt = page.visual.debug_bounds("ROLE_PAGE_PROMPT").unwrap();
+        assert!(profile.right() <= gpui::px(640.));
+        assert!(prompt.right() <= gpui::px(640.));
+        assert!(prompt.top() >= profile.bottom());
+    }
+}
+
+#[test]
+fn chat_panel_opens_role_clamps_toggles_and_resets_on_another_chat() {
+    use crate::surfaces::AppRoute;
+    let mut page = role_page_harness("panel-prompt-actions");
+    let role = create_test_role(
+        &page.core,
+        "panel-coder",
+        Some("# Instructions\n\n".to_owned() + &"- Build the feature.\n".repeat(60)),
+    );
+    let conn = page.core.db.get().unwrap();
+    for id in [
+        "first-panel-chat",
+        "second-panel-chat",
+        "runtime-panel-chat",
+    ] {
+        conn.execute(
+            "INSERT INTO sessions (id, role_id, status) VALUES (?1, ?2, 'stopped')",
+            [
+                Some(id),
+                (id != "runtime-panel-chat").then_some(role.id.as_str()),
+            ],
+        )
+        .unwrap();
+        runner_backend::repo::node::create_tab(
+            &conn,
+            None,
+            "",
+            0,
+            &runner_app::pane_layout::PaneLayout::single(Some(id), &[id.into()])
+                .serialize()
+                .unwrap(),
+        )
+        .unwrap();
+    }
+    for id in ["first-archived-panel-chat", "second-archived-panel-chat"] {
+        conn.execute(
+            "INSERT INTO sessions (id, role_id, status, archived_at) VALUES (?1, ?2, 'stopped', '2026-09-30T00:00:00Z')",
+            [id, role.id.as_str()],
+        )
+        .unwrap();
+    }
+    let nodes = runner_backend::repo::node::list(&conn).unwrap();
+    let roles = runner_backend::ops::role::role_list(&page.core).unwrap();
+    page.host
+        .update(&mut page.visual, |root, _, cx| {
+            root.app_store.update(cx, |store, cx| {
+                store.replace_roles(roles, cx);
+                store.replace_nodes(nodes, cx);
+                store.refresh_sessions(cx);
+            });
+            root.apply_tab_rows(cx);
+            root.tabs.activate_session("first-panel-chat");
+            root.route = AppRoute::Chat;
+            root.sync_active_chat_detail(cx);
+            cx.notify();
+        })
+        .unwrap();
+    page.visual
+        .simulate_resize(gpui::size(gpui::px(1440.), gpui::px(3000.)));
+    page.visual.run_until_parked();
+    assert!(page.visual.debug_bounds("CHAT_PANEL_OPEN_ROLE").is_some());
+    assert!(page
+        .visual
+        .debug_bounds("CHAT_PANEL_PROMPT_TOGGLE")
+        .is_some());
+    let collapsed = page
+        .visual
+        .debug_bounds("CHAT_PANEL_PROMPT_TEXT")
+        .unwrap()
+        .size
+        .height;
+    page.click("CHAT_PANEL_PROMPT_TOGGLE");
+    assert!(page.read(|root| root.chat_panel_prompt_expanded));
+    assert!(
+        page.visual
+            .debug_bounds("CHAT_PANEL_PROMPT_TEXT")
+            .unwrap()
+            .size
+            .height
+            > collapsed
+    );
+    page.click("CHAT_PANEL_PROMPT_TOGGLE");
+    assert!(!page.read(|root| root.chat_panel_prompt_expanded));
+    page.click("CHAT_PANEL_PROMPT_TOGGLE");
+    page.host
+        .update(&mut page.visual, |root, _, cx| {
+            root.tabs.activate_session("second-panel-chat");
+            root.sync_active_chat_detail(cx);
+            cx.notify();
+        })
+        .unwrap();
+    page.visual.run_until_parked();
+    assert!(!page.read(|root| root.chat_panel_prompt_expanded));
+    page.click("CHAT_PANEL_PROMPT_TOGGLE");
+    for id in ["first-archived-panel-chat", "second-archived-panel-chat"] {
+        let archived = runner_backend::ops::session::session_get(&page.core, id)
+            .unwrap()
+            .unwrap();
+        page.host
+            .update(&mut page.visual, |root, window, cx| {
+                root.enter_settings_route(Some("archived"), window, cx);
+                root.open_archived_chat(archived, window, cx);
+            })
+            .unwrap();
+        page.visual.run_until_parked();
+        assert_eq!(
+            page.read(|root| root.chat_panel_prompt_session.clone()),
+            Some(id.into())
+        );
+        assert!(!page.read(|root| root.chat_panel_prompt_expanded));
+        page.click("CHAT_PANEL_PROMPT_TOGGLE");
+        page.host
+            .update(&mut page.visual, |root, _, cx| {
+                root.sync_active_chat_detail(cx);
+                cx.notify();
+            })
+            .unwrap();
+        page.visual.run_until_parked();
+        assert!(page.read(|root| root.chat_panel_prompt_expanded));
+    }
+    page.host
+        .update(&mut page.visual, |root, _, cx| {
+            root.set_route(AppRoute::Chat, cx);
+            root.sync_active_chat_detail(cx);
+            cx.notify();
+        })
+        .unwrap();
+    page.visual.run_until_parked();
+    assert!(!page.read(|root| root.chat_panel_prompt_expanded));
+    page.click("CHAT_PANEL_OPEN_ROLE");
+    assert_eq!(
+        page.read(|root| root.route.clone()),
+        AppRoute::RoleDetail("panel-coder".into())
+    );
+    page.host
+        .update(&mut page.visual, |root, _, cx| {
+            root.tabs.activate_session("runtime-panel-chat");
+            root.set_route(AppRoute::Chat, cx);
+            root.sync_active_chat_detail(cx);
+            cx.notify();
+        })
+        .unwrap();
+    page.visual.run_until_parked();
+    assert!(!page.read(|root| root.chat_panel_prompt_expanded));
+}
+
+#[test]
+fn new_role_enter_is_ime_safe_and_tabs_start_with_name_then_handle() {
+    use gpui::EntityInputHandler;
+    let mut page = role_page_harness("new-role-keyboard");
+    page.visual.run_until_parked();
+    page.host
+        .update(&mut page.visual, |root, window, cx| {
+            root.open_create_role(window, cx)
+        })
+        .unwrap();
+    page.visual.run_until_parked();
+    page.host
+        .update(&mut page.visual, |root, window, cx| {
+            assert!(
+                root.role_surfaces
+                    .create
+                    .as_ref()
+                    .unwrap()
+                    .display_name
+                    .read(cx)
+                    .focus_handle()
+                    .is_focused(window),
+                "creation should focus the name"
+            );
+        })
+        .unwrap();
+    page.visual.simulate_keystrokes("tab");
+    page.host
+        .update(&mut page.visual, |root, window, cx| {
+            let form = root.role_surfaces.create.as_ref().unwrap();
+            assert!(form.handle.read(cx).focus_handle().is_focused(window));
+            form.handle.update(cx, |input, cx| {
+                input.replace_and_mark_text_in_range(None, "coder", Some(5..5), window, cx)
+            });
+        })
+        .unwrap();
+    page.visual.run_until_parked();
+    page.visual.simulate_keystrokes("enter escape");
+    page.visual.run_until_parked();
+    assert!(page.read(|root| root.role_surfaces.create.is_some()));
+    page.host
+        .update(&mut page.visual, |root, window, cx| {
+            let form = root.role_surfaces.create.as_mut().unwrap();
+            form.handle.update(cx, |input, cx| {
+                input.replace_text_in_range(None, "keyboard-coder", window, cx)
+            });
+            form.display_name
+                .update(cx, |input, cx| input.set_text("Keyboard coder", cx));
+            form.runtimes = runner_backend::ops::runtime::runtime_catalog(&page.core).unwrap();
+            root.select_create_role_runtime("codex".into(), cx);
+        })
+        .unwrap();
+    page.visual.run_until_parked();
+    page.visual.simulate_keystrokes("enter");
+    page.visual.run_until_parked();
+    assert!(runner_backend::ops::role::role_get_by_handle(&page.core, "keyboard-coder").is_ok());
+}
+
+#[test]
+fn new_role_keyboard_reaches_the_breadcrumb() {
+    use crate::surfaces::AppRoute;
+    let mut page = role_page_harness("new-role-breadcrumb-keyboard");
+    page.host
+        .update(&mut page.visual, |root, window, cx| {
+            root.open_create_role(window, cx)
+        })
+        .unwrap();
+    page.visual.run_until_parked();
+    page.visual.simulate_keystrokes("shift-tab enter");
+    page.visual.run_until_parked();
+    assert_eq!(page.read(|root| root.route.clone()), AppRoute::Roles);
+}
+
+#[test]
+fn role_edit_tabs_across_the_runtime_select_in_both_directions() {
+    let mut page = role_page_harness("role-runtime-tab-order");
+    let role = create_test_role(&page.core, "keyboard-role", None);
+    page.open_role("keyboard-role");
+    page.host
+        .update(&mut page.visual, |root, window, cx| {
+            root.open_role_edit(role, window, cx);
+            root.role_surfaces
+                .edit
+                .as_ref()
+                .unwrap()
+                .cancel_focus
+                .focus(window, cx);
+        })
+        .unwrap();
+    page.visual.run_until_parked();
+    page.visual.simulate_keystrokes("tab");
+    page.host
+        .update(&mut page.visual, |root, window, cx| {
+            let form = root.role_surfaces.edit.as_ref().unwrap();
+            assert!(form
+                .runtime_select
+                .read(cx)
+                .focus_handle()
+                .is_focused(window));
+        })
+        .unwrap();
+    page.visual.simulate_keystrokes("shift-tab");
+    page.host
+        .update(&mut page.visual, |root, window, _| {
+            assert!(root
+                .role_surfaces
+                .edit
+                .as_ref()
+                .unwrap()
+                .cancel_focus
+                .is_focused(window));
+        })
+        .unwrap();
+    page.visual.simulate_keystrokes("tab tab");
+    page.host
+        .update(&mut page.visual, |root, window, cx| {
+            let form = root.role_surfaces.edit.as_ref().unwrap();
+            assert!(form.model.read(cx).focus_handle().is_focused(window));
+        })
+        .unwrap();
+    page.visual.simulate_keystrokes("shift-tab shift-tab");
+    page.host
+        .update(&mut page.visual, |root, window, _| {
+            assert!(root
+                .role_surfaces
+                .edit
+                .as_ref()
+                .unwrap()
+                .cancel_focus
+                .is_focused(window));
+        })
+        .unwrap();
+}
+
+#[test]
+fn new_role_backend_error_keeps_the_draft_on_the_creating_page() {
+    let mut page = role_page_harness("new-role-error");
+    create_test_role(&page.core, "duplicate-page-role", None);
+    page.host
+        .update(&mut page.visual, |root, window, cx| {
+            root.open_create_role(window, cx)
+        })
+        .unwrap();
+    page.visual.run_until_parked();
+    page.host
+        .update(&mut page.visual, |root, _, cx| {
+            let form = root.role_surfaces.create.as_mut().unwrap();
+            form.runtimes = runner_backend::ops::runtime::runtime_catalog(&page.core).unwrap();
+            form.handle
+                .update(cx, |input, cx| input.set_text("duplicate-page-role", cx));
+            form.display_name
+                .update(cx, |input, cx| input.set_text("Duplicate", cx));
+            root.select_create_role_runtime("codex".into(), cx);
+        })
+        .unwrap();
+    page.visual.run_until_parked();
+    page.click("ROLE_EDIT_SAVE");
+    assert_eq!(
+        page.read(|root| root.route.clone()),
+        crate::surfaces::AppRoute::NewRole
+    );
+    assert!(page.read(|root| {
+        let form = root.role_surfaces.create.as_ref().unwrap();
+        form.error.is_some() && !form.submitting
+    }));
+}
+
+#[test]
+fn settings_returns_to_the_same_creating_draft() {
+    use crate::surfaces::AppRoute;
+    let mut page = role_page_harness("creating-settings-return");
+    page.visual.run_until_parked();
+    page.host
+        .update(&mut page.visual, |root, window, cx| {
+            root.open_create_role(window, cx);
+            root.role_surfaces
+                .create
+                .as_ref()
+                .unwrap()
+                .display_name
+                .update(cx, |input, cx| input.set_text("Draft role", cx));
+            root.settings_return_route = AppRoute::NewRole;
+            root.set_route(AppRoute::Settings, cx);
+            root.leave_settings(window, cx);
+            assert_eq!(root.route, AppRoute::NewRole);
+            assert_eq!(
+                root.role_surfaces
+                    .create
+                    .as_ref()
+                    .unwrap()
+                    .display_name
+                    .read(cx)
+                    .text(),
+                "Draft role"
+            );
+        })
+        .unwrap();
+    page.visual.run_until_parked();
 }

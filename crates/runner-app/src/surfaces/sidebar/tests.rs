@@ -1136,3 +1136,11 @@ fn sidebar_scroll_layout_reports_overflow_and_fills_short_lists() {
     assert_eq!(constrained_chats_height, 0.);
     assert_eq!(short_chats_height, 100.);
 }
+
+#[test]
+fn creating_routes_highlight_their_workspace_entry() {
+    assert!(WorkspaceEntry::Role.selected(&AppRoute::NewRole));
+    assert!(!WorkspaceEntry::Crew.selected(&AppRoute::NewRole));
+    assert!(WorkspaceEntry::Crew.selected(&AppRoute::NewCrew));
+    assert!(!WorkspaceEntry::Role.selected(&AppRoute::NewCrew));
+}

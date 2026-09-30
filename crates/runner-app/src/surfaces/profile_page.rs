@@ -8,7 +8,7 @@ use chrono::{DateTime, Datelike, TimeZone};
 use gpui::prelude::*;
 use gpui::{
     div, linear_color_stop, linear_gradient, px, rems, svg, AnyElement, App, Div, Entity, EntityId,
-    FontWeight, KeyDownEvent, SharedString, Window,
+    FontWeight, Hsla, KeyDownEvent, SharedString, Window,
 };
 use runner_app::ui::{focus_ring, TextField};
 
@@ -109,6 +109,10 @@ pub(crate) fn breadcrumb(
 }
 
 pub(crate) fn editing_tag() -> Div {
+    state_tag("EDITING")
+}
+
+pub(crate) fn state_tag(label: &'static str) -> Div {
     div()
         .flex_none()
         .rounded(rems(3. / 16.))
@@ -119,7 +123,30 @@ pub(crate) fn editing_tag() -> Div {
         .text_size(theme::text_micro())
         .font_weight(FontWeight::SEMIBOLD)
         .text_color(theme::muted())
-        .child("EDITING")
+        .child(label)
+}
+
+pub(crate) fn empty_profile_tile(size: f32, glyph: Option<&'static str>) -> AnyElement {
+    div()
+        .flex_none()
+        .size(rems(size / 16.))
+        .rounded(rems(22. / 16.))
+        .border_1()
+        .border_color(theme::border())
+        .bg(theme::panel())
+        .flex()
+        .items_center()
+        .justify_center()
+        .when(cfg!(test), |tile| {
+            tile.debug_selector(|| "EMPTY_PROFILE_TILE".into())
+        })
+        .children(glyph.map(|glyph| {
+            svg()
+                .path(glyph)
+                .size(rems(28. / 16.))
+                .text_color(theme::faint())
+        }))
+        .into_any_element()
 }
 
 /// An amber dot and a short note, such as "Unsaved changes".
@@ -153,7 +180,7 @@ pub(crate) fn text_action(
     let key_press = Rc::clone(&on_press);
     div()
         .id(id)
-        .track_focus(focus)
+        .track_focus(&focus.clone().tab_stop(true))
         .tab_index(0)
         .flex()
         .items_center()
@@ -280,10 +307,12 @@ pub(crate) fn card_meta(meta: Option<String>) -> AnyElement {
 
 /// Markdown clamped to its first lines behind a fade, with a Show all toggle
 /// when it runs longer. `test_prefix` names the `_TEXT` and `_TOGGLE` hooks.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn clamped_markdown(
     id: &str,
     text: &str,
     expanded: bool,
+    background: Hsla,
     test_prefix: &'static str,
     on_toggle: ClickHandler,
     view: EntityId,
@@ -330,8 +359,8 @@ pub(crate) fn clamped_markdown(
                             .h(rems(64. / 16.))
                             .bg(linear_gradient(
                                 180.,
-                                linear_color_stop(theme::with_alpha(theme::panel(), 0.), 0.),
-                                linear_color_stop(theme::panel(), 1.),
+                                linear_color_stop(theme::with_alpha(background, 0.), 0.),
+                                linear_color_stop(background, 1.),
                             )),
                     )
                 }),
@@ -439,6 +468,7 @@ pub(crate) fn markdown_editor_body(
 pub(crate) fn markdown_mode_switch(
     id: &'static str,
     preview: bool,
+    focus: &[gpui::FocusHandle; 2],
     on_select: ModeHandler,
 ) -> AnyElement {
     let segment = |label: &'static str, active: bool, show_preview: bool| {
@@ -446,6 +476,7 @@ pub(crate) fn markdown_mode_switch(
         let key = Rc::clone(&on_select);
         div()
             .id(SharedString::from(format!("{id}-{}", label.to_lowercase())))
+            .track_focus(&focus[usize::from(show_preview)].clone().tab_stop(true))
             .tab_index(0)
             .px_2()
             .py(rems(2. / 16.))

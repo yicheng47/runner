@@ -184,7 +184,7 @@ impl RenderOnce for Button {
         let mut button = div()
             .id(self.id)
             .when_some(self.focus_handle, |button, handle| {
-                button.track_focus(&handle)
+                button.track_focus(&handle.tab_stop(!inactive))
             })
             .tab_index(0)
             .tab_stop(!inactive)
@@ -439,7 +439,7 @@ impl RenderOnce for IconButton {
         let mut button = div()
             .id(self.id)
             .when_some(self.focus_handle, |button, handle| {
-                button.track_focus(&handle)
+                button.track_focus(&handle.tab_stop(!inactive))
             })
             .tab_index(0)
             .tab_stop(!inactive)

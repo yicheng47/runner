@@ -19,8 +19,9 @@ use runner_backend::ops::crew::UpdateCrewInput;
 
 use super::*;
 use crate::surfaces::profile_page::{
-    breadcrumb, column_text, dot_note, editing_tag, page_columns, page_container, profile_column,
-    section, short_id, ClickHandler, PROFILE_COLUMN_WIDTH,
+    breadcrumb, column_text, dot_note, editing_tag, empty_profile_tile, page_columns,
+    page_container, profile_column, section, short_id, state_tag, ClickHandler,
+    PROFILE_COLUMN_WIDTH,
 };
 use crate::surfaces::*;
 use crate::*;
@@ -139,6 +140,15 @@ impl NativeRoot {
     /// The page's edit in place and slot popup live only on their own crew's
     /// page, so a route that leaves it discards them, as Cancel does.
     pub(crate) fn drop_crew_edit_for_route(&mut self, route: &AppRoute) {
+        if !matches!(route, AppRoute::NewCrew | AppRoute::Settings)
+            && !self
+                .crew_surfaces
+                .create
+                .as_ref()
+                .is_some_and(|form| form.submitting)
+        {
+            self.crew_surfaces.create = None;
+        }
         let editor = &mut self.crew_surfaces.editor;
         if matches!(route, AppRoute::Settings)
             || matches!(route, AppRoute::CrewEditor(id) if id == &editor.crew_id)
@@ -158,20 +168,35 @@ impl NativeRoot {
     ) -> AnyElement {
         let column = self.profile_page_column_width(window, cx);
         let editor = &self.crew_surfaces.editor;
+        let creating = self.route == AppRoute::NewCrew
+            || (self.route == AppRoute::Settings
+                && self.settings_return_route == AppRoute::NewCrew);
         let editing = editor.edit.is_some();
         let (loading, loaded) = (editor.loading, editor.loaded);
         let crew = editor.crew.clone();
         let slots = editor.slots.clone();
-        let editor_error = editor.error.clone();
+        let editor_error = if creating {
+            self.crew_surfaces
+                .create
+                .as_ref()
+                .and_then(|form| form.error.clone())
+        } else {
+            editor.error.clone()
+        };
         let back_root = cx.entity();
         let on_back: ClickHandler = Rc::new(move |window, cx| {
             back_root.update(cx, |this, cx| this.open_crews(window, cx));
         });
-        let current = crew
-            .as_ref()
-            .map(|crew| crew.name.clone())
-            .unwrap_or_else(|| "…".into());
-        let body = if loading && !loaded {
+        let current = if creating {
+            "New crew".into()
+        } else {
+            crew.as_ref()
+                .map(|crew| crew.name.clone())
+                .unwrap_or_else(|| "…".into())
+        };
+        let body = if creating {
+            self.render_crew_page_body(None, Vec::new(), column, cx)
+        } else if loading && !loaded {
             div()
                 .text_size(theme::text_title())
                 .text_color(theme::muted())
@@ -184,7 +209,7 @@ impl NativeRoot {
                     .unwrap_or_else(|| "Failed to load crew.".into()),
             )
         } else if let Some(crew) = crew {
-            self.render_crew_page_body(crew, slots, column, cx)
+            self.render_crew_page_body(Some(crew), slots, column, cx)
         } else {
             div()
                 .text_size(theme::text_title())
@@ -192,7 +217,7 @@ impl NativeRoot {
                 .child("Crew not found.")
                 .into_any_element()
         };
-        let error = editor_error.filter(|_| loaded);
+        let error = editor_error.filter(|_| loaded || creating);
         div()
             .id("crew-editor-scroll")
             .when(cfg!(test), |scroll| {
@@ -201,7 +226,8 @@ impl NativeRoot {
             .flex_1()
             .min_h(px(0.))
             .overflow_y_scroll()
-            .when(editing, |page| {
+            .tab_group()
+            .when(editing || creating, |page| {
                 page.on_key_down(cx.listener(Self::on_crew_page_key_down))
             })
             .child(
@@ -224,6 +250,11 @@ impl NativeRoot {
                         .when(cfg!(test), |header| {
                             header.debug_selector(|| "CREW_EDITOR_HEADER".into())
                         })
+                        .children(creating.then(|| {
+                            state_tag("NEW").when(cfg!(test), |tag| {
+                                tag.debug_selector(|| "CREW_NEW_TAG".into())
+                            })
+                        }))
                         .children(editing.then(|| {
                             editing_tag().when(cfg!(test), |tag| {
                                 tag.debug_selector(|| "CREW_EDITING_TAG".into())
@@ -238,7 +269,7 @@ impl NativeRoot {
 
     fn render_crew_page_body(
         &mut self,
-        crew: Crew,
+        crew: Option<Crew>,
         slots: Vec<SlotWithRole>,
         column: f32,
         cx: &mut Context<Self>,
@@ -248,10 +279,10 @@ impl NativeRoot {
             .when(cfg!(test), |column| {
                 column.debug_selector(|| "CREW_PAGE_PROFILE".into())
             })
-            .child(self.render_crew_profile(&crew, &slots, column, cx))
+            .child(self.render_crew_profile(crew.as_ref(), &slots, column, cx))
             .child(self.render_slot_section(slots, column, cx))
-            .child(crew_details(&crew, editing));
-        let right = self.render_crew_cards(&crew, cx);
+            .children(crew.as_ref().map(|crew| crew_details(crew, editing)));
+        let right = self.render_crew_cards(crew.as_ref(), cx);
         page_columns(left, right, false)
             .when(cfg!(test), |body| {
                 body.debug_selector(|| "CREW_PAGE_BODY".into())
@@ -263,7 +294,7 @@ impl NativeRoot {
     /// width when the column spans a stacked page.
     fn render_crew_profile(
         &self,
-        crew: &Crew,
+        crew: Option<&Crew>,
         slots: &[SlotWithRole],
         column: f32,
         cx: &mut Context<Self>,
@@ -286,10 +317,28 @@ impl NativeRoot {
                 .when(cfg!(test), |picture| {
                     picture.debug_selector(|| "CREW_PICTURE".into())
                 })
-                .child(crew_picture(&handles, PICTURE_SIZE)),
+                .child(if crew.is_none() {
+                    empty_profile_tile(PICTURE_SIZE, Some("users.svg"))
+                } else {
+                    crew_picture(&handles, PICTURE_SIZE)
+                }),
         );
-        match self.crew_surfaces.editor.edit.as_ref() {
+        let creating = crew.is_none();
+        let form = if creating {
+            self.crew_surfaces
+                .create
+                .as_ref()
+                .map(|form| (&form.name, form.submitting, &form.action_focus))
+        } else {
+            self.crew_surfaces
+                .editor
+                .edit
+                .as_ref()
+                .map(|form| (&form.name, form.saving, &form.action_focus))
+        };
+        match form {
             None => {
+                let crew = crew.expect("view crew");
                 let start_root = root.clone();
                 let start_crew_id = crew.id.clone();
                 let edit_root = root;
@@ -360,10 +409,14 @@ impl NativeRoot {
                     )
                     .into_any_element()
             }
-            Some(form) => {
-                let saving = form.saving;
-                let name_empty = form.name.read(cx).text().trim().is_empty();
-                let dirty = crew_edit_is_dirty(form, crew, cx);
+            Some((name, saving, action_focus)) => {
+                let name_empty = name.read(cx).text().trim().is_empty();
+                let dirty = !creating
+                    && crew_edit_is_dirty(
+                        self.crew_surfaces.editor.edit.as_ref().unwrap(),
+                        crew.unwrap(),
+                        cx,
+                    );
                 let save_root = root.clone();
                 let cancel_root = root;
                 profile
@@ -375,7 +428,7 @@ impl NativeRoot {
                             .flex()
                             .flex_col()
                             .gap_1()
-                            .child(div().w(actions).child(form.name.clone()))
+                            .child(div().w(actions).child(name.clone()))
                             .child(summary.mt_1()),
                     )
                     .child(
@@ -399,20 +452,41 @@ impl NativeRoot {
                                             .child(
                                                 Button::new(
                                                     "crew-page-save",
-                                                    if saving { "Saving…" } else { "Save" },
+                                                    if saving {
+                                                        if creating {
+                                                            "Creating…"
+                                                        } else {
+                                                            "Saving…"
+                                                        }
+                                                    } else if creating {
+                                                        "Create crew"
+                                                    } else {
+                                                        "Save"
+                                                    },
                                                 )
-                                                .icon("check.svg")
+                                                .icon(if creating {
+                                                    "plus.svg"
+                                                } else {
+                                                    "check.svg"
+                                                })
                                                 .variant(ButtonVariant::Primary)
                                                 .full_width(true)
                                                 .tooltip(if name_empty {
                                                     "The crew needs a name"
+                                                } else if creating {
+                                                    "Create the crew"
                                                 } else {
                                                     "Save the name and conventions"
                                                 })
+                                                .focus_handle(action_focus[0].clone())
                                                 .disabled(saving || name_empty)
-                                                .on_press(move |_, cx| {
+                                                .on_press(move |window, cx| {
                                                     save_root.update(cx, |this, cx| {
-                                                        this.save_crew_edit(cx)
+                                                        if creating {
+                                                            this.submit_create_crew(window, cx)
+                                                        } else {
+                                                            this.save_crew_edit(cx)
+                                                        }
                                                     });
                                                 }),
                                             ),
@@ -424,23 +498,28 @@ impl NativeRoot {
                                             })
                                             .child(
                                                 Button::new("crew-page-cancel", "Cancel")
+                                                    .focus_handle(action_focus[1].clone())
                                                     .disabled(saving)
                                                     .on_press(move |window, cx| {
                                                         cancel_root.update(cx, |this, cx| {
-                                                            this.cancel_crew_edit(window, cx)
+                                                            if creating {
+                                                                this.close_create_crew(window, cx)
+                                                            } else {
+                                                                this.cancel_crew_edit(window, cx)
+                                                            }
                                                         });
                                                     }),
                                             ),
                                     ),
                             )
                             // Always laid out, so the slots below never jump.
-                            .child(
+                            .children((!creating).then(|| {
                                 dot_note("Unsaved changes. Slots save on their own.")
                                     .when(!dirty, |line| line.opacity(0.))
                                     .when(cfg!(test) && dirty, |line| {
                                         line.debug_selector(|| "CREW_EDIT_DIRTY".into())
-                                    }),
-                            ),
+                                    })
+                            })),
                     )
                     .into_any_element()
             }
@@ -485,6 +564,8 @@ impl NativeRoot {
         editor.edit = Some(CrewEditForm {
             name,
             conventions,
+            mode_focus: [cx.focus_handle(), cx.focus_handle()],
+            action_focus: [cx.focus_handle(), cx.focus_handle()],
             saving: false,
             _subscriptions: subscriptions,
         });
@@ -535,6 +616,37 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if event.keystroke.key == "tab" {
+            let composing = self.crew_surfaces.create.as_ref().is_some_and(|form| {
+                form.name.read(cx).is_composing() || form.conventions.read(cx).is_composing()
+            }) || self.crew_surfaces.editor.edit.as_ref().is_some_and(|form| {
+                form.name.read(cx).is_composing() || form.conventions.read(cx).is_composing()
+            });
+            if !composing {
+                cx.stop_propagation();
+                if event.keystroke.modifiers.shift {
+                    window.focus_prev(cx);
+                } else {
+                    window.focus_next(cx);
+                }
+            }
+            return;
+        }
+        if self.route == AppRoute::NewCrew
+            || (self.route == AppRoute::Settings && self.settings_return_route == AppRoute::NewCrew)
+        {
+            if event.keystroke.key == "escape" {
+                if self.crew_surfaces.create.as_ref().is_some_and(|form| {
+                    !form.name.read(cx).is_composing() && !form.conventions.read(cx).is_composing()
+                }) {
+                    cx.stop_propagation();
+                    self.close_create_crew(window, cx);
+                }
+            } else {
+                self.on_create_crew_key_down(event, window, cx);
+            }
+            return;
+        }
         let Some(form) = self.crew_surfaces.editor.edit.as_ref() else {
             return;
         };
@@ -579,6 +691,9 @@ fn crew_details(crew: &Crew, editing: bool) -> AnyElement {
         format!("Created {created} · updated {updated}")
     };
     section()
+        .when(cfg!(test), |lines| {
+            lines.debug_selector(|| "CREW_DETAILS".into())
+        })
         .gap(rems(6. / 16.))
         .when(editing, |section| section.opacity(0.4))
         .text_size(theme::text_ui())

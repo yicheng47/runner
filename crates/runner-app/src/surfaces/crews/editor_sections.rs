@@ -25,8 +25,8 @@ const CONVENTIONS_CAPTION: &str =
 impl NativeRoot {
     /// The right column: the team conventions, their caption, and the crew's
     /// missions.
-    pub(super) fn render_crew_cards(&self, crew: &Crew, cx: &mut Context<Self>) -> Div {
-        let editing = self.crew_surfaces.editor.edit.is_some();
+    pub(super) fn render_crew_cards(&self, crew: Option<&Crew>, cx: &mut Context<Self>) -> Div {
+        let editing = self.crew_surfaces.editor.edit.is_some() || crew.is_none();
         card_column()
             .when(cfg!(test), |column| {
                 column.debug_selector(|| "CREW_PAGE_CARDS".into())
@@ -34,15 +34,15 @@ impl NativeRoot {
             .child(if editing {
                 self.render_conventions_editor(cx)
             } else {
-                self.render_conventions_card(crew, cx)
+                self.render_conventions_card(crew.unwrap(), cx)
             })
             .child(caption(CONVENTIONS_CAPTION))
-            .child(
+            .children(crew.map(|crew| {
                 div()
                     .mt(rems(20. / 16.))
                     .when(editing, |missions| missions.opacity(0.4))
-                    .child(self.render_missions_card(&crew.id, !editing, cx)),
-            )
+                    .child(self.render_missions_card(&crew.id, !editing, cx))
+            }))
     }
 
     fn render_conventions_card(&self, crew: &Crew, cx: &mut Context<Self>) -> AnyElement {
@@ -62,6 +62,7 @@ impl NativeRoot {
                 &format!("crew-conventions-{}", crew.id),
                 text,
                 self.crew_surfaces.editor.conventions_expanded,
+                theme::panel(),
                 "CREW_CONVENTIONS",
                 Rc::new(move |_, cx| {
                     root.update(cx, |this, cx| {
@@ -81,10 +82,28 @@ impl NativeRoot {
 
     fn render_conventions_editor(&self, cx: &mut Context<Self>) -> AnyElement {
         let editor = &self.crew_surfaces.editor;
-        let form = editor.edit.as_ref().expect("crew edit form");
+        let conventions = if self.route == AppRoute::NewCrew
+            || (self.route == AppRoute::Settings && self.settings_return_route == AppRoute::NewCrew)
+        {
+            &self
+                .crew_surfaces
+                .create
+                .as_ref()
+                .expect("creating crew form")
+                .conventions
+        } else {
+            &editor.edit.as_ref().expect("crew edit form").conventions
+        };
+        let mode_focus = self
+            .crew_surfaces
+            .create
+            .as_ref()
+            .map(|form| &form.mode_focus)
+            .unwrap_or_else(|| &editor.edit.as_ref().unwrap().mode_focus);
         let preview = editor.conventions_preview;
-        let draft = form.conventions.read(cx).text();
-        let meta = (!draft.trim().is_empty()).then(|| prompt_meta(draft));
+        let draft = conventions.read(cx).text();
+        let meta = (self.crew_surfaces.create.is_some() || !draft.trim().is_empty())
+            .then(|| prompt_meta(draft));
         let root = cx.entity();
         conventions_card(
             div()
@@ -95,6 +114,7 @@ impl NativeRoot {
                 .child(markdown_mode_switch(
                     "crew-conventions-mode",
                     preview,
+                    mode_focus,
                     Rc::new(move |preview, cx| {
                         root.update(cx, |this, cx| {
                             if this.crew_surfaces.editor.conventions_preview != preview {
@@ -110,7 +130,7 @@ impl NativeRoot {
         .h(rems(496. / 16.))
         .child(markdown_editor_body(
             "crew-conventions-draft",
-            form.conventions.clone(),
+            conventions.clone(),
             preview,
             "CREW_CONVENTIONS",
             cx.entity_id(),

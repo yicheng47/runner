@@ -28,7 +28,7 @@ pub(super) use crate::surfaces::profile_page::column_text;
 use crate::surfaces::profile_page::{
     breadcrumb, caption, card, card_column, card_meta, clamped_markdown, dot_note, editing_tag,
     markdown_editor_body, markdown_mode_switch, page_columns, page_container, profile_column,
-    section, section_label, setup_row, setup_value,
+    section, section_label, setup_row, setup_value, state_tag,
 };
 use crate::*;
 
@@ -51,6 +51,9 @@ impl NativeRoot {
     ) -> AnyElement {
         let column = self.profile_page_column_width(window, cx);
         let back_root = cx.entity();
+        let creating = self.route == AppRoute::NewRole
+            || (self.route == AppRoute::Settings
+                && self.settings_return_route == AppRoute::NewRole);
         let detail = &self.role_surfaces.detail;
         let handle = detail.handle.clone();
         let editing = self
@@ -64,8 +67,10 @@ impl NativeRoot {
             .as_ref()
             .filter(|_| editing)
             .and_then(|form| form.error.clone());
-        let detail_error = detail.error.clone();
-        let body = if detail.loading {
+        let detail_error = if creating { None } else { detail.error.clone() };
+        let body = if creating {
+            self.render_role_edit_page(None, None, Vec::new(), column, cx)
+        } else if detail.loading {
             div()
                 .text_size(theme::text_title())
                 .text_color(theme::muted())
@@ -75,7 +80,7 @@ impl NativeRoot {
             let activity = detail.activity.clone();
             let crews = detail.crews.clone();
             if editing {
-                self.render_role_edit_page(role, activity, crews, column, cx)
+                self.render_role_edit_page(Some(role), activity, crews, column, cx)
             } else {
                 self.render_role_view_page(role, activity, crews, column, cx)
             }
@@ -103,7 +108,8 @@ impl NativeRoot {
             .flex_1()
             .min_h(px(0.))
             .overflow_y_scroll()
-            .when(editing, |page| {
+            .tab_group()
+            .when(editing || creating, |page| {
                 page.on_key_down(cx.listener(Self::on_role_page_key_down))
             })
             .child(
@@ -119,14 +125,25 @@ impl NativeRoot {
                             div()
                                 .min_w(px(0.))
                                 .truncate()
-                                .font_family(theme::UI_MONOSPACE_FONT)
+                                .when(!creating, |crumb| {
+                                    crumb.font_family(theme::UI_MONOSPACE_FONT)
+                                })
                                 .font_weight(FontWeight::MEDIUM)
                                 .text_color(theme::text())
-                                .child(format!("@{handle}")),
+                                .child(if creating {
+                                    "New role".to_owned()
+                                } else {
+                                    format!("@{handle}")
+                                }),
                         )
                         .when(cfg!(test), |header| {
                             header.debug_selector(|| "ROLE_DETAIL_HEADER".into())
                         })
+                        .children(creating.then(|| {
+                            state_tag("NEW").when(cfg!(test), |tag| {
+                                tag.debug_selector(|| "ROLE_NEW_TAG".into())
+                            })
+                        }))
                         .children(editing.then(|| {
                             editing_tag().when(cfg!(test), |tag| {
                                 tag.debug_selector(|| "ROLE_EDITING_TAG".into())
@@ -146,6 +163,43 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if event.keystroke.key == "tab" {
+            let composing = self
+                .role_surfaces
+                .create
+                .as_ref()
+                .is_some_and(|form| super::logic::create_role_form_is_composing(form, cx))
+                || self
+                    .role_surfaces
+                    .edit
+                    .as_ref()
+                    .is_some_and(|form| role_edit_form_is_composing(form, cx));
+            if !composing {
+                cx.stop_propagation();
+                if event.keystroke.modifiers.shift {
+                    window.focus_prev(cx);
+                } else {
+                    window.focus_next(cx);
+                }
+            }
+            return;
+        }
+        if self.route == AppRoute::NewRole {
+            if event.keystroke.key == "escape" {
+                if self
+                    .role_surfaces
+                    .create
+                    .as_ref()
+                    .is_some_and(|form| !super::logic::create_role_form_is_composing(form, cx))
+                {
+                    cx.stop_propagation();
+                    self.close_create_role(window, cx);
+                }
+            } else {
+                self.on_create_role_key_down(event, window, cx);
+            }
+            return;
+        }
         if event.keystroke.key != "escape" {
             self.on_role_edit_key_down(event, window, cx);
             return;
@@ -347,7 +401,7 @@ impl NativeRoot {
 
     fn render_role_edit_page(
         &self,
-        role: Role,
+        role: Option<Role>,
         activity: Option<RoleActivity>,
         crews: Vec<CrewMembership>,
         column: f32,
@@ -356,18 +410,32 @@ impl NativeRoot {
         // The form keeps the fixed column's width: its selects are sized when
         // the edit opens. The column's rules and lists still span the page.
         let form_width = rems(column.min(ROLE_COLUMN_WIDTH) / 16.);
-        let form = self
-            .role_surfaces
-            .edit
-            .as_ref()
-            .expect("in-place role edit form");
+        let creating = role.is_none();
+        let create = self.role_surfaces.create.as_ref().filter(|_| creating);
+        let form = if let Some(create) = create {
+            &create.fields
+        } else {
+            &self
+                .role_surfaces
+                .edit
+                .as_ref()
+                .expect("in-place role edit form")
+                .fields
+        };
         let root = cx.entity();
         let submit_root = root.clone();
         let cancel_root = root.clone();
         let browse_root = root.clone();
         let submitting = form.submitting;
-        let can_submit = !submitting && form.display_name_valid;
-        let dirty = role_edit_is_dirty(form, cx);
+        let can_submit = create
+            .map(super::logic::create_role_can_submit)
+            .unwrap_or(!submitting && form.display_name_valid);
+        let dirty = !creating
+            && self
+                .role_surfaces
+                .edit
+                .as_ref()
+                .is_some_and(|edit| role_edit_is_dirty(edit, cx));
         let has_efforts = !runtime_efforts(&form.runtimes, &form.runtime).is_empty();
         let profile = div()
             .when(cfg!(test), |profile| {
@@ -376,26 +444,30 @@ impl NativeRoot {
             .flex()
             .flex_col()
             .gap_4()
-            .child(RoleAvatar::new(role.handle.clone(), 96.))
+            .children(form.error.clone().filter(|_| creating).map(error_banner))
+            .child({
+                let seed = create.map(|form| form.avatar_seed(cx)).unwrap_or_else(|| role.as_ref().unwrap().handle.clone());
+                div().when(cfg!(test), |avatar| avatar.debug_selector(|| "ROLE_CREATE_AVATAR".into())).child(RoleAvatar::new(seed, 96.)).into_any_element()
+            })
             .child(
                 div()
                     .flex()
                     .flex_col()
                     .gap_1()
-                    .child(div().w(form_width).child(form.display_name.clone()))
-                    .child(
-                        column_text(format!("@{}", role.handle), column)
-                            .mt_1()
-                            .font_family(theme::UI_MONOSPACE_FONT)
-                            .text_size(theme::text_body())
-                            .text_color(theme::muted()),
-                    )
-                    .child(
-                        div()
-                            .text_size(theme::text_meta())
-                            .text_color(theme::faint())
-                            .child("The handle can't change."),
-                    ),
+                    .child(div().when(cfg!(test), |field| field.debug_selector(|| "ROLE_NAME_FIELD".into())).w(form_width).child(form.display_name.clone()))
+                    .child(if let Some(create) = create {
+                        div().when(cfg!(test), |field| field.debug_selector(|| "ROLE_CREATE_HANDLE".into())).w(form_width).flex().items_center().rounded_sm().border_1()
+                            .border_color(if create.handle_error.is_some() { theme::danger() } else { theme::border_strong() })
+                            .bg(theme::bg()).px(rems(10. / 16.)).py(rems(6. / 16.))
+                            .child(div().font_family(theme::UI_MONOSPACE_FONT).text_color(theme::faint()).child("@"))
+                            .child(div().min_w(px(0.)).flex_1().child(create.handle.clone())).into_any_element()
+                    } else {
+                        column_text(format!("@{}", role.as_ref().unwrap().handle), column).mt_1()
+                            .font_family(theme::UI_MONOSPACE_FONT).text_size(theme::text_body()).text_color(theme::muted()).into_any_element()
+                    })
+                    .child(div().text_size(theme::text_meta())
+                        .text_color(if create.is_some_and(|form| form.handle_error.is_some()) { theme::danger() } else { theme::faint() })
+                        .child(create.map(|form| form.handle_error.unwrap_or("Lowercase letters, digits, - and _. The handle can't change later.")).unwrap_or("The handle can't change."))),
             )
             .child(
                 div()
@@ -418,9 +490,9 @@ impl NativeRoot {
                                     .child(
                                         Button::new(
                                             "role-page-save",
-                                            if submitting { "Saving…" } else { "Save" },
+                                            if submitting { if creating { "Creating…" } else { "Saving…" } } else if creating { "Create role" } else { "Save" },
                                         )
-                                        .icon("check.svg")
+                                        .icon(if creating { "plus.svg" } else { "check.svg" })
                                         .variant(ButtonVariant::Primary)
                                         .full_width(true)
                                         .focus_handle(form.submit_focus.clone())
@@ -428,7 +500,7 @@ impl NativeRoot {
                                         .on_press(
                                             move |window, cx| {
                                                 submit_root.update(cx, |this, cx| {
-                                                    this.submit_role_edit(window, cx)
+                                                    if creating { this.submit_create_role(window, cx) } else { this.submit_role_edit(window, cx) }
                                                 });
                                             },
                                         ),
@@ -445,20 +517,20 @@ impl NativeRoot {
                                             .disabled(submitting)
                                             .on_press(move |window, cx| {
                                                 cancel_root.update(cx, |this, cx| {
-                                                    this.close_role_edit(window, cx)
+                                                    if creating { this.close_create_role(window, cx) } else { this.close_role_edit(window, cx) }
                                                 });
                                             }),
                                     ),
                             ),
                     )
                     // Always laid out, so the setup below never jumps.
-                    .child(
+                    .children((!creating).then(||
                         dot_note("Unsaved changes")
                             .when(!dirty, |line| line.opacity(0.))
                             .when(cfg!(test) && dirty, |line| {
                                 line.debug_selector(|| "ROLE_EDIT_DIRTY".into())
                             }),
-                    ),
+                    )),
             );
         let setup = section()
             .when(cfg!(test), |setup| {
@@ -478,8 +550,22 @@ impl NativeRoot {
                                 .child(error)
                         }),
                     ))
-                    .child(edit_row("Model", form.model_field.clone()))
-                    .children(has_efforts.then(|| edit_row("Effort", form.effort_select.clone())))
+                    .child(
+                        div()
+                            .flex()
+                            .gap_4()
+                            .child(edit_row("Model", form.model_field.clone()).w(rems(
+                                if has_efforts {
+                                    half_column(column.min(ROLE_COLUMN_WIDTH))
+                                } else {
+                                    column.min(ROLE_COLUMN_WIDTH)
+                                } / 16.,
+                            )))
+                            .children(has_efforts.then(|| {
+                                edit_row("Effort", form.effort_select.clone())
+                                    .w(rems(half_column(column.min(ROLE_COLUMN_WIDTH)) / 16.))
+                            })),
+                    )
                     .children((form.runtime == "codex").then(|| {
                         edit_row("Speed", form.speed_select.clone())
                             .when(cfg!(test), |row| {
@@ -487,6 +573,9 @@ impl NativeRoot {
                             })
                             .children((form.speed == "fast").then(|| {
                                 div()
+                                    .when(cfg!(test) && creating, |note| {
+                                        note.debug_selector(|| "NEW_ROLE_SPEED_NOTE".into())
+                                    })
                                     .text_size(theme::text_meta())
                                     .text_color(theme::faint())
                                     .child("Fast uses more credits.")
@@ -501,8 +590,13 @@ impl NativeRoot {
                                 form.working_dir.clone(),
                                 submitting,
                                 Rc::new(move |_, cx| {
-                                    browse_root
-                                        .update(cx, |this, cx| this.browse_role_edit_cwd(cx));
+                                    browse_root.update(cx, |this, cx| {
+                                        if creating {
+                                            this.browse_create_role_cwd(cx)
+                                        } else {
+                                            this.browse_role_edit_cwd(cx)
+                                        }
+                                    });
                                 }),
                             )
                             .browse_id("role-page-browse")
@@ -519,8 +613,14 @@ impl NativeRoot {
             })
             .child(profile)
             .child(setup)
-            .child(self.render_role_crews(crews, false, column, cx))
-            .child(role_activity_lines(&role, activity.as_ref(), false));
+            .children(role.as_ref().map(|_| {
+                self.render_role_crews(crews, false, column, cx)
+                    .into_any_element()
+            }))
+            .children(
+                role.as_ref()
+                    .map(|role| role_activity_lines(role, activity.as_ref(), false)),
+            );
         let right = prompt_column()
             .child(self.render_prompt_editor_card(cx))
             .child(caption(PROMPT_CAPTION));
@@ -557,6 +657,9 @@ impl NativeRoot {
         section()
             .gap_2()
             .when(!interactive, |section| section.opacity(0.4))
+            .when(cfg!(test), |section| {
+                section.debug_selector(|| "ROLE_CREWS_SECTION".into())
+            })
             .child(section_label(label))
             .child(rows)
             .into_any_element()
@@ -579,6 +682,7 @@ impl NativeRoot {
                 &format!("role-prompt-{}", role.id),
                 prompt,
                 self.role_surfaces.prompt_expanded,
+                theme::panel(),
                 "ROLE_PROMPT",
                 Rc::new(move |_, cx| {
                     root.update(cx, |this, cx| this.toggle_role_prompt(cx));
@@ -593,15 +697,28 @@ impl NativeRoot {
     }
 
     fn render_prompt_editor_card(&self, cx: &mut Context<Self>) -> AnyElement {
-        let form = self
-            .role_surfaces
-            .edit
-            .as_ref()
-            .expect("in-place role edit form");
+        let form = if self.route == AppRoute::NewRole
+            || (self.route == AppRoute::Settings && self.settings_return_route == AppRoute::NewRole)
+        {
+            &self
+                .role_surfaces
+                .create
+                .as_ref()
+                .expect("creating role form")
+                .fields
+        } else {
+            &self
+                .role_surfaces
+                .edit
+                .as_ref()
+                .expect("in-place role edit form")
+                .fields
+        };
         let root = cx.entity();
         let preview = self.role_surfaces.prompt_preview;
         let draft = form.system_prompt.read(cx).text();
-        let meta = (!draft.trim().is_empty()).then(|| prompt_meta(draft));
+        let meta = (self.role_surfaces.create.is_some() || !draft.trim().is_empty())
+            .then(|| prompt_meta(draft));
         prompt_card(
             div()
                 .flex_none()
@@ -611,6 +728,7 @@ impl NativeRoot {
                 .child(markdown_mode_switch(
                     "role-prompt-mode",
                     preview,
+                    &form.prompt_mode_focus,
                     Rc::new(move |preview, cx| {
                         root.update(cx, |this, cx| this.set_role_prompt_preview(preview, cx));
                     }),
@@ -772,6 +890,9 @@ fn role_activity_lines(
         .map(|started| format!("Last seen {}", local_short_timestamp(started)))
         .unwrap_or_else(|| "Never started".to_owned());
     section()
+        .when(cfg!(test), |lines| {
+            lines.debug_selector(|| "ROLE_ACTIVITY_LINES".into())
+        })
         .gap(rems(6. / 16.))
         .when(!interactive, |section| section.opacity(0.4))
         .text_size(theme::text_ui())
@@ -793,6 +914,9 @@ fn role_activity_lines(
 
 fn edit_row(label: &'static str, control: impl IntoElement) -> Div {
     div()
+        .when(cfg!(test), |row| {
+            row.debug_selector(|| format!("ROLE_EDIT_ROW {label}"))
+        })
         .min_w(px(0.))
         .flex()
         .flex_col()

@@ -373,6 +373,7 @@ enum ArchiveAllSource {
 enum RuntimeLocation {
     Chat(String),
     Mission(String),
+    Entity(AppRoute),
 }
 
 const RUNTIME_NAVIGATION_HISTORY_LIMIT: usize = 64;
@@ -491,6 +492,8 @@ struct NativeRoot {
     sidebar_collapsed: bool,
     sidebar_visibility: SidebarVisibilityTransition,
     chat_panel_visibility: SidebarVisibilityTransition,
+    chat_panel_prompt_session: Option<String>,
+    chat_panel_prompt_expanded: bool,
     command_palette: Entity<CommandPaletteState>,
     sidebar_preview_open: bool,
     sidebar_preview_peeking: bool,
@@ -795,6 +798,12 @@ impl NativeRoot {
                 .map(|session| vec![RuntimeLocation::Chat(session.session_id.clone())])
                 .unwrap_or_default(),
             AppRoute::Mission(mission_id) => vec![RuntimeLocation::Mission(mission_id.clone())],
+            AppRoute::Roles
+            | AppRoute::NewRole
+            | AppRoute::RoleDetail(_)
+            | AppRoute::Crews
+            | AppRoute::NewCrew
+            | AppRoute::CrewEditor(_) => vec![RuntimeLocation::Entity(initial_route.clone())],
             _ => Vec::new(),
         };
         let runtime_navigation_index = (!runtime_navigation_history.is_empty()).then_some(0);
@@ -863,6 +872,8 @@ impl NativeRoot {
             sidebar_collapsed,
             sidebar_visibility,
             chat_panel_visibility,
+            chat_panel_prompt_session: None,
+            chat_panel_prompt_expanded: false,
             command_palette,
             sidebar_preview_open: false,
             sidebar_preview_peeking: false,
@@ -912,6 +923,8 @@ impl NativeRoot {
         root.sync_theme(window, cx);
         match root.route.clone() {
             AppRoute::Mission(mission_id) => root.open_mission(mission_id, window, cx),
+            AppRoute::NewRole => root.open_create_role(window, cx),
+            AppRoute::NewCrew => root.open_create_crew(window, cx),
             AppRoute::Roles => {
                 root.load_role_page(cx);
                 window.focus(&root.root_focus, cx);

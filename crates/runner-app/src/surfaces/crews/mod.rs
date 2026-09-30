@@ -79,6 +79,8 @@ struct CrewEditorState {
 struct CrewEditForm {
     name: Entity<TextField>,
     conventions: Entity<TextField>,
+    mode_focus: [FocusHandle; 2],
+    action_focus: [FocusHandle; 2],
     saving: bool,
     _subscriptions: Vec<Subscription>,
 }
@@ -116,11 +118,13 @@ struct SlotOverrideForm {
 
 struct CreateCrewForm {
     name: Entity<TextField>,
-    close_focus: FocusHandle,
-    cancel_focus: FocusHandle,
-    submit_focus: FocusHandle,
+    conventions: Entity<TextField>,
+    mode_focus: [FocusHandle; 2],
+    action_focus: [FocusHandle; 2],
+    return_route: AppRoute,
     submitting: bool,
     error: Option<String>,
+    _subscriptions: Vec<Subscription>,
 }
 
 struct AddSlotForm {
