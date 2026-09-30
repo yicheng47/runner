@@ -250,6 +250,7 @@ pub(crate) struct Sidebar {
     dragged_id: Option<String>,
     drop_target: Option<DropTarget>,
     drop_marker: Option<String>,
+    hovered_row: Option<String>,
     cmd_held_since: Option<Instant>,
     shortcut_key_pressed: bool,
     show_shortcut_pills: bool,

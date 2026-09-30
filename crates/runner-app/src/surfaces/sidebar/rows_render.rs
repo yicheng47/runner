@@ -39,6 +39,21 @@ impl Sidebar {
             .attached_title(session_id, cx)
     }
 
+    /// A hovered row swaps its status for the "more" button in the same slot.
+    /// A hover style cannot do this: gpui-pre resolves group hover differently
+    /// in prepaint and paint, and a child hidden in one and shown in the other
+    /// panics.
+    fn set_row_hovered(&mut self, id: &str, hovered: bool, cx: &mut Context<Self>) {
+        if hovered {
+            self.hovered_row = Some(id.to_owned());
+        } else if self.hovered_row.as_deref() == Some(id) {
+            self.hovered_row = None;
+        } else {
+            return;
+        }
+        cx.notify();
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(super) fn render_tab_row(
         &self,
@@ -93,35 +108,46 @@ impl Sidebar {
             )
         } else {
             let show_shortcut = self.show_shortcut_pills && shortcut_index.is_some();
+            let hovered = self.hovered_row.as_deref() == Some(node.id.as_str());
             let trailing = if show_shortcut {
                 sidebar_row_trailing_slot()
                     .children(shortcut_index.map(|index| tab_shortcut_pill(index, active)))
-                    .into_any_element()
-            } else {
-                let more_button = IconButton::new(
-                    SharedString::from(format!("sidebar-tab-actions-{}", node.id)),
-                    "more-horizontal.svg",
+            } else if hovered {
+                sidebar_row_trailing_slot().child(
+                    IconButton::new(
+                        SharedString::from(format!("sidebar-tab-actions-{}", node.id)),
+                        "more-horizontal.svg",
+                    )
+                    .size(IconButtonSize::Xs)
+                    .stop_click_propagation(true)
+                    .tooltip("More actions")
+                    .on_press(move |window, cx| {
+                        let position = window.mouse_position();
+                        menu_root.update(cx, |this, cx| {
+                            this.open_tab_menu(
+                                menu_node.clone(),
+                                menu_layout.clone(),
+                                menu_members.clone(),
+                                position,
+                                window,
+                                cx,
+                            )
+                        });
+                    }),
                 )
-                .size(IconButtonSize::Xs)
-                .stop_click_propagation(true)
-                .reveal_on_group_hover("sidebar-row-actions")
-                .tooltip("More actions")
-                .on_press(move |window, cx| {
-                    let position = window.mouse_position();
-                    menu_root.update(cx, |this, cx| {
-                        this.open_tab_menu(
-                            menu_node.clone(),
-                            menu_layout.clone(),
-                            menu_members.clone(),
-                            position,
-                            window,
-                            cx,
-                        )
-                    });
-                });
-                sidebar_row_trailing_slot()
-                    .child(more_button)
-                    .into_any_element()
+            } else {
+                sidebar_row_trailing_slot().child(
+                    self.render_rollup_attention(
+                        self.tab_status_rollup(&members, cx),
+                        Some(node.id.clone()),
+                        members
+                            .iter()
+                            .any(|member| self.archiving_sessions.contains(&member.session_id)),
+                        pane_count == 1,
+                        SharedString::from(format!("attention-{}", node.id)),
+                        cx,
+                    ),
+                )
             };
             sidebar_row_shell(
                 SharedString::from(format!("sidebar-tab-{}", node.id)),
@@ -132,19 +158,13 @@ impl Sidebar {
             .when(!live, |row| row.text_color(theme::faint()))
             .child(sidebar_icon(leaf_icon, live))
             .child(sidebar_row_label(label.clone(), active, false))
-            .child(
-                self.render_rollup_attention(
-                    self.tab_status_rollup(&members, cx),
-                    Some(node.id.clone()),
-                    members
-                        .iter()
-                        .any(|member| self.archiving_sessions.contains(&member.session_id)),
-                    pane_count == 1,
-                    SharedString::from(format!("attention-{}", node.id)),
-                    cx,
-                ),
-            )
             .child(trailing)
+            .on_hover({
+                let id = node.id.clone();
+                cx.listener(move |this, hovered: &bool, _, cx| {
+                    this.set_row_hovered(&id, *hovered, cx)
+                })
+            })
             .on_click(cx.listener(move |this, _, window, cx| {
                 this.activate_sidebar_session(&click_tab, &click_session, window, cx);
             }))
@@ -223,38 +243,44 @@ impl Sidebar {
             )
         } else {
             let show_shortcut = self.show_shortcut_pills && shortcut_index.is_some();
+            let hovered = self.hovered_row.as_deref() == Some(node.id.as_str());
             let trailing = if show_shortcut {
                 sidebar_row_trailing_slot()
                     .children(shortcut_index.map(|index| tab_shortcut_pill(index, active)))
-                    .into_any_element()
-            } else {
-                sidebar_row_trailing_slot()
-                    .child(
-                        IconButton::new(
-                            SharedString::from(format!(
-                                "sidebar-mission-actions-{}",
-                                summary.mission.id
-                            )),
-                            "more-horizontal.svg",
-                        )
-                        .size(IconButtonSize::Xs)
-                        .stop_click_propagation(true)
-                        .reveal_on_group_hover("sidebar-row-actions")
-                        .tooltip("More actions")
-                        .on_press(move |window, cx| {
-                            let position = window.mouse_position();
-                            menu_root.update(cx, |this, cx| {
-                                this.open_mission_menu(
-                                    menu_node.clone(),
-                                    menu_summary.clone(),
-                                    position,
-                                    window,
-                                    cx,
-                                )
-                            });
-                        }),
+            } else if hovered {
+                sidebar_row_trailing_slot().child(
+                    IconButton::new(
+                        SharedString::from(format!(
+                            "sidebar-mission-actions-{}",
+                            summary.mission.id
+                        )),
+                        "more-horizontal.svg",
                     )
-                    .into_any_element()
+                    .size(IconButtonSize::Xs)
+                    .stop_click_propagation(true)
+                    .tooltip("More actions")
+                    .on_press(move |window, cx| {
+                        let position = window.mouse_position();
+                        menu_root.update(cx, |this, cx| {
+                            this.open_mission_menu(
+                                menu_node.clone(),
+                                menu_summary.clone(),
+                                position,
+                                window,
+                                cx,
+                            )
+                        });
+                    }),
+                )
+            } else {
+                sidebar_row_trailing_slot().child(self.render_rollup_attention(
+                    self.mission_status_rollup(&summary),
+                    Some(node.id.clone()),
+                    self.archiving_missions.contains(&summary.mission.id),
+                    false,
+                    SharedString::from(format!("attention-{}", node.id)),
+                    cx,
+                ))
             };
             sidebar_row_shell(
                 SharedString::from(format!("sidebar-mission-{}", summary.mission.id)),
@@ -264,15 +290,13 @@ impl Sidebar {
             .children(node.pinned_position.is_some().then(pin_indicator))
             .child(sidebar_icon(ChatIcon::mission(), summary.any_session_live))
             .child(sidebar_row_label(label.clone(), active, false))
-            .child(self.render_rollup_attention(
-                self.mission_status_rollup(&summary),
-                Some(node.id.clone()),
-                self.archiving_missions.contains(&summary.mission.id),
-                false,
-                SharedString::from(format!("attention-{}", node.id)),
-                cx,
-            ))
             .child(trailing)
+            .on_hover({
+                let id = node.id.clone();
+                cx.listener(move |this, hovered: &bool, _, cx| {
+                    this.set_row_hovered(&id, *hovered, cx)
+                })
+            })
             .on_click(cx.listener(move |this, _, window, cx| {
                 this.active_project_id = project_id.clone();
                 this.open_mission(summary.mission.id.clone(), window, cx);

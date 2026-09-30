@@ -59,6 +59,7 @@ impl Sidebar {
             dragged_id: None,
             drop_target: None,
             drop_marker: None,
+            hovered_row: None,
             cmd_held_since: None,
             shortcut_key_pressed: false,
             show_shortcut_pills: false,

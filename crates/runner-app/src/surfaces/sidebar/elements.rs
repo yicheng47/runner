@@ -225,6 +225,7 @@ pub(super) fn sidebar_row_shell(
     accent_bar: bool,
 ) -> gpui::Stateful<gpui::Div> {
     div()
+        .debug_selector(|| format!("SIDEBAR_ROW {id}"))
         .id(id)
         .relative()
         .group("sidebar-row-actions")
@@ -272,8 +273,7 @@ pub(super) fn sidebar_row_label(label: String, selected: bool, monospace: bool) 
     div()
         .min_w(px(0.))
         .flex_1()
-        .overflow_hidden()
-        .whitespace_nowrap()
+        .truncate()
         .when(monospace, |label| {
             label.font_family(theme::UI_MONOSPACE_FONT)
         })
@@ -286,14 +286,15 @@ pub(super) fn sidebar_row_label(label: String, selected: bool, monospace: bool) 
         .into_any_element()
 }
 
+/// One cell for the row's status, its "more" button, or its shortcut pill,
+/// all 16 px or less and centred so they swap in place.
 pub(super) fn sidebar_row_trailing_slot() -> gpui::Div {
     div()
-        .w(rems(34. / 16.))
+        .size(rems(1.))
         .flex_none()
         .flex()
         .items_center()
-        .justify_end()
-        .gap(rems(6. / 16.))
+        .justify_center()
 }
 
 pub(super) fn chat_tab_row_active(
@@ -346,8 +347,7 @@ pub(super) fn project_row_label(label: String) -> AnyElement {
     div()
         .min_w(px(0.))
         .flex_1()
-        .overflow_hidden()
-        .whitespace_nowrap()
+        .truncate()
         .font_weight(FontWeight::MEDIUM)
         .child(label)
         .into_any_element()

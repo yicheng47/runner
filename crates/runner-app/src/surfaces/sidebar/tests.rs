@@ -18,6 +18,7 @@ use super::rows_render::project_header_icon;
 use super::view::sidebar_scroll_container;
 use super::view::sidebar_scroll_frame;
 use super::*;
+use crate::surfaces::sidebar_logic::DropKind;
 use gpui::{
     prelude::*, size, Context, Render, ScrollHandle, TestAppContext, VisualTestContext, Window,
 };
@@ -46,27 +47,30 @@ impl Render for SidebarRenameTest {
     }
 }
 
-#[test]
-fn mission_rename_commits_when_the_field_loses_focus() {
+/// One completed mission, "Original mission", with its sidebar node.
+fn seeded_store(
+    cx: &mut TestAppContext,
+    temp: &std::path::Path,
+) -> (Arc<runner_backend::db::DbPool>, Entity<AppStore>) {
     use runner_backend::{db, event_bus, events, mcp, router, session, shell_path, windows};
     use std::sync::{Mutex, RwLock};
 
-    let temp = tempfile::tempdir().unwrap();
-    let pool = Arc::new(db::open_pool(&temp.path().join("runner.db")).unwrap());
-    pool.get()
-        .unwrap()
-        .execute_batch(
-            "INSERT INTO crews (id, name, created_at, updated_at)
-                 VALUES ('crew', 'Crew', '2026-09-06T00:00:00Z', '2026-09-06T00:00:00Z');
-                 INSERT INTO missions (id, crew_id, title, status, started_at)
-                 VALUES ('mission', 'crew', 'Original mission', 'completed', '2026-09-06T00:00:00Z');",
-        )
-        .unwrap();
+    let pool = Arc::new(db::open_pool(&temp.join("runner.db")).unwrap());
+    let conn = pool.get().unwrap();
+    conn.execute_batch(
+        "INSERT INTO crews (id, name, created_at, updated_at)
+             VALUES ('crew', 'Crew', '2026-09-06T00:00:00Z', '2026-09-06T00:00:00Z');
+             INSERT INTO missions (id, crew_id, title, status, started_at)
+             VALUES ('mission', 'crew', 'Original mission', 'completed', '2026-09-06T00:00:00Z');",
+    )
+    .unwrap();
+    runner_backend::repo::node::ensure_mission_node(&conn, "mission", None).unwrap();
+    drop(conn);
     let runtime_shell_env = Arc::new(RwLock::new(shell_path::LoginShellEnv::default()));
     let runtime_discovery = Arc::new(RwLock::new(shell_path::DiscoveryState::startup(None, None)));
     let core = AppCore {
         db: pool.clone(),
-        app_data_dir: temp.path().to_owned(),
+        app_data_dir: temp.to_owned(),
         sessions: session::SessionManager::new(
             runtime_shell_env.clone(),
             runtime_discovery.clone(),
@@ -84,18 +88,25 @@ fn mission_rename_commits_when_the_field_loses_focus() {
         session_event_observer: Default::default(),
         app_version: "0.0.0-test".into(),
     };
-    let mut cx = TestAppContext::single();
     let store = cx.new(|cx| {
         AppStore::new(
             core,
             None,
             None,
-            temp.path().join("settings.json"),
+            temp.join("settings.json"),
             AppSettings::default(),
             None,
             cx,
         )
     });
+    (pool, store)
+}
+
+#[test]
+fn mission_rename_commits_when_the_field_loses_focus() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut cx = TestAppContext::single();
+    let (pool, store) = seeded_store(&mut cx, temp.path());
     let host = cx.add_window(|window, cx| {
         let sidebar = cx.new(|cx| Sidebar::new(WeakEntity::new_invalid(), store, None, cx));
         sidebar.update(cx, |sidebar, cx| {
@@ -141,6 +152,63 @@ fn mission_rename_commits_when_the_field_loses_focus() {
         )
         .unwrap();
     assert_eq!(title, "Renamed mission");
+}
+
+struct SidebarRowTest {
+    sidebar: Entity<Sidebar>,
+    _observe: gpui::Subscription,
+}
+
+impl Render for SidebarRowTest {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let row = self.sidebar.update(cx, |sidebar, cx| {
+            let row = sidebar
+                .resolved_sidebar_rows_for_tabs(&TabSet::default(), cx)
+                .into_iter()
+                .next()
+                .unwrap();
+            sidebar.render_sidebar_row(row, None, None, DropKind::Leaf, None, Vec::new(), cx)
+        });
+        div().w(px(260.)).child(row)
+    }
+}
+
+#[test]
+fn hovering_a_row_reveals_its_actions_in_a_frame_that_paints() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut cx = TestAppContext::single();
+    let (_pool, store) = seeded_store(&mut cx, temp.path());
+    let host = cx.add_window(|_, cx| {
+        let sidebar = cx.new(|cx| Sidebar::new(WeakEntity::new_invalid(), store, None, cx));
+        SidebarRowTest {
+            _observe: cx.observe(&sidebar, |_, _, cx| cx.notify()),
+            sidebar,
+        }
+    });
+    cx.run_until_parked();
+    let mut window = VisualTestContext::from_window(host.into(), &cx);
+    window.run_until_parked();
+    let row = window
+        .debug_bounds("SIDEBAR_ROW sidebar-mission-mission")
+        .unwrap();
+    let hovered_row = |window: &mut VisualTestContext| {
+        host.update(window, |host, _, cx| {
+            host.sidebar.read(cx).hovered_row.clone()
+        })
+        .unwrap()
+    };
+
+    window.simulate_mouse_move(row.center(), None, gpui::Modifiers::default());
+    window.run_until_parked();
+    assert!(hovered_row(&mut window).is_some());
+
+    window.simulate_mouse_move(
+        row.bottom_right() + gpui::point(px(0.), px(100.)),
+        None,
+        gpui::Modifiers::default(),
+    );
+    window.run_until_parked();
+    assert_eq!(hovered_row(&mut window), None);
 }
 
 fn direct_session(id: &str, runtime: &str, status: SessionStatus) -> DirectSessionEntry {
