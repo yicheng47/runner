@@ -21,7 +21,7 @@ Some places hard-code the set of runtimes outright, and a new runtime has to be 
 
 ## Proposal
 
-Each agent runtime becomes one module that implements a `RuntimeAdapter` trait. `Runtime::adapter()` is the registry. Outside the adapters, code asks the adapter or reads the catalog instead of matching on a runtime.
+Each agent runtime becomes one module that implements a `RuntimeAdapter` trait. `runtimes::adapter()` is the registry. Outside the adapters, code asks the adapter or reads the catalog instead of matching on a runtime.
 
 ```rust
 // crates/runner-backend/src/runtimes/mod.rs: shape, not final signatures
@@ -58,14 +58,14 @@ pub trait RuntimeAdapter: Send + Sync {
     fn mcp(&self) -> Option<McpConfig>;                // path, format, wire name
 }
 
-impl Runtime {
-    pub fn adapter(self) -> &'static dyn RuntimeAdapter {
-        match self {
-            Self::Codex => &codex::Codex,
-            Self::ClaudeCode => &claude_code::ClaudeCode,
-            // … one arm per runtime
-            Self::Shell => &NoAgent,
-        }
+// A free function: `Runtime` lives in runner-core (decision 1), and Rust
+// allows inherent impls only in the defining crate.
+pub fn adapter(runtime: Runtime) -> &'static dyn RuntimeAdapter {
+    match runtime {
+        Runtime::Codex => &codex::Codex,
+        Runtime::ClaudeCode => &claude_code::ClaudeCode,
+        // … one arm per runtime
+        Runtime::Shell => &NoAgent,
     }
 }
 ```
@@ -96,7 +96,7 @@ Every method except the four required ones has a default that means "not support
 
 ### Rules
 
-- **The registry is a `match`, not self-registration.** Rust cannot self-register without link-time crates such as `inventory` or `linkme`. One exhaustive arm in `Runtime::adapter()` is explicit, and the compiler forces it.
+- **The registry is a `match`, not self-registration.** Rust cannot self-register without link-time crates such as `inventory` or `linkme`. One exhaustive arm in `runtimes::adapter()` is explicit, and the compiler forces it.
 - **No `match` on an agent variant outside `runtimes/`.** The exceptions are the identity table in `runner-core`, the app's `runtime_ui` table, and tests. Checks of `Runtime::Shell` stay where they are: terminal versus agent is a product distinction, not per-runtime behavior, and they become `runtime.is_shell()`.
 - **Shell and unknown keys use `NoAgent`.** It takes every default: empty argv, a fresh resume plan, no hooks. Callers that hold `Option<Runtime>` today call `runtimes::for_key(key)`, which returns `&NoAgent` for an unknown or legacy key, so call sites carry no `Option` and unknown rows behave exactly as they do now.
 - **Shared mechanisms become helpers that adapters call.** Codex and TRAE share the rollout capture; Claude and pi share the rekey drop; Codex, Copilot and agy share `--add-dir`; Go-style flag parsing is shared by any adapter that needs it. No adapter calls another adapter.
@@ -117,7 +117,7 @@ Adding a runtime means a `runtimes/<name>/` module, one `Runtime` variant with i
 
 Settled with Jason on 2026-10-01.
 
-1. **`Runtime` moves into `runner-core`.** Core already has `serde`; the `schemars` derive goes behind a core feature that `runner-backend` enables, and `runner_backend::model::Runtime` stays as a re-export so import paths don't change. Key, display name, default command and managed-skill root sit next to the enum, which removes the CLI's `runtime_command` and the `RUNNER_SKILL_ROOTS` copy.
+1. **`Runtime` moves into `runner-core`.** Core already has `serde`; the `schemars` derive goes behind a core feature that `runner-backend` enables, and `runner_backend::model::Runtime` stays as a re-export so import paths don't change. Key, display name, default command and managed-skill root sit next to the enum, which removes the CLI's `runtime_command`. `RUNNER_SKILL_ROOTS` stays a const, because its order is observable in `runner skill` output, and a core test ties it to the identity rows' managed roots.
 2. **Three PRs, one mission each, in order.** PR 1 is phases 0 and 1: the argv layer, which the golden tests prove unchanged. PR 2 is phase 2: spawn hooks and status watchers, the riskiest part, because key capture, trust and hook watchers only show in a live session. PR 3 is phases 3 and 4: making `UsageSnapshot` a map and replacing `McpClientId` break `app_shell.rs` and Settings → MCP in the same change, so the catalog and the app move together without temporary shims. Each mission starts after the previous PR merges.
 
 ## Implementation phases

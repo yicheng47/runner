@@ -47,7 +47,8 @@ pub(crate) struct AgentUpdateRequest {
 
 impl AgentUpdateRequest {
     fn command_label(&self) -> String {
-        let args = runner_backend::router::runtime::runtime_definition(self.runtime)
+        let args = runner_backend::runtimes::adapter(self.runtime)
+            .catalog()
             .map(|definition| definition.update_args.join(" "))
             .unwrap_or_default();
         format!("{} {args}", self.command).trim().to_owned()

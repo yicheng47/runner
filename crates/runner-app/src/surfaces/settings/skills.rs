@@ -14,7 +14,7 @@ use runner_app::ui::{
     Toggle, Tone, Tooltip,
 };
 use runner_backend::ops::skills;
-use runner_backend::router::runtime::runtime_display_name;
+
 use runner_backend::skills::{parse_skill_document, GlobalState, SkillCatalog, SkillEntry};
 
 use crate::app_store::AppStore;
@@ -278,7 +278,10 @@ impl SkillsPane {
                             .map(|c| {
                                 SelectOption::new(
                                     c.runtime.key(),
-                                    runtime_display_name(c.runtime.key()),
+                                    runner_backend::runtimes::for_key(c.runtime.key())
+                                        .catalog()
+                                        .map(|catalog| catalog.display_name.to_string())
+                                        .unwrap_or_else(|| c.runtime.key().to_string()),
                                 )
                             })
                             .collect(),
@@ -915,7 +918,7 @@ impl SkillDetail {
                             .py_2()
                             .child(
                                 div().flex_1().min_w_0().flex().flex_col().gap_1()
-                                    .child(div().text_size(theme::text_ui()).child(format!("Enabled in {}", runtime_display_name(skill.runtime.key()))))
+                                    .child(div().text_size(theme::text_ui()).child(format!("Enabled in {}", runner_backend::runtimes::for_key(skill.runtime.key()).catalog().map(|catalog| catalog.display_name.to_string()).unwrap_or_else(|| skill.runtime.key().to_string()))))
                                     .child(
                                         div().text_size(theme::text_caption())
                                             .line_height(rems(15. / 16.))
@@ -1450,7 +1453,8 @@ mod tests {
         assert!(caption.contains("~/.gemini/antigravity-cli/skills"));
         assert!(caption.contains("~/.gemini/skills"));
         assert_eq!(
-            runner_backend::router::runtime::runtime_definition(Runtime::Antigravity)
+            runner_backend::runtimes::adapter(Runtime::Antigravity)
+                .catalog()
                 .unwrap()
                 .skills_dirs,
             [".gemini/antigravity-cli/skills", ".gemini/skills"]

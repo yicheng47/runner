@@ -236,28 +236,9 @@ fn role_model_efforts(runtime: &RuntimeCatalogEntry, model: &str) -> Vec<Runtime
 }
 
 pub(super) fn permission_modes(runtime: &str) -> &'static [PermissionMode] {
-    match Runtime::parse(runtime) {
-        Some(Runtime::ClaudeCode) => &[
-            PermissionMode::Default,
-            PermissionMode::AcceptEdits,
-            PermissionMode::Auto,
-            PermissionMode::Bypass,
-        ],
-        Some(Runtime::Codex) => &[
-            PermissionMode::Default,
-            PermissionMode::Auto,
-            PermissionMode::Bypass,
-        ],
-        // TRAE CLI has no auto-approve middle ground, so an old Auto mode
-        // falls back to Default when a role changes runtime (#599).
-        Some(Runtime::Trae) => &[PermissionMode::Default, PermissionMode::Bypass],
-        Some(Runtime::Copilot | Runtime::Antigravity) => &[
-            PermissionMode::Default,
-            PermissionMode::AcceptEdits,
-            PermissionMode::Bypass,
-        ],
-        Some(Runtime::Pi | Runtime::Shell) | None => &[],
-    }
+    runner_backend::runtimes::for_key(runtime)
+        .permissions()
+        .offered
 }
 
 /// The permission mode a role's args carry, or `None` for a runtime that has
@@ -269,10 +250,9 @@ pub(super) fn role_permission_mode(role: &Role) -> Option<PermissionMode> {
     if modes.is_empty() {
         return None;
     }
-    let inferred = runner_backend::router::runtime::infer_permission_mode(
-        Runtime::parse(&role.runtime),
-        &role.args,
-    );
+    let inferred = runner_backend::runtimes::for_key(&role.runtime)
+        .permissions()
+        .infer(&role.args);
     Some(if modes.contains(&inferred) {
         inferred
     } else {
@@ -321,10 +301,9 @@ pub(super) fn role_edit_is_dirty(form: &RoleEditForm, cx: &Context<NativeRoot>) 
 
 /// Mission permissions are fixed, so old role permission flags stay out of the form.
 pub(super) fn role_visible_args(role: &Role) -> Vec<String> {
-    runner_backend::router::runtime::strip_permission_flags(
-        Runtime::parse(&role.runtime),
-        &role.args,
-    )
+    runner_backend::runtimes::for_key(&role.runtime)
+        .permissions()
+        .strip(&role.args)
 }
 
 /// The args a save writes. The field joins args with spaces, so while it

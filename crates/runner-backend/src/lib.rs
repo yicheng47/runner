@@ -22,6 +22,7 @@ pub mod repo;
 pub mod router;
 pub mod runtime_defaults;
 pub mod runtime_status;
+pub mod runtimes;
 pub mod session;
 pub mod shell_integration;
 pub mod shell_path;
@@ -111,3 +112,5 @@ impl AppCore {
             .emit("window_focus_map", &self.windows.snapshot());
     }
 }
+#[cfg(all(test, unix))]
+mod golden;

@@ -23,7 +23,7 @@ fn fork_materializer(stdout: &str, exit_code: i32) -> (tempfile::TempDir, String
 }
 
 #[cfg(unix)]
-fn codex_fork_materializer(
+pub(super) fn codex_fork_materializer(
     source_key: &str,
     fork_key: &str,
     create_rollout: bool,
@@ -396,7 +396,9 @@ fn headless_fork_rejects_nonzero_exit_and_kills_timed_out_process_group() {
     let source_key = uuid::Uuid::new_v4().to_string();
     let fork_key = uuid::Uuid::new_v4().to_string();
     let event = format!(r#"{{"type":"thread.started","thread_id":"{fork_key}"}}"#);
-    let plan = router::runtime::fork_plan(Some(Runtime::Codex), &source_key, "fork note").unwrap();
+    let plan = crate::runtimes::adapter(Runtime::Codex)
+        .fork_plan(&source_key, "fork note")
+        .unwrap();
     let (_materializer, command, _capture_path) = fork_materializer(&event, 7);
     let codex_home = tempfile::tempdir().unwrap();
     let mut env = std::collections::BTreeMap::new();
@@ -441,8 +443,9 @@ fn headless_fork_rejects_nonzero_exit_and_kills_timed_out_process_group() {
         shell_path: None,
         initial_size: None,
     };
-    let codex_plan =
-        router::runtime::fork_plan(Some(Runtime::Codex), &source_key, "Source").unwrap();
+    let codex_plan = crate::runtimes::adapter(Runtime::Codex)
+        .fork_plan(&source_key, "Source")
+        .unwrap();
     // The rollout deadline, five seconds after thread.started, must be what
     // ends this wait. A short overall timeout races the materializer's start
     // on a loaded machine and reports a timeout before thread.started arrives.

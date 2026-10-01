@@ -10,7 +10,7 @@ license.workspace = true
 name = "runner_backend"
 
 [dependencies]
-runner-core = { path = "../runner-core" }
+runner-core = { path = "../runner-core", features = ["schemars"] }
 log = "0.4"
 serde = { workspace = true }
 serde_json = { workspace = true, features = ["preserve_order"] }

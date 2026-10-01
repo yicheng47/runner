@@ -119,7 +119,7 @@ fn only_terminal_shells_get_the_osc7_integration() {
         SessionManager::apply_runtime_args(
             &mut spec,
             role,
-            &router::runtime::resume_plan(Runtime::parse(&role.runtime), None),
+            &crate::runtimes::for_key(&role.runtime).resume_plan(None),
             data.path(),
             None,
             None,

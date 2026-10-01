@@ -1,0 +1,3693 @@
+[
+  {
+    "runtime": "codex",
+    "shape": "fresh",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep",
+        "--model",
+        "fixture-model",
+        "-c",
+        "model_reasoning_effort=high",
+        "-c",
+        "check_for_update_on_startup=false",
+        "--enable",
+        "hooks",
+        "--dangerously-bypass-hook-trust",
+        "-c",
+        "hooks.SessionStart=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'SessionStart' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.UserPromptSubmit=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'UserPromptSubmit' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.PreToolUse=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'PreToolUse' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.PostToolUse=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'PostToolUse' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.PreCompact=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'PreCompact' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.PostCompact=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'PostCompact' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.Stop=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'Stop' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.Interrupt=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'Interrupt' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.SessionEnd=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'SessionEnd' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "GOLDEN_PERSONA\n\n<!-- runner-codex-session-key-capture:<ID1> -->"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_CODEX_STATUS_GENERATION",
+        "RUNNER_CODEX_STATUS_PATH",
+        "RUNNER_HANDLE",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "codex",
+    "shape": "blank",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep",
+        "-c",
+        "check_for_update_on_startup=false",
+        "--enable",
+        "hooks",
+        "--dangerously-bypass-hook-trust",
+        "-c",
+        "hooks.SessionStart=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'SessionStart' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.UserPromptSubmit=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'UserPromptSubmit' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.PreToolUse=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'PreToolUse' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.PostToolUse=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'PostToolUse' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.PreCompact=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'PreCompact' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.PostCompact=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'PostCompact' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.Stop=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'Stop' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.Interrupt=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'Interrupt' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.SessionEnd=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'SessionEnd' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_CODEX_STATUS_GENERATION",
+        "RUNNER_CODEX_STATUS_PATH",
+        "RUNNER_HANDLE",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "codex",
+    "shape": "resume",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "resume",
+        "<ID1>",
+        "--keep",
+        "--model",
+        "fixture-model",
+        "-c",
+        "model_reasoning_effort=high",
+        "-c",
+        "check_for_update_on_startup=false",
+        "--enable",
+        "hooks",
+        "--dangerously-bypass-hook-trust",
+        "-c",
+        "hooks.SessionStart=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'SessionStart' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.UserPromptSubmit=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'UserPromptSubmit' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.PreToolUse=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PreToolUse' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.PostToolUse=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostToolUse' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.PreCompact=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PreCompact' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.PostCompact=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostCompact' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.Stop=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Stop' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.Interrupt=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Interrupt' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.SessionEnd=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'SessionEnd' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_CODEX_STATUS_GENERATION",
+        "RUNNER_CODEX_STATUS_PATH",
+        "RUNNER_HANDLE",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "codex",
+    "shape": "missing",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "resume",
+        "<ID1>",
+        "--keep",
+        "--model",
+        "fixture-model",
+        "-c",
+        "model_reasoning_effort=high",
+        "-c",
+        "check_for_update_on_startup=false",
+        "--enable",
+        "hooks",
+        "--dangerously-bypass-hook-trust",
+        "-c",
+        "hooks.SessionStart=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'SessionStart' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.UserPromptSubmit=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'UserPromptSubmit' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.PreToolUse=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PreToolUse' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.PostToolUse=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostToolUse' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.PreCompact=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PreCompact' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.PostCompact=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostCompact' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.Stop=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Stop' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.Interrupt=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Interrupt' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.SessionEnd=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'SessionEnd' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_CODEX_STATUS_GENERATION",
+        "RUNNER_CODEX_STATUS_PATH",
+        "RUNNER_HANDLE",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "codex",
+    "shape": "hooks-off",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep",
+        "--disable",
+        "hooks",
+        "--model",
+        "fixture-model",
+        "-c",
+        "model_reasoning_effort=high",
+        "-c",
+        "check_for_update_on_startup=false",
+        "GOLDEN_PERSONA\n\n<!-- runner-codex-session-key-capture:<ID1> -->"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_HANDLE",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "codex",
+    "shape": "speed",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep",
+        "--model",
+        "fixture-model",
+        "-c",
+        "model_reasoning_effort=high",
+        "-c",
+        "check_for_update_on_startup=false",
+        "-c",
+        "service_tier=fast",
+        "--enable",
+        "hooks",
+        "--dangerously-bypass-hook-trust",
+        "-c",
+        "hooks.SessionStart=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'SessionStart' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.UserPromptSubmit=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'UserPromptSubmit' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.PreToolUse=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'PreToolUse' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.PostToolUse=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'PostToolUse' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.PreCompact=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'PreCompact' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.PostCompact=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'PostCompact' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.Stop=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'Stop' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.Interrupt=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'Interrupt' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.SessionEnd=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'SessionEnd' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "GOLDEN_PERSONA\n\n<!-- runner-codex-session-key-capture:<ID1> -->"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_CODEX_STATUS_GENERATION",
+        "RUNNER_CODEX_STATUS_PATH",
+        "RUNNER_HANDLE",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "codex",
+    "shape": "direct-permission",
+    "mode": "default",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep",
+        "--model",
+        "fixture-model",
+        "-c",
+        "model_reasoning_effort=high",
+        "-c",
+        "check_for_update_on_startup=false",
+        "--enable",
+        "hooks",
+        "--dangerously-bypass-hook-trust",
+        "-c",
+        "hooks.SessionStart=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'SessionStart' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.UserPromptSubmit=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'UserPromptSubmit' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.PreToolUse=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'PreToolUse' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.PostToolUse=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'PostToolUse' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.PreCompact=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'PreCompact' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.PostCompact=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'PostCompact' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.Stop=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'Stop' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.Interrupt=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'Interrupt' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.SessionEnd=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'SessionEnd' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "GOLDEN_PERSONA\n\n<!-- runner-codex-session-key-capture:<ID1> -->"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_CODEX_STATUS_GENERATION",
+        "RUNNER_CODEX_STATUS_PATH",
+        "RUNNER_HANDLE",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "codex",
+    "shape": "direct-permission",
+    "mode": "accept_edits",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep",
+        "--model",
+        "fixture-model",
+        "-c",
+        "model_reasoning_effort=high",
+        "-c",
+        "check_for_update_on_startup=false",
+        "--enable",
+        "hooks",
+        "--dangerously-bypass-hook-trust",
+        "-c",
+        "hooks.SessionStart=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'SessionStart' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.UserPromptSubmit=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'UserPromptSubmit' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.PreToolUse=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'PreToolUse' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.PostToolUse=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'PostToolUse' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.PreCompact=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'PreCompact' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.PostCompact=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'PostCompact' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.Stop=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'Stop' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.Interrupt=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'Interrupt' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.SessionEnd=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'SessionEnd' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "GOLDEN_PERSONA\n\n<!-- runner-codex-session-key-capture:<ID1> -->"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_CODEX_STATUS_GENERATION",
+        "RUNNER_CODEX_STATUS_PATH",
+        "RUNNER_HANDLE",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "codex",
+    "shape": "direct-permission",
+    "mode": "auto",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep",
+        "--model",
+        "fixture-model",
+        "-c",
+        "model_reasoning_effort=high",
+        "-c",
+        "check_for_update_on_startup=false",
+        "--enable",
+        "hooks",
+        "--dangerously-bypass-hook-trust",
+        "-c",
+        "hooks.SessionStart=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'SessionStart' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.UserPromptSubmit=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'UserPromptSubmit' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.PreToolUse=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'PreToolUse' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.PostToolUse=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'PostToolUse' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.PreCompact=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'PreCompact' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.PostCompact=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'PostCompact' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.Stop=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'Stop' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.Interrupt=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'Interrupt' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.SessionEnd=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'SessionEnd' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "GOLDEN_PERSONA\n\n<!-- runner-codex-session-key-capture:<ID1> -->"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_CODEX_STATUS_GENERATION",
+        "RUNNER_CODEX_STATUS_PATH",
+        "RUNNER_HANDLE",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "codex",
+    "shape": "direct-permission",
+    "mode": "bypass",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep",
+        "--model",
+        "fixture-model",
+        "-c",
+        "model_reasoning_effort=high",
+        "-c",
+        "check_for_update_on_startup=false",
+        "--enable",
+        "hooks",
+        "--dangerously-bypass-hook-trust",
+        "-c",
+        "hooks.SessionStart=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'SessionStart' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.UserPromptSubmit=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'UserPromptSubmit' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.PreToolUse=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'PreToolUse' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.PostToolUse=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'PostToolUse' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.PreCompact=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'PreCompact' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.PostCompact=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'PostCompact' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.Stop=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'Stop' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.Interrupt=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'Interrupt' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.SessionEnd=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'SessionEnd' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "GOLDEN_PERSONA\n\n<!-- runner-codex-session-key-capture:<ID1> -->"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_CODEX_STATUS_GENERATION",
+        "RUNNER_CODEX_STATUS_PATH",
+        "RUNNER_HANDLE",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "codex",
+    "shape": "mission-worker",
+    "mode": "bypass",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep",
+        "--ask-for-approval",
+        "never",
+        "--sandbox",
+        "danger-full-access",
+        "--add-dir",
+        "<TMP>/crews/c/missions/<ID1>",
+        "--model",
+        "fixture-model",
+        "-c",
+        "model_reasoning_effort=high",
+        "-c",
+        "check_for_update_on_startup=false",
+        "--enable",
+        "hooks",
+        "--dangerously-bypass-hook-trust",
+        "-c",
+        "hooks.SessionStart=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'SessionStart' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.UserPromptSubmit=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'UserPromptSubmit' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.PreToolUse=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PreToolUse' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.PostToolUse=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostToolUse' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.PreCompact=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PreCompact' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.PostCompact=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostCompact' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.Stop=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Stop' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.Interrupt=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Interrupt' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.SessionEnd=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'SessionEnd' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "You are a worker in a crew coordinated by the bundled `runner` CLI. The CLI is on your PATH and talks to the rest of the crew via a shared event bus. Use these verbs to participate; do not invent your own conventions.\n\n== Coordination ==\n- `runner msg read` — read your inbox (pull-based: new messages do NOT auto-print). Run this when you see an `[inbox]` notification or any time you suspect new traffic.\n- `runner msg post --to <handle> \"<text>\"` — direct message to a specific handle. Valid handles: any slot in this crew.\n- `runner msg post \"<text>\"` — broadcast to the crew (no `--to`).\n- `runner signal ask_lead --payload '{\"question\":\"…\",\"context\":\"…\"}'` — escalate to the lead when a load-bearing decision is genuinely ambiguous.\n- Busy/idle is inferred from your terminal activity.\n\n== Team conventions ==\nTEAM\n\n== Your brief ==\nGOLDEN_PERSONA\n\n<!-- runner-codex-session-key-capture:<ID2> -->"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "MISSION_CWD",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_CODEX_STATUS_GENERATION",
+        "RUNNER_CODEX_STATUS_PATH",
+        "RUNNER_CREW_ID",
+        "RUNNER_EVENT_LOG",
+        "RUNNER_HANDLE",
+        "RUNNER_MISSION_ID",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "codex",
+    "shape": "mission-lead",
+    "mode": "bypass",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep",
+        "--ask-for-approval",
+        "never",
+        "--sandbox",
+        "danger-full-access",
+        "--add-dir",
+        "<TMP>/crews/c/missions/<ID1>",
+        "--model",
+        "fixture-model",
+        "-c",
+        "model_reasoning_effort=high",
+        "-c",
+        "check_for_update_on_startup=false",
+        "--enable",
+        "hooks",
+        "--dangerously-bypass-hook-trust",
+        "-c",
+        "hooks.SessionStart=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'SessionStart' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.UserPromptSubmit=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'UserPromptSubmit' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.PreToolUse=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PreToolUse' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.PostToolUse=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostToolUse' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.PreCompact=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PreCompact' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.PostCompact=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostCompact' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.Stop=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Stop' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.Interrupt=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Interrupt' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.SessionEnd=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'SessionEnd' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "You are `tester` (Tester), the lead of crew \"Golden crew\".\n\n== Team conventions ==\nTEAM\n\n== Your brief ==\nGOLDEN_PERSONA\n\n== Mission ==\nGoal: Golden goal\n\n== Coordination ==\n- You are the human's counterpart. Workers escalate to you via `ask_lead`.\n- Reply to a worker with `runner msg post --to <handle> \"…\"`; broadcasts omit `--to`.\n- The operator watches the terminals and types directly into a runner's pane.\n- Read your inbox with `runner msg read` — it's pull-based.\n- Escalate to the human (with structured choices) via `runner signal ask_human --payload '{\"prompt\":\"…\",\"choices\":[\"yes\",\"no\"],\"on_behalf_of\":\"<asker>\"}'`.\n- Busy/idle is inferred from your terminal activity.\n\n\n\n<!-- runner-codex-session-key-capture:<ID2> -->"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "MISSION_CWD",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_CODEX_STATUS_GENERATION",
+        "RUNNER_CODEX_STATUS_PATH",
+        "RUNNER_CREW_ID",
+        "RUNNER_EVENT_LOG",
+        "RUNNER_HANDLE",
+        "RUNNER_MISSION_ID",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "codex",
+    "shape": "mission-worker",
+    "mode": "auto",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep",
+        "--ask-for-approval",
+        "on-request",
+        "--sandbox",
+        "workspace-write",
+        "--add-dir",
+        "<TMP>/crews/c/missions/<ID1>",
+        "--model",
+        "fixture-model",
+        "-c",
+        "model_reasoning_effort=high",
+        "-c",
+        "check_for_update_on_startup=false",
+        "--enable",
+        "hooks",
+        "--dangerously-bypass-hook-trust",
+        "-c",
+        "hooks.SessionStart=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'SessionStart' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.UserPromptSubmit=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'UserPromptSubmit' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.PreToolUse=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PreToolUse' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.PostToolUse=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostToolUse' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.PreCompact=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PreCompact' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.PostCompact=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostCompact' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.Stop=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Stop' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.Interrupt=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Interrupt' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.SessionEnd=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'SessionEnd' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "You are a worker in a crew coordinated by the bundled `runner` CLI. The CLI is on your PATH and talks to the rest of the crew via a shared event bus. Use these verbs to participate; do not invent your own conventions.\n\n== Coordination ==\n- `runner msg read` — read your inbox (pull-based: new messages do NOT auto-print). Run this when you see an `[inbox]` notification or any time you suspect new traffic.\n- `runner msg post --to <handle> \"<text>\"` — direct message to a specific handle. Valid handles: any slot in this crew.\n- `runner msg post \"<text>\"` — broadcast to the crew (no `--to`).\n- `runner signal ask_lead --payload '{\"question\":\"…\",\"context\":\"…\"}'` — escalate to the lead when a load-bearing decision is genuinely ambiguous.\n- Busy/idle is inferred from your terminal activity.\n\n== Team conventions ==\nTEAM\n\n== Your brief ==\nGOLDEN_PERSONA\n\n<!-- runner-codex-session-key-capture:<ID2> -->"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "MISSION_CWD",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_CODEX_STATUS_GENERATION",
+        "RUNNER_CODEX_STATUS_PATH",
+        "RUNNER_CREW_ID",
+        "RUNNER_EVENT_LOG",
+        "RUNNER_HANDLE",
+        "RUNNER_MISSION_ID",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "codex",
+    "shape": "mission-lead",
+    "mode": "auto",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep",
+        "--ask-for-approval",
+        "on-request",
+        "--sandbox",
+        "workspace-write",
+        "--add-dir",
+        "<TMP>/crews/c/missions/<ID1>",
+        "--model",
+        "fixture-model",
+        "-c",
+        "model_reasoning_effort=high",
+        "-c",
+        "check_for_update_on_startup=false",
+        "--enable",
+        "hooks",
+        "--dangerously-bypass-hook-trust",
+        "-c",
+        "hooks.SessionStart=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'SessionStart' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.UserPromptSubmit=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'UserPromptSubmit' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.PreToolUse=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PreToolUse' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.PostToolUse=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostToolUse' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.PreCompact=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PreCompact' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.PostCompact=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostCompact' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.Stop=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Stop' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.Interrupt=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Interrupt' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.SessionEnd=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'SessionEnd' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "You are `tester` (Tester), the lead of crew \"Golden crew\".\n\n== Team conventions ==\nTEAM\n\n== Your brief ==\nGOLDEN_PERSONA\n\n== Mission ==\nGoal: Golden goal\n\n== Coordination ==\n- You are the human's counterpart. Workers escalate to you via `ask_lead`.\n- Reply to a worker with `runner msg post --to <handle> \"…\"`; broadcasts omit `--to`.\n- The operator watches the terminals and types directly into a runner's pane.\n- Read your inbox with `runner msg read` — it's pull-based.\n- Escalate to the human (with structured choices) via `runner signal ask_human --payload '{\"prompt\":\"…\",\"choices\":[\"yes\",\"no\"],\"on_behalf_of\":\"<asker>\"}'`.\n- Busy/idle is inferred from your terminal activity.\n\n\n\n<!-- runner-codex-session-key-capture:<ID2> -->"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "MISSION_CWD",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_CODEX_STATUS_GENERATION",
+        "RUNNER_CODEX_STATUS_PATH",
+        "RUNNER_CREW_ID",
+        "RUNNER_EVENT_LOG",
+        "RUNNER_HANDLE",
+        "RUNNER_MISSION_ID",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "codex",
+    "shape": "mission-worker",
+    "mode": "role-default",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep",
+        "--add-dir",
+        "<TMP>/crews/c/missions/<ID1>",
+        "--model",
+        "fixture-model",
+        "-c",
+        "model_reasoning_effort=high",
+        "-c",
+        "check_for_update_on_startup=false",
+        "--enable",
+        "hooks",
+        "--dangerously-bypass-hook-trust",
+        "-c",
+        "hooks.SessionStart=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'SessionStart' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.UserPromptSubmit=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'UserPromptSubmit' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.PreToolUse=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PreToolUse' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.PostToolUse=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostToolUse' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.PreCompact=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PreCompact' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.PostCompact=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostCompact' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.Stop=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Stop' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.Interrupt=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Interrupt' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.SessionEnd=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'SessionEnd' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "You are a worker in a crew coordinated by the bundled `runner` CLI. The CLI is on your PATH and talks to the rest of the crew via a shared event bus. Use these verbs to participate; do not invent your own conventions.\n\n== Coordination ==\n- `runner msg read` — read your inbox (pull-based: new messages do NOT auto-print). Run this when you see an `[inbox]` notification or any time you suspect new traffic.\n- `runner msg post --to <handle> \"<text>\"` — direct message to a specific handle. Valid handles: any slot in this crew.\n- `runner msg post \"<text>\"` — broadcast to the crew (no `--to`).\n- `runner signal ask_lead --payload '{\"question\":\"…\",\"context\":\"…\"}'` — escalate to the lead when a load-bearing decision is genuinely ambiguous.\n- Busy/idle is inferred from your terminal activity.\n\n== Team conventions ==\nTEAM\n\n== Your brief ==\nGOLDEN_PERSONA\n\n<!-- runner-codex-session-key-capture:<ID2> -->"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "MISSION_CWD",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_CODEX_STATUS_GENERATION",
+        "RUNNER_CODEX_STATUS_PATH",
+        "RUNNER_CREW_ID",
+        "RUNNER_EVENT_LOG",
+        "RUNNER_HANDLE",
+        "RUNNER_MISSION_ID",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "codex",
+    "shape": "mission-lead",
+    "mode": "role-default",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep",
+        "--add-dir",
+        "<TMP>/crews/c/missions/<ID1>",
+        "--model",
+        "fixture-model",
+        "-c",
+        "model_reasoning_effort=high",
+        "-c",
+        "check_for_update_on_startup=false",
+        "--enable",
+        "hooks",
+        "--dangerously-bypass-hook-trust",
+        "-c",
+        "hooks.SessionStart=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'SessionStart' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.UserPromptSubmit=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'UserPromptSubmit' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.PreToolUse=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PreToolUse' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.PostToolUse=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostToolUse' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.PreCompact=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PreCompact' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.PostCompact=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostCompact' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.Stop=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Stop' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.Interrupt=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Interrupt' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.SessionEnd=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'SessionEnd' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "You are `tester` (Tester), the lead of crew \"Golden crew\".\n\n== Team conventions ==\nTEAM\n\n== Your brief ==\nGOLDEN_PERSONA\n\n== Mission ==\nGoal: Golden goal\n\n== Coordination ==\n- You are the human's counterpart. Workers escalate to you via `ask_lead`.\n- Reply to a worker with `runner msg post --to <handle> \"…\"`; broadcasts omit `--to`.\n- The operator watches the terminals and types directly into a runner's pane.\n- Read your inbox with `runner msg read` — it's pull-based.\n- Escalate to the human (with structured choices) via `runner signal ask_human --payload '{\"prompt\":\"…\",\"choices\":[\"yes\",\"no\"],\"on_behalf_of\":\"<asker>\"}'`.\n- Busy/idle is inferred from your terminal activity.\n\n\n\n<!-- runner-codex-session-key-capture:<ID2> -->"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "MISSION_CWD",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_CODEX_STATUS_GENERATION",
+        "RUNNER_CODEX_STATUS_PATH",
+        "RUNNER_CREW_ID",
+        "RUNNER_EVENT_LOG",
+        "RUNNER_HANDLE",
+        "RUNNER_MISSION_ID",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "claude-code",
+    "shape": "fresh",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep",
+        "--session-id",
+        "<ID1>",
+        "--model",
+        "fixture-model",
+        "--effort",
+        "High",
+        "--settings",
+        "{\"tui\":\"fullscreen\",\"theme\":\"auto\",\"hooks\":{\"SessionStart\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"cat > '<TMP>/session-keys/<ID2>.json.tmp' && mv '<TMP>/session-keys/<ID2>.json.tmp' '<TMP>/session-keys/<ID2>.json'\",\"timeout\":2}]},{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'SessionStart' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PermissionRequest\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PermissionRequest' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PermissionDenied\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PermissionDenied' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PostToolUseFailure\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostToolUseFailure' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"Elicitation\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Elicitation' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"ElicitationResult\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'ElicitationResult' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"UserPromptSubmit\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'UserPromptSubmit' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PreToolUse\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PreToolUse' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PostToolUse\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostToolUse' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PreCompact\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PreCompact' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PostCompact\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostCompact' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"Notification\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Notification' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}],\"matcher\":\"^(idle_prompt|permission_prompt|elicitation_dialog)$\"}],\"Stop\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Stop' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"StopFailure\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'StopFailure' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}]}}",
+        "GOLDEN_PERSONA"
+      ],
+      "env_keys": [
+        "CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY",
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "DISABLE_INSTALLATION_CHECKS",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_CLAUDE_STATUS_GENERATION",
+        "RUNNER_CLAUDE_STATUS_PATH",
+        "RUNNER_HANDLE",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "claude-code",
+    "shape": "blank",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep",
+        "--session-id",
+        "<ID1>",
+        "--settings",
+        "{\"tui\":\"fullscreen\",\"theme\":\"auto\",\"hooks\":{\"SessionStart\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"cat > '<TMP>/session-keys/<ID2>.json.tmp' && mv '<TMP>/session-keys/<ID2>.json.tmp' '<TMP>/session-keys/<ID2>.json'\",\"timeout\":2}]},{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'SessionStart' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PermissionRequest\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PermissionRequest' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PermissionDenied\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PermissionDenied' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PostToolUseFailure\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostToolUseFailure' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"Elicitation\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Elicitation' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"ElicitationResult\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'ElicitationResult' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"UserPromptSubmit\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'UserPromptSubmit' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PreToolUse\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PreToolUse' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PostToolUse\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostToolUse' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PreCompact\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PreCompact' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PostCompact\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostCompact' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"Notification\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Notification' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}],\"matcher\":\"^(idle_prompt|permission_prompt|elicitation_dialog)$\"}],\"Stop\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Stop' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"StopFailure\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'StopFailure' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}]}}"
+      ],
+      "env_keys": [
+        "CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY",
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "DISABLE_INSTALLATION_CHECKS",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_CLAUDE_STATUS_GENERATION",
+        "RUNNER_CLAUDE_STATUS_PATH",
+        "RUNNER_HANDLE",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "claude-code",
+    "shape": "resume",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep",
+        "--resume",
+        "<ID1>",
+        "--model",
+        "fixture-model",
+        "--effort",
+        "High",
+        "--settings",
+        "{\"tui\":\"fullscreen\",\"theme\":\"auto\",\"hooks\":{\"SessionStart\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"cat > '<TMP>/session-keys/<ID2>.json.tmp' && mv '<TMP>/session-keys/<ID2>.json.tmp' '<TMP>/session-keys/<ID2>.json'\",\"timeout\":2}]},{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'SessionStart' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PermissionRequest\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PermissionRequest' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PermissionDenied\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PermissionDenied' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PostToolUseFailure\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostToolUseFailure' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"Elicitation\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Elicitation' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"ElicitationResult\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'ElicitationResult' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"UserPromptSubmit\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'UserPromptSubmit' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PreToolUse\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PreToolUse' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PostToolUse\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostToolUse' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PreCompact\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PreCompact' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PostCompact\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostCompact' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"Notification\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Notification' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}],\"matcher\":\"^(idle_prompt|permission_prompt|elicitation_dialog)$\"}],\"Stop\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Stop' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"StopFailure\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'StopFailure' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}]}}"
+      ],
+      "env_keys": [
+        "CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY",
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "DISABLE_INSTALLATION_CHECKS",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_CLAUDE_STATUS_GENERATION",
+        "RUNNER_CLAUDE_STATUS_PATH",
+        "RUNNER_HANDLE",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "claude-code",
+    "shape": "missing",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep",
+        "--session-id",
+        "<ID1>",
+        "--model",
+        "fixture-model",
+        "--effort",
+        "High",
+        "--settings",
+        "{\"tui\":\"fullscreen\",\"theme\":\"auto\",\"hooks\":{\"SessionStart\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"cat > '<TMP>/session-keys/<ID2>.json.tmp' && mv '<TMP>/session-keys/<ID2>.json.tmp' '<TMP>/session-keys/<ID2>.json'\",\"timeout\":2}]},{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'SessionStart' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PermissionRequest\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PermissionRequest' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PermissionDenied\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PermissionDenied' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PostToolUseFailure\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostToolUseFailure' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"Elicitation\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Elicitation' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"ElicitationResult\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'ElicitationResult' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"UserPromptSubmit\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'UserPromptSubmit' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PreToolUse\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PreToolUse' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PostToolUse\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostToolUse' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PreCompact\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PreCompact' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PostCompact\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostCompact' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"Notification\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Notification' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}],\"matcher\":\"^(idle_prompt|permission_prompt|elicitation_dialog)$\"}],\"Stop\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Stop' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"StopFailure\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'StopFailure' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}]}}"
+      ],
+      "env_keys": [
+        "CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY",
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "DISABLE_INSTALLATION_CHECKS",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_CLAUDE_STATUS_GENERATION",
+        "RUNNER_CLAUDE_STATUS_PATH",
+        "RUNNER_HANDLE",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "claude-code",
+    "shape": "hooks-off",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep",
+        "--settings",
+        "custom.json",
+        "--session-id",
+        "<ID1>",
+        "--model",
+        "fixture-model",
+        "--effort",
+        "High",
+        "GOLDEN_PERSONA"
+      ],
+      "env_keys": [
+        "CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY",
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "DISABLE_INSTALLATION_CHECKS",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_HANDLE",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "claude-code",
+    "shape": "direct-permission",
+    "mode": "default",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep",
+        "--session-id",
+        "<ID1>",
+        "--model",
+        "fixture-model",
+        "--effort",
+        "High",
+        "--settings",
+        "{\"tui\":\"fullscreen\",\"theme\":\"auto\",\"hooks\":{\"SessionStart\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"cat > '<TMP>/session-keys/<ID2>.json.tmp' && mv '<TMP>/session-keys/<ID2>.json.tmp' '<TMP>/session-keys/<ID2>.json'\",\"timeout\":2}]},{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'SessionStart' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PermissionRequest\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PermissionRequest' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PermissionDenied\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PermissionDenied' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PostToolUseFailure\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostToolUseFailure' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"Elicitation\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Elicitation' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"ElicitationResult\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'ElicitationResult' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"UserPromptSubmit\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'UserPromptSubmit' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PreToolUse\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PreToolUse' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PostToolUse\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostToolUse' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PreCompact\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PreCompact' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PostCompact\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostCompact' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"Notification\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Notification' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}],\"matcher\":\"^(idle_prompt|permission_prompt|elicitation_dialog)$\"}],\"Stop\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Stop' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"StopFailure\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'StopFailure' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}]}}",
+        "GOLDEN_PERSONA"
+      ],
+      "env_keys": [
+        "CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY",
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "DISABLE_INSTALLATION_CHECKS",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_CLAUDE_STATUS_GENERATION",
+        "RUNNER_CLAUDE_STATUS_PATH",
+        "RUNNER_HANDLE",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "claude-code",
+    "shape": "direct-permission",
+    "mode": "accept_edits",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep",
+        "--session-id",
+        "<ID1>",
+        "--model",
+        "fixture-model",
+        "--effort",
+        "High",
+        "--settings",
+        "{\"tui\":\"fullscreen\",\"theme\":\"auto\",\"hooks\":{\"SessionStart\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"cat > '<TMP>/session-keys/<ID2>.json.tmp' && mv '<TMP>/session-keys/<ID2>.json.tmp' '<TMP>/session-keys/<ID2>.json'\",\"timeout\":2}]},{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'SessionStart' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PermissionRequest\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PermissionRequest' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PermissionDenied\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PermissionDenied' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PostToolUseFailure\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostToolUseFailure' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"Elicitation\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Elicitation' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"ElicitationResult\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'ElicitationResult' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"UserPromptSubmit\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'UserPromptSubmit' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PreToolUse\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PreToolUse' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PostToolUse\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostToolUse' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PreCompact\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PreCompact' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PostCompact\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostCompact' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"Notification\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Notification' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}],\"matcher\":\"^(idle_prompt|permission_prompt|elicitation_dialog)$\"}],\"Stop\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Stop' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"StopFailure\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'StopFailure' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}]}}",
+        "GOLDEN_PERSONA"
+      ],
+      "env_keys": [
+        "CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY",
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "DISABLE_INSTALLATION_CHECKS",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_CLAUDE_STATUS_GENERATION",
+        "RUNNER_CLAUDE_STATUS_PATH",
+        "RUNNER_HANDLE",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "claude-code",
+    "shape": "direct-permission",
+    "mode": "auto",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep",
+        "--session-id",
+        "<ID1>",
+        "--model",
+        "fixture-model",
+        "--effort",
+        "High",
+        "--settings",
+        "{\"tui\":\"fullscreen\",\"theme\":\"auto\",\"hooks\":{\"SessionStart\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"cat > '<TMP>/session-keys/<ID2>.json.tmp' && mv '<TMP>/session-keys/<ID2>.json.tmp' '<TMP>/session-keys/<ID2>.json'\",\"timeout\":2}]},{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'SessionStart' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PermissionRequest\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PermissionRequest' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PermissionDenied\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PermissionDenied' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PostToolUseFailure\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostToolUseFailure' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"Elicitation\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Elicitation' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"ElicitationResult\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'ElicitationResult' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"UserPromptSubmit\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'UserPromptSubmit' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PreToolUse\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PreToolUse' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PostToolUse\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostToolUse' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PreCompact\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PreCompact' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PostCompact\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostCompact' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"Notification\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Notification' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}],\"matcher\":\"^(idle_prompt|permission_prompt|elicitation_dialog)$\"}],\"Stop\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Stop' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"StopFailure\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'StopFailure' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}]}}",
+        "GOLDEN_PERSONA"
+      ],
+      "env_keys": [
+        "CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY",
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "DISABLE_INSTALLATION_CHECKS",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_CLAUDE_STATUS_GENERATION",
+        "RUNNER_CLAUDE_STATUS_PATH",
+        "RUNNER_HANDLE",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "claude-code",
+    "shape": "direct-permission",
+    "mode": "bypass",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep",
+        "--session-id",
+        "<ID1>",
+        "--model",
+        "fixture-model",
+        "--effort",
+        "High",
+        "--settings",
+        "{\"tui\":\"fullscreen\",\"theme\":\"auto\",\"hooks\":{\"SessionStart\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"cat > '<TMP>/session-keys/<ID2>.json.tmp' && mv '<TMP>/session-keys/<ID2>.json.tmp' '<TMP>/session-keys/<ID2>.json'\",\"timeout\":2}]},{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'SessionStart' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PermissionRequest\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PermissionRequest' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PermissionDenied\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PermissionDenied' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PostToolUseFailure\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostToolUseFailure' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"Elicitation\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Elicitation' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"ElicitationResult\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'ElicitationResult' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"UserPromptSubmit\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'UserPromptSubmit' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PreToolUse\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PreToolUse' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PostToolUse\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostToolUse' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PreCompact\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PreCompact' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PostCompact\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostCompact' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"Notification\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Notification' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}],\"matcher\":\"^(idle_prompt|permission_prompt|elicitation_dialog)$\"}],\"Stop\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Stop' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"StopFailure\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'StopFailure' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}]}}",
+        "GOLDEN_PERSONA"
+      ],
+      "env_keys": [
+        "CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY",
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "DISABLE_INSTALLATION_CHECKS",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_CLAUDE_STATUS_GENERATION",
+        "RUNNER_CLAUDE_STATUS_PATH",
+        "RUNNER_HANDLE",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "claude-code",
+    "shape": "mission-worker",
+    "mode": "bypass",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep",
+        "--permission-mode",
+        "bypassPermissions",
+        "--session-id",
+        "<ID1>",
+        "--model",
+        "fixture-model",
+        "--effort",
+        "High",
+        "--settings",
+        "{\"tui\":\"fullscreen\",\"theme\":\"auto\",\"hooks\":{\"SessionStart\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"cat > '<TMP>/session-keys/<ID2>.json.tmp' && mv '<TMP>/session-keys/<ID2>.json.tmp' '<TMP>/session-keys/<ID2>.json'\",\"timeout\":2}]},{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'SessionStart' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PermissionRequest\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PermissionRequest' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PermissionDenied\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PermissionDenied' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PostToolUseFailure\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostToolUseFailure' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"Elicitation\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Elicitation' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"ElicitationResult\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'ElicitationResult' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"UserPromptSubmit\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'UserPromptSubmit' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PreToolUse\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PreToolUse' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PostToolUse\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostToolUse' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PreCompact\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PreCompact' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PostCompact\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostCompact' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"Notification\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Notification' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}],\"matcher\":\"^(idle_prompt|permission_prompt|elicitation_dialog)$\"}],\"Stop\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Stop' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"StopFailure\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'StopFailure' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}]},\"skipDangerousModePermissionPrompt\":true}",
+        "You are a worker in a crew coordinated by the bundled `runner` CLI. The CLI is on your PATH and talks to the rest of the crew via a shared event bus. Use these verbs to participate; do not invent your own conventions.\n\n== Coordination ==\n- `runner msg read` — read your inbox (pull-based: new messages do NOT auto-print). Run this when you see an `[inbox]` notification or any time you suspect new traffic.\n- `runner msg post --to <handle> \"<text>\"` — direct message to a specific handle. Valid handles: any slot in this crew.\n- `runner msg post \"<text>\"` — broadcast to the crew (no `--to`).\n- `runner signal ask_lead --payload '{\"question\":\"…\",\"context\":\"…\"}'` — escalate to the lead when a load-bearing decision is genuinely ambiguous.\n- Busy/idle is inferred from your terminal activity.\n\n== Team conventions ==\nTEAM\n\n== Your brief ==\nGOLDEN_PERSONA"
+      ],
+      "env_keys": [
+        "CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY",
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "DISABLE_INSTALLATION_CHECKS",
+        "MISSION_CWD",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_CLAUDE_STATUS_GENERATION",
+        "RUNNER_CLAUDE_STATUS_PATH",
+        "RUNNER_CREW_ID",
+        "RUNNER_EVENT_LOG",
+        "RUNNER_HANDLE",
+        "RUNNER_MISSION_ID",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "claude-code",
+    "shape": "mission-lead",
+    "mode": "bypass",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep",
+        "--permission-mode",
+        "bypassPermissions",
+        "--session-id",
+        "<ID1>",
+        "--model",
+        "fixture-model",
+        "--effort",
+        "High",
+        "--settings",
+        "{\"tui\":\"fullscreen\",\"theme\":\"auto\",\"hooks\":{\"SessionStart\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"cat > '<TMP>/session-keys/<ID2>.json.tmp' && mv '<TMP>/session-keys/<ID2>.json.tmp' '<TMP>/session-keys/<ID2>.json'\",\"timeout\":2}]},{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'SessionStart' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PermissionRequest\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PermissionRequest' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PermissionDenied\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PermissionDenied' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PostToolUseFailure\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostToolUseFailure' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"Elicitation\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Elicitation' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"ElicitationResult\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'ElicitationResult' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"UserPromptSubmit\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'UserPromptSubmit' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PreToolUse\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PreToolUse' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PostToolUse\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostToolUse' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PreCompact\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PreCompact' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PostCompact\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostCompact' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"Notification\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Notification' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}],\"matcher\":\"^(idle_prompt|permission_prompt|elicitation_dialog)$\"}],\"Stop\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Stop' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"StopFailure\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'StopFailure' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}]},\"skipDangerousModePermissionPrompt\":true}",
+        "You are `tester` (Tester), the lead of crew \"Golden crew\".\n\n== Team conventions ==\nTEAM\n\n== Your brief ==\nGOLDEN_PERSONA\n\n== Mission ==\nGoal: Golden goal\n\n== Coordination ==\n- You are the human's counterpart. Workers escalate to you via `ask_lead`.\n- Reply to a worker with `runner msg post --to <handle> \"…\"`; broadcasts omit `--to`.\n- The operator watches the terminals and types directly into a runner's pane.\n- Read your inbox with `runner msg read` — it's pull-based.\n- Escalate to the human (with structured choices) via `runner signal ask_human --payload '{\"prompt\":\"…\",\"choices\":[\"yes\",\"no\"],\"on_behalf_of\":\"<asker>\"}'`.\n- Busy/idle is inferred from your terminal activity.\n\n"
+      ],
+      "env_keys": [
+        "CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY",
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "DISABLE_INSTALLATION_CHECKS",
+        "MISSION_CWD",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_CLAUDE_STATUS_GENERATION",
+        "RUNNER_CLAUDE_STATUS_PATH",
+        "RUNNER_CREW_ID",
+        "RUNNER_EVENT_LOG",
+        "RUNNER_HANDLE",
+        "RUNNER_MISSION_ID",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "claude-code",
+    "shape": "mission-worker",
+    "mode": "auto",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep",
+        "--permission-mode",
+        "auto",
+        "--session-id",
+        "<ID1>",
+        "--model",
+        "fixture-model",
+        "--effort",
+        "High",
+        "--settings",
+        "{\"tui\":\"fullscreen\",\"theme\":\"auto\",\"hooks\":{\"SessionStart\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"cat > '<TMP>/session-keys/<ID2>.json.tmp' && mv '<TMP>/session-keys/<ID2>.json.tmp' '<TMP>/session-keys/<ID2>.json'\",\"timeout\":2}]},{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'SessionStart' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PermissionRequest\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PermissionRequest' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PermissionDenied\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PermissionDenied' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PostToolUseFailure\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostToolUseFailure' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"Elicitation\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Elicitation' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"ElicitationResult\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'ElicitationResult' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"UserPromptSubmit\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'UserPromptSubmit' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PreToolUse\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PreToolUse' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PostToolUse\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostToolUse' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PreCompact\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PreCompact' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PostCompact\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostCompact' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"Notification\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Notification' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}],\"matcher\":\"^(idle_prompt|permission_prompt|elicitation_dialog)$\"}],\"Stop\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Stop' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"StopFailure\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'StopFailure' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}]}}",
+        "You are a worker in a crew coordinated by the bundled `runner` CLI. The CLI is on your PATH and talks to the rest of the crew via a shared event bus. Use these verbs to participate; do not invent your own conventions.\n\n== Coordination ==\n- `runner msg read` — read your inbox (pull-based: new messages do NOT auto-print). Run this when you see an `[inbox]` notification or any time you suspect new traffic.\n- `runner msg post --to <handle> \"<text>\"` — direct message to a specific handle. Valid handles: any slot in this crew.\n- `runner msg post \"<text>\"` — broadcast to the crew (no `--to`).\n- `runner signal ask_lead --payload '{\"question\":\"…\",\"context\":\"…\"}'` — escalate to the lead when a load-bearing decision is genuinely ambiguous.\n- Busy/idle is inferred from your terminal activity.\n\n== Team conventions ==\nTEAM\n\n== Your brief ==\nGOLDEN_PERSONA"
+      ],
+      "env_keys": [
+        "CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY",
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "DISABLE_INSTALLATION_CHECKS",
+        "MISSION_CWD",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_CLAUDE_STATUS_GENERATION",
+        "RUNNER_CLAUDE_STATUS_PATH",
+        "RUNNER_CREW_ID",
+        "RUNNER_EVENT_LOG",
+        "RUNNER_HANDLE",
+        "RUNNER_MISSION_ID",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "claude-code",
+    "shape": "mission-lead",
+    "mode": "auto",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep",
+        "--permission-mode",
+        "auto",
+        "--session-id",
+        "<ID1>",
+        "--model",
+        "fixture-model",
+        "--effort",
+        "High",
+        "--settings",
+        "{\"tui\":\"fullscreen\",\"theme\":\"auto\",\"hooks\":{\"SessionStart\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"cat > '<TMP>/session-keys/<ID2>.json.tmp' && mv '<TMP>/session-keys/<ID2>.json.tmp' '<TMP>/session-keys/<ID2>.json'\",\"timeout\":2}]},{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'SessionStart' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PermissionRequest\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PermissionRequest' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PermissionDenied\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PermissionDenied' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PostToolUseFailure\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostToolUseFailure' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"Elicitation\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Elicitation' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"ElicitationResult\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'ElicitationResult' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"UserPromptSubmit\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'UserPromptSubmit' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PreToolUse\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PreToolUse' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PostToolUse\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostToolUse' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PreCompact\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PreCompact' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PostCompact\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostCompact' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"Notification\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Notification' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}],\"matcher\":\"^(idle_prompt|permission_prompt|elicitation_dialog)$\"}],\"Stop\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Stop' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"StopFailure\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'StopFailure' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}]}}",
+        "You are `tester` (Tester), the lead of crew \"Golden crew\".\n\n== Team conventions ==\nTEAM\n\n== Your brief ==\nGOLDEN_PERSONA\n\n== Mission ==\nGoal: Golden goal\n\n== Coordination ==\n- You are the human's counterpart. Workers escalate to you via `ask_lead`.\n- Reply to a worker with `runner msg post --to <handle> \"…\"`; broadcasts omit `--to`.\n- The operator watches the terminals and types directly into a runner's pane.\n- Read your inbox with `runner msg read` — it's pull-based.\n- Escalate to the human (with structured choices) via `runner signal ask_human --payload '{\"prompt\":\"…\",\"choices\":[\"yes\",\"no\"],\"on_behalf_of\":\"<asker>\"}'`.\n- Busy/idle is inferred from your terminal activity.\n\n"
+      ],
+      "env_keys": [
+        "CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY",
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "DISABLE_INSTALLATION_CHECKS",
+        "MISSION_CWD",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_CLAUDE_STATUS_GENERATION",
+        "RUNNER_CLAUDE_STATUS_PATH",
+        "RUNNER_CREW_ID",
+        "RUNNER_EVENT_LOG",
+        "RUNNER_HANDLE",
+        "RUNNER_MISSION_ID",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "claude-code",
+    "shape": "mission-worker",
+    "mode": "role-default",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep",
+        "--session-id",
+        "<ID1>",
+        "--model",
+        "fixture-model",
+        "--effort",
+        "High",
+        "--settings",
+        "{\"tui\":\"fullscreen\",\"theme\":\"auto\",\"hooks\":{\"SessionStart\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"cat > '<TMP>/session-keys/<ID2>.json.tmp' && mv '<TMP>/session-keys/<ID2>.json.tmp' '<TMP>/session-keys/<ID2>.json'\",\"timeout\":2}]},{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'SessionStart' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PermissionRequest\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PermissionRequest' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PermissionDenied\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PermissionDenied' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PostToolUseFailure\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostToolUseFailure' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"Elicitation\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Elicitation' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"ElicitationResult\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'ElicitationResult' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"UserPromptSubmit\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'UserPromptSubmit' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PreToolUse\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PreToolUse' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PostToolUse\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostToolUse' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PreCompact\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PreCompact' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PostCompact\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostCompact' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"Notification\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Notification' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}],\"matcher\":\"^(idle_prompt|permission_prompt|elicitation_dialog)$\"}],\"Stop\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Stop' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"StopFailure\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'StopFailure' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}]}}",
+        "You are a worker in a crew coordinated by the bundled `runner` CLI. The CLI is on your PATH and talks to the rest of the crew via a shared event bus. Use these verbs to participate; do not invent your own conventions.\n\n== Coordination ==\n- `runner msg read` — read your inbox (pull-based: new messages do NOT auto-print). Run this when you see an `[inbox]` notification or any time you suspect new traffic.\n- `runner msg post --to <handle> \"<text>\"` — direct message to a specific handle. Valid handles: any slot in this crew.\n- `runner msg post \"<text>\"` — broadcast to the crew (no `--to`).\n- `runner signal ask_lead --payload '{\"question\":\"…\",\"context\":\"…\"}'` — escalate to the lead when a load-bearing decision is genuinely ambiguous.\n- Busy/idle is inferred from your terminal activity.\n\n== Team conventions ==\nTEAM\n\n== Your brief ==\nGOLDEN_PERSONA"
+      ],
+      "env_keys": [
+        "CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY",
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "DISABLE_INSTALLATION_CHECKS",
+        "MISSION_CWD",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_CLAUDE_STATUS_GENERATION",
+        "RUNNER_CLAUDE_STATUS_PATH",
+        "RUNNER_CREW_ID",
+        "RUNNER_EVENT_LOG",
+        "RUNNER_HANDLE",
+        "RUNNER_MISSION_ID",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "claude-code",
+    "shape": "mission-lead",
+    "mode": "role-default",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep",
+        "--session-id",
+        "<ID1>",
+        "--model",
+        "fixture-model",
+        "--effort",
+        "High",
+        "--settings",
+        "{\"tui\":\"fullscreen\",\"theme\":\"auto\",\"hooks\":{\"SessionStart\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"cat > '<TMP>/session-keys/<ID2>.json.tmp' && mv '<TMP>/session-keys/<ID2>.json.tmp' '<TMP>/session-keys/<ID2>.json'\",\"timeout\":2}]},{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'SessionStart' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PermissionRequest\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PermissionRequest' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PermissionDenied\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PermissionDenied' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PostToolUseFailure\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostToolUseFailure' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"Elicitation\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Elicitation' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"ElicitationResult\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'ElicitationResult' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"UserPromptSubmit\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'UserPromptSubmit' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PreToolUse\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PreToolUse' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PostToolUse\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostToolUse' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PreCompact\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PreCompact' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PostCompact\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostCompact' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"Notification\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Notification' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}],\"matcher\":\"^(idle_prompt|permission_prompt|elicitation_dialog)$\"}],\"Stop\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Stop' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"StopFailure\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'StopFailure' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}]}}",
+        "You are `tester` (Tester), the lead of crew \"Golden crew\".\n\n== Team conventions ==\nTEAM\n\n== Your brief ==\nGOLDEN_PERSONA\n\n== Mission ==\nGoal: Golden goal\n\n== Coordination ==\n- You are the human's counterpart. Workers escalate to you via `ask_lead`.\n- Reply to a worker with `runner msg post --to <handle> \"…\"`; broadcasts omit `--to`.\n- The operator watches the terminals and types directly into a runner's pane.\n- Read your inbox with `runner msg read` — it's pull-based.\n- Escalate to the human (with structured choices) via `runner signal ask_human --payload '{\"prompt\":\"…\",\"choices\":[\"yes\",\"no\"],\"on_behalf_of\":\"<asker>\"}'`.\n- Busy/idle is inferred from your terminal activity.\n\n"
+      ],
+      "env_keys": [
+        "CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY",
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "DISABLE_INSTALLATION_CHECKS",
+        "MISSION_CWD",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_CLAUDE_STATUS_GENERATION",
+        "RUNNER_CLAUDE_STATUS_PATH",
+        "RUNNER_CREW_ID",
+        "RUNNER_EVENT_LOG",
+        "RUNNER_HANDLE",
+        "RUNNER_MISSION_ID",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "antigravity",
+    "shape": "fresh",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep",
+        "--model",
+        "gemini-3.8-flash",
+        "--effort",
+        "high",
+        "--log-file",
+        "<TMP>/antigravity/logs/<ID1>.log",
+        "--add-dir",
+        "<TMP>/antigravity-hooks",
+        "-i",
+        "GOLDEN_PERSONA"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_ANTIGRAVITY_STATUS_GENERATION",
+        "RUNNER_ANTIGRAVITY_STATUS_PATH",
+        "RUNNER_HANDLE",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "antigravity",
+    "shape": "blank",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep",
+        "--log-file",
+        "<TMP>/antigravity/logs/<ID1>.log",
+        "--add-dir",
+        "<TMP>/antigravity-hooks"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_ANTIGRAVITY_STATUS_GENERATION",
+        "RUNNER_ANTIGRAVITY_STATUS_PATH",
+        "RUNNER_HANDLE",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "antigravity",
+    "shape": "resume",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep",
+        "--conversation",
+        "<ID1>",
+        "--model",
+        "gemini-3.8-flash",
+        "--effort",
+        "high",
+        "--log-file",
+        "<TMP>/antigravity/logs/<ID2>.log",
+        "--add-dir",
+        "<TMP>/antigravity-hooks"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_ANTIGRAVITY_STATUS_GENERATION",
+        "RUNNER_ANTIGRAVITY_STATUS_PATH",
+        "RUNNER_HANDLE",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "antigravity",
+    "shape": "missing",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep",
+        "--model",
+        "gemini-3.8-flash",
+        "--effort",
+        "high",
+        "--log-file",
+        "<TMP>/antigravity/logs/<ID1>.log",
+        "--add-dir",
+        "<TMP>/antigravity-hooks",
+        "-i",
+        "GOLDEN_PERSONA"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_ANTIGRAVITY_STATUS_GENERATION",
+        "RUNNER_ANTIGRAVITY_STATUS_PATH",
+        "RUNNER_HANDLE",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "antigravity",
+    "shape": "hooks-off",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep",
+        "--model",
+        "gemini-3.8-flash",
+        "--effort",
+        "high",
+        "--log-file",
+        "<TMP>/antigravity/logs/<ID1>.log",
+        "-i",
+        "GOLDEN_PERSONA"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_ANTIGRAVITY_STATUS_GENERATION",
+        "RUNNER_ANTIGRAVITY_STATUS_PATH",
+        "RUNNER_HANDLE",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "antigravity",
+    "shape": "direct-permission",
+    "mode": "default",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep",
+        "--model",
+        "gemini-3.8-flash",
+        "--effort",
+        "high",
+        "--log-file",
+        "<TMP>/antigravity/logs/<ID1>.log",
+        "-i",
+        "GOLDEN_PERSONA"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_ANTIGRAVITY_STATUS_GENERATION",
+        "RUNNER_ANTIGRAVITY_STATUS_PATH",
+        "RUNNER_HANDLE",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "antigravity",
+    "shape": "direct-permission",
+    "mode": "accept_edits",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep",
+        "--model",
+        "gemini-3.8-flash",
+        "--effort",
+        "high",
+        "--log-file",
+        "<TMP>/antigravity/logs/<ID1>.log",
+        "-i",
+        "GOLDEN_PERSONA"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_ANTIGRAVITY_STATUS_GENERATION",
+        "RUNNER_ANTIGRAVITY_STATUS_PATH",
+        "RUNNER_HANDLE",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "antigravity",
+    "shape": "direct-permission",
+    "mode": "auto",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep",
+        "--model",
+        "gemini-3.8-flash",
+        "--effort",
+        "high",
+        "--log-file",
+        "<TMP>/antigravity/logs/<ID1>.log",
+        "-i",
+        "GOLDEN_PERSONA"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_ANTIGRAVITY_STATUS_GENERATION",
+        "RUNNER_ANTIGRAVITY_STATUS_PATH",
+        "RUNNER_HANDLE",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "antigravity",
+    "shape": "direct-permission",
+    "mode": "bypass",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep",
+        "--model",
+        "gemini-3.8-flash",
+        "--effort",
+        "high",
+        "--log-file",
+        "<TMP>/antigravity/logs/<ID1>.log",
+        "-i",
+        "GOLDEN_PERSONA"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_ANTIGRAVITY_STATUS_GENERATION",
+        "RUNNER_ANTIGRAVITY_STATUS_PATH",
+        "RUNNER_HANDLE",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "antigravity",
+    "shape": "mission-worker",
+    "mode": "bypass",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep",
+        "--dangerously-skip-permissions",
+        "--add-dir",
+        "<TMP>/crews/c/missions/<ID1>",
+        "--model",
+        "gemini-3.8-flash",
+        "--effort",
+        "high",
+        "--log-file",
+        "<TMP>/antigravity/logs/<ID2>.log",
+        "-i",
+        "You are a worker in a crew coordinated by the bundled `runner` CLI. The CLI is on your PATH and talks to the rest of the crew via a shared event bus. Use these verbs to participate; do not invent your own conventions.\n\n== Coordination ==\n- `runner msg read` — read your inbox (pull-based: new messages do NOT auto-print). Run this when you see an `[inbox]` notification or any time you suspect new traffic.\n- `runner msg post --to <handle> \"<text>\"` — direct message to a specific handle. Valid handles: any slot in this crew.\n- `runner msg post \"<text>\"` — broadcast to the crew (no `--to`).\n- `runner signal ask_lead --payload '{\"question\":\"…\",\"context\":\"…\"}'` — escalate to the lead when a load-bearing decision is genuinely ambiguous.\n- Busy/idle is inferred from your terminal activity.\n\n== Team conventions ==\nTEAM\n\n== Your brief ==\nGOLDEN_PERSONA"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "MISSION_CWD",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_ANTIGRAVITY_STATUS_GENERATION",
+        "RUNNER_ANTIGRAVITY_STATUS_PATH",
+        "RUNNER_CREW_ID",
+        "RUNNER_EVENT_LOG",
+        "RUNNER_HANDLE",
+        "RUNNER_MISSION_ID",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "antigravity",
+    "shape": "mission-lead",
+    "mode": "bypass",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep",
+        "--dangerously-skip-permissions",
+        "--add-dir",
+        "<TMP>/crews/c/missions/<ID1>",
+        "--model",
+        "gemini-3.8-flash",
+        "--effort",
+        "high",
+        "--log-file",
+        "<TMP>/antigravity/logs/<ID2>.log",
+        "-i",
+        "You are `tester` (Tester), the lead of crew \"Golden crew\".\n\n== Team conventions ==\nTEAM\n\n== Your brief ==\nGOLDEN_PERSONA\n\n== Mission ==\nGoal: Golden goal\n\n== Coordination ==\n- You are the human's counterpart. Workers escalate to you via `ask_lead`.\n- Reply to a worker with `runner msg post --to <handle> \"…\"`; broadcasts omit `--to`.\n- The operator watches the terminals and types directly into a runner's pane.\n- Read your inbox with `runner msg read` — it's pull-based.\n- Escalate to the human (with structured choices) via `runner signal ask_human --payload '{\"prompt\":\"…\",\"choices\":[\"yes\",\"no\"],\"on_behalf_of\":\"<asker>\"}'`.\n- Busy/idle is inferred from your terminal activity.\n\n"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "MISSION_CWD",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_ANTIGRAVITY_STATUS_GENERATION",
+        "RUNNER_ANTIGRAVITY_STATUS_PATH",
+        "RUNNER_CREW_ID",
+        "RUNNER_EVENT_LOG",
+        "RUNNER_HANDLE",
+        "RUNNER_MISSION_ID",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "antigravity",
+    "shape": "mission-worker",
+    "mode": "auto",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep",
+        "--add-dir",
+        "<TMP>/crews/c/missions/<ID1>",
+        "--model",
+        "gemini-3.8-flash",
+        "--effort",
+        "high",
+        "--log-file",
+        "<TMP>/antigravity/logs/<ID2>.log",
+        "-i",
+        "You are a worker in a crew coordinated by the bundled `runner` CLI. The CLI is on your PATH and talks to the rest of the crew via a shared event bus. Use these verbs to participate; do not invent your own conventions.\n\n== Coordination ==\n- `runner msg read` — read your inbox (pull-based: new messages do NOT auto-print). Run this when you see an `[inbox]` notification or any time you suspect new traffic.\n- `runner msg post --to <handle> \"<text>\"` — direct message to a specific handle. Valid handles: any slot in this crew.\n- `runner msg post \"<text>\"` — broadcast to the crew (no `--to`).\n- `runner signal ask_lead --payload '{\"question\":\"…\",\"context\":\"…\"}'` — escalate to the lead when a load-bearing decision is genuinely ambiguous.\n- Busy/idle is inferred from your terminal activity.\n\n== Team conventions ==\nTEAM\n\n== Your brief ==\nGOLDEN_PERSONA"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "MISSION_CWD",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_ANTIGRAVITY_STATUS_GENERATION",
+        "RUNNER_ANTIGRAVITY_STATUS_PATH",
+        "RUNNER_CREW_ID",
+        "RUNNER_EVENT_LOG",
+        "RUNNER_HANDLE",
+        "RUNNER_MISSION_ID",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "antigravity",
+    "shape": "mission-lead",
+    "mode": "auto",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep",
+        "--add-dir",
+        "<TMP>/crews/c/missions/<ID1>",
+        "--model",
+        "gemini-3.8-flash",
+        "--effort",
+        "high",
+        "--log-file",
+        "<TMP>/antigravity/logs/<ID2>.log",
+        "-i",
+        "You are `tester` (Tester), the lead of crew \"Golden crew\".\n\n== Team conventions ==\nTEAM\n\n== Your brief ==\nGOLDEN_PERSONA\n\n== Mission ==\nGoal: Golden goal\n\n== Coordination ==\n- You are the human's counterpart. Workers escalate to you via `ask_lead`.\n- Reply to a worker with `runner msg post --to <handle> \"…\"`; broadcasts omit `--to`.\n- The operator watches the terminals and types directly into a runner's pane.\n- Read your inbox with `runner msg read` — it's pull-based.\n- Escalate to the human (with structured choices) via `runner signal ask_human --payload '{\"prompt\":\"…\",\"choices\":[\"yes\",\"no\"],\"on_behalf_of\":\"<asker>\"}'`.\n- Busy/idle is inferred from your terminal activity.\n\n"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "MISSION_CWD",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_ANTIGRAVITY_STATUS_GENERATION",
+        "RUNNER_ANTIGRAVITY_STATUS_PATH",
+        "RUNNER_CREW_ID",
+        "RUNNER_EVENT_LOG",
+        "RUNNER_HANDLE",
+        "RUNNER_MISSION_ID",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "antigravity",
+    "shape": "mission-worker",
+    "mode": "role-default",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep",
+        "--add-dir",
+        "<TMP>/crews/c/missions/<ID1>",
+        "--model",
+        "gemini-3.8-flash",
+        "--effort",
+        "high",
+        "--log-file",
+        "<TMP>/antigravity/logs/<ID2>.log",
+        "-i",
+        "You are a worker in a crew coordinated by the bundled `runner` CLI. The CLI is on your PATH and talks to the rest of the crew via a shared event bus. Use these verbs to participate; do not invent your own conventions.\n\n== Coordination ==\n- `runner msg read` — read your inbox (pull-based: new messages do NOT auto-print). Run this when you see an `[inbox]` notification or any time you suspect new traffic.\n- `runner msg post --to <handle> \"<text>\"` — direct message to a specific handle. Valid handles: any slot in this crew.\n- `runner msg post \"<text>\"` — broadcast to the crew (no `--to`).\n- `runner signal ask_lead --payload '{\"question\":\"…\",\"context\":\"…\"}'` — escalate to the lead when a load-bearing decision is genuinely ambiguous.\n- Busy/idle is inferred from your terminal activity.\n\n== Team conventions ==\nTEAM\n\n== Your brief ==\nGOLDEN_PERSONA"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "MISSION_CWD",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_ANTIGRAVITY_STATUS_GENERATION",
+        "RUNNER_ANTIGRAVITY_STATUS_PATH",
+        "RUNNER_CREW_ID",
+        "RUNNER_EVENT_LOG",
+        "RUNNER_HANDLE",
+        "RUNNER_MISSION_ID",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "antigravity",
+    "shape": "mission-lead",
+    "mode": "role-default",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep",
+        "--add-dir",
+        "<TMP>/crews/c/missions/<ID1>",
+        "--model",
+        "gemini-3.8-flash",
+        "--effort",
+        "high",
+        "--log-file",
+        "<TMP>/antigravity/logs/<ID2>.log",
+        "-i",
+        "You are `tester` (Tester), the lead of crew \"Golden crew\".\n\n== Team conventions ==\nTEAM\n\n== Your brief ==\nGOLDEN_PERSONA\n\n== Mission ==\nGoal: Golden goal\n\n== Coordination ==\n- You are the human's counterpart. Workers escalate to you via `ask_lead`.\n- Reply to a worker with `runner msg post --to <handle> \"…\"`; broadcasts omit `--to`.\n- The operator watches the terminals and types directly into a runner's pane.\n- Read your inbox with `runner msg read` — it's pull-based.\n- Escalate to the human (with structured choices) via `runner signal ask_human --payload '{\"prompt\":\"…\",\"choices\":[\"yes\",\"no\"],\"on_behalf_of\":\"<asker>\"}'`.\n- Busy/idle is inferred from your terminal activity.\n\n"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "MISSION_CWD",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_ANTIGRAVITY_STATUS_GENERATION",
+        "RUNNER_ANTIGRAVITY_STATUS_PATH",
+        "RUNNER_CREW_ID",
+        "RUNNER_EVENT_LOG",
+        "RUNNER_HANDLE",
+        "RUNNER_MISSION_ID",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "pi",
+    "shape": "fresh",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--session-id",
+        "<ID1>",
+        "--keep",
+        "--model",
+        "fixture-model",
+        "--thinking",
+        "high",
+        "-e",
+        "<TMP>/pi-hooks/runner-status.ts",
+        "--append-system-prompt",
+        "<TMP>/session-prompts/<ID2>.md"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "PI_CODING_AGENT_DIR",
+        "PI_SKIP_VERSION_CHECK",
+        "RUNNER_HANDLE",
+        "RUNNER_PI_REKEY_PATH",
+        "RUNNER_PI_SESSION_KEY",
+        "RUNNER_PI_STATUS_GENERATION",
+        "RUNNER_PI_STATUS_PATH",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "pi",
+    "shape": "blank",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--session-id",
+        "<ID1>",
+        "--keep",
+        "-e",
+        "<TMP>/pi-hooks/runner-status.ts"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "PI_CODING_AGENT_DIR",
+        "PI_SKIP_VERSION_CHECK",
+        "RUNNER_HANDLE",
+        "RUNNER_PI_REKEY_PATH",
+        "RUNNER_PI_SESSION_KEY",
+        "RUNNER_PI_STATUS_GENERATION",
+        "RUNNER_PI_STATUS_PATH",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "pi",
+    "shape": "resume",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--session-id",
+        "<ID1>",
+        "--keep",
+        "--model",
+        "fixture-model",
+        "--thinking",
+        "high",
+        "-e",
+        "<TMP>/pi-hooks/runner-status.ts",
+        "--append-system-prompt",
+        "<TMP>/session-prompts/<ID2>.md"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "PI_CODING_AGENT_DIR",
+        "PI_SKIP_VERSION_CHECK",
+        "RUNNER_HANDLE",
+        "RUNNER_PI_REKEY_PATH",
+        "RUNNER_PI_SESSION_KEY",
+        "RUNNER_PI_STATUS_GENERATION",
+        "RUNNER_PI_STATUS_PATH",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "pi",
+    "shape": "missing",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--session-id",
+        "<ID1>",
+        "--keep",
+        "--model",
+        "fixture-model",
+        "--thinking",
+        "high",
+        "-e",
+        "<TMP>/pi-hooks/runner-status.ts",
+        "--append-system-prompt",
+        "<TMP>/session-prompts/<ID2>.md"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "PI_CODING_AGENT_DIR",
+        "PI_SKIP_VERSION_CHECK",
+        "RUNNER_HANDLE",
+        "RUNNER_PI_REKEY_PATH",
+        "RUNNER_PI_SESSION_KEY",
+        "RUNNER_PI_STATUS_GENERATION",
+        "RUNNER_PI_STATUS_PATH",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "pi",
+    "shape": "hooks-off",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--session-id",
+        "<ID1>",
+        "--keep",
+        "--model",
+        "fixture-model",
+        "--thinking",
+        "high",
+        "--append-system-prompt",
+        "<TMP>/session-prompts/<ID2>.md"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "PI_CODING_AGENT_DIR",
+        "PI_SKIP_VERSION_CHECK",
+        "RUNNER_HANDLE",
+        "RUNNER_PI_REKEY_PATH",
+        "RUNNER_PI_SESSION_KEY",
+        "RUNNER_PI_STATUS_GENERATION",
+        "RUNNER_PI_STATUS_PATH",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "pi",
+    "shape": "direct-permission",
+    "mode": "default",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--session-id",
+        "<ID1>",
+        "--keep",
+        "--model",
+        "fixture-model",
+        "--thinking",
+        "high",
+        "--append-system-prompt",
+        "<TMP>/session-prompts/<ID2>.md"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "PI_CODING_AGENT_DIR",
+        "PI_SKIP_VERSION_CHECK",
+        "RUNNER_HANDLE",
+        "RUNNER_PI_REKEY_PATH",
+        "RUNNER_PI_SESSION_KEY",
+        "RUNNER_PI_STATUS_GENERATION",
+        "RUNNER_PI_STATUS_PATH",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "pi",
+    "shape": "direct-permission",
+    "mode": "accept_edits",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--session-id",
+        "<ID1>",
+        "--keep",
+        "--model",
+        "fixture-model",
+        "--thinking",
+        "high",
+        "--append-system-prompt",
+        "<TMP>/session-prompts/<ID2>.md"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "PI_CODING_AGENT_DIR",
+        "PI_SKIP_VERSION_CHECK",
+        "RUNNER_HANDLE",
+        "RUNNER_PI_REKEY_PATH",
+        "RUNNER_PI_SESSION_KEY",
+        "RUNNER_PI_STATUS_GENERATION",
+        "RUNNER_PI_STATUS_PATH",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "pi",
+    "shape": "direct-permission",
+    "mode": "auto",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--session-id",
+        "<ID1>",
+        "--keep",
+        "--model",
+        "fixture-model",
+        "--thinking",
+        "high",
+        "--append-system-prompt",
+        "<TMP>/session-prompts/<ID2>.md"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "PI_CODING_AGENT_DIR",
+        "PI_SKIP_VERSION_CHECK",
+        "RUNNER_HANDLE",
+        "RUNNER_PI_REKEY_PATH",
+        "RUNNER_PI_SESSION_KEY",
+        "RUNNER_PI_STATUS_GENERATION",
+        "RUNNER_PI_STATUS_PATH",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "pi",
+    "shape": "direct-permission",
+    "mode": "bypass",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--session-id",
+        "<ID1>",
+        "--keep",
+        "--model",
+        "fixture-model",
+        "--thinking",
+        "high",
+        "--append-system-prompt",
+        "<TMP>/session-prompts/<ID2>.md"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "PI_CODING_AGENT_DIR",
+        "PI_SKIP_VERSION_CHECK",
+        "RUNNER_HANDLE",
+        "RUNNER_PI_REKEY_PATH",
+        "RUNNER_PI_SESSION_KEY",
+        "RUNNER_PI_STATUS_GENERATION",
+        "RUNNER_PI_STATUS_PATH",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "pi",
+    "shape": "mission-worker",
+    "mode": "bypass",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--session-id",
+        "<ID1>",
+        "--keep",
+        "--approve",
+        "--model",
+        "fixture-model",
+        "--thinking",
+        "high",
+        "--append-system-prompt",
+        "<TMP>/session-prompts/<ID2>.md"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "MISSION_CWD",
+        "PI_CODING_AGENT_DIR",
+        "PI_SKIP_VERSION_CHECK",
+        "RUNNER_CREW_ID",
+        "RUNNER_EVENT_LOG",
+        "RUNNER_HANDLE",
+        "RUNNER_MISSION_ID",
+        "RUNNER_PI_REKEY_PATH",
+        "RUNNER_PI_SESSION_KEY",
+        "RUNNER_PI_STATUS_GENERATION",
+        "RUNNER_PI_STATUS_PATH",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "pi",
+    "shape": "mission-lead",
+    "mode": "bypass",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--session-id",
+        "<ID1>",
+        "--keep",
+        "--approve",
+        "--model",
+        "fixture-model",
+        "--thinking",
+        "high",
+        "--append-system-prompt",
+        "<TMP>/session-prompts/<ID2>.md",
+        "--",
+        "== Mission ==\nGoal: Golden goal\n\n"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "MISSION_CWD",
+        "PI_CODING_AGENT_DIR",
+        "PI_SKIP_VERSION_CHECK",
+        "RUNNER_CREW_ID",
+        "RUNNER_EVENT_LOG",
+        "RUNNER_HANDLE",
+        "RUNNER_MISSION_ID",
+        "RUNNER_PI_REKEY_PATH",
+        "RUNNER_PI_SESSION_KEY",
+        "RUNNER_PI_STATUS_GENERATION",
+        "RUNNER_PI_STATUS_PATH",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "pi",
+    "shape": "mission-worker",
+    "mode": "auto",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--session-id",
+        "<ID1>",
+        "--keep",
+        "--approve",
+        "--model",
+        "fixture-model",
+        "--thinking",
+        "high",
+        "--append-system-prompt",
+        "<TMP>/session-prompts/<ID2>.md"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "MISSION_CWD",
+        "PI_CODING_AGENT_DIR",
+        "PI_SKIP_VERSION_CHECK",
+        "RUNNER_CREW_ID",
+        "RUNNER_EVENT_LOG",
+        "RUNNER_HANDLE",
+        "RUNNER_MISSION_ID",
+        "RUNNER_PI_REKEY_PATH",
+        "RUNNER_PI_SESSION_KEY",
+        "RUNNER_PI_STATUS_GENERATION",
+        "RUNNER_PI_STATUS_PATH",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "pi",
+    "shape": "mission-lead",
+    "mode": "auto",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--session-id",
+        "<ID1>",
+        "--keep",
+        "--approve",
+        "--model",
+        "fixture-model",
+        "--thinking",
+        "high",
+        "--append-system-prompt",
+        "<TMP>/session-prompts/<ID2>.md",
+        "--",
+        "== Mission ==\nGoal: Golden goal\n\n"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "MISSION_CWD",
+        "PI_CODING_AGENT_DIR",
+        "PI_SKIP_VERSION_CHECK",
+        "RUNNER_CREW_ID",
+        "RUNNER_EVENT_LOG",
+        "RUNNER_HANDLE",
+        "RUNNER_MISSION_ID",
+        "RUNNER_PI_REKEY_PATH",
+        "RUNNER_PI_SESSION_KEY",
+        "RUNNER_PI_STATUS_GENERATION",
+        "RUNNER_PI_STATUS_PATH",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "pi",
+    "shape": "mission-worker",
+    "mode": "role-default",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--session-id",
+        "<ID1>",
+        "--keep",
+        "--approve",
+        "--model",
+        "fixture-model",
+        "--thinking",
+        "high",
+        "--append-system-prompt",
+        "<TMP>/session-prompts/<ID2>.md"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "MISSION_CWD",
+        "PI_CODING_AGENT_DIR",
+        "PI_SKIP_VERSION_CHECK",
+        "RUNNER_CREW_ID",
+        "RUNNER_EVENT_LOG",
+        "RUNNER_HANDLE",
+        "RUNNER_MISSION_ID",
+        "RUNNER_PI_REKEY_PATH",
+        "RUNNER_PI_SESSION_KEY",
+        "RUNNER_PI_STATUS_GENERATION",
+        "RUNNER_PI_STATUS_PATH",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "pi",
+    "shape": "mission-lead",
+    "mode": "role-default",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--session-id",
+        "<ID1>",
+        "--keep",
+        "--approve",
+        "--model",
+        "fixture-model",
+        "--thinking",
+        "high",
+        "--append-system-prompt",
+        "<TMP>/session-prompts/<ID2>.md",
+        "--",
+        "== Mission ==\nGoal: Golden goal\n\n"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "MISSION_CWD",
+        "PI_CODING_AGENT_DIR",
+        "PI_SKIP_VERSION_CHECK",
+        "RUNNER_CREW_ID",
+        "RUNNER_EVENT_LOG",
+        "RUNNER_HANDLE",
+        "RUNNER_MISSION_ID",
+        "RUNNER_PI_REKEY_PATH",
+        "RUNNER_PI_SESSION_KEY",
+        "RUNNER_PI_STATUS_GENERATION",
+        "RUNNER_PI_STATUS_PATH",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "copilot",
+    "shape": "fresh",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep",
+        "--session-id",
+        "<ID1>",
+        "--model",
+        "fixture-model",
+        "--effort",
+        "High",
+        "--no-auto-update",
+        "--plugin-dir",
+        "<TMP>/copilot-hooks",
+        "-i",
+        "GOLDEN_PERSONA"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_COPILOT_STATUS_GENERATION",
+        "RUNNER_COPILOT_STATUS_PATH",
+        "RUNNER_HANDLE",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "copilot",
+    "shape": "blank",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep",
+        "--session-id",
+        "<ID1>",
+        "--no-auto-update",
+        "--plugin-dir",
+        "<TMP>/copilot-hooks"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_COPILOT_STATUS_GENERATION",
+        "RUNNER_COPILOT_STATUS_PATH",
+        "RUNNER_HANDLE",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "copilot",
+    "shape": "resume",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep",
+        "--session-id",
+        "<ID1>",
+        "--model",
+        "fixture-model",
+        "--effort",
+        "High",
+        "--no-auto-update",
+        "--plugin-dir",
+        "<TMP>/copilot-hooks"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_COPILOT_STATUS_GENERATION",
+        "RUNNER_COPILOT_STATUS_PATH",
+        "RUNNER_HANDLE",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "copilot",
+    "shape": "missing",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep",
+        "--session-id",
+        "<ID1>",
+        "--model",
+        "fixture-model",
+        "--effort",
+        "High",
+        "--no-auto-update",
+        "--plugin-dir",
+        "<TMP>/copilot-hooks"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_COPILOT_STATUS_GENERATION",
+        "RUNNER_COPILOT_STATUS_PATH",
+        "RUNNER_HANDLE",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "copilot",
+    "shape": "hooks-off",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep",
+        "--session-id",
+        "<ID1>",
+        "--model",
+        "fixture-model",
+        "--effort",
+        "High",
+        "--no-auto-update",
+        "-i",
+        "GOLDEN_PERSONA"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_COPILOT_STATUS_GENERATION",
+        "RUNNER_COPILOT_STATUS_PATH",
+        "RUNNER_HANDLE",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "copilot",
+    "shape": "direct-permission",
+    "mode": "default",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep",
+        "--session-id",
+        "<ID1>",
+        "--model",
+        "fixture-model",
+        "--effort",
+        "High",
+        "--no-auto-update",
+        "-i",
+        "GOLDEN_PERSONA"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_COPILOT_STATUS_GENERATION",
+        "RUNNER_COPILOT_STATUS_PATH",
+        "RUNNER_HANDLE",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "copilot",
+    "shape": "direct-permission",
+    "mode": "accept_edits",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep",
+        "--session-id",
+        "<ID1>",
+        "--model",
+        "fixture-model",
+        "--effort",
+        "High",
+        "--no-auto-update",
+        "-i",
+        "GOLDEN_PERSONA"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_COPILOT_STATUS_GENERATION",
+        "RUNNER_COPILOT_STATUS_PATH",
+        "RUNNER_HANDLE",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "copilot",
+    "shape": "direct-permission",
+    "mode": "auto",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep",
+        "--session-id",
+        "<ID1>",
+        "--model",
+        "fixture-model",
+        "--effort",
+        "High",
+        "--no-auto-update",
+        "-i",
+        "GOLDEN_PERSONA"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_COPILOT_STATUS_GENERATION",
+        "RUNNER_COPILOT_STATUS_PATH",
+        "RUNNER_HANDLE",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "copilot",
+    "shape": "direct-permission",
+    "mode": "bypass",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep",
+        "--session-id",
+        "<ID1>",
+        "--model",
+        "fixture-model",
+        "--effort",
+        "High",
+        "--no-auto-update",
+        "-i",
+        "GOLDEN_PERSONA"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_COPILOT_STATUS_GENERATION",
+        "RUNNER_COPILOT_STATUS_PATH",
+        "RUNNER_HANDLE",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "copilot",
+    "shape": "mission-worker",
+    "mode": "bypass",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep",
+        "--yolo",
+        "--session-id",
+        "<ID1>",
+        "--add-dir",
+        "<TMP>/crews/c/missions/<ID2>",
+        "--model",
+        "fixture-model",
+        "--effort",
+        "High",
+        "--no-auto-update",
+        "-i",
+        "You are a worker in a crew coordinated by the bundled `runner` CLI. The CLI is on your PATH and talks to the rest of the crew via a shared event bus. Use these verbs to participate; do not invent your own conventions.\n\n== Coordination ==\n- `runner msg read` — read your inbox (pull-based: new messages do NOT auto-print). Run this when you see an `[inbox]` notification or any time you suspect new traffic.\n- `runner msg post --to <handle> \"<text>\"` — direct message to a specific handle. Valid handles: any slot in this crew.\n- `runner msg post \"<text>\"` — broadcast to the crew (no `--to`).\n- `runner signal ask_lead --payload '{\"question\":\"…\",\"context\":\"…\"}'` — escalate to the lead when a load-bearing decision is genuinely ambiguous.\n- Busy/idle is inferred from your terminal activity.\n\n== Team conventions ==\nTEAM\n\n== Your brief ==\nGOLDEN_PERSONA"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "MISSION_CWD",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_COPILOT_STATUS_GENERATION",
+        "RUNNER_COPILOT_STATUS_PATH",
+        "RUNNER_CREW_ID",
+        "RUNNER_EVENT_LOG",
+        "RUNNER_HANDLE",
+        "RUNNER_MISSION_ID",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "copilot",
+    "shape": "mission-lead",
+    "mode": "bypass",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep",
+        "--yolo",
+        "--session-id",
+        "<ID1>",
+        "--add-dir",
+        "<TMP>/crews/c/missions/<ID2>",
+        "--model",
+        "fixture-model",
+        "--effort",
+        "High",
+        "--no-auto-update",
+        "-i",
+        "You are `tester` (Tester), the lead of crew \"Golden crew\".\n\n== Team conventions ==\nTEAM\n\n== Your brief ==\nGOLDEN_PERSONA\n\n== Mission ==\nGoal: Golden goal\n\n== Coordination ==\n- You are the human's counterpart. Workers escalate to you via `ask_lead`.\n- Reply to a worker with `runner msg post --to <handle> \"…\"`; broadcasts omit `--to`.\n- The operator watches the terminals and types directly into a runner's pane.\n- Read your inbox with `runner msg read` — it's pull-based.\n- Escalate to the human (with structured choices) via `runner signal ask_human --payload '{\"prompt\":\"…\",\"choices\":[\"yes\",\"no\"],\"on_behalf_of\":\"<asker>\"}'`.\n- Busy/idle is inferred from your terminal activity.\n\n"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "MISSION_CWD",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_COPILOT_STATUS_GENERATION",
+        "RUNNER_COPILOT_STATUS_PATH",
+        "RUNNER_CREW_ID",
+        "RUNNER_EVENT_LOG",
+        "RUNNER_HANDLE",
+        "RUNNER_MISSION_ID",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "copilot",
+    "shape": "mission-worker",
+    "mode": "auto",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep",
+        "--session-id",
+        "<ID1>",
+        "--add-dir",
+        "<TMP>/crews/c/missions/<ID2>",
+        "--model",
+        "fixture-model",
+        "--effort",
+        "High",
+        "--no-auto-update",
+        "-i",
+        "You are a worker in a crew coordinated by the bundled `runner` CLI. The CLI is on your PATH and talks to the rest of the crew via a shared event bus. Use these verbs to participate; do not invent your own conventions.\n\n== Coordination ==\n- `runner msg read` — read your inbox (pull-based: new messages do NOT auto-print). Run this when you see an `[inbox]` notification or any time you suspect new traffic.\n- `runner msg post --to <handle> \"<text>\"` — direct message to a specific handle. Valid handles: any slot in this crew.\n- `runner msg post \"<text>\"` — broadcast to the crew (no `--to`).\n- `runner signal ask_lead --payload '{\"question\":\"…\",\"context\":\"…\"}'` — escalate to the lead when a load-bearing decision is genuinely ambiguous.\n- Busy/idle is inferred from your terminal activity.\n\n== Team conventions ==\nTEAM\n\n== Your brief ==\nGOLDEN_PERSONA"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "MISSION_CWD",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_COPILOT_STATUS_GENERATION",
+        "RUNNER_COPILOT_STATUS_PATH",
+        "RUNNER_CREW_ID",
+        "RUNNER_EVENT_LOG",
+        "RUNNER_HANDLE",
+        "RUNNER_MISSION_ID",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "copilot",
+    "shape": "mission-lead",
+    "mode": "auto",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep",
+        "--session-id",
+        "<ID1>",
+        "--add-dir",
+        "<TMP>/crews/c/missions/<ID2>",
+        "--model",
+        "fixture-model",
+        "--effort",
+        "High",
+        "--no-auto-update",
+        "-i",
+        "You are `tester` (Tester), the lead of crew \"Golden crew\".\n\n== Team conventions ==\nTEAM\n\n== Your brief ==\nGOLDEN_PERSONA\n\n== Mission ==\nGoal: Golden goal\n\n== Coordination ==\n- You are the human's counterpart. Workers escalate to you via `ask_lead`.\n- Reply to a worker with `runner msg post --to <handle> \"…\"`; broadcasts omit `--to`.\n- The operator watches the terminals and types directly into a runner's pane.\n- Read your inbox with `runner msg read` — it's pull-based.\n- Escalate to the human (with structured choices) via `runner signal ask_human --payload '{\"prompt\":\"…\",\"choices\":[\"yes\",\"no\"],\"on_behalf_of\":\"<asker>\"}'`.\n- Busy/idle is inferred from your terminal activity.\n\n"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "MISSION_CWD",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_COPILOT_STATUS_GENERATION",
+        "RUNNER_COPILOT_STATUS_PATH",
+        "RUNNER_CREW_ID",
+        "RUNNER_EVENT_LOG",
+        "RUNNER_HANDLE",
+        "RUNNER_MISSION_ID",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "copilot",
+    "shape": "mission-worker",
+    "mode": "role-default",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep",
+        "--session-id",
+        "<ID1>",
+        "--add-dir",
+        "<TMP>/crews/c/missions/<ID2>",
+        "--model",
+        "fixture-model",
+        "--effort",
+        "High",
+        "--no-auto-update",
+        "-i",
+        "You are a worker in a crew coordinated by the bundled `runner` CLI. The CLI is on your PATH and talks to the rest of the crew via a shared event bus. Use these verbs to participate; do not invent your own conventions.\n\n== Coordination ==\n- `runner msg read` — read your inbox (pull-based: new messages do NOT auto-print). Run this when you see an `[inbox]` notification or any time you suspect new traffic.\n- `runner msg post --to <handle> \"<text>\"` — direct message to a specific handle. Valid handles: any slot in this crew.\n- `runner msg post \"<text>\"` — broadcast to the crew (no `--to`).\n- `runner signal ask_lead --payload '{\"question\":\"…\",\"context\":\"…\"}'` — escalate to the lead when a load-bearing decision is genuinely ambiguous.\n- Busy/idle is inferred from your terminal activity.\n\n== Team conventions ==\nTEAM\n\n== Your brief ==\nGOLDEN_PERSONA"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "MISSION_CWD",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_COPILOT_STATUS_GENERATION",
+        "RUNNER_COPILOT_STATUS_PATH",
+        "RUNNER_CREW_ID",
+        "RUNNER_EVENT_LOG",
+        "RUNNER_HANDLE",
+        "RUNNER_MISSION_ID",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "copilot",
+    "shape": "mission-lead",
+    "mode": "role-default",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep",
+        "--session-id",
+        "<ID1>",
+        "--add-dir",
+        "<TMP>/crews/c/missions/<ID2>",
+        "--model",
+        "fixture-model",
+        "--effort",
+        "High",
+        "--no-auto-update",
+        "-i",
+        "You are `tester` (Tester), the lead of crew \"Golden crew\".\n\n== Team conventions ==\nTEAM\n\n== Your brief ==\nGOLDEN_PERSONA\n\n== Mission ==\nGoal: Golden goal\n\n== Coordination ==\n- You are the human's counterpart. Workers escalate to you via `ask_lead`.\n- Reply to a worker with `runner msg post --to <handle> \"…\"`; broadcasts omit `--to`.\n- The operator watches the terminals and types directly into a runner's pane.\n- Read your inbox with `runner msg read` — it's pull-based.\n- Escalate to the human (with structured choices) via `runner signal ask_human --payload '{\"prompt\":\"…\",\"choices\":[\"yes\",\"no\"],\"on_behalf_of\":\"<asker>\"}'`.\n- Busy/idle is inferred from your terminal activity.\n\n"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "MISSION_CWD",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_COPILOT_STATUS_GENERATION",
+        "RUNNER_COPILOT_STATUS_PATH",
+        "RUNNER_CREW_ID",
+        "RUNNER_EVENT_LOG",
+        "RUNNER_HANDLE",
+        "RUNNER_MISSION_ID",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "trae",
+    "shape": "fresh",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep",
+        "--model",
+        "fixture-model",
+        "-c",
+        "model_reasoning_effort=high",
+        "GOLDEN_PERSONA\n\n<!-- runner-codex-session-key-capture:<ID1> -->"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_HANDLE",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "trae",
+    "shape": "blank",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_HANDLE",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "trae",
+    "shape": "resume",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "resume",
+        "<ID1>",
+        "--keep",
+        "--model",
+        "fixture-model",
+        "-c",
+        "model_reasoning_effort=high"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_HANDLE",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "trae",
+    "shape": "missing",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "resume",
+        "<ID1>",
+        "--keep",
+        "--model",
+        "fixture-model",
+        "-c",
+        "model_reasoning_effort=high"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_HANDLE",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "trae",
+    "shape": "direct-permission",
+    "mode": "default",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep",
+        "--model",
+        "fixture-model",
+        "-c",
+        "model_reasoning_effort=high",
+        "GOLDEN_PERSONA\n\n<!-- runner-codex-session-key-capture:<ID1> -->"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_HANDLE",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "trae",
+    "shape": "direct-permission",
+    "mode": "accept_edits",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep",
+        "--model",
+        "fixture-model",
+        "-c",
+        "model_reasoning_effort=high",
+        "GOLDEN_PERSONA\n\n<!-- runner-codex-session-key-capture:<ID1> -->"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_HANDLE",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "trae",
+    "shape": "direct-permission",
+    "mode": "auto",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep",
+        "--model",
+        "fixture-model",
+        "-c",
+        "model_reasoning_effort=high",
+        "GOLDEN_PERSONA\n\n<!-- runner-codex-session-key-capture:<ID1> -->"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_HANDLE",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "trae",
+    "shape": "direct-permission",
+    "mode": "bypass",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep",
+        "--model",
+        "fixture-model",
+        "-c",
+        "model_reasoning_effort=high",
+        "GOLDEN_PERSONA\n\n<!-- runner-codex-session-key-capture:<ID1> -->"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_HANDLE",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "trae",
+    "shape": "mission-worker",
+    "mode": "bypass",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep",
+        "--permission-mode",
+        "bypass_permissions",
+        "--model",
+        "fixture-model",
+        "-c",
+        "model_reasoning_effort=high",
+        "You are a worker in a crew coordinated by the bundled `runner` CLI. The CLI is on your PATH and talks to the rest of the crew via a shared event bus. Use these verbs to participate; do not invent your own conventions.\n\n== Coordination ==\n- `runner msg read` — read your inbox (pull-based: new messages do NOT auto-print). Run this when you see an `[inbox]` notification or any time you suspect new traffic.\n- `runner msg post --to <handle> \"<text>\"` — direct message to a specific handle. Valid handles: any slot in this crew.\n- `runner msg post \"<text>\"` — broadcast to the crew (no `--to`).\n- `runner signal ask_lead --payload '{\"question\":\"…\",\"context\":\"…\"}'` — escalate to the lead when a load-bearing decision is genuinely ambiguous.\n- Busy/idle is inferred from your terminal activity.\n\n== Team conventions ==\nTEAM\n\n== Your brief ==\nGOLDEN_PERSONA\n\n<!-- runner-codex-session-key-capture:<ID1> -->"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "MISSION_CWD",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_CREW_ID",
+        "RUNNER_EVENT_LOG",
+        "RUNNER_HANDLE",
+        "RUNNER_MISSION_ID",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "trae",
+    "shape": "mission-lead",
+    "mode": "bypass",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep",
+        "--permission-mode",
+        "bypass_permissions",
+        "--model",
+        "fixture-model",
+        "-c",
+        "model_reasoning_effort=high",
+        "You are `tester` (Tester), the lead of crew \"Golden crew\".\n\n== Team conventions ==\nTEAM\n\n== Your brief ==\nGOLDEN_PERSONA\n\n== Mission ==\nGoal: Golden goal\n\n== Coordination ==\n- You are the human's counterpart. Workers escalate to you via `ask_lead`.\n- Reply to a worker with `runner msg post --to <handle> \"…\"`; broadcasts omit `--to`.\n- The operator watches the terminals and types directly into a runner's pane.\n- Read your inbox with `runner msg read` — it's pull-based.\n- Escalate to the human (with structured choices) via `runner signal ask_human --payload '{\"prompt\":\"…\",\"choices\":[\"yes\",\"no\"],\"on_behalf_of\":\"<asker>\"}'`.\n- Busy/idle is inferred from your terminal activity.\n\n\n\n<!-- runner-codex-session-key-capture:<ID1> -->"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "MISSION_CWD",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_CREW_ID",
+        "RUNNER_EVENT_LOG",
+        "RUNNER_HANDLE",
+        "RUNNER_MISSION_ID",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "trae",
+    "shape": "mission-worker",
+    "mode": "auto",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep",
+        "--model",
+        "fixture-model",
+        "-c",
+        "model_reasoning_effort=high",
+        "You are a worker in a crew coordinated by the bundled `runner` CLI. The CLI is on your PATH and talks to the rest of the crew via a shared event bus. Use these verbs to participate; do not invent your own conventions.\n\n== Coordination ==\n- `runner msg read` — read your inbox (pull-based: new messages do NOT auto-print). Run this when you see an `[inbox]` notification or any time you suspect new traffic.\n- `runner msg post --to <handle> \"<text>\"` — direct message to a specific handle. Valid handles: any slot in this crew.\n- `runner msg post \"<text>\"` — broadcast to the crew (no `--to`).\n- `runner signal ask_lead --payload '{\"question\":\"…\",\"context\":\"…\"}'` — escalate to the lead when a load-bearing decision is genuinely ambiguous.\n- Busy/idle is inferred from your terminal activity.\n\n== Team conventions ==\nTEAM\n\n== Your brief ==\nGOLDEN_PERSONA\n\n<!-- runner-codex-session-key-capture:<ID1> -->"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "MISSION_CWD",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_CREW_ID",
+        "RUNNER_EVENT_LOG",
+        "RUNNER_HANDLE",
+        "RUNNER_MISSION_ID",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "trae",
+    "shape": "mission-lead",
+    "mode": "auto",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep",
+        "--model",
+        "fixture-model",
+        "-c",
+        "model_reasoning_effort=high",
+        "You are `tester` (Tester), the lead of crew \"Golden crew\".\n\n== Team conventions ==\nTEAM\n\n== Your brief ==\nGOLDEN_PERSONA\n\n== Mission ==\nGoal: Golden goal\n\n== Coordination ==\n- You are the human's counterpart. Workers escalate to you via `ask_lead`.\n- Reply to a worker with `runner msg post --to <handle> \"…\"`; broadcasts omit `--to`.\n- The operator watches the terminals and types directly into a runner's pane.\n- Read your inbox with `runner msg read` — it's pull-based.\n- Escalate to the human (with structured choices) via `runner signal ask_human --payload '{\"prompt\":\"…\",\"choices\":[\"yes\",\"no\"],\"on_behalf_of\":\"<asker>\"}'`.\n- Busy/idle is inferred from your terminal activity.\n\n\n\n<!-- runner-codex-session-key-capture:<ID1> -->"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "MISSION_CWD",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_CREW_ID",
+        "RUNNER_EVENT_LOG",
+        "RUNNER_HANDLE",
+        "RUNNER_MISSION_ID",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "trae",
+    "shape": "mission-worker",
+    "mode": "role-default",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep",
+        "--model",
+        "fixture-model",
+        "-c",
+        "model_reasoning_effort=high",
+        "You are a worker in a crew coordinated by the bundled `runner` CLI. The CLI is on your PATH and talks to the rest of the crew via a shared event bus. Use these verbs to participate; do not invent your own conventions.\n\n== Coordination ==\n- `runner msg read` — read your inbox (pull-based: new messages do NOT auto-print). Run this when you see an `[inbox]` notification or any time you suspect new traffic.\n- `runner msg post --to <handle> \"<text>\"` — direct message to a specific handle. Valid handles: any slot in this crew.\n- `runner msg post \"<text>\"` — broadcast to the crew (no `--to`).\n- `runner signal ask_lead --payload '{\"question\":\"…\",\"context\":\"…\"}'` — escalate to the lead when a load-bearing decision is genuinely ambiguous.\n- Busy/idle is inferred from your terminal activity.\n\n== Team conventions ==\nTEAM\n\n== Your brief ==\nGOLDEN_PERSONA\n\n<!-- runner-codex-session-key-capture:<ID1> -->"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "MISSION_CWD",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_CREW_ID",
+        "RUNNER_EVENT_LOG",
+        "RUNNER_HANDLE",
+        "RUNNER_MISSION_ID",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "trae",
+    "shape": "mission-lead",
+    "mode": "role-default",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep",
+        "--model",
+        "fixture-model",
+        "-c",
+        "model_reasoning_effort=high",
+        "You are `tester` (Tester), the lead of crew \"Golden crew\".\n\n== Team conventions ==\nTEAM\n\n== Your brief ==\nGOLDEN_PERSONA\n\n== Mission ==\nGoal: Golden goal\n\n== Coordination ==\n- You are the human's counterpart. Workers escalate to you via `ask_lead`.\n- Reply to a worker with `runner msg post --to <handle> \"…\"`; broadcasts omit `--to`.\n- The operator watches the terminals and types directly into a runner's pane.\n- Read your inbox with `runner msg read` — it's pull-based.\n- Escalate to the human (with structured choices) via `runner signal ask_human --payload '{\"prompt\":\"…\",\"choices\":[\"yes\",\"no\"],\"on_behalf_of\":\"<asker>\"}'`.\n- Busy/idle is inferred from your terminal activity.\n\n\n\n<!-- runner-codex-session-key-capture:<ID1> -->"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "MISSION_CWD",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_CREW_ID",
+        "RUNNER_EVENT_LOG",
+        "RUNNER_HANDLE",
+        "RUNNER_MISSION_ID",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "shell",
+    "shape": "fresh",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "PI_CODING_AGENT_DIR",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "shell",
+    "shape": "blank",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "PI_CODING_AGENT_DIR",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "shell",
+    "shape": "resume",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "PI_CODING_AGENT_DIR",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "shell",
+    "shape": "missing",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "PI_CODING_AGENT_DIR",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "shell",
+    "shape": "direct-permission",
+    "mode": "default",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "PI_CODING_AGENT_DIR",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "shell",
+    "shape": "direct-permission",
+    "mode": "accept_edits",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "PI_CODING_AGENT_DIR",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "shell",
+    "shape": "direct-permission",
+    "mode": "auto",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "PI_CODING_AGENT_DIR",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "shell",
+    "shape": "direct-permission",
+    "mode": "bypass",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "PI_CODING_AGENT_DIR",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "shell",
+    "shape": "mission-worker",
+    "mode": "bypass",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "MISSION_CWD",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_CREW_ID",
+        "RUNNER_EVENT_LOG",
+        "RUNNER_HANDLE",
+        "RUNNER_MISSION_ID",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "shell",
+    "shape": "mission-lead",
+    "mode": "bypass",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "MISSION_CWD",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_CREW_ID",
+        "RUNNER_EVENT_LOG",
+        "RUNNER_HANDLE",
+        "RUNNER_MISSION_ID",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "shell",
+    "shape": "mission-worker",
+    "mode": "auto",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "MISSION_CWD",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_CREW_ID",
+        "RUNNER_EVENT_LOG",
+        "RUNNER_HANDLE",
+        "RUNNER_MISSION_ID",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "shell",
+    "shape": "mission-lead",
+    "mode": "auto",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "MISSION_CWD",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_CREW_ID",
+        "RUNNER_EVENT_LOG",
+        "RUNNER_HANDLE",
+        "RUNNER_MISSION_ID",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "shell",
+    "shape": "mission-worker",
+    "mode": "role-default",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "MISSION_CWD",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_CREW_ID",
+        "RUNNER_EVENT_LOG",
+        "RUNNER_HANDLE",
+        "RUNNER_MISSION_ID",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "shell",
+    "shape": "mission-lead",
+    "mode": "role-default",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "MISSION_CWD",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_CREW_ID",
+        "RUNNER_EVENT_LOG",
+        "RUNNER_HANDLE",
+        "RUNNER_MISSION_ID",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "unknown-runtime",
+    "shape": "fresh",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_HANDLE",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "unknown-runtime",
+    "shape": "blank",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_HANDLE",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "unknown-runtime",
+    "shape": "resume",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_HANDLE",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "unknown-runtime",
+    "shape": "missing",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_HANDLE",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "unknown-runtime",
+    "shape": "direct-permission",
+    "mode": "default",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_HANDLE",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "unknown-runtime",
+    "shape": "direct-permission",
+    "mode": "accept_edits",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_HANDLE",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "unknown-runtime",
+    "shape": "direct-permission",
+    "mode": "auto",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_HANDLE",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "unknown-runtime",
+    "shape": "direct-permission",
+    "mode": "bypass",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_HANDLE",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "unknown-runtime",
+    "shape": "mission-worker",
+    "mode": "bypass",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "MISSION_CWD",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_CREW_ID",
+        "RUNNER_EVENT_LOG",
+        "RUNNER_HANDLE",
+        "RUNNER_MISSION_ID",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "unknown-runtime",
+    "shape": "mission-lead",
+    "mode": "bypass",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "MISSION_CWD",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_CREW_ID",
+        "RUNNER_EVENT_LOG",
+        "RUNNER_HANDLE",
+        "RUNNER_MISSION_ID",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "unknown-runtime",
+    "shape": "mission-worker",
+    "mode": "auto",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "MISSION_CWD",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_CREW_ID",
+        "RUNNER_EVENT_LOG",
+        "RUNNER_HANDLE",
+        "RUNNER_MISSION_ID",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "unknown-runtime",
+    "shape": "mission-lead",
+    "mode": "auto",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "MISSION_CWD",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_CREW_ID",
+        "RUNNER_EVENT_LOG",
+        "RUNNER_HANDLE",
+        "RUNNER_MISSION_ID",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "unknown-runtime",
+    "shape": "mission-worker",
+    "mode": "role-default",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "MISSION_CWD",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_CREW_ID",
+        "RUNNER_EVENT_LOG",
+        "RUNNER_HANDLE",
+        "RUNNER_MISSION_ID",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "unknown-runtime",
+    "shape": "mission-lead",
+    "mode": "role-default",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "MISSION_CWD",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_CREW_ID",
+        "RUNNER_EVENT_LOG",
+        "RUNNER_HANDLE",
+        "RUNNER_MISSION_ID",
+        "TERM"
+      ]
+    }
+  }
+]

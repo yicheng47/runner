@@ -2238,17 +2238,9 @@ fn crew_create_fields(fields: &CrewCreateFields) -> Result<Value, CliError> {
 }
 
 fn runtime_command(runtime: &str) -> Result<&'static str, CliError> {
-    match runtime {
-        "codex" => Ok("codex"),
-        "claude-code" => Ok("claude"),
-        "antigravity" => Ok("agy"),
-        "pi" => Ok("pi"),
-        "copilot" => Ok("copilot"),
-        "trae" => Ok("traecli"),
-        other => Err(CliError::usage(format!(
-            "unknown role runtime {other:?}; expected codex, claude-code, antigravity, pi, copilot, or trae"
-        ))),
-    }
+    runner_core::Runtime::parse(runtime).and_then(runner_core::Runtime::command).ok_or_else(|| CliError::usage(format!(
+        "unknown role runtime {runtime:?}; expected codex, claude-code, antigravity, pi, copilot, or trae"
+    )))
 }
 
 fn validate_permission(permission: Option<&str>) -> Result<(), CliError> {

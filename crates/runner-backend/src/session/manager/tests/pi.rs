@@ -111,7 +111,7 @@ fn pi_direct_spawn_and_relocated_agent_dir_resume_use_live_prompt_file_and_never
 
     role.system_prompt = Some("PERSONA_V2".into());
     update_role_row(&pool.get().unwrap(), &role);
-    let slug = router::runtime::pi_project_slug(&cwd);
+    let slug = crate::runtimes::pi::pi_project_slug(&cwd);
     let pi_sessions = pi_agent_dir.join("sessions").join(slug);
     std::fs::create_dir_all(&pi_sessions).unwrap();
     std::fs::write(pi_sessions.join(format!("resume_{key}.jsonl")), "").unwrap();
@@ -119,7 +119,7 @@ fn pi_direct_spawn_and_relocated_agent_dir_resume_use_live_prompt_file_and_never
     std::fs::create_dir_all(stale_rekey.parent().unwrap()).unwrap();
     std::fs::write(&stale_rekey, "stale report").unwrap();
 
-    router::runtime::with_conversation_home(app_data.path(), || {
+    crate::runtimes::with_conversation_home(app_data.path(), || {
         mgr.resume(
             &spawned.id,
             None,
@@ -207,9 +207,9 @@ fn pi_lead_and_worker_split_prompt_channels_and_approve_only_the_slot() {
                     lead: false,
                 },
             ];
-            router::prompt::compose_lead_prompt_channels(
-                Some(Runtime::Pi),
-                &router::prompt::LaunchPromptInput {
+            crate::runtimes::adapter(Runtime::Pi)
+                .prompt_channels()
+                .lead(&router::prompt::LaunchPromptInput {
                     lead: router::prompt::LeadView {
                         handle: "lead",
                         display_name: "Lead",
@@ -220,14 +220,14 @@ fn pi_lead_and_worker_split_prompt_channels_and_approve_only_the_slot() {
                     roster: &roster,
                     allowed_signals: &[],
                     crew_addendum: None,
-                },
-            )
+                })
         } else {
-            router::prompt::split_session_prompt(
-                Some(Runtime::Pi),
-                router::prompt::SessionPromptKind::Worker,
-                Some(worker_body.clone()),
-            )
+            crate::runtimes::adapter(Runtime::Pi)
+                .prompt_channels()
+                .split(
+                    router::prompt::SessionPromptKind::Worker,
+                    Some(worker_body.clone()),
+                )
         };
         let spawned = mgr
             .spawn_with_prompt_channels(
@@ -316,7 +316,7 @@ fn pi_missing_lead_conversation_keeps_id_and_resends_only_the_goal_turn() {
         .unwrap();
     let fake = fake_runtime();
     let mgr = mgr_with_fake(None, Arc::clone(&fake));
-    router::runtime::with_conversation_home(app_data.path(), || {
+    crate::runtimes::with_conversation_home(app_data.path(), || {
         mgr.resume(
             &id,
             None,
@@ -359,7 +359,7 @@ fn pi_launch_resume_recreates_an_untouched_worker_with_the_same_id() {
     let fake = fake_runtime();
     let mgr = mgr_with_fake(None, Arc::clone(&fake));
 
-    router::runtime::with_conversation_home(app_data.path(), || {
+    crate::runtimes::with_conversation_home(app_data.path(), || {
         mgr.resume_on_launch(
             &id,
             None,

@@ -62,11 +62,9 @@ fn runtime_override_helper_resets_engine_fields_and_keeps_persona() {
     assert_eq!(effective.command, "claude");
     assert_eq!(
         effective.args,
-        router::runtime::apply_permission_mode(
-            Some(Runtime::ClaudeCode),
-            &[],
-            crate::ops::role::default_permission_mode(),
-        ),
+        crate::runtimes::adapter(Runtime::ClaudeCode)
+            .permissions()
+            .apply(&[], crate::ops::role::default_permission_mode()),
         "override args must be the registry default permission-mode pair",
     );
     assert!(!effective.args.contains(&"--custom-flag".to_string()));

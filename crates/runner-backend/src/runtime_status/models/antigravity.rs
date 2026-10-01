@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use super::{option, ModelCatalog, Query, Reason};
 use crate::ops::runtime::RuntimeCatalogOption;
-use crate::router::runtime::ANTIGRAVITY_MODELS;
+use crate::runtimes::antigravity::ANTIGRAVITY_MODELS;
 use crate::shell_path::LoginShellEnv;
 
 const TIMEOUT: Duration = Duration::from_secs(15);
@@ -126,24 +126,20 @@ gemini-4-flash-high\tGemini 4 Flash (High)\n";
             Some([].as_slice())
         );
         assert_eq!(
-            crate::router::runtime::model_effort_args(
-                Some(crate::model::Runtime::Antigravity),
+            crate::runtimes::adapter(crate::model::Runtime::Antigravity).model_effort_args(
                 Some(&catalog.models[0].value),
                 catalog.models[0]
                     .supported_efforts
                     .as_ref()
                     .unwrap()
                     .first()
-                    .map(String::as_str),
+                    .map(String::as_str)
             ),
             ["--model", "gemini-3.8-flash", "--effort", "high"]
         );
         assert_eq!(
-            crate::router::runtime::model_effort_args(
-                Some(crate::model::Runtime::Antigravity),
-                Some(&catalog.models[4].value),
-                None,
-            ),
+            crate::runtimes::adapter(crate::model::Runtime::Antigravity)
+                .model_effort_args(Some(&catalog.models[4].value), None),
             ["--model", "gemini-4-flash-high"]
         );
     }

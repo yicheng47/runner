@@ -29,7 +29,7 @@ pub(crate) fn seed_project_trust(cwd: &Path) -> Result<()> {
 #[cfg(test)]
 pub(crate) fn seed_project_trust(cwd: &Path) -> Result<()> {
     // Mocked session spawns must not touch the user's agy settings.
-    match crate::router::runtime::test_home() {
+    match crate::runtimes::test_home() {
         Some(home) => seed_project_trust_at(cwd, &settings_path(&home), None),
         None => Ok(()),
     }

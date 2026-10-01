@@ -63,6 +63,17 @@ pub(crate) async fn serve_connection(stream: crate::ipc::IpcStream, state: AppCo
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
+    #[test]
+    fn socket_schema_golden() {
+        let schemas: std::collections::BTreeMap<_, _> = RunnerMcpHandler::tool_router()
+            .list_all()
+            .into_iter()
+            .map(|tool| (tool.name.to_string(), tool.input_schema))
+            .collect();
+        crate::golden::assert_golden("socket-schemas", serde_json::to_value(schemas).unwrap());
+    }
+
     #[tokio::test]
     async fn tool_router_registers_tools_and_role_list_matches_backend_list() {
         let router = RunnerMcpHandler::tool_router();

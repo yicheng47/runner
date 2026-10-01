@@ -10,6 +10,7 @@
 
 use runner_core::model::SignalType;
 
+#[cfg(test)]
 use crate::model::Runtime;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -17,29 +18,6 @@ pub enum SessionPromptKind {
     Direct,
     Worker,
     Lead,
-}
-
-/// Split an already-composed session prompt across the runtime's native
-/// prompt channels. The four established runtimes keep the complete body as
-/// their first user turn. pi receives the persona and coordination layers as
-/// a system prompt; only a lead's mission section remains a first turn.
-pub fn split_session_prompt(
-    runtime: Option<Runtime>,
-    kind: SessionPromptKind,
-    composed: Option<String>,
-) -> (Option<String>, Option<String>) {
-    if runtime != Some(Runtime::Pi) {
-        return (None, composed);
-    }
-    let Some(composed) = composed else {
-        return (None, None);
-    };
-    match kind {
-        SessionPromptKind::Direct | SessionPromptKind::Worker => (Some(composed), None),
-        SessionPromptKind::Lead => {
-            unreachable!("pi lead prompts must be composed from LaunchPromptInput")
-        }
-    }
 }
 
 /// View of the lead slot the launch prompt needs. `handle` is the
@@ -137,13 +115,15 @@ pub(crate) const WORKER_COORDINATION_PREAMBLE: &str = r#"You are a worker in a c
 - `runner signal ask_lead --payload '{"question":"…","context":"…"}'` — escalate to the lead when a load-bearing decision is genuinely ambiguous.
 - Busy/idle is inferred from your terminal activity."#;
 
-struct LaunchPromptSections {
-    before_mission: String,
-    mission: String,
-    after_mission: String,
+pub(crate) struct LaunchPromptSections {
+    pub(crate) before_mission: String,
+    pub(crate) mission: String,
+    pub(crate) after_mission: String,
 }
 
-fn compose_launch_prompt_sections(input: &LaunchPromptInput<'_>) -> LaunchPromptSections {
+pub(crate) fn compose_launch_prompt_sections(
+    input: &LaunchPromptInput<'_>,
+) -> LaunchPromptSections {
     let mut before_mission = String::new();
 
     before_mission.push_str(&format!(
@@ -236,19 +216,6 @@ pub fn compose_launch_prompt(input: &LaunchPromptInput<'_>) -> String {
     out
 }
 
-pub fn compose_lead_prompt_channels(
-    runtime: Option<Runtime>,
-    input: &LaunchPromptInput<'_>,
-) -> (Option<String>, Option<String>) {
-    if runtime != Some(Runtime::Pi) {
-        return (None, Some(compose_launch_prompt(input)));
-    }
-    let sections = compose_launch_prompt_sections(input);
-    let mut system_prompt = sections.before_mission;
-    system_prompt.push_str(&sections.after_mission);
-    (Some(system_prompt), Some(sections.mission))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -303,7 +270,9 @@ mod tests {
                 (SessionPromptKind::Lead, lead.clone()),
             ] {
                 assert_eq!(
-                    split_session_prompt(Some(runtime), kind, body.clone()),
+                    crate::runtimes::adapter(runtime)
+                        .prompt_channels()
+                        .split(kind, body.clone()),
                     (None, body)
                 );
             }
@@ -383,7 +352,9 @@ Goal: Implement feature
             (SessionPromptKind::Worker, "coordination and brief"),
         ] {
             assert_eq!(
-                split_session_prompt(Some(Runtime::Pi), kind, Some(body.into())),
+                crate::runtimes::adapter(Runtime::Pi)
+                    .prompt_channels()
+                    .split(kind, Some(body.into())),
                 (Some(body.into()), None),
             );
         }
@@ -413,7 +384,9 @@ Goal: Implement feature
             crew_addendum: Some("TEAM_TEXT"),
         };
         let composed = compose_launch_prompt(&input);
-        let (system_prompt, first_turn) = compose_lead_prompt_channels(Some(Runtime::Pi), &input);
+        let (system_prompt, first_turn) = crate::runtimes::adapter(Runtime::Pi)
+            .prompt_channels()
+            .lead(&input);
         let system_prompt = system_prompt.unwrap();
         let first_turn = first_turn.unwrap();
         assert_eq!(

@@ -74,7 +74,7 @@ fn antigravity_direct_chat_seeds_trust_captures_its_key_and_resumes_by_conversat
     }));
     let mgr = mgr_with_fake(None, Arc::clone(&fake));
     let events = capture();
-    let spawned = router::runtime::with_conversation_home(home.path(), || {
+    let spawned = crate::runtimes::with_conversation_home(home.path(), || {
         mgr.spawn_direct(
             &role,
             None,
@@ -149,7 +149,7 @@ fn antigravity_direct_chat_seeds_trust_captures_its_key_and_resumes_by_conversat
 
     mgr.kill(&spawned.id).unwrap();
     std::fs::write(conversation_db(home.path(), &key), "").unwrap();
-    router::runtime::with_conversation_home(home.path(), || {
+    crate::runtimes::with_conversation_home(home.path(), || {
         mgr.resume(
             &spawned.id,
             None,
@@ -181,7 +181,7 @@ fn antigravity_direct_chat_seeds_trust_captures_its_key_and_resumes_by_conversat
 
     // The replacement has no conversation file, so the next resume starts
     // fresh and resends the persona exactly once.
-    router::runtime::with_conversation_home(home.path(), || {
+    crate::runtimes::with_conversation_home(home.path(), || {
         mgr.resume(
             &spawned.id,
             None,
@@ -269,7 +269,7 @@ fn antigravity_slot_resume_uses_the_conversation_or_starts_fresh_with_its_turn()
     let mgr = mgr_with_fake(None, fake.clone());
 
     std::fs::write(conversation_db(home.path(), &key), "").unwrap();
-    router::runtime::with_conversation_home(home.path(), || {
+    crate::runtimes::with_conversation_home(home.path(), || {
         mgr.resume(&id, None, None, app_data.path(), pool.clone(), capture())
     })
     .unwrap();
@@ -287,7 +287,7 @@ fn antigravity_slot_resume_uses_the_conversation_or_starts_fresh_with_its_turn()
     mgr.kill(&id).unwrap();
 
     std::fs::remove_file(conversation_db(home.path(), &key)).unwrap();
-    router::runtime::with_conversation_home(home.path(), || {
+    crate::runtimes::with_conversation_home(home.path(), || {
         mgr.resume(&id, None, None, app_data.path(), pool.clone(), capture())
     })
     .unwrap();

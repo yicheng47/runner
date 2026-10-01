@@ -4,6 +4,8 @@ mod codex;
 mod copilot;
 mod fork;
 mod forwarder;
+#[cfg(unix)]
+mod golden;
 mod hook_status;
 mod input;
 mod launch_gate;

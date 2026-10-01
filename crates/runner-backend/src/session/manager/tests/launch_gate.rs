@@ -125,7 +125,7 @@ fn custom_claude_settings_do_not_prepare_a_status_watcher() {
         SessionManager::apply_runtime_args(
             &mut spec,
             &role,
-            &router::runtime::resume_plan(Some(Runtime::ClaudeCode), None),
+            &crate::runtimes::adapter(Runtime::ClaudeCode).resume_plan(None),
             root.path(),
             None,
             None,
@@ -191,7 +191,7 @@ fn spawn_argv_injects_runtime_settings_for_fresh_and_resume() {
 
     let fresh = compose(
         "claude-code",
-        router::runtime::resume_plan(Some(Runtime::ClaudeCode), None),
+        crate::runtimes::adapter(Runtime::ClaudeCode).resume_plan(None),
     );
     let settings = fresh
         .windows(2)
@@ -205,13 +205,13 @@ fn spawn_argv_injects_runtime_settings_for_fresh_and_resume() {
     let prior = uuid::Uuid::new_v4().to_string();
     let resumed = compose(
         "claude-code",
-        router::runtime::resume_plan(Some(Runtime::ClaudeCode), Some(&prior)),
+        crate::runtimes::adapter(Runtime::ClaudeCode).resume_plan(Some(&prior)),
     );
     assert!(resumed.windows(2).any(|pair| pair[0] == "--settings"));
 
     let codex = compose(
         "codex",
-        router::runtime::resume_plan(Some(Runtime::Codex), None),
+        crate::runtimes::adapter(Runtime::Codex).resume_plan(None),
     );
     assert!(!codex.iter().any(|arg| arg == "--settings"));
     assert!(codex
@@ -221,7 +221,7 @@ fn spawn_argv_injects_runtime_settings_for_fresh_and_resume() {
 
     let resumed = compose(
         "codex",
-        router::runtime::resume_plan(Some(Runtime::Codex), Some(&prior)),
+        crate::runtimes::adapter(Runtime::Codex).resume_plan(Some(&prior)),
     );
     assert_eq!(&resumed[..2], &["resume", prior.as_str()]);
     assert!(resumed
@@ -230,10 +230,7 @@ fn spawn_argv_injects_runtime_settings_for_fresh_and_resume() {
     assert!(!resumed.iter().any(|arg| arg == "first turn"));
 
     for runtime in ["claude-code", "trae", "copilot", "pi", "antigravity"] {
-        let args = compose(
-            runtime,
-            router::runtime::resume_plan(Runtime::parse(runtime), None),
-        );
+        let args = compose(runtime, crate::runtimes::for_key(runtime).resume_plan(None));
         assert!(!args
             .iter()
             .any(|arg| arg.contains("check_for_update_on_startup")));

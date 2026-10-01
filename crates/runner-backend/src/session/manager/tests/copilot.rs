@@ -137,7 +137,7 @@ fn copilot_missing_worker_conversation_keeps_id_and_delivers_first_turn() {
         .unwrap();
     let fake = fake_runtime();
     let mgr = mgr_with_fake(None, fake.clone());
-    router::runtime::with_conversation_home(app_data.path(), || {
+    crate::runtimes::with_conversation_home(app_data.path(), || {
         mgr.resume(&id, None, None, app_data.path(), pool.clone(), capture())
     })
     .unwrap();

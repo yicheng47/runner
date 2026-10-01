@@ -141,7 +141,7 @@ fn codex_resume_skips_first_prompt_injection() {
         "-c".into(),
         "check_for_update_on_startup=false".into(),
     ];
-    expected.extend(router::runtime::codex_status_args(
+    expected.extend(crate::runtimes::codex::codex_status_args(
         Some(Runtime::Codex),
         &[],
         Path::new("/tmp"),

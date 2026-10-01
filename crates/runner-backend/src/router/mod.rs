@@ -1428,9 +1428,9 @@ impl LaunchInputs {
                 lead: slot.is_lead(),
             })
             .collect();
-        crate::router::prompt::compose_lead_prompt_channels(
-            runtime,
-            &crate::router::prompt::LaunchPromptInput {
+        crate::runtimes::for_key(runtime.map(Runtime::key).unwrap_or(""))
+            .prompt_channels()
+            .lead(&crate::router::prompt::LaunchPromptInput {
                 lead: crate::router::prompt::LeadView {
                     handle: self.lead().handle(),
                     display_name: self.lead().display_name(),
@@ -1441,8 +1441,7 @@ impl LaunchInputs {
                 roster: &roster,
                 allowed_signals: self.allowed_signals(),
                 crew_addendum: self.crew_addendum(),
-            },
-        )
+            })
     }
 
     fn latest_mission_goal_text(log: &EventLog) -> String {

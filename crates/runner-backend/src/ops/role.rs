@@ -166,11 +166,11 @@ pub(super) fn validate_system_prompt(prompt: Option<&str>) -> Result<()> {
 /// their role in memory and never store one.
 pub fn validate_agent_runtime(name: &str) -> Result<Runtime> {
     Runtime::parse(name)
-        .filter(|runtime| crate::router::runtime::runtime_definition(*runtime).is_some())
+        .filter(|runtime| crate::runtimes::adapter(*runtime).catalog().is_some())
         .ok_or_else(|| {
             Error::msg(format!(
                 "unknown runtime '{name}' — valid runtimes: {}",
-                crate::router::runtime::runtime_definitions()
+                crate::runtimes::catalogs()
                     .iter()
                     .map(|r| r.name.key())
                     .collect::<Vec<_>>()
@@ -284,11 +284,9 @@ pub fn create(conn: &Connection, input: CreateRoleInput) -> Result<Role> {
     // `router::runtime::apply_permission_mode`. No-op for runtimes
     // without a permission concept (the helper returns input
     // unchanged for shell/unknown).
-    let args = crate::router::runtime::apply_permission_mode(
-        Some(input.runtime),
-        &input.args,
-        input.permission_mode,
-    );
+    let args = crate::runtimes::adapter(input.runtime)
+        .permissions()
+        .apply(&input.args, input.permission_mode);
 
     repo::role::insert(
         conn,
@@ -355,14 +353,15 @@ pub fn update(conn: &Connection, id: &str, input: UpdateRoleInput) -> Result<Rol
         Some(mode) => {
             let base = input.args.unwrap_or(existing.args);
             let cleared = if runtime_changed {
-                crate::router::runtime::strip_permission_flags(
-                    Runtime::parse(&prior_runtime),
-                    &base,
-                )
+                crate::runtimes::for_key(&prior_runtime)
+                    .permissions()
+                    .strip(&base)
             } else {
                 base
             };
-            crate::router::runtime::apply_permission_mode(Runtime::parse(&runtime), &cleared, mode)
+            crate::runtimes::for_key(&runtime)
+                .permissions()
+                .apply(&cleared, mode)
         }
         None => input.args.unwrap_or(existing.args),
     };

@@ -1,0 +1,570 @@
+[
+  {
+    "name": "codex",
+    "display_name": "Codex",
+    "command": "codex",
+    "native_fork": true,
+    "description": "OpenAI Codex CLI",
+    "install_url": "https://developers.openai.com/codex/cli",
+    "default_enabled": true,
+    "available": false,
+    "default_model": null,
+    "default_effort": null,
+    "models": [
+      {
+        "value": "",
+        "label": "default",
+        "description": "Use the agent's own default model."
+      },
+      {
+        "value": "gpt-6-astra",
+        "label": "gpt-6-astra",
+        "description": "Our most capable model for complex, demanding work."
+      },
+      {
+        "value": "gpt-5.6-sol",
+        "label": "gpt-5.6-sol",
+        "description": "Reliable agentic workhorse for everyday tasks."
+      },
+      {
+        "value": "gpt-5.6-terra",
+        "label": "gpt-5.6-terra",
+        "description": "Balanced agentic coding model for everyday work."
+      },
+      {
+        "value": "gpt-5.6-luna",
+        "label": "gpt-5.6-luna",
+        "description": "Fast and affordable agentic coding model."
+      },
+      {
+        "value": "gpt-5.5",
+        "label": "gpt-5.5",
+        "description": "Frontier model for complex coding, research, and real-world work."
+      },
+      {
+        "value": "gpt-5.4",
+        "label": "gpt-5.4",
+        "description": "Strong model for everyday coding."
+      },
+      {
+        "value": "gpt-5.4-mini",
+        "label": "gpt-5.4-mini",
+        "description": "Small, fast, and cost-efficient model for simpler coding tasks."
+      },
+      {
+        "value": "gpt-5.3-codex-spark",
+        "label": "gpt-5.3-codex-spark",
+        "description": "Ultra-fast coding model."
+      }
+    ],
+    "efforts": [
+      {
+        "value": "",
+        "label": "default",
+        "description": "Use the agent's own default effort; no flag passed."
+      },
+      {
+        "value": "low",
+        "label": "Low",
+        "description": "Fast responses with lighter reasoning."
+      },
+      {
+        "value": "medium",
+        "label": "Medium",
+        "description": "Balances speed and reasoning depth."
+      },
+      {
+        "value": "high",
+        "label": "High",
+        "description": "Greater reasoning depth for complex problems."
+      },
+      {
+        "value": "xhigh",
+        "label": "Extra high",
+        "description": "Extra reasoning depth for complex problems."
+      },
+      {
+        "value": "max",
+        "label": "Max",
+        "description": "Maximum reasoning depth for the hardest problems."
+      },
+      {
+        "value": "ultra",
+        "label": "Ultra",
+        "description": "Maximum reasoning with automatic task delegation."
+      }
+    ]
+  },
+  {
+    "name": "claude-code",
+    "display_name": "Claude Code",
+    "command": "claude",
+    "native_fork": true,
+    "description": "Anthropic Claude Code CLI",
+    "install_url": "https://code.claude.com/docs/en/setup",
+    "default_enabled": true,
+    "available": false,
+    "default_model": null,
+    "default_effort": null,
+    "models": [
+      {
+        "value": "",
+        "label": "default",
+        "description": "Use the agent's own default model."
+      },
+      {
+        "value": "fable",
+        "label": "fable",
+        "description": "Latest Claude Fable."
+      },
+      {
+        "value": "opus",
+        "label": "opus",
+        "description": "Latest Claude Opus."
+      },
+      {
+        "value": "sonnet",
+        "label": "sonnet",
+        "description": "Latest Claude Sonnet."
+      },
+      {
+        "value": "haiku",
+        "label": "haiku",
+        "description": "Latest Claude Haiku."
+      }
+    ],
+    "efforts": [
+      {
+        "value": "",
+        "label": "default",
+        "description": "Use the agent's own default effort; no flag passed."
+      },
+      {
+        "value": "low",
+        "label": "low",
+        "description": null
+      },
+      {
+        "value": "medium",
+        "label": "medium",
+        "description": null
+      },
+      {
+        "value": "high",
+        "label": "high",
+        "description": null
+      },
+      {
+        "value": "xhigh",
+        "label": "xhigh",
+        "description": null
+      },
+      {
+        "value": "max",
+        "label": "max",
+        "description": null
+      }
+    ]
+  },
+  {
+    "name": "antigravity",
+    "display_name": "Antigravity CLI",
+    "command": "agy",
+    "native_fork": false,
+    "description": "Google Antigravity CLI (signs in with a Google account)",
+    "install_url": "https://antigravity.google/docs/cli/reference",
+    "default_enabled": true,
+    "available": false,
+    "default_model": null,
+    "default_effort": null,
+    "models": [
+      {
+        "value": "",
+        "label": "default",
+        "description": "Use the agent's own default model."
+      },
+      {
+        "value": "gemini-3.8-flash",
+        "label": "gemini-3.8-flash",
+        "description": null,
+        "supported_efforts": [
+          "low",
+          "medium",
+          "high"
+        ]
+      },
+      {
+        "value": "gemini-3.7-flash",
+        "label": "gemini-3.7-flash",
+        "description": null,
+        "supported_efforts": [
+          "low",
+          "medium",
+          "high"
+        ]
+      },
+      {
+        "value": "gemini-3.6-flash",
+        "label": "gemini-3.6-flash",
+        "description": null,
+        "supported_efforts": [
+          "low",
+          "medium",
+          "high"
+        ]
+      },
+      {
+        "value": "gemini-3.1-pro",
+        "label": "gemini-3.1-pro",
+        "description": null,
+        "supported_efforts": [
+          "low",
+          "high"
+        ]
+      },
+      {
+        "value": "claude-sonnet-4-6",
+        "label": "claude-sonnet-4-6",
+        "description": null,
+        "supported_efforts": []
+      },
+      {
+        "value": "claude-opus-4-6-thinking",
+        "label": "claude-opus-4-6-thinking",
+        "description": null,
+        "supported_efforts": []
+      },
+      {
+        "value": "gpt-oss-120b-medium",
+        "label": "gpt-oss-120b-medium",
+        "description": null,
+        "supported_efforts": []
+      }
+    ],
+    "efforts": [
+      {
+        "value": "",
+        "label": "default",
+        "description": "Use the agent's own default effort; no flag passed."
+      },
+      {
+        "value": "low",
+        "label": "low",
+        "description": null
+      },
+      {
+        "value": "medium",
+        "label": "medium",
+        "description": null
+      },
+      {
+        "value": "high",
+        "label": "high",
+        "description": null
+      }
+    ]
+  },
+  {
+    "name": "pi",
+    "display_name": "pi",
+    "command": "pi",
+    "native_fork": true,
+    "description": "pi coding agent (bring your own model provider)",
+    "install_url": "https://github.com/earendil-works/pi",
+    "default_enabled": true,
+    "available": false,
+    "default_model": null,
+    "default_effort": null,
+    "models": [
+      {
+        "value": "",
+        "label": "default",
+        "description": "Use the agent's own default model."
+      }
+    ],
+    "efforts": [
+      {
+        "value": "",
+        "label": "default",
+        "description": "Use the agent's own default effort; no flag passed."
+      },
+      {
+        "value": "off",
+        "label": "off",
+        "description": null
+      },
+      {
+        "value": "minimal",
+        "label": "minimal",
+        "description": null
+      },
+      {
+        "value": "low",
+        "label": "low",
+        "description": null
+      },
+      {
+        "value": "medium",
+        "label": "medium",
+        "description": null
+      },
+      {
+        "value": "high",
+        "label": "high",
+        "description": null
+      },
+      {
+        "value": "xhigh",
+        "label": "xhigh",
+        "description": null
+      },
+      {
+        "value": "max",
+        "label": "max",
+        "description": null
+      }
+    ]
+  },
+  {
+    "name": "copilot",
+    "display_name": "GitHub Copilot CLI",
+    "command": "copilot",
+    "native_fork": false,
+    "description": "GitHub Copilot CLI (requires a Copilot subscription)",
+    "install_url": "https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/install-copilot-cli",
+    "default_enabled": true,
+    "available": false,
+    "default_model": null,
+    "default_effort": null,
+    "models": [
+      {
+        "value": "",
+        "label": "default",
+        "description": "Use the agent's own default model."
+      },
+      {
+        "value": "auto",
+        "label": "auto",
+        "description": null
+      },
+      {
+        "value": "claude-sonnet-5",
+        "label": "claude-sonnet-5",
+        "description": null
+      },
+      {
+        "value": "claude-fable-5.1",
+        "label": "claude-fable-5.1",
+        "description": null
+      },
+      {
+        "value": "claude-fable-5",
+        "label": "claude-fable-5",
+        "description": null
+      },
+      {
+        "value": "claude-opus-5",
+        "label": "claude-opus-5",
+        "description": null
+      },
+      {
+        "value": "claude-opus-4.8",
+        "label": "claude-opus-4.8",
+        "description": null
+      },
+      {
+        "value": "claude-opus-4.8-fast",
+        "label": "claude-opus-4.8-fast",
+        "description": null
+      },
+      {
+        "value": "claude-opus-4.7",
+        "label": "claude-opus-4.7",
+        "description": null
+      },
+      {
+        "value": "claude-sonnet-4.6",
+        "label": "claude-sonnet-4.6",
+        "description": null
+      },
+      {
+        "value": "claude-haiku-4.5",
+        "label": "claude-haiku-4.5",
+        "description": null
+      },
+      {
+        "value": "gpt-5.6-sol",
+        "label": "gpt-5.6-sol",
+        "description": null
+      },
+      {
+        "value": "gpt-5.6-terra",
+        "label": "gpt-5.6-terra",
+        "description": null
+      },
+      {
+        "value": "gpt-5.6-luna",
+        "label": "gpt-5.6-luna",
+        "description": null
+      },
+      {
+        "value": "gpt-5.5",
+        "label": "gpt-5.5",
+        "description": null
+      },
+      {
+        "value": "gpt-5.4",
+        "label": "gpt-5.4",
+        "description": null
+      },
+      {
+        "value": "gpt-5.4-mini",
+        "label": "gpt-5.4-mini",
+        "description": null
+      },
+      {
+        "value": "gpt-5.3-codex",
+        "label": "gpt-5.3-codex",
+        "description": null
+      },
+      {
+        "value": "gpt-5-mini",
+        "label": "gpt-5-mini",
+        "description": null
+      },
+      {
+        "value": "mai-code-1.1-flash",
+        "label": "mai-code-1.1-flash",
+        "description": null
+      },
+      {
+        "value": "mai-code-1-flash-picker",
+        "label": "mai-code-1-flash-picker",
+        "description": null
+      },
+      {
+        "value": "gemini-3.8-flash",
+        "label": "gemini-3.8-flash",
+        "description": null
+      },
+      {
+        "value": "gemini-3.7-flash",
+        "label": "gemini-3.7-flash",
+        "description": null
+      },
+      {
+        "value": "gemini-3.6-flash",
+        "label": "gemini-3.6-flash",
+        "description": null
+      },
+      {
+        "value": "gemini-3.5-flash",
+        "label": "gemini-3.5-flash",
+        "description": null
+      },
+      {
+        "value": "grok-4.5",
+        "label": "grok-4.5",
+        "description": null
+      },
+      {
+        "value": "kimi-k3",
+        "label": "kimi-k3",
+        "description": null
+      },
+      {
+        "value": "kimi-k2.7-code",
+        "label": "kimi-k2.7-code",
+        "description": null
+      }
+    ],
+    "efforts": [
+      {
+        "value": "",
+        "label": "default",
+        "description": "Use the agent's own default effort; no flag passed."
+      },
+      {
+        "value": "none",
+        "label": "none",
+        "description": null
+      },
+      {
+        "value": "minimal",
+        "label": "minimal",
+        "description": null
+      },
+      {
+        "value": "low",
+        "label": "low",
+        "description": null
+      },
+      {
+        "value": "medium",
+        "label": "medium",
+        "description": null
+      },
+      {
+        "value": "high",
+        "label": "high",
+        "description": null
+      },
+      {
+        "value": "xhigh",
+        "label": "xhigh",
+        "description": null
+      },
+      {
+        "value": "max",
+        "label": "max",
+        "description": null
+      }
+    ]
+  },
+  {
+    "name": "trae",
+    "display_name": "TRAE CLI",
+    "command": "traecli",
+    "native_fork": false,
+    "description": "",
+    "install_url": "",
+    "default_enabled": true,
+    "available": false,
+    "default_model": null,
+    "default_effort": null,
+    "models": [
+      {
+        "value": "",
+        "label": "default",
+        "description": "Use the agent's own default model."
+      }
+    ],
+    "efforts": [
+      {
+        "value": "",
+        "label": "default",
+        "description": "Use the agent's own default effort; no flag passed."
+      },
+      {
+        "value": "low",
+        "label": "Low",
+        "description": "Fast responses with lighter reasoning."
+      },
+      {
+        "value": "medium",
+        "label": "Medium",
+        "description": "Balances speed and reasoning depth."
+      },
+      {
+        "value": "high",
+        "label": "High",
+        "description": "Greater reasoning depth for complex problems."
+      },
+      {
+        "value": "xhigh",
+        "label": "Extra high",
+        "description": "Extra reasoning depth for complex problems."
+      }
+    ]
+  }
+]

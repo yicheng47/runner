@@ -1717,16 +1717,14 @@ pub(crate) fn resolve_runtime_override(
     }
     let mut effective = role.clone();
     if let Some(name) = runtime_override.filter(|name| *name != role.runtime.as_str()) {
-        let def = Runtime::parse(name)
-            .and_then(router::runtime::runtime_definition)
+        let def = crate::runtimes::for_key(name)
+            .catalog()
             .ok_or_else(|| Error::msg(format!("unknown runtime: {name}")))?;
         effective.runtime = def.name.to_string();
         effective.command = def.command.to_string();
-        effective.args = router::runtime::apply_permission_mode(
-            Some(def.name),
-            &[],
-            crate::ops::role::default_permission_mode(),
-        );
+        effective.args = crate::runtimes::adapter(def.name)
+            .permissions()
+            .apply(&[], crate::ops::role::default_permission_mode());
         // A differing engine starts from its own defaults; the
         // role's model/effort belong to the original runtime.
         effective.model = None;
@@ -1755,21 +1753,19 @@ pub(crate) fn runtime_direct_role(
     if runtime.is_empty() {
         return Err(Error::msg("runtime is required"));
     }
-    let registry = Runtime::parse(runtime).and_then(router::runtime::runtime_definition);
+    let registry = crate::runtimes::for_key(runtime).catalog();
     let command = command
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .or_else(|| registry.map(|r| r.command))
+        .or_else(|| registry.as_ref().map(|r| r.command))
         .ok_or_else(|| Error::msg(format!("unknown runtime: {runtime}")))?;
     let now = Utc::now();
-    let args = if Runtime::parse(runtime) == Some(Runtime::Shell) {
+    let args = if Runtime::parse(runtime).is_some_and(Runtime::is_shell) {
         crate::shell_path::shell_login_args(command)
     } else {
-        router::runtime::apply_permission_mode(
-            Runtime::parse(runtime),
-            &[],
-            crate::ops::role::default_permission_mode(),
-        )
+        crate::runtimes::for_key(runtime)
+            .permissions()
+            .apply(&[], crate::ops::role::default_permission_mode())
     };
     Ok(Role {
         id: format!("runtime:{runtime}"),

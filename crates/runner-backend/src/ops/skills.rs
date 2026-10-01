@@ -5,7 +5,7 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
-use crate::router::runtime::runtime_definitions;
+
 use crate::skills::{
     codex_config_tables, codex_override_matches, skill_catalog, SkillCatalog, SkillEntry,
 };
@@ -26,7 +26,7 @@ pub fn skill_catalogs(_core: &AppCore) -> Vec<SkillCatalog> {
         return Vec::new();
     };
     let codex_home = codex_home();
-    runtime_definitions()
+    crate::runtimes::catalogs()
         .iter()
         .filter_map(|runtime| skill_catalog(runtime.name, &home, codex_home.as_deref()))
         .collect()

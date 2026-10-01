@@ -17,7 +17,7 @@ use super::{
 use crate::db::DbPool;
 use crate::events::EventChannel;
 use crate::model::Runtime;
-use crate::router::runtime::{runtime_definition, runtime_definitions};
+
 use crate::shell_path::LoginShellEnv;
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -382,7 +382,7 @@ fn request_latest_with(
     if deferred {
         return;
     }
-    for definition in runtime_definitions() {
+    for definition in crate::runtimes::catalogs() {
         let Some(package) = definition.npm_package else {
             continue;
         };
@@ -497,9 +497,11 @@ fn parse_latest(body: &serde_json::Value) -> Option<String> {
 
 /// Whether the runtime has an update subcommand Runner can run.
 pub(crate) fn updatable(runtime: Runtime) -> bool {
-    runtime_definition(runtime).is_some_and(|definition| {
-        !definition.update_args.is_empty() && definition.npm_package.is_some()
-    })
+    crate::runtimes::adapter(runtime)
+        .catalog()
+        .is_some_and(|definition| {
+            !definition.update_args.is_empty() && definition.npm_package.is_some()
+        })
 }
 
 #[cfg(test)]

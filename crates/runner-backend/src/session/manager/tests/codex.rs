@@ -30,7 +30,7 @@ fn codex_speed_follows_role_args_for_direct_and_mission_spawns() {
                 SessionManager::apply_runtime_args(
                     &mut spec,
                     &role,
-                    &router::runtime::resume_plan(Some(Runtime::Codex), key),
+                    &crate::runtimes::adapter(Runtime::Codex).resume_plan(key),
                     root.path(),
                     None,
                     Some("first turn"),
@@ -89,7 +89,7 @@ fn codex_spawn_composes_hooks_without_changing_user_home_and_respects_overrides(
             SessionManager::apply_runtime_args(
                 &mut spec,
                 &role,
-                &router::runtime::resume_plan(Some(Runtime::Codex), key),
+                &crate::runtimes::adapter(Runtime::Codex).resume_plan(key),
                 root.path(),
                 None,
                 Some("first turn"),
@@ -728,7 +728,7 @@ fn codex_windows_batch_pending_prompt_is_recorded_before_argv_suppression() {
     SessionManager::apply_runtime_args(
         &mut spec,
         &role,
-        &router::runtime::resume_plan(Some(Runtime::Codex), None),
+        &crate::runtimes::adapter(Runtime::Codex).resume_plan(None),
         root.path(),
         None,
         Some("automatic prompt"),

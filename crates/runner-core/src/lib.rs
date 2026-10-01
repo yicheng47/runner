@@ -6,6 +6,8 @@ pub mod command_install;
 pub mod error;
 pub mod event_log;
 pub mod model;
+pub mod runtime;
+pub use runtime::Runtime;
 
 pub use error::{Error, Result};
 pub use event_log::{EventLog, EVENTS_FILENAME};

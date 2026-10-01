@@ -434,8 +434,15 @@ fn direct_entry_from_repo(
     let display_name = d
         .role_display_name
         .filter(|_| handle.is_some())
-        .unwrap_or_else(|| crate::router::runtime::runtime_display_name(&agent_runtime));
-    let native_fork = crate::router::runtime::supports_native_fork(Runtime::parse(&agent_runtime));
+        .unwrap_or_else(|| {
+            crate::runtimes::for_key(&agent_runtime)
+                .catalog()
+                .map(|catalog| catalog.display_name.to_string())
+                .unwrap_or_else(|| agent_runtime.to_string())
+        });
+    let native_fork = crate::runtimes::for_key(&agent_runtime)
+        .catalog()
+        .is_some_and(|catalog| catalog.native_fork);
     Ok(DirectSessionEntry {
         session_id: d.row.id,
         project_id: d.row.project_id,

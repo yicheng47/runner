@@ -5,7 +5,7 @@ use std::sync::{Arc, RwLock};
 use crate::db::{self, DbPool, LoginShellEnvLkg};
 use crate::error::{Error, Result};
 use crate::events::EventChannel;
-use crate::router::runtime::{runtime_definition, runtime_definitions};
+
 use crate::session::launch;
 use crate::shell_path::{DiscoveryOutcome, DiscoveryResult, DiscoveryState, LoginShellEnv};
 use serde::Serialize;
@@ -110,7 +110,7 @@ pub fn status_list(
     let result = discovery.result.as_ref();
     let failed = result.is_some_and(|result| !result.outcome.is_success());
 
-    let runtimes = runtime_definitions()
+    let runtimes = crate::runtimes::catalogs()
         .iter()
         .map(|runtime| {
             let defaults = home
@@ -224,7 +224,8 @@ fn effective_runtime_command_on_path(
     path: &str,
     checking: bool,
 ) -> Result<EffectiveRuntimeCommand> {
-    let definition = runtime_definition(runtime)
+    let definition = crate::runtimes::adapter(runtime)
+        .catalog()
         .ok_or_else(|| Error::msg(format!("unknown runtime: {runtime}")))?;
     if let Some(path) = overrides.get(runtime.key()) {
         if validate_executable_path(Path::new(path)).is_ok() {
@@ -269,7 +270,8 @@ fn effective_runtime_command_on_path(
 }
 
 pub fn runtime_not_found_error(runtime: Runtime) -> Error {
-    let name = runtime_definition(runtime)
+    let name = crate::runtimes::adapter(runtime)
+        .catalog()
         .map(|definition| definition.display_name)
         .unwrap_or(runtime.key());
     Error::msg(format!(
@@ -281,7 +283,7 @@ pub fn validate_override(
     runtime: Runtime,
     path: &str,
 ) -> std::result::Result<(), OverrideValidationError> {
-    if runtime_definition(runtime).is_none() {
+    if crate::runtimes::adapter(runtime).catalog().is_none() {
         return Err(validation_error(
             "unknown_runtime",
             format!("Unknown runtime: {runtime}."),
@@ -444,7 +446,7 @@ pub fn start_background_discovery(
         }
         log_runtime_paths(&pool, &shell_env);
         events.emit("runtime/changed", &());
-        let runtimes: Vec<_> = runtime_definitions()
+        let runtimes: Vec<_> = crate::runtimes::catalogs()
             .iter()
             .map(|runtime| runtime.name)
             .collect();
@@ -487,7 +489,7 @@ fn log_runtime_paths(pool: &DbPool, shell_env: &SharedShellEnv) {
         return;
     };
     let path = direct_chat_path(&shell_env);
-    for runtime in runtime_definitions() {
+    for runtime in crate::runtimes::catalogs() {
         match find_executable(runtime.command, &path) {
             Some(found) => log::info!(
                 "runtime discovery result: runtime={} detected={}",

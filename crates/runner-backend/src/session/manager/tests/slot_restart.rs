@@ -49,7 +49,7 @@ fn lead_restart_and_missing_conversation_resume_deliver_launch_prompt() {
             mgr.restart(&id, None, None, app_data.path(), pool.clone(), capture())
                 .unwrap();
         } else {
-            router::runtime::with_conversation_home(app_data.path(), || {
+            crate::runtimes::with_conversation_home(app_data.path(), || {
                 mgr.resume(&id, None, None, app_data.path(), pool.clone(), capture())
             })
             .unwrap();
@@ -83,7 +83,7 @@ fn missing_worker_conversation_resume_delivers_cold_start_first_turn() {
         }
         let fake = fake_runtime();
         let mgr = mgr_with_fake(None, fake.clone());
-        router::runtime::with_conversation_home(app_data.path(), || {
+        crate::runtimes::with_conversation_home(app_data.path(), || {
             mgr.resume(&id, None, None, app_data.path(), pool.clone(), capture())
         })
         .unwrap();

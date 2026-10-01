@@ -9,7 +9,11 @@ description = "Shared types and event-log primitives for the Runner app and CLI.
 [lib]
 name = "runner_core"
 
+[features]
+schemars = ["dep:schemars"]
+
 [dependencies]
+schemars = { version = "1", optional = true }
 chrono = { workspace = true }
 fs2 = { workspace = true }
 serde = { workspace = true }

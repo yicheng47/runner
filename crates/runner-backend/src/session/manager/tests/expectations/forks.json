@@ -1,0 +1,115 @@
+[
+  {
+    "runtime": "claude-code",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep",
+        "--resume",
+        "<ID1>",
+        "--fork-session",
+        "--session-id",
+        "<ID2>",
+        "--model",
+        "fixture-model",
+        "--effort",
+        "High",
+        "--settings",
+        "{\"tui\":\"fullscreen\",\"theme\":\"auto\",\"hooks\":{\"SessionStart\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"cat > '<TMP>/session-keys/<ID3>.json.tmp' && mv '<TMP>/session-keys/<ID3>.json.tmp' '<TMP>/session-keys/<ID3>.json'\",\"timeout\":2}]},{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID3>.sh' '<TMP>/session-status/<ID3>.ndjson' 'SessionStart' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PermissionRequest\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID3>.sh' '<TMP>/session-status/<ID3>.ndjson' 'PermissionRequest' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PermissionDenied\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID3>.sh' '<TMP>/session-status/<ID3>.ndjson' 'PermissionDenied' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PostToolUseFailure\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID3>.sh' '<TMP>/session-status/<ID3>.ndjson' 'PostToolUseFailure' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"Elicitation\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID3>.sh' '<TMP>/session-status/<ID3>.ndjson' 'Elicitation' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"ElicitationResult\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID3>.sh' '<TMP>/session-status/<ID3>.ndjson' 'ElicitationResult' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"UserPromptSubmit\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID3>.sh' '<TMP>/session-status/<ID3>.ndjson' 'UserPromptSubmit' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PreToolUse\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID3>.sh' '<TMP>/session-status/<ID3>.ndjson' 'PreToolUse' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PostToolUse\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID3>.sh' '<TMP>/session-status/<ID3>.ndjson' 'PostToolUse' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PreCompact\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID3>.sh' '<TMP>/session-status/<ID3>.ndjson' 'PreCompact' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PostCompact\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID3>.sh' '<TMP>/session-status/<ID3>.ndjson' 'PostCompact' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"Notification\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID3>.sh' '<TMP>/session-status/<ID3>.ndjson' 'Notification' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}],\"matcher\":\"^(idle_prompt|permission_prompt|elicitation_dialog)$\"}],\"Stop\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID3>.sh' '<TMP>/session-status/<ID3>.ndjson' 'Stop' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"StopFailure\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID3>.sh' '<TMP>/session-status/<ID3>.ndjson' 'StopFailure' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}]}}"
+      ],
+      "env_keys": [
+        "CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY",
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "DISABLE_INSTALLATION_CHECKS",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_CLAUDE_STATUS_GENERATION",
+        "RUNNER_CLAUDE_STATUS_PATH",
+        "RUNNER_HANDLE",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "codex",
+    "spawn": {
+      "command": "<MATERIALIZER>/codex-fork-materializer",
+      "args": [
+        "resume",
+        "<ID1>",
+        "--keep",
+        "--model",
+        "fixture-model",
+        "-c",
+        "model_reasoning_effort=high",
+        "-c",
+        "check_for_update_on_startup=false",
+        "--enable",
+        "hooks",
+        "--dangerously-bypass-hook-trust",
+        "-c",
+        "hooks.SessionStart=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'SessionStart' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.UserPromptSubmit=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'UserPromptSubmit' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.PreToolUse=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PreToolUse' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.PostToolUse=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostToolUse' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.PreCompact=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PreCompact' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.PostCompact=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostCompact' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.Stop=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Stop' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.Interrupt=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Interrupt' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "-c",
+        "hooks.SessionEnd=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'SessionEnd' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_CODEX_STATUS_GENERATION",
+        "RUNNER_CODEX_STATUS_PATH",
+        "RUNNER_HANDLE",
+        "TERM"
+      ],
+      "headless": "cwd=<TMP>\nenv=\narg=exec\narg=fork\narg=<ID3>\narg=--json\narg=--skip-git-repo-check\narg=This chat was forked from 'Golden source'.\n"
+    }
+  },
+  {
+    "runtime": "pi",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--fork",
+        "<ID1>",
+        "--session-id",
+        "<ID2>",
+        "--keep",
+        "--model",
+        "fixture-model",
+        "--thinking",
+        "high",
+        "--append-system-prompt",
+        "<TMP>/session-prompts/<ID3>.md"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "PI_CODING_AGENT_DIR",
+        "PI_SKIP_VERSION_CHECK",
+        "RUNNER_HANDLE",
+        "RUNNER_PI_REKEY_PATH",
+        "RUNNER_PI_SESSION_KEY",
+        "RUNNER_PI_STATUS_GENERATION",
+        "RUNNER_PI_STATUS_PATH",
+        "TERM"
+      ]
+    }
+  }
+]

@@ -9,8 +9,6 @@
 // consumes. The GPUI frontend owns the only terminal model; the backend
 // does not run a second headless emulator.
 
-#[cfg(unix)]
-use crate::model::Runtime;
 use std::collections::HashMap;
 use std::io::{ErrorKind, Read, Write};
 use std::path::PathBuf;
@@ -1629,8 +1627,8 @@ fn command_line_matches_recorded_agent(
         .filter(|command| !command.trim().is_empty())
         .or_else(|| {
             runtime.and_then(|runtime| {
-                Runtime::parse(runtime)
-                    .and_then(crate::router::runtime::runtime_definition)
+                crate::runtimes::for_key(runtime)
+                    .catalog()
                     .map(|definition| definition.command)
             })
         });
@@ -3813,7 +3811,7 @@ mod tests {
     #[test]
     fn hook_status_argv_survives_a_batch_shim_launch_windows() {
         use crate::model::Runtime;
-        use crate::router::runtime::{permission_mode_args, trailing_runtime_args, PermissionMode};
+        use crate::router::runtime::PermissionMode;
         let dir = tempfile::tempdir().unwrap();
         let app_data = std::path::Path::new(
             r"C:\Users\Jason Wang (Runner Windows Smoke)\AppData\Roaming\com.wycstudios.runner-dev",
@@ -3835,18 +3833,24 @@ mod tests {
             ),
         ] {
             let mut args = resume.into_iter().map(String::from).collect::<Vec<_>>();
-            args.extend(permission_mode_args(Some(runtime), PermissionMode::Bypass));
-            args.extend(trailing_runtime_args(
-                Some(runtime),
-                &[],
-                app_data,
-                "01M2NCJRAFFVFJQBA0NGDWMDXR",
-                true,
-                Some("fixture-model-with-a-long-name"),
-                Some("xhigh"),
-                None,
-                None,
-                None,
+            args.extend(
+                crate::runtimes::adapter(runtime)
+                    .permissions()
+                    .mode_args(PermissionMode::Bypass),
+            );
+            args.extend(crate::runtimes::adapter(runtime).launch_args(
+                &crate::runtimes::LaunchContext {
+                    role_args: &[],
+                    app_data_dir: app_data,
+                    session_id: "01M2NCJRAFFVFJQBA0NGDWMDXR",
+                    resuming: true,
+                    model: Some("fixture-model-with-a-long-name"),
+                    effort: Some("xhigh"),
+                    codex_speed: None,
+                    system_prompt: None,
+                    first_turn: None,
+                    mission: false,
+                },
             ));
             args.extend([
                 "--add-dir".to_owned(),

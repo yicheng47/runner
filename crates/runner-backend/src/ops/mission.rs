@@ -714,16 +714,16 @@ pub async fn mission_start_impl_with_size(
         roster
             .iter()
             .map(|m| {
-                let runtime = Runtime::parse(
+                let adapter = crate::runtimes::for_key(
                     m.slot
                         .runtime_override
                         .as_deref()
                         .unwrap_or(&m.role.runtime),
                 );
                 if m.slot.lead {
-                    crate::router::prompt::compose_lead_prompt_channels(
-                        runtime,
-                        &crate::router::prompt::LaunchPromptInput {
+                    adapter
+                        .prompt_channels()
+                        .lead(&crate::router::prompt::LaunchPromptInput {
                             lead: crate::router::prompt::LeadView {
                                 handle: m.slot.slot_handle.as_str(),
                                 display_name: m.role.display_name.as_str(),
@@ -734,11 +734,9 @@ pub async fn mission_start_impl_with_size(
                             roster: &roster_entries,
                             allowed_signals: &allowed_signals,
                             crew_addendum: crew_addendum.as_deref(),
-                        },
-                    )
+                        })
                 } else {
-                    crate::router::prompt::split_session_prompt(
-                        runtime,
+                    adapter.prompt_channels().split(
                         crate::router::prompt::SessionPromptKind::Worker,
                         Some(crate::router::prompt::compose_worker_first_turn(
                             m.role.system_prompt.as_deref(),

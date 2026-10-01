@@ -62,7 +62,7 @@ impl RuntimeCatalogEntry {
 }
 
 pub fn runtime_list() -> Vec<RuntimeDefinition> {
-    crate::router::runtime::runtime_definitions()
+    crate::runtimes::catalogs()
         .iter()
         .map(|runtime| RuntimeDefinition {
             name: runtime.name,
@@ -87,7 +87,7 @@ pub fn runtime_set_override(
     path: &str,
 ) -> std::result::Result<RuntimeStatusResponse, OverrideValidationError> {
     let path = path.trim();
-    if crate::router::runtime::runtime_definition(runtime).is_none() {
+    if crate::runtimes::adapter(runtime).catalog().is_none() {
         return Err(OverrideValidationError {
             code: "unknown_runtime".into(),
             message: format!("Unknown runtime: {runtime}."),
@@ -108,7 +108,7 @@ pub fn runtime_set_override(
 }
 
 pub fn runtime_clear_override(state: &AppCore, runtime: Runtime) -> Result<RuntimeStatusResponse> {
-    if crate::router::runtime::runtime_definition(runtime).is_none() {
+    if crate::runtimes::adapter(runtime).catalog().is_none() {
         return Err(Error::msg(format!("unknown runtime: {runtime}")));
     }
     crate::db::set_runtime_override(&state.db, runtime.key(), None)?;
@@ -165,7 +165,8 @@ pub fn runtime_update_spawn_spec(
     runtime: Runtime,
     size: (u16, u16),
 ) -> Result<crate::session::runtime::SpawnSpec> {
-    let definition = crate::router::runtime::runtime_definition(runtime)
+    let definition = crate::runtimes::adapter(runtime)
+        .catalog()
         .filter(|definition| !definition.update_args.is_empty())
         .ok_or_else(|| Error::msg(format!("{runtime} has no update command")))?;
     #[cfg(windows)]
@@ -369,266 +370,22 @@ pub fn filter_selectable_runtime_catalog(
         .collect()
 }
 
-fn option(value: &str, label: &str, description: &str) -> RuntimeCatalogOption {
-    RuntimeCatalogOption {
-        value: value.into(),
-        label: label.into(),
-        description: Some(description.into()),
-        supported_efforts: None,
-    }
-}
-
-fn plain_option(value: &str, label: &str) -> RuntimeCatalogOption {
-    RuntimeCatalogOption {
-        value: value.into(),
-        label: label.into(),
-        description: None,
-        supported_efforts: None,
-    }
-}
-
-fn default_model_option() -> RuntimeCatalogOption {
-    option("", "default", "Use the agent's own default model.")
-}
-
-fn default_effort() -> RuntimeCatalogOption {
-    option(
-        "",
-        "default",
-        "Use the agent's own default effort; no flag passed.",
-    )
-}
-
-fn common_efforts() -> Vec<RuntimeCatalogOption> {
-    vec![
-        default_effort(),
-        option("low", "Low", "Fast responses with lighter reasoning."),
-        option("medium", "Medium", "Balances speed and reasoning depth."),
-        option(
-            "high",
-            "High",
-            "Greater reasoning depth for complex problems.",
-        ),
-        option(
-            "xhigh",
-            "Extra high",
-            "Extra reasoning depth for complex problems.",
-        ),
-    ]
-}
+use crate::runtimes::catalog::default_model_option;
 
 fn runtime_catalog_options() -> Vec<RuntimeCatalogEntry> {
-    let claude_efforts = vec![
-        default_effort(),
-        plain_option("low", "low"),
-        plain_option("medium", "medium"),
-        plain_option("high", "high"),
-        plain_option("xhigh", "xhigh"),
-        plain_option("max", "max"),
-    ];
-    let mut codex_efforts = common_efforts();
-    codex_efforts.push(option(
-        "max",
-        "Max",
-        "Maximum reasoning depth for the hardest problems.",
-    ));
-    codex_efforts.push(option(
-        "ultra",
-        "Ultra",
-        "Maximum reasoning with automatic task delegation.",
-    ));
+    crate::runtimes::catalogs()
+        .into_iter()
+        .map(crate::runtimes::RuntimeCatalog::into_entry)
+        .collect()
+}
 
-    vec![
-        RuntimeCatalogEntry {
-            name: Runtime::Codex,
-            display_name: "Codex".into(),
-            command: "codex".into(),
-            native_fork: crate::router::runtime::supports_native_fork(Some(Runtime::Codex)),
-            description: "OpenAI Codex CLI".into(),
-            install_url: "https://developers.openai.com/codex/cli".into(),
-            default_enabled: true,
-            available: false,
-            default_model: None,
-            default_effort: None,
-            models: vec![
-                default_model_option(),
-                option(
-                    "gpt-6-astra",
-                    "gpt-6-astra",
-                    "Our most capable model for complex, demanding work.",
-                ),
-                option(
-                    "gpt-5.6-sol",
-                    "gpt-5.6-sol",
-                    "Reliable agentic workhorse for everyday tasks.",
-                ),
-                option(
-                    "gpt-5.6-terra",
-                    "gpt-5.6-terra",
-                    "Balanced agentic coding model for everyday work.",
-                ),
-                option(
-                    "gpt-5.6-luna",
-                    "gpt-5.6-luna",
-                    "Fast and affordable agentic coding model.",
-                ),
-                option(
-                    "gpt-5.5",
-                    "gpt-5.5",
-                    "Frontier model for complex coding, research, and real-world work.",
-                ),
-                option("gpt-5.4", "gpt-5.4", "Strong model for everyday coding."),
-                option(
-                    "gpt-5.4-mini",
-                    "gpt-5.4-mini",
-                    "Small, fast, and cost-efficient model for simpler coding tasks.",
-                ),
-                option(
-                    "gpt-5.3-codex-spark",
-                    "gpt-5.3-codex-spark",
-                    "Ultra-fast coding model.",
-                ),
-            ],
-            efforts: codex_efforts,
-        },
-        RuntimeCatalogEntry {
-            name: Runtime::ClaudeCode,
-            display_name: "Claude Code".into(),
-            command: "claude".into(),
-            native_fork: crate::router::runtime::supports_native_fork(Some(Runtime::ClaudeCode)),
-            description: "Anthropic Claude Code CLI".into(),
-            install_url: "https://code.claude.com/docs/en/setup".into(),
-            default_enabled: true,
-            available: false,
-            default_model: None,
-            default_effort: None,
-            models: vec![
-                default_model_option(),
-                option("fable", "fable", "Latest Claude Fable."),
-                option("opus", "opus", "Latest Claude Opus."),
-                option("sonnet", "sonnet", "Latest Claude Sonnet."),
-                option("haiku", "haiku", "Latest Claude Haiku."),
-            ],
-            efforts: claude_efforts,
-        },
-        RuntimeCatalogEntry {
-            name: Runtime::Antigravity,
-            display_name: "Antigravity CLI".into(),
-            command: "agy".into(),
-            native_fork: crate::router::runtime::supports_native_fork(Some(Runtime::Antigravity)),
-            description: "Google Antigravity CLI (signs in with a Google account)".into(),
-            install_url: "https://antigravity.google/docs/cli/reference".into(),
-            default_enabled: true,
-            available: false,
-            default_model: None,
-            default_effort: None,
-            models: std::iter::once(default_model_option())
-                .chain(crate::router::runtime::ANTIGRAVITY_MODELS.iter().map(
-                    |(model, efforts)| RuntimeCatalogOption {
-                        supported_efforts: Some(
-                            efforts.iter().map(|effort| (*effort).into()).collect(),
-                        ),
-                        ..plain_option(model, model)
-                    },
-                ))
-                .collect(),
-            efforts: std::iter::once(default_effort())
-                .chain(
-                    crate::router::runtime::ANTIGRAVITY_EFFORTS
-                        .iter()
-                        .map(|effort| plain_option(effort, effort)),
-                )
-                .collect(),
-        },
-        RuntimeCatalogEntry {
-            name: Runtime::Pi,
-            display_name: "pi".into(),
-            command: "pi".into(),
-            native_fork: crate::router::runtime::supports_native_fork(Some(Runtime::Pi)),
-            description: "pi coding agent (bring your own model provider)".into(),
-            install_url: "https://github.com/earendil-works/pi".into(),
-            default_enabled: true,
-            available: false,
-            default_model: None,
-            default_effort: None,
-            models: vec![default_model_option()],
-            efforts: std::iter::once(default_effort())
-                .chain(
-                    ["off", "minimal", "low", "medium", "high", "xhigh", "max"]
-                        .into_iter()
-                        .map(|effort| plain_option(effort, effort)),
-                )
-                .collect(),
-        },
-        RuntimeCatalogEntry {
-            name: Runtime::Copilot,
-            display_name: "GitHub Copilot CLI".into(),
-            command: "copilot".into(),
-            native_fork: false,
-            description: "GitHub Copilot CLI (requires a Copilot subscription)".into(),
-            install_url: "https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/install-copilot-cli".into(),
-            default_enabled: true,
-            available: false,
-            default_model: None,
-            default_effort: None,
-            models: std::iter::once(default_model_option())
-                .chain(
-                    [
-                        "auto",
-                        "claude-sonnet-5",
-                        "claude-fable-5.1",
-                        "claude-fable-5",
-                        "claude-opus-5",
-                        "claude-opus-4.8",
-                        "claude-opus-4.8-fast",
-                        "claude-opus-4.7",
-                        "claude-sonnet-4.6",
-                        "claude-haiku-4.5",
-                        "gpt-5.6-sol",
-                        "gpt-5.6-terra",
-                        "gpt-5.6-luna",
-                        "gpt-5.5",
-                        "gpt-5.4",
-                        "gpt-5.4-mini",
-                        "gpt-5.3-codex",
-                        "gpt-5-mini",
-                        "mai-code-1.1-flash",
-                        "mai-code-1-flash-picker",
-                        "gemini-3.8-flash",
-                        "gemini-3.7-flash",
-                        "gemini-3.6-flash",
-                        "gemini-3.5-flash",
-                        "grok-4.5",
-                        "kimi-k3",
-                        "kimi-k2.7-code",
-                    ]
-                    .into_iter()
-                    .map(|model| plain_option(model, model)),
-                )
-                .collect(),
-            efforts: std::iter::once(default_effort())
-                .chain(
-                    ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
-                        .into_iter()
-                        .map(|effort| plain_option(effort, effort)),
-                )
-                .collect(),
-        },
-        RuntimeCatalogEntry {
-            name: Runtime::Trae,
-            display_name: "TRAE CLI".into(),
-            command: "traecli".into(),
-            native_fork: crate::router::runtime::supports_native_fork(Some(Runtime::Trae)),
-            description: String::new(),
-            install_url: String::new(),
-            default_enabled: true,
-            available: false,
-            default_model: None,
-            default_effort: None,
-            models: vec![default_model_option()],
-            efforts: common_efforts(),
-        },
-    ]
+#[cfg(all(test, unix))]
+#[test]
+fn catalog_golden() {
+    crate::golden::assert_golden(
+        "catalog",
+        serde_json::to_value(runtime_catalog_options()).unwrap(),
+    );
 }
 
 fn persistence_error(error: Error) -> OverrideValidationError {

@@ -2,8 +2,6 @@ use crate::model::Runtime;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-use crate::router::runtime::runtime_definition;
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum GlobalState {
     On,
@@ -203,7 +201,7 @@ pub fn skill_catalog(
     home: &Path,
     codex_home: Option<&Path>,
 ) -> Option<SkillCatalog> {
-    let relatives = runtime_definition(runtime)?.skills_dirs;
+    let relatives = crate::runtimes::adapter(runtime).catalog()?.skills_dirs;
     if relatives.is_empty() {
         return None;
     }
