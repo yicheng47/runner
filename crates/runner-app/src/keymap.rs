@@ -7,12 +7,13 @@ use serde::{Deserialize, Deserializer, Serialize};
 use crate::{Hide, HideOthers, Quit};
 
 use crate::{
-    CloseTab, CloseWindow, CommandPalette, Copy, FocusNextPane, FocusPreviousPane, Minimize,
-    MissionTabNext, MissionTabPrevious, NavigateNextPage, NavigatePreviousPage, NewTab, NewWindow,
+    CloseTab, CloseWindow, CommandPalette, ConfirmStartChat, ConfirmStartMission, Copy,
+    FocusNextPane, FocusPreviousPane, Minimize, MissionTabNext, MissionTabPrevious,
+    NavigateNextPage, NavigatePreviousPage, NewMission, NewTab, NewTerminal, NewWindow,
     OpenSettings, Paste, ResumeFocusedSession, SelectTab1, SelectTab2, SelectTab3, SelectTab4,
     SelectTab5, SelectTab6, SelectTab7, SelectTab8, SelectTab9, SplitPaneDown, SplitPaneRight,
-    StopFocusedSession, ToggleFullscreen, ToggleSidebar, ToggleTerminalDrawer, ZoomIn, ZoomOut,
-    ZoomReset,
+    StartChatDirect, StartChatRole, StopFocusedSession, ToggleFullscreen, ToggleSidebar,
+    ToggleTerminalDrawer, ZoomIn, ZoomOut, ZoomReset,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -86,7 +87,7 @@ fn key_combo(
     }
 }
 
-fn platform_default(macos: &str) -> String {
+pub(crate) fn platform_default(macos: &str) -> String {
     #[cfg(windows)]
     {
         windows_default(macos)
@@ -102,6 +103,7 @@ fn windows_default(macos: &str) -> String {
     match macos {
         "ctrl-cmd-f" => "f11".into(),
         "cmd-w" => "ctrl-shift-w".into(),
+        "cmd-t" => "ctrl-shift-t".into(),
         "shift-cmd-w" => "alt-f4".into(),
         _ => macos.replace("cmd-", "ctrl-"),
     }
@@ -119,6 +121,10 @@ fn default_combo(macos: &str, label: Option<&str>, shift_optional: bool) -> KeyC
         label,
         shift_optional,
     )
+}
+
+pub(crate) fn fixed_shortcut(binding: &str) -> String {
+    format_combo(&default_combo(binding, None, false))
 }
 
 pub(crate) fn entries() -> &'static [KeymapEntry] {
@@ -139,6 +145,22 @@ pub(crate) fn entries() -> &'static [KeymapEntry] {
                 description: "Fill the focused empty pane or start a chat in a new tab.",
                 scope: KeymapScope::Global,
                 default: default_combo("cmd-n", None, false),
+                fixed: false,
+            },
+            KeymapEntry {
+                id: "new-terminal",
+                title: "New terminal",
+                description: "Fill the focused empty pane or open a terminal tab.",
+                scope: KeymapScope::Global,
+                default: default_combo("cmd-t", None, false),
+                fixed: false,
+            },
+            KeymapEntry {
+                id: "new-mission",
+                title: "New mission",
+                description: "Start a mission in the active project.",
+                scope: KeymapScope::Global,
+                default: default_combo("shift-cmd-m", None, false),
                 fixed: false,
             },
             KeymapEntry {
@@ -938,6 +960,7 @@ pub(crate) fn install_bindings(
         KeyBinding::new(&platform_default("cmd-v"), Paste, Some("Terminal")),
     ]);
     if shortcuts_suspended {
+        install_modal_bindings(cx);
         return;
     }
     cx.bind_keys([
@@ -978,6 +1001,8 @@ pub(crate) fn install_bindings(
             let context = binding_context(entry, &combo);
             let key_binding = match entry.id {
                 "new-chat" => KeyBinding::new(&binding, NewTab, context),
+                "new-terminal" => KeyBinding::new(&binding, NewTerminal, context),
+                "new-mission" => KeyBinding::new(&binding, NewMission, context),
                 "command-palette" => KeyBinding::new(&binding, CommandPalette, context),
                 "toggle-sidebar" => KeyBinding::new(&binding, ToggleSidebar, context),
                 "toggle-terminal-drawer" => {
@@ -1011,6 +1036,33 @@ pub(crate) fn install_bindings(
             cx.bind_keys([key_binding]);
         }
     }
+    install_modal_bindings(cx);
+}
+
+fn install_modal_bindings(cx: &mut App) {
+    // Double negation checks the whole context stack at the focused control's depth; loading last wins ties with user bindings.
+    cx.bind_keys([
+        KeyBinding::new(
+            &platform_default("cmd-enter"),
+            ConfirmStartChat,
+            Some("!(!StartChat)"),
+        ),
+        KeyBinding::new(
+            &platform_default("cmd-enter"),
+            ConfirmStartMission,
+            Some("!(!StartMission)"),
+        ),
+        KeyBinding::new(
+            &platform_default("cmd-1"),
+            StartChatDirect,
+            Some("!(!StartChat)"),
+        ),
+        KeyBinding::new(
+            &platform_default("cmd-2"),
+            StartChatRole,
+            Some("!(!StartChat)"),
+        ),
+    ]);
 }
 
 #[cfg(test)]
@@ -1024,7 +1076,7 @@ mod tests {
     #[test]
     #[cfg(not(windows))]
     fn registry_matches_the_shipped_defaults_and_fixed_entries() {
-        assert_eq!(entries().len(), 30);
+        assert_eq!(entries().len(), 32);
         assert_eq!(entries().iter().filter(|entry| entry.fixed).count(), 12);
         assert!(entry("new-window").unwrap().fixed);
         assert!(entry("close-pane").unwrap().fixed);
@@ -1054,7 +1106,7 @@ mod tests {
             format_combo(&entry("split-pane-down").unwrap().default),
             "⇧⌘D"
         );
-        assert!(entry("new-terminal").is_none());
+        assert_eq!(format_combo(&entry("new-terminal").unwrap().default), "⌘T");
         assert_eq!(
             entry("pane-previous").unwrap().default,
             entry("mission-tab-previous").unwrap().default
@@ -1217,6 +1269,147 @@ mod tests {
                 id
             );
         }
+    }
+
+    #[test]
+    fn gpui_contextless_bindings_need_modal_bindings_at_the_focused_depth_loaded_last() {
+        let cx = gpui::TestAppContext::single();
+        cx.update(|cx| {
+            let key = Keystroke::parse(&platform_default("cmd-2")).unwrap();
+            let contexts = [gpui::KeyContext::parse("StartChat").unwrap()];
+            cx.bind_keys([
+                KeyBinding::new(&platform_default("cmd-2"), StartChatRole, Some("StartChat")),
+                KeyBinding::new(&platform_default("cmd-2"), SelectTab2, None),
+            ]);
+            assert!(cx
+                .key_bindings()
+                .borrow()
+                .bindings_for_input(std::slice::from_ref(&key), &contexts)
+                .0[0]
+                .action()
+                .partial_eq(&SelectTab2));
+            install_bindings(cx, &KeymapOverrides::new(), false);
+            for contexts in [
+                contexts.to_vec(),
+                vec![
+                    contexts[0].clone(),
+                    gpui::KeyContext::parse("TextInput").unwrap(),
+                ],
+            ] {
+                assert!(cx
+                    .key_bindings()
+                    .borrow()
+                    .bindings_for_input(std::slice::from_ref(&key), &contexts)
+                    .0[0]
+                    .action()
+                    .partial_eq(&StartChatRole));
+            }
+        });
+    }
+
+    #[test]
+    fn fixed_modal_confirm_wins_user_global_overrides_at_every_control_depth() {
+        let cx = gpui::TestAppContext::single();
+        cx.update(|cx| {
+            let key = Keystroke::parse(&platform_default("cmd-enter")).unwrap();
+            for (id, global_action) in [
+                ("new-terminal", &NewTerminal as &dyn gpui::Action),
+                ("new-mission", &NewMission),
+                ("zoom-reset", &ZoomReset),
+            ] {
+                let overrides = KeymapOverrides::from([(
+                    id.into(),
+                    Some(default_combo("cmd-enter", None, false)),
+                )]);
+                install_bindings(cx, &overrides, false);
+                for (context, action) in [
+                    ("StartChat", &ConfirmStartChat as &dyn gpui::Action),
+                    ("StartMission", &ConfirmStartMission),
+                ] {
+                    for nested in [false, true] {
+                        let mut contexts = vec![
+                            gpui::KeyContext::parse("Root").unwrap(),
+                            gpui::KeyContext::parse(context).unwrap(),
+                        ];
+                        if nested {
+                            contexts.push(gpui::KeyContext::parse("TextInput").unwrap());
+                        }
+                        let bindings = cx.key_bindings();
+                        let bindings = bindings.borrow();
+                        assert!(bindings
+                            .bindings_for_input(std::slice::from_ref(&key), &contexts)
+                            .0[0]
+                            .action()
+                            .partial_eq(action));
+                    }
+                }
+                let bindings = cx.key_bindings();
+                let bindings = bindings.borrow();
+                assert!(bindings
+                    .bindings_for_input(
+                        std::slice::from_ref(&key),
+                        &[gpui::KeyContext::parse("Root").unwrap()]
+                    )
+                    .0[0]
+                    .action()
+                    .partial_eq(global_action));
+            }
+        });
+    }
+
+    #[test]
+    fn create_bindings_are_global_rebindable_and_modal_keys_stay_out_of_settings() {
+        let cx = gpui::TestAppContext::single();
+        cx.update(|cx| {
+            for (id, action) in [
+                ("new-terminal", &NewTerminal as &dyn gpui::Action),
+                ("new-mission", &NewMission as &dyn gpui::Action),
+            ] {
+                assert_eq!(entry(id).unwrap().scope, KeymapScope::Global);
+                assert!(!entry(id).unwrap().fixed);
+                for combo in [
+                    Some(entry(id).unwrap().default.clone()),
+                    Some(combo_for("KeyP", true)),
+                    None,
+                ] {
+                    let overrides = KeymapOverrides::from([(id.into(), combo.clone())]);
+                    install_bindings(cx, &overrides, false);
+                    let keymap = cx.key_bindings();
+                    let keymap = keymap.borrow();
+                    let bindings = keymap.bindings_for_action(action).collect::<Vec<_>>();
+                    assert_eq!(bindings.len(), usize::from(combo.is_some()));
+                    if let Some(combo) = combo {
+                        assert!(bindings[0].predicate().is_none());
+                        assert_eq!(
+                            bindings[0]
+                                .match_keystrokes(&[
+                                    Keystroke::parse(&binding_strings(&combo)[0]).unwrap()
+                                ]),
+                            Some(false)
+                        );
+                    }
+                }
+            }
+            install_bindings(cx, &KeymapOverrides::new(), true);
+            let bindings = cx.key_bindings();
+            let bindings = bindings.borrow();
+            for action in [
+                &ConfirmStartChat as &dyn gpui::Action,
+                &ConfirmStartMission,
+                &StartChatDirect,
+                &StartChatRole,
+            ] {
+                assert_eq!(bindings.bindings_for_action(action).count(), 1);
+            }
+            assert!(entries()
+                .iter()
+                .all(|entry| !entry.id.starts_with("confirm-")
+                    && !entry.id.starts_with("start-chat-")));
+        });
+        assert_eq!(
+            fixed_shortcut("cmd-enter"),
+            format_combo(&default_combo("cmd-enter", None, false))
+        );
     }
 
     #[test]
@@ -1474,6 +1667,14 @@ mod tests {
                 key_combo("KeyN", true, false, false, false, None, false),
             ),
             (
+                "new-terminal",
+                key_combo("KeyT", true, false, false, false, None, false),
+            ),
+            (
+                "new-mission",
+                key_combo("KeyM", true, false, false, true, None, false),
+            ),
+            (
                 "command-palette",
                 key_combo("KeyK", true, false, false, false, None, false),
             ),
@@ -1630,6 +1831,9 @@ mod tests {
         for (macos, windows) in [
             ("cmd-n", "ctrl-n"),
             ("cmd-w", "ctrl-shift-w"),
+            ("cmd-t", "ctrl-shift-t"),
+            ("shift-cmd-m", "shift-ctrl-m"),
+            ("cmd-enter", "ctrl-enter"),
             ("shift-cmd-w", "alt-f4"),
             ("shift-cmd-n", "shift-ctrl-n"),
             ("cmd-d", "ctrl-d"),
@@ -1755,6 +1959,8 @@ mod tests {
         }
         for (id, hint) in [
             ("new-chat", "Ctrl+N"),
+            ("new-terminal", "Ctrl+Shift+T"),
+            ("new-mission", "Ctrl+Shift+M"),
             ("new-window", "Ctrl+Shift+N"),
             ("command-palette", "Ctrl+K"),
             ("toggle-sidebar", "Ctrl+S"),

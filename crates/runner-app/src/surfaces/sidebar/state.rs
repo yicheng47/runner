@@ -15,9 +15,11 @@ impl Sidebar {
         let scroll_owner = cx.entity_id();
         let scrollbar = cx.new(|_| Scrollbar::app(scroll.clone(), scroll_owner));
         let root = cx.entity();
+        let menu_store = app_store.clone();
         let create_menu = cx.new(move |menu_cx| {
             let action_root = root.clone();
-            let entries = sidebar_create_menu_entries();
+            let entries =
+                sidebar_create_menu_entries(&menu_store.read(menu_cx).settings.keymap_overrides);
             let actions = entries
                 .iter()
                 .map(|(_, action)| action.clone())
@@ -36,7 +38,7 @@ impl Sidebar {
                 }),
                 menu_cx,
             )
-            .min_width(px(160.))
+            .min_width(px(220.))
             .trigger_size(IconButtonSize::Sm)
             .trigger_icon("plus.svg")
             .without_trigger_tooltip()
@@ -67,6 +69,12 @@ impl Sidebar {
             tab_index_by_node: HashMap::new(),
             _rename_focus_subscription: None,
             _store_subscription: cx.observe(&app_store, |this, _, cx| {
+                let items = sidebar_create_menu_entries(&this.settings(cx).keymap_overrides)
+                    .into_iter()
+                    .map(|(item, _)| item)
+                    .collect();
+                this.create_menu
+                    .update(cx, |menu, cx| menu.set_items(items, cx));
                 this.handle_store_update(cx);
             }),
         }

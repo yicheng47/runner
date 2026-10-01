@@ -394,6 +394,9 @@ impl StyledSelect {
             &self.options,
             self.selected_index().min(self.options.len() - 1),
         );
+        if self.state.is_open() {
+            self.menu_scroll.scroll_to_item(self.state.highlighted());
+        }
         cx.notify();
     }
 
@@ -429,6 +432,9 @@ impl StyledSelect {
         if let SelectAction::Changed(index) = self.state.handle_key(key, &self.options, selected) {
             self.choose(index, window, cx);
         } else {
+            if self.state.is_open() {
+                self.menu_scroll.scroll_to_item(self.state.highlighted());
+            }
             cx.notify();
         }
     }
@@ -512,7 +518,11 @@ impl Render for StyledSelect {
                                     trigger.border_color(theme::faint())
                                 }
                             })
-                            .on_click(move |_, window, cx| {
+                            .on_click(move |event, window, cx| {
+                                // Key-down already handles activation; GPUI emits another click on key-up.
+                                if matches!(event, gpui::ClickEvent::Keyboard(_)) {
+                                    return;
+                                }
                                 click_focus.focus(window, cx);
                                 click_entity.update(cx, |select, cx| select.toggle(cx));
                             })
@@ -835,6 +845,8 @@ pub(crate) fn option_menu(
             canvas(
                 move |_, window, cx| {
                     if menu_scrolls(&measured) != scrolls {
+                        // The first layout initializes the viewport needed by scroll_to_item.
+                        measured.scroll_to_item(highlighted);
                         rerender_after_draw(window, cx);
                     }
                 },
@@ -888,7 +900,7 @@ pub fn runtime_select_options(catalog: &[RuntimeCatalogEntry]) -> Vec<SelectOpti
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui::{Modifiers, TestAppContext, VisualTestContext};
+    use gpui::{KeyUpEvent, Keystroke, Modifiers, TestAppContext, VisualTestContext};
 
     struct SelectHost {
         select: Entity<StyledSelect>,
@@ -897,6 +909,164 @@ mod tests {
     impl Render for SelectHost {
         fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
             div().size_full().p_4().child(self.select.clone())
+        }
+    }
+
+    fn press_key(visual: &mut VisualTestContext, key: &str) {
+        visual.simulate_keystrokes(key);
+        visual.simulate_event(KeyUpEvent {
+            keystroke: Keystroke::parse(key).unwrap(),
+        });
+        visual.run_until_parked();
+    }
+
+    #[test]
+    fn enter_and_space_open_and_choose_once_after_key_release() {
+        for key in ["enter", "space"] {
+            let mut cx = TestAppContext::single();
+            let choices = Rc::new(std::cell::RefCell::new(Vec::new()));
+            let window = cx.add_window(|window, cx| {
+                let focus_handle = cx.focus_handle();
+                focus_handle.focus(window, cx);
+                let select = cx.new(|cx| {
+                    let choices = choices.clone();
+                    StyledSelect::new(
+                        "select",
+                        focus_handle,
+                        "a",
+                        options(),
+                        Rc::new(move |value, _, _| choices.borrow_mut().push(value)),
+                        cx,
+                    )
+                });
+                SelectHost { select }
+            });
+            cx.run_until_parked();
+            let select = window
+                .read_with(&cx, |host, _| host.select.clone())
+                .unwrap();
+            let mut visual = VisualTestContext::from_window(window.into(), &cx);
+
+            press_key(&mut visual, key);
+            assert!(
+                select.read_with(&visual, |select, _| select.state.is_open()),
+                "{key}"
+            );
+            assert!(choices.borrow().is_empty());
+
+            press_key(&mut visual, "down");
+            press_key(&mut visual, key);
+            assert!(
+                !select.read_with(&visual, |select, _| select.state.is_open()),
+                "{key}"
+            );
+            assert_eq!(
+                select.read_with(&visual, |select, _| select.value().to_owned()),
+                "c"
+            );
+            assert_eq!(&*choices.borrow(), &["c"]);
+
+            press_key(&mut visual, key);
+            assert!(select.read_with(&visual, |select, _| select.state.is_open()));
+            press_key(&mut visual, "escape");
+            assert!(!select.read_with(&visual, |select, _| select.state.is_open()));
+            assert_eq!(&*choices.borrow(), &["c"]);
+        }
+    }
+
+    #[test]
+    fn keyboard_navigation_keeps_highlighted_options_in_view() {
+        for (detailed, rem) in [(false, 16.), (true, 20.8)] {
+            let mut cx = TestAppContext::single();
+            let window = cx.add_window(|window, cx| {
+                window.resize(gpui::size(px(1200.), px(900.)));
+                window.set_rem_size(px(rem));
+                let focus_handle = cx.focus_handle();
+                focus_handle.focus(window, cx);
+                let select = cx.new(|cx| {
+                    StyledSelect::new(
+                        "select",
+                        focus_handle,
+                        "0",
+                        (0..20)
+                            .map(|index| {
+                                SelectOption::new(index.to_string(), format!("Option {index}"))
+                                    .disabled(index == 10)
+                            })
+                            .collect(),
+                        Rc::new(|_, _, _| {}),
+                        cx,
+                    )
+                    .detailed(detailed)
+                });
+                SelectHost { select }
+            });
+            cx.run_until_parked();
+            let select = window
+                .read_with(&cx, |host, _| host.select.clone())
+                .unwrap();
+            let mut visual = VisualTestContext::from_window(window.into(), &cx);
+            press_key(&mut visual, "down");
+            assert!(select.read_with(&visual, |select, _| select.menu_scroll_range() > px(0.)));
+
+            for key in std::iter::repeat_n("down", 19).chain(["down", "up", "home", "end"]) {
+                press_key(&mut visual, key);
+                let highlighted = select.read_with(&visual, |select, _| select.state.highlighted());
+                assert_ne!(highlighted, 10, "disabled options are skipped");
+                let row = visual
+                    .debug_bounds(Box::leak(
+                        format!("STYLED_SELECT_OPTION_{highlighted}").into_boxed_str(),
+                    ))
+                    .unwrap();
+                let viewport = visual.debug_bounds("STYLED_SELECT_SCROLL").unwrap();
+                assert!(row.top() >= viewport.top() - px(1.) && row.bottom() <= viewport.bottom() + px(1.), "{detailed}/{rem}/{key}: highlighted row {highlighted} {row:?} outside {viewport:?}");
+            }
+            assert!(select.read_with(&visual, |select, _| select.menu_scroll.offset().y < px(0.)));
+            assert_eq!(
+                select.read_with(&visual, |select, _| select.value().to_owned()),
+                "0"
+            );
+        }
+    }
+
+    #[test]
+    fn opening_a_select_scrolls_to_its_current_selection() {
+        for mouse in [false, true] {
+            let mut cx = TestAppContext::single();
+            let window = cx.add_window(|window, cx| {
+                let focus_handle = cx.focus_handle();
+                focus_handle.focus(window, cx);
+                let select = cx.new(|cx| {
+                    StyledSelect::new(
+                        "select",
+                        focus_handle,
+                        "19",
+                        (0..20)
+                            .map(|index| {
+                                SelectOption::new(index.to_string(), format!("Option {index}"))
+                            })
+                            .collect(),
+                        Rc::new(|_, _, _| {}),
+                        cx,
+                    )
+                });
+                SelectHost { select }
+            });
+            cx.run_until_parked();
+            let mut visual = VisualTestContext::from_window(window.into(), &cx);
+            if mouse {
+                let trigger = visual.debug_bounds("STYLED_SELECT_TRIGGER").unwrap();
+                visual.simulate_click(trigger.center(), Modifiers::default());
+                visual.run_until_parked();
+            } else {
+                press_key(&mut visual, "enter");
+            }
+            let row = visual.debug_bounds("STYLED_SELECT_OPTION_19").unwrap();
+            let viewport = visual.debug_bounds("STYLED_SELECT_SCROLL").unwrap();
+            assert!(
+                row.top() >= viewport.top() - px(1.) && row.bottom() <= viewport.bottom() + px(1.),
+                "mouse={mouse}: selected row {row:?} outside {viewport:?}"
+            );
         }
     }
 

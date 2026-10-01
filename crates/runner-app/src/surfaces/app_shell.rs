@@ -699,6 +699,10 @@ impl NativeRoot {
             .start_chat_modal
             .is_some()
             .then(|| self.render_start_chat_modal(window, cx));
+        let mission_modal = self
+            .start_mission_modal
+            .is_some()
+            .then(|| self.render_start_mission_modal(cx));
         let chat_rename_modal = (self.route == AppRoute::Chat)
             .then_some(self.chat_rename_modal.as_ref())
             .flatten()
@@ -773,6 +777,7 @@ impl NativeRoot {
             .child(chrome)
             .children(settings)
             .children(modal)
+            .children(mission_modal)
             .children(settings_confirm)
             .child(command_palette)
             .children(toast)
@@ -849,6 +854,8 @@ impl NativeRoot {
                 }),
             )
             .on_action(cx.listener(Self::open_new_tab_modal))
+            .on_action(cx.listener(Self::new_terminal_action))
+            .on_action(cx.listener(Self::new_mission_action))
             .on_action(cx.listener(Self::split_pane_right))
             .on_action(cx.listener(Self::split_pane_down))
             .on_action(cx.listener(Self::focus_previous_chat_pane))

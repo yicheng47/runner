@@ -37,7 +37,7 @@ const SPEED_COLUMN_WIDTH: f32 = 104.;
 const ROLE_HINT: &str = "Starts with the role's settings. Change any of them for this chat only.";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum ChatMode {
+pub(super) enum ChatMode {
     Role,
     Runtime,
 }
@@ -146,6 +146,23 @@ pub(crate) struct StartChatModal {
 }
 
 impl StartChatModal {
+    fn mode_focus(&self) -> FocusHandle {
+        match self.mode {
+            ChatMode::Role => self.role_mode_focus.clone(),
+            ChatMode::Runtime => self.direct_mode_focus.clone(),
+        }
+    }
+
+    fn picker_focus(&self, cx: &App) -> FocusHandle {
+        match self.mode {
+            ChatMode::Role if !self.roles.is_empty() => self.role_select.read(cx).focus_handle(),
+            ChatMode::Runtime if !self.runtimes.is_empty() => {
+                self.runtime_select.read(cx).focus_handle()
+            }
+            _ => self.title.read(cx).focus_handle(),
+        }
+    }
+
     fn selected_role(&self) -> Option<&Role> {
         self.role_id
             .as_deref()
@@ -315,6 +332,128 @@ enum StartRequest {
 }
 
 impl NativeRoot {
+    pub(crate) fn create_modal_open(&self) -> bool {
+        self.start_chat_modal.is_some() || self.start_mission_modal.is_some()
+    }
+
+    fn focused_empty_chat_pane(&self) -> Option<String> {
+        (self.route == AppRoute::Chat)
+            .then(|| self.tabs.active())
+            .flatten()
+            .and_then(|layout| {
+                layout
+                    .root
+                    .leaves()
+                    .into_iter()
+                    .find(|leaf| leaf.id == layout.focused_pane_id && leaf.session_id.is_none())
+                    .map(|leaf| leaf.id.clone())
+            })
+    }
+
+    pub(crate) fn new_terminal_action(
+        &mut self,
+        _: &NewTerminal,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.create_modal_open() {
+            return;
+        }
+        if let Some(pane_id) = self.focused_empty_chat_pane() {
+            let original = self.tabs.active().unwrap().clone();
+            let (scope, cwd) = self.terminal_start_location(cx);
+            self.spawn_terminal_in_pane(pane_id, original, scope, cwd, window, cx);
+        } else {
+            self.new_terminal_tab(
+                ProjectScope::or_root(self.active_project_id(cx)),
+                window,
+                cx,
+            );
+        }
+    }
+
+    pub(crate) fn new_mission_action(
+        &mut self,
+        _: &NewMission,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.create_modal_open() {
+            return;
+        }
+        self.open_start_mission_modal(
+            None,
+            ProjectScope::or_root(self.active_project_id(cx)),
+            window,
+            cx,
+        );
+    }
+
+    fn confirm_start_chat(
+        &mut self,
+        _: &ConfirmStartChat,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(modal) = self
+            .start_chat_modal
+            .as_ref()
+            .filter(|modal| modal.can_submit() && !modal.is_composing(cx))
+        else {
+            return;
+        };
+        for select in [
+            &modal.role_select,
+            &modal.role_runtime_select,
+            &modal.runtime_select,
+            &modal.effort_select,
+            &modal.speed_select,
+        ] {
+            select.update(cx, |select, cx| select.close(cx));
+        }
+        modal.model_field.update(cx, |field, cx| field.close(cx));
+        self.submit_start_chat(window, cx);
+    }
+
+    fn mouse_switch_start_chat_mode(
+        &mut self,
+        mode: ChatMode,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let focused = window.focused(cx);
+        self.set_start_chat_mode(mode, cx);
+        if let Some(modal) = &self.start_chat_modal {
+            let survives = focused.as_ref().is_some_and(|focus| {
+                *focus == modal.direct_mode_focus
+                    || *focus == modal.role_mode_focus
+                    || start_chat_focus_order(modal, cx).contains(focus)
+            });
+            if !survives {
+                modal.picker_focus(cx).focus(window, cx);
+            }
+        }
+    }
+
+    fn switch_start_chat_mode(
+        &mut self,
+        mode: ChatMode,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self
+            .start_chat_modal
+            .as_ref()
+            .is_none_or(|modal| modal.submitting)
+        {
+            return;
+        }
+        self.set_start_chat_mode(mode, cx);
+        if let Some(modal) = &self.start_chat_modal {
+            modal.picker_focus(cx).focus(window, cx);
+        }
+    }
+
     pub(crate) fn new_terminal_tab(
         &mut self,
         scope: ProjectScope,
@@ -578,6 +717,13 @@ impl NativeRoot {
         let sibling_cwd = self.tabs.active().and_then(|layout| {
             layout
                 .focused_session_id()
+                .or_else(|| {
+                    layout
+                        .root
+                        .leaves()
+                        .into_iter()
+                        .find_map(|leaf| leaf.session_id.as_deref())
+                })
                 .and_then(|session_id| self.session_start_cwd(session_id, cx))
         });
         let project_id = self.active_tab_project_id(cx);
@@ -669,20 +815,10 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.start_chat_modal.is_some() {
+        if self.create_modal_open() {
             return;
         }
-        let focused_empty_pane = (self.route == AppRoute::Chat)
-            .then(|| self.tabs.active())
-            .flatten()
-            .and_then(|layout| {
-                layout
-                    .root
-                    .leaves()
-                    .into_iter()
-                    .find(|leaf| leaf.id == layout.focused_pane_id && leaf.session_id.is_none())
-                    .map(|leaf| leaf.id.clone())
-            });
+        let focused_empty_pane = self.focused_empty_chat_pane();
         if let Some(pane_id) = focused_empty_pane {
             self.open_pane_chat_modal(&pane_id, window, cx);
             return;
@@ -707,7 +843,7 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.start_chat_modal.is_some() {
+        if self.create_modal_open() {
             return;
         }
         let project = scope
@@ -924,7 +1060,6 @@ impl NativeRoot {
         let close_focus = cx.focus_handle();
         let cancel_focus = cx.focus_handle();
         let submit_focus = cx.focus_handle();
-        let title_focus = title_input.read(cx).focus_handle();
         // The model's dot, note and reset live outside the field, so the form
         // redraws with it.
         let model_subscription = cx.observe(&model_input, |this, _, cx| {
@@ -974,7 +1109,11 @@ impl NativeRoot {
         if let Some(modal) = self.start_chat_modal.as_mut() {
             restore_baseline(modal, cx);
         }
-        title_focus.focus(window, cx);
+        self.start_chat_modal
+            .as_ref()
+            .unwrap()
+            .picker_focus(cx)
+            .focus(window, cx);
         self.refresh_start_chat_models(cx);
         cx.notify();
     }
@@ -1585,6 +1724,7 @@ impl NativeRoot {
             .gap_2()
             .child(
                 Button::new("cancel-start-chat", "Cancel")
+                    .shortcut("esc")
                     .focus_handle(modal.cancel_focus.clone())
                     .disabled(submitting)
                     .on_press(move |window, cx| {
@@ -1600,6 +1740,7 @@ impl NativeRoot {
                         "Start chat"
                     },
                 )
+                .shortcut(keymap::fixed_shortcut("cmd-enter"))
                 .focus_handle(modal.submit_focus.clone())
                 .variant(ButtonVariant::Primary)
                 .disabled(!can_submit)
@@ -1608,13 +1749,14 @@ impl NativeRoot {
                 }),
             );
         let modal_close_root = cx.entity();
-        Modal::new(
+        let modal_element = Modal::new(
             title,
             content,
             Rc::new(move |window, cx| {
                 modal_close_root.update(cx, |this, cx| this.close_start_chat_modal(window, cx));
             }),
         )
+        .key_context("StartChat")
         .width(OverlayWidth::Custom(MODAL_WIDTH))
         .busy(submitting)
         .focus_order(if submitting {
@@ -1623,8 +1765,19 @@ impl NativeRoot {
             start_chat_focus_order(modal, cx)
         })
         .scrollbar(modal.scroll_handle.clone(), modal.scrollbar.clone())
-        .footer(footer)
-        .into_any_element()
+        .footer(footer);
+        div()
+            .absolute()
+            .inset_0()
+            .on_action(cx.listener(Self::confirm_start_chat))
+            .on_action(cx.listener(|this, _: &StartChatDirect, window, cx| {
+                this.switch_start_chat_mode(ChatMode::Runtime, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &StartChatRole, window, cx| {
+                this.switch_start_chat_mode(ChatMode::Role, window, cx);
+            }))
+            .child(modal_element)
+            .into_any_element()
     }
 
     /// Puts one role control back to the role's value and hands focus to it,
@@ -1918,7 +2071,6 @@ impl NativeRoot {
     ) -> AnyElement {
         let root = cx.entity();
         let key_root = root.clone();
-        let click_focus = focus_handle.clone();
         let mut button = div()
             .debug_selector(move || match mode {
                 ChatMode::Role => "START_CHAT_ROLE_MODE".into(),
@@ -1928,9 +2080,9 @@ impl NativeRoot {
                 ChatMode::Role => "start-chat-mode-role",
                 ChatMode::Runtime => "start-chat-mode-runtime",
             })
-            .track_focus(&focus_handle)
+            .track_focus(&focus_handle.tab_stop(!disabled && active == mode))
             .tab_index(0)
-            .tab_stop(!disabled)
+            .tab_stop(!disabled && active == mode)
             .flex_1()
             .flex()
             .items_center()
@@ -1939,9 +2091,7 @@ impl NativeRoot {
             .rounded_md()
             .text_size(theme::text_ui())
             .font_weight(FontWeight::SEMIBOLD)
-            .on_mouse_down(MouseButton::Left, move |_, window, cx| {
-                click_focus.focus(window, cx);
-            })
+            .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
             .text_color(if active == mode {
                 theme::text()
             } else {
@@ -1954,17 +2104,43 @@ impl NativeRoot {
             button = button
                 .cursor_pointer()
                 .hover(|button| button.text_color(theme::text()))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.set_start_chat_mode(mode, cx);
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.mouse_switch_start_chat_mode(mode, window, cx);
                 }))
-                .on_key_down(move |event: &KeyDownEvent, _, cx| {
-                    if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                .on_key_down(move |event: &KeyDownEvent, window, cx| {
+                    if matches!(event.keystroke.key.as_str(), "left" | "right") {
+                        cx.stop_propagation();
+                        let next = if mode == ChatMode::Role {
+                            ChatMode::Runtime
+                        } else {
+                            ChatMode::Role
+                        };
+                        key_root.update(cx, |this, cx| {
+                            this.set_start_chat_mode(next, cx);
+                            if let Some(modal) = &this.start_chat_modal {
+                                modal.mode_focus().focus(window, cx);
+                            }
+                        });
+                    } else if matches!(event.keystroke.key.as_str(), "enter" | "space") {
                         cx.stop_propagation();
                         key_root.update(cx, |this, cx| this.set_start_chat_mode(mode, cx));
                     }
                 });
         }
-        button.child(label).into_any_element()
+        button
+            .gap_2()
+            .child(label)
+            .child(
+                div()
+                    .text_size(theme::text_meta())
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(theme::faint())
+                    .child(keymap::fixed_shortcut(match mode {
+                        ChatMode::Runtime => "cmd-1",
+                        ChatMode::Role => "cmd-2",
+                    })),
+            )
+            .into_any_element()
     }
 }
 
@@ -2316,11 +2492,7 @@ fn set_start_chat_controls_disabled(
 }
 
 fn start_chat_focus_order(modal: &StartChatModal, cx: &App) -> Vec<FocusHandle> {
-    let mut order = vec![
-        modal.close_focus.clone(),
-        modal.direct_mode_focus.clone(),
-        modal.role_mode_focus.clone(),
-    ];
+    let mut order = vec![modal.close_focus.clone(), modal.mode_focus()];
     let controls = |order: &mut Vec<FocusHandle>| {
         if let Some(runtime) = modal.active_runtime() {
             order.push(modal.model.read(cx).focus_handle());
@@ -2743,21 +2915,57 @@ fn write_start_chat_mode(app_data_dir: &Path, mode: ChatMode) -> std::io::Result
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
 
     struct ModalHost(Entity<NativeRoot>);
     impl Render for ModalHost {
         fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-            div().size_full().child(
-                self.0
-                    .update(cx, |root, cx| root.render_start_chat_modal(window, cx)),
-            )
+            self.0.update(cx, |root, cx| {
+                if root.route == AppRoute::Settings {
+                    return root.render_app_shell(window, cx);
+                }
+                let pane = root
+                    .tabs
+                    .active()
+                    .cloned()
+                    .filter(|layout| {
+                        layout
+                            .root
+                            .leaves()
+                            .iter()
+                            .any(|leaf| leaf.session_id.is_some())
+                    })
+                    .map(|layout| root.render_pane_node(&layout.root, &layout, window, cx));
+                div()
+                    .size_full()
+                    .children(pane)
+                    .key_context("Terminal")
+                    .track_focus(&root.root_focus)
+                    .on_action(cx.listener(NativeRoot::open_new_tab_modal))
+                    .on_action(cx.listener(NativeRoot::new_terminal_action))
+                    .on_action(cx.listener(NativeRoot::new_mission_action))
+                    .on_action(cx.listener(|root, _: &SelectTab1, _, cx| {
+                        root.tabs.activate("01M3VD00000000000000000001");
+                        cx.notify();
+                    }))
+                    .on_action(cx.listener(|root, _: &SelectTab2, _, cx| {
+                        root.tabs.activate("01M3VD00000000000000000002");
+                        cx.notify();
+                    }))
+                    .when(root.start_chat_modal.is_some(), |host| {
+                        host.child(root.render_start_chat_modal(window, cx))
+                    })
+                    .when(root.start_mission_modal.is_some(), |host| {
+                        host.child(root.render_start_mission_modal(cx))
+                    })
+                    .into_any_element()
+            })
         }
     }
 
-    struct ModalHarness {
-        visual: VisualTestContext,
+    pub(in crate::surfaces) struct ModalHarness {
+        pub(in crate::surfaces) visual: VisualTestContext,
         host: WindowHandle<ModalHost>,
         _cx: TestAppContext,
         _temp: tempfile::TempDir,
@@ -2767,7 +2975,7 @@ mod tests {
     /// A modal window that opens already holding `roles` and `runtimes`, so no
     /// frame is drawn from the machine's own catalog: a test frame keeps every
     /// debug selector it ever drew.
-    fn modal_harness(
+    pub(in crate::surfaces) fn modal_harness(
         width: f32,
         height: f32,
         roles: Vec<Role>,
@@ -2800,6 +3008,7 @@ mod tests {
             app_version: "0.0.0-test".into(),
         };
         let mut cx = TestAppContext::single();
+        cx.update(|cx| keymap::install_bindings(cx, &keymap::KeymapOverrides::new(), false));
         #[cfg(not(windows))]
         let updater = cx.new(|cx| Updater::new(false, cx));
         #[cfg(windows)]
@@ -2831,7 +3040,8 @@ mod tests {
                 )
             });
             root.update(cx, |root, cx| {
-                root.open_start_chat_modal(ChatTarget::NewTab, None, None, window, cx);
+                root.root_focus.focus(window, cx);
+                root.open_new_tab_modal(&NewTab, window, cx);
                 seed_modal(
                     root.start_chat_modal.as_mut().unwrap(),
                     roles,
@@ -2839,6 +3049,11 @@ mod tests {
                     mode,
                     cx,
                 );
+                root.start_chat_modal
+                    .as_ref()
+                    .unwrap()
+                    .picker_focus(cx)
+                    .focus(window, cx);
             });
             ModalHost(root)
         });
@@ -2886,7 +3101,10 @@ mod tests {
     }
 
     impl ModalHarness {
-        fn act(&mut self, f: impl FnOnce(&mut NativeRoot, &mut Window, &mut Context<NativeRoot>)) {
+        pub(in crate::surfaces) fn act(
+            &mut self,
+            f: impl FnOnce(&mut NativeRoot, &mut Window, &mut Context<NativeRoot>),
+        ) {
             self.host
                 .update(&mut self.visual, |host, window, cx| {
                     host.0.update(cx, |root, cx| f(root, window, cx));
@@ -3755,6 +3973,660 @@ mod tests {
     }
 
     #[test]
+    fn confirm_binding_precedes_every_control_and_preserves_open_menu_values() {
+        for index in 0..15 {
+            let mut modal = modal_harness(
+                1200.,
+                1000.,
+                vec![codex_role(), claude_role()],
+                agents(),
+                ChatMode::Role,
+            );
+            modal.type_model("custom-model");
+            modal.choose(StartChatSelection::Effort, "low");
+            modal.choose(StartChatSelection::Speed, "standard");
+            let focus = modal.read(|modal, cx| start_chat_focus_order(modal, cx)[index].clone());
+            modal.act(|_, window, cx| focus.focus(window, cx));
+            modal
+                .visual
+                .simulate_keystrokes(&keymap::platform_default("cmd-enter"));
+            modal.read(|modal, cx| {
+                assert!(
+                    modal.error.is_some(),
+                    "confirm did not submit at control {index}"
+                );
+                assert_eq!(modal.model.read(cx).text(), "custom-model");
+                assert_eq!(modal.effort, "low");
+                assert_eq!(modal.speed, "standard");
+            });
+        }
+        for picker in 0..5 {
+            let mut modal = modal_harness(
+                1200.,
+                1000.,
+                vec![codex_role(), claude_role()],
+                agents(),
+                ChatMode::Role,
+            );
+            if picker == 4 {
+                let missing = modal
+                    ._temp
+                    .path()
+                    .join("missing")
+                    .to_string_lossy()
+                    .into_owned();
+                modal.edit(|form, cx| form.cwd.update(cx, |field, cx| field.set_text(missing, cx)));
+                modal.act(|root, window, cx| {
+                    root.switch_start_chat_mode(ChatMode::Runtime, window, cx)
+                });
+            }
+            let select = modal.read(|modal, _| match picker {
+                0 => modal.role_select.clone(),
+                1 => modal.role_runtime_select.clone(),
+                2 => modal.effort_select.clone(),
+                3 => modal.speed_select.clone(),
+                _ => modal.runtime_select.clone(),
+            });
+            let original = select.read_with(&modal.visual, |select, _| select.value().to_owned());
+            let focus = select.read_with(&modal.visual, |select, _| select.focus_handle());
+            modal.act(|_, window, cx| focus.focus(window, cx));
+            modal.visual.simulate_keystrokes("enter down");
+            modal
+                .visual
+                .simulate_keystrokes(&keymap::platform_default("cmd-enter"));
+            assert_eq!(
+                select.read_with(&modal.visual, |select, _| select.value().to_owned()),
+                original
+            );
+            modal.read(|modal, _| assert!(modal.error.is_some()));
+        }
+    }
+
+    #[test]
+    fn confirm_from_model_menu_and_runtime_reset_preserves_the_shown_values() {
+        let mut modal = modal_harness(1200., 1000., vec![codex_role()], agents(), ChatMode::Role);
+        let mut catalog = agents();
+        catalog[1].models = vec![RuntimeCatalogOption {
+            value: "suggested".into(),
+            label: "Suggested".into(),
+            description: None,
+            supported_efforts: None,
+        }];
+        modal.edit(|form, cx| seed_modal(form, vec![codex_role()], catalog, ChatMode::Role, cx));
+        modal.type_model("custom");
+        modal.pick(|form, cx| form.model.read(cx).focus_handle(), "down");
+        modal
+            .visual
+            .simulate_keystrokes(&keymap::platform_default("cmd-enter"));
+        modal.read(|form, cx| {
+            assert!(form.error.is_some());
+            assert_eq!(form.model.read(cx).text(), "custom");
+        });
+        modal.choose(StartChatSelection::RoleRuntime, "claude-code");
+        let focus = modal.read(|form, _| form.reset_focus[ResetKind::Runtime as usize].clone());
+        modal.act(|_, window, cx| focus.focus(window, cx));
+        modal
+            .visual
+            .simulate_keystrokes(&keymap::platform_default("cmd-enter"));
+        modal.read(|form, _| {
+            assert!(form.error.is_some());
+            assert_eq!(form.role_runtime_override.as_deref(), Some("claude-code"));
+        });
+    }
+
+    #[test]
+    fn remembered_and_preselected_roles_focus_the_picker_with_empty_modes_falling_back() {
+        let mut modal = modal_harness(1200., 1000., Vec::new(), Vec::new(), ChatMode::Runtime);
+        modal.act(|root, window, cx| {
+            let input =
+                serde_json::from_value(serde_json::to_value(test_role("saved", "codex")).unwrap())
+                    .unwrap();
+            let role = runner_backend::ops::role::role_create(root.core(cx), input).unwrap();
+            write_start_chat_mode(&root.core(cx).app_data_dir, ChatMode::Role).unwrap();
+            root.close_start_chat_modal(window, cx);
+            root.open_new_tab_modal(&NewTab, window, cx);
+            let form = root.start_chat_modal.as_ref().unwrap();
+            assert!(form.role_select.read(cx).focus_handle().is_focused(window));
+            root.close_start_chat_modal(window, cx);
+            write_start_chat_mode(&root.core(cx).app_data_dir, ChatMode::Runtime).unwrap();
+            let mut layout = PaneLayout::single(None, &[]);
+            layout.id = "01M3VD00000000000000000004".into();
+            let pane_id = layout.focused_pane_id.clone();
+            runner_backend::ops::node::node_tab_upsert(
+                root.core(cx),
+                layout.upsert_input().unwrap(),
+            )
+            .unwrap();
+            root.reload_tabs(cx).unwrap();
+            root.last_focused_role_id = Some(role.id);
+            root.open_pane_chat_modal(&pane_id, window, cx);
+            let form = root.start_chat_modal.as_ref().unwrap();
+            assert_eq!(form.mode, ChatMode::Role);
+            assert!(form.role_select.read(cx).focus_handle().is_focused(window));
+        });
+        for mode in [ChatMode::Runtime, ChatMode::Role] {
+            modal.edit(|form, cx| seed_modal(form, Vec::new(), Vec::new(), mode, cx));
+            modal.act(|root, window, cx| {
+                let form = root.start_chat_modal.as_ref().unwrap();
+                form.picker_focus(cx).focus(window, cx);
+                assert!(form.title.read(cx).focus_handle().is_focused(window));
+            });
+        }
+        modal.edit(|form, cx| seed_modal(form, Vec::new(), agents(), ChatMode::Runtime, cx));
+        modal.act(|root, window, cx| {
+            let form = root.start_chat_modal.as_ref().unwrap();
+            form.picker_focus(cx).focus(window, cx);
+            assert!(form
+                .runtime_select
+                .read(cx)
+                .focus_handle()
+                .is_focused(window));
+        });
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn terminal_key_fills_only_the_focused_empty_pane_and_otherwise_opens_a_tab() {
+        let mut modal = modal_harness(1200., 1000., Vec::new(), Vec::new(), ChatMode::Runtime);
+        let cwd = modal._temp.path().to_string_lossy().into_owned();
+        modal.act(|root, window, cx| {
+            root.close_start_chat_modal(window, cx);
+            root.app_store.update(cx, |store, cx| {
+                store.settings.default_working_dir = cwd.clone();
+                cx.notify();
+            });
+            root.new_terminal_action(&NewTerminal, window, cx);
+        });
+        let mut first_tab = String::new();
+        let mut empty = String::new();
+        modal.act(|root, _, cx| {
+            let layout = root.tabs.active_mut().unwrap();
+            first_tab = layout.id.clone();
+            empty = layout
+                .split(&layout.focused_pane_id.clone(), SplitOrientation::Row)
+                .unwrap();
+            let input = layout.upsert_input().unwrap();
+            runner_backend::ops::node::node_tab_upsert(root.core(cx), input).unwrap();
+        });
+        modal.act(|root, window, cx| {
+            root.app_store.update(cx, |store, cx| {
+                store.settings.default_working_dir = "/tmp".into();
+                cx.notify();
+            });
+            assert_eq!(root.focused_empty_chat_pane(), Some(empty.clone()));
+            root.new_terminal_action(&NewTerminal, window, cx);
+            let layout = root.tabs.active().unwrap();
+            assert_eq!(layout.id, first_tab);
+            assert_eq!(layout.root.leaves().len(), 2);
+            assert_eq!(layout.focused_pane_id, empty);
+            let session = root
+                .session_entry(layout.focused_session_id().unwrap(), cx)
+                .unwrap();
+            assert_eq!(session.cwd.as_deref(), Some(cwd.as_str()));
+            assert_eq!(root.tabs.tabs().len(), 1);
+            root.new_terminal_action(&NewTerminal, window, cx);
+            assert_eq!(root.tabs.tabs().len(), 2);
+        });
+        modal.act(|root, window, cx| {
+            root.tabs.activate(&first_tab);
+            let layout = root.tabs.active_mut().unwrap();
+            let extra = layout
+                .split(&layout.focused_pane_id.clone(), SplitOrientation::Row)
+                .unwrap();
+            let occupied = layout
+                .root
+                .leaves()
+                .into_iter()
+                .find(|leaf| leaf.session_id.is_some())
+                .unwrap()
+                .id
+                .clone();
+            layout.focus_pane(&occupied);
+            let input = layout.upsert_input().unwrap();
+            runner_backend::ops::node::node_tab_upsert(root.core(cx), input).unwrap();
+            assert_eq!(root.focused_empty_chat_pane(), None);
+            root.new_terminal_action(&NewTerminal, window, cx);
+            assert_eq!(root.tabs.tabs().len(), 3);
+            assert!(root
+                .tabs
+                .tabs()
+                .iter()
+                .find(|tab| tab.id == first_tab)
+                .unwrap()
+                .root
+                .leaves()
+                .into_iter()
+                .find(|leaf| leaf.id == extra)
+                .unwrap()
+                .session_id
+                .is_none());
+            root.set_route(AppRoute::Crews, cx);
+            root.new_terminal_action(&NewTerminal, window, cx);
+            assert_eq!(root.route, AppRoute::Chat);
+            assert_eq!(root.tabs.tabs().len(), 4);
+            for session in root.app_store.read(cx).sessions.clone() {
+                runner_backend::ops::session::session_close(root.core(cx), &session.session_id)
+                    .unwrap();
+            }
+        });
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn terminal_key_from_a_mission_route_opens_a_chat_tab_in_the_active_project() {
+        let mut modal = modal_harness(1200., 1000., Vec::new(), Vec::new(), ChatMode::Runtime);
+        let cwd = modal._temp.path().to_string_lossy().into_owned();
+        let mut project_id = String::new();
+        modal.act(|root, window, cx| {
+            root.close_start_chat_modal(window, cx);
+            let project = runner_backend::ops::project::project_create(
+                root.core(cx),
+                "Terminal project".into(),
+                cwd.clone(),
+            )
+            .unwrap();
+            project_id = project.id.clone();
+            let node = runner_backend::repo::node::ensure_project_node(
+                &root.core(cx).db.get().unwrap(),
+                &project.id,
+            )
+            .unwrap();
+            let mut layout = PaneLayout::single(None, &[]);
+            layout.id = "01M3VD00000000000000000005".into();
+            layout.parent_id = Some(node.id);
+            runner_backend::ops::node::node_tab_upsert(
+                root.core(cx),
+                layout.upsert_input().unwrap(),
+            )
+            .unwrap();
+            root.app_store.update(cx, |store, cx| {
+                store.projects = vec![project];
+                cx.notify();
+            });
+            root.reload_tabs(cx).unwrap();
+            root.set_route(AppRoute::Mission("test-mission".into()), cx);
+        });
+        modal.act(|root, window, cx| root.root_focus.focus(window, cx));
+        modal
+            .visual
+            .simulate_keystrokes(&keymap::platform_default("cmd-t"));
+        modal.act(|root, _, cx| {
+            assert_eq!(root.route, AppRoute::Chat);
+            assert_eq!(root.tabs.tabs().len(), 2);
+            let session_id = root.tabs.active().unwrap().focused_session_id().unwrap();
+            let session = root.session_entry(session_id, cx).unwrap();
+            assert_eq!(session.project_id.as_deref(), Some(project_id.as_str()));
+            assert_eq!(session.cwd.as_deref(), Some(cwd.as_str()));
+            runner_backend::ops::session::session_close(root.core(cx), session_id).unwrap();
+        });
+    }
+
+    #[test]
+    fn confirm_does_nothing_when_disabled_starting_or_composing() {
+        use gpui::EntityInputHandler;
+        let mut modal = modal_harness(1200., 1000., Vec::new(), Vec::new(), ChatMode::Runtime);
+        modal
+            .visual
+            .simulate_keystrokes(&keymap::platform_default("cmd-enter"));
+        modal.read(|modal, _| assert!(modal.error.is_none()));
+        drop(modal);
+        let mut modal = modal_harness(1200., 1000., vec![codex_role()], agents(), ChatMode::Role);
+        modal.edit(|modal, cx| {
+            modal.submitting = true;
+            set_start_chat_controls_disabled(modal, true, cx);
+        });
+        modal
+            .visual
+            .simulate_keystrokes(&keymap::platform_default("cmd-enter"));
+        modal.read(|modal, _| {
+            assert!(modal.submitting);
+            assert!(modal.error.is_none());
+        });
+        modal.edit(|modal, cx| {
+            modal.submitting = false;
+            set_start_chat_controls_disabled(modal, false, cx);
+        });
+        modal.act(|root, window, cx| {
+            let title = root.start_chat_modal.as_ref().unwrap().title.clone();
+            title.read(cx).focus_handle().focus(window, cx);
+            title.update(cx, |title, cx| {
+                title.replace_and_mark_text_in_range(None, "ni", Some(2..2), window, cx)
+            });
+        });
+        modal
+            .visual
+            .simulate_keystrokes(&keymap::platform_default("cmd-enter"));
+        modal.read(|modal, cx| {
+            assert!(modal.title.read(cx).is_composing());
+            assert!(modal.error.is_none());
+        });
+    }
+
+    #[test]
+    fn mode_context_beats_global_tab_keys_and_arrows_keep_the_switch_focused() {
+        let mut modal = modal_harness(
+            1200.,
+            1000.,
+            vec![codex_role()],
+            agents(),
+            ChatMode::Runtime,
+        );
+        modal.act(|root, _, cx| {
+            for id in ["01M3VD00000000000000000001", "01M3VD00000000000000000002"] {
+                let mut layout = PaneLayout::single(None, &[]);
+                layout.id = id.into();
+                runner_backend::ops::node::node_tab_upsert(
+                    root.core(cx),
+                    layout.upsert_input().unwrap(),
+                )
+                .unwrap();
+            }
+            root.reload_tabs(cx).unwrap();
+            root.tabs.activate("01M3VD00000000000000000001");
+        });
+        modal.act(|root, window, cx| {
+            root.start_chat_modal
+                .as_ref()
+                .unwrap()
+                .picker_focus(cx)
+                .focus(window, cx)
+        });
+        modal
+            .visual
+            .simulate_keystrokes(&keymap::platform_default("cmd-2"));
+        modal.act(|root, window, cx| {
+            assert_eq!(
+                root.tabs.active_tab_id(),
+                Some("01M3VD00000000000000000001")
+            );
+            let form = root.start_chat_modal.as_ref().unwrap();
+            assert_eq!(form.mode, ChatMode::Role);
+            assert!(form.role_select.read(cx).focus_handle().is_focused(window));
+        });
+        modal
+            .visual
+            .simulate_keystrokes(&keymap::platform_default("cmd-1"));
+        modal.act(|root, window, cx| {
+            let form = root.start_chat_modal.as_ref().unwrap();
+            assert_eq!(form.mode, ChatMode::Runtime);
+            assert!(form
+                .runtime_select
+                .read(cx)
+                .focus_handle()
+                .is_focused(window));
+        });
+        let name_focus = modal.read(|form, cx| form.title.read(cx).focus_handle());
+        modal.act(|_, window, cx| name_focus.focus(window, cx));
+        modal
+            .visual
+            .simulate_keystrokes(&keymap::platform_default("cmd-2"));
+        modal.act(|root, window, cx| {
+            let form = root.start_chat_modal.as_ref().unwrap();
+            assert_eq!(
+                root.tabs.active_tab_id(),
+                Some("01M3VD00000000000000000001")
+            );
+            assert_eq!(form.mode, ChatMode::Role);
+            assert!(form.role_select.read(cx).focus_handle().is_focused(window));
+        });
+        modal.visual.simulate_keystrokes("enter");
+        modal
+            .visual
+            .simulate_keystrokes(&keymap::platform_default("cmd-1"));
+        modal.act(|root, window, cx| {
+            assert_eq!(
+                root.tabs.active_tab_id(),
+                Some("01M3VD00000000000000000001")
+            );
+            root.start_chat_modal
+                .as_ref()
+                .unwrap()
+                .direct_mode_focus
+                .focus(window, cx);
+        });
+        modal.visual.simulate_keystrokes("right");
+        modal.act(|root, window, _cx| {
+            let form = root.start_chat_modal.as_ref().unwrap();
+            assert_eq!(form.mode, ChatMode::Role);
+            assert!(form.role_mode_focus.is_focused(window));
+        });
+        modal.visual.simulate_keystrokes("left space enter");
+        modal.read(|form, _| assert_eq!(form.mode, ChatMode::Runtime));
+        let bounds = modal.bounds("START_CHAT_ROLE_MODE").unwrap();
+        modal
+            .visual
+            .simulate_click(bounds.center(), gpui::Modifiers::default());
+        modal.act(|root, window, _cx| {
+            assert!(root
+                .start_chat_modal
+                .as_ref()
+                .unwrap()
+                .direct_mode_focus
+                .is_focused(window))
+        });
+        modal.visual.simulate_keystrokes("escape");
+        modal.act(|root, window, cx| root.root_focus.focus(window, cx));
+        modal
+            .visual
+            .simulate_keystrokes(&keymap::platform_default("cmd-2"));
+        modal.act(|root, _, _| {
+            assert_eq!(
+                root.tabs.active_tab_id(),
+                Some("01M3VD00000000000000000002")
+            )
+        });
+        modal
+            .visual
+            .simulate_keystrokes(&keymap::platform_default("cmd-1"));
+        modal.act(|root, _, _| {
+            assert_eq!(
+                root.tabs.active_tab_id(),
+                Some("01M3VD00000000000000000001")
+            )
+        });
+    }
+
+    #[test]
+    fn new_tab_from_outside_focus_closes_with_escape_and_name_enter_submits() {
+        let mut modal = modal_harness(1200., 1000., Vec::new(), Vec::new(), ChatMode::Runtime);
+        modal.visual.simulate_keystrokes("escape");
+        modal.act(|root, window, cx| {
+            assert!(root.start_chat_modal.is_none());
+            root.root_focus.focus(window, cx);
+        });
+        modal
+            .visual
+            .simulate_keystrokes(&keymap::platform_default("cmd-n"));
+        modal.act(|root, window, cx| {
+            let form = root.start_chat_modal.as_ref().unwrap();
+            assert!(form.picker_focus(cx).is_focused(window));
+        });
+        modal.visual.simulate_keystrokes("escape");
+        modal.act(|root, window, cx| {
+            assert!(root.start_chat_modal.is_none());
+            root.root_focus.focus(window, cx);
+        });
+        modal
+            .visual
+            .simulate_keystrokes(&keymap::platform_default("cmd-n"));
+        modal.edit(|form, cx| seed_modal(form, vec![codex_role()], agents(), ChatMode::Role, cx));
+        let name = modal.read(|form, cx| form.title.read(cx).focus_handle());
+        modal.act(|_, window, cx| name.focus(window, cx));
+        modal.visual.simulate_keystrokes("enter");
+        modal.read(|form, _| assert!(form.error.is_some()));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn new_tab_from_a_focused_terminal_pane_handles_escape_and_name_enter() {
+        let mut modal = modal_harness(1200., 1000., Vec::new(), Vec::new(), ChatMode::Runtime);
+        let cwd = modal._temp.path().to_string_lossy().into_owned();
+        let mut session_id = String::new();
+        modal.act(|root, window, cx| {
+            root.close_start_chat_modal(window, cx);
+            root.app_store.update(cx, |store, cx| {
+                store.settings.default_working_dir = cwd;
+                cx.notify();
+            });
+            root.new_terminal_tab(ProjectScope::Root, window, cx);
+            session_id = root
+                .tabs
+                .active()
+                .unwrap()
+                .focused_session_id()
+                .unwrap()
+                .to_owned();
+        });
+        modal.act(|root, window, cx| {
+            root.chat_transitions.clear();
+            root.focus_active_terminal(window, cx);
+            assert!(root
+                .attached
+                .get(&session_id)
+                .unwrap()
+                .terminal_focus
+                .is_focused(window));
+        });
+        modal
+            .visual
+            .simulate_keystrokes(&keymap::platform_default("cmd-n"));
+        modal.act(|root, window, cx| {
+            assert!(root
+                .start_chat_modal
+                .as_ref()
+                .unwrap()
+                .picker_focus(cx)
+                .is_focused(window));
+        });
+        modal.visual.simulate_keystrokes("escape");
+        modal.act(|root, window, _cx| {
+            assert!(root.start_chat_modal.is_none());
+            assert!(root
+                .attached
+                .get(&session_id)
+                .unwrap()
+                .terminal_focus
+                .is_focused(window));
+        });
+        modal
+            .visual
+            .simulate_keystrokes(&keymap::platform_default("cmd-n"));
+        modal.edit(|form, cx| seed_modal(form, vec![codex_role()], agents(), ChatMode::Role, cx));
+        let name = modal.read(|form, cx| form.title.read(cx).focus_handle());
+        modal.act(|_, window, cx| name.focus(window, cx));
+        modal.visual.simulate_keystrokes("enter");
+        modal.read(|form, _| assert!(form.error.is_some()));
+        modal.act(|root, _, cx| {
+            runner_backend::ops::session::session_close(root.core(cx), &session_id).unwrap();
+        });
+    }
+
+    #[test]
+    fn mouse_mode_change_from_the_initial_picker_keeps_modal_keys_live() {
+        for mode in [ChatMode::Runtime, ChatMode::Role] {
+            for confirm in [false, true] {
+                let mut modal = modal_harness(1200., 1000., vec![codex_role()], agents(), mode);
+                let missing = modal
+                    ._temp
+                    .path()
+                    .join("missing")
+                    .to_string_lossy()
+                    .into_owned();
+                modal.edit(|form, cx| form.cwd.update(cx, |field, cx| field.set_text(missing, cx)));
+                let selector = match mode {
+                    ChatMode::Runtime => "START_CHAT_ROLE_MODE",
+                    ChatMode::Role => "START_CHAT_DIRECT_MODE",
+                };
+                let bounds = modal.bounds(selector).unwrap();
+                modal
+                    .visual
+                    .simulate_click(bounds.center(), gpui::Modifiers::default());
+                modal.act(|root, window, cx| {
+                    let form = root.start_chat_modal.as_ref().unwrap();
+                    assert_ne!(form.mode, mode);
+                    assert!(form.picker_focus(cx).is_focused(window));
+                });
+                if confirm {
+                    modal.visual.simulate_keystrokes("tab");
+                    modal
+                        .visual
+                        .simulate_keystrokes(&keymap::platform_default("cmd-enter"));
+                    modal.read(|form, _| assert!(form.error.is_some()));
+                } else {
+                    modal.visual.simulate_keystrokes("escape");
+                    modal.act(|root, _, _| assert!(root.start_chat_modal.is_none()));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn mouse_mode_change_preserves_focus_in_a_persistent_text_field() {
+        let mut modal = modal_harness(
+            1200.,
+            1000.,
+            vec![codex_role()],
+            agents(),
+            ChatMode::Runtime,
+        );
+        let focus = modal.read(|form, cx| form.title.read(cx).focus_handle());
+        modal.act(|_, window, cx| focus.focus(window, cx));
+        let bounds = modal.bounds("START_CHAT_ROLE_MODE").unwrap();
+        modal
+            .visual
+            .simulate_click(bounds.center(), gpui::Modifiers::default());
+        modal.act(|root, window, _| {
+            assert_eq!(root.start_chat_modal.as_ref().unwrap().mode, ChatMode::Role);
+            assert!(focus.is_focused(window));
+        });
+    }
+
+    #[test]
+    fn user_confirm_collision_cannot_shadow_chat_confirm_from_a_picker_or_text_field() {
+        for text_field in [false, true] {
+            let mut modal =
+                modal_harness(1200., 1000., vec![codex_role()], agents(), ChatMode::Role);
+            let key = gpui::Keystroke::parse(&keymap::platform_default("cmd-enter")).unwrap();
+            let overrides = keymap::KeymapOverrides::from([(
+                "new-terminal".into(),
+                keymap::combo_from_keystroke(&key),
+            )]);
+            modal.act(|root, window, cx| {
+                keymap::install_bindings(cx, &overrides, false);
+                if text_field {
+                    root.start_chat_modal
+                        .as_ref()
+                        .unwrap()
+                        .title
+                        .read(cx)
+                        .focus_handle()
+                        .focus(window, cx);
+                }
+            });
+            modal
+                .visual
+                .simulate_keystrokes(&keymap::platform_default("cmd-enter"));
+            modal.read(|form, _| assert!(form.error.is_some()));
+        }
+    }
+
+    #[test]
+    fn create_keys_are_inert_in_start_chat() {
+        let mut modal = modal_harness(1200., 1000., vec![codex_role()], agents(), ChatMode::Role);
+        let title = modal.read(|form, _| form.title.clone());
+        for key in ["cmd-n", "cmd-t", "shift-cmd-m"] {
+            modal
+                .visual
+                .simulate_keystrokes(&keymap::platform_default(key));
+            modal.read(|form, _| assert_eq!(form.title, title));
+            modal.act(|root, _, _| {
+                assert!(root.start_mission_modal.is_none());
+                assert!(root.tabs.tabs().is_empty());
+            });
+        }
+    }
+
+    #[test]
     fn tab_order_runs_from_the_picker_through_the_controls_and_resets() {
         let mut modal = modal_harness(1200., 1000., vec![codex_role()], agents(), ChatMode::Role);
         let order = |modal: &ModalHarness| {
@@ -3792,7 +4664,7 @@ mod tests {
                     .collect::<Vec<_>>()
             })
         };
-        let head = ["close", "direct", "role", "role picker"];
+        let head = ["close", "role", "role picker"];
         let tail = ["name", "directory", "browse", "cancel", "start"];
         assert_eq!(
             order(&modal),
@@ -3828,11 +4700,25 @@ mod tests {
         assert_eq!(
             order(&modal),
             [
-                &["close", "direct", "role", "agent picker", "model", "effort"][..],
+                &["close", "direct", "agent picker", "model", "effort"][..],
                 &tail[..]
             ]
             .concat()
         );
+    }
+
+    #[test]
+    fn tab_traversal_reaches_only_the_active_mode_segment() {
+        let mut modal = modal_harness(1200., 1000., vec![codex_role()], agents(), ChatMode::Role);
+        let order = modal.read(start_chat_focus_order);
+        let close = order[0].clone();
+        modal.act(|_, window, cx| close.focus(window, cx));
+        for focus in order.iter().skip(1).chain(order.iter().take(1)) {
+            modal.visual.simulate_keystrokes("tab");
+            modal.act(|_, window, _| assert!(focus.is_focused(window)));
+        }
+        modal.visual.simulate_keystrokes("shift-tab");
+        modal.act(|_, window, _| assert!(order.last().unwrap().is_focused(window)));
     }
 
     #[test]

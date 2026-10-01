@@ -55,6 +55,8 @@ impl PaletteKind {
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum PaletteDestination {
     NewTerminal,
+    NewChat,
+    NewMission,
     InstallRunnerCommand,
     UninstallRunnerCommand,
     Mission(String),
@@ -135,6 +137,21 @@ fn palette_items(
         search_text: "new terminal shell drawer".into(),
         order: 0,
     });
+    for (id, label, destination) in [
+        ("new-chat", "New chat", PaletteDestination::NewChat),
+        ("new-mission", "New mission", PaletteDestination::NewMission),
+    ] {
+        items.push(PaletteItem {
+            kind: PaletteKind::Command,
+            runtime: None,
+            live: false,
+            id: id.into(),
+            label: label.into(),
+            destination,
+            search_text: label.to_lowercase(),
+            order: items.len(),
+        });
+    }
     match command_status.map(|status| &status.state) {
         Some(RunnerCommandState::Installed | RunnerCommandState::Shadowed) => {
             items.push(PaletteItem {
@@ -388,6 +405,14 @@ impl CommandPaletteState {
         }
         let navigated = self.shell.upgrade().is_some_and(|shell| {
             shell.update(cx, |shell, shell_cx| match destination {
+                PaletteDestination::NewChat => {
+                    shell.open_new_tab_modal(&NewTab, window, shell_cx);
+                    true
+                }
+                PaletteDestination::NewMission => {
+                    shell.new_mission_action(&NewMission, window, shell_cx);
+                    true
+                }
                 PaletteDestination::NewTerminal => {
                     shell.new_terminal(window, shell_cx);
                     true
@@ -704,6 +729,20 @@ mod tests {
             filtered_palette_items(&items, "shell")[0].id,
             "new-terminal"
         );
+    }
+
+    #[test]
+    fn palette_offers_chat_and_mission_creation() {
+        let items = palette_items(&[], &[], &[], &[], None);
+        for (query, destination) in [
+            ("new chat", PaletteDestination::NewChat),
+            ("new mission", PaletteDestination::NewMission),
+        ] {
+            let filtered = filtered_palette_items(&items, query);
+            assert_eq!(filtered.len(), 1);
+            assert_eq!(filtered[0].destination, destination);
+            assert_eq!(filtered[0].kind, PaletteKind::Command);
+        }
     }
 
     #[test]

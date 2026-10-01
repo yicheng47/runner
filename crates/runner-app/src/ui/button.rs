@@ -53,6 +53,7 @@ pub struct Button {
     id: ElementId,
     label: SharedString,
     icon: Option<SharedString>,
+    shortcut: Option<SharedString>,
     variant: ButtonVariant,
     size: ButtonSize,
     radius: f32,
@@ -70,6 +71,7 @@ impl Button {
             id: id.into(),
             label: label.into(),
             icon: None,
+            shortcut: None,
             variant: ButtonVariant::default(),
             size: ButtonSize::default(),
             radius: 4.,
@@ -91,6 +93,11 @@ impl Button {
 
     pub fn icon(mut self, path: impl Into<SharedString>) -> Self {
         self.icon = Some(path.into());
+        self
+    }
+
+    pub fn shortcut(mut self, shortcut: impl Into<SharedString>) -> Self {
+        self.shortcut = Some(shortcut.into());
         self
     }
 
@@ -253,7 +260,17 @@ impl RenderOnce for Button {
                         .text_color(foreground),
                 )
             })
-            .child(self.label);
+            .child(self.label)
+            .when_some(self.shortcut, |button, shortcut| {
+                button.child(
+                    div()
+                        .flex_none()
+                        .text_size(theme::text_meta())
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(theme::with_alpha(foreground, 0.65))
+                        .child(shortcut),
+                )
+            });
         if let Some(content) = self.tooltip {
             let tooltip = Tooltip::new(tooltip_id, content, button);
             if let Some(focus_handle) = tooltip_focus {

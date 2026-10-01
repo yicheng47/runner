@@ -2,7 +2,7 @@
 
 > Tracking issue: [#772](https://github.com/yicheng47/runner/issues/772)
 > Priority: P2, 0.12. Platforms: macOS and Windows.
-> Status: draft proposal, 2026-10-01; open questions at the end.
+> Status: drafted 2026-10-01; open questions settled the same day with the recommended answers (see Decisions), and handed to a codex pair mission on `feat/772-keyboard-create`.
 
 ## Motivation
 
@@ -22,14 +22,14 @@ Start a chat (⌘N) is the main way into Runner, and it is built for the mouse. 
 - **Plain Enter and Esc keep their current behavior.** Enter still starts the chat from a text field, opens a picker, and presses a focused button. Esc still closes an open menu, otherwise the modal. Neither key changes meaning.
 - **The footer shows the keys.** Cancel shows `esc` and Start chat shows `⌘↵`, as trailing keycaps in the faint meta style the sidebar's New chat row uses for ⌘N. The labels come from the keymap, so Windows shows `Ctrl+↵`.
 - **Start mission gets the same ⌘↵ and keycaps.** It shares `Modal` and has the same split between Enter in a field and Enter on a picker.
-- **Mechanism.** The modal root declares a `StartChat` key context (and Start mission a `StartMission` one), with a confirm action bound to `cmd-enter` in it. Bindings dispatch before key-down listeners, so `StyledSelect::on_key_down`, which matches `enter` without checking modifiers, never sees ⌘↵. The binding is a fixed keymap entry, so Settings → Keymap lists it but it cannot be rebound, like Close pane.
+- **Mechanism.** The modal root declares a `StartChat` key context (and Start mission a `StartMission` one), with a confirm action bound to `cmd-enter` in it. Bindings dispatch before key-down listeners, so `StyledSelect::on_key_down`, which matches `enter` without checking modifiers, never sees ⌘↵. These bindings are fixed and registered in the modal's context the way the terminal's Copy is, so Settings → Keymap does not list them.
 
 ### 2. Direct | Role
 
 - **One tab stop.** The switch becomes a segmented control with a single tab stop: ←/→ move between Direct and Role while it has focus, and Enter and Space keep working.
-- **⌘1 Direct, ⌘2 Role** from anywhere in the modal, shown as faint keycaps inside the segments. The bindings live in the `StartChat` context, which is deeper than the global Select tab 1/2 bindings, so they win while the modal is open without changing the tab keys. Binding them there also stops ⌘1 and ⌘2 reaching the workspace behind the modal.
-- **Switching moves focus to that mode's picker** (the role picker or the agent picker), because picking who the chat is with is why you switched. The same switch by mouse leaves focus where it is.
-- **Initial focus goes to the remembered mode's picker,** not Chat name. The quickest paths become: ⌘N ⌘↵ for the defaults, ⌘N ↵ ↓↓ ↵ ⌘↵ for a different role or agent, and ⌘N ⌘2 ↵ ↓ ↵ ⌘↵ from Direct mode. Chat name is optional and comes one Tab later (open question 1).
+- **⌘1 Direct, ⌘2 Role** from anywhere in the modal, shown as faint keycaps inside the segments. The fixed bindings require the `StartChat` context anywhere above the focused control and load after workspace and user bindings, so they also win from a nested `TextInput` context. Global Select tab 1/2 bindings and keys stay unchanged.
+- **Switching moves focus to that mode's picker** (the role picker or the agent picker), because picking who the chat is with is why you switched. The same switch by mouse preserves focus when that control remains visible; when the old picker or another focused control disappears, focus moves to the new mode’s picker (or Chat name when it is unavailable).
+- **Initial focus goes to the remembered mode's picker,** not Chat name. The quickest paths become: ⌘N ⌘↵ for the defaults, ⌘N ↵ ↓↓ ↵ ⌘↵ for a different role or agent, and ⌘N ⌘2 ↵ ↓ ↵ ⌘↵ from Direct mode. Chat name is optional and comes one Tab later. When the picker cannot take focus (no roles, no enabled agents), focus opens in Chat name as today.
 
 ### 3. Chats, terminals and missions: three keys, no merged form
 
@@ -38,11 +38,11 @@ Recommendation: give each kind its own key, and keep each kind's form or no form
 | Key (macOS / Windows) | Action | Form |
 | --- | --- | --- |
 | ⌘N / Ctrl+N | New chat (unchanged) | Start a chat |
-| ⌘T / Ctrl+T | New terminal | None: fills the focused empty pane, otherwise opens a new tab, in the active project's directory or the default directory, as the + menu's New terminal does today |
+| ⌘T / Ctrl+Shift+T | New terminal | None: fills the focused empty pane, otherwise opens a new tab, in the active project's directory or the default directory, as the + menu's New terminal does today |
 | ⇧⌘M / Ctrl+Shift+M | New mission | Start mission, scoped to the active project, as the + menu's New mission does today |
 
-- All three are rebindable keymap entries (`new-chat` already exists; add `new-terminal` and `new-mission`). The + menu rows show their keys, and ⌘K lists New chat, New terminal and New mission as commands.
-- On Windows, Ctrl+T now reaches Runner before the shell, so a Windows shell loses Ctrl+T (transpose characters). Ctrl+N and Ctrl+D already make the same trade, and the key can be rebound.
+- All three are rebindable keymap entries (`new-chat` already exists; add `new-terminal` and `new-mission`). The + menu rows show their keys, and ⌘K gains New chat and New mission commands beside its existing New terminal, which keeps its own placement (#574: drawer on a chat tab).
+- On Windows, New terminal is Ctrl+Shift+T, as in Windows Terminal, so Ctrl+T stays transpose-characters in shells. This follows #725, which kept Ctrl+W for shells and made close tab Ctrl+Shift+W.
 
 Why not one modal with Chat | Terminal | Mission at the top:
 
@@ -55,21 +55,28 @@ The alternative was a small chooser on ⌘N (Chat / Terminal / Mission, then the
 ## Non-goals
 
 - Changing what the forms ask for, how sessions start, or where a chat lands.
-- Type-to-filter in the role and agent pickers (open question 5).
+- Type-to-filter in the role and agent pickers; file it separately if wanted.
+- Stopping other workspace shortcuts (⌘3–9, ⌘D, ⌘W) from acting behind an open modal; only ⌘1 and ⌘2 are taken over here, by the mode switch.
 - Keyboard work on modals other than Start a chat and Start mission.
 
-## Open questions
+## Decisions (2026-10-01)
 
-1. **Initial focus:** the picker (proposed) or Chat name (today)? The picker makes ⌘N ⌘↵ and picking a role the fast paths. Chat name suits people who name every chat.
-2. **⌘T in the mission workspace:** always a chat-surface tab (proposed, consistent with ⌘N), or a shell in the mission's drawer like the palette's New terminal? The drawer already has ⌥F12 and its own +.
-3. **The palette's New terminal** opens in the drawer, but the + menu's opens a tab. Should the palette follow ⌘T?
-4. **Mission key:** ⇧⌘M (proposed, M for mission) or ⌥⌘N (an alternate New)?
-5. **Type-ahead in pickers:** letters jump to the first role whose handle or name starts with them. This is cheap in `StyledSelect` and matters once there are a dozen roles. Add it here, or file it separately?
-6. **Report check:** the code says Esc already closes the modal and Enter starts the chat from Chat name, which is where focus opens. If either did nothing when you tried it, that is a bug to reproduce, for example focus not landing in the modal when ⌘N fires from a terminal pane, and it comes first.
+Jason asked for the mission on the drafted spec, so its open questions take the recommended answers:
+
+1. **Initial focus:** the remembered mode's picker, falling back to Chat name when the picker cannot take focus.
+2. **⌘T on the mission route:** a chat-surface terminal tab like ⌘N's chat, switching to the chat surface; the mission drawer keeps its own + and ⌥F12.
+3. **The palette's New terminal** is unchanged; the palette shows no keys, so it does not contradict ⌘T.
+4. **Mission key:** ⇧⌘M (Ctrl+Shift+M on Windows).
+5. **Type-ahead in pickers:** out of scope.
+6. **Report check:** the mission adds tests that open Start a chat through the New chat action with a terminal pane focused, then check that Esc closes it and Enter in Chat name starts the chat. If either fails, fixing that comes first.
+
+## Implementation finding (2026-10-01)
+
+A GPUI 0.3.7 dispatch regression test found that the proposed depth-only override of global Select tab 1/2 bindings does not hold: bindings with no context match at the deepest context depth, and later registration wins equal-depth ties (`keymap.rs::binding_enabled` and `bindings_for_input` in gpui-pre). The implementation registers fixed modal bindings after workspace and user bindings, using the stack-wide `!(!StartChat)` / `!(!StartMission)` predicates to match at the focused control’s depth, including under `TextInput`. This protects both confirm and mode keys against user overrides while leaving all global bindings unchanged. Tests exercise ⌘1/⌘2 from pickers, text fields, open menus and the switch, plus the workspace keys after closing the modal. Confirm bindings still dispatch before control key-down listeners, as verified from open selects and the mission goal textarea, including when a global user binding uses the confirm key. Review also identified that preserving focus on a picker removed by a mouse mode change leaves the modal without a live focus node; mouse switches now preserve surviving controls and move focus from removed controls to the new picker. Start mission renders alongside Start chat on every route, including over Settings, as Jason confirmed during review.
 
 ## Implementation phases
 
-1. **Design:** `design/specs/772-keyboard-create.pen` in the root checkout, holding only the Start a chat frame with footer keycaps, segment keycaps and the switch's focus ring, and the + menu with keys. Signed off before code.
+1. **Design:** no Pencil frames; the keycaps reuse the sidebar New chat row's shortcut style and the + menu's existing `UiMenuItem::shortcut`, and Jason judges the look in his smoke test.
 2. **Modal keys:** the `StartChat` and `StartMission` key contexts with confirm and mode actions, the single-stop segmented switch, initial focus, the focus move on a mode switch, and keycaps from the keymap.
 3. **Create shortcuts:** `NewTerminal` and `NewMission` actions with keymap entries, the + menu keys, and palette commands. Keep the empty-pane rule shared with ⌘N.
 

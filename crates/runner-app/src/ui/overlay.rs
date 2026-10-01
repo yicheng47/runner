@@ -64,6 +64,7 @@ pub struct Modal {
     height: Option<f32>,
     busy: bool,
     focus_order: Vec<FocusHandle>,
+    key_context: Option<SharedString>,
     scroll: Option<(ScrollHandle, Entity<Scrollbar>)>,
     on_close: PressHandler,
 }
@@ -78,6 +79,7 @@ impl Modal {
             height: None,
             busy: false,
             focus_order: Vec::new(),
+            key_context: None,
             scroll: None,
             on_close,
         }
@@ -108,6 +110,11 @@ impl Modal {
         self
     }
 
+    pub fn key_context(mut self, context: impl Into<SharedString>) -> Self {
+        self.key_context = Some(context.into());
+        self
+    }
+
     pub fn scrollbar(mut self, handle: ScrollHandle, scrollbar: Entity<Scrollbar>) -> Self {
         self.scroll = Some((handle, scrollbar));
         self
@@ -129,6 +136,9 @@ impl RenderOnce for Modal {
             .panel_width(rem, window.viewport_size().width - rem * 2.);
         let content_width = panel_width - px(2.);
         div()
+            .when_some(self.key_context, |root, context| {
+                root.key_context(context.as_ref())
+            })
             .absolute()
             .inset_0()
             .flex()

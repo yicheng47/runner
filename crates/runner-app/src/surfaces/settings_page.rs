@@ -2680,7 +2680,7 @@ mod tests {
         let overrides = keymap::KeymapOverrides::new();
         let rows = shortcut_rows("", &overrides);
         let titles = rows.iter().map(|row| row.title()).collect::<Vec<_>>();
-        assert_eq!(titles.len(), 22);
+        assert_eq!(titles.len(), 24);
         assert_eq!(titles[0], "New window");
         assert!(!titles.contains(&"Copy"));
         let after = |title: &str| titles[titles.iter().position(|t| *t == title).unwrap() + 1];

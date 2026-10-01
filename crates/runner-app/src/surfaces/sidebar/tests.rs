@@ -562,7 +562,7 @@ fn shortcut_pills_use_the_platform_primary_modifier_alone() {
 
 #[test]
 fn project_create_menu_uses_short_labels_and_project_targets() {
-    let root_entries = sidebar_create_menu_entries();
+    let root_entries = sidebar_create_menu_entries(&keymap::KeymapOverrides::new());
     assert_eq!(
         menu_labels(&root_entries),
         ["New chat", "New mission", "New terminal"]
@@ -579,7 +579,7 @@ fn project_create_menu_uses_short_labels_and_project_targets() {
         ]
     );
 
-    let entries = project_create_menu_entries("project-1");
+    let entries = project_create_menu_entries("project-1", &keymap::KeymapOverrides::new());
     assert_eq!(
         menu_labels(&entries),
         ["New chat", "New mission", "New terminal"]
@@ -1201,4 +1201,28 @@ fn creating_routes_highlight_their_workspace_entry() {
     assert!(!WorkspaceEntry::Crew.selected(&AppRoute::NewRole));
     assert!(WorkspaceEntry::Crew.selected(&AppRoute::NewCrew));
     assert!(!WorkspaceEntry::Role.selected(&AppRoute::NewCrew));
+}
+
+#[test]
+fn both_create_menus_show_effective_bindings_and_omit_unbound_keys() {
+    let mut overrides = keymap::KeymapOverrides::new();
+    overrides.insert(
+        "new-chat".into(),
+        Some(keymap::entry("command-palette").unwrap().default.clone()),
+    );
+    overrides.insert("new-terminal".into(), None);
+    for entries in [
+        sidebar_create_menu_entries(&overrides),
+        project_create_menu_entries("project-1", &overrides),
+    ] {
+        assert_eq!(
+            entries[0].0.shortcut.as_deref(),
+            Some(keymap::format_combo(&keymap::entry("command-palette").unwrap().default).as_str())
+        );
+        assert_eq!(
+            entries[1].0.shortcut.as_deref(),
+            Some(keymap::format_combo(&keymap::entry("new-mission").unwrap().default).as_str())
+        );
+        assert!(entries[2].0.shortcut.is_none());
+    }
 }

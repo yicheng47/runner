@@ -35,6 +35,25 @@ pub(crate) struct StartMissionModalState {
     _subscriptions: Vec<Subscription>,
 }
 
+impl StartMissionModalState {
+    fn can_submit(&self, cx: &App) -> bool {
+        !self.submitting
+            && !self.loading
+            && !self.crew_id.is_empty()
+            && !self.title.read(cx).text().trim().is_empty()
+            && self
+                .crews
+                .iter()
+                .any(|crew| crew.crew.id == self.crew_id && crew.role_count > 0)
+    }
+
+    fn is_composing(&self, cx: &App) -> bool {
+        [&self.title, &self.goal, &self.cwd]
+            .into_iter()
+            .any(|field| field.read(cx).is_composing())
+    }
+}
+
 impl NativeRoot {
     pub(crate) fn open_start_mission_modal(
         &mut self,
@@ -276,23 +295,28 @@ impl NativeRoot {
         .detach();
     }
 
+    fn confirm_start_mission(
+        &mut self,
+        _: &ConfirmStartMission,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(modal) = self
+            .start_mission_modal
+            .as_ref()
+            .filter(|modal| modal.can_submit(cx) && !modal.is_composing(cx))
+        else {
+            return;
+        };
+        modal.crew_select.update(cx, |select, cx| select.close(cx));
+        self.submit_start_mission(window, cx);
+    }
+
     fn submit_start_mission(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(modal) = self.start_mission_modal.as_mut() else {
             return;
         };
-        if modal.submitting
-            || modal.loading
-            || modal.crew_id.is_empty()
-            || modal.title.read(cx).text().trim().is_empty()
-        {
-            return;
-        }
-        let launchable = modal
-            .crews
-            .iter()
-            .find(|crew| crew.crew.id == modal.crew_id)
-            .is_some_and(|crew| crew.role_count > 0);
-        if !launchable {
+        if !modal.can_submit(cx) || modal.is_composing(cx) {
             return;
         }
         let input = runner_backend::ops::mission::MissionStart {
@@ -347,12 +371,7 @@ impl NativeRoot {
             .find(|crew| crew.crew.id == modal.crew_id);
         let launchable = selected.is_some_and(|crew| crew.role_count > 0);
         let role_count = selected.map_or(0, |crew| crew.role_count);
-        let title_empty = modal.title.read(cx).text().trim().is_empty();
-        let can_submit = !modal.submitting
-            && !modal.loading
-            && !modal.crew_id.is_empty()
-            && !title_empty
-            && launchable;
+        let can_submit = modal.can_submit(cx);
         let lead = modal.roster.iter().find(|member| member.slot.lead);
         let root = cx.entity();
         let close_root = root.clone();
@@ -552,6 +571,7 @@ impl NativeRoot {
                     .gap_2()
                     .child(
                         Button::new("cancel-start-mission", "Cancel")
+                            .shortcut("esc")
                             .focus_handle(modal.cancel_focus.clone())
                             .disabled(modal.submitting)
                             .on_press(move |window, cx| {
@@ -569,6 +589,7 @@ impl NativeRoot {
                                 "Start mission"
                             },
                         )
+                        .shortcut(keymap::fixed_shortcut("cmd-enter"))
                         .focus_handle(modal.submit_focus.clone())
                         .variant(ButtonVariant::Primary)
                         .disabled(!can_submit)
@@ -579,13 +600,14 @@ impl NativeRoot {
                     ),
             );
         let close_modal_root = root;
-        Modal::new(
+        let modal_element = Modal::new(
             title,
             body,
             Rc::new(move |window, cx| {
                 close_modal_root.update(cx, |this, cx| this.close_start_mission_modal(window, cx));
             }),
         )
+        .key_context("StartMission")
         .width(OverlayWidth::Custom(680.))
         .busy(modal.submitting)
         .focus_order(if modal.submitting {
@@ -603,8 +625,14 @@ impl NativeRoot {
                 modal.submit_focus.clone(),
             ]
         })
-        .footer(footer)
-        .into_any_element()
+        .footer(footer);
+        div()
+            .debug_selector(|| "START_MISSION_MODAL".into())
+            .absolute()
+            .inset_0()
+            .on_action(cx.listener(Self::confirm_start_mission))
+            .child(modal_element)
+            .into_any_element()
     }
 }
 
@@ -706,5 +734,272 @@ mod tests {
     fn nonempty_matches_start_mission_optional_fields() {
         assert_eq!(nonempty("  "), None);
         assert_eq!(nonempty("  goal  ").as_deref(), Some("goal"));
+    }
+}
+
+#[cfg(test)]
+mod keyboard_tests {
+    use super::*;
+    use crate::surfaces::start_chat::{
+        tests::{modal_harness, ModalHarness},
+        ChatMode,
+    };
+    use gpui::EntityInputHandler;
+
+    fn mission_harness() -> ModalHarness {
+        let mut harness = modal_harness(1200., 1000., Vec::new(), Vec::new(), ChatMode::Runtime);
+        harness.act(|root, window, cx| {
+            root.start_chat_modal = None;
+            root.new_mission_action(&NewMission, window, cx);
+        });
+        harness.act(|root, _, cx| {
+            let crew = runner_backend::ops::crew::crew_create(
+                root.core(cx),
+                runner_backend::ops::crew::CreateCrewInput {
+                    name: "First".into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let other = runner_backend::ops::crew::crew_create(
+                root.core(cx),
+                runner_backend::ops::crew::CreateCrewInput {
+                    name: "Second".into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let form = root.start_mission_modal.as_mut().unwrap();
+            form.loading = false;
+            form.crews = vec![
+                CrewListItem {
+                    crew: crew.clone(),
+                    role_count: 1,
+                    members: Vec::new(),
+                },
+                CrewListItem {
+                    crew: other,
+                    role_count: 1,
+                    members: Vec::new(),
+                },
+            ];
+            form.crew_id = crew.id.clone();
+            form.crew_select.update(cx, |select, cx| {
+                select.set_options(
+                    start_mission_crew_options(&form.crews, &form.crew_id, &[]),
+                    cx,
+                );
+                select.set_value(crew.id, cx);
+            });
+            form.title
+                .update(cx, |field, cx| field.set_text("Mission title", cx));
+            form.goal.update(cx, |field, cx| {
+                field.set_text("First line\nSecond line", cx)
+            });
+        });
+        harness
+    }
+
+    #[test]
+    fn mission_confirm_dispatches_from_every_control_including_an_open_select_and_textarea() {
+        for control in 0..9 {
+            let mut harness = mission_harness();
+            let mut original_crew = String::new();
+            harness.act(|root, window, cx| {
+                let form = root.start_mission_modal.as_ref().unwrap();
+                original_crew = form.crew_id.clone();
+                let focus = match control {
+                    0 => form.crew_select.read(cx).focus_handle(),
+                    1 => form.title.read(cx).focus_handle(),
+                    2 => form.goal.read(cx).focus_handle(),
+                    3 => form.cwd.read(cx).focus_handle(),
+                    4 => form.browse_focus.clone(),
+                    5 => form.advanced_focus.clone(),
+                    6 => form.cancel_focus.clone(),
+                    7 => form.submit_focus.clone(),
+                    _ => form.close_focus.clone(),
+                };
+                focus.focus(window, cx);
+            });
+            if control == 0 {
+                harness.visual.simulate_keystrokes("enter down");
+            }
+            harness
+                .visual
+                .simulate_keystrokes(&keymap::platform_default("cmd-enter"));
+            harness.act(|root, _, cx| {
+                let form = root.start_mission_modal.as_ref().unwrap();
+                // The fixture crews have no real slots, so the existing submit returns a validation error without spawning agents.
+                assert!(
+                    form.error.is_some(),
+                    "confirm did not submit at control {control}"
+                );
+                assert_eq!(form.crew_id, original_crew);
+                assert_eq!(form.goal.read(cx).text(), "First line\nSecond line");
+            });
+        }
+    }
+
+    #[test]
+    fn mission_confirm_is_inert_while_unavailable_starting_or_composing_and_create_keys_are_guarded(
+    ) {
+        for condition in 0..6 {
+            let mut harness = mission_harness();
+            harness.act(|root, window, cx| {
+                let form = root.start_mission_modal.as_mut().unwrap();
+                match condition {
+                    0 => form.loading = true,
+                    1 => form.submitting = true,
+                    2 => form.crew_id.clear(),
+                    3 => form.title.update(cx, |field, cx| field.set_text("", cx)),
+                    4 => form.crews[0].role_count = 0,
+                    _ => form.goal.update(cx, |field, cx| {
+                        field.replace_and_mark_text_in_range(None, "ni", Some(2..2), window, cx)
+                    }),
+                }
+            });
+            harness
+                .visual
+                .simulate_keystrokes(&keymap::platform_default("cmd-enter"));
+            for key in ["cmd-n", "cmd-t", "shift-cmd-m"] {
+                harness
+                    .visual
+                    .simulate_keystrokes(&keymap::platform_default(key));
+            }
+            harness.act(|root, _, _| {
+                assert!(root.start_chat_modal.is_none());
+                assert!(root.tabs.tabs().is_empty());
+                let form = root.start_mission_modal.as_ref().unwrap();
+                assert!(form.error.is_none());
+                assert_eq!(form.submitting, condition == 1);
+            });
+        }
+    }
+
+    #[test]
+    fn mission_goal_plain_enter_inserts_newlines_and_escape_closes_the_menu_first() {
+        let mut harness = mission_harness();
+        harness.act(|root, window, cx| {
+            root.start_mission_modal
+                .as_ref()
+                .unwrap()
+                .goal
+                .read(cx)
+                .focus_handle()
+                .focus(window, cx)
+        });
+        harness.visual.simulate_keystrokes("enter");
+        harness.act(|root, window, cx| {
+            let form = root.start_mission_modal.as_ref().unwrap();
+            assert!(form.goal.read(cx).text().contains('\n'));
+            assert!(form.error.is_none());
+            form.crew_select.read(cx).focus_handle().focus(window, cx);
+        });
+        harness.visual.simulate_keystrokes("enter escape");
+        harness.act(|root, _, _| assert!(root.start_mission_modal.is_some()));
+        harness.visual.simulate_keystrokes("escape");
+        harness.act(|root, _, _| assert!(root.start_mission_modal.is_none()));
+    }
+
+    #[test]
+    fn mission_key_displays_the_modal_above_the_production_settings_surface() {
+        let mut harness = modal_harness(1200., 1000., Vec::new(), Vec::new(), ChatMode::Runtime);
+        harness.act(|root, window, cx| {
+            root.start_chat_modal = None;
+            root.enter_settings_route(Some("general"), window, cx);
+        });
+        assert!(harness.visual.debug_bounds("START_MISSION_MODAL").is_none());
+        harness
+            .visual
+            .simulate_keystrokes(&keymap::platform_default("shift-cmd-m"));
+        assert!(harness.visual.debug_bounds("START_MISSION_MODAL").is_some());
+        harness.act(|root, window, cx| {
+            assert_eq!(root.route, AppRoute::Settings);
+            assert!(root
+                .start_mission_modal
+                .as_ref()
+                .unwrap()
+                .crew_select
+                .read(cx)
+                .focus_handle()
+                .is_focused(window));
+        });
+        harness.visual.simulate_keystrokes("escape");
+        harness.act(|root, _, _| {
+            assert_eq!(root.route, AppRoute::Settings);
+            assert!(root.start_mission_modal.is_none());
+        });
+    }
+
+    #[test]
+    fn user_confirm_collision_cannot_shadow_mission_confirm_from_a_picker_or_textarea() {
+        for textarea in [false, true] {
+            let mut harness = mission_harness();
+            let key = gpui::Keystroke::parse(&keymap::platform_default("cmd-enter")).unwrap();
+            let overrides = keymap::KeymapOverrides::from([(
+                "new-terminal".into(),
+                keymap::combo_from_keystroke(&key),
+            )]);
+            harness.act(|root, window, cx| {
+                keymap::install_bindings(cx, &overrides, false);
+                let form = root.start_mission_modal.as_ref().unwrap();
+                let focus = if textarea {
+                    form.goal.read(cx).focus_handle()
+                } else {
+                    form.crew_select.read(cx).focus_handle()
+                };
+                focus.focus(window, cx);
+            });
+            harness
+                .visual
+                .simulate_keystrokes(&keymap::platform_default("cmd-enter"));
+            harness.act(|root, _, _| {
+                assert!(root.start_mission_modal.as_ref().unwrap().error.is_some())
+            });
+        }
+    }
+
+    #[test]
+    fn mission_key_uses_the_active_project_from_other_routes() {
+        let mut harness = mission_harness();
+        let mut project_id = String::new();
+        harness.act(|root, window, cx| {
+            root.close_start_mission_modal(window, cx);
+            let project = runner_backend::ops::project::project_create(
+                root.core(cx),
+                "Project".into(),
+                "/tmp".into(),
+            )
+            .unwrap();
+            project_id = project.id.clone();
+            let project_node = runner_backend::repo::node::ensure_project_node(
+                &root.core(cx).db.get().unwrap(),
+                &project.id,
+            )
+            .unwrap();
+            let mut layout = PaneLayout::single(None, &[]);
+            layout.id = "01M3VD00000000000000000003".into();
+            layout.parent_id = Some(project_node.id);
+            runner_backend::ops::node::node_tab_upsert(
+                root.core(cx),
+                layout.upsert_input().unwrap(),
+            )
+            .unwrap();
+            root.app_store.update(cx, |store, cx| {
+                store.projects = vec![project];
+                cx.notify();
+            });
+            root.reload_tabs(cx).unwrap();
+            root.set_route(AppRoute::Crews, cx);
+        });
+        harness.act(|root, window, cx| root.root_focus.focus(window, cx));
+        harness
+            .visual
+            .simulate_keystrokes(&keymap::platform_default("shift-cmd-m"));
+        harness.act(|root, _, cx| {
+            let form = root.start_mission_modal.as_ref().unwrap();
+            assert_eq!(form.project.as_ref().unwrap().id, project_id);
+            assert_eq!(form.cwd.read(cx).text(), "/tmp");
+        });
     }
 }

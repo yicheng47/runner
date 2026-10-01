@@ -176,8 +176,8 @@ impl Sidebar {
     ) {
         self.open_sidebar_menu(
             MenuOrigin::Button(anchor),
-            160.,
-            project_create_menu_entries(&project_id),
+            220.,
+            project_create_menu_entries(&project_id, &self.settings(cx).keymap_overrides),
             window,
             cx,
         );
@@ -469,38 +469,50 @@ pub(super) fn mission_menu_entries(
 
 pub(super) fn project_create_menu_entries(
     project_id: &str,
+    overrides: &keymap::KeymapOverrides,
 ) -> Vec<(UiMenuItem, SidebarMenuAction)> {
-    vec![
-        (
-            UiMenuItem::new("New chat").icon("message-square-plus.svg"),
-            SidebarMenuAction::NewChat(ProjectScope::Project(project_id.to_owned())),
-        ),
-        (
-            UiMenuItem::new("New mission").icon("flag.svg"),
-            SidebarMenuAction::NewMission(ProjectScope::Project(project_id.to_owned())),
-        ),
-        (
-            UiMenuItem::new("New terminal").icon("square-terminal.svg"),
-            SidebarMenuAction::NewTerminal(ProjectScope::Project(project_id.to_owned())),
-        ),
-    ]
+    create_menu_entries(ProjectScope::Project(project_id.to_owned()), overrides)
 }
 
-pub(super) fn sidebar_create_menu_entries() -> Vec<(UiMenuItem, SidebarMenuAction)> {
-    vec![
+pub(super) fn sidebar_create_menu_entries(
+    overrides: &keymap::KeymapOverrides,
+) -> Vec<(UiMenuItem, SidebarMenuAction)> {
+    create_menu_entries(ProjectScope::Root, overrides)
+}
+
+fn create_menu_entries(
+    scope: ProjectScope,
+    overrides: &keymap::KeymapOverrides,
+) -> Vec<(UiMenuItem, SidebarMenuAction)> {
+    [
         (
-            UiMenuItem::new("New chat").icon("message-square-plus.svg"),
-            SidebarMenuAction::NewChat(ProjectScope::Root),
+            "new-chat",
+            "New chat",
+            "message-square-plus.svg",
+            SidebarMenuAction::NewChat(scope.clone()),
         ),
         (
-            UiMenuItem::new("New mission").icon("flag.svg"),
-            SidebarMenuAction::NewMission(ProjectScope::Root),
+            "new-mission",
+            "New mission",
+            "flag.svg",
+            SidebarMenuAction::NewMission(scope.clone()),
         ),
         (
-            UiMenuItem::new("New terminal").icon("square-terminal.svg"),
-            SidebarMenuAction::NewTerminal(ProjectScope::Root),
+            "new-terminal",
+            "New terminal",
+            "square-terminal.svg",
+            SidebarMenuAction::NewTerminal(scope),
         ),
     ]
+    .into_iter()
+    .map(|(id, label, icon, action)| {
+        let mut item = UiMenuItem::new(label).icon(icon);
+        if let Some(combo) = keymap::effective_binding(id, overrides) {
+            item = item.shortcut(keymap::format_combo(&combo));
+        }
+        (item, action)
+    })
+    .collect()
 }
 
 pub(super) fn project_menu_entries(
