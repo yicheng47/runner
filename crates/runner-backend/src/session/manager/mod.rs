@@ -87,33 +87,6 @@ struct ObservedInput {
 /// Trailing debounce for width-changing full-repaint TUI resizes.
 const RESIZE_SETTLE_MS: u64 = 175;
 
-/// Minimum spacing between consecutive `claude-code` PTY launches.
-/// Long enough for one claude's OAuth refresh round-trip (network
-/// POST to api.anthropic.com plus keychain write) to land before a
-/// sibling spawn reads the same refresh token. Refresh tokens are
-/// conventionally single-use, so concurrent refresh from N parallel
-/// claudes causes `invalid_grant` on the losers and forces relogin
-/// in those panes. See issue #171.
-///
-/// Conservative default at 1500ms — covers typical 100-500ms
-/// round-trips with margin for slow networks. A user spawning a
-/// 3-slot mission pays ~3s of wall clock for the gate (1.5s × 2
-/// post-first-spawn waits); a 7-slot werewolf pays ~9s.
-///
-/// **First spawn through pays zero**: the gate is deadline-based,
-/// not RAII-on-drop. It only sleeps when a prior claude spawned
-/// within the last GRACE — single direct chats and cold-start
-/// mission starts see ~0ms overhead. Scoped to claude-code only;
-/// codex / other runtimes bypass.
-///
-/// Zeroed under `#[cfg(test)]` so existing claude-code path tests
-/// don't pay the wall-clock tax. Pure-function `compute_gate_wait`
-/// covers the wait-math in tests with explicit grace values.
-#[cfg(not(test))]
-const CLAUDE_LAUNCH_GATE_GRACE: Duration = Duration::from_millis(1500);
-#[cfg(test)]
-const CLAUDE_LAUNCH_GATE_GRACE: Duration = Duration::from_millis(0);
-
 /// Inputs the forwarder consumer needs to translate a
 /// `RuntimeOutput::StatusTransition` into a real `session_status`
 /// event on the mission's NDJSON log (issue #124). All fields are
@@ -676,7 +649,7 @@ pub struct SessionManager {
     /// Timestamp of the most recent claude-code spawn through the
     /// launch gate. `None` until the first claude-code spawn lands.
     /// Each new claude-code spawn reads this, sleeps the remainder
-    /// of `CLAUDE_LAUNCH_GATE_GRACE`, then updates it. Non-claude
+    /// of the adapter launch grace, then updates it. Non-claude
     /// runtimes never touch this field. See `enter_claude_launch_gate`
     /// + issue #171.
     claude_launch_gate: Mutex<Option<Instant>>,
@@ -826,29 +799,21 @@ impl SessionManager {
         pool: Arc<DbPool>,
         events: Arc<dyn SessionEvents>,
     ) -> Result<()> {
-        if let Err(error) = super::claude_status::clear_leftovers(app_data_dir) {
-            log::warn!("clear stale Claude status files: {error}");
+        for runtime in Runtime::ALL {
+            if let Some(hooks) = crate::runtimes::adapter(runtime).status_hooks() {
+                hooks.cleanup(app_data_dir);
+            }
         }
         if let Err(error) = super::system_prompt::clear_leftovers(app_data_dir) {
             log::warn!("clear stale session prompt files: {error}");
         }
-        if super::hook_feed::hooks_supported(Some(crate::model::Runtime::Copilot), cfg!(windows)) {
-            if let Err(error) = super::copilot_status::install_plugin(app_data_dir) {
-                log::warn!("install Copilot status plugin: {error}");
+        for runtime in Runtime::ALL {
+            let adapter = crate::runtimes::adapter(runtime);
+            if let Some(hooks) = adapter.status_hooks() {
+                hooks.install(app_data_dir);
             }
-        }
-        if super::hook_feed::hooks_supported(
-            Some(crate::model::Runtime::Antigravity),
-            cfg!(windows),
-        ) {
-            if let Err(error) = super::agy_status::install_hooks(app_data_dir) {
-                log::warn!("install Antigravity status hooks: {error}");
-            }
-        }
-        super::agy_capture::clear_orphans(app_data_dir, &pool);
-        if super::hook_feed::hooks_supported(Some(crate::model::Runtime::Pi), cfg!(windows)) {
-            if let Err(error) = super::pi_status::install_extension(app_data_dir) {
-                log::warn!("install pi status extension: {error}");
+            if matches!(adapter.key_capture(), crate::runtimes::KeyCapture::LogTail) {
+                crate::runtimes::antigravity::agy_capture::clear_orphans(app_data_dir, &pool);
             }
         }
         let watcher =

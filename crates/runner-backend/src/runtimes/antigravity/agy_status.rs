@@ -20,10 +20,10 @@ use std::sync::Arc;
 
 use serde::Deserialize;
 
-use super::claude_status::CTRL_C_INTERRUPT;
-use super::hook_feed::HookFeed;
-use super::status::{Activity, AgentObservation, ObservationSource, TurnOutcome};
 use crate::error::Result;
+use crate::runtimes::claude_code::claude_status::CTRL_C_INTERRUPT;
+use crate::session::hook_feed::HookFeed;
+use crate::session::status::{Activity, AgentObservation, ObservationSource, TurnOutcome};
 
 pub(crate) const PATH_ENV: &str = "RUNNER_ANTIGRAVITY_STATUS_PATH";
 pub(crate) const GENERATION_ENV: &str = "RUNNER_ANTIGRAVITY_STATUS_GENERATION";
@@ -205,6 +205,19 @@ impl AgyStatusWatcher {
     }
 }
 
+impl crate::session::hook_feed::HookWatcher for AgyStatusWatcher {
+    fn interrupt_signal(&self) -> Option<Arc<AtomicU8>> {
+        Some(self.interrupt_signal())
+    }
+    fn drain_observations(
+        &mut self,
+        transition: &mut dyn FnMut(crate::session::status::AgentObservation, &'static str),
+        _session_start: &mut dyn FnMut(String),
+    ) -> Result<()> {
+        self.drain_observations(transition)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::{json, Value};
@@ -300,7 +313,7 @@ mod tests {
 
     #[test]
     fn interrupted_invocation_without_stop_returns_to_ready() {
-        use super::super::claude_status::ESCAPE_INTERRUPT;
+        use crate::runtimes::claude_code::claude_status::ESCAPE_INTERRUPT;
 
         let root = tempfile::tempdir().unwrap();
         install_hooks(root.path()).unwrap();

@@ -64,6 +64,85 @@ impl Normalizer {
             "args": spec.args.iter().map(|arg| self.text(arg, root)).collect::<Vec<_>>(),
             "env_keys": env_keys})
     }
+
+    fn effects(
+        &mut self,
+        fake: &FakeRuntime,
+        mgr: &SessionManager,
+        key: &str,
+        root: &Path,
+    ) -> Value {
+        let spec = fake.last_spawn_spec().unwrap();
+        assert_eq!(spec.agent_runtime, Runtime::parse(key), "runtime {key}");
+        let adapter = spec
+            .agent_runtime
+            .map(crate::runtimes::adapter)
+            .unwrap_or(&crate::runtimes::NoAgent);
+        let env: BTreeMap<_, _> = spec
+            .env
+            .iter()
+            .map(|(name, value)| (name.clone(), self.text(value, root)))
+            .collect();
+        let watcher = [
+            (
+                "claude-code",
+                crate::runtimes::claude_code::claude_status::PATH_ENV,
+                crate::runtimes::claude_code::claude_status::GENERATION_ENV,
+            ),
+            (
+                "codex",
+                crate::runtimes::codex::codex_status::PATH_ENV,
+                crate::runtimes::codex::codex_status::GENERATION_ENV,
+            ),
+            (
+                "pi",
+                crate::runtimes::pi::pi_status::PATH_ENV,
+                crate::runtimes::pi::pi_status::GENERATION_ENV,
+            ),
+            (
+                "antigravity",
+                crate::runtimes::antigravity::agy_status::PATH_ENV,
+                crate::runtimes::antigravity::agy_status::GENERATION_ENV,
+            ),
+            (
+                "copilot",
+                crate::runtimes::copilot::copilot_status::PATH_ENV,
+                crate::runtimes::copilot::copilot_status::GENERATION_ENV,
+            ),
+        ]
+        .into_iter()
+        .find_map(|(runtime, path, generation)| {
+            (spec.agent_runtime == Runtime::parse(runtime)
+                && adapter
+                    .status_hooks()
+                    .is_some_and(|hooks| hooks.supported(cfg!(windows)))
+                && spec.env.contains_key(path)
+                && spec.env.contains_key(generation))
+            .then_some(runtime)
+        });
+        let capture = match adapter.key_capture() {
+            crate::runtimes::KeyCapture::RolloutScan {
+                sessions_root: Some(path),
+            } => {
+                json!({"mechanism": "rollout-scan", "sessions_root": self.text(&path.to_string_lossy(), root)})
+            }
+            crate::runtimes::KeyCapture::LogTail => json!({"mechanism": "log-tail"}),
+            crate::runtimes::KeyCapture::RekeyDrop => json!({"mechanism": "rekey-drop"}),
+            _ => json!({"mechanism": "none"}),
+        };
+        let interrupt = adapter
+            .status_hooks()
+            .and_then(|hooks| hooks.start_watcher(&spec))
+            .map(|watcher| watcher.interrupt_signal().is_some());
+        let rollout = mgr.codex_capture_context(&spec.session_id).map(|ctx| {
+            json!({
+                "sessions_root": self.text(&ctx.sessions_root.to_string_lossy(), root),
+                "prompt_marker": ctx.prompt_marker.map(|marker| self.text(&marker, root))
+            })
+        });
+        json!({"env": env, "codex_pending_turn": spec.codex_pending_turn,
+            "watcher": watcher, "interrupt": interrupt, "key_capture": capture, "rollout": rollout})
+    }
 }
 
 fn configured_role(key: &str, root: &Path) -> Role {
@@ -121,6 +200,7 @@ fn history(root: &Path, cwd: &str, key: &str) {
 #[test]
 fn spawn_goldens() {
     let mut rows = Vec::new();
+    let mut effects_rows = Vec::new();
     for key in Runtime::ALL
         .map(Runtime::key)
         .into_iter()
@@ -160,15 +240,15 @@ fn spawn_goldens() {
                     configured.args.extend(["--disable".into(), "hooks".into()]);
                 }
             } else {
-                crate::session::copilot_status::install_plugin(root).unwrap();
-                crate::session::pi_status::install_extension(root).unwrap();
-                crate::session::agy_status::install_hooks(root).unwrap();
+                crate::runtimes::copilot::copilot_status::install_plugin(root).unwrap();
+                crate::runtimes::pi::pi_status::install_extension(root).unwrap();
+                crate::runtimes::antigravity::agy_status::install_hooks(root).unwrap();
             }
             insert_role_row(&pool.get().unwrap(), &configured);
             let fake = fake_runtime();
             let mgr = mgr_with_fake(None, Arc::clone(&fake));
             let mut normalizer = Normalizer::default();
-            let snapshot = with_conversation_home(root, || {
+            let (snapshot, effects) = with_conversation_home(root, || {
                 let spawned = mgr
                     .spawn_direct(
                         &configured,
@@ -204,10 +284,12 @@ fn spawn_goldens() {
                         .unwrap();
                 }
                 let snapshot = normalizer.spawn(&fake, root);
+                let effects = normalizer.effects(&fake, &mgr, key, root);
                 mgr.kill(&spawned.id).unwrap();
-                snapshot
+                (snapshot, effects)
             });
             rows.push(json!({"runtime": key, "shape": shape, "spawn": snapshot}));
+            effects_rows.push(json!({"runtime": key, "shape": shape, "spawn": effects}));
         }
         for mode in [
             PermissionMode::Default,
@@ -224,7 +306,7 @@ fn spawn_goldens() {
             insert_role_row(&pool.get().unwrap(), &configured);
             let fake = fake_runtime();
             let mgr = mgr_with_fake(None, Arc::clone(&fake));
-            let snapshot = with_conversation_home(data.path(), || {
+            let (snapshot, effects) = with_conversation_home(data.path(), || {
                 let spawned = mgr
                     .spawn_direct(
                         &configured,
@@ -241,11 +323,14 @@ fn spawn_goldens() {
                         Some("GOLDEN_PERSONA".into()),
                     )
                     .unwrap();
-                let snapshot = Normalizer::default().spawn(&fake, data.path());
+                let mut normalizer = Normalizer::default();
+                let snapshot = normalizer.spawn(&fake, data.path());
+                let effects = normalizer.effects(&fake, &mgr, key, data.path());
                 mgr.kill(&spawned.id).unwrap();
-                snapshot
+                (snapshot, effects)
             });
             rows.push(json!({"runtime": key, "shape": "direct-permission", "mode": mode, "spawn": snapshot}));
+            effects_rows.push(json!({"runtime": key, "shape": "direct-permission", "mode": mode, "spawn": effects}));
         }
         for mode in MissionPermissionMode::ALL {
             for lead in [false, true] {
@@ -263,7 +348,7 @@ fn spawn_goldens() {
                 let fake = fake_runtime();
                 let mgr = mgr_with_fake(None, Arc::clone(&fake));
                 mgr.set_mission_permission_mode(mode);
-                let snapshot = with_conversation_home(root, || {
+                let (snapshot, effects) = with_conversation_home(root, || {
                     let (system_prompt, first_turn) = if lead {
                         crate::runtimes::for_key(key).prompt_channels().lead(
                             &crate::router::prompt::LaunchPromptInput {
@@ -301,20 +386,25 @@ fn spawn_goldens() {
                             first_turn,
                         )
                         .unwrap();
-                    let snapshot = Normalizer::default().spawn(&fake, root);
+                    let mut normalizer = Normalizer::default();
+                    let snapshot = normalizer.spawn(&fake, root);
+                    let effects = normalizer.effects(&fake, &mgr, key, root);
                     mgr.kill(&spawned.id).unwrap();
-                    snapshot
+                    (snapshot, effects)
                 });
                 rows.push(json!({"runtime": key, "shape": if lead {"mission-lead"} else {"mission-worker"}, "mode": mode, "spawn": snapshot}));
+                effects_rows.push(json!({"runtime": key, "shape": if lead {"mission-lead"} else {"mission-worker"}, "mode": mode, "spawn": effects}));
             }
         }
     }
     crate::golden::assert_golden("spawns", json!(rows));
+    crate::golden::assert_golden("spawn-effects", json!(effects_rows));
 }
 
 #[test]
 fn fork_goldens() {
     let mut rows = Vec::new();
+    let mut effects_rows = Vec::new();
     for key in ["claude-code", "codex", "pi"] {
         let data = tempfile::tempdir().unwrap();
         let root = data.path();
@@ -344,7 +434,7 @@ fn fork_goldens() {
         crate::repo::session::insert(&pool.get().unwrap(), &source).unwrap();
         let fake = fake_runtime();
         let mgr = mgr_with_fake(None, Arc::clone(&fake));
-        let snapshot = with_conversation_home(root, || {
+        let (snapshot, effects) = with_conversation_home(root, || {
             let spawned = mgr
                 .spawn_fork(
                     &source.id,
@@ -364,10 +454,136 @@ fn fork_goldens() {
                     .text(&std::fs::read_to_string(capture_path).unwrap(), root)
                     .replace(&dir.path().to_string_lossy().to_string(), "<MATERIALIZER>"));
             }
+            let mut effects = normalizer.effects(&fake, &mgr, key, root);
+            if let Some((dir, _, _, _)) = &materializer {
+                effects["env"]["CODEX_HOME"] = json!(effects["env"]["CODEX_HOME"]
+                    .as_str()
+                    .unwrap()
+                    .replace(&dir.path().to_string_lossy().to_string(), "<MATERIALIZER>"));
+            }
             mgr.kill(&spawned.id).unwrap();
-            snapshot
+            (snapshot, effects)
         });
         rows.push(json!({"runtime": key, "spawn": snapshot}));
+        effects_rows.push(json!({"runtime": key, "spawn": effects}));
     }
     crate::golden::assert_golden("forks", json!(rows));
+    crate::golden::assert_golden("fork-effects", json!(effects_rows));
+}
+
+fn files_at(root: &Path) -> Value {
+    fn visit(dir: &Path, root: &Path, files: &mut BTreeMap<String, String>) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                visit(&path, root, files);
+            } else {
+                files.insert(
+                    path.strip_prefix(root)
+                        .unwrap()
+                        .to_string_lossy()
+                        .replace('\\', "/"),
+                    Normalizer::default().text(&std::fs::read_to_string(&path).unwrap(), root),
+                );
+            }
+        }
+    }
+    let mut files = BTreeMap::new();
+    visit(root, root, &mut files);
+    json!(files)
+}
+
+#[test]
+fn startup_files_golden() {
+    let data = tempfile::tempdir().unwrap();
+    let mgr = mgr_with_fake(None, fake_runtime());
+    mgr.start_runtime_watchers(data.path(), pool_with_schema(), capture())
+        .unwrap();
+    crate::golden::assert_golden("startup-files", files_at(data.path()));
+}
+
+#[test]
+fn trust_files_golden() {
+    let mut rows = Vec::new();
+    for key in Runtime::ALL
+        .map(Runtime::key)
+        .into_iter()
+        .chain(["unknown-runtime"])
+    {
+        let data = tempfile::tempdir().unwrap();
+        let project = data.path().join("project");
+        std::fs::create_dir(&project).unwrap();
+        let mgr = mgr_with_fake(None, fake_runtime());
+        let copilot_home = data.path().join("custom-copilot");
+        with_conversation_home(data.path(), || {
+            let app_data = tempfile::tempdir().unwrap();
+            let pool = pool_with_schema();
+            let mut configured = configured_role(key, data.path());
+            configured.working_dir = Some(project.to_string_lossy().into_owned());
+            configured.env.insert(
+                "COPILOT_HOME".into(),
+                copilot_home.to_string_lossy().into_owned(),
+            );
+            insert_role_row(&pool.get().unwrap(), &configured);
+            let spawned = mgr
+                .spawn_direct(
+                    &configured,
+                    None,
+                    None,
+                    None,
+                    None,
+                    configured.working_dir.as_deref(),
+                    None,
+                    None,
+                    app_data.path(),
+                    pool,
+                    capture(),
+                    None,
+                )
+                .unwrap();
+            mgr.kill(&spawned.id).unwrap();
+            // Codex's mocked spawn seed is a no-op; exercise its production writer explicitly.
+            if key == "codex" {
+                crate::runtimes::codex::codex_trust::seed_project_trust_at(
+                    &project,
+                    &data.path().join(".codex/config.toml"),
+                )
+                .unwrap();
+            }
+        });
+        rows.push(json!({"runtime": key, "files": files_at(data.path())}));
+    }
+    crate::golden::assert_golden("trust-files", json!(rows));
+}
+
+#[test]
+fn spawn_capabilities_golden() {
+    let data = tempfile::tempdir().unwrap();
+    let mut rows = Vec::new();
+    for key in Runtime::ALL
+        .map(Runtime::key)
+        .into_iter()
+        .chain(["unknown-runtime"])
+    {
+        let runtime = Runtime::parse(key);
+        let mgr = mgr_with_fake(None, fake_runtime());
+        mgr.enter_claude_launch_gate("golden", runtime);
+        let markers: Vec<_> = [
+            None,
+            Some("TURN".into()),
+            Some("x".repeat(crate::router::runtime::FIRST_TURN_ARGV_MAX_BYTES)),
+        ]
+        .into_iter()
+        .map(|body| {
+            let (body, marker) =
+                SessionManager::codex_capture_prompt_marker(runtime, "golden", body);
+            json!({"body_len": body.as_ref().map(String::len), "marker": marker})
+        })
+        .collect();
+        rows.push(json!({"runtime": key, "hooks_unix": crate::runtimes::for_key(key).status_hooks().is_some_and(|hooks| hooks.supported(false)),
+            "hooks_windows": crate::runtimes::for_key(key).status_hooks().is_some_and(|hooks| hooks.supported(true)),
+            "launch_gate": mgr.claude_launch_gate.lock().unwrap().is_some(), "markers": markers,
+            "env": Normalizer::default().text(&serde_json::to_string(&super::super::spawn::agent_env(BTreeMap::new(), &HashMap::new(), BTreeMap::new(), runtime)).unwrap(), data.path())}));
+    }
+    crate::golden::assert_golden("spawn-capabilities", json!(rows));
 }

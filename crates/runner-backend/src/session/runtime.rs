@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 /// commands) gather the inputs and hand them in.
 #[derive(Debug, Clone, Default)]
 pub struct SpawnSpec {
+    pub agent_runtime: Option<crate::model::Runtime>,
     /// Codex starts without a hook handshake. Some(true) includes an automatic
     /// first turn (also when Windows will paste it); Some(false) awaits input.
     /// None keeps the output-based fallback used by other runtimes.

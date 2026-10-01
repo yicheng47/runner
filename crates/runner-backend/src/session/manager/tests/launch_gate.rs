@@ -110,6 +110,7 @@ fn custom_claude_settings_do_not_prepare_a_status_watcher() {
         std::fs::create_dir_all(stale_rekey.parent().unwrap()).unwrap();
         std::fs::write(&stale_rekey, "stale report").unwrap();
         let mut spec = SpawnSpec {
+            agent_runtime: None,
             codex_pending_turn: None,
             session_id: "custom-settings".into(),
             cwd: None,
@@ -133,10 +134,10 @@ fn custom_claude_settings_do_not_prepare_a_status_watcher() {
         );
         assert!(!spec
             .env
-            .contains_key(crate::session::claude_status::PATH_ENV));
+            .contains_key(crate::runtimes::claude_code::claude_status::PATH_ENV));
         assert!(!spec
             .env
-            .contains_key(crate::session::claude_status::GENERATION_ENV));
+            .contains_key(crate::runtimes::claude_code::claude_status::GENERATION_ENV));
         assert!(!stale_rekey.exists());
     }
 }
@@ -147,6 +148,7 @@ fn spawn_argv_injects_runtime_settings_for_fresh_and_resume() {
         let mut role = role("/bin/cat", &["--debug"]);
         role.runtime = runtime.into();
         let mut spec = SpawnSpec {
+            agent_runtime: None,
             codex_pending_turn: None,
             session_id: "settings-argv".into(),
             cwd: None,
@@ -169,22 +171,25 @@ fn spawn_argv_injects_runtime_settings_for_fresh_and_resume() {
             None,
         );
         if runtime == "claude-code" {
-            let generation = spec.env[crate::session::claude_status::GENERATION_ENV].clone();
+            let generation =
+                spec.env[crate::runtimes::claude_code::claude_status::GENERATION_ENV].clone();
             assert!(uuid::Uuid::parse_str(&generation).is_ok());
             assert_eq!(
-                spec.env[crate::session::claude_status::PATH_ENV],
-                crate::session::hook_feed::hook_path(&crate::session::claude_status::status_path(
-                    &fixture_tmp_dir().join("runner-app-data"),
-                    "settings-argv",
-                )),
+                spec.env[crate::runtimes::claude_code::claude_status::PATH_ENV],
+                crate::session::hook_feed::hook_path(
+                    &crate::runtimes::claude_code::claude_status::status_path(
+                        &fixture_tmp_dir().join("runner-app-data"),
+                        "settings-argv",
+                    )
+                ),
             );
         } else {
             assert!(!spec
                 .env
-                .contains_key(crate::session::claude_status::PATH_ENV));
+                .contains_key(crate::runtimes::claude_code::claude_status::PATH_ENV));
             assert!(!spec
                 .env
-                .contains_key(crate::session::claude_status::GENERATION_ENV));
+                .contains_key(crate::runtimes::claude_code::claude_status::GENERATION_ENV));
         }
         spec.args
     };

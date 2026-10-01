@@ -7,7 +7,7 @@ fn claude_settings_on_windows_carry_sh_status_hooks_with_forward_slash_feeds() {
     let root = Path::new(r"C:\Users\Jason Wang\it's runner app");
     let args = claude_settings_args(Some(Runtime::ClaudeCode), &[], root, "session");
     let settings: serde_json::Value = serde_json::from_str(&args[1]).unwrap();
-    let status_path = crate::session::claude_status::status_path(root, "session");
+    let status_path = crate::runtimes::claude_code::claude_status::status_path(root, "session");
     let rekey = settings["hooks"]["SessionStart"][0]["hooks"][0]["command"]
         .as_str()
         .unwrap();
@@ -42,7 +42,7 @@ fn claude_settings_on_windows_carry_sh_status_hooks_with_forward_slash_feeds() {
         );
         assert_eq!(
             status,
-            crate::session::claude_status::hook_command(&status_path, event)
+            crate::runtimes::claude_code::claude_status::hook_command(&status_path, event)
         );
     }
 }

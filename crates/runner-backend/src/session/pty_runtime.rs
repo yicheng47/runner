@@ -22,14 +22,8 @@ use portable_pty::{native_pty_system, Child, CommandBuilder, ExitStatus, MasterP
 #[cfg(unix)]
 use portable_pty::ChildKiller;
 
-use super::agy_status::AgyStatusWatcher;
-use super::claude_status::{
-    ClaudeStatusWatcher, CTRL_C_INTERRUPT, ESCAPE_INTERRUPT, GENERATION_ENV, PATH_ENV,
-};
-use super::codex_status::CodexStatusWatcher;
-use super::copilot_status::CopilotStatusWatcher;
+use super::hook_feed::HookWatcher;
 use super::launch;
-use super::pi_status::PiStatusWatcher;
 #[cfg(any(unix, test))]
 use super::process::process_exists;
 use super::process::{kill_process, ProcessTree};
@@ -39,6 +33,7 @@ use super::runtime::{
     OutputStream, RuntimeError, RuntimeOutput, RuntimeResult, RuntimeSession, SessionActivityState,
     SessionRuntime, SessionStatus, SpawnSpec,
 };
+use crate::runtimes::claude_code::claude_status::{CTRL_C_INTERRUPT, ESCAPE_INTERRUPT};
 
 const RUNTIME_LABEL: &str = "native-pty";
 // Typical ConPTY redraws can fit in one read; the forwarder coalesces larger bursts.
@@ -91,40 +86,6 @@ impl PtyRuntime {
 impl Default for PtyRuntime {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-enum HookStatusWatcher {
-    Claude(ClaudeStatusWatcher),
-    Codex(CodexStatusWatcher),
-    Copilot(CopilotStatusWatcher),
-    Pi(PiStatusWatcher),
-    Antigravity(AgyStatusWatcher),
-}
-
-impl HookStatusWatcher {
-    fn interrupt_signal(&self) -> Option<Arc<AtomicU8>> {
-        match self {
-            Self::Claude(watcher) => Some(watcher.interrupt_signal()),
-            Self::Codex(_) => None,
-            Self::Copilot(watcher) => Some(watcher.interrupt_signal()),
-            Self::Antigravity(watcher) => Some(watcher.interrupt_signal()),
-            Self::Pi(_) => None,
-        }
-    }
-
-    fn drain_observations(
-        &mut self,
-        transition: impl FnMut(super::status::AgentObservation, &'static str),
-        session_start: impl FnMut(String),
-    ) -> crate::error::Result<()> {
-        match self {
-            Self::Claude(watcher) => watcher.drain_observations(transition),
-            Self::Codex(watcher) => watcher.drain_with_session_starts(transition, session_start),
-            Self::Copilot(watcher) => watcher.drain_observations(transition),
-            Self::Pi(watcher) => watcher.drain_observations(transition),
-            Self::Antigravity(watcher) => watcher.drain_observations(transition),
-        }
     }
 }
 
@@ -241,115 +202,9 @@ impl SessionRuntime for PtyRuntime {
             .map_err(|error| RuntimeError::Msg(error.to_string()))?;
 
         let hook_status = spec
-            .env
-            .get(PATH_ENV)
-            .filter(|_| {
-                super::claude_status::hooks_supported(
-                    Some(crate::model::Runtime::ClaudeCode),
-                    cfg!(windows),
-                )
-            })
-            .zip(spec.env.get(GENERATION_ENV))
-            .and_then(|(path, generation)| {
-                match ClaudeStatusWatcher::start(std::path::Path::new(path), generation.clone()) {
-                    Ok(watcher) => Some(HookStatusWatcher::Claude(watcher)),
-                    Err(error) => {
-                        log::warn!(
-                            "Claude status bridge unavailable for {}: {error}",
-                            spec.session_id
-                        );
-                        None
-                    }
-                }
-            });
-        let hook_status = hook_status.or_else(|| {
-            if !super::hook_feed::hooks_supported(Some(crate::model::Runtime::Codex), cfg!(windows))
-            {
-                return None;
-            }
-            let path = spec.env.get(super::codex_status::PATH_ENV)?;
-            let generation = spec.env.get(super::codex_status::GENERATION_ENV)?;
-            match CodexStatusWatcher::start(std::path::Path::new(path), generation.clone()) {
-                Ok(watcher) => Some(HookStatusWatcher::Codex(watcher)),
-                Err(error) => {
-                    log::warn!(
-                        "Codex status bridge unavailable for {}: {error}",
-                        spec.session_id
-                    );
-                    None
-                }
-            }
-        });
-        let hook_status = hook_status.or_else(|| {
-            if !super::hook_feed::hooks_supported(Some(crate::model::Runtime::Pi), cfg!(windows)) {
-                return None;
-            }
-            let path = spec.env.get(super::pi_status::PATH_ENV)?;
-            let generation = spec.env.get(super::pi_status::GENERATION_ENV)?;
-            match PiStatusWatcher::start(std::path::Path::new(path), generation.clone()) {
-                Ok(watcher) => Some(HookStatusWatcher::Pi(watcher)),
-                Err(error) => {
-                    log::warn!(
-                        "pi status bridge unavailable for {}: {error}",
-                        spec.session_id
-                    );
-                    None
-                }
-            }
-        });
-        let hook_status = hook_status.or_else(|| {
-            if !super::hook_feed::hooks_supported(
-                Some(crate::model::Runtime::Antigravity),
-                cfg!(windows),
-            ) {
-                return None;
-            }
-            let path = spec.env.get(super::agy_status::PATH_ENV)?;
-            let generation = spec.env.get(super::agy_status::GENERATION_ENV)?;
-            match AgyStatusWatcher::start(std::path::Path::new(path), generation.clone()) {
-                Ok(watcher) => Some(HookStatusWatcher::Antigravity(watcher)),
-                Err(error) => {
-                    log::warn!(
-                        "Antigravity status bridge unavailable for {}: {error}",
-                        spec.session_id
-                    );
-                    None
-                }
-            }
-        });
-        let hook_status = hook_status.or_else(|| {
-            if !super::hook_feed::hooks_supported(
-                Some(crate::model::Runtime::Copilot),
-                cfg!(windows),
-            ) {
-                return None;
-            }
-            let path = spec.env.get(super::copilot_status::PATH_ENV)?;
-            let generation = spec.env.get(super::copilot_status::GENERATION_ENV)?;
-            let home = match super::copilot_trust::copilot_home(
-                spec.env.get("COPILOT_HOME").map(String::as_str),
-            ) {
-                Ok(home) => home,
-                Err(error) => {
-                    log::warn!(
-                        "Copilot status transcript unavailable for {}: {error}",
-                        spec.session_id
-                    );
-                    return None;
-                }
-            };
-            match CopilotStatusWatcher::start(std::path::Path::new(path), generation.clone(), home)
-            {
-                Ok(watcher) => Some(HookStatusWatcher::Copilot(watcher)),
-                Err(error) => {
-                    log::warn!(
-                        "Copilot status bridge unavailable for {}: {error}",
-                        spec.session_id
-                    );
-                    None
-                }
-            }
-        });
+            .agent_runtime
+            .and_then(|runtime| crate::runtimes::adapter(runtime).status_hooks())
+            .and_then(|hooks| hooks.start_watcher(&spec));
         let mut child = pair
             .slave
             .spawn_command(cmd)
@@ -416,7 +271,7 @@ impl SessionRuntime for PtyRuntime {
             idle_detector: Arc::new(Mutex::new(idle_detector)),
             hook_interrupt: hook_status
                 .as_ref()
-                .and_then(HookStatusWatcher::interrupt_signal),
+                .and_then(|watcher| watcher.interrupt_signal()),
             pid,
             process_tree,
             command: format_command_summary(&spec.command, &spec.args),
@@ -1253,7 +1108,7 @@ fn idle_monitor_thread(
     tx: mpsc::Sender<RuntimeOutput>,
     stop: Arc<AtomicBool>,
     done: Arc<AtomicBool>,
-    mut hook_status: Option<HookStatusWatcher>,
+    mut hook_status: Option<Box<dyn HookWatcher>>,
     #[cfg(windows)] handle: Arc<SessionHandle>,
 ) {
     loop {
@@ -1273,13 +1128,13 @@ fn idle_monitor_thread(
         }
         if let Some(watcher) = hook_status.as_mut() {
             if let Err(error) = watcher.drain_observations(
-                |observation, _source| {
+                &mut |observation, _source| {
                     let mut detector = detector.lock().expect("idle detector poisoned");
                     if detector.accept_hook(&observation) {
                         let _ = tx.send(RuntimeOutput::AgentObservation(observation));
                     }
                 },
-                |id| {
+                &mut |id| {
                     let _ = tx.send(RuntimeOutput::CodexSessionStart(id));
                 },
             ) {
@@ -1317,7 +1172,7 @@ fn reader_thread(
     stop: Arc<AtomicBool>,
     handle: Arc<SessionHandle>,
     session_id: String,
-    hook_status: Option<HookStatusWatcher>,
+    hook_status: Option<Box<dyn HookWatcher>>,
 ) {
     let detector = Arc::clone(&handle.idle_detector);
     let monitor_done = Arc::new(AtomicBool::new(false));
@@ -1657,6 +1512,11 @@ mod tests {
     #[cfg(unix)]
     use super::super::process::distinct_foreground_process;
     use super::*;
+    #[cfg(unix)]
+    use crate::runtimes::claude_code::claude_status::{GENERATION_ENV, PATH_ENV};
+    #[cfg(unix)]
+    use crate::runtimes::{antigravity::agy_status, pi::pi_status};
+    use crate::runtimes::{codex::codex_status, copilot::copilot_status};
     use std::collections::BTreeMap;
 
     #[cfg(unix)]
@@ -1670,6 +1530,7 @@ mod tests {
     fn spec(session_id: &str, command: &str, args: &[&str]) -> SpawnSpec {
         let env: BTreeMap<String, String> = BTreeMap::new();
         SpawnSpec {
+            agent_runtime: None,
             codex_pending_turn: None,
             session_id: session_id.to_string(),
             command: command.to_string(),
@@ -2418,13 +2279,14 @@ mod tests {
     #[cfg(unix)]
     fn codex_hook_runtime_events_bridge_failure_and_teardown() {
         use super::super::{
-            codex_status, hook_feed,
+            hook_feed,
             status::{Activity, TurnOutcome},
         };
         let root = tempfile::tempdir().unwrap();
         let path = hook_feed::status_path(root.path(), "codex-hooks");
         let rt = PtyRuntime::new();
         let mut spawn = spec("codex-hooks", "/bin/cat", &[]);
+        spawn.agent_runtime = Some(crate::model::Runtime::Codex);
         spawn.env.insert(
             codex_status::PATH_ENV.into(),
             path.to_string_lossy().into_owned(),
@@ -2506,7 +2368,7 @@ mod tests {
     #[cfg(unix)]
     fn copilot_hook_runtime_uses_shared_reporter_interrupt_and_bridge_fallback() {
         use super::super::{
-            copilot_status, hook_feed,
+            hook_feed,
             status::{Activity, TurnOutcome},
         };
         let root = tempfile::tempdir().unwrap();
@@ -2514,6 +2376,7 @@ mod tests {
         let path = hook_feed::status_path(root.path(), "copilot-hooks");
         let rt = PtyRuntime::new();
         let mut spawn = spec("copilot-hooks", "/bin/cat", &[]);
+        spawn.agent_runtime = Some(crate::model::Runtime::Copilot);
         spawn.env.insert(
             copilot_status::PATH_ENV.into(),
             path.to_string_lossy().into_owned(),
@@ -2615,7 +2478,7 @@ mod tests {
     #[cfg(unix)]
     fn antigravity_escape_releases_working_without_a_stop_hook() {
         use super::super::{
-            agy_status, hook_feed,
+            hook_feed,
             status::{Activity, TurnOutcome},
         };
 
@@ -2624,6 +2487,7 @@ mod tests {
         let path = hook_feed::status_path(root.path(), "agy-interrupt");
         let rt = PtyRuntime::new();
         let mut spawn = spec("agy-interrupt", "/bin/cat", &[]);
+        spawn.agent_runtime = Some(crate::model::Runtime::Antigravity);
         spawn.env.insert(
             agy_status::PATH_ENV.into(),
             path.to_string_lossy().into_owned(),
@@ -2679,7 +2543,7 @@ mod tests {
     #[cfg(unix)]
     fn pi_hook_runtime_uses_external_extension_without_an_input_interrupt_signal() {
         use super::super::{
-            hook_feed, pi_status,
+            hook_feed,
             status::{Activity, TurnOutcome},
         };
         let root = tempfile::tempdir().unwrap();
@@ -2687,6 +2551,7 @@ mod tests {
         let path = hook_feed::status_path(root.path(), "pi-hooks");
         let rt = PtyRuntime::new();
         let mut spawn = spec("pi-hooks", "/bin/cat", &[]);
+        spawn.agent_runtime = Some(crate::model::Runtime::Pi);
         spawn.env.insert(
             pi_status::PATH_ENV.into(),
             path.to_string_lossy().into_owned(),
@@ -2773,9 +2638,10 @@ mod tests {
     #[cfg(unix)]
     fn claude_hook_file_feeds_runtime_output_and_closes_on_exit() {
         let root = tempfile::tempdir().unwrap();
-        let path = super::super::claude_status::status_path(root.path(), "hooks");
+        let path = crate::runtimes::claude_code::claude_status::status_path(root.path(), "hooks");
         let rt = PtyRuntime::new();
         let mut spawn = spec("hooks", "/bin/cat", &[]);
+        spawn.agent_runtime = Some(crate::model::Runtime::ClaudeCode);
         spawn
             .env
             .insert(PATH_ENV.into(), path.to_string_lossy().into_owned());
@@ -2788,7 +2654,7 @@ mod tests {
             "StopFailure",
             "Notification",
         ] {
-            let command = super::super::claude_status::hook_command(&path, event);
+            let command = crate::runtimes::claude_code::claude_status::hook_command(&path, event);
             let mut child = std::process::Command::new("/bin/sh")
                 .args(["-c", &command])
                 .env(GENERATION_ENV, "current")
@@ -2854,13 +2720,15 @@ mod tests {
         use std::fs::OpenOptions;
 
         let root = tempfile::tempdir().unwrap();
-        let path = super::super::claude_status::status_path(root.path(), "interrupt");
+        let path =
+            crate::runtimes::claude_code::claude_status::status_path(root.path(), "interrupt");
         let rt = PtyRuntime::new();
         let mut spawn = spec(
             "interrupt",
             "/bin/sh",
             &["-c", "trap '' INT; printf ready; exec cat"],
         );
+        spawn.agent_runtime = Some(crate::model::Runtime::ClaudeCode);
         spawn
             .env
             .insert(PATH_ENV.into(), path.to_string_lossy().into_owned());
@@ -3631,6 +3499,7 @@ mod tests {
     /// `bridge` was removed. Asserts bridge loss and a closed stream on stop.
     #[cfg(windows)]
     fn windows_hook_bridge(
+        runtime: crate::model::Runtime,
         id: &str,
         env: &[(&str, String)],
         hooks: impl FnOnce(),
@@ -3639,6 +3508,7 @@ mod tests {
     ) -> Vec<super::super::status::AgentObservation> {
         let rt = PtyRuntime::new();
         let mut spawn = spec(id, "cmd", &["/d", "/c", "ping -n 30 127.0.0.1 >nul"]);
+        spawn.agent_runtime = Some(runtime);
         for (key, value) in env {
             spawn.env.insert((*key).into(), value.clone());
         }
@@ -3688,13 +3558,14 @@ mod tests {
     #[cfg(windows)]
     fn codex_powershell_hooks_bridge_failure_and_teardown_windows() {
         use super::super::{
-            codex_status, hook_feed,
+            hook_feed,
             status::{Activity, TurnOutcome},
         };
         let root = tempfile::tempdir().unwrap();
         let path = hook_feed::status_path(&root.path().join("Jason's app data"), "codex-hooks");
         let feed = hook_feed::hook_path(&path);
         let values = windows_hook_bridge(
+            crate::model::Runtime::Codex,
             "codex-hooks",
             &[
                 (codex_status::PATH_ENV, feed.clone()),
@@ -3737,7 +3608,7 @@ mod tests {
     #[test]
     #[cfg(windows)]
     fn copilot_powershell_plugin_hooks_bridge_failure_and_teardown_windows() {
-        use super::super::{copilot_status, hook_feed, status::Activity};
+        use super::super::{hook_feed, status::Activity};
         let root = tempfile::tempdir().unwrap();
         copilot_status::install_plugin(root.path()).unwrap();
         let hooks: serde_json::Value = serde_json::from_slice(
@@ -3758,6 +3629,7 @@ mod tests {
             ),
         ];
         let values = windows_hook_bridge(
+            crate::model::Runtime::Copilot,
             "copilot-hooks",
             &env,
             || {

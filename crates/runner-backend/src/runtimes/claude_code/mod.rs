@@ -1,3 +1,31 @@
+/// Minimum spacing between consecutive `claude-code` PTY launches.
+/// Long enough for one claude's OAuth refresh round-trip (network
+/// POST to api.anthropic.com plus keychain write) to land before a
+/// sibling spawn reads the same refresh token. Refresh tokens are
+/// conventionally single-use, so concurrent refresh from N parallel
+/// claudes causes `invalid_grant` on the losers and forces relogin
+/// in those panes. See issue #171.
+///
+/// Conservative default at 1500ms — covers typical 100-500ms
+/// round-trips with margin for slow networks. A user spawning a
+/// 3-slot mission pays ~3s of wall clock for the gate (1.5s × 2
+/// post-first-spawn waits); a 7-slot werewolf pays ~9s.
+///
+/// **First spawn through pays zero**: the gate is deadline-based,
+/// not RAII-on-drop. It only sleeps when a prior claude spawned
+/// within the last GRACE — single direct chats and cold-start
+/// mission starts see ~0ms overhead. Scoped to claude-code only;
+/// codex / other runtimes bypass.
+///
+/// Zeroed under `#[cfg(test)]` so existing claude-code path tests
+/// don't pay the wall-clock tax. Pure-function `compute_gate_wait`
+/// covers the wait-math in tests with explicit grace values.
+#[cfg(not(test))]
+const CLAUDE_LAUNCH_GATE_GRACE: Duration = Duration::from_millis(1500);
+#[cfg(test)]
+const CLAUDE_LAUNCH_GATE_GRACE: Duration = Duration::from_millis(0);
+
+pub(crate) mod claude_status;
 use super::catalog::*;
 use super::helpers::*;
 use super::*;
@@ -35,12 +63,13 @@ pub(crate) fn claude_settings_args(
                 "hooks": [{
                     "type": "command",
                     "command": hook_command,
-                    "timeout": crate::session::claude_status::HOOK_TIMEOUT_SECS,
+                    "timeout": crate::runtimes::claude_code::claude_status::HOOK_TIMEOUT_SECS,
                 }],
             }],
         },
     });
-    let status_path = crate::session::claude_status::status_path(app_data_dir, runner_session_id);
+    let status_path =
+        crate::runtimes::claude_code::claude_status::status_path(app_data_dir, runner_session_id);
     for event in [
         "SessionStart",
         "PermissionRequest",
@@ -57,14 +86,17 @@ pub(crate) fn claude_settings_args(
         "Stop",
         "StopFailure",
     ] {
-        if !crate::session::claude_status::hooks_supported(runtime, cfg!(windows)) {
+        if !ClaudeCode
+            .status_hooks()
+            .is_some_and(|hooks| hooks.supported(cfg!(windows)))
+        {
             continue;
         }
         let mut entry = serde_json::json!({
             "hooks": [{
                 "type": "command",
-                "command": crate::session::claude_status::hook_command(&status_path, event),
-                "timeout": crate::session::claude_status::HOOK_TIMEOUT_SECS,
+                "command": crate::runtimes::claude_code::claude_status::hook_command(&status_path, event),
+                "timeout": crate::runtimes::claude_code::claude_status::HOOK_TIMEOUT_SECS,
             }],
         });
         if event == "Notification" {
@@ -154,6 +186,22 @@ fn mode_matches(args: &[String], mode: PermissionMode) -> bool {
 }
 pub struct ClaudeCode;
 impl RuntimeAdapter for ClaudeCode {
+    fn status_hooks(&self) -> Option<&'static dyn StatusHooks> {
+        Some(&Hooks)
+    }
+    fn launch_env(&self) -> &'static [(&'static str, &'static str)] {
+        &[
+            ("CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY", "1"),
+            ("DISABLE_INSTALLATION_CHECKS", "1"),
+        ]
+    }
+    fn launch_gate(&self) -> Option<Duration> {
+        Some(CLAUDE_LAUNCH_GATE_GRACE)
+    }
+    fn key_capture(&self) -> KeyCapture {
+        KeyCapture::RekeyDrop
+    }
+
     fn catalog(&self) -> Option<RuntimeCatalog> {
         let claude_efforts = vec![
             default_effort(),
@@ -273,6 +321,54 @@ impl RuntimeAdapter for ClaudeCode {
         ));
         out.extend(self.first_turn_argv(if ctx.resuming { None } else { ctx.first_turn }));
         out
+    }
+}
+
+struct Hooks;
+impl StatusHooks for Hooks {
+    fn supported(&self, _windows: bool) -> bool {
+        true
+    }
+    fn cleanup(&self, app_data_dir: &Path) {
+        if let Err(error) = claude_status::clear_leftovers(app_data_dir) {
+            log::warn!("clear stale Claude status files: {error}");
+        }
+    }
+    fn env(
+        &self,
+        role_args: &[String],
+        _plan: &ResumePlan,
+        app_data_dir: &Path,
+        session_id: &str,
+    ) -> std::collections::BTreeMap<String, String> {
+        if !(self.supported(cfg!(windows))
+            && inject_claude_settings(Some(Runtime::ClaudeCode), role_args))
+        {
+            return std::collections::BTreeMap::new();
+        }
+        status_env(
+            claude_status::PATH_ENV,
+            claude_status::GENERATION_ENV,
+            app_data_dir,
+            session_id,
+        )
+    }
+    fn start_watcher(&self, spec: &SpawnSpec) -> Option<Box<dyn HookWatcher>> {
+        if !self.supported(cfg!(windows)) {
+            return None;
+        }
+        let path = spec.env.get(claude_status::PATH_ENV)?;
+        let generation = spec.env.get(claude_status::GENERATION_ENV)?;
+        match claude_status::ClaudeStatusWatcher::start(Path::new(path), generation.clone()) {
+            Ok(watcher) => Some(Box::new(watcher)),
+            Err(error) => {
+                log::warn!(
+                    "Claude status bridge unavailable for {}: {error}",
+                    spec.session_id
+                );
+                None
+            }
+        }
     }
 }
 

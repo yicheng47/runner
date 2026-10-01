@@ -5,12 +5,12 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
-use super::hook_feed::HookFeed;
-use super::status::{
+use crate::error::Result;
+use crate::session::hook_feed::HookFeed;
+use crate::session::status::{
     Activity, AgentObservation, HumanInteraction, ObservationSource, TurnOutcome, WaitReason,
     WorkDetail,
 };
-use crate::error::Result;
 
 pub(crate) const PATH_ENV: &str = "RUNNER_PI_STATUS_PATH";
 pub(crate) const GENERATION_ENV: &str = "RUNNER_PI_STATUS_GENERATION";
@@ -357,6 +357,16 @@ impl PiStatusWatcher {
     }
 }
 
+impl crate::session::hook_feed::HookWatcher for PiStatusWatcher {
+    fn drain_observations(
+        &mut self,
+        transition: &mut dyn FnMut(crate::session::status::AgentObservation, &'static str),
+        _session_start: &mut dyn FnMut(String),
+    ) -> Result<()> {
+        self.drain_observations(transition)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs::{self, OpenOptions};
@@ -578,7 +588,7 @@ mod tests {
     fn watcher_ignores_wrong_generation_malformed_lines_and_reports_bridge_loss() {
         let root = tempfile::tempdir().unwrap();
         install_extension(root.path()).unwrap();
-        let path = super::super::hook_feed::status_path(root.path(), "pi-status");
+        let path = crate::session::hook_feed::status_path(root.path(), "pi-status");
         let mut watcher = PiStatusWatcher::start(&path, "current".into()).unwrap();
         let mut file = OpenOptions::new().append(true).open(&path).unwrap();
         writeln!(file, "not json").unwrap();
@@ -698,8 +708,8 @@ if (process.env.RETURN_SESSION_ID) {
 
         let session_key = "11111111-1111-4111-8111-111111111111";
         let new_key = "22222222-2222-4222-8222-222222222222";
-        let drop_path = super::super::claude_rekey::drop_path(&app_data, "runner-session");
-        let feed_path = super::super::hook_feed::status_path(&app_data, "extension-e2e");
+        let drop_path = crate::session::claude_rekey::drop_path(&app_data, "runner-session");
+        let feed_path = crate::session::hook_feed::status_path(&app_data, "extension-e2e");
         let mut watcher = PiStatusWatcher::start(&feed_path, "current".into()).unwrap();
         let output = Command::new("node")
             .arg(&driver)
@@ -748,7 +758,7 @@ if (process.env.RETURN_SESSION_ID) {
         assert_eq!(values.last().unwrap().outcome, None);
 
         fs::remove_file(&drop_path).unwrap();
-        let matching_feed = super::super::hook_feed::status_path(&app_data, "matching-key");
+        let matching_feed = crate::session::hook_feed::status_path(&app_data, "matching-key");
         let _matching_watcher = PiStatusWatcher::start(&matching_feed, "matching".into()).unwrap();
         let output = Command::new("node")
             .arg(&driver)

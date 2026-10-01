@@ -53,7 +53,7 @@ pub(crate) fn seed_project_trust_at(
     let _guard = SETTINGS_LOCK
         .lock()
         .map_err(|_| Error::msg("Antigravity trust settings lock poisoned"))?;
-    let write_path = super::codex_trust::resolve_config_write_path(settings)?;
+    let write_path = crate::runtimes::helpers::resolve_config_write_path(settings)?;
     let raw = match std::fs::read_to_string(&write_path) {
         Ok(raw) => raw,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
@@ -69,7 +69,7 @@ pub(crate) fn seed_project_trust_at(
     else {
         return Ok(());
     };
-    super::codex_trust::write_config_atomically(&write_path, contents.as_bytes())
+    crate::runtimes::helpers::write_config_atomically(&write_path, contents.as_bytes())
 }
 
 /// `raw` with `workspace` appended to `trustedWorkspaces`, or `None` when it

@@ -1,0 +1,40 @@
+[
+  {
+    "runtime": "codex",
+    "files": {
+      ".codex/config.toml": "[projects.\"<TMP>/project\"]\ntrust_level = \"trusted\"\n"
+    }
+  },
+  {
+    "runtime": "claude-code",
+    "files": {}
+  },
+  {
+    "runtime": "antigravity",
+    "files": {
+      ".gemini/antigravity-cli/settings.json": "{\n  \"trustedWorkspaces\": [\n    \"<TMP>/project\"\n  ]\n}\n"
+    }
+  },
+  {
+    "runtime": "pi",
+    "files": {}
+  },
+  {
+    "runtime": "copilot",
+    "files": {
+      "custom-copilot/config.json": "{\n  \"trustedFolders\": [\n    \"<TMP>/project\"\n  ]\n}\n"
+    }
+  },
+  {
+    "runtime": "trae",
+    "files": {}
+  },
+  {
+    "runtime": "shell",
+    "files": {}
+  },
+  {
+    "runtime": "unknown-runtime",
+    "files": {}
+  }
+]

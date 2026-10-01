@@ -1,4 +1,5 @@
 use super::*;
+use std::io::Write;
 use std::path::Path;
 #[cfg(test)]
 use std::path::PathBuf;
@@ -263,4 +264,80 @@ pub(super) fn conversation_file_exists_at(
         .join(encode_project_dir(cwd))
         .join(format!("{uuid}.jsonl"))
         .exists()
+}
+
+pub(crate) fn resolve_config_write_path(config_path: &Path) -> crate::error::Result<PathBuf> {
+    match std::fs::symlink_metadata(config_path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => std::fs::canonicalize(config_path)
+            .map_err(|e| {
+                crate::error::Error::msg(format!("realpath {}: {e}", config_path.display()))
+            }),
+        Ok(_) => Ok(config_path.to_path_buf()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(config_path.to_path_buf()),
+        Err(e) => Err(crate::error::Error::msg(format!(
+            "metadata {}: {e}",
+            config_path.display()
+        ))),
+    }
+}
+
+pub(crate) fn write_config_atomically(path: &Path, contents: &[u8]) -> crate::error::Result<()> {
+    let parent = path.parent().ok_or_else(|| {
+        crate::error::Error::msg(format!("config path has no parent: {}", path.display()))
+    })?;
+    std::fs::create_dir_all(parent)
+        .map_err(|e| crate::error::Error::msg(format!("mkdir {}: {e}", parent.display())))?;
+    let permissions = std::fs::metadata(path)
+        .ok()
+        .map(|metadata| metadata.permissions());
+    let mut temp = tempfile::NamedTempFile::new_in(parent).map_err(|e| {
+        crate::error::Error::msg(format!("create temp file in {}: {e}", parent.display()))
+    })?;
+    if let Some(permissions) = permissions {
+        temp.as_file().set_permissions(permissions).map_err(|e| {
+            crate::error::Error::msg(format!("set temp permissions for {}: {e}", path.display()))
+        })?;
+    }
+    temp.write_all(contents).map_err(|e| {
+        crate::error::Error::msg(format!("write temp config for {}: {e}", path.display()))
+    })?;
+    temp.as_file().sync_all().map_err(|e| {
+        crate::error::Error::msg(format!("sync temp config for {}: {e}", path.display()))
+    })?;
+    temp.persist(path).map_err(|e| {
+        crate::error::Error::msg(format!("persist {}: {}", path.display(), e.error))
+    })?;
+    Ok(())
+}
+
+pub(super) fn trust_cwd<'a>(
+    session_id: &str,
+    runtime: Runtime,
+    cwd: Option<&'a Path>,
+) -> Option<&'a Path> {
+    if cwd.is_none() {
+        log::debug!(
+            "skipping {:?} project trust seed without cwd: session={session_id}",
+            Some(runtime)
+        );
+    }
+    cwd
+}
+
+pub(super) fn status_env(
+    path_env: &str,
+    generation_env: &str,
+    app_data_dir: &Path,
+    session_id: &str,
+) -> std::collections::BTreeMap<String, String> {
+    std::collections::BTreeMap::from([
+        (
+            path_env.into(),
+            crate::session::hook_feed::hook_path(&crate::session::hook_feed::status_path(
+                app_data_dir,
+                session_id,
+            )),
+        ),
+        (generation_env.into(), uuid::Uuid::new_v4().to_string()),
+    ])
 }

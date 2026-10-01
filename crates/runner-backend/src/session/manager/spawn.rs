@@ -51,12 +51,12 @@ pub(super) fn agent_env(
     env.insert("TERM".into(), "xterm-256color".into());
     env.insert("COLORTERM".into(), "truecolor".into());
     env.extend(extra_env);
-    if runtime == Some(Runtime::ClaudeCode) {
-        env.insert("CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY".into(), "1".into());
-        env.insert("DISABLE_INSTALLATION_CHECKS".into(), "1".into());
-    }
-    if runtime == Some(Runtime::Pi) {
-        env.insert("PI_SKIP_VERSION_CHECK".into(), "1".into());
+    for &(name, value) in runtime
+        .map(crate::runtimes::adapter)
+        .unwrap_or(&crate::runtimes::NoAgent)
+        .launch_env()
+    {
+        env.insert(name.into(), value.into());
     }
     let process_has_locale = LOCALE_VARS
         .iter()
@@ -418,14 +418,18 @@ impl SessionManager {
     /// → after A wakes and updates `last`, B observes A's
     /// just-recorded timestamp and waits its own full grace.
     pub(super) fn enter_claude_launch_gate(&self, session_id: &str, runtime: Option<Runtime>) {
-        if runtime != Some(Runtime::ClaudeCode) {
+        let Some(grace) = runtime
+            .map(crate::runtimes::adapter)
+            .unwrap_or(&crate::runtimes::NoAgent)
+            .launch_gate()
+        else {
             return;
-        }
+        };
         let mut last = self
             .claude_launch_gate
             .lock()
             .expect("claude_launch_gate poisoned");
-        let wait = compute_gate_wait(*last, Instant::now(), CLAUDE_LAUNCH_GATE_GRACE);
+        let wait = compute_gate_wait(*last, Instant::now(), grace);
         if !wait.is_zero() {
             log::info!(
                 "claude-code launch gate: session={session_id} sleep_ms={}",
@@ -443,26 +447,11 @@ impl SessionManager {
         cwd: Option<&Path>,
         copilot_home: Option<&str>,
     ) {
-        if !matches!(
-            runtime,
-            Some(Runtime::Codex | Runtime::Copilot | Runtime::Antigravity)
-        ) {
-            return;
-        }
-        let Some(cwd) = cwd else {
-            log::debug!(
-                "skipping {runtime:?} project trust seed without cwd: session={session_id}"
-            );
-            return;
-        };
-        let result = match runtime {
-            Some(Runtime::Copilot) => {
-                crate::session::copilot_trust::seed_project_trust(cwd, copilot_home)
-            }
-            Some(Runtime::Antigravity) => crate::session::agy_trust::seed_project_trust(cwd),
-            _ => crate::session::codex_trust::seed_project_trust(cwd),
-        };
-        if let Err(e) = result {
+        let result = runtime
+            .map(crate::runtimes::adapter)
+            .unwrap_or(&crate::runtimes::NoAgent)
+            .seed_trust(session_id, cwd, copilot_home);
+        if let (Err(e), Some(cwd)) = (result, cwd) {
             log::warn!(
                 "failed to seed {runtime:?} project trust: session={session_id} cwd={} error={e}",
                 cwd.display()
@@ -493,6 +482,7 @@ impl SessionManager {
             .expect("runtime shell environment lock poisoned")
             .clone();
         SpawnSpec {
+            agent_runtime: Runtime::parse(&role.runtime),
             codex_pending_turn: None,
             session_id,
             cwd: cwd.map(PathBuf::from),
@@ -529,6 +519,7 @@ impl SessionManager {
             .expect("runtime shell environment lock poisoned")
             .clone();
         SpawnSpec {
+            agent_runtime: None,
             codex_pending_turn: None,
             session_id: ulid::Ulid::new().to_string(),
             cwd,
@@ -633,7 +624,11 @@ impl SessionManager {
         first_turn: Option<&str>,
         mission_bus_dir: Option<&Path>,
     ) -> bool {
-        spec.codex_pending_turn = (Runtime::parse(&role.runtime) == Some(Runtime::Codex))
+        let adapter = crate::runtimes::for_key(&role.runtime);
+        spec.agent_runtime = Runtime::parse(&role.runtime);
+        spec.codex_pending_turn = adapter
+            .status_hooks()
+            .is_some_and(|hooks| hooks.tracks_pending_turn())
             .then_some(!plan.resuming && first_turn.is_some_and(|body| !body.trim().is_empty()));
         #[cfg(windows)]
         let first_turn = if crate::session::launch::is_windows_batch(&role.command) {
@@ -641,103 +636,26 @@ impl SessionManager {
         } else {
             first_turn
         };
-        // Rekey reports from an earlier spawn must be cleared even with custom settings.
-        let runtime = Runtime::parse(&role.runtime);
-        if matches!(runtime, Some(Runtime::ClaudeCode | Runtime::Pi)) {
-            let _ = std::fs::remove_file(crate::session::claude_rekey::drop_path(
-                app_data_dir,
-                &spec.session_id,
-            ));
+        match adapter.key_capture() {
+            crate::runtimes::KeyCapture::RekeyDrop => {
+                let _ = std::fs::remove_file(crate::session::claude_rekey::drop_path(
+                    app_data_dir,
+                    &spec.session_id,
+                ));
+            }
+            crate::runtimes::KeyCapture::LogTail => {
+                crate::runtimes::antigravity::agy_capture::prepare_log(
+                    app_data_dir,
+                    &spec.session_id,
+                )
+            }
+            _ => {}
         }
-        if crate::session::claude_status::hooks_supported(runtime, cfg!(windows))
-            && crate::runtimes::claude_code::inject_claude_settings(runtime, &role.args)
-        {
-            let status_path =
-                crate::session::claude_status::status_path(app_data_dir, &spec.session_id);
-            spec.env.insert(
-                crate::session::claude_status::PATH_ENV.into(),
-                crate::session::hook_feed::hook_path(&status_path),
-            );
-            spec.env.insert(
-                crate::session::claude_status::GENERATION_ENV.into(),
-                uuid::Uuid::new_v4().to_string(),
-            );
+        if let Some(hooks) = adapter.status_hooks() {
+            spec.env
+                .extend(hooks.env(&role.args, plan, app_data_dir, &spec.session_id));
         }
         let mut composed: Vec<String> = Vec::new();
-        if crate::runtimes::codex::inject_codex_hooks(runtime, &role.args, cfg!(windows)) {
-            spec.env.insert(
-                crate::session::codex_status::PATH_ENV.into(),
-                crate::session::hook_feed::hook_path(&crate::session::hook_feed::status_path(
-                    app_data_dir,
-                    &spec.session_id,
-                )),
-            );
-            spec.env.insert(
-                crate::session::codex_status::GENERATION_ENV.into(),
-                uuid::Uuid::new_v4().to_string(),
-            );
-        }
-        if Runtime::parse(&role.runtime) == Some(Runtime::Copilot)
-            && crate::session::hook_feed::hooks_supported(Some(Runtime::Copilot), cfg!(windows))
-        {
-            spec.env.insert(
-                crate::session::copilot_status::PATH_ENV.into(),
-                crate::session::hook_feed::hook_path(&crate::session::hook_feed::status_path(
-                    app_data_dir,
-                    &spec.session_id,
-                )),
-            );
-            spec.env.insert(
-                crate::session::copilot_status::GENERATION_ENV.into(),
-                uuid::Uuid::new_v4().to_string(),
-            );
-        }
-        if runtime == Some(Runtime::Antigravity) {
-            crate::session::agy_capture::prepare_log(app_data_dir, &spec.session_id);
-            if crate::session::hook_feed::hooks_supported(runtime, cfg!(windows)) {
-                spec.env.insert(
-                    crate::session::agy_status::PATH_ENV.into(),
-                    crate::session::hook_feed::hook_path(&crate::session::hook_feed::status_path(
-                        app_data_dir,
-                        &spec.session_id,
-                    )),
-                );
-                spec.env.insert(
-                    crate::session::agy_status::GENERATION_ENV.into(),
-                    uuid::Uuid::new_v4().to_string(),
-                );
-            }
-        }
-        if runtime == Some(Runtime::Pi)
-            && crate::session::hook_feed::hooks_supported(Some(Runtime::Pi), cfg!(windows))
-        {
-            let session_key = plan
-                .assigned_key
-                .as_ref()
-                .expect("pi spawn plan must assign --session-id");
-            spec.env.insert(
-                crate::session::pi_status::PATH_ENV.into(),
-                crate::session::hook_feed::hook_path(&crate::session::hook_feed::status_path(
-                    app_data_dir,
-                    &spec.session_id,
-                )),
-            );
-            spec.env.insert(
-                crate::session::pi_status::GENERATION_ENV.into(),
-                uuid::Uuid::new_v4().to_string(),
-            );
-            spec.env.insert(
-                crate::session::pi_status::SESSION_KEY_ENV.into(),
-                session_key.clone(),
-            );
-            spec.env.insert(
-                crate::session::pi_status::REKEY_PATH_ENV.into(),
-                crate::session::hook_feed::hook_path(&crate::session::claude_rekey::drop_path(
-                    app_data_dir,
-                    &spec.session_id,
-                )),
-            );
-        }
         if plan.prepend {
             composed.extend(plan.args.iter().cloned());
             composed.append(&mut spec.args);
@@ -779,7 +697,13 @@ impl SessionManager {
         session_id: &str,
         first_turn: Option<String>,
     ) -> (Option<String>, Option<String>) {
-        if !matches!(runtime, Some(Runtime::Codex | Runtime::Trae)) {
+        if !matches!(
+            runtime
+                .map(crate::runtimes::adapter)
+                .unwrap_or(&crate::runtimes::NoAgent)
+                .key_capture(),
+            crate::runtimes::KeyCapture::RolloutScan { .. }
+        ) {
             return (first_turn, None);
         }
         let Some(first_turn) = first_turn else {
@@ -807,18 +731,29 @@ impl SessionManager {
         pool: &Arc<DbPool>,
         events: &Arc<dyn SessionEvents>,
     ) {
-        if runtime != Some(Runtime::Antigravity) {
+        if !matches!(
+            runtime
+                .map(crate::runtimes::adapter)
+                .unwrap_or(&crate::runtimes::NoAgent)
+                .key_capture(),
+            crate::runtimes::KeyCapture::LogTail
+        ) {
             return;
         }
-        crate::session::agy_capture::spawn_capture(crate::session::agy_capture::CaptureRequest {
-            session_id: session_id.to_owned(),
-            mission_id,
-            log_path: crate::session::agy_capture::log_path(app_data_dir, session_id),
-            expected_row_started_at: row_started_at.to_owned(),
-            stop,
-            pool: Arc::clone(pool),
-            events: Arc::clone(events),
-        });
+        crate::runtimes::antigravity::agy_capture::spawn_capture(
+            crate::runtimes::antigravity::agy_capture::CaptureRequest {
+                session_id: session_id.to_owned(),
+                mission_id,
+                log_path: crate::runtimes::antigravity::agy_capture::log_path(
+                    app_data_dir,
+                    session_id,
+                ),
+                expected_row_started_at: row_started_at.to_owned(),
+                stop,
+                pool: Arc::clone(pool),
+                events: Arc::clone(events),
+            },
+        );
     }
 
     /// Sync part of a mission-slot spawn: validates inputs, composes
@@ -1183,25 +1118,24 @@ impl SessionManager {
             );
         }
 
-        let codex_capture = if matches!(
-            Runtime::parse(role.runtime.as_str()),
-            Some(Runtime::Codex | Runtime::Trae)
-        ) && plan.assigned_key.is_none()
-        {
-            crate::session::codex_capture::sessions_root_for(Runtime::parse(&role.runtime))
-                .and_then(|sessions_root| {
-                    resolved_cwd.clone().map(|cwd| CodexCaptureContext {
-                        mission_id: Some(mission.id.clone()),
-                        sessions_root,
-                        spawn_cwd: cwd,
-                        started_at: spawn_started_at_dt,
-                        row_started_at: row_started_at.clone(),
-                        spawn_pid,
-                        prompt_marker: codex_prompt_marker.clone(),
-                        pool: Arc::clone(&pool),
-                        events: Arc::clone(&events),
-                    })
+        let codex_capture = if plan.assigned_key.is_none() {
+            match crate::runtimes::for_key(&role.runtime).key_capture() {
+                crate::runtimes::KeyCapture::RolloutScan { sessions_root } => sessions_root,
+                _ => None,
+            }
+            .and_then(|sessions_root| {
+                resolved_cwd.clone().map(|cwd| CodexCaptureContext {
+                    mission_id: Some(mission.id.clone()),
+                    sessions_root,
+                    spawn_cwd: cwd,
+                    started_at: spawn_started_at_dt,
+                    row_started_at: row_started_at.clone(),
+                    spawn_pid,
+                    prompt_marker: codex_prompt_marker.clone(),
+                    pool: Arc::clone(&pool),
+                    events: Arc::clone(&events),
                 })
+            })
         } else {
             None
         };
@@ -1748,25 +1682,24 @@ impl SessionManager {
             );
         }
 
-        let codex_capture = if matches!(
-            Runtime::parse(role.runtime.as_str()),
-            Some(Runtime::Codex | Runtime::Trae)
-        ) && plan.assigned_key.is_none()
-        {
-            crate::session::codex_capture::sessions_root_for(Runtime::parse(&role.runtime))
-                .and_then(|sessions_root| {
-                    resolved_cwd.clone().map(|cwd| CodexCaptureContext {
-                        mission_id: None,
-                        sessions_root,
-                        spawn_cwd: cwd,
-                        started_at: spawn_started_at_dt,
-                        row_started_at: started_at.clone(),
-                        spawn_pid,
-                        prompt_marker: codex_prompt_marker.clone(),
-                        pool: Arc::clone(&pool),
-                        events: Arc::clone(&events),
-                    })
+        let codex_capture = if plan.assigned_key.is_none() {
+            match crate::runtimes::for_key(&role.runtime).key_capture() {
+                crate::runtimes::KeyCapture::RolloutScan { sessions_root } => sessions_root,
+                _ => None,
+            }
+            .and_then(|sessions_root| {
+                resolved_cwd.clone().map(|cwd| CodexCaptureContext {
+                    mission_id: None,
+                    sessions_root,
+                    spawn_cwd: cwd,
+                    started_at: spawn_started_at_dt,
+                    row_started_at: started_at.clone(),
+                    spawn_pid,
+                    prompt_marker: codex_prompt_marker.clone(),
+                    pool: Arc::clone(&pool),
+                    events: Arc::clone(&events),
                 })
+            })
         } else {
             None
         };
@@ -1841,17 +1774,9 @@ impl SessionManager {
         if emit_activity {
             emit_role_activity(&pool, &role, events.as_ref());
         }
-        let missing_first_turn = matches!(
-            Runtime::parse(role.runtime.as_str()),
-            Some(
-                Runtime::ClaudeCode
-                    | Runtime::Codex
-                    | Runtime::Trae
-                    | Runtime::Copilot
-                    | Runtime::Pi
-                    | Runtime::Antigravity
-            )
-        ) && !plan.resuming
+        let missing_first_turn = Runtime::parse(role.runtime.as_str())
+            .is_some_and(|runtime| !runtime.is_shell())
+            && !plan.resuming
             && first_turn.is_some()
             && !first_turn_delivered_via_argv;
         #[cfg(windows)]
@@ -1882,17 +1807,8 @@ impl SessionManager {
         first_turn: Option<&str>,
         deadline: Instant,
     ) {
-        if matches!(
-            Runtime::parse(role.runtime.as_str()),
-            Some(
-                Runtime::ClaudeCode
-                    | Runtime::Codex
-                    | Runtime::Trae
-                    | Runtime::Copilot
-                    | Runtime::Pi
-                    | Runtime::Antigravity
-            )
-        ) && !plan.resuming
+        if Runtime::parse(role.runtime.as_str()).is_some_and(|runtime| !runtime.is_shell())
+            && !plan.resuming
             && crate::session::launch::is_windows_batch(&role.command)
         {
             if let Some(body) = first_turn.filter(|body| !body.trim().is_empty()) {
@@ -2098,7 +2014,10 @@ impl SessionManager {
 
         match plan {
             router::runtime::ForkPlan::Direct(plan) => {
-                let system_prompt = if Runtime::parse(&role.runtime) == Some(Runtime::Pi) {
+                let system_prompt = if crate::runtimes::for_key(&role.runtime)
+                    .prompt_channels()
+                    .system_prompt
+                {
                     router::prompt::compose_direct_first_turn(role.system_prompt.as_deref())
                 } else {
                     None
@@ -2890,25 +2809,24 @@ impl SessionManager {
             );
         }
 
-        let codex_capture = if matches!(
-            Runtime::parse(role.runtime.as_str()),
-            Some(Runtime::Codex | Runtime::Trae)
-        ) && plan.assigned_key.is_none()
-        {
-            crate::session::codex_capture::sessions_root_for(Runtime::parse(&role.runtime))
-                .and_then(|sessions_root| {
-                    resolved_cwd.clone().map(|cwd| CodexCaptureContext {
-                        mission_id: snap.mission_id.clone(),
-                        sessions_root,
-                        spawn_cwd: cwd,
-                        started_at: spawn_started_at_dt,
-                        row_started_at: started_at.clone(),
-                        spawn_pid,
-                        prompt_marker: codex_prompt_marker.clone(),
-                        pool: Arc::clone(&pool),
-                        events: Arc::clone(&events),
-                    })
+        let codex_capture = if plan.assigned_key.is_none() {
+            match crate::runtimes::for_key(&role.runtime).key_capture() {
+                crate::runtimes::KeyCapture::RolloutScan { sessions_root } => sessions_root,
+                _ => None,
+            }
+            .and_then(|sessions_root| {
+                resolved_cwd.clone().map(|cwd| CodexCaptureContext {
+                    mission_id: snap.mission_id.clone(),
+                    sessions_root,
+                    spawn_cwd: cwd,
+                    started_at: spawn_started_at_dt,
+                    row_started_at: started_at.clone(),
+                    spawn_pid,
+                    prompt_marker: codex_prompt_marker.clone(),
+                    pool: Arc::clone(&pool),
+                    events: Arc::clone(&events),
                 })
+            })
         } else {
             None
         };

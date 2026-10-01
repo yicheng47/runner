@@ -15,6 +15,7 @@ fn codex_speed_follows_role_args_for_direct_and_mission_spawns() {
                 role.runtime = "codex".into();
                 role.codex_speed = speed;
                 let mut spec = SpawnSpec {
+                    agent_runtime: None,
                     codex_pending_turn: None,
                     session_id: "speed-spawn".into(),
                     cwd: None,
@@ -62,7 +63,7 @@ fn codex_speed_follows_role_args_for_direct_and_mission_spawns() {
 
 #[test]
 fn codex_spawn_composes_hooks_without_changing_user_home_and_respects_overrides() {
-    use crate::session::codex_status::{GENERATION_ENV, PATH_ENV};
+    use crate::runtimes::codex::codex_status::{GENERATION_ENV, PATH_ENV};
     let root = tempfile::tempdir().unwrap();
     for args in [
         vec![],
@@ -74,6 +75,7 @@ fn codex_spawn_composes_hooks_without_changing_user_home_and_respects_overrides(
         let mut generations = Vec::new();
         for key in [None, Some("11111111-1111-4111-8111-111111111111")] {
             let mut spec = SpawnSpec {
+                agent_runtime: None,
                 codex_pending_turn: None,
                 session_id: "codex-spawn".into(),
                 cwd: None,
@@ -108,7 +110,7 @@ fn codex_spawn_composes_hooks_without_changing_user_home_and_respects_overrides(
             );
             assert!(!spec
                 .env
-                .contains_key(crate::session::claude_status::PATH_ENV));
+                .contains_key(crate::runtimes::claude_code::claude_status::PATH_ENV));
             if injected {
                 let generation = spec.env[GENERATION_ENV].clone();
                 assert!(uuid::Uuid::parse_str(&generation).is_ok());
@@ -138,7 +140,7 @@ fn codex_spawn_composes_hooks_without_changing_user_home_and_respects_overrides(
 
 #[test]
 fn codex_observations_preserve_delivery_and_drafts_and_interrupt_attention() {
-    use crate::session::codex_status::CodexStatusWatcher;
+    use crate::runtimes::codex::codex_status::CodexStatusWatcher;
     use std::io::Write;
     let core = crate::test_support::test_core();
     core.db.get().unwrap().execute("INSERT INTO sessions(id, status, agent_runtime) VALUES ('codex-status', 'running', 'codex')", []).unwrap();

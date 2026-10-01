@@ -93,13 +93,13 @@ fn copilot_permissions_roundtrip_and_strip_every_elevation_flag() {
 fn copilot_status_plugin_args_require_a_complete_installed_plugin() {
     let root = tempfile::tempdir().unwrap();
     assert!(copilot_status_args(Some(Runtime::Copilot), root.path()).is_empty());
-    crate::session::copilot_status::install_plugin(root.path()).unwrap();
+    crate::runtimes::copilot::copilot_status::install_plugin(root.path()).unwrap();
     let args = copilot_status_args(Some(Runtime::Copilot), root.path());
     assert_eq!(
         args,
         [
             "--plugin-dir".to_owned(),
-            crate::session::copilot_status::plugin_dir(root.path())
+            crate::runtimes::copilot::copilot_status::plugin_dir(root.path())
                 .to_string_lossy()
                 .into_owned(),
         ]

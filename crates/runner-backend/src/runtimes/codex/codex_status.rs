@@ -5,9 +5,11 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::hook_feed::{self, HookFeed, TranscriptTail};
-use super::status::{Activity, AgentObservation, ObservationSource, TurnOutcome, WorkDetail};
 use crate::error::Result;
+use crate::session::hook_feed::{self, HookFeed, TranscriptTail};
+use crate::session::status::{
+    Activity, AgentObservation, ObservationSource, TurnOutcome, WorkDetail,
+};
 
 pub(crate) const PATH_ENV: &str = "RUNNER_CODEX_STATUS_PATH";
 pub(crate) const GENERATION_ENV: &str = "RUNNER_CODEX_STATUS_GENERATION";
@@ -360,6 +362,16 @@ impl CodexStatusWatcher {
             transition(self.observation.value.clone(), "hook");
         }
         Ok(())
+    }
+}
+
+impl crate::session::hook_feed::HookWatcher for CodexStatusWatcher {
+    fn drain_observations(
+        &mut self,
+        transition: &mut dyn FnMut(crate::session::status::AgentObservation, &'static str),
+        session_start: &mut dyn FnMut(String),
+    ) -> Result<()> {
+        self.drain_with_session_starts(transition, session_start)
     }
 }
 

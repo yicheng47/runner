@@ -1,5 +1,5 @@
+use crate::runtimes::helpers::{resolve_config_write_path, write_config_atomically};
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -107,45 +107,6 @@ fn is_broad_trust_root(project_root: &Path, home: Option<&Path>) -> bool {
     home.map(|home| fs::canonicalize(home).unwrap_or_else(|_| home.to_path_buf()))
         .as_deref()
         == Some(project_root)
-}
-
-pub(crate) fn resolve_config_write_path(config_path: &Path) -> Result<PathBuf> {
-    match fs::symlink_metadata(config_path) {
-        Ok(metadata) if metadata.file_type().is_symlink() => fs::canonicalize(config_path)
-            .map_err(|e| Error::msg(format!("realpath {}: {e}", config_path.display()))),
-        Ok(_) => Ok(config_path.to_path_buf()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(config_path.to_path_buf()),
-        Err(e) => Err(Error::msg(format!(
-            "metadata {}: {e}",
-            config_path.display()
-        ))),
-    }
-}
-
-pub(crate) fn write_config_atomically(path: &Path, contents: &[u8]) -> Result<()> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| Error::msg(format!("config path has no parent: {}", path.display())))?;
-    fs::create_dir_all(parent)
-        .map_err(|e| Error::msg(format!("mkdir {}: {e}", parent.display())))?;
-    let permissions = fs::metadata(path)
-        .ok()
-        .map(|metadata| metadata.permissions());
-    let mut temp = tempfile::NamedTempFile::new_in(parent)
-        .map_err(|e| Error::msg(format!("create temp file in {}: {e}", parent.display())))?;
-    if let Some(permissions) = permissions {
-        temp.as_file()
-            .set_permissions(permissions)
-            .map_err(|e| Error::msg(format!("set temp permissions for {}: {e}", path.display())))?;
-    }
-    temp.write_all(contents)
-        .map_err(|e| Error::msg(format!("write temp config for {}: {e}", path.display())))?;
-    temp.as_file()
-        .sync_all()
-        .map_err(|e| Error::msg(format!("sync temp config for {}: {e}", path.display())))?;
-    temp.persist(path)
-        .map_err(|e| Error::msg(format!("persist {}: {}", path.display(), e.error)))?;
-    Ok(())
 }
 
 fn resolve_worktree_main_root(cwd: &Path) -> Option<PathBuf> {

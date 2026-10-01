@@ -1,3 +1,4 @@
+pub(crate) mod pi_status;
 use super::catalog::*;
 use super::helpers::*;
 use super::*;
@@ -6,14 +7,16 @@ use std::path::PathBuf;
 
 pub(crate) fn pi_status_args(runtime: Option<Runtime>, app_data_dir: &Path) -> Vec<String> {
     if runtime != Some(Runtime::Pi)
-        || !crate::session::hook_feed::hooks_supported(runtime, cfg!(windows))
-        || !crate::session::pi_status::extension_available(app_data_dir)
+        || !Pi
+            .status_hooks()
+            .is_some_and(|hooks| hooks.supported(cfg!(windows)))
+        || !crate::runtimes::pi::pi_status::extension_available(app_data_dir)
     {
         return Vec::new();
     }
     vec![
         "-e".into(),
-        crate::session::pi_status::extension_path(app_data_dir)
+        crate::runtimes::pi::pi_status::extension_path(app_data_dir)
             .to_string_lossy()
             .into_owned(),
     ]
@@ -140,6 +143,16 @@ static PERMISSIONS: Permissions = Permissions {
 };
 pub struct Pi;
 impl RuntimeAdapter for Pi {
+    fn status_hooks(&self) -> Option<&'static dyn StatusHooks> {
+        Some(&Hooks)
+    }
+    fn launch_env(&self) -> &'static [(&'static str, &'static str)] {
+        &[("PI_SKIP_VERSION_CHECK", "1")]
+    }
+    fn key_capture(&self) -> KeyCapture {
+        KeyCapture::RekeyDrop
+    }
+
     fn catalog(&self) -> Option<RuntimeCatalog> {
         Some(RuntimeCatalog {
             name: Runtime::Pi,
@@ -227,6 +240,67 @@ impl RuntimeAdapter for Pi {
         out.extend(self.prompt_channels().system_prompt_args(ctx.system_prompt));
         out.extend(self.first_turn_argv(if ctx.resuming { None } else { ctx.first_turn }));
         out
+    }
+}
+
+struct Hooks;
+impl StatusHooks for Hooks {
+    fn supported(&self, _windows: bool) -> bool {
+        true
+    }
+    fn install(&self, app_data_dir: &Path) {
+        if self.supported(cfg!(windows)) {
+            if let Err(error) = pi_status::install_extension(app_data_dir) {
+                log::warn!("install pi status extension: {error}");
+            }
+        }
+    }
+    fn env(
+        &self,
+        _role_args: &[String],
+        plan: &ResumePlan,
+        app_data_dir: &Path,
+        session_id: &str,
+    ) -> std::collections::BTreeMap<String, String> {
+        if !(self.supported(cfg!(windows))) {
+            return std::collections::BTreeMap::new();
+        }
+        let mut env = status_env(
+            pi_status::PATH_ENV,
+            pi_status::GENERATION_ENV,
+            app_data_dir,
+            session_id,
+        );
+        let session_key = plan
+            .assigned_key
+            .as_ref()
+            .expect("pi spawn plan must assign --session-id");
+        env.insert(pi_status::SESSION_KEY_ENV.into(), session_key.clone());
+        env.insert(
+            pi_status::REKEY_PATH_ENV.into(),
+            crate::session::hook_feed::hook_path(&crate::session::claude_rekey::drop_path(
+                app_data_dir,
+                session_id,
+            )),
+        );
+        env
+    }
+    fn start_watcher(&self, spec: &SpawnSpec) -> Option<Box<dyn HookWatcher>> {
+        if !self.supported(cfg!(windows)) {
+            return None;
+        }
+        let path = spec.env.get(pi_status::PATH_ENV)?;
+        let generation = spec.env.get(pi_status::GENERATION_ENV)?;
+        match pi_status::PiStatusWatcher::start(Path::new(path), generation.clone()) {
+            Ok(watcher) => Some(Box::new(watcher)),
+            Err(error) => {
+                log::warn!(
+                    "pi status bridge unavailable for {}: {error}",
+                    spec.session_id
+                );
+                None
+            }
+        }
     }
 }
 

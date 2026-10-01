@@ -10,18 +10,20 @@ use serde_json::Value;
 
 use super::launch::shell_quote;
 use crate::error::{Error, Result};
+#[cfg(test)]
 use crate::model::Runtime;
 
 const STATUS_DIR: &str = "session-status";
 
-pub(crate) const fn hooks_supported(runtime: Option<Runtime>, windows: bool) -> bool {
-    matches!(
-        (runtime, windows),
-        (
-            Some(Runtime::ClaudeCode | Runtime::Codex | Runtime::Copilot | Runtime::Pi),
-            false | true
-        ) | (Some(Runtime::Antigravity), false)
-    )
+pub trait HookWatcher: Send {
+    fn interrupt_signal(&self) -> Option<Arc<std::sync::atomic::AtomicU8>> {
+        None
+    }
+    fn drain_observations(
+        &mut self,
+        transition: &mut dyn FnMut(super::status::AgentObservation, &'static str),
+        session_start: &mut dyn FnMut(String),
+    ) -> Result<()>;
 }
 
 /// Renders a status feed path for a hook command or env var. Git Bash strips
@@ -121,7 +123,7 @@ pub(crate) fn powershell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
 }
 
-pub(super) fn script_path(path: &Path) -> PathBuf {
+pub(crate) fn script_path(path: &Path) -> PathBuf {
     path.with_extension("sh")
 }
 
@@ -193,24 +195,24 @@ impl Drop for StatusFiles {
     }
 }
 
-pub(super) struct HookFeed {
+pub(crate) struct HookFeed {
     path: PathBuf,
     reporter_path: PathBuf,
     reader: BufReader<File>,
-    pub(super) pending: Vec<u8>,
+    pub(crate) pending: Vec<u8>,
     generation: String,
-    pub(super) dirty: Arc<AtomicBool>,
+    pub(crate) dirty: Arc<AtomicBool>,
     last_read: Instant,
     _watcher: RecommendedWatcher,
     _files: StatusFiles,
 }
 
 impl HookFeed {
-    pub(super) fn start(path: &Path, generation: String, script_body: &str) -> Result<Self> {
+    pub(crate) fn start(path: &Path, generation: String, script_body: &str) -> Result<Self> {
         Self::start_with_script(path, generation, script_path(path), script_body)
     }
 
-    pub(super) fn start_powershell(
+    pub(crate) fn start_powershell(
         path: &Path,
         generation: String,
         script_body: &str,
@@ -235,7 +237,7 @@ impl HookFeed {
         Self::start_with_reporter(path, generation, script, files)
     }
 
-    pub(super) fn start_external(
+    pub(crate) fn start_external(
         path: &Path,
         generation: String,
         reporter_path: &Path,
@@ -297,7 +299,7 @@ impl HookFeed {
         })
     }
 
-    pub(super) fn drain(&mut self, force: bool, mut observe: impl FnMut(Value)) -> Result<()> {
+    pub(crate) fn drain(&mut self, force: bool, mut observe: impl FnMut(Value)) -> Result<()> {
         if !self.dirty.swap(false, Ordering::AcqRel)
             && self.last_read.elapsed() < Duration::from_secs(1)
             && !force
@@ -350,14 +352,14 @@ impl HookFeed {
     }
 }
 
-pub(super) struct TranscriptTail {
-    pub(super) path: PathBuf,
-    pub(super) reader: BufReader<File>,
-    pub(super) pending: Vec<u8>,
+pub(crate) struct TranscriptTail {
+    pub(crate) path: PathBuf,
+    pub(crate) reader: BufReader<File>,
+    pub(crate) pending: Vec<u8>,
 }
 
 impl TranscriptTail {
-    pub(super) fn open(path: &Path) -> std::io::Result<Self> {
+    pub(crate) fn open(path: &Path) -> std::io::Result<Self> {
         let mut file = File::open(path)?;
         let start = file.metadata()?.len().saturating_sub(1024 * 1024);
         file.seek(SeekFrom::Start(start))?;
@@ -435,7 +437,9 @@ mod tests {
         for windows in [false, true] {
             for runtime in Runtime::ALL {
                 assert_eq!(
-                    hooks_supported(Some(runtime), windows),
+                    crate::runtimes::adapter(runtime)
+                        .status_hooks()
+                        .is_some_and(|hooks| hooks.supported(windows)),
                     matches!(
                         runtime,
                         Runtime::ClaudeCode | Runtime::Codex | Runtime::Copilot | Runtime::Pi
@@ -443,7 +447,9 @@ mod tests {
                     "{runtime:?} windows={windows}"
                 );
             }
-            assert!(!hooks_supported(None, windows));
+            assert!(!crate::runtimes::for_key("")
+                .status_hooks()
+                .is_some_and(|hooks| hooks.supported(windows)));
         }
     }
 

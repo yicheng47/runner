@@ -23,7 +23,7 @@ fn antigravity_fresh_plan_waits_for_agy_and_resume_passes_the_conversation() {
 #[test]
 fn antigravity_trailing_args_carry_the_session_log_and_first_turn_on_i() {
     let app_data = Path::new("/tmp/runner-app-data");
-    let log = crate::session::agy_capture::log_path(app_data, "runner-session")
+    let log = crate::runtimes::antigravity::agy_capture::log_path(app_data, "runner-session")
         .to_string_lossy()
         .into_owned();
     let fresh = trailing_runtime_args(
@@ -75,7 +75,7 @@ fn antigravity_trailing_args_carry_the_session_log_and_first_turn_on_i() {
 fn antigravity_status_args_require_the_installed_hooks_folder() {
     let root = tempfile::tempdir().unwrap();
     assert!(antigravity_status_args(Some(Runtime::Antigravity), root.path()).is_empty());
-    crate::session::agy_status::install_hooks(root.path()).unwrap();
+    crate::runtimes::antigravity::agy_status::install_hooks(root.path()).unwrap();
     let args = antigravity_status_args(Some(Runtime::Antigravity), root.path());
     if cfg!(windows) {
         assert!(args.is_empty(), "agy hook status is macOS-only");
@@ -84,7 +84,7 @@ fn antigravity_status_args_require_the_installed_hooks_folder() {
             args,
             [
                 "--add-dir".to_owned(),
-                crate::session::agy_status::hooks_dir(root.path())
+                crate::runtimes::antigravity::agy_status::hooks_dir(root.path())
                     .to_string_lossy()
                     .into_owned(),
             ]

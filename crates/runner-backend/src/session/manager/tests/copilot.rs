@@ -4,7 +4,7 @@ use super::*;
 fn copilot_direct_spawn_persists_key_before_spawn_and_resume_never_replays_first_turn() {
     let pool = pool_with_schema();
     let app_data = tempfile::tempdir().unwrap();
-    crate::session::copilot_status::install_plugin(app_data.path()).unwrap();
+    crate::runtimes::copilot::copilot_status::install_plugin(app_data.path()).unwrap();
     let mut role = role(
         "copilot",
         &[
@@ -59,22 +59,22 @@ fn copilot_direct_spawn_persists_key_before_spawn_and_resume_never_replays_first
     let args = fresh_spec.args;
     let fresh_generation = fresh_spec
         .env
-        .get(crate::session::copilot_status::GENERATION_ENV)
+        .get(crate::runtimes::copilot::copilot_status::GENERATION_ENV)
         .cloned();
-    let plugin_dir = crate::session::copilot_status::plugin_dir(app_data.path())
+    let plugin_dir = crate::runtimes::copilot::copilot_status::plugin_dir(app_data.path())
         .to_string_lossy()
         .into_owned();
     assert_eq!(
-        fresh_spec.env[crate::session::copilot_status::PATH_ENV],
+        fresh_spec.env[crate::runtimes::copilot::copilot_status::PATH_ENV],
         crate::session::hook_feed::hook_path(&crate::session::hook_feed::status_path(
             app_data.path(),
             &spawned.id
         ))
     );
-    assert!(
-        uuid::Uuid::parse_str(&fresh_spec.env[crate::session::copilot_status::GENERATION_ENV])
-            .is_ok()
-    );
+    assert!(uuid::Uuid::parse_str(
+        &fresh_spec.env[crate::runtimes::copilot::copilot_status::GENERATION_ENV]
+    )
+    .is_ok());
     let expected = vec![
         "--user-flag".to_owned(),
         "kept".to_owned(),
@@ -102,7 +102,8 @@ fn copilot_direct_spawn_persists_key_before_spawn_and_resume_never_replays_first
     .unwrap();
     let resumed_spec = fake.last_spawn_spec().unwrap();
     let args = resumed_spec.args;
-    let resumed_generation = &resumed_spec.env[crate::session::copilot_status::GENERATION_ENV];
+    let resumed_generation =
+        &resumed_spec.env[crate::runtimes::copilot::copilot_status::GENERATION_ENV];
     assert!(uuid::Uuid::parse_str(resumed_generation).is_ok());
     assert_ne!(
         fresh_generation.as_deref(),

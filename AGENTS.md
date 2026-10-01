@@ -62,6 +62,10 @@ On Windows, use `.\make.cmd run` to build and start the app with its CLI sidecar
 
 Prefer the smallest check that covers the change. For native UI changes, run the `runner-app` tests plus workspace clippy; for core behavior, run the relevant crate tests.
 
+## Full Smoke Tests
+
+When Jason explicitly requests a complete smoke test for a major refactor or important release, follow [Full smoke test procedure](docs/tests/full-smoke-test.md). It covers live runtime lifecycle checks through the development Runner UI and CLI, with a result matrix and cleanup. Add the change's feature-specific checks and record platform or runtime gaps explicitly. Ordinary implementation and CI do not authorize launching real agents; an explicit live smoke-test request supplies that authorization for the bounded test chats and missions in the procedure. Use development data, preserve existing sessions, and archive only the test chats and missions you created. Record each run in `docs/tests/`; the [#777 run](docs/tests/777-runtime-adapter-smoke.md) is the first example.
+
 ## Worktrees
 
 The checkout at the repository root stays on `main`. Every branch of work gets its own linked worktree under `.worktrees/`, named after the branch with its slashes flattened: `fix/659-session-start-status` lives in `.worktrees/fix-659-session-start-status`. Create it with `git worktree add .worktrees/<flattened-branch> -b <branch> origin/main` and remove it with `git worktree remove` once the branch has merged. Because the directory name is the branch name, an editor window's title says which work it holds, and either name can be derived from the other.

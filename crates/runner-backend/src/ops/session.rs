@@ -683,7 +683,7 @@ pub fn session_delete(state: &AppCore, session_id: &str) -> Result<()> {
     }
     delete_rows(&tx, &[session_id.to_owned()])?;
     tx.commit()?;
-    crate::session::agy_capture::remove_log(&state.app_data_dir, session_id);
+    crate::runtimes::antigravity::agy_capture::remove_log(&state.app_data_dir, session_id);
     Ok(())
 }
 
@@ -1726,11 +1726,12 @@ mod tests {
         let archived = insert_direct_session(&conn, &role_id, true);
         let active = insert_direct_session(&conn, &role_id, false);
         drop(conn);
-        crate::session::agy_capture::prepare_log(app_data.path(), &archived);
-        let log = crate::session::agy_capture::log_path(app_data.path(), &archived);
+        crate::runtimes::antigravity::agy_capture::prepare_log(app_data.path(), &archived);
+        let log = crate::runtimes::antigravity::agy_capture::log_path(app_data.path(), &archived);
         std::fs::write(&log, "log").unwrap();
-        crate::session::agy_capture::prepare_log(app_data.path(), &active);
-        let active_log = crate::session::agy_capture::log_path(app_data.path(), &active);
+        crate::runtimes::antigravity::agy_capture::prepare_log(app_data.path(), &active);
+        let active_log =
+            crate::runtimes::antigravity::agy_capture::log_path(app_data.path(), &active);
         std::fs::write(&active_log, "log").unwrap();
 
         assert!(session_delete(&state, &active).is_err());

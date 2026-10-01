@@ -1,0 +1,170 @@
+[
+  {
+    "runtime": "codex",
+    "hooks_unix": true,
+    "hooks_windows": true,
+    "launch_gate": false,
+    "markers": [
+      {
+        "body_len": null,
+        "marker": null
+      },
+      {
+        "body_len": 54,
+        "marker": "<!-- runner-codex-session-key-capture:golden -->"
+      },
+      {
+        "body_len": 32768,
+        "marker": null
+      }
+    ],
+    "env": "{\"COLORTERM\":\"truecolor\",\"TERM\":\"xterm-256color\"}"
+  },
+  {
+    "runtime": "claude-code",
+    "hooks_unix": true,
+    "hooks_windows": true,
+    "launch_gate": true,
+    "markers": [
+      {
+        "body_len": null,
+        "marker": null
+      },
+      {
+        "body_len": 4,
+        "marker": null
+      },
+      {
+        "body_len": 32768,
+        "marker": null
+      }
+    ],
+    "env": "{\"CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY\":\"1\",\"COLORTERM\":\"truecolor\",\"DISABLE_INSTALLATION_CHECKS\":\"1\",\"TERM\":\"xterm-256color\"}"
+  },
+  {
+    "runtime": "antigravity",
+    "hooks_unix": true,
+    "hooks_windows": false,
+    "launch_gate": false,
+    "markers": [
+      {
+        "body_len": null,
+        "marker": null
+      },
+      {
+        "body_len": 4,
+        "marker": null
+      },
+      {
+        "body_len": 32768,
+        "marker": null
+      }
+    ],
+    "env": "{\"COLORTERM\":\"truecolor\",\"TERM\":\"xterm-256color\"}"
+  },
+  {
+    "runtime": "pi",
+    "hooks_unix": true,
+    "hooks_windows": true,
+    "launch_gate": false,
+    "markers": [
+      {
+        "body_len": null,
+        "marker": null
+      },
+      {
+        "body_len": 4,
+        "marker": null
+      },
+      {
+        "body_len": 32768,
+        "marker": null
+      }
+    ],
+    "env": "{\"COLORTERM\":\"truecolor\",\"PI_SKIP_VERSION_CHECK\":\"1\",\"TERM\":\"xterm-256color\"}"
+  },
+  {
+    "runtime": "copilot",
+    "hooks_unix": true,
+    "hooks_windows": true,
+    "launch_gate": false,
+    "markers": [
+      {
+        "body_len": null,
+        "marker": null
+      },
+      {
+        "body_len": 4,
+        "marker": null
+      },
+      {
+        "body_len": 32768,
+        "marker": null
+      }
+    ],
+    "env": "{\"COLORTERM\":\"truecolor\",\"TERM\":\"xterm-256color\"}"
+  },
+  {
+    "runtime": "trae",
+    "hooks_unix": false,
+    "hooks_windows": false,
+    "launch_gate": false,
+    "markers": [
+      {
+        "body_len": null,
+        "marker": null
+      },
+      {
+        "body_len": 54,
+        "marker": "<!-- runner-codex-session-key-capture:golden -->"
+      },
+      {
+        "body_len": 32768,
+        "marker": null
+      }
+    ],
+    "env": "{\"COLORTERM\":\"truecolor\",\"TERM\":\"xterm-256color\"}"
+  },
+  {
+    "runtime": "shell",
+    "hooks_unix": false,
+    "hooks_windows": false,
+    "launch_gate": false,
+    "markers": [
+      {
+        "body_len": null,
+        "marker": null
+      },
+      {
+        "body_len": 4,
+        "marker": null
+      },
+      {
+        "body_len": 32768,
+        "marker": null
+      }
+    ],
+    "env": "{\"COLORTERM\":\"truecolor\",\"TERM\":\"xterm-256color\"}"
+  },
+  {
+    "runtime": "unknown-runtime",
+    "hooks_unix": false,
+    "hooks_windows": false,
+    "launch_gate": false,
+    "markers": [
+      {
+        "body_len": null,
+        "marker": null
+      },
+      {
+        "body_len": 4,
+        "marker": null
+      },
+      {
+        "body_len": 32768,
+        "marker": null
+      }
+    ],
+    "env": "{\"COLORTERM\":\"truecolor\",\"TERM\":\"xterm-256color\"}"
+  }
+]

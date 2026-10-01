@@ -1,0 +1,3075 @@
+[
+  {
+    "runtime": "codex",
+    "shape": "fresh",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "RUNNER_CODEX_STATUS_GENERATION": "<ID2>",
+        "RUNNER_CODEX_STATUS_PATH": "<TMP>/session-status/<ID1>.ndjson",
+        "RUNNER_HANDLE": "tester",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": true,
+      "watcher": "codex",
+      "interrupt": false,
+      "key_capture": {
+        "mechanism": "rollout-scan",
+        "sessions_root": "<HOME>/.codex/sessions"
+      },
+      "rollout": {
+        "sessions_root": "<HOME>/.codex/sessions",
+        "prompt_marker": "<!-- runner-codex-session-key-capture:<ID1> -->"
+      }
+    }
+  },
+  {
+    "runtime": "codex",
+    "shape": "blank",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "RUNNER_CODEX_STATUS_GENERATION": "<ID2>",
+        "RUNNER_CODEX_STATUS_PATH": "<TMP>/session-status/<ID1>.ndjson",
+        "RUNNER_HANDLE": "tester",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": false,
+      "watcher": "codex",
+      "interrupt": false,
+      "key_capture": {
+        "mechanism": "rollout-scan",
+        "sessions_root": "<HOME>/.codex/sessions"
+      },
+      "rollout": {
+        "sessions_root": "<HOME>/.codex/sessions",
+        "prompt_marker": null
+      }
+    }
+  },
+  {
+    "runtime": "codex",
+    "shape": "resume",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "RUNNER_CODEX_STATUS_GENERATION": "<ID3>",
+        "RUNNER_CODEX_STATUS_PATH": "<TMP>/session-status/<ID2>.ndjson",
+        "RUNNER_HANDLE": "tester",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": false,
+      "watcher": "codex",
+      "interrupt": false,
+      "key_capture": {
+        "mechanism": "rollout-scan",
+        "sessions_root": "<HOME>/.codex/sessions"
+      },
+      "rollout": null
+    }
+  },
+  {
+    "runtime": "codex",
+    "shape": "missing",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "RUNNER_CODEX_STATUS_GENERATION": "<ID3>",
+        "RUNNER_CODEX_STATUS_PATH": "<TMP>/session-status/<ID2>.ndjson",
+        "RUNNER_HANDLE": "tester",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": false,
+      "watcher": "codex",
+      "interrupt": false,
+      "key_capture": {
+        "mechanism": "rollout-scan",
+        "sessions_root": "<HOME>/.codex/sessions"
+      },
+      "rollout": null
+    }
+  },
+  {
+    "runtime": "codex",
+    "shape": "hooks-off",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "RUNNER_HANDLE": "tester",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": true,
+      "watcher": null,
+      "interrupt": null,
+      "key_capture": {
+        "mechanism": "rollout-scan",
+        "sessions_root": "<HOME>/.codex/sessions"
+      },
+      "rollout": {
+        "sessions_root": "<HOME>/.codex/sessions",
+        "prompt_marker": "<!-- runner-codex-session-key-capture:<ID1> -->"
+      }
+    }
+  },
+  {
+    "runtime": "codex",
+    "shape": "speed",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "RUNNER_CODEX_STATUS_GENERATION": "<ID2>",
+        "RUNNER_CODEX_STATUS_PATH": "<TMP>/session-status/<ID1>.ndjson",
+        "RUNNER_HANDLE": "tester",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": true,
+      "watcher": "codex",
+      "interrupt": false,
+      "key_capture": {
+        "mechanism": "rollout-scan",
+        "sessions_root": "<HOME>/.codex/sessions"
+      },
+      "rollout": {
+        "sessions_root": "<HOME>/.codex/sessions",
+        "prompt_marker": "<!-- runner-codex-session-key-capture:<ID1> -->"
+      }
+    }
+  },
+  {
+    "runtime": "codex",
+    "shape": "direct-permission",
+    "mode": "default",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "RUNNER_CODEX_STATUS_GENERATION": "<ID2>",
+        "RUNNER_CODEX_STATUS_PATH": "<TMP>/session-status/<ID1>.ndjson",
+        "RUNNER_HANDLE": "tester",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": true,
+      "watcher": "codex",
+      "interrupt": false,
+      "key_capture": {
+        "mechanism": "rollout-scan",
+        "sessions_root": "<HOME>/.codex/sessions"
+      },
+      "rollout": {
+        "sessions_root": "<HOME>/.codex/sessions",
+        "prompt_marker": "<!-- runner-codex-session-key-capture:<ID1> -->"
+      }
+    }
+  },
+  {
+    "runtime": "codex",
+    "shape": "direct-permission",
+    "mode": "accept_edits",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "RUNNER_CODEX_STATUS_GENERATION": "<ID2>",
+        "RUNNER_CODEX_STATUS_PATH": "<TMP>/session-status/<ID1>.ndjson",
+        "RUNNER_HANDLE": "tester",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": true,
+      "watcher": "codex",
+      "interrupt": false,
+      "key_capture": {
+        "mechanism": "rollout-scan",
+        "sessions_root": "<HOME>/.codex/sessions"
+      },
+      "rollout": {
+        "sessions_root": "<HOME>/.codex/sessions",
+        "prompt_marker": "<!-- runner-codex-session-key-capture:<ID1> -->"
+      }
+    }
+  },
+  {
+    "runtime": "codex",
+    "shape": "direct-permission",
+    "mode": "auto",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "RUNNER_CODEX_STATUS_GENERATION": "<ID2>",
+        "RUNNER_CODEX_STATUS_PATH": "<TMP>/session-status/<ID1>.ndjson",
+        "RUNNER_HANDLE": "tester",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": true,
+      "watcher": "codex",
+      "interrupt": false,
+      "key_capture": {
+        "mechanism": "rollout-scan",
+        "sessions_root": "<HOME>/.codex/sessions"
+      },
+      "rollout": {
+        "sessions_root": "<HOME>/.codex/sessions",
+        "prompt_marker": "<!-- runner-codex-session-key-capture:<ID1> -->"
+      }
+    }
+  },
+  {
+    "runtime": "codex",
+    "shape": "direct-permission",
+    "mode": "bypass",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "RUNNER_CODEX_STATUS_GENERATION": "<ID2>",
+        "RUNNER_CODEX_STATUS_PATH": "<TMP>/session-status/<ID1>.ndjson",
+        "RUNNER_HANDLE": "tester",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": true,
+      "watcher": "codex",
+      "interrupt": false,
+      "key_capture": {
+        "mechanism": "rollout-scan",
+        "sessions_root": "<HOME>/.codex/sessions"
+      },
+      "rollout": {
+        "sessions_root": "<HOME>/.codex/sessions",
+        "prompt_marker": "<!-- runner-codex-session-key-capture:<ID1> -->"
+      }
+    }
+  },
+  {
+    "runtime": "codex",
+    "shape": "mission-worker",
+    "mode": "bypass",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "MISSION_CWD": "<TMP>",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "RUNNER_CODEX_STATUS_GENERATION": "<ID3>",
+        "RUNNER_CODEX_STATUS_PATH": "<TMP>/session-status/<ID2>.ndjson",
+        "RUNNER_CREW_ID": "c",
+        "RUNNER_EVENT_LOG": "<TMP>/events.ndjson",
+        "RUNNER_HANDLE": "tester",
+        "RUNNER_MISSION_ID": "<ID1>",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": true,
+      "watcher": "codex",
+      "interrupt": false,
+      "key_capture": {
+        "mechanism": "rollout-scan",
+        "sessions_root": "<HOME>/.codex/sessions"
+      },
+      "rollout": {
+        "sessions_root": "<HOME>/.codex/sessions",
+        "prompt_marker": "<!-- runner-codex-session-key-capture:<ID2> -->"
+      }
+    }
+  },
+  {
+    "runtime": "codex",
+    "shape": "mission-lead",
+    "mode": "bypass",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "MISSION_CWD": "<TMP>",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "RUNNER_CODEX_STATUS_GENERATION": "<ID3>",
+        "RUNNER_CODEX_STATUS_PATH": "<TMP>/session-status/<ID2>.ndjson",
+        "RUNNER_CREW_ID": "c",
+        "RUNNER_EVENT_LOG": "<TMP>/events.ndjson",
+        "RUNNER_HANDLE": "tester",
+        "RUNNER_MISSION_ID": "<ID1>",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": true,
+      "watcher": "codex",
+      "interrupt": false,
+      "key_capture": {
+        "mechanism": "rollout-scan",
+        "sessions_root": "<HOME>/.codex/sessions"
+      },
+      "rollout": {
+        "sessions_root": "<HOME>/.codex/sessions",
+        "prompt_marker": "<!-- runner-codex-session-key-capture:<ID2> -->"
+      }
+    }
+  },
+  {
+    "runtime": "codex",
+    "shape": "mission-worker",
+    "mode": "auto",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "MISSION_CWD": "<TMP>",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "RUNNER_CODEX_STATUS_GENERATION": "<ID3>",
+        "RUNNER_CODEX_STATUS_PATH": "<TMP>/session-status/<ID2>.ndjson",
+        "RUNNER_CREW_ID": "c",
+        "RUNNER_EVENT_LOG": "<TMP>/events.ndjson",
+        "RUNNER_HANDLE": "tester",
+        "RUNNER_MISSION_ID": "<ID1>",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": true,
+      "watcher": "codex",
+      "interrupt": false,
+      "key_capture": {
+        "mechanism": "rollout-scan",
+        "sessions_root": "<HOME>/.codex/sessions"
+      },
+      "rollout": {
+        "sessions_root": "<HOME>/.codex/sessions",
+        "prompt_marker": "<!-- runner-codex-session-key-capture:<ID2> -->"
+      }
+    }
+  },
+  {
+    "runtime": "codex",
+    "shape": "mission-lead",
+    "mode": "auto",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "MISSION_CWD": "<TMP>",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "RUNNER_CODEX_STATUS_GENERATION": "<ID3>",
+        "RUNNER_CODEX_STATUS_PATH": "<TMP>/session-status/<ID2>.ndjson",
+        "RUNNER_CREW_ID": "c",
+        "RUNNER_EVENT_LOG": "<TMP>/events.ndjson",
+        "RUNNER_HANDLE": "tester",
+        "RUNNER_MISSION_ID": "<ID1>",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": true,
+      "watcher": "codex",
+      "interrupt": false,
+      "key_capture": {
+        "mechanism": "rollout-scan",
+        "sessions_root": "<HOME>/.codex/sessions"
+      },
+      "rollout": {
+        "sessions_root": "<HOME>/.codex/sessions",
+        "prompt_marker": "<!-- runner-codex-session-key-capture:<ID2> -->"
+      }
+    }
+  },
+  {
+    "runtime": "codex",
+    "shape": "mission-worker",
+    "mode": "role-default",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "MISSION_CWD": "<TMP>",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "RUNNER_CODEX_STATUS_GENERATION": "<ID3>",
+        "RUNNER_CODEX_STATUS_PATH": "<TMP>/session-status/<ID2>.ndjson",
+        "RUNNER_CREW_ID": "c",
+        "RUNNER_EVENT_LOG": "<TMP>/events.ndjson",
+        "RUNNER_HANDLE": "tester",
+        "RUNNER_MISSION_ID": "<ID1>",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": true,
+      "watcher": "codex",
+      "interrupt": false,
+      "key_capture": {
+        "mechanism": "rollout-scan",
+        "sessions_root": "<HOME>/.codex/sessions"
+      },
+      "rollout": {
+        "sessions_root": "<HOME>/.codex/sessions",
+        "prompt_marker": "<!-- runner-codex-session-key-capture:<ID2> -->"
+      }
+    }
+  },
+  {
+    "runtime": "codex",
+    "shape": "mission-lead",
+    "mode": "role-default",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "MISSION_CWD": "<TMP>",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "RUNNER_CODEX_STATUS_GENERATION": "<ID3>",
+        "RUNNER_CODEX_STATUS_PATH": "<TMP>/session-status/<ID2>.ndjson",
+        "RUNNER_CREW_ID": "c",
+        "RUNNER_EVENT_LOG": "<TMP>/events.ndjson",
+        "RUNNER_HANDLE": "tester",
+        "RUNNER_MISSION_ID": "<ID1>",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": true,
+      "watcher": "codex",
+      "interrupt": false,
+      "key_capture": {
+        "mechanism": "rollout-scan",
+        "sessions_root": "<HOME>/.codex/sessions"
+      },
+      "rollout": {
+        "sessions_root": "<HOME>/.codex/sessions",
+        "prompt_marker": "<!-- runner-codex-session-key-capture:<ID2> -->"
+      }
+    }
+  },
+  {
+    "runtime": "claude-code",
+    "shape": "fresh",
+    "spawn": {
+      "env": {
+        "CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY": "1",
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "DISABLE_INSTALLATION_CHECKS": "1",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "RUNNER_CLAUDE_STATUS_GENERATION": "<ID3>",
+        "RUNNER_CLAUDE_STATUS_PATH": "<TMP>/session-status/<ID2>.ndjson",
+        "RUNNER_HANDLE": "tester",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": "claude-code",
+      "interrupt": true,
+      "key_capture": {
+        "mechanism": "rekey-drop"
+      },
+      "rollout": null
+    }
+  },
+  {
+    "runtime": "claude-code",
+    "shape": "blank",
+    "spawn": {
+      "env": {
+        "CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY": "1",
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "DISABLE_INSTALLATION_CHECKS": "1",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "RUNNER_CLAUDE_STATUS_GENERATION": "<ID3>",
+        "RUNNER_CLAUDE_STATUS_PATH": "<TMP>/session-status/<ID2>.ndjson",
+        "RUNNER_HANDLE": "tester",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": "claude-code",
+      "interrupt": true,
+      "key_capture": {
+        "mechanism": "rekey-drop"
+      },
+      "rollout": null
+    }
+  },
+  {
+    "runtime": "claude-code",
+    "shape": "resume",
+    "spawn": {
+      "env": {
+        "CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY": "1",
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "DISABLE_INSTALLATION_CHECKS": "1",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "RUNNER_CLAUDE_STATUS_GENERATION": "<ID3>",
+        "RUNNER_CLAUDE_STATUS_PATH": "<TMP>/session-status/<ID2>.ndjson",
+        "RUNNER_HANDLE": "tester",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": "claude-code",
+      "interrupt": true,
+      "key_capture": {
+        "mechanism": "rekey-drop"
+      },
+      "rollout": null
+    }
+  },
+  {
+    "runtime": "claude-code",
+    "shape": "missing",
+    "spawn": {
+      "env": {
+        "CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY": "1",
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "DISABLE_INSTALLATION_CHECKS": "1",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "RUNNER_CLAUDE_STATUS_GENERATION": "<ID3>",
+        "RUNNER_CLAUDE_STATUS_PATH": "<TMP>/session-status/<ID2>.ndjson",
+        "RUNNER_HANDLE": "tester",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": "claude-code",
+      "interrupt": true,
+      "key_capture": {
+        "mechanism": "rekey-drop"
+      },
+      "rollout": null
+    }
+  },
+  {
+    "runtime": "claude-code",
+    "shape": "hooks-off",
+    "spawn": {
+      "env": {
+        "CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY": "1",
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "DISABLE_INSTALLATION_CHECKS": "1",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "RUNNER_HANDLE": "tester",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": null,
+      "interrupt": null,
+      "key_capture": {
+        "mechanism": "rekey-drop"
+      },
+      "rollout": null
+    }
+  },
+  {
+    "runtime": "claude-code",
+    "shape": "direct-permission",
+    "mode": "default",
+    "spawn": {
+      "env": {
+        "CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY": "1",
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "DISABLE_INSTALLATION_CHECKS": "1",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "RUNNER_CLAUDE_STATUS_GENERATION": "<ID3>",
+        "RUNNER_CLAUDE_STATUS_PATH": "<TMP>/session-status/<ID2>.ndjson",
+        "RUNNER_HANDLE": "tester",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": "claude-code",
+      "interrupt": true,
+      "key_capture": {
+        "mechanism": "rekey-drop"
+      },
+      "rollout": null
+    }
+  },
+  {
+    "runtime": "claude-code",
+    "shape": "direct-permission",
+    "mode": "accept_edits",
+    "spawn": {
+      "env": {
+        "CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY": "1",
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "DISABLE_INSTALLATION_CHECKS": "1",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "RUNNER_CLAUDE_STATUS_GENERATION": "<ID3>",
+        "RUNNER_CLAUDE_STATUS_PATH": "<TMP>/session-status/<ID2>.ndjson",
+        "RUNNER_HANDLE": "tester",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": "claude-code",
+      "interrupt": true,
+      "key_capture": {
+        "mechanism": "rekey-drop"
+      },
+      "rollout": null
+    }
+  },
+  {
+    "runtime": "claude-code",
+    "shape": "direct-permission",
+    "mode": "auto",
+    "spawn": {
+      "env": {
+        "CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY": "1",
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "DISABLE_INSTALLATION_CHECKS": "1",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "RUNNER_CLAUDE_STATUS_GENERATION": "<ID3>",
+        "RUNNER_CLAUDE_STATUS_PATH": "<TMP>/session-status/<ID2>.ndjson",
+        "RUNNER_HANDLE": "tester",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": "claude-code",
+      "interrupt": true,
+      "key_capture": {
+        "mechanism": "rekey-drop"
+      },
+      "rollout": null
+    }
+  },
+  {
+    "runtime": "claude-code",
+    "shape": "direct-permission",
+    "mode": "bypass",
+    "spawn": {
+      "env": {
+        "CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY": "1",
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "DISABLE_INSTALLATION_CHECKS": "1",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "RUNNER_CLAUDE_STATUS_GENERATION": "<ID3>",
+        "RUNNER_CLAUDE_STATUS_PATH": "<TMP>/session-status/<ID2>.ndjson",
+        "RUNNER_HANDLE": "tester",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": "claude-code",
+      "interrupt": true,
+      "key_capture": {
+        "mechanism": "rekey-drop"
+      },
+      "rollout": null
+    }
+  },
+  {
+    "runtime": "claude-code",
+    "shape": "mission-worker",
+    "mode": "bypass",
+    "spawn": {
+      "env": {
+        "CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY": "1",
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "DISABLE_INSTALLATION_CHECKS": "1",
+        "MISSION_CWD": "<TMP>",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "RUNNER_CLAUDE_STATUS_GENERATION": "<ID3>",
+        "RUNNER_CLAUDE_STATUS_PATH": "<TMP>/session-status/<ID2>.ndjson",
+        "RUNNER_CREW_ID": "c",
+        "RUNNER_EVENT_LOG": "<TMP>/events.ndjson",
+        "RUNNER_HANDLE": "tester",
+        "RUNNER_MISSION_ID": "<ID4>",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": "claude-code",
+      "interrupt": true,
+      "key_capture": {
+        "mechanism": "rekey-drop"
+      },
+      "rollout": null
+    }
+  },
+  {
+    "runtime": "claude-code",
+    "shape": "mission-lead",
+    "mode": "bypass",
+    "spawn": {
+      "env": {
+        "CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY": "1",
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "DISABLE_INSTALLATION_CHECKS": "1",
+        "MISSION_CWD": "<TMP>",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "RUNNER_CLAUDE_STATUS_GENERATION": "<ID3>",
+        "RUNNER_CLAUDE_STATUS_PATH": "<TMP>/session-status/<ID2>.ndjson",
+        "RUNNER_CREW_ID": "c",
+        "RUNNER_EVENT_LOG": "<TMP>/events.ndjson",
+        "RUNNER_HANDLE": "tester",
+        "RUNNER_MISSION_ID": "<ID4>",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": "claude-code",
+      "interrupt": true,
+      "key_capture": {
+        "mechanism": "rekey-drop"
+      },
+      "rollout": null
+    }
+  },
+  {
+    "runtime": "claude-code",
+    "shape": "mission-worker",
+    "mode": "auto",
+    "spawn": {
+      "env": {
+        "CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY": "1",
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "DISABLE_INSTALLATION_CHECKS": "1",
+        "MISSION_CWD": "<TMP>",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "RUNNER_CLAUDE_STATUS_GENERATION": "<ID3>",
+        "RUNNER_CLAUDE_STATUS_PATH": "<TMP>/session-status/<ID2>.ndjson",
+        "RUNNER_CREW_ID": "c",
+        "RUNNER_EVENT_LOG": "<TMP>/events.ndjson",
+        "RUNNER_HANDLE": "tester",
+        "RUNNER_MISSION_ID": "<ID4>",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": "claude-code",
+      "interrupt": true,
+      "key_capture": {
+        "mechanism": "rekey-drop"
+      },
+      "rollout": null
+    }
+  },
+  {
+    "runtime": "claude-code",
+    "shape": "mission-lead",
+    "mode": "auto",
+    "spawn": {
+      "env": {
+        "CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY": "1",
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "DISABLE_INSTALLATION_CHECKS": "1",
+        "MISSION_CWD": "<TMP>",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "RUNNER_CLAUDE_STATUS_GENERATION": "<ID3>",
+        "RUNNER_CLAUDE_STATUS_PATH": "<TMP>/session-status/<ID2>.ndjson",
+        "RUNNER_CREW_ID": "c",
+        "RUNNER_EVENT_LOG": "<TMP>/events.ndjson",
+        "RUNNER_HANDLE": "tester",
+        "RUNNER_MISSION_ID": "<ID4>",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": "claude-code",
+      "interrupt": true,
+      "key_capture": {
+        "mechanism": "rekey-drop"
+      },
+      "rollout": null
+    }
+  },
+  {
+    "runtime": "claude-code",
+    "shape": "mission-worker",
+    "mode": "role-default",
+    "spawn": {
+      "env": {
+        "CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY": "1",
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "DISABLE_INSTALLATION_CHECKS": "1",
+        "MISSION_CWD": "<TMP>",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "RUNNER_CLAUDE_STATUS_GENERATION": "<ID3>",
+        "RUNNER_CLAUDE_STATUS_PATH": "<TMP>/session-status/<ID2>.ndjson",
+        "RUNNER_CREW_ID": "c",
+        "RUNNER_EVENT_LOG": "<TMP>/events.ndjson",
+        "RUNNER_HANDLE": "tester",
+        "RUNNER_MISSION_ID": "<ID4>",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": "claude-code",
+      "interrupt": true,
+      "key_capture": {
+        "mechanism": "rekey-drop"
+      },
+      "rollout": null
+    }
+  },
+  {
+    "runtime": "claude-code",
+    "shape": "mission-lead",
+    "mode": "role-default",
+    "spawn": {
+      "env": {
+        "CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY": "1",
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "DISABLE_INSTALLATION_CHECKS": "1",
+        "MISSION_CWD": "<TMP>",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "RUNNER_CLAUDE_STATUS_GENERATION": "<ID3>",
+        "RUNNER_CLAUDE_STATUS_PATH": "<TMP>/session-status/<ID2>.ndjson",
+        "RUNNER_CREW_ID": "c",
+        "RUNNER_EVENT_LOG": "<TMP>/events.ndjson",
+        "RUNNER_HANDLE": "tester",
+        "RUNNER_MISSION_ID": "<ID4>",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": "claude-code",
+      "interrupt": true,
+      "key_capture": {
+        "mechanism": "rekey-drop"
+      },
+      "rollout": null
+    }
+  },
+  {
+    "runtime": "antigravity",
+    "shape": "fresh",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "RUNNER_ANTIGRAVITY_STATUS_GENERATION": "<ID2>",
+        "RUNNER_ANTIGRAVITY_STATUS_PATH": "<TMP>/session-status/<ID1>.ndjson",
+        "RUNNER_HANDLE": "tester",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": "antigravity",
+      "interrupt": true,
+      "key_capture": {
+        "mechanism": "log-tail"
+      },
+      "rollout": null
+    }
+  },
+  {
+    "runtime": "antigravity",
+    "shape": "blank",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "RUNNER_ANTIGRAVITY_STATUS_GENERATION": "<ID2>",
+        "RUNNER_ANTIGRAVITY_STATUS_PATH": "<TMP>/session-status/<ID1>.ndjson",
+        "RUNNER_HANDLE": "tester",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": "antigravity",
+      "interrupt": true,
+      "key_capture": {
+        "mechanism": "log-tail"
+      },
+      "rollout": null
+    }
+  },
+  {
+    "runtime": "antigravity",
+    "shape": "resume",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "RUNNER_ANTIGRAVITY_STATUS_GENERATION": "<ID3>",
+        "RUNNER_ANTIGRAVITY_STATUS_PATH": "<TMP>/session-status/<ID2>.ndjson",
+        "RUNNER_HANDLE": "tester",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": "antigravity",
+      "interrupt": true,
+      "key_capture": {
+        "mechanism": "log-tail"
+      },
+      "rollout": null
+    }
+  },
+  {
+    "runtime": "antigravity",
+    "shape": "missing",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "RUNNER_ANTIGRAVITY_STATUS_GENERATION": "<ID2>",
+        "RUNNER_ANTIGRAVITY_STATUS_PATH": "<TMP>/session-status/<ID1>.ndjson",
+        "RUNNER_HANDLE": "tester",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": "antigravity",
+      "interrupt": true,
+      "key_capture": {
+        "mechanism": "log-tail"
+      },
+      "rollout": null
+    }
+  },
+  {
+    "runtime": "antigravity",
+    "shape": "hooks-off",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "RUNNER_ANTIGRAVITY_STATUS_GENERATION": "<ID2>",
+        "RUNNER_ANTIGRAVITY_STATUS_PATH": "<TMP>/session-status/<ID1>.ndjson",
+        "RUNNER_HANDLE": "tester",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": "antigravity",
+      "interrupt": null,
+      "key_capture": {
+        "mechanism": "log-tail"
+      },
+      "rollout": null
+    }
+  },
+  {
+    "runtime": "antigravity",
+    "shape": "direct-permission",
+    "mode": "default",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "RUNNER_ANTIGRAVITY_STATUS_GENERATION": "<ID2>",
+        "RUNNER_ANTIGRAVITY_STATUS_PATH": "<TMP>/session-status/<ID1>.ndjson",
+        "RUNNER_HANDLE": "tester",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": "antigravity",
+      "interrupt": null,
+      "key_capture": {
+        "mechanism": "log-tail"
+      },
+      "rollout": null
+    }
+  },
+  {
+    "runtime": "antigravity",
+    "shape": "direct-permission",
+    "mode": "accept_edits",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "RUNNER_ANTIGRAVITY_STATUS_GENERATION": "<ID2>",
+        "RUNNER_ANTIGRAVITY_STATUS_PATH": "<TMP>/session-status/<ID1>.ndjson",
+        "RUNNER_HANDLE": "tester",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": "antigravity",
+      "interrupt": null,
+      "key_capture": {
+        "mechanism": "log-tail"
+      },
+      "rollout": null
+    }
+  },
+  {
+    "runtime": "antigravity",
+    "shape": "direct-permission",
+    "mode": "auto",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "RUNNER_ANTIGRAVITY_STATUS_GENERATION": "<ID2>",
+        "RUNNER_ANTIGRAVITY_STATUS_PATH": "<TMP>/session-status/<ID1>.ndjson",
+        "RUNNER_HANDLE": "tester",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": "antigravity",
+      "interrupt": null,
+      "key_capture": {
+        "mechanism": "log-tail"
+      },
+      "rollout": null
+    }
+  },
+  {
+    "runtime": "antigravity",
+    "shape": "direct-permission",
+    "mode": "bypass",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "RUNNER_ANTIGRAVITY_STATUS_GENERATION": "<ID2>",
+        "RUNNER_ANTIGRAVITY_STATUS_PATH": "<TMP>/session-status/<ID1>.ndjson",
+        "RUNNER_HANDLE": "tester",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": "antigravity",
+      "interrupt": null,
+      "key_capture": {
+        "mechanism": "log-tail"
+      },
+      "rollout": null
+    }
+  },
+  {
+    "runtime": "antigravity",
+    "shape": "mission-worker",
+    "mode": "bypass",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "MISSION_CWD": "<TMP>",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "RUNNER_ANTIGRAVITY_STATUS_GENERATION": "<ID3>",
+        "RUNNER_ANTIGRAVITY_STATUS_PATH": "<TMP>/session-status/<ID2>.ndjson",
+        "RUNNER_CREW_ID": "c",
+        "RUNNER_EVENT_LOG": "<TMP>/events.ndjson",
+        "RUNNER_HANDLE": "tester",
+        "RUNNER_MISSION_ID": "<ID1>",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": "antigravity",
+      "interrupt": null,
+      "key_capture": {
+        "mechanism": "log-tail"
+      },
+      "rollout": null
+    }
+  },
+  {
+    "runtime": "antigravity",
+    "shape": "mission-lead",
+    "mode": "bypass",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "MISSION_CWD": "<TMP>",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "RUNNER_ANTIGRAVITY_STATUS_GENERATION": "<ID3>",
+        "RUNNER_ANTIGRAVITY_STATUS_PATH": "<TMP>/session-status/<ID2>.ndjson",
+        "RUNNER_CREW_ID": "c",
+        "RUNNER_EVENT_LOG": "<TMP>/events.ndjson",
+        "RUNNER_HANDLE": "tester",
+        "RUNNER_MISSION_ID": "<ID1>",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": "antigravity",
+      "interrupt": null,
+      "key_capture": {
+        "mechanism": "log-tail"
+      },
+      "rollout": null
+    }
+  },
+  {
+    "runtime": "antigravity",
+    "shape": "mission-worker",
+    "mode": "auto",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "MISSION_CWD": "<TMP>",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "RUNNER_ANTIGRAVITY_STATUS_GENERATION": "<ID3>",
+        "RUNNER_ANTIGRAVITY_STATUS_PATH": "<TMP>/session-status/<ID2>.ndjson",
+        "RUNNER_CREW_ID": "c",
+        "RUNNER_EVENT_LOG": "<TMP>/events.ndjson",
+        "RUNNER_HANDLE": "tester",
+        "RUNNER_MISSION_ID": "<ID1>",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": "antigravity",
+      "interrupt": null,
+      "key_capture": {
+        "mechanism": "log-tail"
+      },
+      "rollout": null
+    }
+  },
+  {
+    "runtime": "antigravity",
+    "shape": "mission-lead",
+    "mode": "auto",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "MISSION_CWD": "<TMP>",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "RUNNER_ANTIGRAVITY_STATUS_GENERATION": "<ID3>",
+        "RUNNER_ANTIGRAVITY_STATUS_PATH": "<TMP>/session-status/<ID2>.ndjson",
+        "RUNNER_CREW_ID": "c",
+        "RUNNER_EVENT_LOG": "<TMP>/events.ndjson",
+        "RUNNER_HANDLE": "tester",
+        "RUNNER_MISSION_ID": "<ID1>",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": "antigravity",
+      "interrupt": null,
+      "key_capture": {
+        "mechanism": "log-tail"
+      },
+      "rollout": null
+    }
+  },
+  {
+    "runtime": "antigravity",
+    "shape": "mission-worker",
+    "mode": "role-default",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "MISSION_CWD": "<TMP>",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "RUNNER_ANTIGRAVITY_STATUS_GENERATION": "<ID3>",
+        "RUNNER_ANTIGRAVITY_STATUS_PATH": "<TMP>/session-status/<ID2>.ndjson",
+        "RUNNER_CREW_ID": "c",
+        "RUNNER_EVENT_LOG": "<TMP>/events.ndjson",
+        "RUNNER_HANDLE": "tester",
+        "RUNNER_MISSION_ID": "<ID1>",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": "antigravity",
+      "interrupt": null,
+      "key_capture": {
+        "mechanism": "log-tail"
+      },
+      "rollout": null
+    }
+  },
+  {
+    "runtime": "antigravity",
+    "shape": "mission-lead",
+    "mode": "role-default",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "MISSION_CWD": "<TMP>",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "RUNNER_ANTIGRAVITY_STATUS_GENERATION": "<ID3>",
+        "RUNNER_ANTIGRAVITY_STATUS_PATH": "<TMP>/session-status/<ID2>.ndjson",
+        "RUNNER_CREW_ID": "c",
+        "RUNNER_EVENT_LOG": "<TMP>/events.ndjson",
+        "RUNNER_HANDLE": "tester",
+        "RUNNER_MISSION_ID": "<ID1>",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": "antigravity",
+      "interrupt": null,
+      "key_capture": {
+        "mechanism": "log-tail"
+      },
+      "rollout": null
+    }
+  },
+  {
+    "runtime": "pi",
+    "shape": "fresh",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "PI_SKIP_VERSION_CHECK": "1",
+        "RUNNER_HANDLE": "tester",
+        "RUNNER_PI_REKEY_PATH": "<TMP>/session-keys/<ID2>.json",
+        "RUNNER_PI_SESSION_KEY": "<ID1>",
+        "RUNNER_PI_STATUS_GENERATION": "<ID3>",
+        "RUNNER_PI_STATUS_PATH": "<TMP>/session-status/<ID2>.ndjson",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": "pi",
+      "interrupt": false,
+      "key_capture": {
+        "mechanism": "rekey-drop"
+      },
+      "rollout": null
+    }
+  },
+  {
+    "runtime": "pi",
+    "shape": "blank",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "PI_SKIP_VERSION_CHECK": "1",
+        "RUNNER_HANDLE": "tester",
+        "RUNNER_PI_REKEY_PATH": "<TMP>/session-keys/<ID2>.json",
+        "RUNNER_PI_SESSION_KEY": "<ID1>",
+        "RUNNER_PI_STATUS_GENERATION": "<ID3>",
+        "RUNNER_PI_STATUS_PATH": "<TMP>/session-status/<ID2>.ndjson",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": "pi",
+      "interrupt": false,
+      "key_capture": {
+        "mechanism": "rekey-drop"
+      },
+      "rollout": null
+    }
+  },
+  {
+    "runtime": "pi",
+    "shape": "resume",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "PI_SKIP_VERSION_CHECK": "1",
+        "RUNNER_HANDLE": "tester",
+        "RUNNER_PI_REKEY_PATH": "<TMP>/session-keys/<ID2>.json",
+        "RUNNER_PI_SESSION_KEY": "<ID1>",
+        "RUNNER_PI_STATUS_GENERATION": "<ID3>",
+        "RUNNER_PI_STATUS_PATH": "<TMP>/session-status/<ID2>.ndjson",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": "pi",
+      "interrupt": false,
+      "key_capture": {
+        "mechanism": "rekey-drop"
+      },
+      "rollout": null
+    }
+  },
+  {
+    "runtime": "pi",
+    "shape": "missing",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "PI_SKIP_VERSION_CHECK": "1",
+        "RUNNER_HANDLE": "tester",
+        "RUNNER_PI_REKEY_PATH": "<TMP>/session-keys/<ID2>.json",
+        "RUNNER_PI_SESSION_KEY": "<ID1>",
+        "RUNNER_PI_STATUS_GENERATION": "<ID3>",
+        "RUNNER_PI_STATUS_PATH": "<TMP>/session-status/<ID2>.ndjson",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": "pi",
+      "interrupt": false,
+      "key_capture": {
+        "mechanism": "rekey-drop"
+      },
+      "rollout": null
+    }
+  },
+  {
+    "runtime": "pi",
+    "shape": "hooks-off",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "PI_SKIP_VERSION_CHECK": "1",
+        "RUNNER_HANDLE": "tester",
+        "RUNNER_PI_REKEY_PATH": "<TMP>/session-keys/<ID2>.json",
+        "RUNNER_PI_SESSION_KEY": "<ID1>",
+        "RUNNER_PI_STATUS_GENERATION": "<ID3>",
+        "RUNNER_PI_STATUS_PATH": "<TMP>/session-status/<ID2>.ndjson",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": "pi",
+      "interrupt": null,
+      "key_capture": {
+        "mechanism": "rekey-drop"
+      },
+      "rollout": null
+    }
+  },
+  {
+    "runtime": "pi",
+    "shape": "direct-permission",
+    "mode": "default",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "PI_SKIP_VERSION_CHECK": "1",
+        "RUNNER_HANDLE": "tester",
+        "RUNNER_PI_REKEY_PATH": "<TMP>/session-keys/<ID2>.json",
+        "RUNNER_PI_SESSION_KEY": "<ID1>",
+        "RUNNER_PI_STATUS_GENERATION": "<ID3>",
+        "RUNNER_PI_STATUS_PATH": "<TMP>/session-status/<ID2>.ndjson",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": "pi",
+      "interrupt": null,
+      "key_capture": {
+        "mechanism": "rekey-drop"
+      },
+      "rollout": null
+    }
+  },
+  {
+    "runtime": "pi",
+    "shape": "direct-permission",
+    "mode": "accept_edits",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "PI_SKIP_VERSION_CHECK": "1",
+        "RUNNER_HANDLE": "tester",
+        "RUNNER_PI_REKEY_PATH": "<TMP>/session-keys/<ID2>.json",
+        "RUNNER_PI_SESSION_KEY": "<ID1>",
+        "RUNNER_PI_STATUS_GENERATION": "<ID3>",
+        "RUNNER_PI_STATUS_PATH": "<TMP>/session-status/<ID2>.ndjson",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": "pi",
+      "interrupt": null,
+      "key_capture": {
+        "mechanism": "rekey-drop"
+      },
+      "rollout": null
+    }
+  },
+  {
+    "runtime": "pi",
+    "shape": "direct-permission",
+    "mode": "auto",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "PI_SKIP_VERSION_CHECK": "1",
+        "RUNNER_HANDLE": "tester",
+        "RUNNER_PI_REKEY_PATH": "<TMP>/session-keys/<ID2>.json",
+        "RUNNER_PI_SESSION_KEY": "<ID1>",
+        "RUNNER_PI_STATUS_GENERATION": "<ID3>",
+        "RUNNER_PI_STATUS_PATH": "<TMP>/session-status/<ID2>.ndjson",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": "pi",
+      "interrupt": null,
+      "key_capture": {
+        "mechanism": "rekey-drop"
+      },
+      "rollout": null
+    }
+  },
+  {
+    "runtime": "pi",
+    "shape": "direct-permission",
+    "mode": "bypass",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "PI_SKIP_VERSION_CHECK": "1",
+        "RUNNER_HANDLE": "tester",
+        "RUNNER_PI_REKEY_PATH": "<TMP>/session-keys/<ID2>.json",
+        "RUNNER_PI_SESSION_KEY": "<ID1>",
+        "RUNNER_PI_STATUS_GENERATION": "<ID3>",
+        "RUNNER_PI_STATUS_PATH": "<TMP>/session-status/<ID2>.ndjson",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": "pi",
+      "interrupt": null,
+      "key_capture": {
+        "mechanism": "rekey-drop"
+      },
+      "rollout": null
+    }
+  },
+  {
+    "runtime": "pi",
+    "shape": "mission-worker",
+    "mode": "bypass",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "MISSION_CWD": "<TMP>",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "PI_SKIP_VERSION_CHECK": "1",
+        "RUNNER_CREW_ID": "c",
+        "RUNNER_EVENT_LOG": "<TMP>/events.ndjson",
+        "RUNNER_HANDLE": "tester",
+        "RUNNER_MISSION_ID": "<ID3>",
+        "RUNNER_PI_REKEY_PATH": "<TMP>/session-keys/<ID2>.json",
+        "RUNNER_PI_SESSION_KEY": "<ID1>",
+        "RUNNER_PI_STATUS_GENERATION": "<ID4>",
+        "RUNNER_PI_STATUS_PATH": "<TMP>/session-status/<ID2>.ndjson",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": "pi",
+      "interrupt": null,
+      "key_capture": {
+        "mechanism": "rekey-drop"
+      },
+      "rollout": null
+    }
+  },
+  {
+    "runtime": "pi",
+    "shape": "mission-lead",
+    "mode": "bypass",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "MISSION_CWD": "<TMP>",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "PI_SKIP_VERSION_CHECK": "1",
+        "RUNNER_CREW_ID": "c",
+        "RUNNER_EVENT_LOG": "<TMP>/events.ndjson",
+        "RUNNER_HANDLE": "tester",
+        "RUNNER_MISSION_ID": "<ID3>",
+        "RUNNER_PI_REKEY_PATH": "<TMP>/session-keys/<ID2>.json",
+        "RUNNER_PI_SESSION_KEY": "<ID1>",
+        "RUNNER_PI_STATUS_GENERATION": "<ID4>",
+        "RUNNER_PI_STATUS_PATH": "<TMP>/session-status/<ID2>.ndjson",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": "pi",
+      "interrupt": null,
+      "key_capture": {
+        "mechanism": "rekey-drop"
+      },
+      "rollout": null
+    }
+  },
+  {
+    "runtime": "pi",
+    "shape": "mission-worker",
+    "mode": "auto",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "MISSION_CWD": "<TMP>",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "PI_SKIP_VERSION_CHECK": "1",
+        "RUNNER_CREW_ID": "c",
+        "RUNNER_EVENT_LOG": "<TMP>/events.ndjson",
+        "RUNNER_HANDLE": "tester",
+        "RUNNER_MISSION_ID": "<ID3>",
+        "RUNNER_PI_REKEY_PATH": "<TMP>/session-keys/<ID2>.json",
+        "RUNNER_PI_SESSION_KEY": "<ID1>",
+        "RUNNER_PI_STATUS_GENERATION": "<ID4>",
+        "RUNNER_PI_STATUS_PATH": "<TMP>/session-status/<ID2>.ndjson",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": "pi",
+      "interrupt": null,
+      "key_capture": {
+        "mechanism": "rekey-drop"
+      },
+      "rollout": null
+    }
+  },
+  {
+    "runtime": "pi",
+    "shape": "mission-lead",
+    "mode": "auto",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "MISSION_CWD": "<TMP>",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "PI_SKIP_VERSION_CHECK": "1",
+        "RUNNER_CREW_ID": "c",
+        "RUNNER_EVENT_LOG": "<TMP>/events.ndjson",
+        "RUNNER_HANDLE": "tester",
+        "RUNNER_MISSION_ID": "<ID3>",
+        "RUNNER_PI_REKEY_PATH": "<TMP>/session-keys/<ID2>.json",
+        "RUNNER_PI_SESSION_KEY": "<ID1>",
+        "RUNNER_PI_STATUS_GENERATION": "<ID4>",
+        "RUNNER_PI_STATUS_PATH": "<TMP>/session-status/<ID2>.ndjson",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": "pi",
+      "interrupt": null,
+      "key_capture": {
+        "mechanism": "rekey-drop"
+      },
+      "rollout": null
+    }
+  },
+  {
+    "runtime": "pi",
+    "shape": "mission-worker",
+    "mode": "role-default",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "MISSION_CWD": "<TMP>",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "PI_SKIP_VERSION_CHECK": "1",
+        "RUNNER_CREW_ID": "c",
+        "RUNNER_EVENT_LOG": "<TMP>/events.ndjson",
+        "RUNNER_HANDLE": "tester",
+        "RUNNER_MISSION_ID": "<ID3>",
+        "RUNNER_PI_REKEY_PATH": "<TMP>/session-keys/<ID2>.json",
+        "RUNNER_PI_SESSION_KEY": "<ID1>",
+        "RUNNER_PI_STATUS_GENERATION": "<ID4>",
+        "RUNNER_PI_STATUS_PATH": "<TMP>/session-status/<ID2>.ndjson",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": "pi",
+      "interrupt": null,
+      "key_capture": {
+        "mechanism": "rekey-drop"
+      },
+      "rollout": null
+    }
+  },
+  {
+    "runtime": "pi",
+    "shape": "mission-lead",
+    "mode": "role-default",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "MISSION_CWD": "<TMP>",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "PI_SKIP_VERSION_CHECK": "1",
+        "RUNNER_CREW_ID": "c",
+        "RUNNER_EVENT_LOG": "<TMP>/events.ndjson",
+        "RUNNER_HANDLE": "tester",
+        "RUNNER_MISSION_ID": "<ID3>",
+        "RUNNER_PI_REKEY_PATH": "<TMP>/session-keys/<ID2>.json",
+        "RUNNER_PI_SESSION_KEY": "<ID1>",
+        "RUNNER_PI_STATUS_GENERATION": "<ID4>",
+        "RUNNER_PI_STATUS_PATH": "<TMP>/session-status/<ID2>.ndjson",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": "pi",
+      "interrupt": null,
+      "key_capture": {
+        "mechanism": "rekey-drop"
+      },
+      "rollout": null
+    }
+  },
+  {
+    "runtime": "copilot",
+    "shape": "fresh",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "RUNNER_COPILOT_STATUS_GENERATION": "<ID2>",
+        "RUNNER_COPILOT_STATUS_PATH": "<TMP>/session-status/<ID3>.ndjson",
+        "RUNNER_HANDLE": "tester",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": "copilot",
+      "interrupt": true,
+      "key_capture": {
+        "mechanism": "none"
+      },
+      "rollout": null
+    }
+  },
+  {
+    "runtime": "copilot",
+    "shape": "blank",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "RUNNER_COPILOT_STATUS_GENERATION": "<ID2>",
+        "RUNNER_COPILOT_STATUS_PATH": "<TMP>/session-status/<ID3>.ndjson",
+        "RUNNER_HANDLE": "tester",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": "copilot",
+      "interrupt": true,
+      "key_capture": {
+        "mechanism": "none"
+      },
+      "rollout": null
+    }
+  },
+  {
+    "runtime": "copilot",
+    "shape": "resume",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "RUNNER_COPILOT_STATUS_GENERATION": "<ID2>",
+        "RUNNER_COPILOT_STATUS_PATH": "<TMP>/session-status/<ID3>.ndjson",
+        "RUNNER_HANDLE": "tester",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": "copilot",
+      "interrupt": true,
+      "key_capture": {
+        "mechanism": "none"
+      },
+      "rollout": null
+    }
+  },
+  {
+    "runtime": "copilot",
+    "shape": "missing",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "RUNNER_COPILOT_STATUS_GENERATION": "<ID2>",
+        "RUNNER_COPILOT_STATUS_PATH": "<TMP>/session-status/<ID3>.ndjson",
+        "RUNNER_HANDLE": "tester",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": "copilot",
+      "interrupt": true,
+      "key_capture": {
+        "mechanism": "none"
+      },
+      "rollout": null
+    }
+  },
+  {
+    "runtime": "copilot",
+    "shape": "hooks-off",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "RUNNER_COPILOT_STATUS_GENERATION": "<ID2>",
+        "RUNNER_COPILOT_STATUS_PATH": "<TMP>/session-status/<ID3>.ndjson",
+        "RUNNER_HANDLE": "tester",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": "copilot",
+      "interrupt": null,
+      "key_capture": {
+        "mechanism": "none"
+      },
+      "rollout": null
+    }
+  },
+  {
+    "runtime": "copilot",
+    "shape": "direct-permission",
+    "mode": "default",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "RUNNER_COPILOT_STATUS_GENERATION": "<ID2>",
+        "RUNNER_COPILOT_STATUS_PATH": "<TMP>/session-status/<ID3>.ndjson",
+        "RUNNER_HANDLE": "tester",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": "copilot",
+      "interrupt": null,
+      "key_capture": {
+        "mechanism": "none"
+      },
+      "rollout": null
+    }
+  },
+  {
+    "runtime": "copilot",
+    "shape": "direct-permission",
+    "mode": "accept_edits",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "RUNNER_COPILOT_STATUS_GENERATION": "<ID2>",
+        "RUNNER_COPILOT_STATUS_PATH": "<TMP>/session-status/<ID3>.ndjson",
+        "RUNNER_HANDLE": "tester",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": "copilot",
+      "interrupt": null,
+      "key_capture": {
+        "mechanism": "none"
+      },
+      "rollout": null
+    }
+  },
+  {
+    "runtime": "copilot",
+    "shape": "direct-permission",
+    "mode": "auto",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "RUNNER_COPILOT_STATUS_GENERATION": "<ID2>",
+        "RUNNER_COPILOT_STATUS_PATH": "<TMP>/session-status/<ID3>.ndjson",
+        "RUNNER_HANDLE": "tester",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": "copilot",
+      "interrupt": null,
+      "key_capture": {
+        "mechanism": "none"
+      },
+      "rollout": null
+    }
+  },
+  {
+    "runtime": "copilot",
+    "shape": "direct-permission",
+    "mode": "bypass",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "RUNNER_COPILOT_STATUS_GENERATION": "<ID2>",
+        "RUNNER_COPILOT_STATUS_PATH": "<TMP>/session-status/<ID3>.ndjson",
+        "RUNNER_HANDLE": "tester",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": "copilot",
+      "interrupt": null,
+      "key_capture": {
+        "mechanism": "none"
+      },
+      "rollout": null
+    }
+  },
+  {
+    "runtime": "copilot",
+    "shape": "mission-worker",
+    "mode": "bypass",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "MISSION_CWD": "<TMP>",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "RUNNER_COPILOT_STATUS_GENERATION": "<ID3>",
+        "RUNNER_COPILOT_STATUS_PATH": "<TMP>/session-status/<ID4>.ndjson",
+        "RUNNER_CREW_ID": "c",
+        "RUNNER_EVENT_LOG": "<TMP>/events.ndjson",
+        "RUNNER_HANDLE": "tester",
+        "RUNNER_MISSION_ID": "<ID2>",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": "copilot",
+      "interrupt": null,
+      "key_capture": {
+        "mechanism": "none"
+      },
+      "rollout": null
+    }
+  },
+  {
+    "runtime": "copilot",
+    "shape": "mission-lead",
+    "mode": "bypass",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "MISSION_CWD": "<TMP>",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "RUNNER_COPILOT_STATUS_GENERATION": "<ID3>",
+        "RUNNER_COPILOT_STATUS_PATH": "<TMP>/session-status/<ID4>.ndjson",
+        "RUNNER_CREW_ID": "c",
+        "RUNNER_EVENT_LOG": "<TMP>/events.ndjson",
+        "RUNNER_HANDLE": "tester",
+        "RUNNER_MISSION_ID": "<ID2>",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": "copilot",
+      "interrupt": null,
+      "key_capture": {
+        "mechanism": "none"
+      },
+      "rollout": null
+    }
+  },
+  {
+    "runtime": "copilot",
+    "shape": "mission-worker",
+    "mode": "auto",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "MISSION_CWD": "<TMP>",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "RUNNER_COPILOT_STATUS_GENERATION": "<ID3>",
+        "RUNNER_COPILOT_STATUS_PATH": "<TMP>/session-status/<ID4>.ndjson",
+        "RUNNER_CREW_ID": "c",
+        "RUNNER_EVENT_LOG": "<TMP>/events.ndjson",
+        "RUNNER_HANDLE": "tester",
+        "RUNNER_MISSION_ID": "<ID2>",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": "copilot",
+      "interrupt": null,
+      "key_capture": {
+        "mechanism": "none"
+      },
+      "rollout": null
+    }
+  },
+  {
+    "runtime": "copilot",
+    "shape": "mission-lead",
+    "mode": "auto",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "MISSION_CWD": "<TMP>",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "RUNNER_COPILOT_STATUS_GENERATION": "<ID3>",
+        "RUNNER_COPILOT_STATUS_PATH": "<TMP>/session-status/<ID4>.ndjson",
+        "RUNNER_CREW_ID": "c",
+        "RUNNER_EVENT_LOG": "<TMP>/events.ndjson",
+        "RUNNER_HANDLE": "tester",
+        "RUNNER_MISSION_ID": "<ID2>",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": "copilot",
+      "interrupt": null,
+      "key_capture": {
+        "mechanism": "none"
+      },
+      "rollout": null
+    }
+  },
+  {
+    "runtime": "copilot",
+    "shape": "mission-worker",
+    "mode": "role-default",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "MISSION_CWD": "<TMP>",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "RUNNER_COPILOT_STATUS_GENERATION": "<ID3>",
+        "RUNNER_COPILOT_STATUS_PATH": "<TMP>/session-status/<ID4>.ndjson",
+        "RUNNER_CREW_ID": "c",
+        "RUNNER_EVENT_LOG": "<TMP>/events.ndjson",
+        "RUNNER_HANDLE": "tester",
+        "RUNNER_MISSION_ID": "<ID2>",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": "copilot",
+      "interrupt": null,
+      "key_capture": {
+        "mechanism": "none"
+      },
+      "rollout": null
+    }
+  },
+  {
+    "runtime": "copilot",
+    "shape": "mission-lead",
+    "mode": "role-default",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "MISSION_CWD": "<TMP>",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "RUNNER_COPILOT_STATUS_GENERATION": "<ID3>",
+        "RUNNER_COPILOT_STATUS_PATH": "<TMP>/session-status/<ID4>.ndjson",
+        "RUNNER_CREW_ID": "c",
+        "RUNNER_EVENT_LOG": "<TMP>/events.ndjson",
+        "RUNNER_HANDLE": "tester",
+        "RUNNER_MISSION_ID": "<ID2>",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": "copilot",
+      "interrupt": null,
+      "key_capture": {
+        "mechanism": "none"
+      },
+      "rollout": null
+    }
+  },
+  {
+    "runtime": "trae",
+    "shape": "fresh",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "RUNNER_HANDLE": "tester",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": null,
+      "interrupt": null,
+      "key_capture": {
+        "mechanism": "rollout-scan",
+        "sessions_root": "<HOME>/.trae/cli/sessions"
+      },
+      "rollout": {
+        "sessions_root": "<HOME>/.trae/cli/sessions",
+        "prompt_marker": "<!-- runner-codex-session-key-capture:<ID1> -->"
+      }
+    }
+  },
+  {
+    "runtime": "trae",
+    "shape": "blank",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "RUNNER_HANDLE": "tester",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": null,
+      "interrupt": null,
+      "key_capture": {
+        "mechanism": "rollout-scan",
+        "sessions_root": "<HOME>/.trae/cli/sessions"
+      },
+      "rollout": {
+        "sessions_root": "<HOME>/.trae/cli/sessions",
+        "prompt_marker": null
+      }
+    }
+  },
+  {
+    "runtime": "trae",
+    "shape": "resume",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "RUNNER_HANDLE": "tester",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": null,
+      "interrupt": null,
+      "key_capture": {
+        "mechanism": "rollout-scan",
+        "sessions_root": "<HOME>/.trae/cli/sessions"
+      },
+      "rollout": null
+    }
+  },
+  {
+    "runtime": "trae",
+    "shape": "missing",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "RUNNER_HANDLE": "tester",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": null,
+      "interrupt": null,
+      "key_capture": {
+        "mechanism": "rollout-scan",
+        "sessions_root": "<HOME>/.trae/cli/sessions"
+      },
+      "rollout": null
+    }
+  },
+  {
+    "runtime": "trae",
+    "shape": "direct-permission",
+    "mode": "default",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "RUNNER_HANDLE": "tester",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": null,
+      "interrupt": null,
+      "key_capture": {
+        "mechanism": "rollout-scan",
+        "sessions_root": "<HOME>/.trae/cli/sessions"
+      },
+      "rollout": {
+        "sessions_root": "<HOME>/.trae/cli/sessions",
+        "prompt_marker": "<!-- runner-codex-session-key-capture:<ID1> -->"
+      }
+    }
+  },
+  {
+    "runtime": "trae",
+    "shape": "direct-permission",
+    "mode": "accept_edits",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "RUNNER_HANDLE": "tester",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": null,
+      "interrupt": null,
+      "key_capture": {
+        "mechanism": "rollout-scan",
+        "sessions_root": "<HOME>/.trae/cli/sessions"
+      },
+      "rollout": {
+        "sessions_root": "<HOME>/.trae/cli/sessions",
+        "prompt_marker": "<!-- runner-codex-session-key-capture:<ID1> -->"
+      }
+    }
+  },
+  {
+    "runtime": "trae",
+    "shape": "direct-permission",
+    "mode": "auto",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "RUNNER_HANDLE": "tester",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": null,
+      "interrupt": null,
+      "key_capture": {
+        "mechanism": "rollout-scan",
+        "sessions_root": "<HOME>/.trae/cli/sessions"
+      },
+      "rollout": {
+        "sessions_root": "<HOME>/.trae/cli/sessions",
+        "prompt_marker": "<!-- runner-codex-session-key-capture:<ID1> -->"
+      }
+    }
+  },
+  {
+    "runtime": "trae",
+    "shape": "direct-permission",
+    "mode": "bypass",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "RUNNER_HANDLE": "tester",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": null,
+      "interrupt": null,
+      "key_capture": {
+        "mechanism": "rollout-scan",
+        "sessions_root": "<HOME>/.trae/cli/sessions"
+      },
+      "rollout": {
+        "sessions_root": "<HOME>/.trae/cli/sessions",
+        "prompt_marker": "<!-- runner-codex-session-key-capture:<ID1> -->"
+      }
+    }
+  },
+  {
+    "runtime": "trae",
+    "shape": "mission-worker",
+    "mode": "bypass",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "MISSION_CWD": "<TMP>",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "RUNNER_CREW_ID": "c",
+        "RUNNER_EVENT_LOG": "<TMP>/events.ndjson",
+        "RUNNER_HANDLE": "tester",
+        "RUNNER_MISSION_ID": "<ID2>",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": null,
+      "interrupt": null,
+      "key_capture": {
+        "mechanism": "rollout-scan",
+        "sessions_root": "<HOME>/.trae/cli/sessions"
+      },
+      "rollout": {
+        "sessions_root": "<HOME>/.trae/cli/sessions",
+        "prompt_marker": "<!-- runner-codex-session-key-capture:<ID1> -->"
+      }
+    }
+  },
+  {
+    "runtime": "trae",
+    "shape": "mission-lead",
+    "mode": "bypass",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "MISSION_CWD": "<TMP>",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "RUNNER_CREW_ID": "c",
+        "RUNNER_EVENT_LOG": "<TMP>/events.ndjson",
+        "RUNNER_HANDLE": "tester",
+        "RUNNER_MISSION_ID": "<ID2>",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": null,
+      "interrupt": null,
+      "key_capture": {
+        "mechanism": "rollout-scan",
+        "sessions_root": "<HOME>/.trae/cli/sessions"
+      },
+      "rollout": {
+        "sessions_root": "<HOME>/.trae/cli/sessions",
+        "prompt_marker": "<!-- runner-codex-session-key-capture:<ID1> -->"
+      }
+    }
+  },
+  {
+    "runtime": "trae",
+    "shape": "mission-worker",
+    "mode": "auto",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "MISSION_CWD": "<TMP>",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "RUNNER_CREW_ID": "c",
+        "RUNNER_EVENT_LOG": "<TMP>/events.ndjson",
+        "RUNNER_HANDLE": "tester",
+        "RUNNER_MISSION_ID": "<ID2>",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": null,
+      "interrupt": null,
+      "key_capture": {
+        "mechanism": "rollout-scan",
+        "sessions_root": "<HOME>/.trae/cli/sessions"
+      },
+      "rollout": {
+        "sessions_root": "<HOME>/.trae/cli/sessions",
+        "prompt_marker": "<!-- runner-codex-session-key-capture:<ID1> -->"
+      }
+    }
+  },
+  {
+    "runtime": "trae",
+    "shape": "mission-lead",
+    "mode": "auto",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "MISSION_CWD": "<TMP>",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "RUNNER_CREW_ID": "c",
+        "RUNNER_EVENT_LOG": "<TMP>/events.ndjson",
+        "RUNNER_HANDLE": "tester",
+        "RUNNER_MISSION_ID": "<ID2>",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": null,
+      "interrupt": null,
+      "key_capture": {
+        "mechanism": "rollout-scan",
+        "sessions_root": "<HOME>/.trae/cli/sessions"
+      },
+      "rollout": {
+        "sessions_root": "<HOME>/.trae/cli/sessions",
+        "prompt_marker": "<!-- runner-codex-session-key-capture:<ID1> -->"
+      }
+    }
+  },
+  {
+    "runtime": "trae",
+    "shape": "mission-worker",
+    "mode": "role-default",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "MISSION_CWD": "<TMP>",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "RUNNER_CREW_ID": "c",
+        "RUNNER_EVENT_LOG": "<TMP>/events.ndjson",
+        "RUNNER_HANDLE": "tester",
+        "RUNNER_MISSION_ID": "<ID2>",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": null,
+      "interrupt": null,
+      "key_capture": {
+        "mechanism": "rollout-scan",
+        "sessions_root": "<HOME>/.trae/cli/sessions"
+      },
+      "rollout": {
+        "sessions_root": "<HOME>/.trae/cli/sessions",
+        "prompt_marker": "<!-- runner-codex-session-key-capture:<ID1> -->"
+      }
+    }
+  },
+  {
+    "runtime": "trae",
+    "shape": "mission-lead",
+    "mode": "role-default",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "MISSION_CWD": "<TMP>",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "RUNNER_CREW_ID": "c",
+        "RUNNER_EVENT_LOG": "<TMP>/events.ndjson",
+        "RUNNER_HANDLE": "tester",
+        "RUNNER_MISSION_ID": "<ID2>",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": null,
+      "interrupt": null,
+      "key_capture": {
+        "mechanism": "rollout-scan",
+        "sessions_root": "<HOME>/.trae/cli/sessions"
+      },
+      "rollout": {
+        "sessions_root": "<HOME>/.trae/cli/sessions",
+        "prompt_marker": "<!-- runner-codex-session-key-capture:<ID1> -->"
+      }
+    }
+  },
+  {
+    "runtime": "shell",
+    "shape": "fresh",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": null,
+      "interrupt": null,
+      "key_capture": {
+        "mechanism": "none"
+      },
+      "rollout": null
+    }
+  },
+  {
+    "runtime": "shell",
+    "shape": "blank",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": null,
+      "interrupt": null,
+      "key_capture": {
+        "mechanism": "none"
+      },
+      "rollout": null
+    }
+  },
+  {
+    "runtime": "shell",
+    "shape": "resume",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": null,
+      "interrupt": null,
+      "key_capture": {
+        "mechanism": "none"
+      },
+      "rollout": null
+    }
+  },
+  {
+    "runtime": "shell",
+    "shape": "missing",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": null,
+      "interrupt": null,
+      "key_capture": {
+        "mechanism": "none"
+      },
+      "rollout": null
+    }
+  },
+  {
+    "runtime": "shell",
+    "shape": "direct-permission",
+    "mode": "default",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": null,
+      "interrupt": null,
+      "key_capture": {
+        "mechanism": "none"
+      },
+      "rollout": null
+    }
+  },
+  {
+    "runtime": "shell",
+    "shape": "direct-permission",
+    "mode": "accept_edits",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": null,
+      "interrupt": null,
+      "key_capture": {
+        "mechanism": "none"
+      },
+      "rollout": null
+    }
+  },
+  {
+    "runtime": "shell",
+    "shape": "direct-permission",
+    "mode": "auto",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": null,
+      "interrupt": null,
+      "key_capture": {
+        "mechanism": "none"
+      },
+      "rollout": null
+    }
+  },
+  {
+    "runtime": "shell",
+    "shape": "direct-permission",
+    "mode": "bypass",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": null,
+      "interrupt": null,
+      "key_capture": {
+        "mechanism": "none"
+      },
+      "rollout": null
+    }
+  },
+  {
+    "runtime": "shell",
+    "shape": "mission-worker",
+    "mode": "bypass",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "MISSION_CWD": "<TMP>",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "RUNNER_CREW_ID": "c",
+        "RUNNER_EVENT_LOG": "<TMP>/events.ndjson",
+        "RUNNER_HANDLE": "tester",
+        "RUNNER_MISSION_ID": "<ID1>",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": null,
+      "interrupt": null,
+      "key_capture": {
+        "mechanism": "none"
+      },
+      "rollout": null
+    }
+  },
+  {
+    "runtime": "shell",
+    "shape": "mission-lead",
+    "mode": "bypass",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "MISSION_CWD": "<TMP>",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "RUNNER_CREW_ID": "c",
+        "RUNNER_EVENT_LOG": "<TMP>/events.ndjson",
+        "RUNNER_HANDLE": "tester",
+        "RUNNER_MISSION_ID": "<ID1>",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": null,
+      "interrupt": null,
+      "key_capture": {
+        "mechanism": "none"
+      },
+      "rollout": null
+    }
+  },
+  {
+    "runtime": "shell",
+    "shape": "mission-worker",
+    "mode": "auto",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "MISSION_CWD": "<TMP>",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "RUNNER_CREW_ID": "c",
+        "RUNNER_EVENT_LOG": "<TMP>/events.ndjson",
+        "RUNNER_HANDLE": "tester",
+        "RUNNER_MISSION_ID": "<ID1>",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": null,
+      "interrupt": null,
+      "key_capture": {
+        "mechanism": "none"
+      },
+      "rollout": null
+    }
+  },
+  {
+    "runtime": "shell",
+    "shape": "mission-lead",
+    "mode": "auto",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "MISSION_CWD": "<TMP>",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "RUNNER_CREW_ID": "c",
+        "RUNNER_EVENT_LOG": "<TMP>/events.ndjson",
+        "RUNNER_HANDLE": "tester",
+        "RUNNER_MISSION_ID": "<ID1>",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": null,
+      "interrupt": null,
+      "key_capture": {
+        "mechanism": "none"
+      },
+      "rollout": null
+    }
+  },
+  {
+    "runtime": "shell",
+    "shape": "mission-worker",
+    "mode": "role-default",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "MISSION_CWD": "<TMP>",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "RUNNER_CREW_ID": "c",
+        "RUNNER_EVENT_LOG": "<TMP>/events.ndjson",
+        "RUNNER_HANDLE": "tester",
+        "RUNNER_MISSION_ID": "<ID1>",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": null,
+      "interrupt": null,
+      "key_capture": {
+        "mechanism": "none"
+      },
+      "rollout": null
+    }
+  },
+  {
+    "runtime": "shell",
+    "shape": "mission-lead",
+    "mode": "role-default",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "MISSION_CWD": "<TMP>",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "RUNNER_CREW_ID": "c",
+        "RUNNER_EVENT_LOG": "<TMP>/events.ndjson",
+        "RUNNER_HANDLE": "tester",
+        "RUNNER_MISSION_ID": "<ID1>",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": null,
+      "interrupt": null,
+      "key_capture": {
+        "mechanism": "none"
+      },
+      "rollout": null
+    }
+  },
+  {
+    "runtime": "unknown-runtime",
+    "shape": "fresh",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "RUNNER_HANDLE": "tester",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": null,
+      "interrupt": null,
+      "key_capture": {
+        "mechanism": "none"
+      },
+      "rollout": null
+    }
+  },
+  {
+    "runtime": "unknown-runtime",
+    "shape": "blank",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "RUNNER_HANDLE": "tester",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": null,
+      "interrupt": null,
+      "key_capture": {
+        "mechanism": "none"
+      },
+      "rollout": null
+    }
+  },
+  {
+    "runtime": "unknown-runtime",
+    "shape": "resume",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "RUNNER_HANDLE": "tester",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": null,
+      "interrupt": null,
+      "key_capture": {
+        "mechanism": "none"
+      },
+      "rollout": null
+    }
+  },
+  {
+    "runtime": "unknown-runtime",
+    "shape": "missing",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "RUNNER_HANDLE": "tester",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": null,
+      "interrupt": null,
+      "key_capture": {
+        "mechanism": "none"
+      },
+      "rollout": null
+    }
+  },
+  {
+    "runtime": "unknown-runtime",
+    "shape": "direct-permission",
+    "mode": "default",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "RUNNER_HANDLE": "tester",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": null,
+      "interrupt": null,
+      "key_capture": {
+        "mechanism": "none"
+      },
+      "rollout": null
+    }
+  },
+  {
+    "runtime": "unknown-runtime",
+    "shape": "direct-permission",
+    "mode": "accept_edits",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "RUNNER_HANDLE": "tester",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": null,
+      "interrupt": null,
+      "key_capture": {
+        "mechanism": "none"
+      },
+      "rollout": null
+    }
+  },
+  {
+    "runtime": "unknown-runtime",
+    "shape": "direct-permission",
+    "mode": "auto",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "RUNNER_HANDLE": "tester",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": null,
+      "interrupt": null,
+      "key_capture": {
+        "mechanism": "none"
+      },
+      "rollout": null
+    }
+  },
+  {
+    "runtime": "unknown-runtime",
+    "shape": "direct-permission",
+    "mode": "bypass",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "RUNNER_HANDLE": "tester",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": null,
+      "interrupt": null,
+      "key_capture": {
+        "mechanism": "none"
+      },
+      "rollout": null
+    }
+  },
+  {
+    "runtime": "unknown-runtime",
+    "shape": "mission-worker",
+    "mode": "bypass",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "MISSION_CWD": "<TMP>",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "RUNNER_CREW_ID": "c",
+        "RUNNER_EVENT_LOG": "<TMP>/events.ndjson",
+        "RUNNER_HANDLE": "tester",
+        "RUNNER_MISSION_ID": "<ID1>",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": null,
+      "interrupt": null,
+      "key_capture": {
+        "mechanism": "none"
+      },
+      "rollout": null
+    }
+  },
+  {
+    "runtime": "unknown-runtime",
+    "shape": "mission-lead",
+    "mode": "bypass",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "MISSION_CWD": "<TMP>",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "RUNNER_CREW_ID": "c",
+        "RUNNER_EVENT_LOG": "<TMP>/events.ndjson",
+        "RUNNER_HANDLE": "tester",
+        "RUNNER_MISSION_ID": "<ID1>",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": null,
+      "interrupt": null,
+      "key_capture": {
+        "mechanism": "none"
+      },
+      "rollout": null
+    }
+  },
+  {
+    "runtime": "unknown-runtime",
+    "shape": "mission-worker",
+    "mode": "auto",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "MISSION_CWD": "<TMP>",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "RUNNER_CREW_ID": "c",
+        "RUNNER_EVENT_LOG": "<TMP>/events.ndjson",
+        "RUNNER_HANDLE": "tester",
+        "RUNNER_MISSION_ID": "<ID1>",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": null,
+      "interrupt": null,
+      "key_capture": {
+        "mechanism": "none"
+      },
+      "rollout": null
+    }
+  },
+  {
+    "runtime": "unknown-runtime",
+    "shape": "mission-lead",
+    "mode": "auto",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "MISSION_CWD": "<TMP>",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "RUNNER_CREW_ID": "c",
+        "RUNNER_EVENT_LOG": "<TMP>/events.ndjson",
+        "RUNNER_HANDLE": "tester",
+        "RUNNER_MISSION_ID": "<ID1>",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": null,
+      "interrupt": null,
+      "key_capture": {
+        "mechanism": "none"
+      },
+      "rollout": null
+    }
+  },
+  {
+    "runtime": "unknown-runtime",
+    "shape": "mission-worker",
+    "mode": "role-default",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "MISSION_CWD": "<TMP>",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "RUNNER_CREW_ID": "c",
+        "RUNNER_EVENT_LOG": "<TMP>/events.ndjson",
+        "RUNNER_HANDLE": "tester",
+        "RUNNER_MISSION_ID": "<ID1>",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": null,
+      "interrupt": null,
+      "key_capture": {
+        "mechanism": "none"
+      },
+      "rollout": null
+    }
+  },
+  {
+    "runtime": "unknown-runtime",
+    "shape": "mission-lead",
+    "mode": "role-default",
+    "spawn": {
+      "env": {
+        "CODEX_HOME": "<TMP>/.codex",
+        "COLORTERM": "truecolor",
+        "COPILOT_HOME": "<TMP>/.copilot",
+        "MISSION_CWD": "<TMP>",
+        "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
+        "RUNNER_CREW_ID": "c",
+        "RUNNER_EVENT_LOG": "<TMP>/events.ndjson",
+        "RUNNER_HANDLE": "tester",
+        "RUNNER_MISSION_ID": "<ID1>",
+        "TERM": "xterm-256color"
+      },
+      "codex_pending_turn": null,
+      "watcher": null,
+      "interrupt": null,
+      "key_capture": {
+        "mechanism": "none"
+      },
+      "rollout": null
+    }
+  }
+]

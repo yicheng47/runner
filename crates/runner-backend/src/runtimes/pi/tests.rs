@@ -19,12 +19,12 @@ fn pi_fork_assigns_a_new_session_key_and_prepends_native_args() {
 fn pi_status_extension_args_require_the_installed_extension() {
     let root = tempfile::tempdir().unwrap();
     assert!(pi_status_args(Some(Runtime::Pi), root.path()).is_empty());
-    crate::session::pi_status::install_extension(root.path()).unwrap();
+    crate::runtimes::pi::pi_status::install_extension(root.path()).unwrap();
     assert_eq!(
         pi_status_args(Some(Runtime::Pi), root.path()),
         [
             "-e".to_owned(),
-            crate::session::pi_status::extension_path(root.path())
+            crate::runtimes::pi::pi_status::extension_path(root.path())
                 .to_string_lossy()
                 .into_owned(),
         ]
@@ -67,8 +67,8 @@ fn pi_assigns_and_resumes_the_same_id_with_prompt_file_args() {
 #[test]
 fn pi_status_extension_precedes_the_system_prompt_and_goal_on_spawn_and_resume() {
     let root = tempfile::tempdir().unwrap();
-    crate::session::pi_status::install_extension(root.path()).unwrap();
-    let extension = crate::session::pi_status::extension_path(root.path())
+    crate::runtimes::pi::pi_status::install_extension(root.path()).unwrap();
+    let extension = crate::runtimes::pi::pi_status::extension_path(root.path())
         .to_string_lossy()
         .into_owned();
     let fresh = trailing_runtime_args(

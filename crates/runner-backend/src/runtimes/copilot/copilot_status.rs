@@ -8,13 +8,13 @@ use std::sync::Arc;
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::claude_status::CTRL_C_INTERRUPT;
-use super::hook_feed::{HookFeed, TranscriptTail};
-use super::status::{
+use crate::error::Result;
+use crate::runtimes::claude_code::claude_status::CTRL_C_INTERRUPT;
+use crate::session::hook_feed::{HookFeed, TranscriptTail};
+use crate::session::status::{
     Activity, AgentObservation, HumanInteraction, ObservationSource, TurnOutcome, WaitReason,
     WorkDetail,
 };
-use crate::error::Result;
 
 pub(crate) const PATH_ENV: &str = "RUNNER_COPILOT_STATUS_PATH";
 pub(crate) const GENERATION_ENV: &str = "RUNNER_COPILOT_STATUS_GENERATION";
@@ -81,10 +81,10 @@ fn write_plugin_file(path: &Path, contents: &[u8]) -> Result<()> {
 fn powershell_command(event: &str) -> String {
     format!(
         "{};exit 0",
-        super::hook_feed::powershell_reporter(
+        crate::session::hook_feed::powershell_reporter(
             &format!("$env:{PATH_ENV}"),
             GENERATION_ENV,
-            &super::hook_feed::powershell_quote(event),
+            &crate::session::hook_feed::powershell_quote(event),
         )
     )
 }
@@ -680,6 +680,19 @@ impl CopilotStatusWatcher {
     }
 }
 
+impl crate::session::hook_feed::HookWatcher for CopilotStatusWatcher {
+    fn interrupt_signal(&self) -> Option<Arc<AtomicU8>> {
+        Some(self.interrupt_signal())
+    }
+    fn drain_observations(
+        &mut self,
+        transition: &mut dyn FnMut(crate::session::status::AgentObservation, &'static str),
+        _session_start: &mut dyn FnMut(String),
+    ) -> Result<()> {
+        self.drain_observations(transition)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs::{self, OpenOptions};
@@ -1264,7 +1277,7 @@ mod tests {
             ),
         )
         .unwrap();
-        let path = super::super::hook_feed::status_path(root.path(), "session");
+        let path = crate::session::hook_feed::status_path(root.path(), "session");
         let mut watcher = CopilotStatusWatcher::start(&path, "current".into(), home).unwrap();
         let mut file = OpenOptions::new().append(true).open(&path).unwrap();
         for value in [
@@ -1279,7 +1292,7 @@ mod tests {
         watcher.drain_observations(|_, _| {}).unwrap();
         assert!(watcher.observation.value.needs_you());
         watcher.interrupt.store(
-            super::super::claude_status::ESCAPE_INTERRUPT,
+            crate::runtimes::claude_code::claude_status::ESCAPE_INTERRUPT,
             Ordering::Release,
         );
         watcher.drain_observations(|_, _| {}).unwrap();
@@ -1322,7 +1335,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         install_plugin(root.path()).unwrap();
         let home = root.path().join("copilot-home");
-        let path = super::super::hook_feed::status_path(root.path(), "session");
+        let path = crate::session::hook_feed::status_path(root.path(), "session");
         let mut watcher = CopilotStatusWatcher::start(&path, "current".into(), home).unwrap();
         fs::write(&path, "not json\n").unwrap();
         let mut file = OpenOptions::new().append(true).open(&path).unwrap();
@@ -1399,7 +1412,7 @@ mod tests {
         assert!(missing.stdout.is_empty());
         assert!(missing.stderr.is_empty());
 
-        let path = super::super::hook_feed::status_path(&app_data, "session with spaces");
+        let path = crate::session::hook_feed::status_path(&app_data, "session with spaces");
         let mut watcher =
             CopilotStatusWatcher::start(&path, "current".into(), root.path().join("copilot-home"))
                 .unwrap();
@@ -1431,7 +1444,7 @@ mod tests {
     fn disabled_hooks_leave_the_baseline_unlatched() {
         let root = tempfile::tempdir().unwrap();
         install_plugin(root.path()).unwrap();
-        let path = super::super::hook_feed::status_path(root.path(), "disabled");
+        let path = crate::session::hook_feed::status_path(root.path(), "disabled");
         let mut watcher =
             CopilotStatusWatcher::start(&path, "current".into(), root.path().join("copilot-home"))
                 .unwrap();
@@ -1447,7 +1460,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn powershell_entry_drains_missing_path_handles_spaces_large_payload_and_teardown() {
-        use super::super::hook_feed::{hook_path, run_powershell, POWERSHELLS};
+        use crate::session::hook_feed::{hook_path, run_powershell, POWERSHELLS};
         for shell in POWERSHELLS {
             let root = tempfile::tempdir().unwrap();
             let app_data = root.path().join("Jason's runner app data");
@@ -1471,7 +1484,7 @@ mod tests {
             assert!(missing.status.success(), "{shell}: {missing:?}");
             assert!(missing.stdout.is_empty() && missing.stderr.is_empty());
 
-            let path = super::super::hook_feed::status_path(&app_data, "session with spaces");
+            let path = crate::session::hook_feed::status_path(&app_data, "session with spaces");
             let path = PathBuf::from(hook_path(&path));
             let mut watcher = CopilotStatusWatcher::start(
                 &path,

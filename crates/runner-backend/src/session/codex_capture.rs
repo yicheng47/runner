@@ -28,7 +28,6 @@
 // the user disabled rollouts), the row keeps a NULL key and codex
 // continues to spawn fresh on every resume — same as today, no worse.
 
-use crate::model::Runtime;
 use std::collections::HashSet;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -62,17 +61,6 @@ pub fn prompt_marker(session_id: &str) -> String {
 fn claimed_rollouts() -> &'static Mutex<HashSet<PathBuf>> {
     static SET: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
     SET.get_or_init(|| Mutex::new(HashSet::new()))
-}
-
-pub fn sessions_root_for(runtime: Option<Runtime>) -> Option<PathBuf> {
-    let home = runner_core::app_paths::home_dir()?;
-    match runtime {
-        Some(Runtime::Codex) => Some(home.join(".codex").join("sessions")),
-        Some(Runtime::Trae) => Some(home.join(".trae").join("cli").join("sessions")),
-        Some(Runtime::ClaudeCode | Runtime::Copilot | Runtime::Pi | Runtime::Antigravity)
-        | Some(Runtime::Shell)
-        | None => None,
-    }
 }
 
 pub(crate) fn fork_rollout_is_ready(sessions_root: &Path, key: &str, source_key: &str) -> bool {
@@ -665,6 +653,15 @@ mod tests {
 
     #[test]
     fn sessions_root_for_maps_codex_lineage_layouts() {
+        use crate::model::Runtime;
+        let sessions_root_for = |runtime: Option<Runtime>| match runtime
+            .map(crate::runtimes::adapter)
+            .unwrap_or(&crate::runtimes::NoAgent)
+            .key_capture()
+        {
+            crate::runtimes::KeyCapture::RolloutScan { sessions_root } => sessions_root,
+            _ => None,
+        };
         let home = runner_core::app_paths::home_dir().expect("tests require a home directory");
         assert_eq!(
             sessions_root_for(Some(Runtime::Codex)),

@@ -56,7 +56,7 @@ fn seed_project_trust_at_with_home(
     let _guard = CONFIG_LOCK
         .lock()
         .map_err(|_| Error::msg("copilot trust config lock poisoned"))?;
-    let write_path = super::codex_trust::resolve_config_write_path(config_path)?;
+    let write_path = crate::runtimes::helpers::resolve_config_write_path(config_path)?;
     let raw = match std::fs::read_to_string(&write_path) {
         Ok(raw) => raw,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
@@ -96,7 +96,7 @@ fn seed_project_trust_at_with_home(
     }
     folders.push(serde_json::Value::String(cwd.into_owned()));
     let contents = format!("{header}{}\n", serde_json::to_string_pretty(&document)?);
-    super::codex_trust::write_config_atomically(&write_path, contents.as_bytes())
+    crate::runtimes::helpers::write_config_atomically(&write_path, contents.as_bytes())
 }
 
 fn is_broad_trust_root(cwd: &Path, home: Option<&Path>) -> bool {

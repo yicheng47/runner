@@ -17,11 +17,14 @@ use crate::router::prompt::{LaunchPromptInput, SessionPromptKind};
 use crate::router::runtime::{
     ForkPlan, MissionPermissionMode, PermissionMode, ResumePlan, FIRST_TURN_ARGV_MAX_BYTES,
 };
+use crate::session::hook_feed::HookWatcher;
+use crate::session::runtime::SpawnSpec;
 pub use helpers::Permissions;
 #[cfg(test)]
 pub(crate) use helpers::{test_home, with_conversation_home};
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 #[derive(Debug, Clone)]
 pub struct RuntimeCatalog {
@@ -136,6 +139,30 @@ pub struct MissingConversation {
     pub resume_on_launch: bool,
 }
 
+pub enum KeyCapture {
+    None,
+    RolloutScan { sessions_root: Option<PathBuf> },
+    LogTail,
+    RekeyDrop,
+}
+
+pub trait StatusHooks: Send + Sync {
+    fn supported(&self, windows: bool) -> bool;
+    fn install(&self, _app_data_dir: &Path) {}
+    fn cleanup(&self, _app_data_dir: &Path) {}
+    fn tracks_pending_turn(&self) -> bool {
+        false
+    }
+    fn env(
+        &self,
+        role_args: &[String],
+        plan: &ResumePlan,
+        app_data_dir: &Path,
+        session_id: &str,
+    ) -> std::collections::BTreeMap<String, String>;
+    fn start_watcher(&self, spec: &SpawnSpec) -> Option<Box<dyn HookWatcher>>;
+}
+
 pub trait RuntimeAdapter: Send + Sync {
     fn catalog(&self) -> Option<RuntimeCatalog>;
     fn permissions(&self) -> &'static Permissions;
@@ -149,6 +176,26 @@ pub trait RuntimeAdapter: Send + Sync {
     }
     fn launch_args(&self, ctx: &LaunchContext<'_>) -> Vec<String> {
         self.first_turn_argv(if ctx.resuming { None } else { ctx.first_turn })
+    }
+    fn launch_env(&self) -> &'static [(&'static str, &'static str)] {
+        &[]
+    }
+    fn launch_gate(&self) -> Option<Duration> {
+        None
+    }
+    fn seed_trust(
+        &self,
+        _session_id: &str,
+        _cwd: Option<&Path>,
+        _copilot_home: Option<&str>,
+    ) -> crate::error::Result<()> {
+        Ok(())
+    }
+    fn key_capture(&self) -> KeyCapture {
+        KeyCapture::None
+    }
+    fn status_hooks(&self) -> Option<&'static dyn StatusHooks> {
+        None
     }
     fn mission_dir_args(&self, _dir: Option<&Path>) -> Vec<String> {
         Vec::new()

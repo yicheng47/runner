@@ -10,12 +10,12 @@ use serde::Deserialize;
 use crate::error::Result;
 
 #[cfg(test)]
-use super::hook_feed::script_path;
-pub(crate) use super::hook_feed::{clear_leftovers, hook_command, hooks_supported, status_path};
-use super::hook_feed::{HookFeed, TranscriptTail};
+use crate::session::hook_feed::script_path;
+pub(crate) use crate::session::hook_feed::{clear_leftovers, hook_command, status_path};
+use crate::session::hook_feed::{HookFeed, TranscriptTail};
 #[cfg(test)]
-use super::runtime::SessionActivityState;
-use super::status::{
+use crate::session::runtime::SessionActivityState;
+use crate::session::status::{
     Activity, AgentObservation, HumanInteraction, ObservationSource, TurnOutcome, WaitReason,
     WorkDetail,
 };
@@ -571,6 +571,19 @@ impl ClaudeStatusWatcher {
                 source,
             )
         })
+    }
+}
+
+impl crate::session::hook_feed::HookWatcher for ClaudeStatusWatcher {
+    fn interrupt_signal(&self) -> Option<Arc<AtomicU8>> {
+        Some(self.interrupt_signal())
+    }
+    fn drain_observations(
+        &mut self,
+        transition: &mut dyn FnMut(crate::session::status::AgentObservation, &'static str),
+        _session_start: &mut dyn FnMut(String),
+    ) -> Result<()> {
+        self.drain_observations(transition)
     }
 }
 
@@ -1932,7 +1945,7 @@ mod tests {
         };
         let root = tempfile::tempdir().unwrap();
         let path = status_path(&root.path().join("Jason's status $dir"), "session");
-        let path = PathBuf::from(super::super::hook_feed::hook_path(&path));
+        let path = PathBuf::from(crate::session::hook_feed::hook_path(&path));
         let mut watcher = ClaudeStatusWatcher::start(&path, "current".into()).unwrap();
         let run = |path: &Path, event: &str, payload: &[u8]| {
             let mut child = std::process::Command::new(&sh)

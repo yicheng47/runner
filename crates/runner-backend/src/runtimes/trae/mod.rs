@@ -31,6 +31,13 @@ fn mode_matches(args: &[String], mode: PermissionMode) -> bool {
 }
 pub struct Trae;
 impl RuntimeAdapter for Trae {
+    fn key_capture(&self) -> KeyCapture {
+        KeyCapture::RolloutScan {
+            sessions_root: runner_core::app_paths::home_dir()
+                .map(|home| home.join(".trae").join("cli").join("sessions")),
+        }
+    }
+
     fn catalog(&self) -> Option<RuntimeCatalog> {
         Some(RuntimeCatalog {
             name: Runtime::Trae,

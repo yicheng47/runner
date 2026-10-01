@@ -1,10 +1,14 @@
+pub(crate) mod codex_status;
+pub(crate) mod codex_trust;
 use super::catalog::*;
 use super::helpers::*;
 use super::*;
 
 pub(crate) fn inject_codex_hooks(runtime: Option<Runtime>, args: &[String], windows: bool) -> bool {
     if runtime != Some(Runtime::Codex)
-        || !crate::session::hook_feed::hooks_supported(runtime, windows)
+        || !Codex
+            .status_hooks()
+            .is_some_and(|hooks| hooks.supported(windows))
     {
         return false;
     }
@@ -63,9 +67,10 @@ pub(crate) fn codex_status_args(
         "hooks".into(),
         "--dangerously-bypass-hook-trust".into(),
     ];
-    for event in crate::session::codex_status::EVENTS {
-        let command =
-            toml_edit::Value::from(crate::session::codex_status::hook_command(&path, event));
+    for event in crate::runtimes::codex::codex_status::EVENTS {
+        let command = toml_edit::Value::from(crate::runtimes::codex::codex_status::hook_command(
+            &path, event,
+        ));
         args.extend([
             "-c".into(),
             format!("hooks.{event}=[{{hooks=[{{type=\"command\",command={command},timeout=2}}]}}]"),
@@ -129,6 +134,27 @@ fn mode_matches(args: &[String], mode: PermissionMode) -> bool {
 }
 pub struct Codex;
 impl RuntimeAdapter for Codex {
+    fn status_hooks(&self) -> Option<&'static dyn StatusHooks> {
+        Some(&Hooks)
+    }
+    fn key_capture(&self) -> KeyCapture {
+        KeyCapture::RolloutScan {
+            sessions_root: runner_core::app_paths::home_dir()
+                .map(|home| home.join(".codex").join("sessions")),
+        }
+    }
+    fn seed_trust(
+        &self,
+        session_id: &str,
+        cwd: Option<&Path>,
+        _copilot_home: Option<&str>,
+    ) -> crate::error::Result<()> {
+        if let Some(cwd) = trust_cwd(session_id, Runtime::Codex, cwd) {
+            codex_trust::seed_project_trust(cwd)?;
+        }
+        Ok(())
+    }
+
     fn catalog(&self) -> Option<RuntimeCatalog> {
         let mut codex_efforts = common_efforts();
         codex_efforts.push(option(
@@ -244,6 +270,50 @@ impl RuntimeAdapter for Codex {
         ));
         out.extend(self.first_turn_argv(if ctx.resuming { None } else { ctx.first_turn }));
         out
+    }
+}
+
+struct Hooks;
+impl StatusHooks for Hooks {
+    fn supported(&self, _windows: bool) -> bool {
+        true
+    }
+    fn tracks_pending_turn(&self) -> bool {
+        true
+    }
+    fn env(
+        &self,
+        role_args: &[String],
+        _plan: &ResumePlan,
+        app_data_dir: &Path,
+        session_id: &str,
+    ) -> std::collections::BTreeMap<String, String> {
+        if !(inject_codex_hooks(Some(Runtime::Codex), role_args, cfg!(windows))) {
+            return std::collections::BTreeMap::new();
+        }
+        status_env(
+            codex_status::PATH_ENV,
+            codex_status::GENERATION_ENV,
+            app_data_dir,
+            session_id,
+        )
+    }
+    fn start_watcher(&self, spec: &SpawnSpec) -> Option<Box<dyn HookWatcher>> {
+        if !self.supported(cfg!(windows)) {
+            return None;
+        }
+        let path = spec.env.get(codex_status::PATH_ENV)?;
+        let generation = spec.env.get(codex_status::GENERATION_ENV)?;
+        match codex_status::CodexStatusWatcher::start(Path::new(path), generation.clone()) {
+            Ok(watcher) => Some(Box::new(watcher)),
+            Err(error) => {
+                log::warn!(
+                    "Codex status bridge unavailable for {}: {error}",
+                    spec.session_id
+                );
+                None
+            }
+        }
     }
 }
 

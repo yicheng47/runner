@@ -1,3 +1,6 @@
+pub(crate) mod agy_capture;
+pub(crate) mod agy_status;
+pub(crate) mod agy_trust;
 use super::catalog::*;
 use super::helpers::*;
 use super::*;
@@ -18,14 +21,16 @@ pub(crate) fn antigravity_status_args(
     app_data_dir: &Path,
 ) -> Vec<String> {
     if runtime != Some(Runtime::Antigravity)
-        || !crate::session::hook_feed::hooks_supported(runtime, cfg!(windows))
-        || !crate::session::agy_status::hooks_available(app_data_dir)
+        || !Antigravity
+            .status_hooks()
+            .is_some_and(|hooks| hooks.supported(cfg!(windows)))
+        || !crate::runtimes::antigravity::agy_status::hooks_available(app_data_dir)
     {
         return Vec::new();
     }
     vec![
         "--add-dir".into(),
-        crate::session::agy_status::hooks_dir(app_data_dir)
+        crate::runtimes::antigravity::agy_status::hooks_dir(app_data_dir)
             .to_string_lossy()
             .into_owned(),
     ]
@@ -90,6 +95,24 @@ fn mode_matches(args: &[String], mode: PermissionMode) -> bool {
 }
 pub struct Antigravity;
 impl RuntimeAdapter for Antigravity {
+    fn status_hooks(&self) -> Option<&'static dyn StatusHooks> {
+        Some(&Hooks)
+    }
+    fn key_capture(&self) -> KeyCapture {
+        KeyCapture::LogTail
+    }
+    fn seed_trust(
+        &self,
+        session_id: &str,
+        cwd: Option<&Path>,
+        _copilot_home: Option<&str>,
+    ) -> crate::error::Result<()> {
+        if let Some(cwd) = trust_cwd(session_id, Runtime::Antigravity, cwd) {
+            agy_trust::seed_project_trust(cwd)?;
+        }
+        Ok(())
+    }
+
     fn catalog(&self) -> Option<RuntimeCatalog> {
         Some(RuntimeCatalog {
             name: Runtime::Antigravity,
@@ -175,7 +198,7 @@ impl RuntimeAdapter for Antigravity {
         out.extend(self.model_effort_args(ctx.model, ctx.effort));
         out.extend([
             "--log-file".into(),
-            crate::session::agy_capture::log_path(ctx.app_data_dir, ctx.session_id)
+            crate::runtimes::antigravity::agy_capture::log_path(ctx.app_data_dir, ctx.session_id)
                 .to_string_lossy()
                 .into_owned(),
         ]);
@@ -185,6 +208,54 @@ impl RuntimeAdapter for Antigravity {
         ));
         out.extend(self.first_turn_argv(if ctx.resuming { None } else { ctx.first_turn }));
         out
+    }
+}
+
+struct Hooks;
+impl StatusHooks for Hooks {
+    fn supported(&self, windows: bool) -> bool {
+        !windows
+    }
+    fn install(&self, app_data_dir: &Path) {
+        if self.supported(cfg!(windows)) {
+            if let Err(error) = agy_status::install_hooks(app_data_dir) {
+                log::warn!("install Antigravity status hooks: {error}");
+            }
+        }
+    }
+    fn env(
+        &self,
+        _role_args: &[String],
+        _plan: &ResumePlan,
+        app_data_dir: &Path,
+        session_id: &str,
+    ) -> std::collections::BTreeMap<String, String> {
+        if !(self.supported(cfg!(windows))) {
+            return std::collections::BTreeMap::new();
+        }
+        status_env(
+            agy_status::PATH_ENV,
+            agy_status::GENERATION_ENV,
+            app_data_dir,
+            session_id,
+        )
+    }
+    fn start_watcher(&self, spec: &SpawnSpec) -> Option<Box<dyn HookWatcher>> {
+        if !self.supported(cfg!(windows)) {
+            return None;
+        }
+        let path = spec.env.get(agy_status::PATH_ENV)?;
+        let generation = spec.env.get(agy_status::GENERATION_ENV)?;
+        match agy_status::AgyStatusWatcher::start(Path::new(path), generation.clone()) {
+            Ok(watcher) => Some(Box::new(watcher)),
+            Err(error) => {
+                log::warn!(
+                    "Antigravity status bridge unavailable for {}: {error}",
+                    spec.session_id
+                );
+                None
+            }
+        }
     }
 }
 

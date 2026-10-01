@@ -44,7 +44,7 @@ pub trait RuntimeAdapter: Send + Sync {
     fn fork_plan(&self, source_key: &str, label: &str) -> Option<ForkPlan>;
     fn conversation_exists(&self, key: &str, ctx: &ProbeContext) -> Option<bool>;
     fn missing_conversation(&self) -> MissingConversation; // fail, start fresh, or reuse key
-    fn key_capture(&self) -> Option<&'static dyn KeyCapture>;
+    fn key_capture(&self) -> KeyCapture;               // shared mechanism: none, rollout scan, log tail, rekey drop
 
     // per-spawn hooks
     fn seed_trust(&self, cwd: &Path, env: &RoleEnv) -> io::Result<()>;
@@ -83,7 +83,7 @@ Every method except the four required ones has a default that means "not support
 | Launch extras | `trailing_runtime_args`, `agent_env`, `mission_bus_sandbox_args`, pi's mission `--approve`, `enter_claude_launch_gate` | Codex update check and service tier, Copilot `--no-auto-update`, agy `--log-file`, env that silences surveys and version checks, `--add-dir` for the mission dir | `launch_args`, `launch_env`, `mission_dir_args`, `launch_gate` |
 | Resume and fork | `resume_plan`, `fork_plan`, the `*_conversation_exists` probes, the conversation-missing arm in `spawn.rs` | assigned or captured key, argv prepended or appended, where the probe looks, what happens when history is gone | `resume_plan`, `fork_plan`, `conversation_exists`, `missing_conversation` |
 | Folder trust | `seed_runtime_project_trust` | Codex, Copilot (honouring `COPILOT_HOME`) and agy each write their own file | `seed_trust` |
-| Key capture | `codex_capture` (Codex and TRAE), `agy_capture`, the `claude_rekey` drop (Claude and pi) | rollout scan with a prompt marker, log tail, hook drop | `key_capture` |
+| Key capture | `codex_capture` (Codex and TRAE), `agy_capture`, the `claude_rekey` drop (Claude and pi) | rollout scan with a prompt marker, log tail, hook drop | `key_capture`, naming one of the shared mechanisms, which the manager runs |
 | Status hooks | `hook_feed::hooks_supported`, the five `*_status` modules, env set in `spawn.rs`, args in `router/runtime.rs`, `HookStatusWatcher` | platforms, env vars, the CLI args, plugin or settings that install the hook, the watcher, the interrupt signal | `status_hooks()`, returning a `Box<dyn HookWatcher>` |
 | Native defaults | `runtime_defaults.rs` | config path, format and keys | `native_defaults` |
 | Model discovery | `runtime_status/models.rs` | query command and config home | `model_discovery()` |
@@ -126,7 +126,7 @@ The phases land as three PRs: phases 0 and 1, then phase 2, then phases 3 and 4.
 
 0. **Characterization tests.** Golden tests that build the composed argv and env for each of the six runtimes across these launch shapes: direct chat fresh and resumed; mission worker and lead; fork where supported; each offered permission mode in a direct chat and in a mission; model and effort set and unset; hooks on and off. The app data dir, session ids and generated UUIDs are normalized. The tests are written and passing against current `main` before any code moves.
 1. **Trait, registry and identity.** Add `runtimes/` with the trait, `NoAgent` and the six adapters. Move the identity data, the catalog merge, and every `router/runtime.rs` argv, permission, resume and fork function into adapters. `router/runtime.rs` keeps only shared types (`ResumePlan`, `ForkPlan`, `PermissionMode`, `MissionPermissionMode`) and helpers.
-2. **Spawn hooks.** Launch env and args, trust seeding, the launch gate, key capture and status hooks. `HookStatusWatcher` becomes `Box<dyn HookWatcher>`, and `SpawnSpec` carries what `PtyRuntime` needs to ask the adapter for a watcher instead of probing env-var pairs. The per-runtime `session/*` files move into their adapter folders.
+2. **Spawn hooks.** Launch env and args, trust seeding, the launch gate, key capture and status hooks. `HookStatusWatcher` becomes `Box<dyn HookWatcher>`, and `SpawnSpec` carries what `PtyRuntime` needs to ask the adapter for a watcher instead of probing env-var pairs. The per-runtime `session/*` files move into their adapter folders. The mechanisms shared by two runtimes (`codex_capture.rs` for Codex and TRAE, `claude_rekey.rs` for Claude and pi) stay in `session/`, with `hook_feed.rs` and `status.rs`. `key_capture` returns an enum that names the mechanism rather than a trait object, because the four mechanisms take different spawn contexts and two are shared.
 3. **Catalog surfaces.** Native defaults, model discovery, versions, usage (`UsageSnapshot` becomes a map), skills and MCP (`McpClientId` becomes a thin wrapper over `Runtime` with the adapter's wire name).
 4. **App and docs.** Add the `runtime_ui` table; drive permission modes, usage lists and the effort rule from the catalog. Rewrite "Where the implementation lives" in [`runtime-integration.md`](../arch/runtime-integration.md) around `runtimes/<name>/`, and point `docs/arch/arch.md`'s references to the adapter in `router/runtime.rs` at `runtimes/`.
 

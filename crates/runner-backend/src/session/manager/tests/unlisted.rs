@@ -49,8 +49,8 @@ fn update_spec_runs_the_update_in_home_without_runner_layers() {
         "DISABLE_INSTALLATION_CHECKS",
         "CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY",
         "PI_SKIP_VERSION_CHECK",
-        crate::session::claude_status::PATH_ENV,
-        crate::session::codex_status::PATH_ENV,
+        crate::runtimes::claude_code::claude_status::PATH_ENV,
+        crate::runtimes::codex::codex_status::PATH_ENV,
     ] {
         assert!(!spec.env.contains_key(runner_layer), "{runner_layer}");
     }

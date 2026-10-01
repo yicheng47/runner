@@ -64,7 +64,7 @@ fn codex_injection_roundtrips_toml_and_shell_metacharacters() {
     );
     for (pair, event) in args[3..]
         .chunks_exact(2)
-        .zip(crate::session::codex_status::EVENTS)
+        .zip(crate::runtimes::codex::codex_status::EVENTS)
     {
         assert_eq!(pair[0], "-c");
         let config = pair[1].parse::<toml_edit::DocumentMut>().unwrap();
@@ -80,7 +80,7 @@ fn codex_injection_roundtrips_toml_and_shell_metacharacters() {
         let path = crate::session::hook_feed::status_path(&root, "session");
         assert_eq!(
             command,
-            crate::session::codex_status::hook_command(&path, event)
+            crate::runtimes::codex::codex_status::hook_command(&path, event)
         );
         let result = std::process::Command::new("sh")
             .args(["-c", command])
@@ -96,7 +96,7 @@ fn codex_injection_roundtrips_toml_and_shell_metacharacters() {
 #[cfg(windows)]
 #[test]
 fn codex_injection_on_windows_calls_the_session_reporter_script() {
-    use crate::session::codex_status::{self, EVENTS};
+    use crate::runtimes::codex::codex_status::{self, EVENTS};
     use crate::session::hook_feed::{hook_path, powershell_script_path, status_path};
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("spaces triple ''' dollar $ backtick `");

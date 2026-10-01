@@ -11,7 +11,9 @@ fn append_log(app_data: &Path, session_id: &str, text: &str) {
     std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(crate::session::agy_capture::log_path(app_data, session_id))
+        .open(crate::runtimes::antigravity::agy_capture::log_path(
+            app_data, session_id,
+        ))
         .unwrap()
         .write_all(text.as_bytes())
         .unwrap();
@@ -48,7 +50,7 @@ fn antigravity_direct_chat_seeds_trust_captures_its_key_and_resumes_by_conversat
     let pool = pool_with_schema();
     let app_data = tempfile::tempdir().unwrap();
     let home = tempfile::tempdir().unwrap();
-    crate::session::agy_status::install_hooks(app_data.path()).unwrap();
+    crate::runtimes::antigravity::agy_status::install_hooks(app_data.path()).unwrap();
     let project = app_data.path().join("project");
     std::fs::create_dir_all(&project).unwrap();
     let canonical = std::fs::canonicalize(&project).unwrap();
@@ -60,7 +62,7 @@ fn antigravity_direct_chat_seeds_trust_captures_its_key_and_resumes_by_conversat
     insert_role_row(&pool.get().unwrap(), &role);
 
     let fake = fake_runtime();
-    let settings = crate::session::agy_trust::settings_path(home.path());
+    let settings = crate::runtimes::antigravity::agy_trust::settings_path(home.path());
     let settings_for_hook = settings.clone();
     let expected_trust = canonical.to_string_lossy().into_owned();
     *fake.spawn_hook.lock().unwrap() = Some(Box::new(move || {
@@ -93,8 +95,8 @@ fn antigravity_direct_chat_seeds_trust_captures_its_key_and_resumes_by_conversat
     .unwrap();
     assert_eq!(session_key(&pool, &spawned.id), None);
 
-    let log = crate::session::agy_capture::log_path(app_data.path(), &spawned.id);
-    let hooks = crate::session::agy_status::hooks_dir(app_data.path());
+    let log = crate::runtimes::antigravity::agy_capture::log_path(app_data.path(), &spawned.id);
+    let hooks = crate::runtimes::antigravity::agy_status::hooks_dir(app_data.path());
     let fresh = fake.last_spawn_spec().unwrap();
     let mut expected = vec![
         "--role-flag",
@@ -108,17 +110,20 @@ fn antigravity_direct_chat_seeds_trust_captures_its_key_and_resumes_by_conversat
     if cfg!(not(windows)) {
         expected.extend(["--add-dir", hooks.to_str().unwrap()]);
         assert_eq!(
-            fresh.env[crate::session::agy_status::PATH_ENV],
+            fresh.env[crate::runtimes::antigravity::agy_status::PATH_ENV],
             crate::session::hook_feed::hook_path(&crate::session::hook_feed::status_path(
                 app_data.path(),
                 &spawned.id
             ))
         );
-        assert!(
-            uuid::Uuid::parse_str(&fresh.env[crate::session::agy_status::GENERATION_ENV]).is_ok()
-        );
+        assert!(uuid::Uuid::parse_str(
+            &fresh.env[crate::runtimes::antigravity::agy_status::GENERATION_ENV]
+        )
+        .is_ok());
     } else {
-        assert!(!fresh.env.contains_key(crate::session::agy_status::PATH_ENV));
+        assert!(!fresh
+            .env
+            .contains_key(crate::runtimes::antigravity::agy_status::PATH_ENV));
     }
     expected.extend(["-i", "persona first turn"]);
     assert_eq!(fresh.args, expected);

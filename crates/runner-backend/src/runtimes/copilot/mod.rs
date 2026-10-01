@@ -1,17 +1,21 @@
+pub(crate) mod copilot_status;
+pub(crate) mod copilot_trust;
 use super::catalog::*;
 use super::helpers::*;
 use super::*;
 
 pub(crate) fn copilot_status_args(runtime: Option<Runtime>, app_data_dir: &Path) -> Vec<String> {
     if runtime != Some(Runtime::Copilot)
-        || !crate::session::hook_feed::hooks_supported(runtime, cfg!(windows))
-        || !crate::session::copilot_status::plugin_available(app_data_dir)
+        || !Copilot
+            .status_hooks()
+            .is_some_and(|hooks| hooks.supported(cfg!(windows)))
+        || !crate::runtimes::copilot::copilot_status::plugin_available(app_data_dir)
     {
         return Vec::new();
     }
     vec![
         "--plugin-dir".into(),
-        crate::session::copilot_status::plugin_dir(app_data_dir)
+        crate::runtimes::copilot::copilot_status::plugin_dir(app_data_dir)
             .to_string_lossy()
             .into_owned(),
     ]
@@ -32,7 +36,7 @@ pub(crate) fn copilot_conversation_exists_with_home(
     }
     #[cfg(not(test))]
     {
-        crate::session::copilot_trust::copilot_home(override_home)
+        crate::runtimes::copilot::copilot_trust::copilot_home(override_home)
             .is_ok_and(|home| copilot_conversation_exists_at(&home, key))
     }
 }
@@ -90,6 +94,21 @@ fn mode_matches(args: &[String], mode: PermissionMode) -> bool {
 }
 pub struct Copilot;
 impl RuntimeAdapter for Copilot {
+    fn status_hooks(&self) -> Option<&'static dyn StatusHooks> {
+        Some(&Hooks)
+    }
+    fn seed_trust(
+        &self,
+        session_id: &str,
+        cwd: Option<&Path>,
+        copilot_home: Option<&str>,
+    ) -> crate::error::Result<()> {
+        if let Some(cwd) = trust_cwd(session_id, Runtime::Copilot, cwd) {
+            copilot_trust::seed_project_trust(cwd, copilot_home)?;
+        }
+        Ok(())
+    }
+
     fn catalog(&self) -> Option<RuntimeCatalog> {
         Some(RuntimeCatalog {
             name: Runtime::Copilot,
@@ -194,6 +213,66 @@ impl RuntimeAdapter for Copilot {
         ));
         out.extend(self.first_turn_argv(if ctx.resuming { None } else { ctx.first_turn }));
         out
+    }
+}
+
+struct Hooks;
+impl StatusHooks for Hooks {
+    fn supported(&self, _windows: bool) -> bool {
+        true
+    }
+    fn install(&self, app_data_dir: &Path) {
+        if self.supported(cfg!(windows)) {
+            if let Err(error) = copilot_status::install_plugin(app_data_dir) {
+                log::warn!("install Copilot status plugin: {error}");
+            }
+        }
+    }
+    fn env(
+        &self,
+        _role_args: &[String],
+        _plan: &ResumePlan,
+        app_data_dir: &Path,
+        session_id: &str,
+    ) -> std::collections::BTreeMap<String, String> {
+        if !(self.supported(cfg!(windows))) {
+            return std::collections::BTreeMap::new();
+        }
+        status_env(
+            copilot_status::PATH_ENV,
+            copilot_status::GENERATION_ENV,
+            app_data_dir,
+            session_id,
+        )
+    }
+    fn start_watcher(&self, spec: &SpawnSpec) -> Option<Box<dyn HookWatcher>> {
+        if !self.supported(cfg!(windows)) {
+            return None;
+        }
+        let path = spec.env.get(copilot_status::PATH_ENV)?;
+        let generation = spec.env.get(copilot_status::GENERATION_ENV)?;
+        let home =
+            match copilot_trust::copilot_home(spec.env.get("COPILOT_HOME").map(String::as_str)) {
+                Ok(home) => home,
+                Err(error) => {
+                    log::warn!(
+                        "Copilot status transcript unavailable for {}: {error}",
+                        spec.session_id
+                    );
+                    return None;
+                }
+            };
+        match copilot_status::CopilotStatusWatcher::start(Path::new(path), generation.clone(), home)
+        {
+            Ok(watcher) => Some(Box::new(watcher)),
+            Err(error) => {
+                log::warn!(
+                    "Copilot status bridge unavailable for {}: {error}",
+                    spec.session_id
+                );
+                None
+            }
+        }
     }
 }
 
