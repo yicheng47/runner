@@ -138,6 +138,7 @@ impl NativeRoot {
         cx: &mut Context<Self>,
     ) {
         let active = self.active_focused_session_id();
+        self.prepare_tab_close(&session_ids, cx);
         let error_target = match source {
             ArchiveAllSource::Chat => ArchiveErrorTarget::Chat,
             ArchiveAllSource::Sidebar => ArchiveErrorTarget::App,
@@ -249,6 +250,7 @@ impl NativeRoot {
             Ok(())
         })();
         let refresh_ok = refresh_result.is_ok();
+        self.clear_pending_tab_close(&attempted);
         if refresh_ok {
             self.mark_active_tab_viewed(window, cx);
             self.focus_active_terminal(window, cx);

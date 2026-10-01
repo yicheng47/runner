@@ -115,6 +115,26 @@ pub(crate) fn activation_target_for_index(
         .map(|row| row.target.clone())
 }
 
+pub(crate) fn neighbour_tab_id(
+    rows: impl IntoIterator<Item = VisibleSidebarRow>,
+    tab_id: &str,
+) -> Option<String> {
+    let tabs = rows
+        .into_iter()
+        .filter_map(|row| match row {
+            VisibleSidebarRow::Activatable(SidebarShortcutRow {
+                target: SidebarActivationTarget::Tab { tab_id, .. },
+                ..
+            }) => Some(tab_id),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let index = tabs.iter().position(|id| id == tab_id)?;
+    tabs.get(index + 1)
+        .or_else(|| index.checked_sub(1).and_then(|index| tabs.get(index)))
+        .cloned()
+}
+
 pub(crate) fn should_show_shortcut_pills(
     command_held_alone_since: Option<Instant>,
     now: Instant,
@@ -421,6 +441,50 @@ mod tests {
             last_viewed_at: None,
             created_at: format!("2026-08-19T00:00:0{position}Z"),
         }
+    }
+
+    #[test]
+    fn closing_a_tab_selects_the_next_sidebar_tab_or_the_previous_at_the_end() {
+        let walk = visible_sidebar_walk(
+            vec![shortcut_tab("pinned"), shortcut_mission("mission", None)],
+            true,
+            vec![SidebarShortcutProject {
+                node_id: "project".into(),
+                expanded: true,
+                children: vec![shortcut_tab("middle")],
+            }],
+            true,
+            vec![
+                shortcut_mission("recent-mission", None),
+                shortcut_tab("last"),
+            ],
+        );
+        assert_eq!(
+            neighbour_tab_id(walk.clone(), "middle"),
+            Some("last".into())
+        );
+        assert_eq!(
+            neighbour_tab_id(walk.clone(), "last"),
+            Some("middle".into())
+        );
+        assert_eq!(neighbour_tab_id(walk, "pinned"), Some("middle".into()));
+        assert_eq!(
+            neighbour_tab_id(
+                [VisibleSidebarRow::Activatable(shortcut_tab("only"))],
+                "only"
+            ),
+            None
+        );
+        let walk = visible_sidebar_walk(
+            Vec::new(),
+            true,
+            Vec::new(),
+            true,
+            (1..=12)
+                .map(|n| shortcut_tab(&format!("tab-{n}")))
+                .collect(),
+        );
+        assert_eq!(neighbour_tab_id(walk, "tab-10"), Some("tab-11".into()));
     }
 
     #[test]

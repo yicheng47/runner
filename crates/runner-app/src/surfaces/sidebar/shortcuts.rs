@@ -13,66 +13,22 @@ use runner_backend::repo::node::{NodeRow, NodeType};
 impl Sidebar {
     fn shortcut_row_walk(
         &self,
-        rows: &[SidebarRow],
-        pinned: &[SidebarRow],
-        project_nodes: &[NodeRow],
-        root_rows: &[SidebarRow],
+        rows: &[(NodeRow, SidebarShortcutRow)],
+        include_hidden: bool,
         cx: &App,
     ) -> Vec<crate::surfaces::sidebar_logic::VisibleSidebarRow> {
         let store = self.app_store.read(cx);
-        let shortcut_row = |row: &SidebarRow| row.shortcut_row(&store.nodes);
-        let pinned = pinned.iter().map(shortcut_row).collect();
+        let mut pinned = rows
+            .iter()
+            .filter(|(node, _)| node.pinned_position.is_some())
+            .collect::<Vec<_>>();
+        pinned.sort_by_key(|(node, _)| node.pinned_position);
         let project_ids = store
             .projects
             .iter()
             .map(|project| project.id.as_str())
             .collect::<HashSet<_>>();
-        let projects = project_nodes
-            .iter()
-            .filter_map(|node| {
-                let project_id = node
-                    .ref_id
-                    .as_deref()
-                    .filter(|project_id| project_ids.contains(project_id))?;
-                Some(SidebarShortcutProject {
-                    node_id: node.id.clone(),
-                    expanded: !store
-                        .settings
-                        .sidebar_collapsed_projects
-                        .contains(project_id),
-                    children: rows
-                        .iter()
-                        .filter(|row| {
-                            row.node().pinned_position.is_none()
-                                && row.node().parent_id.as_deref() == Some(node.id.as_str())
-                        })
-                        .map(shortcut_row)
-                        .collect(),
-                })
-            })
-            .collect();
-        let recent = root_rows.iter().map(shortcut_row).collect();
-        visible_sidebar_walk(
-            pinned,
-            store.settings.sidebar_projects_open,
-            projects,
-            store.settings.sidebar_chats_open,
-            recent,
-        )
-    }
-
-    pub(crate) fn refresh_shortcut_rows(&mut self, tabs: &TabSet, cx: &App) {
-        let rows = self.resolved_sidebar_rows_for_tabs(tabs, cx);
-        let mut pinned = rows
-            .iter()
-            .filter(|row| row.node().pinned_position.is_some())
-            .cloned()
-            .collect::<Vec<_>>();
-        pinned.sort_by_key(|row| row.node().pinned_position);
-        let root_rows = self.scope_rows(&rows, None);
-        let project_nodes = self
-            .app_store
-            .read(cx)
+        let projects = store
             .nodes
             .iter()
             .filter(|node| {
@@ -80,15 +36,96 @@ impl Sidebar {
                     && node.pinned_position.is_none()
                     && node.node_type == NodeType::Project
             })
-            .cloned()
+            .filter_map(|node| {
+                let project_id = node
+                    .ref_id
+                    .as_deref()
+                    .filter(|project_id| project_ids.contains(project_id))?;
+                Some(SidebarShortcutProject {
+                    node_id: node.id.clone(),
+                    expanded: include_hidden
+                        || !store
+                            .settings
+                            .sidebar_collapsed_projects
+                            .contains(project_id),
+                    children: rows
+                        .iter()
+                        .filter(|(child, _)| {
+                            child.pinned_position.is_none()
+                                && child.parent_id.as_deref() == Some(node.id.as_str())
+                        })
+                        .map(|(_, row)| row.clone())
+                        .collect(),
+                })
+            })
+            .collect();
+        let recent = rows
+            .iter()
+            .filter(|(node, _)| node.pinned_position.is_none() && node.parent_id.is_none())
+            .map(|(_, row)| row.clone())
+            .collect();
+        visible_sidebar_walk(
+            pinned.into_iter().map(|(_, row)| row.clone()).collect(),
+            include_hidden || store.settings.sidebar_projects_open,
+            projects,
+            include_hidden || store.settings.sidebar_chats_open,
+            recent,
+        )
+    }
+
+    pub(crate) fn tab_close_neighbour(
+        &self,
+        tabs: &TabSet,
+        tab_id: &str,
+        cx: &App,
+    ) -> Option<String> {
+        let resolved = self.resolved_sidebar_rows_for_tabs(tabs, cx);
+        let store = self.app_store.read(cx);
+        let rows = store
+            .nodes
+            .iter()
+            .filter_map(|node| {
+                let row = if let Some(row) = resolved.iter().find(|row| row.node().id == node.id) {
+                    row.shortcut_row(&store.nodes)
+                } else if node.id == tab_id {
+                    SidebarShortcutRow {
+                        node_id: node.id.clone(),
+                        target: SidebarActivationTarget::Tab {
+                            tab_id: node.id.clone(),
+                            session_id: String::new(),
+                        },
+                    }
+                } else {
+                    return None;
+                };
+                Some((node.clone(), row))
+            })
             .collect::<Vec<_>>();
-        let numbered_shortcut_rows = numbered_sidebar_rows(self.shortcut_row_walk(
-            &rows,
-            &pinned,
-            &project_nodes,
-            &root_rows,
-            cx,
-        ));
+        let mut walk = self.shortcut_row_walk(&rows, false, cx);
+        if !walk.iter().any(|row| {
+            matches!(row,
+                crate::surfaces::sidebar_logic::VisibleSidebarRow::Activatable(row)
+                    if row.node_id == tab_id
+            )
+        }) {
+            walk = self.shortcut_row_walk(&rows, true, cx);
+        }
+        crate::surfaces::sidebar_logic::neighbour_tab_id(walk, tab_id)
+    }
+
+    pub(crate) fn refresh_shortcut_rows(&mut self, tabs: &TabSet, cx: &App) {
+        let rows = self
+            .resolved_sidebar_rows_for_tabs(tabs, cx)
+            .iter()
+            .map(|row| {
+                (
+                    row.node().clone(),
+                    row.shortcut_row(&self.app_store.read(cx).nodes),
+                )
+            })
+            .collect::<Vec<_>>();
+        let numbered_shortcut_rows =
+            numbered_sidebar_rows(self.shortcut_row_walk(&rows, false, cx));
         self.tab_index_by_node = numbered_shortcut_rows
             .iter()
             .map(|row| (row.node_id.clone(), row.index))

@@ -48,6 +48,23 @@ fn archive_chat_pane_target(
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TabCloseBehavior {
+    ArchiveChat,
+    CloseTerminal,
+    ArchiveDrawerShells,
+    DeleteEmptyTab,
+}
+
+fn tab_close_behavior(runtime: Option<&str>, has_drawer_shells: bool) -> TabCloseBehavior {
+    match pane_close_behavior(runtime) {
+        PaneCloseBehavior::ArchiveChat => TabCloseBehavior::ArchiveChat,
+        PaneCloseBehavior::CloseTerminal => TabCloseBehavior::CloseTerminal,
+        PaneCloseBehavior::LayoutOnly if has_drawer_shells => TabCloseBehavior::ArchiveDrawerShells,
+        PaneCloseBehavior::LayoutOnly => TabCloseBehavior::DeleteEmptyTab,
+    }
+}
+
 fn fork_confirmation(entry: Option<&DirectSessionEntry>) -> Option<ForkConfirm> {
     entry
         .filter(|entry| {
@@ -2013,11 +2030,14 @@ impl NativeRoot {
             session_id,
         ) {
             Ok(true) => {
-                self.terminal_close_confirm = Some(TerminalCloseConfirm {
-                    target: TerminalCloseTarget::Drawer {
+                TerminalCloseConfirm::open(
+                    &mut self.terminal_close_confirm,
+                    TerminalCloseTarget::Drawer {
                         session_id: session_id.to_owned(),
                     },
-                });
+                    window,
+                    cx,
+                );
                 cx.notify();
             }
             Ok(false) => self.close_drawer_shell(session_id, window, cx),
@@ -2040,12 +2060,15 @@ impl NativeRoot {
             session_id,
         ) {
             Ok(true) => {
-                self.terminal_close_confirm = Some(TerminalCloseConfirm {
-                    target: TerminalCloseTarget::Pane {
+                TerminalCloseConfirm::open(
+                    &mut self.terminal_close_confirm,
+                    TerminalCloseTarget::Pane {
                         pane_id: pane_id.to_owned(),
                         session_id: session_id.to_owned(),
                     },
-                });
+                    window,
+                    cx,
+                );
                 cx.notify();
             }
             Ok(false) => self.close_terminal_pane(pane_id, session_id, window, cx),
@@ -2074,10 +2097,96 @@ impl NativeRoot {
         let Some(layout) = self.tabs.active() else {
             return;
         };
-        self.terminal_close_confirm = Some(TerminalCloseConfirm {
-            target: archive_chat_pane_target(layout, pane_id, session_id),
-        });
+        TerminalCloseConfirm::open(
+            &mut self.terminal_close_confirm,
+            archive_chat_pane_target(layout, pane_id, session_id),
+            window,
+            cx,
+        );
         cx.notify();
+    }
+
+    pub(crate) fn request_close_single_pane_tab(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(layout) = self.tabs.active() else {
+            return;
+        };
+        let tab_id = layout.id.clone();
+        let pane_id = layout.focused_pane_id.clone();
+        let session_id = layout.focused_session_id().map(str::to_owned);
+        let shell_ids = layout.drawer_shells().to_vec();
+        let behavior = tab_close_behavior(
+            session_id
+                .as_deref()
+                .and_then(|id| self.session_entry(id, cx))
+                .map(|entry| entry.agent_runtime.as_str()),
+            !shell_ids.is_empty(),
+        );
+        match (behavior, session_id) {
+            (TabCloseBehavior::ArchiveChat, Some(session_id)) => {
+                self.request_close_chat_pane(&pane_id, &session_id, window, cx);
+            }
+            (TabCloseBehavior::CloseTerminal, Some(session_id)) => {
+                self.request_close_terminal_tab(&tab_id, &session_id, window, cx);
+            }
+            (TabCloseBehavior::ArchiveDrawerShells, _) => {
+                self.request_archive_all(None, shell_ids, ArchiveAllSource::Chat, window, cx);
+            }
+            (TabCloseBehavior::DeleteEmptyTab, _) => {
+                self.prepare_tab_close(&[], cx);
+                let result = runner_backend::ops::node::node_tab_delete(self.core(cx), &tab_id)
+                    .map_err(anyhow::Error::from)
+                    .and_then(|_| self.reload_tabs(cx))
+                    .and_then(|_| self.ensure_active_tab_attached(window, cx));
+                self.pending_tab_close = None;
+                if let Err(error) = result {
+                    self.chat_error = Some(error.to_string());
+                } else {
+                    self.mark_active_tab_viewed(window, cx);
+                    self.focus_active_terminal(window, cx);
+                    self.record_current_runtime_location();
+                }
+                cx.notify();
+            }
+            (TabCloseBehavior::ArchiveChat | TabCloseBehavior::CloseTerminal, None) => {}
+        }
+    }
+
+    pub(crate) fn prepare_tab_close(&mut self, session_ids: &[String], cx: &mut Context<Self>) {
+        let Some(layout) = self.tabs.active().filter(|layout| {
+            layout
+                .all_session_ids()
+                .iter()
+                .all(|id| session_ids.contains(id))
+        }) else {
+            return;
+        };
+        let tab_id = layout.id.clone();
+        let next_tab_id = self
+            .sidebar
+            .read(cx)
+            .tab_close_neighbour(&self.tabs, &tab_id, cx);
+        self.pending_tab_close = Some(PendingTabClose {
+            tab_id,
+            next_tab_id,
+        });
+    }
+
+    pub(crate) fn clear_pending_tab_close(&mut self, attempted: &[String]) {
+        if self.pending_tab_close.as_ref().is_some_and(|close| {
+            self.tabs.tabs().iter().any(|layout| {
+                layout.id == close.tab_id
+                    && layout
+                        .all_session_ids()
+                        .iter()
+                        .any(|id| attempted.contains(id))
+            })
+        }) {
+            self.pending_tab_close = None;
+        }
     }
 
     pub(crate) fn request_close_terminal_tab(
@@ -2097,11 +2206,14 @@ impl NativeRoot {
                 if let Err(error) = self.ensure_active_tab_attached(window, cx) {
                     self.chat_error = Some(error.to_string());
                 }
-                self.terminal_close_confirm = Some(TerminalCloseConfirm {
-                    target: TerminalCloseTarget::Tab {
+                TerminalCloseConfirm::open(
+                    &mut self.terminal_close_confirm,
+                    TerminalCloseTarget::Tab {
                         session_id: session_id.to_owned(),
                     },
-                });
+                    window,
+                    cx,
+                );
                 cx.notify();
             }
             Ok(false) => self.close_terminal_tab(session_id, window, cx),
@@ -2122,6 +2234,7 @@ impl NativeRoot {
         if !self.stopping_sessions.insert(session_id.to_owned()) {
             return;
         }
+        self.prepare_tab_close(&[session_id.to_owned()], cx);
         let core = self.core(cx).clone();
         let target = session_id.to_owned();
         let close_target = target.clone();
@@ -2153,6 +2266,7 @@ impl NativeRoot {
                     }
                     Err(error) => this.error = Some(error),
                 }
+                this.clear_pending_tab_close(std::slice::from_ref(&target));
                 cx.notify();
             });
         })
@@ -2182,13 +2296,16 @@ impl NativeRoot {
                 self.chat_error = Some(error.to_string());
             }
         }
-        self.terminal_close_confirm = Some(TerminalCloseConfirm {
-            target: TerminalCloseTarget::ArchiveAll {
+        TerminalCloseConfirm::open(
+            &mut self.terminal_close_confirm,
+            TerminalCloseTarget::ArchiveAll {
                 session_ids,
                 source,
                 confirmation_body,
             },
-        });
+            window,
+            cx,
+        );
         cx.notify();
     }
 
@@ -2196,6 +2313,7 @@ impl NativeRoot {
         let Some(confirm) = self.terminal_close_confirm.take() else {
             return;
         };
+        confirm.restore_focus(window, cx);
         match confirm.target {
             TerminalCloseTarget::Pane {
                 pane_id,
@@ -2225,8 +2343,10 @@ impl NativeRoot {
         }
     }
 
-    pub(crate) fn cancel_terminal_close(&mut self, cx: &mut Context<Self>) {
-        self.terminal_close_confirm = None;
+    pub(crate) fn cancel_terminal_close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(confirm) = self.terminal_close_confirm.take() {
+            confirm.restore_focus(window, cx);
+        }
         cx.notify();
     }
 
@@ -2316,13 +2436,27 @@ mod tests {
     use super::{
         accept_fork_started, archive_chat_pane_target, begin_fork_submission,
         cancel_fork_confirmation, finish_fork_tracking, fork_confirmation, fork_in_progress,
-        fork_materializing, pane_rename_change, tab_is_terminal, PaneRenameChange,
+        fork_materializing, pane_rename_change, tab_close_behavior, tab_is_terminal,
+        PaneRenameChange, TabCloseBehavior,
     };
     use crate::{PendingPaneClose, TerminalCloseTarget};
     use runner_app::pane_layout::{PaneLayout, SplitOrientation};
     use runner_backend::model::{Runtime, SessionStatus};
     use runner_backend::ops::session::DirectSessionEntry;
     use std::collections::HashMap;
+
+    #[test]
+    fn single_pane_tab_close_dispatches_chat_terminal_and_empty_panes() {
+        for (runtime, drawers, expected) in [
+            (Some("codex"), false, TabCloseBehavior::ArchiveChat),
+            (Some("claude"), true, TabCloseBehavior::ArchiveChat),
+            (Some("shell"), false, TabCloseBehavior::CloseTerminal),
+            (None, true, TabCloseBehavior::ArchiveDrawerShells),
+            (None, false, TabCloseBehavior::DeleteEmptyTab),
+        ] {
+            assert_eq!(tab_close_behavior(runtime, drawers), expected);
+        }
+    }
 
     #[test]
     fn terminal_tabs_require_sessions_and_ignore_empty_panes() {

@@ -320,9 +320,12 @@ impl MissionWorkspace {
                 if let Some(shell) = self.shell.upgrade() {
                     let session_id = session_id.to_owned();
                     shell.update(cx, |shell, shell_cx| {
-                        shell.terminal_close_confirm = Some(TerminalCloseConfirm {
-                            target: TerminalCloseTarget::MissionDrawer { session_id },
-                        });
+                        TerminalCloseConfirm::open(
+                            &mut shell.terminal_close_confirm,
+                            TerminalCloseTarget::MissionDrawer { session_id },
+                            window,
+                            shell_cx,
+                        );
                         shell_cx.notify();
                     });
                 }

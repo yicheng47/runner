@@ -1124,9 +1124,16 @@ impl NativeRoot {
             Rc::new(move |window, cx| {
                 confirm_root.update(cx, |this, cx| this.confirm_terminal_close(window, cx));
             }),
-            Rc::new(move |_, cx| {
-                root.update(cx, |this, cx| this.cancel_terminal_close(cx));
+            Rc::new(move |window, cx| {
+                root.update(cx, |this, cx| this.cancel_terminal_close(window, cx));
             }),
+        )
+        .focus_handle(
+            self.terminal_close_confirm
+                .as_ref()
+                .expect("close confirm is open")
+                .focus
+                .clone(),
         )
         .icon(icon)
         .into_any_element()

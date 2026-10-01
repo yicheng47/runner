@@ -103,6 +103,64 @@ fn seeded_store(
 }
 
 #[test]
+fn close_neighbours_skip_invisible_tabs_but_use_the_closing_empty_tab_as_an_anchor() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut cx = TestAppContext::single();
+    let (pool, store) = seeded_store(&mut cx, temp.path());
+    let conn = pool.get().unwrap();
+    let rows = ["a", "b", "empty", "drawer-only", "c"]
+        .into_iter()
+        .enumerate()
+        .map(|(position, name)| {
+            let mut layout = PaneLayout::single(None, &[]);
+            if name == "drawer-only" {
+                conn.execute("INSERT INTO sessions(id, status, agent_runtime, agent_command) VALUES ('drawer', 'stopped', 'shell', '/bin/sh')", []).unwrap();
+                layout.add_drawer_shell("drawer".into());
+            } else if name != "empty" {
+                conn.execute("INSERT INTO sessions(id, status, agent_runtime, agent_command) VALUES (?1, 'stopped', 'codex', 'codex')", [name]).unwrap();
+                layout.assign_session("p1", name).unwrap();
+            }
+            runner_backend::repo::node::create_tab(
+                &conn, None, name, position as i64, &layout.serialize().unwrap(),
+            ).unwrap()
+        })
+        .collect::<Vec<_>>();
+    drop(conn);
+    store.update(&mut cx, |store, cx| {
+        store.refresh_sessions(cx);
+        store.refresh_nodes(cx).unwrap();
+    });
+    let sidebar = cx.new(|cx| Sidebar::new(WeakEntity::new_invalid(), store.clone(), None, cx));
+    let tabs = cx.update(|cx| TabSet::from_rows(&store.read(cx).nodes));
+    sidebar.update(&mut cx, |sidebar, cx| {
+        let visible = sidebar
+            .resolved_sidebar_rows_for_tabs(&tabs, cx)
+            .into_iter()
+            .filter(|row| matches!(row, SidebarRow::Tab { .. }))
+            .map(|row| row.node().id.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            visible,
+            [rows[0].id.clone(), rows[1].id.clone(), rows[4].id.clone()]
+        );
+        for closing in [&rows[1], &rows[2], &rows[3]] {
+            assert_eq!(
+                sidebar.tab_close_neighbour(&tabs, &closing.id, cx),
+                Some(rows[4].id.clone())
+            );
+        }
+        assert_eq!(
+            sidebar.tab_close_neighbour(&tabs, &rows[4].id, cx),
+            Some(rows[1].id.clone())
+        );
+        sidebar.refresh_shortcut_rows(&tabs, cx);
+        for invisible in [&rows[2], &rows[3]] {
+            assert!(!sidebar.tab_index_by_node.contains_key(&invisible.id));
+        }
+    });
+}
+
+#[test]
 fn mission_rename_commits_when_the_field_loses_focus() {
     let temp = tempfile::tempdir().unwrap();
     let mut cx = TestAppContext::single();

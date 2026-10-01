@@ -403,6 +403,7 @@ pub struct ConfirmDialog {
     confirm_label: SharedString,
     busy_label: SharedString,
     busy: bool,
+    focus_handle: Option<FocusHandle>,
     on_confirm: PressHandler,
     on_cancel: PressHandler,
 }
@@ -469,6 +470,7 @@ impl ConfirmDialog {
             confirm_label: confirm_label.into(),
             busy_label: busy_label.into(),
             busy,
+            focus_handle: None,
             on_confirm,
             on_cancel,
         }
@@ -483,6 +485,11 @@ impl ConfirmDialog {
         self.variant = variant;
         self
     }
+
+    pub fn focus_handle(mut self, focus_handle: FocusHandle) -> Self {
+        self.focus_handle = Some(focus_handle);
+        self
+    }
 }
 
 impl RenderOnce for ConfirmDialog {
@@ -490,6 +497,7 @@ impl RenderOnce for ConfirmDialog {
         let cancel = Rc::clone(&self.on_cancel);
         let cancel_key = Rc::clone(&self.on_cancel);
         let confirm = Rc::clone(&self.on_confirm);
+        let confirm_key = Rc::clone(&self.on_confirm);
         let busy = self.busy;
         let icon_color = match self.variant {
             ButtonVariant::Danger => theme::danger(),
@@ -501,6 +509,9 @@ impl RenderOnce for ConfirmDialog {
             | ButtonVariant::Ghost => theme::text(),
         };
         div()
+            .when_some(self.focus_handle, |dialog, focus| {
+                dialog.track_focus(&focus)
+            })
             .absolute()
             .inset_0()
             .flex()
@@ -515,9 +526,18 @@ impl RenderOnce for ConfirmDialog {
                 }
             })
             .on_key_down(move |event: &KeyDownEvent, window, cx| {
-                if event.keystroke.key == "escape" && !busy {
-                    cx.stop_propagation();
-                    cancel_key(window, cx);
+                if !busy {
+                    match event.keystroke.key.as_str() {
+                        "escape" => {
+                            cx.stop_propagation();
+                            cancel_key(window, cx);
+                        }
+                        "enter" => {
+                            cx.stop_propagation();
+                            confirm_key(window, cx);
+                        }
+                        _ => {}
+                    }
                 }
             })
             .child(

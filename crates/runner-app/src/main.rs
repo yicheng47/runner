@@ -66,7 +66,8 @@ use toast::ToastHost;
 actions!(
     runner_app_ui,
     [
-        CloseWindowOrPane,
+        CloseTab,
+        CloseWindow,
         CheckForUpdates,
         CommandPalette,
         FocusNextPane,
@@ -230,7 +231,8 @@ enum CloseTarget {
     ChatDrawer,
     MissionDrawer,
     Pane,
-    Window,
+    Tab,
+    None,
 }
 
 fn close_target(
@@ -245,12 +247,14 @@ fn close_target(
         CloseTarget::MissionDrawer
     } else if *route == AppRoute::Chat && leaves > 1 {
         CloseTarget::Pane
+    } else if *route == AppRoute::Chat && leaves == 1 {
+        CloseTarget::Tab
     } else {
-        CloseTarget::Window
+        CloseTarget::None
     }
 }
 
-fn close_window_or_pane(this: &mut NativeRoot, window: &mut Window, cx: &mut Context<NativeRoot>) {
+fn close_tab(this: &mut NativeRoot, window: &mut Window, cx: &mut Context<NativeRoot>) {
     let drawer_focused = this.route == AppRoute::Chat
         && this.tabs.active().is_some_and(PaneLayout::drawer_open)
         && this.drawer_focus.contains_focused(window, cx);
@@ -299,11 +303,14 @@ fn close_window_or_pane(this: &mut NativeRoot, window: &mut Window, cx: &mut Con
                 (PaneCloseBehavior::CloseTerminal | PaneCloseBehavior::ArchiveChat, None) => {}
             }
         }
-        CloseTarget::Window => {
-            this.prepare_window_close(window, cx);
-            window.remove_window();
-        }
+        CloseTarget::Tab => this.request_close_single_pane_tab(window, cx),
+        CloseTarget::None => {}
     }
+}
+
+fn close_window(this: &mut NativeRoot, window: &mut Window, cx: &mut Context<NativeRoot>) {
+    this.prepare_window_close(window, cx);
+    window.remove_window();
 }
 
 struct ChatRenameModal {
@@ -349,12 +356,59 @@ enum TerminalCloseTarget {
 
 struct TerminalCloseConfirm {
     target: TerminalCloseTarget,
+    focus: FocusHandle,
+    previous_focus: Option<FocusHandle>,
+}
+
+impl TerminalCloseConfirm {
+    fn open(
+        pending: &mut Option<Self>,
+        target: TerminalCloseTarget,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        if pending.is_some() {
+            return;
+        }
+        let previous_focus = window.focused(cx);
+        let focus = cx.focus_handle();
+        focus.focus(window, cx);
+        *pending = Some(Self {
+            target,
+            focus,
+            previous_focus,
+        });
+    }
+
+    fn restore_focus(&self, window: &mut Window, cx: &mut App) {
+        if let Some(previous_focus) = &self.previous_focus {
+            previous_focus.focus(window, cx);
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct PendingPaneClose {
     tab_id: String,
     pane_id: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct PendingTabClose {
+    tab_id: String,
+    next_tab_id: Option<String>,
+}
+
+impl PendingTabClose {
+    fn apply(&self, tabs: &mut TabSet) -> bool {
+        if tabs.tabs().iter().any(|tab| tab.id == self.tab_id) {
+            return false;
+        }
+        if let Some(next_tab_id) = &self.next_tab_id {
+            tabs.activate(next_tab_id);
+        }
+        true
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -463,6 +517,7 @@ struct NativeRoot {
     _pane_rename_focus_subscription: Option<Subscription>,
     terminal_close_confirm: Option<TerminalCloseConfirm>,
     pending_pane_closes: HashMap<String, PendingPaneClose>,
+    pending_tab_close: Option<PendingTabClose>,
     #[cfg(windows)]
     update_dialog: Option<Entity<surfaces::update_dialog::UpdateDialog>>,
     agent_update: Option<Entity<surfaces::agent_update::AgentUpdateDialog>>,
@@ -845,6 +900,7 @@ impl NativeRoot {
             _pane_rename_focus_subscription: None,
             terminal_close_confirm: None,
             pending_pane_closes: HashMap::new(),
+            pending_tab_close: None,
             #[cfg(windows)]
             update_dialog: None,
             agent_update: None,
@@ -986,6 +1042,13 @@ impl NativeRoot {
 
     fn apply_tab_rows(&mut self, cx: &mut Context<Self>) {
         self.tabs.replace_rows(&self.app_store.read(cx).nodes);
+        if self
+            .pending_tab_close
+            .as_ref()
+            .is_some_and(|close| close.apply(&mut self.tabs))
+        {
+            self.pending_tab_close = None;
+        }
         self.sync_active_project_from_active_tab(cx);
         self.prune_sidebar_collapse_state(cx);
     }
@@ -1378,13 +1441,25 @@ fn run() -> Result<()> {
                 });
             }
         });
-        cx.on_action(|_: &CloseWindowOrPane, cx| {
+        cx.on_action(|_: &CloseTab, cx| {
             if let Some(window) = cx
                 .active_window()
                 .and_then(|window| window.downcast::<NativeRoot>())
             {
                 cx.defer(move |cx| {
-                    if let Err(error) = window.update(cx, close_window_or_pane) {
+                    if let Err(error) = window.update(cx, close_tab) {
+                        eprintln!("Runner close tab failed: {error:#}");
+                    }
+                });
+            }
+        });
+        cx.on_action(|_: &CloseWindow, cx| {
+            if let Some(window) = cx
+                .active_window()
+                .and_then(|window| window.downcast::<NativeRoot>())
+            {
+                cx.defer(move |cx| {
+                    if let Err(error) = window.update(cx, close_window) {
                         eprintln!("Runner close window failed: {error:#}");
                     }
                 });
@@ -1497,7 +1572,8 @@ pub(crate) fn app_menus() -> Vec<Menu> {
                 MenuItem::action("Minimize", Minimize),
                 MenuItem::action("Maximize", Maximize),
                 MenuItem::separator(),
-                MenuItem::action("Close Window", CloseWindowOrPane),
+                MenuItem::action("Close Tab", CloseTab),
+                MenuItem::action("Close Window", CloseWindow),
             ],
         },
     ]
@@ -1689,6 +1765,137 @@ fn main() {
 mod native_root_tests {
     use super::*;
 
+    struct CloseConfirmKeyboardTest {
+        background_focus: FocusHandle,
+        confirm: Option<TerminalCloseConfirm>,
+        confirmed: usize,
+        cancelled: usize,
+        background_keys: usize,
+        busy: bool,
+    }
+
+    impl CloseConfirmKeyboardTest {
+        fn dismiss(&mut self, confirmed: bool, window: &mut Window, cx: &mut Context<Self>) {
+            self.confirm.take().unwrap().restore_focus(window, cx);
+            if confirmed {
+                self.confirmed += 1;
+            } else {
+                self.cancelled += 1;
+            }
+            cx.notify();
+        }
+    }
+
+    impl Render for CloseConfirmKeyboardTest {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let dialog = self.confirm.as_ref().map(|confirm| {
+                let root = cx.entity();
+                let confirm_root = root.clone();
+                ConfirmDialog::new(
+                    "Archive chat?",
+                    "Chat is still running.",
+                    "Archive chat",
+                    "Archiving…",
+                    self.busy,
+                    Rc::new(move |window, cx| {
+                        confirm_root.update(cx, |this, cx| this.dismiss(true, window, cx));
+                    }),
+                    Rc::new(move |window, cx| {
+                        root.update(cx, |this, cx| this.dismiss(false, window, cx));
+                    }),
+                )
+                .focus_handle(confirm.focus.clone())
+            });
+            div()
+                .size_full()
+                .child(
+                    div()
+                        .track_focus(&self.background_focus)
+                        .on_key_down(cx.listener(|this, _: &KeyDownEvent, _, cx| {
+                            this.background_keys += 1;
+                            cx.stop_propagation();
+                        })),
+                )
+                .children(dialog)
+        }
+    }
+
+    #[test]
+    fn close_confirm_enter_submits_escape_cancels_and_restores_the_background_focus() {
+        for (key, busy) in [
+            ("enter", false),
+            ("escape", false),
+            ("enter", true),
+            ("escape", true),
+        ] {
+            let mut cx = gpui::TestAppContext::single();
+            let host = cx.add_window(|window, cx| {
+                let background_focus = cx.focus_handle();
+                background_focus.focus(window, cx);
+                CloseConfirmKeyboardTest {
+                    background_focus,
+                    confirm: None,
+                    confirmed: 0,
+                    cancelled: 0,
+                    background_keys: 0,
+                    busy,
+                }
+            });
+            cx.run_until_parked();
+            host.update(&mut cx, |this, window, cx| {
+                TerminalCloseConfirm::open(
+                    &mut this.confirm,
+                    TerminalCloseTarget::ArchiveChatPane {
+                        session_id: "chat".into(),
+                        close: PendingPaneClose {
+                            tab_id: "tab".into(),
+                            pane_id: "p1".into(),
+                        },
+                    },
+                    window,
+                    cx,
+                );
+                assert!(this.confirm.as_ref().unwrap().focus.is_focused(window));
+                let original_focus = this.confirm.as_ref().unwrap().focus.clone();
+                TerminalCloseConfirm::open(
+                    &mut this.confirm,
+                    TerminalCloseTarget::ArchiveChatPane {
+                        session_id: "chat".into(),
+                        close: PendingPaneClose {
+                            tab_id: "tab".into(),
+                            pane_id: "p1".into(),
+                        },
+                    },
+                    window,
+                    cx,
+                );
+                assert!(original_focus.is_focused(window));
+                cx.notify();
+            })
+            .unwrap();
+            cx.run_until_parked();
+            let mut visual = gpui::VisualTestContext::from_window(host.into(), &cx);
+            visual.simulate_keystrokes(key);
+            cx.run_until_parked();
+            host.update(&mut cx, |this, window, _| {
+                assert_eq!(this.confirmed, usize::from(!busy && key == "enter"));
+                assert_eq!(this.cancelled, usize::from(!busy && key == "escape"));
+                assert_eq!(this.background_keys, 0);
+                assert_eq!(this.confirm.is_some(), busy);
+                if !busy {
+                    assert!(this.background_focus.is_focused(window));
+                }
+            })
+            .unwrap();
+            if !busy {
+                visual.simulate_keystrokes("a");
+                cx.run_until_parked();
+                host.update(&mut cx, |this, _, _| assert_eq!(this.background_keys, 1))
+                    .unwrap();
+            }
+        }
+    }
+
     #[test]
     fn reopen_before_startup_ignores_missing_globals() {
         let cx = gpui::TestAppContext::single();
@@ -1699,7 +1906,7 @@ mod native_root_tests {
     }
 
     #[test]
-    fn cmd_w_hides_focused_drawers_and_only_closes_a_split_chat_pane() {
+    fn close_tab_hides_focused_drawers_then_closes_panes_or_tabs() {
         assert_eq!(
             close_target(&AppRoute::Chat, 2, true, false),
             CloseTarget::ChatDrawer
@@ -1710,7 +1917,7 @@ mod native_root_tests {
         );
         assert_eq!(
             close_target(&AppRoute::Mission("mission".into()), 0, false, false),
-            CloseTarget::Window
+            CloseTarget::None
         );
         assert_eq!(
             close_target(&AppRoute::Chat, 2, false, false),
@@ -1718,20 +1925,86 @@ mod native_root_tests {
         );
         assert_eq!(
             close_target(&AppRoute::Chat, 1, false, false),
-            CloseTarget::Window
+            CloseTarget::Tab
         );
         assert_eq!(
             close_target(&AppRoute::Roles, 0, false, false),
-            CloseTarget::Window
+            CloseTarget::None
         );
         assert_eq!(
             close_target(&AppRoute::Crews, 0, false, false),
-            CloseTarget::Window
+            CloseTarget::None
         );
-        assert_eq!(
-            close_target(&AppRoute::Settings, 0, false, false),
-            CloseTarget::Window
-        );
+        for route in [
+            AppRoute::Chat,
+            AppRoute::NewRole,
+            AppRoute::RoleDetail("role".into()),
+            AppRoute::NewCrew,
+            AppRoute::CrewEditor("crew".into()),
+            AppRoute::ArchivedChat,
+            AppRoute::Settings,
+        ] {
+            assert_eq!(close_target(&route, 0, false, false), CloseTarget::None);
+        }
+        for route in [
+            AppRoute::Roles,
+            AppRoute::Crews,
+            AppRoute::Settings,
+            AppRoute::ArchivedChat,
+            AppRoute::Mission("mission".into()),
+        ] {
+            for leaves in [0, 1, 2] {
+                assert_eq!(close_target(&route, leaves, true, false), CloseTarget::None);
+            }
+        }
+    }
+
+    #[test]
+    fn tab_close_selection_survives_async_reload_for_middle_last_and_only_tabs() {
+        use runner_backend::repo::node::{NodeRow, NodeType};
+
+        let rows = ["first", "middle", "last"].map(|id| NodeRow {
+            id: id.into(),
+            parent_id: None,
+            position: 0,
+            node_type: NodeType::Tab,
+            name: None,
+            ref_id: None,
+            layout: Some(PaneLayout::single(None, &[]).serialize().unwrap()),
+            pinned_position: None,
+            last_completed_at: None,
+            last_viewed_at: None,
+            created_at: String::new(),
+        });
+        for (closing, next) in [("middle", Some("last")), ("last", Some("middle"))] {
+            let mut tabs = TabSet::from_rows(&rows);
+            tabs.activate(closing);
+            let pending = PendingTabClose {
+                tab_id: closing.into(),
+                next_tab_id: next.map(str::to_owned),
+            };
+            tabs.replace_rows(&rows);
+            assert!(!pending.apply(&mut tabs));
+            assert_eq!(tabs.active_tab_id(), Some(closing));
+            let remaining = rows
+                .iter()
+                .filter(|row| row.id != closing)
+                .cloned()
+                .collect::<Vec<_>>();
+            tabs.replace_rows(&remaining);
+            assert!(pending.apply(&mut tabs));
+            assert_eq!(tabs.active_tab_id(), next);
+            tabs.replace_rows(&remaining);
+            assert_eq!(tabs.active_tab_id(), next);
+        }
+        let mut tabs = TabSet::from_rows(&rows[..1]);
+        let pending = PendingTabClose {
+            tab_id: "first".into(),
+            next_tab_id: None,
+        };
+        tabs.replace_rows(&[]);
+        assert!(pending.apply(&mut tabs));
+        assert!(tabs.active().is_none());
     }
 
     #[test]

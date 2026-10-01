@@ -117,6 +117,23 @@ pub fn node_tab_upsert(state: &AppCore, input: NodeTabUpsertInput) -> Result<Nod
     Ok(row)
 }
 
+pub fn node_tab_delete(state: &AppCore, node_id: &str) -> Result<()> {
+    let mut conn = state.db.get()?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let node = repo::node::get(&tx, node_id)?
+        .ok_or_else(|| Error::msg(format!("node not found: {node_id}")))?;
+    if node.node_type != NodeType::Tab {
+        return Err(Error::msg(format!("node {node_id} is not a tab")));
+    }
+    if !repo::node::session_ids(&node).is_empty() {
+        return Err(Error::msg(format!("tab {node_id} still has sessions")));
+    }
+    repo::node::delete(&tx, node_id)?;
+    tx.commit()?;
+    emit_layout_changed(state);
+    Ok(())
+}
+
 pub fn node_mission_layout_set(state: &AppCore, node_id: &str, layout: String) -> Result<NodeRow> {
     validate_layout(&layout)?;
     let mut conn = state.db.get()?;
@@ -622,6 +639,42 @@ mod tests {
             .build()
             .unwrap()
             .block_on(future)
+    }
+
+    #[test]
+    fn tab_delete_removes_an_empty_tab_and_emits_layout_changed() {
+        let state = test_core();
+        let tab = create_tab(&state, &[]);
+        let mut events = state.events.subscribe();
+        node_tab_delete(&state, &tab.id).unwrap();
+        assert!(repo::node::get(&state.db.get().unwrap(), &tab.id)
+            .unwrap()
+            .is_none());
+        assert_eq!(events.try_recv().unwrap().name, LAYOUT_CHANGED_EVENT);
+        assert!(events.try_recv().is_err());
+    }
+
+    #[test]
+    fn tab_delete_refuses_project_mission_and_occupied_tab_nodes() {
+        let state = test_core();
+        seed_mission(&state, "mission", None);
+        let (project, mission) = {
+            let conn = state.db.get().unwrap();
+            let project = repo::project::create(&conn, "Project", "/tmp/project").unwrap();
+            (
+                repo::node::ensure_project_node(&conn, &project.id).unwrap(),
+                repo::node::ensure_mission_node(&conn, "mission", None).unwrap(),
+            )
+        };
+        let tab = create_tab(&state, &["chat"]);
+        let mut events = state.events.subscribe();
+        for node in [project, mission, tab] {
+            assert!(node_tab_delete(&state, &node.id).is_err());
+            assert!(repo::node::get(&state.db.get().unwrap(), &node.id)
+                .unwrap()
+                .is_some());
+        }
+        assert!(events.try_recv().is_err());
     }
 
     #[test]

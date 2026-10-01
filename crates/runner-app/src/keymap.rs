@@ -7,7 +7,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use crate::{Hide, HideOthers, Quit};
 
 use crate::{
-    CloseWindowOrPane, CommandPalette, Copy, FocusNextPane, FocusPreviousPane, Minimize,
+    CloseTab, CloseWindow, CommandPalette, Copy, FocusNextPane, FocusPreviousPane, Minimize,
     MissionTabNext, MissionTabPrevious, NavigateNextPage, NavigatePreviousPage, NewTab, NewWindow,
     OpenSettings, Paste, ResumeFocusedSession, SelectTab1, SelectTab2, SelectTab3, SelectTab4,
     SelectTab5, SelectTab6, SelectTab7, SelectTab8, SelectTab9, SplitPaneDown, SplitPaneRight,
@@ -99,10 +99,11 @@ fn platform_default(macos: &str) -> String {
 
 #[cfg(any(windows, test))]
 fn windows_default(macos: &str) -> String {
-    if macos == "ctrl-cmd-f" {
-        "f11".into()
-    } else {
-        macos.replace("cmd-", "ctrl-")
+    match macos {
+        "ctrl-cmd-f" => "f11".into(),
+        "cmd-w" => "ctrl-shift-w".into(),
+        "shift-cmd-w" => "alt-f4".into(),
+        _ => macos.replace("cmd-", "ctrl-"),
     }
 }
 
@@ -318,10 +319,19 @@ pub(crate) fn entries() -> &'static [KeymapEntry] {
             },
             KeymapEntry {
                 id: "close-pane",
-                title: "Close pane",
-                description: "Close the focused pane while split; otherwise close the window.",
-                scope: KeymapScope::ChatSplit,
+                title: "Close tab",
+                description:
+                    "Hide the focused drawer, close the focused split pane, or close the chat tab.",
+                scope: KeymapScope::Global,
                 default: default_combo("cmd-w", None, false),
+                fixed: true,
+            },
+            KeymapEntry {
+                id: "system-close-window",
+                title: "Close window",
+                description: "Close the window, saving its layout and keeping chats running.",
+                scope: KeymapScope::Global,
+                default: default_combo("shift-cmd-w", None, false),
                 fixed: true,
             },
             KeymapEntry {
@@ -412,14 +422,6 @@ fn reserved_entries() -> &'static [KeymapEntry] {
                 description: "",
                 scope: KeymapScope::Global,
                 default: default_combo("cmd-m", None, false),
-                fixed: true,
-            },
-            KeymapEntry {
-                id: "system-close-window",
-                title: "Close window",
-                description: "",
-                scope: KeymapScope::Global,
-                default: default_combo("cmd-w", None, false),
                 fixed: true,
             },
             KeymapEntry {
@@ -551,10 +553,9 @@ pub(crate) fn find_conflict(
                 && binding.is_some_and(|binding| combos_collide(&binding, candidate))
         })
         .or_else(|| {
-            reserved_entries().iter().find(|other| {
-                !(target.scope == KeymapScope::ChatSplit && other.id == "system-close-window")
-                    && combos_collide(&other.default, candidate)
-            })
+            reserved_entries()
+                .iter()
+                .find(|other| combos_collide(&other.default, candidate))
         })
 }
 
@@ -949,12 +950,15 @@ pub(crate) fn install_bindings(
         KeyBinding::new(&platform_default("cmd-m"), Minimize, None),
         KeyBinding::new(&platform_default("ctrl-cmd-f"), ToggleFullscreen, None),
     ]);
-    if effective_binding("close-pane", overrides).is_some() {
-        cx.bind_keys([KeyBinding::new(
-            &platform_default("cmd-w"),
-            CloseWindowOrPane,
-            None,
-        )]);
+    if let Some(combo) = effective_binding("close-pane", overrides) {
+        for binding in binding_strings(&combo) {
+            cx.bind_keys([KeyBinding::new(&binding, CloseTab, None)]);
+        }
+    }
+    if let Some(combo) = effective_binding("system-close-window", overrides) {
+        for binding in binding_strings(&combo) {
+            cx.bind_keys([KeyBinding::new(&binding, CloseWindow, None)]);
+        }
     }
     if effective_binding("new-window", overrides).is_some() {
         cx.bind_keys([KeyBinding::new(
@@ -1020,10 +1024,16 @@ mod tests {
     #[test]
     #[cfg(not(windows))]
     fn registry_matches_the_shipped_defaults_and_fixed_entries() {
-        assert_eq!(entries().len(), 29);
-        assert_eq!(entries().iter().filter(|entry| entry.fixed).count(), 11);
+        assert_eq!(entries().len(), 30);
+        assert_eq!(entries().iter().filter(|entry| entry.fixed).count(), 12);
         assert!(entry("new-window").unwrap().fixed);
         assert!(entry("close-pane").unwrap().fixed);
+        assert!(entry("system-close-window").unwrap().fixed);
+        assert_eq!(format_combo(&entry("close-pane").unwrap().default), "⌘W");
+        assert_eq!(
+            format_combo(&entry("system-close-window").unwrap().default),
+            "⇧⌘W"
+        );
         assert!(entry("copy").is_none());
         assert_eq!(format_combo(&entry("new-window").unwrap().default), "⇧⌘N");
         assert_eq!(
@@ -1179,7 +1189,7 @@ mod tests {
     }
 
     #[test]
-    fn conflicts_include_system_owned_shortcuts_without_blocking_split_close() {
+    fn conflicts_include_system_owned_shortcuts_and_distinct_close_keys() {
         let overrides = KeymapOverrides::new();
         let reserved = reserved_entries()
             .iter()
@@ -1197,7 +1207,41 @@ mod tests {
                 .id,
             "copy"
         );
-        assert!(find_conflict(&combo_for("KeyW", false), "close-pane", &overrides).is_none());
+        for id in ["close-pane", "system-close-window"] {
+            let close = entry(id).unwrap();
+            assert!(find_conflict(&close.default, id, &overrides).is_none());
+            assert_eq!(
+                find_conflict(&close.default, "new-chat", &overrides)
+                    .unwrap()
+                    .id,
+                id
+            );
+        }
+    }
+
+    #[test]
+    fn installed_close_keys_match_fixed_defaults_without_a_focus_context() {
+        let cx = gpui::TestAppContext::single();
+        cx.update(|cx| {
+            install_bindings(cx, &KeymapOverrides::new(), false);
+            let keymap = cx.key_bindings();
+            let keymap = keymap.borrow();
+            for (id, action) in [
+                ("close-pane", &CloseTab as &dyn gpui::Action),
+                ("system-close-window", &CloseWindow as &dyn gpui::Action),
+            ] {
+                let bindings = keymap.bindings_for_action(action).collect::<Vec<_>>();
+                assert_eq!(bindings.len(), 1);
+                assert!(bindings[0].predicate().is_none());
+                let key =
+                    Keystroke::parse(&binding_strings(&entry(id).unwrap().default)[0]).unwrap();
+                assert_eq!(bindings[0].match_keystrokes(&[key]), Some(false));
+            }
+            #[cfg(windows)]
+            assert!(keymap
+                .all_bindings_for_input(&[Keystroke::parse("ctrl-w").unwrap()])
+                .is_empty());
+        });
     }
 
     #[test]
@@ -1285,7 +1329,7 @@ mod tests {
     fn registry_defaults_compile_to_gpui_runtime_keystrokes() {
         type ExpectedBinding<'a> = (&'a str, &'a str, bool, bool, bool, bool);
         type ExpectedEntry<'a> = (&'a str, &'a [ExpectedBinding<'a>]);
-        let expected: [ExpectedEntry<'_>; 29] = [
+        let expected: [ExpectedEntry<'_>; 30] = [
             (
                 "new-window",
                 &[("shift-cmd-n", "n", true, false, false, true)],
@@ -1344,6 +1388,10 @@ mod tests {
                 &[("shift-cmd-d", "d", true, false, false, true)],
             ),
             ("close-pane", &[("cmd-w", "w", true, false, false, false)]),
+            (
+                "system-close-window",
+                &[("shift-cmd-w", "w", true, false, false, true)],
+            ),
             (
                 "stop-session",
                 &[("shift-cmd-x", "x", true, false, false, true)],
@@ -1518,6 +1566,10 @@ mod tests {
                 key_combo("KeyW", true, false, false, false, None, false),
             ),
             (
+                "system-close-window",
+                key_combo("KeyW", true, false, false, true, None, false),
+            ),
+            (
                 "stop-session",
                 key_combo("KeyX", true, false, false, true, None, false),
             ),
@@ -1550,10 +1602,6 @@ mod tests {
                 key_combo("KeyM", true, false, false, false, None, false),
             ),
             (
-                "system-close-window",
-                key_combo("KeyW", true, false, false, false, None, false),
-            ),
-            (
                 "system-toggle-fullscreen",
                 key_combo("KeyF", true, true, false, false, None, false),
             ),
@@ -1581,6 +1629,8 @@ mod tests {
     fn windows_defaults_replace_command_with_control() {
         for (macos, windows) in [
             ("cmd-n", "ctrl-n"),
+            ("cmd-w", "ctrl-shift-w"),
+            ("shift-cmd-w", "alt-f4"),
             ("shift-cmd-n", "shift-ctrl-n"),
             ("cmd-d", "ctrl-d"),
             ("shift-cmd-d", "shift-ctrl-d"),
@@ -1616,6 +1666,7 @@ mod tests {
         }
         for entry in entries().iter().chain(reserved_entries()) {
             for binding in binding_strings(&entry.default) {
+                assert_ne!(windows_default(&binding), "ctrl-w", "{}", entry.id);
                 let windows = Keystroke::parse(&windows_default(&binding)).unwrap();
                 assert!(!windows.modifiers.platform, "{}", entry.id);
                 assert!(code_from_gpui_key(&windows.key).is_some(), "{}", entry.id);
@@ -1647,10 +1698,6 @@ mod tests {
             .collect::<Vec<_>>();
         for (index, (left, left_combo)) in defaults.iter().enumerate() {
             for (right, right_combo) in &defaults[index + 1..] {
-                if matches!((left.id, right.id), ("close-pane", "system-close-window")) {
-                    assert!(combos_collide(left_combo, right_combo));
-                    continue;
-                }
                 assert!(
                     !left.scope.overlaps(right.scope) || !combos_collide(left_combo, right_combo),
                     "{} collides with {}",
@@ -1713,7 +1760,8 @@ mod tests {
             ("toggle-sidebar", "Ctrl+S"),
             ("split-pane-right", "Ctrl+D"),
             ("split-pane-down", "Ctrl+Shift+D"),
-            ("close-pane", "Ctrl+W"),
+            ("close-pane", "Ctrl+Shift+W"),
+            ("system-close-window", "Alt+F4"),
             ("stop-session", "Ctrl+Shift+X"),
             ("resume-session", "Ctrl+Shift+R"),
             ("pane-previous", "Ctrl+["),
