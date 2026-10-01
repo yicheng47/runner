@@ -135,6 +135,28 @@ fn temporary_path(script: &Path) -> PathBuf {
     path.into()
 }
 
+const WATCH_START_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// notify's Windows watcher waits for its own thread to acknowledge a watch with no
+/// timeout. A start that stalls must fail, so the session runs without hook status
+/// instead of hanging (#774).
+fn start_within<T: Send + 'static>(
+    timeout: Duration,
+    start: impl FnOnce() -> Result<T> + Send + 'static,
+) -> Result<T> {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .name("agent status watch".into())
+        .spawn(move || {
+            let _ = sender.send(start());
+        })?;
+    receiver.recv_timeout(timeout).map_err(|error| {
+        Error::msg(format!(
+            "agent status watcher did not start within {timeout:?}: {error}"
+        ))
+    })?
+}
+
 struct StatusFiles {
     path: PathBuf,
     owned_script: Option<PathBuf>,
@@ -246,18 +268,22 @@ impl HookFeed {
             .open(path)?;
         let dirty = Arc::new(AtomicBool::new(true));
         let dirty_for_watch = Arc::clone(&dirty);
-        let mut watcher = notify::recommended_watcher(move |event| {
-            if let Err(error) = event {
-                log::warn!("agent status notify: {error}");
-            }
-            dirty_for_watch.store(true, Ordering::Release);
-        })
-        .map_err(|error| Error::msg(format!("agent status watcher: {error}")))?;
-        watcher
-            .watch(path, RecursiveMode::NonRecursive)
-            .map_err(|error| {
-                Error::msg(format!("watch agent status {}: {error}", path.display()))
-            })?;
+        let watched = path.to_owned();
+        let watcher = start_within(WATCH_START_TIMEOUT, move || {
+            let mut watcher = notify::recommended_watcher(move |event| {
+                if let Err(error) = event {
+                    log::warn!("agent status notify: {error}");
+                }
+                dirty_for_watch.store(true, Ordering::Release);
+            })
+            .map_err(|error| Error::msg(format!("agent status watcher: {error}")))?;
+            watcher
+                .watch(&watched, RecursiveMode::NonRecursive)
+                .map_err(|error| {
+                    Error::msg(format!("watch agent status {}: {error}", watched.display()))
+                })?;
+            Ok(watcher)
+        })?;
         Ok(Self {
             path: path.to_owned(),
             reporter_path,
@@ -385,6 +411,24 @@ pub(crate) fn run_powershell(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_stalled_watcher_start_fails_instead_of_hanging() {
+        let (release, stalled) = std::sync::mpsc::channel::<()>();
+        let started = Instant::now();
+        let error = start_within(Duration::from_millis(50), move || {
+            let _ = stalled.recv();
+            Ok(())
+        })
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("did not start within"),
+            "{error}"
+        );
+        assert!(started.elapsed() < Duration::from_secs(5));
+        drop(release);
+        assert_eq!(start_within(Duration::from_secs(5), || Ok(7)).unwrap(), 7);
+    }
 
     #[test]
     fn hooks_are_gated_per_runtime() {
