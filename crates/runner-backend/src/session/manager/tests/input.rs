@@ -86,6 +86,12 @@ fn local_input_byte_classes_remain_the_unobserved_fallback() {
     );
     for protocol in [
         b"\x1b[A".as_slice(),
+        b"\x1b",
+        b"\x1b[27u",
+        b"\x1bd",
+        b"\x1b[100;3u",
+        b"\x1b[13;2u",
+        b"\x1b[27u\x1b[27u",
         b"\x1b]10;rgb:dcdc/dcdc/e0e0\x1b\\",
         b"\x1b]11;rgb:1515/1616/1b1b\x1b\\",
     ] {
@@ -95,10 +101,15 @@ fn local_input_byte_classes_remain_the_unobserved_fallback() {
             "terminal protocol traffic must not mark local input pending"
         );
     }
-    assert_eq!(
-        classify_local_input(b"\x1b[200~pasted text\x1b[201~"),
-        Some(LocalInputClass::SetPending)
-    );
+    for paste in [
+        b"\x1b[200~pasted text\x1b[201~".as_slice(),
+        b"\x1b[200~\x03\x1b\x1b[27u\x1b[99;5u\x1b[201~",
+    ] {
+        assert_eq!(
+            classify_local_input(paste),
+            Some(LocalInputClass::SetPending)
+        );
+    }
     assert_eq!(
         classify_local_input(b"\x16"),
         Some(LocalInputClass::SetPending)
@@ -107,10 +118,12 @@ fn local_input_byte_classes_remain_the_unobserved_fallback() {
         classify_local_input(b"\r"),
         Some(LocalInputClass::ClearPending)
     );
-    assert_eq!(
-        classify_local_input(b"\x03"),
-        Some(LocalInputClass::ClearPending)
-    );
+    for interrupt in [b"\x03".as_slice(), b"\x1b[99;5u"] {
+        assert_eq!(
+            classify_local_input(interrupt),
+            Some(LocalInputClass::ClearPending)
+        );
+    }
 
     let now = Instant::now();
     let mut state = SessionState::default();
@@ -128,9 +141,17 @@ fn local_input_byte_classes_remain_the_unobserved_fallback() {
     assert_eq!(state.last_local_input_at, Some(now));
 
     state.local_input_pending = true;
-    update_local_input_state(&mut state, classify_local_input(b"\x03"), now);
-    assert!(!state.local_input_pending);
-    assert!(state.last_local_input_at.is_none());
+    for escape in [b"\x1b".as_slice(), b"\x1b[27u"] {
+        update_local_input_state(&mut state, classify_local_input(escape), now);
+        assert!(state.local_input_pending);
+        assert_eq!(state.last_local_input_at, Some(now));
+    }
+    for interrupt in [b"\x03".as_slice(), b"\x1b[99;5u"] {
+        state.local_input_pending = true;
+        update_local_input_state(&mut state, classify_local_input(interrupt), now);
+        assert!(!state.local_input_pending);
+        assert!(state.last_local_input_at.is_none());
+    }
 }
 
 #[test]

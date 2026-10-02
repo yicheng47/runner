@@ -399,7 +399,11 @@ impl ClaudeObservation {
                         == Some("user-rejected")
                     {
                         self.cancelled_tool_result = true;
-                        self.value.activity = Activity::Unavailable;
+                        self.value.activity = if self.value.needs_you() {
+                            Activity::Unavailable
+                        } else {
+                            Activity::Ready
+                        };
                         self.value.outcome = Some(TurnOutcome::Interrupted);
                     }
                     self.update_detail();
@@ -783,7 +787,7 @@ mod tests {
             .drain_observations(|value, _| observations.push(value))
             .unwrap();
         assert!(!observations.last().unwrap().needs_you());
-        assert_eq!(observations.last().unwrap().activity, Activity::Unavailable);
+        assert_eq!(observations.last().unwrap().activity, Activity::Ready);
         writeln!(
             transcript_file,
             "{}",
@@ -826,6 +830,70 @@ mod tests {
         assert!(!observations
             .iter()
             .any(|value| value.outcome == Some(TurnOutcome::Completed)));
+    }
+
+    #[test]
+    fn rejected_bash_tool_without_turn_duration_settles_and_preserves_other_waits() {
+        for other_wait in [false, true] {
+            let mut model = ClaudeObservation::default();
+            observe(
+                &mut model,
+                "SessionStart",
+                serde_json::json!({"session_id":"main"}),
+            );
+            observe(
+                &mut model,
+                "UserPromptSubmit",
+                serde_json::json!({"prompt_id":"turn"}),
+            );
+            observe(
+                &mut model,
+                "PreToolUse",
+                serde_json::json!({"tool_name":"Bash","tool_use_id":"wait","tool_input":{"command":"sleep 30"}}),
+            );
+            if other_wait {
+                observe(
+                    &mut model,
+                    "PreToolUse",
+                    serde_json::json!({"tool_name":"AskUserQuestion","tool_use_id":"question"}),
+                );
+            }
+            let value = model.observe_transcript(&serde_json::json!({
+                "type":"user","sessionId":"main","promptId":"turn","isSidechain":false,
+                "toolDenialKind":"user-rejected",
+                "message":{"content":[{"type":"tool_result","tool_use_id":"wait","is_error":true}]},
+            })).unwrap();
+            assert_eq!(
+                value.activity,
+                if other_wait {
+                    Activity::Unavailable
+                } else {
+                    Activity::Ready
+                }
+            );
+            assert_eq!(value.outcome, Some(TurnOutcome::Interrupted));
+            assert_eq!(value.needs_you(), other_wait);
+            assert_eq!(value.detail, None);
+            if other_wait {
+                assert_eq!(value.interactions[0].owners, ["question"]);
+            }
+            observe(
+                &mut model,
+                "UserPromptSubmit",
+                serde_json::json!({"prompt_id":"recovery"}),
+            );
+            assert_eq!(model.value.activity, Activity::Working);
+            assert_eq!(model.value.outcome, None);
+            let recovered = observe(
+                &mut model,
+                "Stop",
+                serde_json::json!({"prompt_id":"recovery"}),
+            )
+            .unwrap();
+            assert_eq!(recovered.activity, Activity::Ready);
+            assert_eq!(recovered.outcome, Some(TurnOutcome::Completed));
+            assert!(!recovered.needs_you());
+        }
     }
 
     #[test]

@@ -1,4 +1,6 @@
 use super::*;
+use crate::runtimes::claude_code::claude_status::CTRL_C_INTERRUPT;
+use crate::session::pty_runtime::interrupt_key;
 
 // Match alacritty's read budget while bounding a single terminal-lock hold.
 const MAX_OUTPUT_BURST: usize = 1024 * 1024;
@@ -14,7 +16,7 @@ pub(crate) fn classify_local_input(bytes: &[u8]) -> Option<LocalInputClass> {
     if bytes.is_empty() {
         return None;
     }
-    if bytes == b"\r" || bytes == b"\x03" {
+    if bytes == b"\r" || interrupt_key(bytes) == Some(CTRL_C_INTERRUPT) {
         return Some(LocalInputClass::ClearPending);
     }
     if bytes == b"\x16" || bytes.starts_with(b"\x1b[200~") {

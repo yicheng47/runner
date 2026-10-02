@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
@@ -169,6 +169,7 @@ struct CopilotObservation {
     compacting: bool,
     compaction_resume: Option<CompactionResume>,
     permission_owners: Vec<String>,
+    completed_permissions: BTreeSet<String>,
     transcript_calls: BTreeMap<String, String>,
     next_tool: u64,
     next_interaction: u64,
@@ -258,6 +259,9 @@ impl CopilotObservation {
                     report.tool_input.as_ref(),
                     true,
                 )?;
+                if self.completed_permissions.contains(&owner) {
+                    return None;
+                }
                 if !self.permission_owners.contains(&owner) {
                     self.permission_owners.push(owner);
                 }
@@ -384,6 +388,24 @@ impl CopilotObservation {
                 }
                 self.update_detail();
             }
+            Some("permission.completed") => {
+                let call_id = data.get("toolCallId")?.as_str()?;
+                let owner = self.transcript_calls.get(call_id)?;
+                self.completed_permissions.insert(owner.clone());
+                self.permission_owners
+                    .retain(|candidate| candidate != owner);
+                self.value.interactions.retain_mut(|wait| {
+                    if wait.reason != WaitReason::Approval {
+                        return true;
+                    }
+                    wait.owners.retain(|candidate| candidate != owner);
+                    !wait.owners.is_empty()
+                });
+                if self.value.outcome == Some(TurnOutcome::Interrupted) && !self.value.needs_you() {
+                    self.value.activity = Activity::Ready;
+                }
+                self.update_detail();
+            }
             _ => return None,
         }
         (before != self.value).then(|| self.value.clone())
@@ -422,6 +444,7 @@ impl CopilotObservation {
         let tool = self.tools.remove(index);
         self.permission_owners
             .retain(|candidate| candidate != owner);
+        self.completed_permissions.remove(owner);
         self.transcript_calls
             .retain(|_, candidate| candidate != owner);
         Some(tool)
@@ -469,6 +492,7 @@ impl CopilotObservation {
         self.compacting = false;
         self.compaction_resume = None;
         self.permission_owners.clear();
+        self.completed_permissions.clear();
         self.transcript_calls.clear();
         self.value.detail = None;
     }
@@ -1316,6 +1340,174 @@ mod tests {
             Some(TurnOutcome::Interrupted)
         );
         assert!(!watcher.observation.value.needs_you());
+    }
+
+    #[test]
+    fn approved_wait_cancellation_without_tool_completion_closes_its_approval() {
+        for (completion_before_hooks, completion_before_escape) in
+            [(false, true), (false, false), (true, true)]
+        {
+            let root = tempfile::tempdir().unwrap();
+            install_plugin(root.path()).unwrap();
+            let home = root.path().join("copilot-home");
+            let transcript = home.join("session-state/main/events.jsonl");
+            fs::create_dir_all(transcript.parent().unwrap()).unwrap();
+            // Sanitised #777 sleep-60 records: permission completes, but the tool never does.
+            let input =
+                json!({"command":"sleep 60","description":"Bounded wait","initial_wait":70});
+            fs::write(&transcript, format!("{}\n", json!({
+                "type":"tool.execution_start",
+                "data":{"toolCallId":"wait-call","toolName":"bash","arguments":input,"turnId":"0"},
+            }))).unwrap();
+            let path = crate::session::hook_feed::status_path(root.path(), "session");
+            let mut watcher = CopilotStatusWatcher::start(&path, "current".into(), home).unwrap();
+            let mut feed = OpenOptions::new().append(true).open(&path).unwrap();
+            let approval = [
+                json!({"hook_event_name":"PermissionRequest","session_id":"main","tool_name":"bash","tool_input":{"command":"sleep 60"}}),
+                json!({"hook_event_name":"Notification","session_id":"main","notification_type":"permission_prompt"}),
+            ];
+            for mut value in [report("UserPromptSubmit"), pre_tool("Bash", input.clone())] {
+                value["generation"] = json!("current");
+                writeln!(feed, "{value}").unwrap();
+            }
+            if !completion_before_hooks {
+                for mut value in approval.clone() {
+                    value["generation"] = json!("current");
+                    writeln!(feed, "{value}").unwrap();
+                }
+            }
+            watcher.drain_observations(|_, _| {}).unwrap();
+            assert_eq!(
+                watcher.observation.value.needs_you(),
+                !completion_before_hooks
+            );
+            let mut events = OpenOptions::new().append(true).open(&transcript).unwrap();
+            let completion = json!({
+                "type":"permission.completed",
+                "data":{"requestId":"wait-permission","toolCallId":"wait-call","result":{"kind":"approved"},"decisionSource":"human_response"},
+            });
+            if completion_before_escape {
+                writeln!(events, "{completion}").unwrap();
+                watcher.drain_observations(|_, _| {}).unwrap();
+                assert_eq!(watcher.observation.value.activity, Activity::Working);
+                assert!(!watcher.observation.value.needs_you());
+                assert_eq!(
+                    watcher.observation.value.detail,
+                    Some(WorkDetail::UsingTools)
+                );
+            }
+            if completion_before_hooks {
+                for mut value in approval {
+                    value["generation"] = json!("current");
+                    writeln!(feed, "{value}").unwrap();
+                }
+                watcher.feed.dirty.store(true, Ordering::Release);
+                watcher.drain_observations(|_, _| {}).unwrap();
+                assert!(
+                    !watcher.observation.value.needs_you(),
+                    "late hooks reopened approval"
+                );
+            }
+            watcher.interrupt.store(
+                crate::session::pty_runtime::interrupt_key(b"\x1b[27u").unwrap(),
+                Ordering::Release,
+            );
+            watcher.drain_observations(|_, _| {}).unwrap();
+            assert_eq!(
+                watcher.observation.value.needs_you(),
+                !completion_before_escape
+            );
+            if !completion_before_escape {
+                assert_eq!(watcher.observation.value.activity, Activity::Unavailable);
+                writeln!(events, "{completion}").unwrap();
+            }
+            writeln!(
+                events,
+                "{}",
+                json!({"type":"assistant.turn_end","data":{"turnId":"0"}})
+            )
+            .unwrap();
+            writeln!(
+                events,
+                "{}",
+                json!({"type":"abort","data":{"reason":"user_abort"}})
+            )
+            .unwrap();
+            watcher.drain_observations(|_, _| {}).unwrap();
+            assert_eq!(watcher.observation.value.activity, Activity::Ready);
+            assert_eq!(
+                watcher.observation.value.outcome,
+                Some(TurnOutcome::Interrupted)
+            );
+            assert!(!watcher.observation.value.needs_you());
+            assert_eq!(watcher.observation.value.detail, None);
+            assert_eq!(watcher.observation.tools.len(), 1);
+
+            for mut value in [
+                report("UserPromptSubmit"),
+                json!({"hook_event_name":"Stop","session_id":"main","stop_reason":"end_turn"}),
+            ] {
+                value["generation"] = json!("current");
+                writeln!(feed, "{value}").unwrap();
+            }
+            watcher.feed.dirty.store(true, Ordering::Release);
+            watcher.drain_observations(|_, _| {}).unwrap();
+            assert_eq!(watcher.observation.value.activity, Activity::Ready);
+            assert_eq!(
+                watcher.observation.value.outcome,
+                Some(TurnOutcome::Completed)
+            );
+            assert!(watcher.observation.tools.is_empty());
+        }
+    }
+
+    #[test]
+    fn permission_completion_resolves_only_the_correlated_approval() {
+        let mut state = CopilotObservation::default();
+        observe(&mut state, report("UserPromptSubmit"));
+        for (call_id, command) in [("one", "sleep 60"), ("two", "sleep 30")] {
+            let input = json!({"command":command});
+            observe(&mut state, pre_tool("Bash", input.clone()));
+            observe(
+                &mut state,
+                json!({"hook_event_name":"PermissionRequest","session_id":"main","tool_name":"bash","tool_input":input}),
+            );
+            state.observe_transcript(&json!({"type":"tool.execution_start","data":{"toolCallId":call_id,"toolName":"bash","arguments":input}}));
+        }
+        observe(
+            &mut state,
+            json!({"hook_event_name":"Notification","session_id":"main","notification_type":"permission_prompt"}),
+        );
+        let second = state.transcript_calls["two"].clone();
+        state.wait(
+            WaitReason::Answer,
+            vec![state.transcript_calls["one"].clone()],
+        );
+        let before = state.value.clone();
+        for record in [
+            json!({"type":"permission.completed","data":{"toolCallId":"unknown"}}),
+            json!({"type":"permission.completed","data":{"toolCallId":"one","agentId":"worker"}}),
+        ] {
+            assert!(state.observe_transcript(&record).is_none());
+            assert_eq!(state.value, before);
+        }
+        let value = state.observe_transcript(&json!({"type":"permission.completed","data":{"toolCallId":"one","result":{"kind":"approved"}}})).unwrap();
+        assert_eq!(value.interactions.len(), 2);
+        assert_eq!(value.interactions[0].reason, WaitReason::Approval);
+        assert_eq!(value.interactions[0].owners, std::slice::from_ref(&second));
+        assert_eq!(value.interactions[1].reason, WaitReason::Answer);
+        assert_eq!(
+            value.interactions[1].owners,
+            std::slice::from_ref(&state.transcript_calls["one"])
+        );
+        assert_eq!(state.permission_owners, [second]);
+        assert_eq!(state.tools.len(), 2);
+        assert!(observe(&mut state, json!({"hook_event_name":"PermissionRequest","session_id":"main","tool_name":"bash","tool_input":{"command":"sleep 60"}})).is_none());
+        assert!(observe(&mut state, json!({"hook_event_name":"Notification","session_id":"main","notification_type":"permission_prompt"})).is_none());
+        assert_eq!(state.value, value);
+        assert!(state
+            .observe_transcript(&json!({"type":"permission.completed","data":{"toolCallId":"one"}}))
+            .is_none());
     }
 
     #[test]

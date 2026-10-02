@@ -1292,17 +1292,20 @@ fn write_to(runtime: &PtyRuntime, session_id: &str, bytes: &[u8]) -> RuntimeResu
         .lock()
         .expect("idle detector poisoned")
         .on_input(bytes);
-    if bytes == b"\x03" || bytes == b"\x1b" {
+    if let Some(kind) = interrupt_key(bytes) {
         if let Some(interrupt) = &handle.hook_interrupt {
-            let kind = if bytes == b"\x03" {
-                CTRL_C_INTERRUPT
-            } else {
-                ESCAPE_INTERRUPT
-            };
             interrupt.fetch_or(kind, Ordering::Release);
         }
     }
     Ok(())
+}
+
+pub(crate) fn interrupt_key(bytes: &[u8]) -> Option<u8> {
+    match bytes {
+        b"\x03" | b"\x1b[99;5u" => Some(CTRL_C_INTERRUPT),
+        b"\x1b" | b"\x1b[27u" => Some(ESCAPE_INTERRUPT),
+        _ => None,
+    }
 }
 
 /// Map a symbolic key name to the byte sequence the child PTY expects.
@@ -1620,6 +1623,39 @@ mod tests {
         assert_eq!(translate_key("C-D").unwrap(), vec![0x04]);
         assert!(translate_key("OhNoMyKey").is_err());
         assert!(translate_key("C-").is_err());
+    }
+
+    #[test]
+    fn interrupt_key_matches_only_complete_legacy_and_kitty_cancels() {
+        for (bytes, kind) in [
+            (b"\x03".as_slice(), CTRL_C_INTERRUPT),
+            (b"\x1b", ESCAPE_INTERRUPT),
+            (b"\x1b[99;5u", CTRL_C_INTERRUPT),
+            (b"\x1b[27u", ESCAPE_INTERRUPT),
+        ] {
+            assert_eq!(interrupt_key(bytes), Some(kind), "{bytes:?}");
+        }
+        for bytes in [
+            b"".as_slice(),
+            b"text",
+            b"\x1b[A",
+            b"\x1bOP",
+            b"\x1bd",
+            b"\x1b[100;3u",
+            b"\x1b[13;2u",
+            b"\x1b[99;7u",
+            b"\x1b[27;3u",
+            b"\x1b[200~\x03\x1b\x1b[27u\x1b[99;5u\x1b[201~",
+            b"text\x03",
+            b"\x03text",
+            b"\x1b\x1b",
+            b"\x1b[27u\x1b[27u",
+            b"\x1b[99;5utext",
+            b"\x1b[27",
+            b"[27u",
+        ] {
+            assert_eq!(interrupt_key(bytes), None, "{bytes:?}");
+        }
     }
 
     #[test]
@@ -2777,14 +2813,23 @@ mod tests {
             }
         };
         let mut file = OpenOptions::new().append(true).open(&path).unwrap();
-        for (interrupt, source) in [(b"\x03", "input-interrupt"), (b"\x1b", "input-escape")] {
+        for (interrupt, source) in [
+            (b"\x03".as_slice(), "input-interrupt"),
+            (b"\x1b", "input-escape"),
+            (b"\x1b[99;5u", "input-interrupt"),
+            (b"\x1b[27u", "input-escape"),
+        ] {
             writeln!(file, r#"{{"generation":"current","hook_event_name":"PreToolUse","tool_name":"AskUserQuestion"}}"#).unwrap();
             wait_for_status(SessionActivityState::Busy, "hook");
             for bytes in [
                 b"\x1b[A".as_slice(),
+                b"\x1bd",
+                b"\x1b[100;3u",
+                b"\x1b[13;2u",
                 b"x",
                 b"\x1b[200~\x03\x1b[201~",
                 b"\x1b[200~\x1b\x1b[201~",
+                b"\x1b[200~\x1b[27u\x1b[99;5u\x1b[201~",
             ] {
                 rt.send_bytes(&session, bytes).unwrap();
             }
@@ -2810,6 +2855,57 @@ mod tests {
         )
         .unwrap();
         wait_for_status(SessionActivityState::Busy, "hook");
+        rt.stop(&session).unwrap();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn claude_streamed_kitty_escape_without_stop_allows_a_recovery_turn() {
+        use super::super::status::{Activity, TurnOutcome};
+        use std::fs::OpenOptions;
+
+        let root = tempfile::tempdir().unwrap();
+        let path = crate::runtimes::claude_code::claude_status::status_path(root.path(), "stream");
+        let rt = PtyRuntime::new();
+        let mut spawn = spec("stream", "/bin/cat", &[]);
+        spawn.agent_runtime = Some(crate::model::Runtime::ClaudeCode);
+        spawn
+            .env
+            .insert(PATH_ENV.into(), path.to_string_lossy().into_owned());
+        spawn.env.insert(GENERATION_ENV.into(), "current".into());
+        let (session, stream) = rt.spawn(spawn).unwrap();
+        let mut feed = OpenOptions::new().append(true).open(&path).unwrap();
+        // The live #783 stream ended after UserPromptSubmit with no Stop or tool record.
+        writeln!(feed, r#"{{"generation":"current","hook_event_name":"UserPromptSubmit","session_id":"main","prompt_id":"stream"}}"#).unwrap();
+        rt.send_bytes(&session, b"\x1b[27u").unwrap();
+        let read_observations = || {
+            let deadline = Instant::now() + Duration::from_secs(3);
+            let mut values = Vec::new();
+            while values.len() < 2 && Instant::now() < deadline {
+                if let Ok(RuntimeOutput::AgentObservation(value)) =
+                    stream.recv_timeout(IDLE_MONITOR_POLL)
+                {
+                    values.push(value);
+                }
+            }
+            assert_eq!(values.len(), 2);
+            values
+        };
+        let values = read_observations();
+        assert_eq!(values[0].activity, Activity::Working);
+        assert_eq!(values[1].activity, Activity::Ready);
+        assert_eq!(values[1].outcome, Some(TurnOutcome::Interrupted));
+        assert!(values[1].interactions.is_empty());
+        assert_eq!(values[1].detail, None);
+
+        for event in ["UserPromptSubmit", "Stop"] {
+            writeln!(feed, "{}", serde_json::json!({"generation":"current","hook_event_name":event,"session_id":"main","prompt_id":"recovery"})).unwrap();
+        }
+        let values = read_observations();
+        assert_eq!(values[0].activity, Activity::Working);
+        assert_eq!(values[0].outcome, None);
+        assert_eq!(values[1].activity, Activity::Ready);
+        assert_eq!(values[1].outcome, Some(TurnOutcome::Completed));
         rt.stop(&session).unwrap();
     }
 
