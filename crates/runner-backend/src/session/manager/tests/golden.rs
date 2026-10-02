@@ -483,7 +483,9 @@ fn files_at(root: &Path) -> Value {
                         .unwrap()
                         .to_string_lossy()
                         .replace('\\', "/"),
-                    Normalizer::default().text(&std::fs::read_to_string(&path).unwrap(), root),
+                    Normalizer::default()
+                        .text(&std::fs::read_to_string(&path).unwrap(), root)
+                        .replace(env!("CARGO_PKG_VERSION"), "<VERSION>"),
                 );
             }
         }
