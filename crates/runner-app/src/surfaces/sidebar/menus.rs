@@ -111,7 +111,9 @@ impl Sidebar {
             .then(|| {
                 members
                     .iter()
-                    .find(|member| Runtime::parse(&member.agent_runtime) == Some(Runtime::Shell))
+                    .find(|member| {
+                        Runtime::parse(&member.agent_runtime).is_some_and(Runtime::is_shell)
+                    })
                     .map(|member| member.session_id.clone())
             })
             .flatten();
@@ -141,7 +143,9 @@ impl Sidebar {
             fork_pending,
             members
                 .into_iter()
-                .filter(|member| Runtime::parse(&member.agent_runtime) != Some(Runtime::Shell))
+                .filter(|member| {
+                    !Runtime::parse(&member.agent_runtime).is_some_and(Runtime::is_shell)
+                })
                 .map(|member| member.session_id)
                 .collect(),
             tab_session_ids,

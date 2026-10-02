@@ -10,6 +10,11 @@ fn runtime_with_defaults(
 ) -> RuntimeCatalogEntry {
     RuntimeCatalogEntry {
         name: Runtime::Codex,
+        capabilities: runner_backend::ops::runtime::RuntimeCatalogEntry::for_runtime(
+            Runtime::Codex,
+        )
+        .map(|entry| entry.capabilities)
+        .unwrap_or_default(),
         display_name: "Codex".into(),
         command: "codex".into(),
         native_fork: true,

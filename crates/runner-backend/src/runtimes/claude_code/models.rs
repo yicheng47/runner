@@ -7,8 +7,8 @@ use std::time::Duration;
 
 use serde::Deserialize;
 
-use super::{option, trimmed, ModelCatalog, Query, Reason};
 use crate::ops::runtime::RuntimeCatalogOption;
+use crate::runtime_status::models::{option, trimmed, ModelCatalog, Query, Reason};
 use crate::shell_path::LoginShellEnv;
 
 /// Longer than Codex's: the CLI initializes a session before answering, and
@@ -32,8 +32,8 @@ const REQUEST: &str = concat!(
     "\n"
 );
 
-pub(super) fn query(executable: &str, env: &LoginShellEnv) -> Result<ModelCatalog, Reason> {
-    let output = super::run(Query {
+pub(crate) fn query(executable: &str, env: &LoginShellEnv) -> Result<ModelCatalog, Reason> {
+    let output = crate::runtime_status::models::run(Query {
         executable,
         args: ARGS,
         stdin: Some(REQUEST.as_bytes()),
@@ -153,7 +153,7 @@ fn parse(bytes: &[u8]) -> Result<ModelCatalog, Reason> {
 /// Shapes captured from Claude Code 2.1.270 on 2026-09-14, with an unrelated
 /// hook line and a stream event left in place.
 #[cfg(test)]
-pub(super) const STREAM: &str = concat!(
+pub(crate) const STREAM: &str = concat!(
     r#"{"type":"system","subtype":"hook_started","hook_name":"SessionStart","exit_code":0}"#,
     "\n",
     r#"{"type":"stream_event","event":{"type":"ping"}}"#,

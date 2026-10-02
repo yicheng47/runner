@@ -156,7 +156,7 @@ impl ModelField {
             "down" => Some(MenuKey::Down),
             "home" if self.state.is_open() => Some(MenuKey::Home),
             "end" if self.state.is_open() => Some(MenuKey::End),
-            "enter" if self.state.is_open() => Some(MenuKey::Enter),
+            "enter" if !self.suggestions.is_empty() => Some(MenuKey::Enter),
             "escape" if self.state.is_open() => Some(MenuKey::Escape),
             _ => None,
         };

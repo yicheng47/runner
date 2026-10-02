@@ -328,7 +328,7 @@ pub(super) fn sidebar_fork_menu_target(
     }
     let entry = members
         .first()
-        .filter(|entry| Runtime::parse(&entry.agent_runtime) != Some(Runtime::Shell))?;
+        .filter(|entry| !Runtime::parse(&entry.agent_runtime).is_some_and(Runtime::is_shell))?;
     let (disabled, description) = if !entry.native_fork {
         (true, None)
     } else if !entry.forkable {
@@ -508,7 +508,7 @@ pub(super) fn default_session_label_parts(
     handle: Option<&str>,
     display_name: &str,
 ) -> String {
-    if Runtime::parse(runtime) == Some(Runtime::Shell) {
+    if Runtime::parse(runtime).is_some_and(Runtime::is_shell) {
         return std::path::Path::new(command)
             .file_name()
             .and_then(|name| name.to_str())

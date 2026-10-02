@@ -31,6 +31,8 @@ pub struct RuntimeCatalogEntry {
     pub display_name: String,
     pub command: String,
     pub native_fork: bool,
+    #[serde(skip)]
+    pub capabilities: crate::runtimes::RuntimeCapabilities,
     pub description: String,
     pub install_url: String,
     pub default_enabled: bool,
@@ -42,6 +44,12 @@ pub struct RuntimeCatalogEntry {
 }
 
 impl RuntimeCatalogEntry {
+    pub fn for_runtime(runtime: Runtime) -> Option<Self> {
+        crate::runtimes::adapter(runtime)
+            .catalog()
+            .map(|catalog| catalog.into_entry())
+    }
+
     pub fn efforts_for_model(&self, model: &str) -> Vec<RuntimeCatalogOption> {
         let model = model.trim();
         let supported = self
@@ -295,7 +303,7 @@ pub fn runtime_default_enabled(runtime: Runtime) -> bool {
 
 /// The runtimes whose models Runner can discover at all.
 pub fn model_discovery_runtimes() -> Vec<Runtime> {
-    crate::runtime_status::models::DISCOVERY_RUNTIMES.to_vec()
+    crate::runtime_status::models::discovery_runtimes()
 }
 
 pub fn runtime_catalog(state: &AppCore) -> Result<Vec<RuntimeCatalogEntry>> {

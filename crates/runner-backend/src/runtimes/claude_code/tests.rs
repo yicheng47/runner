@@ -5,7 +5,7 @@ use crate::runtimes::test_support::*;
 #[test]
 fn claude_settings_on_windows_carry_sh_status_hooks_with_forward_slash_feeds() {
     let root = Path::new(r"C:\Users\Jason Wang\it's runner app");
-    let args = claude_settings_args(Some(Runtime::ClaudeCode), &[], root, "session");
+    let args = claude_settings_args_for(Runtime::ClaudeCode.key(), &[], root, "session");
     let settings: serde_json::Value = serde_json::from_str(&args[1]).unwrap();
     let status_path = crate::runtimes::claude_code::claude_status::status_path(root, "session");
     let rekey = settings["hooks"]["SessionStart"][0]["hooks"][0]["command"]
@@ -78,7 +78,7 @@ fn claude_transcript_lookup_preserves_resume_identity() {
                 claude_code_project_dir,
             );
             assert!(exists, "saved Claude transcript must be found for {cwd}");
-            let plan = resume_plan(Some(Runtime::ClaudeCode), exists.then_some(prior.as_str()));
+            let plan = resume_plan(Runtime::ClaudeCode.key(), exists.then_some(prior.as_str()));
             assert!(plan.resuming);
             assert_eq!(plan.args, ["--resume", prior.as_str()]);
         }
@@ -98,15 +98,15 @@ fn claude_code_returns_no_argv_for_system_prompt() {
     // interactive TUI ignores it. The argv path returns empty,
     // and call sites fold the prompt into first-turn delivery
     // instead.
-    let args = system_prompt_args(Some(Runtime::ClaudeCode), Some("be helpful"));
+    let args = system_prompt_args(Runtime::ClaudeCode.key(), Some("be helpful"));
     assert!(args.is_empty());
 }
 
 #[test]
 fn claude_settings_injects_fullscreen_and_per_spawn_session_start_hook() {
     let app_data_dir = Path::new("/tmp/runner app-data");
-    let args = claude_settings_args(
-        Some(Runtime::ClaudeCode),
+    let args = claude_settings_args_for(
+        Runtime::ClaudeCode.key(),
         &[],
         app_data_dir,
         "runner-session-one",
@@ -137,8 +137,8 @@ fn claude_settings_injects_fullscreen_and_per_spawn_session_start_hook() {
         "command"
     );
 
-    let other = claude_settings_args(
-        Some(Runtime::ClaudeCode),
+    let other = claude_settings_args_for(
+        Runtime::ClaudeCode.key(),
         &[],
         app_data_dir,
         "runner-session-two",
@@ -151,8 +151,8 @@ fn claude_settings_injects_fullscreen_and_per_spawn_session_start_hook() {
 fn claude_settings_acknowledge_bypass_only_for_bypass_spawns() {
     let app_data_dir = Path::new("/tmp/runner-app-data");
     let settings_for = |role_args: &[String]| {
-        let args = claude_settings_args(
-            Some(Runtime::ClaudeCode),
+        let args = claude_settings_args_for(
+            Runtime::ClaudeCode.key(),
             role_args,
             app_data_dir,
             "runner-session",
@@ -164,7 +164,7 @@ fn claude_settings_acknowledge_bypass_only_for_bypass_spawns() {
         vec!["--permission-mode".to_string(), "bypassPermissions".into()],
         vec!["--dangerously-skip-permissions".to_string()],
         apply_mission_permission_mode(
-            Some(Runtime::ClaudeCode),
+            Runtime::ClaudeCode.key(),
             &["--verbose".to_string()],
             MissionPermissionMode::Bypass,
         ),
@@ -184,7 +184,7 @@ fn claude_settings_acknowledge_bypass_only_for_bypass_spawns() {
         vec!["--permission-mode".to_string(), "auto".into()],
         vec!["--permission-mode".to_string(), "acceptEdits".into()],
         apply_mission_permission_mode(
-            Some(Runtime::ClaudeCode),
+            Runtime::ClaudeCode.key(),
             &["--permission-mode".to_string(), "bypassPermissions".into()],
             MissionPermissionMode::Auto,
         ),
@@ -199,8 +199,8 @@ fn claude_settings_acknowledge_bypass_only_for_bypass_spawns() {
 
 #[test]
 fn claude_status_hooks_have_short_timeouts_and_match_verified_notifications() {
-    let args = claude_settings_args(
-        Some(Runtime::ClaudeCode),
+    let args = claude_settings_args_for(
+        Runtime::ClaudeCode.key(),
         &[],
         Path::new("/tmp/runner app"),
         "session",
@@ -241,8 +241,8 @@ fn claude_settings_respects_runner_settings_flags() {
         vec!["--settings".into(), "custom.json".into()],
         vec!["--settings=custom.json".into()],
     ] {
-        assert!(claude_settings_args(
-            Some(Runtime::ClaudeCode),
+        assert!(claude_settings_args_for(
+            Runtime::ClaudeCode.key(),
             &role_args,
             Path::new("/tmp/runner-app-data"),
             "runner-session"
@@ -254,8 +254,8 @@ fn claude_settings_respects_runner_settings_flags() {
 #[test]
 fn claude_settings_do_not_leak_to_other_runtimes() {
     for runtime in ["codex", "pi", "antigravity", "shell"] {
-        assert!(claude_settings_args(
-            Runtime::parse(runtime),
+        assert!(claude_settings_args_for(
+            runtime,
             &[],
             Path::new("/tmp/runner-app-data"),
             "runner-session"
@@ -266,7 +266,7 @@ fn claude_settings_do_not_leak_to_other_runtimes() {
 
 #[test]
 fn claude_code_fresh_self_assigns_session_id() {
-    let plan = resume_plan(Some(Runtime::ClaudeCode), None);
+    let plan = resume_plan(Runtime::ClaudeCode.key(), None);
     assert!(!plan.resuming);
     assert!(!plan.prepend);
     assert_eq!(plan.args.len(), 2);
@@ -283,7 +283,7 @@ fn claude_code_resumes_with_prior_uuid() {
     // it as fresh-only. Fresh-spawn first-turn delivery ensures
     // the conversation file exists before any resume attempt.
     let prior = uuid::Uuid::new_v4().to_string();
-    let plan = resume_plan(Some(Runtime::ClaudeCode), Some(&prior));
+    let plan = resume_plan(Runtime::ClaudeCode.key(), Some(&prior));
     assert!(plan.resuming);
     assert!(!plan.prepend);
     assert_eq!(plan.args, vec!["--resume", &prior]);
@@ -294,7 +294,7 @@ fn claude_code_resumes_with_prior_uuid() {
 fn claude_code_falls_back_to_fresh_on_invalid_prior_key() {
     // A non-UUID prior key would crash claude-code's --resume parser.
     // Treat it as missing and start fresh.
-    let plan = resume_plan(Some(Runtime::ClaudeCode), Some("not-a-uuid"));
+    let plan = resume_plan(Runtime::ClaudeCode.key(), Some("not-a-uuid"));
     assert!(!plan.resuming);
     assert_eq!(plan.args[0], "--session-id");
 }
@@ -302,7 +302,7 @@ fn claude_code_falls_back_to_fresh_on_invalid_prior_key() {
 #[test]
 fn claude_code_fork_assigns_a_new_session_key() {
     let source = "019fa1b9-a133-7841-b4dd-730d376ab1d1";
-    let plan = fork_plan(Some(Runtime::ClaudeCode), source, "Source").unwrap();
+    let plan = fork_plan(Runtime::ClaudeCode.key(), source, "Source").unwrap();
     let ForkPlan::Direct(plan) = plan else {
         panic!("claude-code must spawn its fork directly")
     };
@@ -325,7 +325,7 @@ fn claude_code_fork_assigns_a_new_session_key() {
 #[test]
 fn claude_code_emits_model_and_effort_flags() {
     let args = model_effort_args(
-        Some(Runtime::ClaudeCode),
+        Runtime::ClaudeCode.key(),
         Some("claude-opus-4-7"),
         Some("xhigh"),
     );
@@ -346,7 +346,7 @@ fn claude_code_forwards_effort_verbatim() {
     // insensitive (accepts `High`), so we forward the row's
     // value verbatim rather than risk regressing already-shipped
     // behavior. Only the codex branch normalises.
-    let args = model_effort_args(Some(Runtime::ClaudeCode), None, Some("High"));
+    let args = model_effort_args(Runtime::ClaudeCode.key(), None, Some("High"));
     assert!(
         args.windows(2)
             .any(|w| w[0] == "--effort" && w[1] == "High"),
@@ -374,7 +374,7 @@ fn apply_permission_mode_claude_code_each_mode() {
         ),
     ] {
         let user = vec!["--mcp-debug".to_string()];
-        let out = apply_permission_mode(Some(Runtime::ClaudeCode), &user, mode);
+        let out = apply_permission_mode(Runtime::ClaudeCode.key(), &user, mode);
         let mut want = vec!["--mcp-debug".to_string()];
         want.extend(expected_extra);
         assert_eq!(out, want, "mode={mode:?}");
@@ -388,7 +388,7 @@ fn apply_permission_mode_claude_code_cycles_cleanly() {
     // args for the chosen mode, never an accumulation.
     let mut args = vec!["--mcp-debug".to_string()];
     args = apply_permission_mode(
-        Some(Runtime::ClaudeCode),
+        Runtime::ClaudeCode.key(),
         &args,
         PermissionMode::AcceptEdits,
     );
@@ -400,7 +400,7 @@ fn apply_permission_mode_claude_code_cycles_cleanly() {
             "acceptEdits".to_string(),
         ],
     );
-    args = apply_permission_mode(Some(Runtime::ClaudeCode), &args, PermissionMode::Auto);
+    args = apply_permission_mode(Runtime::ClaudeCode.key(), &args, PermissionMode::Auto);
     assert_eq!(
         args,
         vec![
@@ -410,7 +410,7 @@ fn apply_permission_mode_claude_code_cycles_cleanly() {
         ],
         "cycling to Auto must replace the prior --permission-mode value, not stack",
     );
-    args = apply_permission_mode(Some(Runtime::ClaudeCode), &args, PermissionMode::Bypass);
+    args = apply_permission_mode(Runtime::ClaudeCode.key(), &args, PermissionMode::Bypass);
     assert_eq!(
         args,
         vec![
@@ -419,7 +419,7 @@ fn apply_permission_mode_claude_code_cycles_cleanly() {
             "bypassPermissions".to_string(),
         ],
     );
-    args = apply_permission_mode(Some(Runtime::ClaudeCode), &args, PermissionMode::Default);
+    args = apply_permission_mode(Runtime::ClaudeCode.key(), &args, PermissionMode::Default);
     assert_eq!(args, vec!["--mcp-debug".to_string()]);
 }
 
@@ -434,7 +434,7 @@ fn apply_permission_mode_claude_code_strips_legacy_dangerous_flag() {
         "--mcp-debug".to_string(),
         "--dangerously-skip-permissions".to_string(),
     ];
-    let out = apply_permission_mode(Some(Runtime::ClaudeCode), &user, PermissionMode::Bypass);
+    let out = apply_permission_mode(Runtime::ClaudeCode.key(), &user, PermissionMode::Bypass);
     assert_eq!(
         out,
         vec![
@@ -456,7 +456,7 @@ fn apply_mission_permission_mode_keeps_unrelated_claude_args() {
     ];
     assert_eq!(
         apply_mission_permission_mode(
-            Some(Runtime::ClaudeCode),
+            Runtime::ClaudeCode.key(),
             &row,
             MissionPermissionMode::Bypass
         ),
@@ -468,7 +468,7 @@ fn apply_mission_permission_mode_keeps_unrelated_claude_args() {
         ],
     );
     assert_eq!(
-        apply_mission_permission_mode(Some(Runtime::ClaudeCode), &row, MissionPermissionMode::Auto),
+        apply_mission_permission_mode(Runtime::ClaudeCode.key(), &row, MissionPermissionMode::Auto),
         vec![
             "--model".to_string(),
             "opus".to_string(),
@@ -478,7 +478,7 @@ fn apply_mission_permission_mode_keeps_unrelated_claude_args() {
     );
     assert_eq!(
         apply_mission_permission_mode(
-            Some(Runtime::ClaudeCode),
+            Runtime::ClaudeCode.key(),
             &row,
             MissionPermissionMode::RoleDefault
         ),
@@ -489,33 +489,33 @@ fn apply_mission_permission_mode_keeps_unrelated_claude_args() {
 #[test]
 fn infer_permission_mode_claude_code_each_state() {
     assert_eq!(
-        infer_permission_mode(Some(Runtime::ClaudeCode), &["--mcp-debug".into()]),
+        infer_permission_mode(Runtime::ClaudeCode.key(), &["--mcp-debug".into()]),
         PermissionMode::Default,
     );
     assert_eq!(
         infer_permission_mode(
-            Some(Runtime::ClaudeCode),
+            Runtime::ClaudeCode.key(),
             &["--permission-mode".into(), "acceptEdits".into()],
         ),
         PermissionMode::AcceptEdits,
     );
     assert_eq!(
         infer_permission_mode(
-            Some(Runtime::ClaudeCode),
+            Runtime::ClaudeCode.key(),
             &["--permission-mode=acceptEdits".into()]
         ),
         PermissionMode::AcceptEdits,
     );
     assert_eq!(
         infer_permission_mode(
-            Some(Runtime::ClaudeCode),
+            Runtime::ClaudeCode.key(),
             &["--permission-mode".into(), "auto".into()],
         ),
         PermissionMode::Auto,
     );
     assert_eq!(
         infer_permission_mode(
-            Some(Runtime::ClaudeCode),
+            Runtime::ClaudeCode.key(),
             &["--permission-mode".into(), "bypassPermissions".into()],
         ),
         PermissionMode::Bypass,
@@ -530,7 +530,7 @@ fn infer_permission_mode_claude_code_legacy_dangerous_flag_reads_as_bypass() {
     // bypassPermissions`.
     let args = vec!["--dangerously-skip-permissions".to_string()];
     assert_eq!(
-        infer_permission_mode(Some(Runtime::ClaudeCode), &args),
+        infer_permission_mode(Runtime::ClaudeCode.key(), &args),
         PermissionMode::Bypass,
     );
 }
@@ -548,7 +548,7 @@ fn infer_permission_mode_claude_code_bypass_wins_over_accept_edits() {
         "--dangerously-skip-permissions".to_string(),
     ];
     assert_eq!(
-        infer_permission_mode(Some(Runtime::ClaudeCode), &args),
+        infer_permission_mode(Runtime::ClaudeCode.key(), &args),
         PermissionMode::Bypass,
     );
 }
@@ -564,7 +564,7 @@ fn strip_permission_flags_drops_claude_code_permission_mode() {
         "--debug".to_string(),
         "--dangerously-skip-permissions".to_string(),
     ];
-    let out = strip_permission_flags(Some(Runtime::ClaudeCode), &user);
+    let out = strip_permission_flags(Runtime::ClaudeCode.key(), &user);
     assert_eq!(out, vec!["--debug".to_string()]);
 }
 
@@ -575,7 +575,7 @@ fn claude_code_trailing_args_unaffected_by_resume_flag_when_first_turn_absent() 
     // `plan_resuming` flag has no effect — the trailing args
     // are just the model/effort pair.
     let fresh = trailing_runtime_args(
-        Some(Runtime::ClaudeCode),
+        Runtime::ClaudeCode.key(),
         &[],
         Path::new("/tmp/runner-app-data"),
         "runner-session",
@@ -587,7 +587,7 @@ fn claude_code_trailing_args_unaffected_by_resume_flag_when_first_turn_absent() 
         None,
     );
     let resuming = trailing_runtime_args(
-        Some(Runtime::ClaudeCode),
+        Runtime::ClaudeCode.key(),
         &[],
         Path::new("/tmp/runner-app-data"),
         "runner-session",
@@ -612,4 +612,12 @@ fn claude_code_trailing_args_unaffected_by_resume_flag_when_first_turn_absent() 
     let settings: serde_json::Value = serde_json::from_str(&fresh[5]).unwrap();
     assert_eq!(settings["tui"], "fullscreen");
     assert!(settings["hooks"]["SessionStart"].is_array());
+}
+
+fn claude_settings_args_for(key: &str, args: &[String], data: &Path, session: &str) -> Vec<String> {
+    if key == Runtime::ClaudeCode.key() {
+        claude_settings_args(args, data, session)
+    } else {
+        Vec::new()
+    }
 }

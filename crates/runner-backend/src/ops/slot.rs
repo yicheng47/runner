@@ -300,7 +300,10 @@ pub fn update(
             existing.effort_override.clone()
         }
     });
-    let final_speed_override = if next_runtime == Runtime::Codex.key() {
+    let final_speed_override = if crate::runtimes::for_key(next_runtime)
+        .capabilities()
+        .codex_speed
+    {
         speed_override.unwrap_or({
             if engine_changed {
                 None

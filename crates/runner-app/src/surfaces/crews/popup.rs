@@ -351,49 +351,52 @@ impl NativeRoot {
                         Self::reset_slot_override_effort,
                     )
                 }),
-                runtime == "codex",
+                crate::runtime_ui::catalog_capabilities(&form.runtimes, &runtime).codex_speed,
             ))
-            .when(runtime == "codex", |rows| {
-                rows.child(
-                    div()
-                        .when(cfg!(test), |row| {
-                            row.debug_selector(|| "CREW_SLOT_SPEED_EDIT".into())
-                        })
-                        .child(override_row(
-                            "Speed",
-                            form.speed_select.clone().into_any_element(),
-                            if own_runtime {
-                                format!("role: {}", speed_label(slot.role.codex_speed))
-                            } else {
-                                "Codex default".into()
-                            },
-                            form.speed.map(|_| {
-                                reset(
-                                    "slot-reset-speed",
-                                    &form.reset_focus[3],
-                                    Self::reset_slot_override_speed,
-                                )
-                            }),
-                            false,
-                        )),
-                )
-                .children(
-                    (form
-                        .speed
-                        .or(own_runtime.then_some(slot.role.codex_speed).flatten())
-                        == Some(CodexSpeed::Fast))
-                    .then(|| {
+            .when(
+                crate::runtime_ui::catalog_capabilities(&form.runtimes, &runtime).codex_speed,
+                |rows| {
+                    rows.child(
                         div()
-                            .when(cfg!(test), |note| {
-                                note.debug_selector(|| "CREW_SLOT_SPEED_NOTE".into())
+                            .when(cfg!(test), |row| {
+                                row.debug_selector(|| "CREW_SLOT_SPEED_EDIT".into())
                             })
-                            .pl_4()
-                            .text_size(theme::text_meta())
-                            .text_color(theme::faint())
-                            .child("Fast uses more credits.")
-                    }),
-                )
-            })
+                            .child(override_row(
+                                "Speed",
+                                form.speed_select.clone().into_any_element(),
+                                if own_runtime {
+                                    format!("role: {}", speed_label(slot.role.codex_speed))
+                                } else {
+                                    "Codex default".into()
+                                },
+                                form.speed.map(|_| {
+                                    reset(
+                                        "slot-reset-speed",
+                                        &form.reset_focus[3],
+                                        Self::reset_slot_override_speed,
+                                    )
+                                }),
+                                false,
+                            )),
+                    )
+                    .children(
+                        (form
+                            .speed
+                            .or(own_runtime.then_some(slot.role.codex_speed).flatten())
+                            == Some(CodexSpeed::Fast))
+                        .then(|| {
+                            div()
+                                .when(cfg!(test), |note| {
+                                    note.debug_selector(|| "CREW_SLOT_SPEED_NOTE".into())
+                                })
+                                .pl_4()
+                                .text_size(theme::text_meta())
+                                .text_color(theme::faint())
+                                .child("Fast uses more credits.")
+                        }),
+                    )
+                },
+            )
             .children((!own_runtime).then(runtime_note))
             .children(form.error.clone().map(|error| {
                 div()
@@ -1130,36 +1133,39 @@ fn popup_view_rows(slot: &SlotWithRole) -> AnyElement {
                 setup.effort_overridden,
             ),
             format!("role: {}", role_value(slot.role.effort.as_deref())),
-            setup.runtime == "codex",
+            crate::runtime_ui::catalog_capabilities(&[], &setup.runtime).codex_speed,
         ))
-        .when(setup.runtime == "codex", |rows| {
-            rows.child(
-                div()
-                    .when(cfg!(test), |row| {
-                        row.debug_selector(|| "CREW_SLOT_SPEED_VIEW".into())
-                    })
-                    .child(row(
-                        "Speed",
-                        value(speed_label(setup.speed).into(), setup.speed_overridden),
-                        if own_runtime {
-                            format!("role: {}", speed_label(slot.role.codex_speed))
-                        } else {
-                            "Codex default".into()
-                        },
-                        false,
-                    )),
-            )
-            .children((setup.speed == Some(CodexSpeed::Fast)).then(|| {
-                div()
-                    .when(cfg!(test), |note| {
-                        note.debug_selector(|| "CREW_SLOT_SPEED_VIEW_NOTE".into())
-                    })
-                    .pl_4()
-                    .text_size(theme::text_meta())
-                    .text_color(theme::faint())
-                    .child("Fast uses more credits.")
-            }))
-        })
+        .when(
+            crate::runtime_ui::catalog_capabilities(&[], &setup.runtime).codex_speed,
+            |rows| {
+                rows.child(
+                    div()
+                        .when(cfg!(test), |row| {
+                            row.debug_selector(|| "CREW_SLOT_SPEED_VIEW".into())
+                        })
+                        .child(row(
+                            "Speed",
+                            value(speed_label(setup.speed).into(), setup.speed_overridden),
+                            if own_runtime {
+                                format!("role: {}", speed_label(slot.role.codex_speed))
+                            } else {
+                                "Codex default".into()
+                            },
+                            false,
+                        )),
+                )
+                .children((setup.speed == Some(CodexSpeed::Fast)).then(|| {
+                    div()
+                        .when(cfg!(test), |note| {
+                            note.debug_selector(|| "CREW_SLOT_SPEED_VIEW_NOTE".into())
+                        })
+                        .pl_4()
+                        .text_size(theme::text_meta())
+                        .text_color(theme::faint())
+                        .child("Fast uses more credits.")
+                }))
+            },
+        )
         .children((!own_runtime).then(runtime_note))
         .into_any_element()
 }

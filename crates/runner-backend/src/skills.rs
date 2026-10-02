@@ -38,6 +38,16 @@ pub struct SkillDocument {
     pub problem: Option<String>,
 }
 
+impl SkillDocument {
+    pub(crate) fn value(&self, key: &str) -> Option<&str> {
+        self.frontmatter
+            .iter()
+            .rev()
+            .find(|(name, _)| name == key)
+            .map(|(_, value)| value.as_str())
+    }
+}
+
 pub fn parse_skill_document(text: &str) -> SkillDocument {
     let mut document = SkillDocument {
         body: text.to_owned(),
@@ -146,62 +156,13 @@ fn skill_name(raw: &str) -> Option<String> {
     (!clean.is_empty()).then(|| clean.to_owned())
 }
 
-pub(crate) fn codex_config_tables(
-    item: &toml_edit::Item,
-) -> Option<Vec<&dyn toml_edit::TableLike>> {
-    if let Some(tables) = item.as_array_of_tables() {
-        Some(
-            tables
-                .iter()
-                .map(|table| table as &dyn toml_edit::TableLike)
-                .collect(),
-        )
-    } else {
-        item.as_array()?
-            .iter()
-            .map(|value| {
-                value
-                    .as_inline_table()
-                    .map(|table| table as &dyn toml_edit::TableLike)
-            })
-            .collect()
-    }
-}
-
-pub(crate) fn codex_override_matches(table: &dyn toml_edit::TableLike, marker: &Path) -> bool {
-    table
-        .get("path")
-        .and_then(toml_edit::Item::as_str)
-        .is_some_and(|path| Path::new(path) == marker)
-}
-
-fn codex_global_state(document: &toml_edit::DocumentMut, entry: &SkillEntry) -> GlobalState {
-    let marker = entry.path.join(&entry.marker);
-    let enabled = document
-        .get("skills")
-        .and_then(|skills| skills.get("config"))
-        .and_then(codex_config_tables)
-        .and_then(|tables| {
-            tables
-                .into_iter()
-                .rev()
-                .find(|table| codex_override_matches(*table, &marker))
-        })
-        .and_then(|table| table.get("enabled"))
-        .and_then(toml_edit::Item::as_bool);
-    if enabled == Some(false) {
-        GlobalState::Off
-    } else {
-        GlobalState::On
-    }
-}
-
 pub fn skill_catalog(
     runtime: Runtime,
     home: &Path,
     codex_home: Option<&Path>,
 ) -> Option<SkillCatalog> {
-    let relatives = crate::runtimes::adapter(runtime).catalog()?.skills_dirs;
+    let support = crate::runtimes::adapter(runtime).skills();
+    let relatives = support.roots;
     if relatives.is_empty() {
         return None;
     }
@@ -217,27 +178,7 @@ pub fn skill_catalog(
             }
         })
         .collect();
-    let config_dir = codex_home
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| home.join(".codex"));
-    let codex_overrides = (runtime == Runtime::Codex)
-        .then(|| {
-            std::fs::read_to_string(config_dir.join("config.toml"))
-                .ok()
-                .and_then(|text| text.parse::<toml_edit::DocumentMut>().ok())
-        })
-        .flatten();
-    let copilot_disabled = (runtime == Runtime::Copilot)
-        .then(|| copilot_disabled_skills(home))
-        .flatten();
-    let overrides = if runtime == Runtime::ClaudeCode {
-        std::fs::read_to_string(home.join(".claude/settings.json"))
-            .ok()
-            .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
-            .and_then(|value| value.get("skillOverrides").cloned())
-    } else {
-        None
-    };
+    let state = (support.load)(home, codex_home);
     let mut catalog = SkillCatalog {
         runtime,
         root_exists: roots.iter().any(|root| root.is_dir()),
@@ -282,24 +223,7 @@ pub fn skill_catalog(
                     "SKILL.md"
                 };
                 let mut entry = read_entry(&path, marker, runtime);
-                entry.global = match overrides.as_ref().and_then(|value| value.get(&entry.name)) {
-                    None => GlobalState::On,
-                    Some(value) => match value.as_str() {
-                        Some("on") => GlobalState::On,
-                        Some("off") => GlobalState::Off,
-                        Some(other) => GlobalState::Other(other.into()),
-                        None => GlobalState::Other(value.to_string()),
-                    },
-                };
-                if let Some(document) = &codex_overrides {
-                    entry.global = codex_global_state(document, &entry);
-                }
-                if copilot_disabled
-                    .as_ref()
-                    .is_some_and(|disabled| disabled.iter().any(|name| name == &entry.name))
-                {
-                    entry.global = GlobalState::Off;
-                }
+                entry.global = state(&entry);
                 catalog.entries.push(entry);
             }
         }
@@ -311,47 +235,6 @@ pub fn skill_catalog(
             .then(a.path.cmp(&b.path))
     });
     Some(catalog)
-}
-
-fn codex_manual(text: &str) -> bool {
-    let mut in_policy = false;
-    let mut child_indent = None;
-    let mut manual = false;
-    for line in text.lines() {
-        let line = line.split('#').next().unwrap_or_default().trim_end();
-        let trimmed = line.trim_start();
-        if trimmed.is_empty() {
-            continue;
-        }
-        let indent = line.len() - trimmed.len();
-        if indent == 0 {
-            in_policy = trimmed
-                .split_once(':')
-                .is_some_and(|(key, value)| key.trim() == "policy" && value.trim().is_empty());
-            child_indent = None;
-        } else if in_policy && indent == *child_indent.get_or_insert(indent) {
-            if let Some((key, value)) = trimmed.split_once(':') {
-                if key.trim() == "allow_implicit_invocation" {
-                    manual = value.trim() == "false";
-                }
-            }
-        }
-    }
-    manual
-}
-
-pub(crate) fn copilot_disabled_skills(home: &Path) -> Option<Vec<String>> {
-    let text =
-        std::fs::read_to_string(crate::runtime_defaults::copilot_settings_path(home)).ok()?;
-    let settings = crate::runtime_defaults::jsonc_document(&text).ok()?;
-    Some(
-        settings
-            .get("disabledSkills")?
-            .as_array()?
-            .iter()
-            .filter_map(|value| value.as_str().map(str::to_owned))
-            .collect(),
-    )
 }
 
 fn read_entry(path: &Path, marker: &str, runtime: Runtime) -> SkillEntry {
@@ -402,13 +285,8 @@ fn read_entry(path: &Path, marker: &str, runtime: Runtime) -> SkillEntry {
             path.canonicalize()
                 .unwrap_or_else(|_| path.parent().unwrap_or(path).join(target))
         }),
-        manual: if runtime == Runtime::Codex {
-            std::fs::read_to_string(path.join("agents/openai.yaml"))
-                .is_ok_and(|text| codex_manual(&text))
-        } else {
-            value("disable-model-invocation") == Some("true")
-        },
-        hidden: runtime == Runtime::ClaudeCode && value("user-invocable") == Some("false"),
+        manual: (crate::runtimes::adapter(runtime).skills().manual)(path, &document),
+        hidden: (crate::runtimes::adapter(runtime).skills().hidden)(&document),
         problem: match (document.problem, marker == "skill.md") {
             (Some(problem), true) => Some(format!("legacy skill.md; {problem}")),
             (None, true) => Some("legacy skill.md".into()),
@@ -422,6 +300,7 @@ fn read_entry(path: &Path, marker: &str, runtime: Runtime) -> SkillEntry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::runtimes::codex::skills::codex_manual;
 
     fn write(home: &Path, name: &str, marker: &str, text: &str) -> PathBuf {
         let path = home.join(".claude/skills").join(name);

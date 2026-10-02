@@ -1,0 +1,630 @@
+[
+  {
+    "runtime": "codex",
+    "role_input": null,
+    "slot_input": null,
+    "role_stored": null,
+    "slot_stored": null,
+    "session_stored": null,
+    "speed_args": [
+      "-c",
+      "-c",
+      "-c",
+      "-c",
+      "-c",
+      "-c",
+      "-c",
+      "-c",
+      "-c",
+      "-c",
+      "-c"
+    ]
+  },
+  {
+    "runtime": "codex",
+    "role_input": null,
+    "slot_input": "standard",
+    "role_stored": null,
+    "slot_stored": "standard",
+    "session_stored": "standard",
+    "speed_args": [
+      "-c",
+      "-c",
+      "-c",
+      "service_tier=default",
+      "-c",
+      "-c",
+      "-c",
+      "-c",
+      "-c",
+      "-c",
+      "-c",
+      "-c",
+      "-c"
+    ]
+  },
+  {
+    "runtime": "codex",
+    "role_input": null,
+    "slot_input": "fast",
+    "role_stored": null,
+    "slot_stored": "fast",
+    "session_stored": "fast",
+    "speed_args": [
+      "-c",
+      "-c",
+      "-c",
+      "service_tier=fast",
+      "-c",
+      "-c",
+      "-c",
+      "-c",
+      "-c",
+      "-c",
+      "-c",
+      "-c",
+      "-c"
+    ]
+  },
+  {
+    "runtime": "codex",
+    "role_input": "standard",
+    "slot_input": null,
+    "role_stored": "standard",
+    "slot_stored": null,
+    "session_stored": null,
+    "speed_args": [
+      "-c",
+      "-c",
+      "-c",
+      "service_tier=default",
+      "-c",
+      "-c",
+      "-c",
+      "-c",
+      "-c",
+      "-c",
+      "-c",
+      "-c",
+      "-c"
+    ]
+  },
+  {
+    "runtime": "codex",
+    "role_input": "standard",
+    "slot_input": "standard",
+    "role_stored": "standard",
+    "slot_stored": "standard",
+    "session_stored": "standard",
+    "speed_args": [
+      "-c",
+      "-c",
+      "-c",
+      "service_tier=default",
+      "-c",
+      "-c",
+      "-c",
+      "-c",
+      "-c",
+      "-c",
+      "-c",
+      "-c",
+      "-c"
+    ]
+  },
+  {
+    "runtime": "codex",
+    "role_input": "standard",
+    "slot_input": "fast",
+    "role_stored": "standard",
+    "slot_stored": "fast",
+    "session_stored": "fast",
+    "speed_args": [
+      "-c",
+      "-c",
+      "-c",
+      "service_tier=fast",
+      "-c",
+      "-c",
+      "-c",
+      "-c",
+      "-c",
+      "-c",
+      "-c",
+      "-c",
+      "-c"
+    ]
+  },
+  {
+    "runtime": "codex",
+    "role_input": "fast",
+    "slot_input": null,
+    "role_stored": "fast",
+    "slot_stored": null,
+    "session_stored": null,
+    "speed_args": [
+      "-c",
+      "-c",
+      "-c",
+      "service_tier=fast",
+      "-c",
+      "-c",
+      "-c",
+      "-c",
+      "-c",
+      "-c",
+      "-c",
+      "-c",
+      "-c"
+    ]
+  },
+  {
+    "runtime": "codex",
+    "role_input": "fast",
+    "slot_input": "standard",
+    "role_stored": "fast",
+    "slot_stored": "standard",
+    "session_stored": "standard",
+    "speed_args": [
+      "-c",
+      "-c",
+      "-c",
+      "service_tier=default",
+      "-c",
+      "-c",
+      "-c",
+      "-c",
+      "-c",
+      "-c",
+      "-c",
+      "-c",
+      "-c"
+    ]
+  },
+  {
+    "runtime": "codex",
+    "role_input": "fast",
+    "slot_input": "fast",
+    "role_stored": "fast",
+    "slot_stored": "fast",
+    "session_stored": "fast",
+    "speed_args": [
+      "-c",
+      "-c",
+      "-c",
+      "service_tier=fast",
+      "-c",
+      "-c",
+      "-c",
+      "-c",
+      "-c",
+      "-c",
+      "-c",
+      "-c",
+      "-c"
+    ]
+  },
+  {
+    "runtime": "claude-code",
+    "role_input": null,
+    "slot_input": null,
+    "role_stored": null,
+    "slot_stored": null,
+    "session_stored": null,
+    "speed_args": []
+  },
+  {
+    "runtime": "claude-code",
+    "role_input": null,
+    "slot_input": "standard",
+    "role_stored": null,
+    "slot_stored": null,
+    "session_stored": null,
+    "speed_args": []
+  },
+  {
+    "runtime": "claude-code",
+    "role_input": null,
+    "slot_input": "fast",
+    "role_stored": null,
+    "slot_stored": null,
+    "session_stored": null,
+    "speed_args": []
+  },
+  {
+    "runtime": "claude-code",
+    "role_input": "standard",
+    "slot_input": null,
+    "role_stored": null,
+    "slot_stored": null,
+    "session_stored": null,
+    "speed_args": []
+  },
+  {
+    "runtime": "claude-code",
+    "role_input": "standard",
+    "slot_input": "standard",
+    "role_stored": null,
+    "slot_stored": null,
+    "session_stored": null,
+    "speed_args": []
+  },
+  {
+    "runtime": "claude-code",
+    "role_input": "standard",
+    "slot_input": "fast",
+    "role_stored": null,
+    "slot_stored": null,
+    "session_stored": null,
+    "speed_args": []
+  },
+  {
+    "runtime": "claude-code",
+    "role_input": "fast",
+    "slot_input": null,
+    "role_stored": null,
+    "slot_stored": null,
+    "session_stored": null,
+    "speed_args": []
+  },
+  {
+    "runtime": "claude-code",
+    "role_input": "fast",
+    "slot_input": "standard",
+    "role_stored": null,
+    "slot_stored": null,
+    "session_stored": null,
+    "speed_args": []
+  },
+  {
+    "runtime": "claude-code",
+    "role_input": "fast",
+    "slot_input": "fast",
+    "role_stored": null,
+    "slot_stored": null,
+    "session_stored": null,
+    "speed_args": []
+  },
+  {
+    "runtime": "antigravity",
+    "role_input": null,
+    "slot_input": null,
+    "role_stored": null,
+    "slot_stored": null,
+    "session_stored": null,
+    "speed_args": []
+  },
+  {
+    "runtime": "antigravity",
+    "role_input": null,
+    "slot_input": "standard",
+    "role_stored": null,
+    "slot_stored": null,
+    "session_stored": null,
+    "speed_args": []
+  },
+  {
+    "runtime": "antigravity",
+    "role_input": null,
+    "slot_input": "fast",
+    "role_stored": null,
+    "slot_stored": null,
+    "session_stored": null,
+    "speed_args": []
+  },
+  {
+    "runtime": "antigravity",
+    "role_input": "standard",
+    "slot_input": null,
+    "role_stored": null,
+    "slot_stored": null,
+    "session_stored": null,
+    "speed_args": []
+  },
+  {
+    "runtime": "antigravity",
+    "role_input": "standard",
+    "slot_input": "standard",
+    "role_stored": null,
+    "slot_stored": null,
+    "session_stored": null,
+    "speed_args": []
+  },
+  {
+    "runtime": "antigravity",
+    "role_input": "standard",
+    "slot_input": "fast",
+    "role_stored": null,
+    "slot_stored": null,
+    "session_stored": null,
+    "speed_args": []
+  },
+  {
+    "runtime": "antigravity",
+    "role_input": "fast",
+    "slot_input": null,
+    "role_stored": null,
+    "slot_stored": null,
+    "session_stored": null,
+    "speed_args": []
+  },
+  {
+    "runtime": "antigravity",
+    "role_input": "fast",
+    "slot_input": "standard",
+    "role_stored": null,
+    "slot_stored": null,
+    "session_stored": null,
+    "speed_args": []
+  },
+  {
+    "runtime": "antigravity",
+    "role_input": "fast",
+    "slot_input": "fast",
+    "role_stored": null,
+    "slot_stored": null,
+    "session_stored": null,
+    "speed_args": []
+  },
+  {
+    "runtime": "pi",
+    "role_input": null,
+    "slot_input": null,
+    "role_stored": null,
+    "slot_stored": null,
+    "session_stored": null,
+    "speed_args": []
+  },
+  {
+    "runtime": "pi",
+    "role_input": null,
+    "slot_input": "standard",
+    "role_stored": null,
+    "slot_stored": null,
+    "session_stored": null,
+    "speed_args": []
+  },
+  {
+    "runtime": "pi",
+    "role_input": null,
+    "slot_input": "fast",
+    "role_stored": null,
+    "slot_stored": null,
+    "session_stored": null,
+    "speed_args": []
+  },
+  {
+    "runtime": "pi",
+    "role_input": "standard",
+    "slot_input": null,
+    "role_stored": null,
+    "slot_stored": null,
+    "session_stored": null,
+    "speed_args": []
+  },
+  {
+    "runtime": "pi",
+    "role_input": "standard",
+    "slot_input": "standard",
+    "role_stored": null,
+    "slot_stored": null,
+    "session_stored": null,
+    "speed_args": []
+  },
+  {
+    "runtime": "pi",
+    "role_input": "standard",
+    "slot_input": "fast",
+    "role_stored": null,
+    "slot_stored": null,
+    "session_stored": null,
+    "speed_args": []
+  },
+  {
+    "runtime": "pi",
+    "role_input": "fast",
+    "slot_input": null,
+    "role_stored": null,
+    "slot_stored": null,
+    "session_stored": null,
+    "speed_args": []
+  },
+  {
+    "runtime": "pi",
+    "role_input": "fast",
+    "slot_input": "standard",
+    "role_stored": null,
+    "slot_stored": null,
+    "session_stored": null,
+    "speed_args": []
+  },
+  {
+    "runtime": "pi",
+    "role_input": "fast",
+    "slot_input": "fast",
+    "role_stored": null,
+    "slot_stored": null,
+    "session_stored": null,
+    "speed_args": []
+  },
+  {
+    "runtime": "copilot",
+    "role_input": null,
+    "slot_input": null,
+    "role_stored": null,
+    "slot_stored": null,
+    "session_stored": null,
+    "speed_args": []
+  },
+  {
+    "runtime": "copilot",
+    "role_input": null,
+    "slot_input": "standard",
+    "role_stored": null,
+    "slot_stored": null,
+    "session_stored": null,
+    "speed_args": []
+  },
+  {
+    "runtime": "copilot",
+    "role_input": null,
+    "slot_input": "fast",
+    "role_stored": null,
+    "slot_stored": null,
+    "session_stored": null,
+    "speed_args": []
+  },
+  {
+    "runtime": "copilot",
+    "role_input": "standard",
+    "slot_input": null,
+    "role_stored": null,
+    "slot_stored": null,
+    "session_stored": null,
+    "speed_args": []
+  },
+  {
+    "runtime": "copilot",
+    "role_input": "standard",
+    "slot_input": "standard",
+    "role_stored": null,
+    "slot_stored": null,
+    "session_stored": null,
+    "speed_args": []
+  },
+  {
+    "runtime": "copilot",
+    "role_input": "standard",
+    "slot_input": "fast",
+    "role_stored": null,
+    "slot_stored": null,
+    "session_stored": null,
+    "speed_args": []
+  },
+  {
+    "runtime": "copilot",
+    "role_input": "fast",
+    "slot_input": null,
+    "role_stored": null,
+    "slot_stored": null,
+    "session_stored": null,
+    "speed_args": []
+  },
+  {
+    "runtime": "copilot",
+    "role_input": "fast",
+    "slot_input": "standard",
+    "role_stored": null,
+    "slot_stored": null,
+    "session_stored": null,
+    "speed_args": []
+  },
+  {
+    "runtime": "copilot",
+    "role_input": "fast",
+    "slot_input": "fast",
+    "role_stored": null,
+    "slot_stored": null,
+    "session_stored": null,
+    "speed_args": []
+  },
+  {
+    "runtime": "trae",
+    "role_input": null,
+    "slot_input": null,
+    "role_stored": null,
+    "slot_stored": null,
+    "session_stored": null,
+    "speed_args": [
+      "-c"
+    ]
+  },
+  {
+    "runtime": "trae",
+    "role_input": null,
+    "slot_input": "standard",
+    "role_stored": null,
+    "slot_stored": null,
+    "session_stored": null,
+    "speed_args": [
+      "-c"
+    ]
+  },
+  {
+    "runtime": "trae",
+    "role_input": null,
+    "slot_input": "fast",
+    "role_stored": null,
+    "slot_stored": null,
+    "session_stored": null,
+    "speed_args": [
+      "-c"
+    ]
+  },
+  {
+    "runtime": "trae",
+    "role_input": "standard",
+    "slot_input": null,
+    "role_stored": null,
+    "slot_stored": null,
+    "session_stored": null,
+    "speed_args": [
+      "-c"
+    ]
+  },
+  {
+    "runtime": "trae",
+    "role_input": "standard",
+    "slot_input": "standard",
+    "role_stored": null,
+    "slot_stored": null,
+    "session_stored": null,
+    "speed_args": [
+      "-c"
+    ]
+  },
+  {
+    "runtime": "trae",
+    "role_input": "standard",
+    "slot_input": "fast",
+    "role_stored": null,
+    "slot_stored": null,
+    "session_stored": null,
+    "speed_args": [
+      "-c"
+    ]
+  },
+  {
+    "runtime": "trae",
+    "role_input": "fast",
+    "slot_input": null,
+    "role_stored": null,
+    "slot_stored": null,
+    "session_stored": null,
+    "speed_args": [
+      "-c"
+    ]
+  },
+  {
+    "runtime": "trae",
+    "role_input": "fast",
+    "slot_input": "standard",
+    "role_stored": null,
+    "slot_stored": null,
+    "session_stored": null,
+    "speed_args": [
+      "-c"
+    ]
+  },
+  {
+    "runtime": "trae",
+    "role_input": "fast",
+    "slot_input": "fast",
+    "role_stored": null,
+    "slot_stored": null,
+    "session_stored": null,
+    "speed_args": [
+      "-c"
+    ]
+  }
+]

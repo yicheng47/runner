@@ -142,7 +142,6 @@ fn codex_resume_skips_first_prompt_injection() {
         "check_for_update_on_startup=false".into(),
     ];
     expected.extend(crate::runtimes::codex::codex_status_args(
-        Some(Runtime::Codex),
         &[],
         Path::new("/tmp"),
         &session_id,

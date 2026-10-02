@@ -104,14 +104,13 @@ fn root_is_detected(relative: &str, available: &[Runtime]) -> bool {
         .any(|runtime| available.contains(runtime))
 }
 
-fn root_runtimes(relative: &str) -> &'static [Runtime] {
-    match relative {
-        ".claude/skills" => &[Runtime::ClaudeCode],
-        ".agents/skills" => &[Runtime::Codex, Runtime::Copilot, Runtime::Pi],
-        ".trae/skills" => &[Runtime::Trae],
-        ".gemini/antigravity-cli/skills" => &[Runtime::Antigravity],
-        _ => &[],
-    }
+fn root_runtimes(relative: &str) -> Vec<Runtime> {
+    let mut runtimes: Vec<_> = Runtime::ALL
+        .into_iter()
+        .filter(|runtime| runtime.managed_skill_root() == Some(relative))
+        .collect();
+    runtimes.sort_by_key(|runtime| runtime.key());
+    runtimes
 }
 
 #[cfg(test)]
@@ -237,7 +236,7 @@ mod tests {
             fs::write(folder.join(agent_skill::SKILL_MARKER), "managed").unwrap();
             fs::write(folder.join("SKILL.md"), "stale canary").unwrap();
         }
-        let config_canaries: Vec<_> = runner_backend::ops::mcp::McpClientId::ALL
+        let config_canaries: Vec<_> = runner_backend::ops::mcp::McpClientId::all()
             .into_iter()
             .map(|client| client.config_path(&home))
             .collect();

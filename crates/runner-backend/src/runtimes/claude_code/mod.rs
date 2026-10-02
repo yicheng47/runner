@@ -1,3 +1,6 @@
+pub(crate) mod models;
+pub(crate) mod skills;
+pub(crate) mod usage;
 /// Minimum spacing between consecutive `claude-code` PTY launches.
 /// Long enough for one claude's OAuth refresh round-trip (network
 /// POST to api.anthropic.com plus keychain write) to land before a
@@ -30,20 +33,18 @@ use super::catalog::*;
 use super::helpers::*;
 use super::*;
 
-pub(crate) fn inject_claude_settings(runtime: Option<Runtime>, role_args: &[String]) -> bool {
-    runtime == Some(Runtime::ClaudeCode)
-        && !role_args
-            .iter()
-            .any(|arg| arg == "--settings" || arg.starts_with("--settings="))
+pub(crate) fn inject_claude_settings(role_args: &[String]) -> bool {
+    !role_args
+        .iter()
+        .any(|arg| arg == "--settings" || arg.starts_with("--settings="))
 }
 
 pub(crate) fn claude_settings_args(
-    runtime: Option<Runtime>,
     role_args: &[String],
     app_data_dir: &Path,
     runner_session_id: &str,
 ) -> Vec<String> {
-    if !inject_claude_settings(runtime, role_args) {
+    if !inject_claude_settings(role_args) {
         return Vec::new();
     }
     let drop_path = crate::session::claude_rekey::drop_path(app_data_dir, runner_session_id);
@@ -186,6 +187,40 @@ fn mode_matches(args: &[String], mode: PermissionMode) -> bool {
 }
 pub struct ClaudeCode;
 impl RuntimeAdapter for ClaudeCode {
+    fn mcp(&self) -> Option<&'static McpConfig> {
+        Some(&MCP)
+    }
+    fn usage(&self) -> Option<&'static UsageSource> {
+        Some(&USAGE)
+    }
+
+    fn skills(&self) -> SkillSupport {
+        SkillSupport {
+            roots: SKILL_DIRS,
+            load: skills::load,
+            toggle: Some(skills::set_enabled),
+            hidden: |document| document.value("user-invocable") == Some("false"),
+            ..Default::default()
+        }
+    }
+
+    fn npm_dist_tag(&self) -> &'static str {
+        npm_dist_tag()
+    }
+    fn model_discovery(&self) -> Option<&'static ModelDiscoverySource> {
+        Some(&DISCOVERY)
+    }
+    fn capabilities(&self) -> RuntimeCapabilities {
+        RuntimeCapabilities {
+            usage: true,
+            global_skill_toggle: true,
+            ..Default::default()
+        }
+    }
+    fn native_defaults(&self, home: &Path) -> crate::runtime_defaults::RuntimeDefaults {
+        crate::runtime_defaults::json_defaults(&settings_path(home), false)
+    }
+
     fn status_hooks(&self) -> Option<&'static dyn StatusHooks> {
         Some(&Hooks)
     }
@@ -215,6 +250,7 @@ impl RuntimeAdapter for ClaudeCode {
             name: Runtime::ClaudeCode,
             display_name: Runtime::ClaudeCode.display_name(),
             command: Runtime::ClaudeCode.command().unwrap(),
+            capabilities: self.capabilities(),
             native_fork: true,
             description: "Anthropic Claude Code CLI",
             install_url: "https://code.claude.com/docs/en/setup",
@@ -227,7 +263,7 @@ impl RuntimeAdapter for ClaudeCode {
                 option("haiku", "haiku", "Latest Claude Haiku."),
             ],
             efforts: claude_efforts,
-            skills_dirs: &[".claude/skills"],
+            skills_dirs: SKILL_DIRS,
             update_args: &["update"],
             npm_package: Some("@anthropic-ai/claude-code"),
         })
@@ -314,7 +350,6 @@ impl RuntimeAdapter for ClaudeCode {
         let mut out = Vec::new();
         out.extend(self.model_effort_args(ctx.model, ctx.effort));
         out.extend(claude_settings_args(
-            Some(Runtime::ClaudeCode),
             ctx.role_args,
             ctx.app_data_dir,
             ctx.session_id,
@@ -341,9 +376,7 @@ impl StatusHooks for Hooks {
         app_data_dir: &Path,
         session_id: &str,
     ) -> std::collections::BTreeMap<String, String> {
-        if !(self.supported(cfg!(windows))
-            && inject_claude_settings(Some(Runtime::ClaudeCode), role_args))
-        {
+        if !(self.supported(cfg!(windows)) && inject_claude_settings(role_args)) {
             return std::collections::BTreeMap::new();
         }
         status_env(
@@ -374,3 +407,66 @@ impl StatusHooks for Hooks {
 
 #[cfg(test)]
 mod tests;
+
+pub(crate) const CLAUDE_SETTINGS_RELATIVE_PATH: &str = ".claude/settings.json";
+pub(crate) fn settings_path(home: &Path) -> PathBuf {
+    home.join(CLAUDE_SETTINGS_RELATIVE_PATH)
+}
+
+static DISCOVERY: ModelDiscoverySource = ModelDiscoverySource {
+    order: 1,
+    method: "list_models",
+    query: models::query,
+    config_home: || config_home(Some("CLAUDE_CONFIG_DIR"), ".claude"),
+};
+
+fn npm_dist_tag() -> &'static str {
+    let config_dir = std::env::var_os("CLAUDE_CONFIG_DIR")
+        .filter(|dir| !dir.is_empty())
+        .map(std::path::PathBuf::from)
+        .or_else(|| runner_core::app_paths::home_dir().map(|home| home.join(".claude")));
+    #[cfg(test)]
+    let config_dir = crate::runtimes::test_home()
+        .map(|home| home.join(".claude"))
+        .or(config_dir);
+    config_dir
+        .and_then(|dir| claude_channel(&dir.join("settings.json")))
+        .unwrap_or("latest")
+}
+
+pub(crate) fn claude_channel(settings: &std::path::Path) -> Option<&'static str> {
+    let settings: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(settings).ok()?).ok()?;
+    match settings.get("autoUpdatesChannel")?.as_str()? {
+        "stable" => Some("stable"),
+        "latest" => Some("latest"),
+        _ => None,
+    }
+}
+
+static USAGE: UsageSource = UsageSource {
+    fetch: |_command, env, denied| {
+        if denied {
+            Err(crate::usage::UnavailableReason::KeychainDenied)
+        } else {
+            usage::fetch_claude(env)
+        }
+    },
+};
+
+const SKILL_DIRS: &[&str] = &[".claude/skills"];
+
+static MCP: McpConfig = McpConfig {
+    wire_name: "claude_code",
+    serialized_name: "ClaudeCode",
+    order: 0,
+    config_file: "~/.claude.json",
+    format: McpFormat::Json,
+    translate: crate::ops::mcp::json_entry,
+    preserve_disabled: false,
+    supports_http: true,
+};
+#[allow(non_upper_case_globals)]
+impl crate::ops::mcp::McpClientId {
+    pub const ClaudeCode: Self = Self(Runtime::ClaudeCode);
+}

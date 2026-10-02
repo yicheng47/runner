@@ -1,14 +1,20 @@
 pub(crate) mod codex_status;
 pub(crate) mod codex_trust;
+pub(crate) mod models;
+pub(crate) mod skills;
+pub(crate) mod usage;
 use super::catalog::*;
 use super::helpers::*;
 use super::*;
+#[cfg(test)]
+use crate::golden::config_home as capture_home;
+#[cfg(not(test))]
+use runner_core::app_paths::home_dir as capture_home;
 
-pub(crate) fn inject_codex_hooks(runtime: Option<Runtime>, args: &[String], windows: bool) -> bool {
-    if runtime != Some(Runtime::Codex)
-        || !Codex
-            .status_hooks()
-            .is_some_and(|hooks| hooks.supported(windows))
+pub(crate) fn inject_codex_hooks(args: &[String], windows: bool) -> bool {
+    if !Codex
+        .status_hooks()
+        .is_some_and(|hooks| hooks.supported(windows))
     {
         return false;
     }
@@ -53,12 +59,11 @@ pub(crate) fn inject_codex_hooks(runtime: Option<Runtime>, args: &[String], wind
 }
 
 pub(crate) fn codex_status_args(
-    runtime: Option<Runtime>,
     role_args: &[String],
     app_data_dir: &Path,
     session_id: &str,
 ) -> Vec<String> {
-    if !inject_codex_hooks(runtime, role_args, cfg!(windows)) {
+    if !inject_codex_hooks(role_args, cfg!(windows)) {
         return Vec::new();
     }
     let path = crate::session::hook_feed::status_path(app_data_dir, session_id);
@@ -134,13 +139,45 @@ fn mode_matches(args: &[String], mode: PermissionMode) -> bool {
 }
 pub struct Codex;
 impl RuntimeAdapter for Codex {
+    fn mcp(&self) -> Option<&'static McpConfig> {
+        Some(&MCP)
+    }
+    fn usage(&self) -> Option<&'static UsageSource> {
+        Some(&USAGE)
+    }
+
+    fn skills(&self) -> SkillSupport {
+        SkillSupport {
+            roots: SKILL_DIRS,
+            load: skills::load,
+            toggle: Some(skills::set_enabled),
+            manual: skills::manual,
+            ..Default::default()
+        }
+    }
+
+    fn model_discovery(&self) -> Option<&'static ModelDiscoverySource> {
+        Some(&DISCOVERY)
+    }
+    fn capabilities(&self) -> RuntimeCapabilities {
+        RuntimeCapabilities {
+            usage: true,
+            global_skill_toggle: true,
+            skill_toggle_requires_marker: true,
+            codex_speed: true,
+            ..Default::default()
+        }
+    }
+    fn native_defaults(&self, home: &Path) -> crate::runtime_defaults::RuntimeDefaults {
+        crate::runtime_defaults::toml_defaults(&config_path(home))
+    }
+
     fn status_hooks(&self) -> Option<&'static dyn StatusHooks> {
         Some(&Hooks)
     }
     fn key_capture(&self) -> KeyCapture {
         KeyCapture::RolloutScan {
-            sessions_root: runner_core::app_paths::home_dir()
-                .map(|home| home.join(".codex").join("sessions")),
+            sessions_root: capture_home().map(|home| home.join(".codex").join("sessions")),
         }
     }
     fn seed_trust(
@@ -171,6 +208,7 @@ impl RuntimeAdapter for Codex {
             name: Runtime::Codex,
             display_name: Runtime::Codex.display_name(),
             command: Runtime::Codex.command().unwrap(),
+            capabilities: self.capabilities(),
             native_fork: true,
             description: "OpenAI Codex CLI",
             install_url: "https://developers.openai.com/codex/cli",
@@ -215,7 +253,7 @@ impl RuntimeAdapter for Codex {
                 ),
             ],
             efforts: codex_efforts,
-            skills_dirs: &[".agents/skills", ".codex/skills"],
+            skills_dirs: SKILL_DIRS,
             update_args: &["update"],
             npm_package: Some("@openai/codex"),
         })
@@ -263,7 +301,6 @@ impl RuntimeAdapter for Codex {
             ]);
         }
         out.extend(codex_status_args(
-            Some(Runtime::Codex),
             ctx.role_args,
             ctx.app_data_dir,
             ctx.session_id,
@@ -288,7 +325,7 @@ impl StatusHooks for Hooks {
         app_data_dir: &Path,
         session_id: &str,
     ) -> std::collections::BTreeMap<String, String> {
-        if !(inject_codex_hooks(Some(Runtime::Codex), role_args, cfg!(windows))) {
+        if !(inject_codex_hooks(role_args, cfg!(windows))) {
             return std::collections::BTreeMap::new();
         }
         status_env(
@@ -319,3 +356,36 @@ impl StatusHooks for Hooks {
 
 #[cfg(test)]
 mod tests;
+
+pub(crate) const CODEX_CONFIG_RELATIVE_PATH: &str = ".codex/config.toml";
+pub(crate) fn config_path(home: &Path) -> PathBuf {
+    home.join(CODEX_CONFIG_RELATIVE_PATH)
+}
+
+static DISCOVERY: ModelDiscoverySource = ModelDiscoverySource {
+    order: 0,
+    method: "debug models",
+    query: models::query,
+    config_home: || config_home(Some("CODEX_HOME"), ".codex"),
+};
+
+static USAGE: UsageSource = UsageSource {
+    fetch: |command, env, _denied| usage::fetch_codex(command, env),
+};
+
+const SKILL_DIRS: &[&str] = &[".agents/skills", ".codex/skills"];
+
+static MCP: McpConfig = McpConfig {
+    wire_name: "codex",
+    serialized_name: "Codex",
+    order: 1,
+    config_file: "~/.codex/config.toml",
+    format: McpFormat::Toml,
+    translate: crate::ops::mcp::toml_entry,
+    preserve_disabled: false,
+    supports_http: true,
+};
+#[allow(non_upper_case_globals)]
+impl crate::ops::mcp::McpClientId {
+    pub const Codex: Self = Self(Runtime::Codex);
+}

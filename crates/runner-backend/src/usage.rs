@@ -1,7 +1,3 @@
-#[cfg(any(target_os = "macos", all(test, unix)))]
-use std::io::Read;
-use std::io::{BufRead, BufReader, Write};
-use std::process::{Command, Stdio};
 use std::sync::{Arc, Condvar, Mutex, RwLock};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -10,14 +6,11 @@ use chrono::{DateTime, Utc};
 use serde_json::Value;
 
 use crate::model::Runtime;
-use crate::runtime_status::{direct_chat_path, RuntimeCommandSource};
-use crate::session::process::{prepare_headless_fork, ProcessTree};
+use crate::runtime_status::RuntimeCommandSource;
 use crate::shell_path::LoginShellEnv;
 use crate::AppCore;
 
-const FETCH_TIMEOUT: Duration = Duration::from_secs(10);
-#[cfg(target_os = "macos")]
-const KEYCHAIN_TIMEOUT: Duration = Duration::from_secs(120);
+pub(crate) const FETCH_TIMEOUT: Duration = Duration::from_secs(10);
 const MIN_REFRESH_VISIBLE: Duration = Duration::from_millis(400);
 const SCHEDULE_INTERVAL: Duration = Duration::from_secs(15 * 60);
 const OPEN_INTERVAL: Duration = Duration::from_secs(5 * 60);
@@ -48,14 +41,24 @@ pub enum UnavailableReason {
 
 #[derive(Clone, Debug, Default)]
 pub struct UsageSnapshot {
-    pub claude: Option<AgentUsage>,
-    pub codex: Option<AgentUsage>,
-    pub antigravity: Option<AgentUsage>,
-    pub claude_error: Option<UnavailableReason>,
-    pub codex_error: Option<UnavailableReason>,
-    pub antigravity_error: Option<UnavailableReason>,
+    pub runtimes: std::collections::HashMap<Runtime, RuntimeUsage>,
     pub last_fetch_at: Option<DateTime<Utc>>,
     pub refreshing: bool,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct RuntimeUsage {
+    pub value: Option<AgentUsage>,
+    pub error: Option<UnavailableReason>,
+}
+
+impl UsageSnapshot {
+    pub fn get(&self, runtime: Runtime) -> Option<&AgentUsage> {
+        self.runtimes.get(&runtime)?.value.as_ref()
+    }
+    pub fn error(&self, runtime: Runtime) -> Option<UnavailableReason> {
+        self.runtimes.get(&runtime)?.error
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -169,9 +172,7 @@ impl UsageService {
         );
         let env = core.runtime_shell_env.read().unwrap().clone();
         let enabled = self.enabled();
-        let mut claude = None;
-        let mut codex = None;
-        let mut antigravity = None;
+        let mut results = Vec::new();
         if let Ok(statuses) = statuses {
             for status in statuses.runtimes {
                 if !enabled.contains(&status.name)
@@ -185,18 +186,9 @@ impl UsageService {
                 let Some(command) = status.effective_command else {
                     continue;
                 };
-                match status.name {
-                    Runtime::ClaudeCode => {
-                        let denied = self.state.lock().unwrap().keychain_denied;
-                        claude = Some(if denied {
-                            Err(UnavailableReason::KeychainDenied)
-                        } else {
-                            fetch_claude(&env)
-                        });
-                    }
-                    Runtime::Codex => codex = Some(fetch_codex(&command, &env)),
-                    Runtime::Antigravity => antigravity = Some(fetch_antigravity(&command, &env)),
-                    _ => {}
+                if let Some(source) = crate::runtimes::adapter(status.name).usage() {
+                    let denied = self.state.lock().unwrap().keychain_denied;
+                    results.push((status.name, (source.fetch)(&command, &env, denied)));
                 }
             }
         }
@@ -212,30 +204,12 @@ impl UsageService {
         }
         let now = Utc::now();
         let mut state = self.state.lock().unwrap();
-        if let Some(result) = claude {
+        for (runtime, result) in results {
             if result == Err(UnavailableReason::KeychainDenied) {
                 state.keychain_denied = true;
             }
-            let snapshot = &mut state.snapshot;
-            apply_result(
-                &mut snapshot.claude,
-                &mut snapshot.claude_error,
-                result,
-                now,
-            );
-        }
-        if let Some(result) = codex {
-            let snapshot = &mut state.snapshot;
-            apply_result(&mut snapshot.codex, &mut snapshot.codex_error, result, now);
-        }
-        if let Some(result) = antigravity {
-            let snapshot = &mut state.snapshot;
-            apply_result(
-                &mut snapshot.antigravity,
-                &mut snapshot.antigravity_error,
-                result,
-                now,
-            );
+            let entry = state.snapshot.runtimes.entry(runtime).or_default();
+            apply_result(&mut entry.value, &mut entry.error, result, now);
         }
         state.snapshot.last_fetch_at = Some(now);
         state.snapshot.refreshing = false;
@@ -294,7 +268,7 @@ fn apply_result(
     }
 }
 
-fn parse_timestamp(value: Option<&Value>) -> Option<DateTime<Utc>> {
+pub(crate) fn parse_timestamp(value: Option<&Value>) -> Option<DateTime<Utc>> {
     let value = value?;
     if let Some(seconds) = value
         .as_i64()
@@ -310,295 +284,11 @@ fn parse_timestamp(value: Option<&Value>) -> Option<DateTime<Utc>> {
     value.as_str()?.parse().ok()
 }
 
-fn percent(value: Option<&Value>) -> Option<f64> {
+pub(crate) fn percent(value: Option<&Value>) -> Option<f64> {
     value?
         .as_f64()
         .filter(|value| value.is_finite())
         .map(|value| value.clamp(0., 100.))
-}
-
-fn parse_codex_window(value: &Value) -> Option<UsageWindow> {
-    let duration = value.get("windowDurationMins")?.as_u64()?;
-    let name = match duration {
-        299..=301 => "5 hours".to_owned(),
-        10079..=10081 => "Week".to_owned(),
-        _ => format!("{duration} min"),
-    };
-    Some(UsageWindow {
-        name,
-        used_percent: percent(value.get("usedPercent"))?,
-        resets_at: parse_timestamp(value.get("resetsAt")),
-    })
-}
-
-fn parse_codex(value: &Value) -> Result<Vec<UsageWindow>, UnavailableReason> {
-    let limits = value
-        .get("rateLimits")
-        .ok_or(UnavailableReason::InvalidResponse)?;
-    let mut windows: Vec<_> = ["primary", "secondary"]
-        .into_iter()
-        .filter_map(|name| limits.get(name).and_then(parse_codex_window))
-        .collect();
-    windows.sort_by_key(|window| match window.name.as_str() {
-        "5 hours" => 0,
-        "Week" => 1,
-        _ => 2,
-    });
-    if windows.is_empty() {
-        Err(UnavailableReason::InvalidResponse)
-    } else {
-        Ok(windows)
-    }
-}
-
-fn parse_antigravity(value: &Value) -> Result<Vec<UsageWindow>, UnavailableReason> {
-    if value.get("status").and_then(Value::as_str) != Some("SUCCESS")
-        || value.pointer("/command/name").and_then(Value::as_str) != Some("usage")
-    {
-        return Err(UnavailableReason::InvalidResponse);
-    }
-    let groups = value
-        .pointer("/command/data/groups")
-        .and_then(Value::as_array)
-        .ok_or(UnavailableReason::InvalidResponse)?;
-    let mut windows = Vec::new();
-    for group in groups {
-        let Some(name) = group.get("name").and_then(Value::as_str) else {
-            continue;
-        };
-        let Some(buckets) = group.get("buckets").and_then(Value::as_array) else {
-            continue;
-        };
-        for bucket in buckets {
-            let Some(window) = bucket.get("window").and_then(Value::as_str) else {
-                continue;
-            };
-            let Some(remaining) = bucket
-                .get("remaining_fraction")
-                .and_then(Value::as_f64)
-                .filter(|value| value.is_finite() && (0. ..=1.).contains(value))
-            else {
-                continue;
-            };
-            let label = match window {
-                "5h" => "5 hours",
-                "weekly" => "Week",
-                _ => continue,
-            };
-            windows.push(UsageWindow {
-                name: format!("{name} · {label} used"),
-                used_percent: (1. - remaining) * 100.,
-                resets_at: parse_timestamp(bucket.get("reset_time")),
-            });
-        }
-    }
-    if windows.is_empty() {
-        Err(UnavailableReason::InvalidResponse)
-    } else {
-        Ok(windows)
-    }
-}
-
-fn fetch_antigravity(
-    command: &str,
-    env: &LoginShellEnv,
-) -> Result<Vec<UsageWindow>, UnavailableReason> {
-    let output = crate::runtime_status::models::command_output(
-        command,
-        &["-p", "/usage", "--output-format", "json"],
-        env,
-        Duration::from_secs(15),
-    )
-    .ok_or(UnavailableReason::AntigravityNoAnswer)?;
-    let value: Value =
-        serde_json::from_slice(&output).map_err(|_| UnavailableReason::InvalidResponse)?;
-    parse_antigravity(&value)
-}
-
-fn parse_claude_window(value: Option<&Value>, name: String) -> Option<UsageWindow> {
-    let value = value?;
-    Some(UsageWindow {
-        name,
-        used_percent: percent(
-            value
-                .get("utilization")
-                .or_else(|| value.get("used_percentage"))
-                .or_else(|| value.get("percent")),
-        )?,
-        resets_at: parse_timestamp(value.get("resets_at")),
-    })
-}
-
-fn parse_claude(value: &Value) -> Result<Vec<UsageWindow>, UnavailableReason> {
-    let mut windows = Vec::new();
-    if let Some(window) = parse_claude_window(value.get("five_hour"), "5 hours".into()) {
-        windows.push(window);
-    }
-    if let Some(window) = parse_claude_window(value.get("seven_day"), "Week".into()) {
-        windows.push(window);
-    }
-    if let Some(limits) = value.get("limits").and_then(Value::as_array) {
-        for limit in limits
-            .iter()
-            .filter(|limit| limit.get("kind").and_then(Value::as_str) == Some("weekly_scoped"))
-        {
-            let Some(model) = limit
-                .pointer("/scope/model/display_name")
-                .and_then(Value::as_str)
-                .filter(|model| !model.trim().is_empty())
-            else {
-                continue;
-            };
-            if let Some(window) = parse_claude_window(Some(limit), format!("{model} · week")) {
-                windows.push(window);
-            }
-        }
-    }
-    if windows.is_empty() {
-        Err(UnavailableReason::InvalidResponse)
-    } else {
-        Ok(windows)
-    }
-}
-
-fn parse_credentials(bytes: &[u8]) -> Result<String, UnavailableReason> {
-    let value: Value = serde_json::from_slice(bytes).map_err(|_| UnavailableReason::SignIn)?;
-    value
-        .pointer("/claudeAiOauth/accessToken")
-        .and_then(Value::as_str)
-        .filter(|token| !token.is_empty())
-        .map(str::to_owned)
-        .ok_or(UnavailableReason::SignIn)
-}
-
-#[cfg(target_os = "macos")]
-fn read_claude_credentials() -> Result<Vec<u8>, UnavailableReason> {
-    let user = std::env::var("USER").ok();
-    read_claude_credentials_with(
-        std::path::Path::new("/usr/bin/security"),
-        keychain_account(user.as_deref()),
-        KEYCHAIN_TIMEOUT,
-    )
-}
-
-#[cfg(any(target_os = "macos", test))]
-fn keychain_account(user: Option<&str>) -> &str {
-    user.filter(|name| {
-        !name.is_empty()
-            && name
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || "._-".contains(c))
-    })
-    .unwrap_or("claude-code-user")
-}
-
-#[cfg(any(target_os = "macos", test))]
-fn keychain_error_reason(code: Option<i32>, stderr: &[u8]) -> UnavailableReason {
-    let message = String::from_utf8_lossy(stderr).to_ascii_lowercase();
-    match code {
-        Some(44) => UnavailableReason::SignIn,
-        Some(51 | 128) => UnavailableReason::KeychainDenied,
-        _ if message.contains("user canceled")
-            || message.contains("user cancelled")
-            || message.contains("user denied") =>
-        {
-            UnavailableReason::KeychainDenied
-        }
-        _ => UnavailableReason::KeychainUnavailable,
-    }
-}
-
-#[cfg(any(target_os = "macos", all(test, unix)))]
-fn read_claude_credentials_with(
-    command: &std::path::Path,
-    account: &str,
-    timeout: Duration,
-) -> Result<Vec<u8>, UnavailableReason> {
-    let mut child = Command::new(command)
-        .args([
-            "find-generic-password",
-            "-s",
-            "Claude Code-credentials",
-            "-a",
-            account,
-            "-w",
-        ])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|_| UnavailableReason::KeychainUnavailable)?;
-    let mut stdout = child.stdout.take().unwrap();
-    let stdout_reader = thread::spawn(move || {
-        let mut bytes = Vec::new();
-        stdout.read_to_end(&mut bytes).map(|_| bytes)
-    });
-    let mut stderr = child.stderr.take().unwrap();
-    let stderr_reader = thread::spawn(move || {
-        let mut bytes = Vec::new();
-        stderr.read_to_end(&mut bytes).map(|_| bytes)
-    });
-    let deadline = Instant::now() + timeout;
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break Some(status),
-            Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(50)),
-            _ => {
-                let _ = child.kill();
-                let _ = child.wait();
-                break None;
-            }
-        }
-    };
-    let stdout = stdout_reader.join().ok().and_then(Result::ok);
-    let stderr = stderr_reader.join().ok().and_then(Result::ok);
-    let status = status.ok_or(UnavailableReason::KeychainUnavailable)?;
-    let stdout = stdout.ok_or(UnavailableReason::KeychainUnavailable)?;
-    if status.success() {
-        Ok(stdout)
-    } else {
-        let stderr = stderr.ok_or(UnavailableReason::KeychainUnavailable)?;
-        Err(keychain_error_reason(status.code(), &stderr))
-    }
-}
-
-#[cfg(not(target_os = "macos"))]
-fn read_claude_credentials() -> Result<Vec<u8>, UnavailableReason> {
-    let home = runner_core::app_paths::home_dir().ok_or(UnavailableReason::SignIn)?;
-    read_claude_credentials_file(&home.join(".claude").join(".credentials.json"))
-}
-
-#[cfg(any(not(target_os = "macos"), test))]
-fn read_claude_credentials_file(path: &std::path::Path) -> Result<Vec<u8>, UnavailableReason> {
-    std::fs::read(path).map_err(|_| UnavailableReason::SignIn)
-}
-
-fn claude_response(status: u16, value: &Value) -> Result<Vec<UsageWindow>, UnavailableReason> {
-    if matches!(status, 401 | 403) {
-        return Err(UnavailableReason::SignIn);
-    }
-    if !(200..300).contains(&status) {
-        return Err(UnavailableReason::ClaudeUnreachable);
-    }
-    parse_claude(value)
-}
-
-fn fetch_claude(env: &LoginShellEnv) -> Result<Vec<UsageWindow>, UnavailableReason> {
-    let token = parse_credentials(&read_claude_credentials()?)?;
-    let client = http_client(env).map_err(|_| UnavailableReason::ClaudeUnreachable)?;
-    let response = client
-        .get("https://api.anthropic.com/api/oauth/usage")
-        .bearer_auth(token)
-        .header("anthropic-beta", "oauth-2025-04-20")
-        .send()
-        .map_err(|_| UnavailableReason::ClaudeUnreachable)?;
-    let status = response.status().as_u16();
-    if !(200..300).contains(&status) {
-        return claude_response(status, &Value::Null);
-    }
-    let value: Value = response
-        .json()
-        .map_err(|_| UnavailableReason::InvalidResponse)?;
-    claude_response(status, &value)
 }
 
 pub(crate) fn http_client(
@@ -634,146 +324,21 @@ pub(crate) fn http_client(
     builder.build()
 }
 
-fn fetch_codex(command: &str, env: &LoginShellEnv) -> Result<Vec<UsageWindow>, UnavailableReason> {
-    fetch_codex_with_timeout(command, env, FETCH_TIMEOUT)
-}
-
-fn fetch_codex_with_timeout(
-    command: &str,
-    env: &LoginShellEnv,
-    timeout: Duration,
-) -> Result<Vec<UsageWindow>, UnavailableReason> {
-    let mut process = Command::new(command);
-    process
-        .args([
-            "-c",
-            "approval_policy=never",
-            "-c",
-            "features.plugins=false",
-            "-s",
-            "read-only",
-            "-a",
-            "never",
-            "app-server",
-        ])
-        .envs(&env.vars)
-        .env("PATH", direct_chat_path(env))
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
-    if let Some(home) = runner_core::app_paths::home_dir() {
-        process.current_dir(home);
-    }
-    prepare_headless_fork(&mut process);
-    let mut child = process
-        .spawn()
-        .map_err(|_| UnavailableReason::CodexNoAnswer)?;
-    let tree = ProcessTree::adopt(child.id()).map_err(|_| {
-        let _ = child.kill();
-        let _ = child.wait();
-        UnavailableReason::CodexNoAnswer
-    })?;
-    let result = (|| {
-        let mut stdin = child.stdin.take().ok_or(UnavailableReason::CodexNoAnswer)?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or(UnavailableReason::CodexNoAnswer)?;
-        let (tx, rx) = std::sync::mpsc::channel();
-        thread::spawn(move || {
-            for line in BufReader::new(stdout).lines() {
-                if tx.send(line).is_err() {
-                    break;
-                }
-            }
-        });
-        write_rpc(
-            &mut stdin,
-            serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"clientInfo":{"name":"Runner","version":env!("CARGO_PKG_VERSION")}}}),
-        )?;
-        let deadline = std::time::Instant::now() + timeout;
-        let mut initialized = false;
-        loop {
-            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-            let line = rx
-                .recv_timeout(remaining)
-                .map_err(|_| UnavailableReason::CodexNoAnswer)?
-                .map_err(|_| UnavailableReason::CodexNoAnswer)?;
-            let Ok(value) = serde_json::from_str::<Value>(&line) else {
-                continue;
-            };
-            if value.get("method").is_some() {
-                continue;
-            }
-            match value.get("id").and_then(Value::as_u64) {
-                Some(1) if !initialized => {
-                    if value.get("error").is_some() {
-                        return Err(UnavailableReason::CodexNoAnswer);
-                    }
-                    write_rpc(
-                        &mut stdin,
-                        serde_json::json!({"jsonrpc":"2.0","method":"initialized","params":{}}),
-                    )?;
-                    write_rpc(
-                        &mut stdin,
-                        serde_json::json!({"jsonrpc":"2.0","id":2,"method":"account/rateLimits/read","params":{}}),
-                    )?;
-                    initialized = true;
-                }
-                Some(2) if initialized => {
-                    if value.get("error").is_some() {
-                        return Err(UnavailableReason::CodexNoAnswer);
-                    }
-                    return parse_codex(
-                        value
-                            .get("result")
-                            .ok_or(UnavailableReason::InvalidResponse)?,
-                    );
-                }
-                _ => {}
-            }
-        }
-    })();
-    shutdown_codex(&mut child, &tree);
-    result
-}
-
-fn shutdown_codex(child: &mut std::process::Child, tree: &ProcessTree) {
-    drop(child.stdin.take());
-    #[cfg(unix)]
-    unsafe {
-        libc::kill(-(child.id() as i32), libc::SIGTERM);
-    }
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    loop {
-        let exited = child.try_wait().is_ok_and(|status| status.is_some());
-        #[cfg(unix)]
-        let drained = exited && unsafe { libc::kill(-(child.id() as i32), 0) } != 0;
-        #[cfg(windows)]
-        let drained = exited;
-        if drained {
-            break;
-        }
-        if std::time::Instant::now() >= deadline {
-            let _ = tree.terminate();
-            break;
-        }
-        thread::sleep(Duration::from_millis(25));
-    }
-    let _ = child.wait();
-}
-
-fn write_rpc(writer: &mut impl Write, value: Value) -> Result<(), UnavailableReason> {
-    serde_json::to_writer(&mut *writer, &value).map_err(|_| UnavailableReason::CodexNoAnswer)?;
-    writer
-        .write_all(b"\n")
-        .map_err(|_| UnavailableReason::CodexNoAnswer)?;
-    writer.flush().map_err(|_| UnavailableReason::CodexNoAnswer)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::runtimes::{
+        antigravity::usage::parse_antigravity,
+        claude_code::usage::{
+            claude_response, keychain_account, keychain_error_reason, parse_claude,
+            parse_credentials, read_claude_credentials_file,
+        },
+        codex::usage::parse_codex,
+    };
+    #[cfg(unix)]
+    use crate::runtimes::{
+        claude_code::usage::read_claude_credentials_with, codex::usage::fetch_codex_with_timeout,
+    };
     use chrono::TimeDelta;
 
     #[test]
@@ -1033,4 +598,42 @@ mod tests {
         assert_eq!(good.unwrap().updated_at, now);
         assert_eq!(error, None);
     }
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn usage_catalog_golden() {
+    let home = tempfile::tempdir().unwrap();
+    let env = LoginShellEnv {
+        path: Some("/golden/bin".into()),
+        vars: std::collections::BTreeMap::from([
+            ("GOLDEN_ENV".into(), "value".into()),
+            ("HTTPS_PROXY".into(), "http://127.0.0.1:9999".into()),
+        ]),
+    };
+    let mut rows = Vec::new();
+    for runtime in Runtime::ALL {
+        let commands = crate::golden::capture_commands(|| {
+            if let Some(source) = crate::runtimes::adapter(runtime).usage() {
+                let _ = (source.fetch)("/golden/agent", &env, false);
+            }
+        });
+        rows.push(serde_json::json!({"runtime":runtime,"supported":crate::runtimes::adapter(runtime).usage().is_some(),"commands":commands}));
+    }
+    let value = crate::golden::normalize(serde_json::json!(rows), home.path());
+    // macOS credentials are a Keychain command; the account comes from the process user.
+    #[cfg(target_os = "macos")]
+    let value = {
+        let mut value = value;
+        value[1]["commands"][0]["args"][4] = serde_json::json!("<ACCOUNT>");
+        value
+    };
+    crate::golden::assert_golden(
+        if cfg!(target_os = "macos") {
+            "catalog-usage-macos"
+        } else {
+            "catalog-usage-file"
+        },
+        value,
+    );
 }

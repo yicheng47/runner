@@ -1,14 +1,14 @@
 use std::time::Duration;
 
-use super::{option, ModelCatalog, Query, Reason};
 use crate::ops::runtime::RuntimeCatalogOption;
+use crate::runtime_status::models::{option, ModelCatalog, Query, Reason};
 use crate::runtimes::antigravity::ANTIGRAVITY_MODELS;
 use crate::shell_path::LoginShellEnv;
 
 const TIMEOUT: Duration = Duration::from_secs(15);
 
-pub(super) fn query(executable: &str, env: &LoginShellEnv) -> Result<ModelCatalog, Reason> {
-    let output = super::run(Query {
+pub(crate) fn query(executable: &str, env: &LoginShellEnv) -> Result<ModelCatalog, Reason> {
+    let output = crate::runtime_status::models::run(Query {
         executable,
         args: &["models"],
         stdin: None,

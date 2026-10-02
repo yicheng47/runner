@@ -1,0 +1,294 @@
+[
+  {
+    "runtime": "codex",
+    "roots": [
+      "<HOME>/.agents/skills",
+      "<HOME>/.codex/skills"
+    ],
+    "entries": [
+      {
+        "name": "golden-skill",
+        "manual": true,
+        "hidden": false,
+        "global": "On",
+        "marker": "SKILL.md",
+        "problem": null
+      },
+      {
+        "name": "golden-skill",
+        "manual": true,
+        "hidden": false,
+        "global": "On",
+        "marker": "SKILL.md",
+        "problem": null
+      }
+    ],
+    "writes": [
+      {
+        "enabled": false,
+        "error": null,
+        "files": {
+          ".codex/config.toml": "[[skills.config]]\npath = \"<HOME>/.agents/skills/golden-skill/SKILL.md\"\nenabled = false\n"
+        }
+      },
+      {
+        "enabled": false,
+        "error": null,
+        "files": {
+          ".codex/config.toml": "[[skills.config]]\npath = \"<HOME>/.agents/skills/golden-skill/SKILL.md\"\nenabled = false\n"
+        }
+      },
+      {
+        "enabled": true,
+        "error": null,
+        "files": {
+          ".codex/config.toml": ""
+        }
+      },
+      {
+        "enabled": true,
+        "error": null,
+        "files": {
+          ".codex/config.toml": ""
+        }
+      }
+    ]
+  },
+  {
+    "runtime": "claude-code",
+    "roots": [
+      "<HOME>/.claude/skills"
+    ],
+    "entries": [
+      {
+        "name": "golden-skill",
+        "manual": true,
+        "hidden": true,
+        "global": "On",
+        "marker": "SKILL.md",
+        "problem": null
+      }
+    ],
+    "writes": [
+      {
+        "enabled": false,
+        "error": null,
+        "files": {
+          ".claude/settings.json": "{\n  \"skillOverrides\": {\n    \"golden-skill\": \"off\"\n  }\n}\n"
+        }
+      },
+      {
+        "enabled": false,
+        "error": null,
+        "files": {
+          ".claude/settings.json": "{\n  \"skillOverrides\": {\n    \"golden-skill\": \"off\"\n  }\n}\n"
+        }
+      },
+      {
+        "enabled": true,
+        "error": null,
+        "files": {
+          ".claude/settings.json": "{}\n"
+        }
+      },
+      {
+        "enabled": true,
+        "error": null,
+        "files": {
+          ".claude/settings.json": "{}\n"
+        }
+      }
+    ]
+  },
+  {
+    "runtime": "antigravity",
+    "roots": [
+      "<HOME>/.gemini/antigravity-cli/skills",
+      "<HOME>/.gemini/skills"
+    ],
+    "entries": [
+      {
+        "name": "golden-skill",
+        "manual": true,
+        "hidden": false,
+        "global": "On",
+        "marker": "SKILL.md",
+        "problem": null
+      },
+      {
+        "name": "golden-skill",
+        "manual": true,
+        "hidden": false,
+        "global": "On",
+        "marker": "SKILL.md",
+        "problem": null
+      }
+    ],
+    "writes": [
+      {
+        "enabled": false,
+        "error": "global skill on/off is only supported for Claude Code, Codex and GitHub Copilot CLI",
+        "files": {}
+      },
+      {
+        "enabled": false,
+        "error": "global skill on/off is only supported for Claude Code, Codex and GitHub Copilot CLI",
+        "files": {}
+      },
+      {
+        "enabled": true,
+        "error": "global skill on/off is only supported for Claude Code, Codex and GitHub Copilot CLI",
+        "files": {}
+      },
+      {
+        "enabled": true,
+        "error": "global skill on/off is only supported for Claude Code, Codex and GitHub Copilot CLI",
+        "files": {}
+      }
+    ]
+  },
+  {
+    "runtime": "pi",
+    "roots": [
+      "<HOME>/.pi/agent/skills",
+      "<HOME>/.agents/skills"
+    ],
+    "entries": [
+      {
+        "name": "golden-skill",
+        "manual": true,
+        "hidden": false,
+        "global": "On",
+        "marker": "SKILL.md",
+        "problem": null
+      },
+      {
+        "name": "golden-skill",
+        "manual": true,
+        "hidden": false,
+        "global": "On",
+        "marker": "SKILL.md",
+        "problem": null
+      }
+    ],
+    "writes": [
+      {
+        "enabled": false,
+        "error": "global skill on/off is only supported for Claude Code, Codex and GitHub Copilot CLI",
+        "files": {}
+      },
+      {
+        "enabled": false,
+        "error": "global skill on/off is only supported for Claude Code, Codex and GitHub Copilot CLI",
+        "files": {}
+      },
+      {
+        "enabled": true,
+        "error": "global skill on/off is only supported for Claude Code, Codex and GitHub Copilot CLI",
+        "files": {}
+      },
+      {
+        "enabled": true,
+        "error": "global skill on/off is only supported for Claude Code, Codex and GitHub Copilot CLI",
+        "files": {}
+      }
+    ]
+  },
+  {
+    "runtime": "copilot",
+    "roots": [
+      "<HOME>/.copilot/skills",
+      "<HOME>/.agents/skills"
+    ],
+    "entries": [
+      {
+        "name": "golden-skill",
+        "manual": true,
+        "hidden": false,
+        "global": "On",
+        "marker": "SKILL.md",
+        "problem": null
+      },
+      {
+        "name": "golden-skill",
+        "manual": true,
+        "hidden": false,
+        "global": "On",
+        "marker": "SKILL.md",
+        "problem": null
+      }
+    ],
+    "writes": [
+      {
+        "enabled": false,
+        "error": null,
+        "files": {
+          ".copilot/settings.json": "{\n  \"disabledSkills\": [\n    \"golden-skill\"\n  ]\n}\n"
+        }
+      },
+      {
+        "enabled": false,
+        "error": null,
+        "files": {
+          ".copilot/settings.json": "{\n  \"disabledSkills\": [\n    \"golden-skill\"\n  ]\n}\n"
+        }
+      },
+      {
+        "enabled": true,
+        "error": null,
+        "files": {
+          ".copilot/settings.json": "{}\n"
+        }
+      },
+      {
+        "enabled": true,
+        "error": null,
+        "files": {
+          ".copilot/settings.json": "{}\n"
+        }
+      }
+    ]
+  },
+  {
+    "runtime": "trae",
+    "roots": [
+      "<HOME>/.trae/skills"
+    ],
+    "entries": [
+      {
+        "name": "golden-skill",
+        "manual": true,
+        "hidden": false,
+        "global": "On",
+        "marker": "SKILL.md",
+        "problem": null
+      }
+    ],
+    "writes": [
+      {
+        "enabled": false,
+        "error": "global skill on/off is only supported for Claude Code, Codex and GitHub Copilot CLI",
+        "files": {}
+      },
+      {
+        "enabled": false,
+        "error": "global skill on/off is only supported for Claude Code, Codex and GitHub Copilot CLI",
+        "files": {}
+      },
+      {
+        "enabled": true,
+        "error": "global skill on/off is only supported for Claude Code, Codex and GitHub Copilot CLI",
+        "files": {}
+      },
+      {
+        "enabled": true,
+        "error": "global skill on/off is only supported for Claude Code, Codex and GitHub Copilot CLI",
+        "files": {}
+      }
+    ]
+  },
+  {
+    "runtime": "shell",
+    "roots": null
+  }
+]

@@ -345,30 +345,36 @@ impl NativeRoot {
                         .flex_1(),
                     ),
             )
-            .children((role.runtime == "codex").then(|| {
-                setup_row(
-                    "Speed",
-                    setup_value(
-                        match role.codex_speed {
-                            None => "Inherit",
-                            Some(CodexSpeed::Standard) => "Standard",
-                            Some(CodexSpeed::Fast) => "Fast",
-                        },
-                        column,
-                        false,
-                        role.codex_speed.is_none(),
-                    ),
-                )
-                .when(cfg!(test), |row| {
-                    row.debug_selector(|| "ROLE_SPEED_DETAIL".into())
-                })
-                .children((role.codex_speed == Some(CodexSpeed::Fast)).then(|| {
-                    div()
-                        .text_size(theme::text_meta())
-                        .text_color(theme::faint())
-                        .child("Fast uses more credits.")
-                }))
-            }))
+            .children(
+                (crate::runtime_ui::catalog_capabilities(&[], &role.runtime).codex_speed).then(
+                    || {
+                        setup_row(
+                            "Speed",
+                            setup_value(
+                                match role.codex_speed {
+                                    None => "Inherit",
+                                    Some(CodexSpeed::Standard) => "Standard",
+                                    Some(CodexSpeed::Fast) => "Fast",
+                                },
+                                column,
+                                false,
+                                role.codex_speed.is_none(),
+                            ),
+                        )
+                        .when(cfg!(test), |row| {
+                            row.debug_selector(|| "ROLE_SPEED_DETAIL".into())
+                        })
+                        .children(
+                            (role.codex_speed == Some(CodexSpeed::Fast)).then(|| {
+                                div()
+                                    .text_size(theme::text_meta())
+                                    .text_color(theme::faint())
+                                    .child("Fast uses more credits.")
+                            }),
+                        )
+                    },
+                ),
+            )
             .child(setup_row(
                 "Command",
                 setup_value(format!("$ {command}"), column, true, false),
@@ -566,21 +572,25 @@ impl NativeRoot {
                                     .w(rems(half_column(column.min(ROLE_COLUMN_WIDTH)) / 16.))
                             })),
                     )
-                    .children((form.runtime == "codex").then(|| {
-                        edit_row("Speed", form.speed_select.clone())
-                            .when(cfg!(test), |row| {
-                                row.debug_selector(|| "ROLE_SPEED_EDIT".into())
-                            })
-                            .children((form.speed == "fast").then(|| {
-                                div()
-                                    .when(cfg!(test) && creating, |note| {
-                                        note.debug_selector(|| "NEW_ROLE_SPEED_NOTE".into())
+                    .children(
+                        (crate::runtime_ui::catalog_capabilities(&form.runtimes, &form.runtime)
+                            .codex_speed)
+                            .then(|| {
+                                edit_row("Speed", form.speed_select.clone())
+                                    .when(cfg!(test), |row| {
+                                        row.debug_selector(|| "ROLE_SPEED_EDIT".into())
                                     })
-                                    .text_size(theme::text_meta())
-                                    .text_color(theme::faint())
-                                    .child("Fast uses more credits.")
-                            }))
-                    }))
+                                    .children((form.speed == "fast").then(|| {
+                                        div()
+                                            .when(cfg!(test) && creating, |note| {
+                                                note.debug_selector(|| "NEW_ROLE_SPEED_NOTE".into())
+                                            })
+                                            .text_size(theme::text_meta())
+                                            .text_color(theme::faint())
+                                            .child("Fast uses more credits.")
+                                    }))
+                            }),
+                    )
                     .child(edit_row("Command", form.command.clone()))
                     .child(edit_row("Args", form.args.clone()))
                     .child(

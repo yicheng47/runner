@@ -1,0 +1,170 @@
+[
+  {
+    "runtime": "codex",
+    "channel": null,
+    "package": "@openai/codex",
+    "dist_tag": "latest"
+  },
+  {
+    "runtime": "claude-code",
+    "channel": null,
+    "package": "@anthropic-ai/claude-code",
+    "dist_tag": "latest"
+  },
+  {
+    "runtime": "antigravity",
+    "channel": null,
+    "package": null,
+    "dist_tag": "latest"
+  },
+  {
+    "runtime": "pi",
+    "channel": null,
+    "package": "@earendil-works/pi-coding-agent",
+    "dist_tag": "latest"
+  },
+  {
+    "runtime": "copilot",
+    "channel": null,
+    "package": "@github/copilot",
+    "dist_tag": "latest"
+  },
+  {
+    "runtime": "trae",
+    "channel": null,
+    "package": null,
+    "dist_tag": "latest"
+  },
+  {
+    "runtime": "shell",
+    "channel": null,
+    "package": null,
+    "dist_tag": "latest"
+  },
+  {
+    "runtime": "codex",
+    "channel": "latest",
+    "package": "@openai/codex",
+    "dist_tag": "latest"
+  },
+  {
+    "runtime": "claude-code",
+    "channel": "latest",
+    "package": "@anthropic-ai/claude-code",
+    "dist_tag": "latest"
+  },
+  {
+    "runtime": "antigravity",
+    "channel": "latest",
+    "package": null,
+    "dist_tag": "latest"
+  },
+  {
+    "runtime": "pi",
+    "channel": "latest",
+    "package": "@earendil-works/pi-coding-agent",
+    "dist_tag": "latest"
+  },
+  {
+    "runtime": "copilot",
+    "channel": "latest",
+    "package": "@github/copilot",
+    "dist_tag": "latest"
+  },
+  {
+    "runtime": "trae",
+    "channel": "latest",
+    "package": null,
+    "dist_tag": "latest"
+  },
+  {
+    "runtime": "shell",
+    "channel": "latest",
+    "package": null,
+    "dist_tag": "latest"
+  },
+  {
+    "runtime": "codex",
+    "channel": "stable",
+    "package": "@openai/codex",
+    "dist_tag": "latest"
+  },
+  {
+    "runtime": "claude-code",
+    "channel": "stable",
+    "package": "@anthropic-ai/claude-code",
+    "dist_tag": "stable"
+  },
+  {
+    "runtime": "antigravity",
+    "channel": "stable",
+    "package": null,
+    "dist_tag": "latest"
+  },
+  {
+    "runtime": "pi",
+    "channel": "stable",
+    "package": "@earendil-works/pi-coding-agent",
+    "dist_tag": "latest"
+  },
+  {
+    "runtime": "copilot",
+    "channel": "stable",
+    "package": "@github/copilot",
+    "dist_tag": "latest"
+  },
+  {
+    "runtime": "trae",
+    "channel": "stable",
+    "package": null,
+    "dist_tag": "latest"
+  },
+  {
+    "runtime": "shell",
+    "channel": "stable",
+    "package": null,
+    "dist_tag": "latest"
+  },
+  {
+    "runtime": "codex",
+    "channel": "unknown",
+    "package": "@openai/codex",
+    "dist_tag": "latest"
+  },
+  {
+    "runtime": "claude-code",
+    "channel": "unknown",
+    "package": "@anthropic-ai/claude-code",
+    "dist_tag": "latest"
+  },
+  {
+    "runtime": "antigravity",
+    "channel": "unknown",
+    "package": null,
+    "dist_tag": "latest"
+  },
+  {
+    "runtime": "pi",
+    "channel": "unknown",
+    "package": "@earendil-works/pi-coding-agent",
+    "dist_tag": "latest"
+  },
+  {
+    "runtime": "copilot",
+    "channel": "unknown",
+    "package": "@github/copilot",
+    "dist_tag": "latest"
+  },
+  {
+    "runtime": "trae",
+    "channel": "unknown",
+    "package": null,
+    "dist_tag": "latest"
+  },
+  {
+    "runtime": "shell",
+    "channel": "unknown",
+    "package": null,
+    "dist_tag": "latest"
+  }
+]

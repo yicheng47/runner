@@ -452,8 +452,10 @@ pub(crate) fn delete_container_tabs_and_archive(
     let mut archived_ids = Vec::new();
     let mut deleted_ids = Vec::new();
     for id in &session_ids {
-        let shell =
-            repo::session::effective_runtime(tx, id)?.as_deref() == Some(Runtime::Shell.key());
+        let shell = repo::session::effective_runtime(tx, id)?
+            .as_deref()
+            .and_then(Runtime::parse)
+            .is_some_and(Runtime::is_shell);
         if shell {
             deleted_ids.push(id.clone());
         } else {
@@ -526,7 +528,10 @@ pub(crate) fn record_session_completion(
     session_id: &str,
 ) -> Result<()> {
     let mut conn = db.get()?;
-    if repo::session::effective_runtime(&conn, session_id)?.as_deref() == Some(Runtime::Shell.key())
+    if repo::session::effective_runtime(&conn, session_id)?
+        .as_deref()
+        .and_then(Runtime::parse)
+        .is_some_and(Runtime::is_shell)
     {
         return Ok(());
     }

@@ -1,0 +1,86 @@
+[
+  {
+    "runtime": "codex",
+    "seeded": false,
+    "model": null,
+    "effort": null
+  },
+  {
+    "runtime": "claude-code",
+    "seeded": false,
+    "model": null,
+    "effort": null
+  },
+  {
+    "runtime": "antigravity",
+    "seeded": false,
+    "model": null,
+    "effort": null
+  },
+  {
+    "runtime": "pi",
+    "seeded": false,
+    "model": null,
+    "effort": null
+  },
+  {
+    "runtime": "copilot",
+    "seeded": false,
+    "model": null,
+    "effort": null
+  },
+  {
+    "runtime": "trae",
+    "seeded": false,
+    "model": null,
+    "effort": null
+  },
+  {
+    "runtime": "shell",
+    "seeded": false,
+    "model": null,
+    "effort": null
+  },
+  {
+    "runtime": "codex",
+    "seeded": true,
+    "model": "profile-model",
+    "effort": "high"
+  },
+  {
+    "runtime": "claude-code",
+    "seeded": true,
+    "model": "claude-model",
+    "effort": "high"
+  },
+  {
+    "runtime": "antigravity",
+    "seeded": true,
+    "model": null,
+    "effort": null
+  },
+  {
+    "runtime": "pi",
+    "seeded": true,
+    "model": "provider/pi-model",
+    "effort": "xhigh"
+  },
+  {
+    "runtime": "copilot",
+    "seeded": true,
+    "model": "copilot-model",
+    "effort": "medium"
+  },
+  {
+    "runtime": "trae",
+    "seeded": true,
+    "model": "trae-model",
+    "effort": "max"
+  },
+  {
+    "runtime": "shell",
+    "seeded": true,
+    "model": null,
+    "effort": null
+  }
+]

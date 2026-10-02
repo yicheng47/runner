@@ -820,7 +820,7 @@ fn runtime_only_chat_spawn_and_resume_assert_no_permission_posture() {
 #[test]
 fn trae_first_turn_gets_capture_prompt_marker() {
     let (first_turn, marker) = SessionManager::codex_capture_prompt_marker(
-        Some(Runtime::Trae),
+        Runtime::Trae.key(),
         "session-id",
         Some("first turn".to_string()),
     );

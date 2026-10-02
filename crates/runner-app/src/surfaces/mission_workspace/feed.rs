@@ -134,8 +134,8 @@ impl MissionWorkspace {
                                 .child(format!("@{}", session.handle)),
                         )
                         .when(
-                            runner_backend::model::Runtime::parse(&session.runtime)
-                                != Some(runner_backend::model::Runtime::Shell),
+                            !runner_backend::model::Runtime::parse(&session.runtime)
+                                .is_some_and(runner_backend::model::Runtime::is_shell),
                             |tab| {
                                 tab.child(rollup.render(SharedString::from(format!(
                                     "mission-tab-status-{session_id}"

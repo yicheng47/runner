@@ -11,7 +11,7 @@ static CONFIG_LOCK: Mutex<()> = Mutex::new(());
 pub(crate) fn seed_project_trust(cwd: &Path) -> Result<()> {
     let home = runner_core::app_paths::home_dir()
         .ok_or_else(|| Error::msg("home directory is not available"))?;
-    let config_path = crate::runtime_defaults::codex_config_path(&home);
+    let config_path = super::config_path(&home);
     seed_project_trust_at_with_home(cwd, &config_path, Some(&home))
 }
 

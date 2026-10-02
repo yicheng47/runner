@@ -128,18 +128,25 @@ These examples describe the implementation and recorded evidence through 2026-09
 
 ## Where the implementation lives
 
-Use these as entry points, then search for runtime-specific matches and tests. Many UI surfaces are catalog-driven; others have explicit runtime arms. This is a source map, not a requirement to create a new abstraction or edit every file for every runtime.
+Each agent owns its integration in [`crates/runner-backend/src/runtimes/<name>/`](../../crates/runner-backend/src/runtimes/). The [`RuntimeAdapter`](../../crates/runner-backend/src/runtimes/mod.rs) defaults unsupported capabilities to no operation; `NoAgent` supplies those defaults for Shell and unknown keys. Shared modules handle scheduling, process transport, config splicing and application state, and dispatch through the adapter.
 
-| Concern | Entry points |
-| --- | --- |
-| Runtime identity and catalog | [`model.rs`](../../crates/runner-backend/src/model.rs), [`router/runtime.rs`](../../crates/runner-backend/src/router/runtime.rs), [`ops/runtime.rs`](../../crates/runner-backend/src/ops/runtime.rs) |
-| Discovery, native defaults, models, versions | [`runtime_status.rs`](../../crates/runner-backend/src/runtime_status.rs), [`runtime_defaults.rs`](../../crates/runner-backend/src/runtime_defaults.rs), [`runtime_status/models.rs`](../../crates/runner-backend/src/runtime_status/models.rs), [`runtime_status/versions.rs`](../../crates/runner-backend/src/runtime_status/versions.rs) |
-| Prompt, permission, model, resume, and fork arguments | [`router/prompt.rs`](../../crates/runner-backend/src/router/prompt.rs), [`router/runtime.rs`](../../crates/runner-backend/src/router/runtime.rs) |
-| Spawn, environment, trust, key capture, and lifecycle | [`session/manager/spawn.rs`](../../crates/runner-backend/src/session/manager/spawn.rs), [`session/launch.rs`](../../crates/runner-backend/src/session/launch.rs), [`session/agy_trust.rs`](../../crates/runner-backend/src/session/agy_trust.rs), [`session/agy_capture.rs`](../../crates/runner-backend/src/session/agy_capture.rs) |
-| Status and hook transport | [`session/status.rs`](../../crates/runner-backend/src/session/status.rs), [`session/hook_feed.rs`](../../crates/runner-backend/src/session/hook_feed.rs), [`session/pty_runtime.rs`](../../crates/runner-backend/src/session/pty_runtime.rs), [`session/agy_status.rs`](../../crates/runner-backend/src/session/agy_status.rs) |
-| MCP and skills | [`ops/mcp.rs`](../../crates/runner-backend/src/ops/mcp.rs), [`skills.rs`](../../crates/runner-backend/src/skills.rs), [`agent_skill.rs`](../../crates/runner-backend/src/agent_skill.rs), [`app_store/skill_defaults.rs`](../../crates/runner-app/src/app_store/skill_defaults.rs) |
-| Usage, identity, and titles | [`usage.rs`](../../crates/runner-backend/src/usage.rs), [`chat_icon.rs`](../../crates/runner-app/src/chat_icon.rs), [`session/title.rs`](../../crates/runner-backend/src/session/title.rs) |
-| Regression evidence | [`session/manager/tests/`](../../crates/runner-backend/src/session/manager/tests/), [`runner-app/tests/`](../../crates/runner-app/tests/), [`runner-terminal/fixtures/`](../../crates/runner-terminal/fixtures/), [`runner-terminal/tests/`](../../crates/runner-terminal/tests/), [`docs/tests/`](../tests/) |
+| Concern | Runtime-owned implementation | Shared mechanism |
+| --- | --- | --- |
+| Identity and catalog | Each `runtimes/<name>/mod.rs` defines its catalog and capabilities; `runner-core/src/runtime.rs` keeps the variant, wire identity and managed skill root | `runtimes/mod.rs` selects the adapter; `ops/runtime.rs` exposes catalog entries |
+| Native defaults, discovery and versions | `native_defaults`, `model_discovery`, `npm_dist_tag`; model commands and parsers live in `runtimes/<name>/models.rs` | `runtime_defaults.rs`, `runtime_status.rs`, `runtime_status/models.rs` and `runtime_status/versions.rs` handle reads, processes and caches |
+| Prompt, permission, model, resume, fork and Speed argv | The adapter's permissions, prompt channels, launch args and resume/fork plans | `router/prompt.rs` composes content; `session/manager/spawn.rs` coordinates launches |
+| Environment, trust, key capture and status | `launch_env`, `launch_gate`, `seed_trust`, `key_capture`, `status_hooks`, and the runtime's trust, capture and status modules | `session/launch.rs`, `session/hook_feed.rs`, `session/status.rs` and `session/pty_runtime.rs` provide transport and lifecycle machinery |
+| Skills and MCP | `skills()` owns roots, flags, state and toggle writes; `mcp()` owns wire identity, config format and translation | `skills.rs` scans and parses; `ops/skills.rs` validates; `ops/mcp.rs` splices named entries; `agent_skill.rs` manages Runner-owned files |
+| Usage | Each supported runtime's `usage.rs` owns commands, credentials and response parsing | `usage.rs` schedules refreshes and stores values/errors in a runtime map |
+| App presentation and behavior | `runner-app/src/runtime_ui.rs` owns icons, tints, skill copy and usage labels; behavior reads catalog capabilities | `chat_icon.rs`, Settings, Start Chat, roles, crews and the usage surfaces render the catalog |
+| Regression evidence | Runtime parser and adapter tests stay in their owning modules | `session/manager/tests/`, app tests, terminal fixtures and `docs/tests/` |
+
+## Adding a runtime
+
+1. Add a `runtimes/<name>/` module implementing `RuntimeAdapter`, using unsupported defaults for capabilities the CLI lacks. Keep runtime-specific discovery, usage, skills, MCP, hooks and argv there.
+2. Add the `Runtime` variant and identity row in `runner-core/src/runtime.rs`, then register one adapter arm in `runtimes/mod.rs`.
+3. Add one `runtime_ui` row and its icon asset. App behavior follows the catalog's capability fields.
+4. Add focused adapter tests, parser fixtures and characterization expectations. Run workspace tests and platform checks; no shared dispatch, spawn or UI branch should need another runtime arm.
 
 ## Checklist for a runtime spec
 

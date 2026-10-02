@@ -1,0 +1,317 @@
+{
+  "visible": [
+    "codex",
+    "claude-code",
+    "antigravity"
+  ],
+  "runtimes": [
+    {
+      "runtime": "codex",
+      "unavailable": [
+        "Checking…",
+        "Sign in to Claude Code to see usage.",
+        "Runner was not allowed to read Claude Code's sign-in from the Keychain.",
+        "Couldn't read Claude Code's sign-in from the Keychain.",
+        "Couldn't reach Anthropic.",
+        "Codex didn't answer.",
+        "Antigravity CLI didn't answer.",
+        "Codex didn't answer."
+      ],
+      "sections": [
+        {
+          "runtime": "codex",
+          "title": "Codex",
+          "refresh_spinner": "usage-codex-refreshing"
+        },
+        {
+          "window": "Week",
+          "group": null,
+          "label": "Week"
+        },
+        {
+          "window": "Gemini Models · Week used",
+          "group": null,
+          "label": "Gemini Models · Week used"
+        },
+        {
+          "window": "Claude and GPT models · 5 hours used",
+          "group": null,
+          "label": "Claude and GPT models · 5 hours used"
+        },
+        {
+          "runtime": "codex",
+          "title": "Codex",
+          "refresh_spinner": "usage-codex-refreshing"
+        },
+        {
+          "checking_spinner": "usage-codex-checking"
+        }
+      ],
+      "weekly_percent": 27.0
+    },
+    {
+      "runtime": "claude-code",
+      "unavailable": [
+        "Checking…",
+        "Sign in to Claude Code to see usage.",
+        "Runner was not allowed to read Claude Code's sign-in from the Keychain.",
+        "Couldn't read Claude Code's sign-in from the Keychain.",
+        "Couldn't reach Anthropic.",
+        "Codex didn't answer.",
+        "Antigravity CLI didn't answer.",
+        "Couldn't reach Anthropic."
+      ],
+      "sections": [
+        {
+          "runtime": "claude-code",
+          "title": "Claude Code",
+          "refresh_spinner": "usage-claude-refreshing"
+        },
+        {
+          "window": "Week",
+          "group": null,
+          "label": "Week"
+        },
+        {
+          "window": "Gemini Models · Week used",
+          "group": null,
+          "label": "Gemini Models · Week used"
+        },
+        {
+          "window": "Claude and GPT models · 5 hours used",
+          "group": null,
+          "label": "Claude and GPT models · 5 hours used"
+        },
+        {
+          "runtime": "claude-code",
+          "title": "Claude Code",
+          "refresh_spinner": "usage-claude-refreshing"
+        },
+        {
+          "checking_spinner": "usage-claude-checking"
+        }
+      ],
+      "weekly_percent": 27.0
+    },
+    {
+      "runtime": "antigravity",
+      "unavailable": [
+        "Checking…",
+        "Sign in to Claude Code to see usage.",
+        "Runner was not allowed to read Claude Code's sign-in from the Keychain.",
+        "Couldn't read Claude Code's sign-in from the Keychain.",
+        "Couldn't reach Anthropic.",
+        "Codex didn't answer.",
+        "Antigravity CLI didn't answer.",
+        "Antigravity CLI returned invalid usage data."
+      ],
+      "sections": [
+        {
+          "runtime": "antigravity",
+          "title": "Antigravity CLI",
+          "refresh_spinner": "usage-antigravity-refreshing"
+        },
+        {
+          "window": "Week",
+          "group": null,
+          "label": "Week"
+        },
+        {
+          "window": "Gemini Models · Week used",
+          "group": "Gemini Models",
+          "label": "Week"
+        },
+        {
+          "window": "Claude and GPT models · 5 hours used",
+          "group": "Claude and GPT models",
+          "label": "5 hours"
+        },
+        {
+          "runtime": "antigravity",
+          "title": "Antigravity CLI",
+          "refresh_spinner": "usage-antigravity-refreshing"
+        },
+        {
+          "checking_spinner": "usage-codex-checking"
+        }
+      ],
+      "weekly_percent": 27.0
+    },
+    {
+      "runtime": "pi",
+      "unavailable": [
+        "Checking…",
+        "Sign in to Claude Code to see usage.",
+        "Runner was not allowed to read Claude Code's sign-in from the Keychain.",
+        "Couldn't read Claude Code's sign-in from the Keychain.",
+        "Couldn't reach Anthropic.",
+        "Codex didn't answer.",
+        "Antigravity CLI didn't answer.",
+        "Couldn't reach Anthropic."
+      ],
+      "sections": [
+        {
+          "runtime": "pi",
+          "title": "Codex",
+          "refresh_spinner": "usage-codex-refreshing"
+        },
+        {
+          "window": "Week",
+          "group": null,
+          "label": "Week"
+        },
+        {
+          "window": "Gemini Models · Week used",
+          "group": null,
+          "label": "Gemini Models · Week used"
+        },
+        {
+          "window": "Claude and GPT models · 5 hours used",
+          "group": null,
+          "label": "Claude and GPT models · 5 hours used"
+        },
+        {
+          "runtime": "pi",
+          "title": "Codex",
+          "refresh_spinner": "usage-codex-refreshing"
+        },
+        {
+          "checking_spinner": "usage-codex-checking"
+        }
+      ],
+      "weekly_percent": 27.0
+    },
+    {
+      "runtime": "copilot",
+      "unavailable": [
+        "Checking…",
+        "Sign in to Claude Code to see usage.",
+        "Runner was not allowed to read Claude Code's sign-in from the Keychain.",
+        "Couldn't read Claude Code's sign-in from the Keychain.",
+        "Couldn't reach Anthropic.",
+        "Codex didn't answer.",
+        "Antigravity CLI didn't answer.",
+        "Couldn't reach Anthropic."
+      ],
+      "sections": [
+        {
+          "runtime": "copilot",
+          "title": "Codex",
+          "refresh_spinner": "usage-codex-refreshing"
+        },
+        {
+          "window": "Week",
+          "group": null,
+          "label": "Week"
+        },
+        {
+          "window": "Gemini Models · Week used",
+          "group": null,
+          "label": "Gemini Models · Week used"
+        },
+        {
+          "window": "Claude and GPT models · 5 hours used",
+          "group": null,
+          "label": "Claude and GPT models · 5 hours used"
+        },
+        {
+          "runtime": "copilot",
+          "title": "Codex",
+          "refresh_spinner": "usage-codex-refreshing"
+        },
+        {
+          "checking_spinner": "usage-codex-checking"
+        }
+      ],
+      "weekly_percent": 27.0
+    },
+    {
+      "runtime": "trae",
+      "unavailable": [
+        "Checking…",
+        "Sign in to Claude Code to see usage.",
+        "Runner was not allowed to read Claude Code's sign-in from the Keychain.",
+        "Couldn't read Claude Code's sign-in from the Keychain.",
+        "Couldn't reach Anthropic.",
+        "Codex didn't answer.",
+        "Antigravity CLI didn't answer.",
+        "Couldn't reach Anthropic."
+      ],
+      "sections": [
+        {
+          "runtime": "trae",
+          "title": "Codex",
+          "refresh_spinner": "usage-codex-refreshing"
+        },
+        {
+          "window": "Week",
+          "group": null,
+          "label": "Week"
+        },
+        {
+          "window": "Gemini Models · Week used",
+          "group": null,
+          "label": "Gemini Models · Week used"
+        },
+        {
+          "window": "Claude and GPT models · 5 hours used",
+          "group": null,
+          "label": "Claude and GPT models · 5 hours used"
+        },
+        {
+          "runtime": "trae",
+          "title": "Codex",
+          "refresh_spinner": "usage-codex-refreshing"
+        },
+        {
+          "checking_spinner": "usage-codex-checking"
+        }
+      ],
+      "weekly_percent": 27.0
+    },
+    {
+      "runtime": "shell",
+      "unavailable": [
+        "Checking…",
+        "Sign in to Claude Code to see usage.",
+        "Runner was not allowed to read Claude Code's sign-in from the Keychain.",
+        "Couldn't read Claude Code's sign-in from the Keychain.",
+        "Couldn't reach Anthropic.",
+        "Codex didn't answer.",
+        "Antigravity CLI didn't answer.",
+        "Couldn't reach Anthropic."
+      ],
+      "sections": [
+        {
+          "runtime": "shell",
+          "title": "Codex",
+          "refresh_spinner": "usage-codex-refreshing"
+        },
+        {
+          "window": "Week",
+          "group": null,
+          "label": "Week"
+        },
+        {
+          "window": "Gemini Models · Week used",
+          "group": null,
+          "label": "Gemini Models · Week used"
+        },
+        {
+          "window": "Claude and GPT models · 5 hours used",
+          "group": null,
+          "label": "Claude and GPT models · 5 hours used"
+        },
+        {
+          "runtime": "shell",
+          "title": "Codex",
+          "refresh_spinner": "usage-codex-refreshing"
+        },
+        {
+          "checking_spinner": "usage-codex-checking"
+        }
+      ],
+      "weekly_percent": 27.0
+    }
+  ]
+}

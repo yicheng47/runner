@@ -476,7 +476,7 @@ impl TerminalSession {
                 runner_backend::repo::session::get_row(&conn, &session_id)?,
             )
         };
-        let agent = runtime.is_some_and(|runtime| runtime != Runtime::Shell);
+        let agent = runtime.is_some_and(|runtime| !runtime.is_shell());
         let started_at = row
             .as_ref()
             .and_then(|row| row.started_at)
@@ -521,7 +521,7 @@ impl TerminalSession {
             input_tracker: Mutex::new(input_tracker),
             fixture_recorder,
             link_cwd: std::sync::OnceLock::new(),
-            cwd_reports: (runtime == Some(Runtime::Shell)).then(Mutex::default),
+            cwd_reports: (runtime.is_some_and(Runtime::is_shell)).then(Mutex::default),
             live_cwd: Mutex::new(None),
         });
         core.sessions

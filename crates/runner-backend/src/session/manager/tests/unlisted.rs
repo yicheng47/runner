@@ -63,7 +63,7 @@ fn sessions_keep_the_quiet_flags_the_update_drops() {
         BTreeMap::new(),
         &HashMap::new(),
         BTreeMap::new(),
-        Some(Runtime::ClaudeCode),
+        Runtime::ClaudeCode.key(),
     );
     assert_eq!(
         claude
@@ -81,7 +81,7 @@ fn sessions_keep_the_quiet_flags_the_update_drops() {
         BTreeMap::new(),
         &HashMap::new(),
         BTreeMap::new(),
-        Some(Runtime::Pi),
+        Runtime::Pi.key(),
     );
     assert_eq!(
         pi.get("PI_SKIP_VERSION_CHECK").map(String::as_str),

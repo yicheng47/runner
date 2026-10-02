@@ -1,6 +1,8 @@
 pub(crate) mod agy_capture;
 pub(crate) mod agy_status;
 pub(crate) mod agy_trust;
+pub(crate) mod models;
+pub(crate) mod usage;
 use super::catalog::*;
 use super::helpers::*;
 use super::*;
@@ -16,14 +18,10 @@ pub const ANTIGRAVITY_MODELS: &[(&str, &[&str])] = &[
 
 pub const ANTIGRAVITY_EFFORTS: &[&str] = &["low", "medium", "high"];
 
-pub(crate) fn antigravity_status_args(
-    runtime: Option<Runtime>,
-    app_data_dir: &Path,
-) -> Vec<String> {
-    if runtime != Some(Runtime::Antigravity)
-        || !Antigravity
-            .status_hooks()
-            .is_some_and(|hooks| hooks.supported(cfg!(windows)))
+pub(crate) fn antigravity_status_args(app_data_dir: &Path) -> Vec<String> {
+    if !Antigravity
+        .status_hooks()
+        .is_some_and(|hooks| hooks.supported(cfg!(windows)))
         || !crate::runtimes::antigravity::agy_status::hooks_available(app_data_dir)
     {
         return Vec::new();
@@ -95,6 +93,30 @@ fn mode_matches(args: &[String], mode: PermissionMode) -> bool {
 }
 pub struct Antigravity;
 impl RuntimeAdapter for Antigravity {
+    fn mcp(&self) -> Option<&'static McpConfig> {
+        Some(&MCP)
+    }
+    fn usage(&self) -> Option<&'static UsageSource> {
+        Some(&USAGE)
+    }
+
+    fn skills(&self) -> SkillSupport {
+        SkillSupport {
+            roots: SKILL_DIRS,
+            ..Default::default()
+        }
+    }
+
+    fn model_discovery(&self) -> Option<&'static ModelDiscoverySource> {
+        Some(&DISCOVERY)
+    }
+    fn capabilities(&self) -> RuntimeCapabilities {
+        RuntimeCapabilities {
+            usage: true,
+            effort_needs_launch_model: true,
+            ..Default::default()
+        }
+    }
     fn status_hooks(&self) -> Option<&'static dyn StatusHooks> {
         Some(&Hooks)
     }
@@ -118,6 +140,7 @@ impl RuntimeAdapter for Antigravity {
             name: Runtime::Antigravity,
             display_name: Runtime::Antigravity.display_name(),
             command: Runtime::Antigravity.command().unwrap(),
+            capabilities: self.capabilities(),
             native_fork: false,
             description: "Google Antigravity CLI (signs in with a Google account)",
             install_url: "https://antigravity.google/docs/cli/reference",
@@ -141,7 +164,7 @@ impl RuntimeAdapter for Antigravity {
                         .map(|effort| plain_option(effort, effort)),
                 )
                 .collect(),
-            skills_dirs: &[".gemini/antigravity-cli/skills", ".gemini/skills"],
+            skills_dirs: SKILL_DIRS,
             update_args: &[],
             npm_package: None,
         })
@@ -202,10 +225,7 @@ impl RuntimeAdapter for Antigravity {
                 .to_string_lossy()
                 .into_owned(),
         ]);
-        out.extend(antigravity_status_args(
-            Some(Runtime::Antigravity),
-            ctx.app_data_dir,
-        ));
+        out.extend(antigravity_status_args(ctx.app_data_dir));
         out.extend(self.first_turn_argv(if ctx.resuming { None } else { ctx.first_turn }));
         out
     }
@@ -261,3 +281,55 @@ impl StatusHooks for Hooks {
 
 #[cfg(test)]
 mod tests;
+
+static DISCOVERY: ModelDiscoverySource = ModelDiscoverySource {
+    order: 3,
+    method: "models",
+    query: models::query,
+    config_home: || config_home(None, ".gemini/antigravity-cli"),
+};
+
+static USAGE: UsageSource = UsageSource {
+    fetch: |command, env, _denied| usage::fetch_antigravity(command, env),
+};
+
+const SKILL_DIRS: &[&str] = &[".gemini/antigravity-cli/skills", ".gemini/skills"];
+
+static MCP: McpConfig = McpConfig {
+    wire_name: "antigravity",
+    serialized_name: "Antigravity",
+    order: 4,
+    config_file: "~/.gemini/config/mcp_config.json",
+    format: McpFormat::Json,
+    translate: translate_mcp,
+    preserve_disabled: true,
+    supports_http: false,
+};
+#[allow(non_upper_case_globals)]
+impl crate::ops::mcp::McpClientId {
+    pub const Antigravity: Self = Self(Runtime::Antigravity);
+}
+
+fn translate_mcp(
+    definition: &crate::ops::mcp::McpServerDefinition,
+) -> crate::error::Result<crate::ops::mcp::NativeEntry> {
+    // `agy mcp add` writes args, command, disabled, env in this order and
+    // omits empty args. Its HTTP entry shape is unprobed.
+    let crate::ops::mcp::McpServerDefinition::Stdio { command, args, env } = definition else {
+        return Err(crate::error::Error::msg(
+            "Antigravity CLI's HTTP entry is not supported yet; add the server with `agy mcp add`",
+        ));
+    };
+    let mut value = serde_json::Map::new();
+    if !args.is_empty() {
+        value.insert("args".into(), serde_json::json!(args));
+    }
+    value.insert("command".into(), serde_json::json!(command));
+    value.insert("disabled".into(), serde_json::json!(false));
+    if !env.is_empty() {
+        value.insert("env".into(), serde_json::json!(env));
+    }
+    Ok(crate::ops::mcp::NativeEntry::Claude(
+        serde_json::Value::Object(value),
+    ))
+}

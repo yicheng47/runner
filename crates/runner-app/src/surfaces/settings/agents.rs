@@ -1856,6 +1856,11 @@ mod tests {
             .into_iter()
             .map(|entry| RuntimeCatalogEntry {
                 name: entry.name,
+                capabilities: runner_backend::ops::runtime::RuntimeCatalogEntry::for_runtime(
+                    entry.name,
+                )
+                .map(|entry| entry.capabilities)
+                .unwrap_or_default(),
                 display_name: entry.display_name,
                 command: entry.command,
                 native_fork: entry.native_fork,
@@ -2339,6 +2344,11 @@ mod tests {
     fn unavailable_default_waits_for_discovery_then_clears() {
         let catalog = vec![RuntimeCatalogEntry {
             name: Runtime::Codex,
+            capabilities: runner_backend::ops::runtime::RuntimeCatalogEntry::for_runtime(
+                Runtime::Codex,
+            )
+            .map(|entry| entry.capabilities)
+            .unwrap_or_default(),
             display_name: "Codex".into(),
             command: "codex".into(),
             native_fork: true,

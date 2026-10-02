@@ -1,0 +1,296 @@
+{
+  "order": [
+    "codex",
+    "claude-code",
+    "pi",
+    "antigravity"
+  ],
+  "runtimes": [
+    {
+      "runtime": "codex",
+      "override_home": false,
+      "supported": true,
+      "source": {
+        "command": "/golden/agent",
+        "executable": null,
+        "config_home": "<HOME>/.codex"
+      },
+      "commands": [
+        {
+          "command": "/golden/agent",
+          "args": [
+            "debug",
+            "models"
+          ],
+          "env": {
+            "GOLDEN_ENV": "value",
+            "PATH": "/golden/bin:<DIRECT_CHAT_PATH>"
+          },
+          "cwd": "<HOME>",
+          "stdin": null,
+          "timeout_ms": 5000
+        }
+      ]
+    },
+    {
+      "runtime": "claude-code",
+      "override_home": false,
+      "supported": true,
+      "source": {
+        "command": "/golden/agent",
+        "executable": null,
+        "config_home": "<HOME>/.claude"
+      },
+      "commands": [
+        {
+          "command": "/golden/agent",
+          "args": [
+            "-p",
+            "--input-format",
+            "stream-json",
+            "--output-format",
+            "stream-json",
+            "--include-partial-messages",
+            "--verbose",
+            "--safe-mode",
+            "--no-session-persistence"
+          ],
+          "env": {
+            "GOLDEN_ENV": "value",
+            "PATH": "/golden/bin:<DIRECT_CHAT_PATH>"
+          },
+          "cwd": "<HOME>",
+          "stdin": "{\"type\":\"control_request\",\"request_id\":\"runner-list-models\",\"request\":{\"subtype\":\"list_models\"}}\n",
+          "timeout_ms": 30000
+        }
+      ]
+    },
+    {
+      "runtime": "antigravity",
+      "override_home": false,
+      "supported": true,
+      "source": {
+        "command": "/golden/agent",
+        "executable": null,
+        "config_home": "<HOME>/.gemini/antigravity-cli"
+      },
+      "commands": [
+        {
+          "command": "/golden/agent",
+          "args": [
+            "models"
+          ],
+          "env": {
+            "GOLDEN_ENV": "value",
+            "PATH": "/golden/bin:<DIRECT_CHAT_PATH>"
+          },
+          "cwd": "<HOME>",
+          "stdin": null,
+          "timeout_ms": 15000
+        }
+      ]
+    },
+    {
+      "runtime": "pi",
+      "override_home": false,
+      "supported": true,
+      "source": {
+        "command": "/golden/agent",
+        "executable": null,
+        "config_home": "<HOME>/.pi/agent"
+      },
+      "commands": [
+        {
+          "command": "/golden/agent",
+          "args": [
+            "--offline",
+            "--list-models"
+          ],
+          "env": {
+            "GOLDEN_ENV": "value",
+            "PATH": "/golden/bin:<DIRECT_CHAT_PATH>"
+          },
+          "cwd": "<HOME>",
+          "stdin": null,
+          "timeout_ms": 5000
+        }
+      ]
+    },
+    {
+      "runtime": "copilot",
+      "override_home": false,
+      "supported": false,
+      "source": {
+        "command": "/golden/agent",
+        "executable": null,
+        "config_home": null
+      },
+      "commands": []
+    },
+    {
+      "runtime": "trae",
+      "override_home": false,
+      "supported": false,
+      "source": {
+        "command": "/golden/agent",
+        "executable": null,
+        "config_home": null
+      },
+      "commands": []
+    },
+    {
+      "runtime": "shell",
+      "override_home": false,
+      "supported": false,
+      "source": {
+        "command": "/golden/agent",
+        "executable": null,
+        "config_home": null
+      },
+      "commands": []
+    },
+    {
+      "runtime": "codex",
+      "override_home": true,
+      "supported": true,
+      "source": {
+        "command": "/golden/agent",
+        "executable": null,
+        "config_home": "<HOME>/custom-codex"
+      },
+      "commands": [
+        {
+          "command": "/golden/agent",
+          "args": [
+            "debug",
+            "models"
+          ],
+          "env": {
+            "GOLDEN_ENV": "value",
+            "PATH": "/golden/bin:<DIRECT_CHAT_PATH>"
+          },
+          "cwd": "<HOME>",
+          "stdin": null,
+          "timeout_ms": 5000
+        }
+      ]
+    },
+    {
+      "runtime": "claude-code",
+      "override_home": true,
+      "supported": true,
+      "source": {
+        "command": "/golden/agent",
+        "executable": null,
+        "config_home": "<HOME>/custom-claude"
+      },
+      "commands": [
+        {
+          "command": "/golden/agent",
+          "args": [
+            "-p",
+            "--input-format",
+            "stream-json",
+            "--output-format",
+            "stream-json",
+            "--include-partial-messages",
+            "--verbose",
+            "--safe-mode",
+            "--no-session-persistence"
+          ],
+          "env": {
+            "GOLDEN_ENV": "value",
+            "PATH": "/golden/bin:<DIRECT_CHAT_PATH>"
+          },
+          "cwd": "<HOME>",
+          "stdin": "{\"type\":\"control_request\",\"request_id\":\"runner-list-models\",\"request\":{\"subtype\":\"list_models\"}}\n",
+          "timeout_ms": 30000
+        }
+      ]
+    },
+    {
+      "runtime": "antigravity",
+      "override_home": true,
+      "supported": true,
+      "source": {
+        "command": "/golden/agent",
+        "executable": null,
+        "config_home": "<HOME>/.gemini/antigravity-cli"
+      },
+      "commands": [
+        {
+          "command": "/golden/agent",
+          "args": [
+            "models"
+          ],
+          "env": {
+            "GOLDEN_ENV": "value",
+            "PATH": "/golden/bin:<DIRECT_CHAT_PATH>"
+          },
+          "cwd": "<HOME>",
+          "stdin": null,
+          "timeout_ms": 15000
+        }
+      ]
+    },
+    {
+      "runtime": "pi",
+      "override_home": true,
+      "supported": true,
+      "source": {
+        "command": "/golden/agent",
+        "executable": null,
+        "config_home": "<HOME>/.pi/agent"
+      },
+      "commands": [
+        {
+          "command": "/golden/agent",
+          "args": [
+            "--offline",
+            "--list-models"
+          ],
+          "env": {
+            "GOLDEN_ENV": "value",
+            "PATH": "/golden/bin:<DIRECT_CHAT_PATH>"
+          },
+          "cwd": "<HOME>",
+          "stdin": null,
+          "timeout_ms": 5000
+        }
+      ]
+    },
+    {
+      "runtime": "copilot",
+      "override_home": true,
+      "supported": false,
+      "source": {
+        "command": "/golden/agent",
+        "executable": null,
+        "config_home": null
+      },
+      "commands": []
+    },
+    {
+      "runtime": "trae",
+      "override_home": true,
+      "supported": false,
+      "source": {
+        "command": "/golden/agent",
+        "executable": null,
+        "config_home": null
+      },
+      "commands": []
+    },
+    {
+      "runtime": "shell",
+      "override_home": true,
+      "supported": false,
+      "source": {
+        "command": "/golden/agent",
+        "executable": null,
+        "config_home": null
+      },
+      "commands": []
+    }
+  ]
+}

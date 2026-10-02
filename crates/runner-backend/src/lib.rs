@@ -112,5 +112,5 @@ impl AppCore {
             .emit("window_focus_map", &self.windows.snapshot());
     }
 }
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod golden;

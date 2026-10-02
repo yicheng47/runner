@@ -224,7 +224,7 @@ pub(super) fn slot_command_summary(slot: &SlotWithRole) -> String {
         if let Some(effort) = slot.slot.effort_override.as_deref() {
             overrides.push(format!("effort {effort}"));
         }
-        if runtime == "codex" {
+        if crate::runtime_ui::catalog_capabilities(&[], runtime).codex_speed {
             if let Some(speed) = slot.slot.codex_speed_override {
                 overrides.push(format!(
                     "speed {}",
@@ -255,7 +255,7 @@ pub(super) fn slot_command_summary(slot: &SlotWithRole) -> String {
     if let Some(effort) = slot.slot.effort_override.as_deref() {
         overrides.push(format!("effort {effort}"));
     }
-    if slot.role.runtime == "codex" {
+    if crate::runtime_ui::catalog_capabilities(&[], &slot.role.runtime).codex_speed {
         if let Some(speed) = slot.slot.codex_speed_override {
             overrides.push(format!(
                 "speed {}",
@@ -424,7 +424,7 @@ pub(super) fn slot_setup(slot: &SlotWithRole) -> SlotSetup {
         slot.slot.effort_override.as_deref(),
         slot.role.effort.as_deref(),
     );
-    let speed = if runtime == "codex" {
+    let speed = if crate::runtime_ui::catalog_capabilities(&[], &runtime).codex_speed {
         slot.slot.codex_speed_override.or(if own_runtime {
             slot.role.codex_speed
         } else {
@@ -433,7 +433,8 @@ pub(super) fn slot_setup(slot: &SlotWithRole) -> SlotSetup {
     } else {
         None
     };
-    let speed_overridden = runtime == "codex" && slot.slot.codex_speed_override.is_some();
+    let speed_overridden = crate::runtime_ui::catalog_capabilities(&[], &runtime).codex_speed
+        && slot.slot.codex_speed_override.is_some();
     SlotSetup {
         runtime_overridden,
         own_runtime,

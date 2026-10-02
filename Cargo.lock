@@ -5357,6 +5357,7 @@ dependencies = [
  "chrono",
  "clap",
  "rmcp",
+ "runner-backend",
  "runner-core",
  "serde",
  "serde_json",

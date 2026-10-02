@@ -1,0 +1,285 @@
+{
+  "clients": [
+    {
+      "client": "Codex",
+      "key": "codex",
+      "runtime": "codex",
+      "label": "Codex",
+      "config_file": "~/.codex/config.toml",
+      "path": "<HOME>/.codex/config.toml",
+      "json": false,
+      "entry_key": "mcp_servers.runner",
+      "empty": {
+        "registered": false,
+        "matches_current": false,
+        "command": null,
+        "args": []
+      },
+      "registered": {
+        "registered": true,
+        "matches_current": true,
+        "command": "/golden/runner-mcp",
+        "args": []
+      },
+      "written": "[mcp_servers.runner]\ncommand = \"/golden/runner-mcp\"\nargs = []\nenv = {}\n",
+      "removed": true,
+      "after": ""
+    },
+    {
+      "client": "ClaudeCode",
+      "key": "claude_code",
+      "runtime": "claude-code",
+      "label": "Claude Code",
+      "config_file": "~/.claude.json",
+      "path": "<HOME>/.claude.json",
+      "json": true,
+      "entry_key": "mcpServers.runner",
+      "empty": {
+        "registered": false,
+        "matches_current": false,
+        "command": null,
+        "args": []
+      },
+      "registered": {
+        "registered": true,
+        "matches_current": true,
+        "command": "/golden/runner-mcp",
+        "args": []
+      },
+      "written": "{\"mcpServers\": {\n  \"runner\": {\n    \"type\": \"stdio\",\n    \"command\": \"/golden/runner-mcp\",\n    \"args\": [],\n    \"env\": {}\n  }\n}}",
+      "removed": true,
+      "after": "{\"mcpServers\": {\n  \n}}"
+    },
+    {
+      "client": "Antigravity",
+      "key": "antigravity",
+      "runtime": "antigravity",
+      "label": "Antigravity CLI",
+      "config_file": "~/.gemini/config/mcp_config.json",
+      "path": "<HOME>/.gemini/config/mcp_config.json",
+      "json": true,
+      "entry_key": "mcpServers.runner",
+      "empty": {
+        "registered": false,
+        "matches_current": false,
+        "command": null,
+        "args": []
+      },
+      "registered": {
+        "registered": true,
+        "matches_current": true,
+        "command": "/golden/runner-mcp",
+        "args": []
+      },
+      "written": "{\"mcpServers\": {\n  \"runner\": {\n    \"command\": \"/golden/runner-mcp\",\n    \"disabled\": false\n  }\n}}",
+      "removed": true,
+      "after": "{\"mcpServers\": {\n  \n}}"
+    },
+    {
+      "client": "Copilot",
+      "key": "copilot",
+      "runtime": "copilot",
+      "label": "GitHub Copilot CLI",
+      "config_file": "~/.copilot/mcp-config.json",
+      "path": "<HOME>/.copilot/mcp-config.json",
+      "json": true,
+      "entry_key": "mcpServers.runner",
+      "empty": {
+        "registered": false,
+        "matches_current": false,
+        "command": null,
+        "args": []
+      },
+      "registered": {
+        "registered": true,
+        "matches_current": true,
+        "command": "/golden/runner-mcp",
+        "args": []
+      },
+      "written": "{\"mcpServers\": {\n  \"runner\": {\n    \"type\": \"local\",\n    \"command\": \"/golden/runner-mcp\",\n    \"args\": [],\n    \"env\": {},\n    \"tools\": [\n      \"*\"\n    ]\n  }\n}}",
+      "removed": true,
+      "after": "{\"mcpServers\": {\n  \n}}"
+    },
+    {
+      "client": "Trae",
+      "key": "trae",
+      "runtime": "trae",
+      "label": "TRAE CLI",
+      "config_file": "~/.trae/traecli.toml",
+      "path": "<HOME>/.trae/traecli.toml",
+      "json": false,
+      "entry_key": "mcp_servers.runner",
+      "empty": {
+        "registered": false,
+        "matches_current": false,
+        "command": null,
+        "args": []
+      },
+      "registered": {
+        "registered": true,
+        "matches_current": true,
+        "command": "/golden/runner-mcp",
+        "args": []
+      },
+      "written": "[mcp_servers.runner]\ncommand = \"/golden/runner-mcp\"\nargs = []\nenv = {}\n",
+      "removed": true,
+      "after": ""
+    }
+  ],
+  "parse": [
+    {
+      "raw": "codex",
+      "value": "Codex",
+      "error": null
+    },
+    {
+      "raw": "claude_code",
+      "value": "ClaudeCode",
+      "error": null
+    },
+    {
+      "raw": "claude-code",
+      "value": null,
+      "error": "unknown MCP client: \"claude-code\" (expected codex, claude_code, antigravity, copilot, or trae)"
+    },
+    {
+      "raw": "ClaudeCode",
+      "value": null,
+      "error": "unknown MCP client: \"ClaudeCode\" (expected codex, claude_code, antigravity, copilot, or trae)"
+    },
+    {
+      "raw": "antigravity",
+      "value": "Antigravity",
+      "error": null
+    },
+    {
+      "raw": "copilot",
+      "value": "Copilot",
+      "error": null
+    },
+    {
+      "raw": "trae",
+      "value": "Trae",
+      "error": null
+    },
+    {
+      "raw": "pi",
+      "value": null,
+      "error": "unknown MCP client: \"pi\" (expected codex, claude_code, antigravity, copilot, or trae)"
+    },
+    {
+      "raw": "shell",
+      "value": null,
+      "error": "unknown MCP client: \"shell\" (expected codex, claude_code, antigravity, copilot, or trae)"
+    },
+    {
+      "raw": "unknown",
+      "value": null,
+      "error": "unknown MCP client: \"unknown\" (expected codex, claude_code, antigravity, copilot, or trae)"
+    },
+    {
+      "raw": "",
+      "value": null,
+      "error": "unknown MCP client: \"\" (expected codex, claude_code, antigravity, copilot, or trae)"
+    }
+  ],
+  "deserialize": [
+    {
+      "raw": "\"ClaudeCode\"",
+      "value": "ClaudeCode",
+      "error": null
+    },
+    {
+      "raw": "\"Codex\"",
+      "value": "Codex",
+      "error": null
+    },
+    {
+      "raw": "\"Trae\"",
+      "value": "Trae",
+      "error": null
+    },
+    {
+      "raw": "\"Copilot\"",
+      "value": "Copilot",
+      "error": null
+    },
+    {
+      "raw": "\"Antigravity\"",
+      "value": "Antigravity",
+      "error": null
+    },
+    {
+      "raw": "\"claude_code\"",
+      "value": null,
+      "error": "unknown variant `claude_code`, expected one of `ClaudeCode`, `Codex`, `Trae`, `Copilot`, `Antigravity` at line 1 column 13"
+    },
+    {
+      "raw": "\"unknown\"",
+      "value": null,
+      "error": "unknown variant `unknown`, expected one of `ClaudeCode`, `Codex`, `Trae`, `Copilot`, `Antigravity` at line 1 column 9"
+    },
+    {
+      "raw": "{\"Codex\":null}",
+      "value": "Codex",
+      "error": null
+    },
+    {
+      "raw": "{\"Codex\":1}",
+      "value": null,
+      "error": "invalid type: integer `1`, expected unit at line 1 column 10"
+    },
+    {
+      "raw": "{}",
+      "value": null,
+      "error": "expected value at line 1 column 2"
+    },
+    {
+      "raw": "null",
+      "value": null,
+      "error": "expected value at line 1 column 1"
+    },
+    {
+      "raw": "7",
+      "value": null,
+      "error": "expected value at line 1 column 1"
+    }
+  ],
+  "sorted": [
+    "ClaudeCode",
+    "Codex",
+    "Trae",
+    "Copilot",
+    "Antigravity"
+  ],
+  "for_runtime": [
+    {
+      "runtime": "codex",
+      "client": "Codex"
+    },
+    {
+      "runtime": "claude-code",
+      "client": "ClaudeCode"
+    },
+    {
+      "runtime": "antigravity",
+      "client": "Antigravity"
+    },
+    {
+      "runtime": "pi",
+      "client": null
+    },
+    {
+      "runtime": "copilot",
+      "client": "Copilot"
+    },
+    {
+      "runtime": "trae",
+      "client": "Trae"
+    },
+    {
+      "runtime": "shell",
+      "client": null
+    }
+  ]
+}

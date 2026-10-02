@@ -1,3 +1,4 @@
+pub(crate) mod models;
 pub(crate) mod pi_status;
 use super::catalog::*;
 use super::helpers::*;
@@ -5,11 +6,10 @@ use super::*;
 use std::ffi::{OsStr, OsString};
 use std::path::PathBuf;
 
-pub(crate) fn pi_status_args(runtime: Option<Runtime>, app_data_dir: &Path) -> Vec<String> {
-    if runtime != Some(Runtime::Pi)
-        || !Pi
-            .status_hooks()
-            .is_some_and(|hooks| hooks.supported(cfg!(windows)))
+pub(crate) fn pi_status_args(app_data_dir: &Path) -> Vec<String> {
+    if !Pi
+        .status_hooks()
+        .is_some_and(|hooks| hooks.supported(cfg!(windows)))
         || !crate::runtimes::pi::pi_status::extension_available(app_data_dir)
     {
         return Vec::new();
@@ -143,6 +143,20 @@ static PERMISSIONS: Permissions = Permissions {
 };
 pub struct Pi;
 impl RuntimeAdapter for Pi {
+    fn skills(&self) -> SkillSupport {
+        SkillSupport {
+            roots: SKILL_DIRS,
+            ..Default::default()
+        }
+    }
+
+    fn model_discovery(&self) -> Option<&'static ModelDiscoverySource> {
+        Some(&DISCOVERY)
+    }
+    fn native_defaults(&self, home: &Path) -> crate::runtime_defaults::RuntimeDefaults {
+        pi_defaults(&settings_path(home))
+    }
+
     fn status_hooks(&self) -> Option<&'static dyn StatusHooks> {
         Some(&Hooks)
     }
@@ -158,6 +172,7 @@ impl RuntimeAdapter for Pi {
             name: Runtime::Pi,
             display_name: Runtime::Pi.display_name(),
             command: Runtime::Pi.command().unwrap(),
+            capabilities: self.capabilities(),
             native_fork: true,
             description: "pi coding agent (bring your own model provider)",
             install_url: "https://github.com/earendil-works/pi",
@@ -170,7 +185,7 @@ impl RuntimeAdapter for Pi {
                         .map(|effort| plain_option(effort, effort)),
                 )
                 .collect(),
-            skills_dirs: &[".pi/agent/skills", ".agents/skills"],
+            skills_dirs: SKILL_DIRS,
             update_args: &["update"],
             npm_package: Some("@earendil-works/pi-coding-agent"),
         })
@@ -236,7 +251,7 @@ impl RuntimeAdapter for Pi {
             out.push("--approve".into());
         }
         out.extend(self.model_effort_args(ctx.model, ctx.effort));
-        out.extend(pi_status_args(Some(Runtime::Pi), ctx.app_data_dir));
+        out.extend(pi_status_args(ctx.app_data_dir));
         out.extend(self.prompt_channels().system_prompt_args(ctx.system_prompt));
         out.extend(self.first_turn_argv(if ctx.resuming { None } else { ctx.first_turn }));
         out
@@ -306,3 +321,36 @@ impl StatusHooks for Hooks {
 
 #[cfg(test)]
 mod tests;
+
+pub(crate) const PI_SETTINGS_RELATIVE_PATH: &str = ".pi/agent/settings.json";
+pub(crate) fn settings_path(home: &Path) -> PathBuf {
+    home.join(PI_SETTINGS_RELATIVE_PATH)
+}
+
+use crate::runtime_defaults::{json_string, RuntimeDefaults};
+fn pi_defaults(path: &Path) -> RuntimeDefaults {
+    let Some(document) = std::fs::read_to_string(path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+    else {
+        return RuntimeDefaults::default();
+    };
+    let model = json_string(&document, "defaultModel");
+    let provider = json_string(&document, "defaultProvider");
+    RuntimeDefaults {
+        model: model.map(|model| match provider {
+            Some(provider) if !provider.is_empty() => format!("{provider}/{model}"),
+            _ => model,
+        }),
+        effort: json_string(&document, "defaultThinkingLevel"),
+    }
+}
+
+static DISCOVERY: ModelDiscoverySource = ModelDiscoverySource {
+    order: 2,
+    method: "--offline --list-models",
+    query: models::query,
+    config_home: || config_home(None, ".pi/agent"),
+};
+
+const SKILL_DIRS: &[&str] = &[".pi/agent/skills", ".agents/skills"];

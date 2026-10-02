@@ -4,7 +4,7 @@ use crate::runtimes::test_support::*;
 #[test]
 fn pi_fork_assigns_a_new_session_key_and_prepends_native_args() {
     let source = "019fa1b9-a133-7841-b4dd-730d376ab1d1";
-    let plan = fork_plan(Some(Runtime::Pi), source, "Source").unwrap();
+    let plan = fork_plan(Runtime::Pi.key(), source, "Source").unwrap();
     let ForkPlan::Direct(plan) = plan else {
         panic!("pi must spawn its fork directly")
     };
@@ -18,10 +18,10 @@ fn pi_fork_assigns_a_new_session_key_and_prepends_native_args() {
 #[test]
 fn pi_status_extension_args_require_the_installed_extension() {
     let root = tempfile::tempdir().unwrap();
-    assert!(pi_status_args(Some(Runtime::Pi), root.path()).is_empty());
+    assert!(pi_status_args_for(Runtime::Pi.key(), root.path()).is_empty());
     crate::runtimes::pi::pi_status::install_extension(root.path()).unwrap();
     assert_eq!(
-        pi_status_args(Some(Runtime::Pi), root.path()),
+        pi_status_args_for(Runtime::Pi.key(), root.path()),
         [
             "-e".to_owned(),
             crate::runtimes::pi::pi_status::extension_path(root.path())
@@ -29,37 +29,37 @@ fn pi_status_extension_args_require_the_installed_extension() {
                 .into_owned(),
         ]
     );
-    assert!(pi_status_args(Some(Runtime::Copilot), root.path()).is_empty());
+    assert!(pi_status_args_for(Runtime::Copilot.key(), root.path()).is_empty());
 }
 
 #[test]
 fn pi_assigns_and_resumes_the_same_id_with_prompt_file_args() {
-    let fresh = resume_plan(Some(Runtime::Pi), None);
+    let fresh = resume_plan(Runtime::Pi.key(), None);
     let key = fresh.assigned_key.as_deref().unwrap();
     assert!(uuid::Uuid::parse_str(key).is_ok());
     assert_eq!(fresh.args, ["--session-id", key]);
     assert!(fresh.prepend);
     assert!(!fresh.resuming);
 
-    let resumed = resume_plan(Some(Runtime::Pi), Some(key));
+    let resumed = resume_plan(Runtime::Pi.key(), Some(key));
     assert_eq!(resumed.args, fresh.args);
     assert_eq!(resumed.assigned_key, fresh.assigned_key);
     assert!(resumed.prepend);
     assert!(resumed.resuming);
     assert_eq!(
-        system_prompt_args(Some(Runtime::Pi), Some("/tmp/persona.md")),
+        system_prompt_args(Runtime::Pi.key(), Some("/tmp/persona.md")),
         ["--append-system-prompt", "/tmp/persona.md"]
     );
     assert_eq!(
         model_effort_args(
-            Some(Runtime::Pi),
+            Runtime::Pi.key(),
             Some("deepseek/deepseek-v4-pro"),
             Some("High")
         ),
         ["--model", "deepseek/deepseek-v4-pro", "--thinking", "high"]
     );
     assert_eq!(
-        first_turn_argv(Some(Runtime::Pi), Some("-goal")),
+        first_turn_argv(Runtime::Pi.key(), Some("-goal")),
         ["--", "-goal"]
     );
 }
@@ -72,7 +72,7 @@ fn pi_status_extension_precedes_the_system_prompt_and_goal_on_spawn_and_resume()
         .to_string_lossy()
         .into_owned();
     let fresh = trailing_runtime_args(
-        Some(Runtime::Pi),
+        Runtime::Pi.key(),
         &[],
         root.path(),
         "runner-session",
@@ -95,7 +95,7 @@ fn pi_status_extension_precedes_the_system_prompt_and_goal_on_spawn_and_resume()
         ]
     );
     let resumed = trailing_runtime_args(
-        Some(Runtime::Pi),
+        Runtime::Pi.key(),
         &[],
         root.path(),
         "runner-session",
@@ -248,4 +248,12 @@ fn pi_session_directory_expands_tilde_and_resolves_relative_overrides_from_cwd()
         ),
         Some(cwd.join("relative-sessions"))
     );
+}
+
+fn pi_status_args_for(key: &str, data: &Path) -> Vec<String> {
+    if key == Runtime::Pi.key() {
+        pi_status_args(data)
+    } else {
+        Vec::new()
+    }
 }

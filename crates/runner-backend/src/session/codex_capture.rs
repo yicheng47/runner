@@ -677,6 +677,22 @@ mod tests {
     }
 
     #[test]
+    fn rollout_capture_uses_fixture_home() {
+        let home = tempfile::tempdir().unwrap();
+        crate::runtimes::with_conversation_home(home.path(), || {
+            for (key, relative) in [("codex", ".codex/sessions"), ("trae", ".trae/cli/sessions")] {
+                let crate::runtimes::KeyCapture::RolloutScan { sessions_root } =
+                    crate::runtimes::for_key(key).key_capture()
+                else {
+                    panic!("missing rollout capture for {key}");
+                };
+                assert_eq!(sessions_root, Some(home.path().join(relative)));
+            }
+        });
+        assert!(crate::runtimes::test_home().is_none());
+    }
+
+    #[test]
     fn fork_rollout_is_ready_requires_complete_matching_lineage() {
         let root = tempfile::tempdir().unwrap();
         let now = Local::now();

@@ -39,19 +39,13 @@ impl ChatIcon {
     }
 
     pub fn for_runtime(runtime: &str) -> Self {
-        let (path, tint) = match Runtime::parse(runtime) {
-            Some(Runtime::ClaudeCode) => ("claude.svg", gpui::rgb(0xd97757).into()),
-            Some(Runtime::Codex) => ("openai.svg", theme::text()),
-            Some(Runtime::Trae) => ("trae.svg", gpui::rgb(0x32f08c).into()),
-            Some(Runtime::Copilot) => ("copilot.svg", gpui::rgb(0x8534f3).into()),
-            Some(Runtime::Pi) => ("pi.svg", theme::text()),
-            Some(Runtime::Antigravity) => ("antigravity-icon.png", theme::text()),
-            Some(Runtime::Shell) => return Self::accented("square-terminal.svg"),
-            None => return Self::generic("message-square.svg"),
+        let Some(runtime) = Runtime::parse(runtime) else {
+            return Self::generic("message-square.svg");
         };
+        let ui = crate::runtime_ui::runtime_ui(runtime);
         Self {
-            path,
-            tint: Some(tint),
+            path: ui.icon,
+            tint: Some(ui.tint),
         }
     }
 

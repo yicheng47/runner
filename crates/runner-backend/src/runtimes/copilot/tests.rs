@@ -9,10 +9,10 @@ fn copilot_permissions_roundtrip_and_strip_every_elevation_flag() {
         (PermissionMode::Bypass, vec!["--yolo"]),
         (PermissionMode::Auto, vec![]),
     ] {
-        let args = permission_mode_args(Some(Runtime::Copilot), mode);
+        let args = permission_mode_args(Runtime::Copilot.key(), mode);
         assert_eq!(args, expected);
         assert_eq!(
-            infer_permission_mode(Some(Runtime::Copilot), &args),
+            infer_permission_mode(Runtime::Copilot.key(), &args),
             if mode == PermissionMode::Auto {
                 PermissionMode::Default
             } else {
@@ -21,7 +21,7 @@ fn copilot_permissions_roundtrip_and_strip_every_elevation_flag() {
         );
         assert_eq!(
             apply_permission_mode(
-                Some(Runtime::Copilot),
+                Runtime::Copilot.key(),
                 &["--yolo".into(), "--debug".into()],
                 mode
             ),
@@ -43,12 +43,12 @@ fn copilot_permissions_roundtrip_and_strip_every_elevation_flag() {
         args.extend(allow_tool.iter().copied());
         let args = args.into_iter().map(String::from).collect::<Vec<_>>();
         assert_eq!(
-            strip_permission_flags(Some(Runtime::Copilot), &args),
+            strip_permission_flags(Runtime::Copilot.key(), &args),
             ["--model", "gpt-5.4"]
         );
         assert_eq!(
             infer_permission_mode(
-                Some(Runtime::Copilot),
+                Runtime::Copilot.key(),
                 &allow_tool.into_iter().map(String::from).collect::<Vec<_>>()
             ),
             PermissionMode::AcceptEdits
@@ -56,7 +56,7 @@ fn copilot_permissions_roundtrip_and_strip_every_elevation_flag() {
     }
     assert_eq!(
         strip_permission_flags(
-            Some(Runtime::Copilot),
+            Runtime::Copilot.key(),
             &[
                 "--allow-tool".into(),
                 "read".into(),
@@ -69,32 +69,32 @@ fn copilot_permissions_roundtrip_and_strip_every_elevation_flag() {
     );
     assert_eq!(
         strip_permission_flags(
-            Some(Runtime::Copilot),
+            Runtime::Copilot.key(),
             &["--allow-tool".into(), "--model".into(), "gpt-5.4".into(),],
         ),
         ["--model", "gpt-5.4"]
     );
     assert_eq!(
-        mission_permission_mode_args(Some(Runtime::Copilot), MissionPermissionMode::Bypass),
+        mission_permission_mode_args(Runtime::Copilot.key(), MissionPermissionMode::Bypass),
         Some(vec!["--yolo".into()])
     );
     assert_eq!(
-        mission_permission_mode_args(Some(Runtime::Copilot), MissionPermissionMode::Auto),
+        mission_permission_mode_args(Runtime::Copilot.key(), MissionPermissionMode::Auto),
         Some(vec![])
     );
     assert_eq!(
-        mission_bus_sandbox_args(Some(Runtime::Copilot), Some(Path::new("/mission"))),
+        mission_bus_sandbox_args(Runtime::Copilot.key(), Some(Path::new("/mission"))),
         ["--add-dir", "/mission"]
     );
-    assert!(mission_bus_sandbox_args(Some(Runtime::Copilot), None).is_empty());
+    assert!(mission_bus_sandbox_args(Runtime::Copilot.key(), None).is_empty());
 }
 
 #[test]
 fn copilot_status_plugin_args_require_a_complete_installed_plugin() {
     let root = tempfile::tempdir().unwrap();
-    assert!(copilot_status_args(Some(Runtime::Copilot), root.path()).is_empty());
+    assert!(copilot_status_args_for(Runtime::Copilot.key(), root.path()).is_empty());
     crate::runtimes::copilot::copilot_status::install_plugin(root.path()).unwrap();
-    let args = copilot_status_args(Some(Runtime::Copilot), root.path());
+    let args = copilot_status_args_for(Runtime::Copilot.key(), root.path());
     assert_eq!(
         args,
         [
@@ -108,33 +108,33 @@ fn copilot_status_plugin_args_require_a_complete_installed_plugin() {
 
 #[test]
 fn copilot_assigns_and_resumes_the_same_id_without_a_capture_thread() {
-    let fresh = resume_plan(Some(Runtime::Copilot), None);
+    let fresh = resume_plan(Runtime::Copilot.key(), None);
     let key = fresh.assigned_key.as_deref().unwrap();
     assert!(uuid::Uuid::parse_str(key).is_ok());
     assert_eq!(fresh.args, ["--session-id", key]);
     assert!(!fresh.resuming);
     assert!(!fresh.prepend);
-    let resumed = resume_plan(Some(Runtime::Copilot), Some(key));
+    let resumed = resume_plan(Runtime::Copilot.key(), Some(key));
     assert_eq!(resumed.args, fresh.args);
     assert_eq!(resumed.assigned_key, fresh.assigned_key);
     assert!(resumed.resuming);
     assert!(!resumed.prepend);
-    assert!(!resume_plan(Some(Runtime::Copilot), Some("not-a-uuid")).resuming);
-    assert!(system_prompt_args(Some(Runtime::Copilot), Some("persona")).is_empty());
+    assert!(!resume_plan(Runtime::Copilot.key(), Some("not-a-uuid")).resuming);
+    assert!(system_prompt_args(Runtime::Copilot.key(), Some("persona")).is_empty());
     assert_eq!(
-        model_effort_args(Some(Runtime::Copilot), Some("gpt-5.4"), Some("high")),
+        model_effort_args(Runtime::Copilot.key(), Some("gpt-5.4"), Some("high")),
         ["--model", "gpt-5.4", "--effort", "high"]
     );
     for effort in [
         "none", "minimal", "low", "medium", "high", "xhigh", "max", "High",
     ] {
         assert_eq!(
-            model_effort_args(Some(Runtime::Copilot), None, Some(effort)),
+            model_effort_args(Runtime::Copilot.key(), None, Some(effort)),
             ["--effort", effort]
         );
     }
     assert_eq!(
-        first_turn_argv(Some(Runtime::Copilot), Some("body")),
+        first_turn_argv(Runtime::Copilot.key(), Some("body")),
         ["-i", "body"]
     );
 }
@@ -152,4 +152,12 @@ fn copilot_conversation_probe_uses_events_file_in_its_home() {
         &key,
         home.path().to_str()
     ));
+}
+
+fn copilot_status_args_for(key: &str, data: &Path) -> Vec<String> {
+    if key == Runtime::Copilot.key() {
+        copilot_status_args(data)
+    } else {
+        Vec::new()
+    }
 }

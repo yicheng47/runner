@@ -120,11 +120,12 @@ impl Normalizer {
                 && spec.env.contains_key(generation))
             .then_some(runtime)
         });
+        // The fixture shares its agent home and app-data root; capture paths represent the home.
         let capture = match adapter.key_capture() {
             crate::runtimes::KeyCapture::RolloutScan {
                 sessions_root: Some(path),
             } => {
-                json!({"mechanism": "rollout-scan", "sessions_root": self.text(&path.to_string_lossy(), root)})
+                json!({"mechanism": "rollout-scan", "sessions_root": self.text(&path.to_string_lossy(), root).replace("<TMP>", "<HOME>")})
             }
             crate::runtimes::KeyCapture::LogTail => json!({"mechanism": "log-tail"}),
             crate::runtimes::KeyCapture::RekeyDrop => json!({"mechanism": "rekey-drop"}),
@@ -136,7 +137,7 @@ impl Normalizer {
             .map(|watcher| watcher.interrupt_signal().is_some());
         let rollout = mgr.codex_capture_context(&spec.session_id).map(|ctx| {
             json!({
-                "sessions_root": self.text(&ctx.sessions_root.to_string_lossy(), root),
+                "sessions_root": self.text(&ctx.sessions_root.to_string_lossy(), root).replace("<TMP>", "<HOME>"),
                 "prompt_marker": ctx.prompt_marker.map(|marker| self.text(&marker, root))
             })
         });
@@ -567,9 +568,8 @@ fn spawn_capabilities_golden() {
         .into_iter()
         .chain(["unknown-runtime"])
     {
-        let runtime = Runtime::parse(key);
         let mgr = mgr_with_fake(None, fake_runtime());
-        mgr.enter_claude_launch_gate("golden", runtime);
+        mgr.enter_claude_launch_gate("golden", key);
         let markers: Vec<_> = [
             None,
             Some("TURN".into()),
@@ -577,15 +577,82 @@ fn spawn_capabilities_golden() {
         ]
         .into_iter()
         .map(|body| {
-            let (body, marker) =
-                SessionManager::codex_capture_prompt_marker(runtime, "golden", body);
+            let (body, marker) = SessionManager::codex_capture_prompt_marker(key, "golden", body);
             json!({"body_len": body.as_ref().map(String::len), "marker": marker})
         })
         .collect();
         rows.push(json!({"runtime": key, "hooks_unix": crate::runtimes::for_key(key).status_hooks().is_some_and(|hooks| hooks.supported(false)),
             "hooks_windows": crate::runtimes::for_key(key).status_hooks().is_some_and(|hooks| hooks.supported(true)),
             "launch_gate": mgr.claude_launch_gate.lock().unwrap().is_some(), "markers": markers,
-            "env": Normalizer::default().text(&serde_json::to_string(&super::super::spawn::agent_env(BTreeMap::new(), &HashMap::new(), BTreeMap::new(), runtime)).unwrap(), data.path())}));
+            "env": Normalizer::default().text(&serde_json::to_string(&super::super::spawn::agent_env(BTreeMap::new(), &HashMap::new(), BTreeMap::new(), key)).unwrap(), data.path())}));
     }
     crate::golden::assert_golden("spawn-capabilities", json!(rows));
+}
+
+#[test]
+fn catalog_speed_golden() {
+    let mut rows = Vec::new();
+    for runtime in Runtime::ALL
+        .into_iter()
+        .filter(|runtime| !runtime.is_shell())
+    {
+        let home = tempfile::tempdir().unwrap();
+        let pool = pool_with_schema();
+        let mut configured = configured_role(runtime.key(), home.path());
+        let (mission, slot) = seed_mission_rows(&pool, &configured);
+        for speed in [None, Some(CodexSpeed::Standard), Some(CodexSpeed::Fast)] {
+            for slot_speed in [None, Some(CodexSpeed::Standard), Some(CodexSpeed::Fast)] {
+                let fake = fake_runtime();
+                let mgr = mgr_with_fake(None, Arc::clone(&fake));
+                let mut conn = pool.get().unwrap();
+                configured = crate::ops::role::update(
+                    &conn,
+                    &configured.id,
+                    crate::ops::role::UpdateRoleInput {
+                        codex_speed: Some(speed),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+                let updated = crate::ops::slot::update(
+                    &mut conn,
+                    &slot.id,
+                    crate::ops::slot::UpdateSlotInput {
+                        codex_speed_override: Some(slot_speed),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+                drop(conn);
+                with_conversation_home(home.path(), || {
+                    let spawned = mgr
+                        .spawn_with_prompt_channels(
+                            &mission,
+                            &configured,
+                            &updated.slot,
+                            home.path(),
+                            home.path().join("events.ndjson"),
+                            Arc::clone(&pool),
+                            capture(),
+                            None,
+                            None,
+                        )
+                        .unwrap();
+                    let stored = crate::repo::session::get_row(&pool.get().unwrap(), &spawned.id)
+                        .unwrap()
+                        .unwrap();
+                    let args: Vec<_> = fake
+                        .last_spawn_spec()
+                        .unwrap()
+                        .args
+                        .into_iter()
+                        .filter(|arg| arg == "-c" || arg.starts_with("service_tier="))
+                        .collect();
+                    rows.push(json!({"runtime":runtime,"role_input":speed,"slot_input":slot_speed,"role_stored":crate::ops::role::get(&pool.get().unwrap(),&configured.id).unwrap().codex_speed,"slot_stored":updated.slot.codex_speed_override,"session_stored":stored.agent_speed,"speed_args":args}));
+                    mgr.kill(&spawned.id).unwrap();
+                });
+            }
+        }
+    }
+    crate::golden::assert_golden("catalog-speed", json!(rows));
 }

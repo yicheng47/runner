@@ -308,7 +308,9 @@ pub fn create(conn: &Connection, input: CreateRoleInput) -> Result<Role> {
                 .effort
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty()),
-            codex_speed: (input.runtime == Runtime::Codex)
+            codex_speed: (crate::runtimes::adapter(input.runtime)
+                .capabilities()
+                .codex_speed)
                 .then_some(input.codex_speed)
                 .flatten(),
             created_at: ts,
@@ -405,7 +407,10 @@ pub fn update(conn: &Connection, id: &str, input: UpdateRoleInput) -> Result<Rol
             })
         })
         .unwrap_or(existing.effort);
-    let codex_speed = if runtime == Runtime::Codex.key() {
+    let codex_speed = if crate::runtimes::for_key(&runtime)
+        .capabilities()
+        .codex_speed
+    {
         input.codex_speed.unwrap_or(existing.codex_speed)
     } else {
         None

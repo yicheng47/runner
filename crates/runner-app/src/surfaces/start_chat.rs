@@ -202,10 +202,13 @@ impl StartChatModal {
     }
 
     fn codex_speed_visible(&self) -> bool {
-        match self.mode {
-            ChatMode::Role => self.role_agent() == Some("codex"),
-            ChatMode::Runtime => self.runtime_name.as_deref() == Some("codex"),
-        }
+        let key = match self.mode {
+            ChatMode::Role => self.role_agent(),
+            ChatMode::Runtime => self.runtime_name.as_deref(),
+        };
+        key.is_some_and(|key| {
+            crate::runtime_ui::catalog_capabilities(&self.runtimes, key).codex_speed
+        })
     }
 
     fn effective_speed(&self) -> Option<CodexSpeed> {
@@ -235,7 +238,9 @@ impl StartChatModal {
     /// Codex agent, else Inherit.
     fn baseline_speed(&self) -> String {
         match inheriting_role(self)
-            .filter(|role| role.runtime == "codex")
+            .filter(|role| {
+                crate::runtime_ui::catalog_capabilities(&self.runtimes, &role.runtime).codex_speed
+            })
             .and_then(|role| role.codex_speed)
         {
             Some(CodexSpeed::Standard) => "standard",
@@ -2342,7 +2347,7 @@ fn launch_model(modal: &StartChatModal, cx: &App) -> Option<String> {
 /// pair its catalog lists, so its effort waits for a model that reaches the
 /// launch.
 fn effort_needs_launch_model(runtime: &RuntimeCatalogEntry) -> bool {
-    runtime.name == runner_backend::model::Runtime::Antigravity
+    runtime.capabilities.effort_needs_launch_model
 }
 
 fn sync_role_runtime_select(modal: &StartChatModal, cx: &mut Context<NativeRoot>) {
@@ -2406,7 +2411,9 @@ fn sync_speed_control(modal: &mut StartChatModal, cx: &mut Context<NativeRoot>) 
         modal.speed = "inherit".into();
     }
     let baseline = modal.baseline_speed();
-    let role = inheriting_role(modal).filter(|role| role.runtime == "codex");
+    let role = inheriting_role(modal).filter(|role| {
+        crate::runtime_ui::catalog_capabilities(&modal.runtimes, &role.runtime).codex_speed
+    });
     let options = speed_options(
         role.map(|_| baseline.as_str()),
         role.is_some_and(|role| role.codex_speed.is_some()),
@@ -3811,6 +3818,20 @@ pub(super) mod tests {
     }
 
     #[test]
+    fn role_speed_remains_visible_when_its_agent_is_not_selectable() {
+        let mut modal = modal_harness(
+            1200.,
+            1000.,
+            vec![codex_role()],
+            vec![agents().remove(0)],
+            ChatMode::Role,
+        );
+        assert!(modal.read(|modal, _| modal.codex_speed_visible()));
+        assert!(modal.bounds("START_CHAT_SPEED_FIELD").is_some());
+        modal.read(|modal, _| assert_eq!(modal.baseline_speed(), "fast"));
+    }
+
+    #[test]
     fn speed_shows_for_codex_roles_codex_overrides_and_direct_codex() {
         // A Codex role's speed is a control from the start.
         let mut modal = modal_harness(1200., 1000., vec![codex_role()], agents(), ChatMode::Role);
@@ -4039,6 +4060,55 @@ pub(super) mod tests {
                 original
             );
             modal.read(|modal, _| assert!(modal.error.is_some()));
+        }
+    }
+
+    #[test]
+    fn enter_opens_and_chooses_a_model_without_submitting_the_chat() {
+        for mode in [ChatMode::Role, ChatMode::Runtime] {
+            let mut catalog = agents();
+            catalog
+                .iter_mut()
+                .find(|runtime| runtime.name == Runtime::Codex)
+                .unwrap()
+                .models = ["first-model", "second-model"]
+                .into_iter()
+                .map(|value| RuntimeCatalogOption {
+                    value: value.into(),
+                    label: value.into(),
+                    description: None,
+                    supported_efforts: None,
+                })
+                .collect();
+            let mut modal = modal_harness(1200., 1000., vec![codex_role()], catalog, mode);
+            if mode == ChatMode::Runtime {
+                modal.choose(StartChatSelection::Runtime, "codex");
+            }
+            let missing = modal
+                ._temp
+                .path()
+                .join("missing-model-key-test")
+                .to_string_lossy()
+                .into_owned();
+            modal.edit(|form, cx| form.cwd.update(cx, |field, cx| field.set_text(missing, cx)));
+            modal.pick(|form, cx| form.model.read(cx).focus_handle(), "enter");
+            modal.read(|form, _| {
+                assert!(form.error.is_none(), "Enter must open the model chooser");
+                assert!(!form.submitting);
+            });
+            modal.visual.simulate_keystrokes("down enter");
+            modal.read(|form, cx| {
+                assert_eq!(form.model.read(cx).text(), "second-model");
+                assert!(form.error.is_none(), "Choosing a model must not submit");
+                assert!(!form.submitting);
+            });
+            modal
+                .visual
+                .simulate_keystrokes(&keymap::platform_default("cmd-enter"));
+            modal.read(|form, cx| {
+                assert!(form.error.is_some(), "The confirm shortcut must submit");
+                assert_eq!(form.model.read(cx).text(), "second-model");
+            });
         }
     }
 
@@ -4925,6 +4995,11 @@ pub(super) mod tests {
     fn runtime(name: &str, efforts: &[&str]) -> RuntimeCatalogEntry {
         RuntimeCatalogEntry {
             name: Runtime::parse(name).unwrap(),
+            capabilities: runner_backend::ops::runtime::RuntimeCatalogEntry::for_runtime(
+                Runtime::parse(name).unwrap(),
+            )
+            .map(|entry| entry.capabilities)
+            .unwrap_or_default(),
             display_name: name.into(),
             command: name.into(),
             native_fork: matches!(name, "codex" | "claude-code" | "pi"),

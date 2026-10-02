@@ -13,7 +13,7 @@ pub(super) fn archive_session_plan(
         .map(|id| {
             let entry = sessions.iter().find(|session| session.session_id == *id);
             let operation = if entry.is_some_and(|session| {
-                Runtime::parse(&session.agent_runtime) == Some(Runtime::Shell)
+                Runtime::parse(&session.agent_runtime).is_some_and(Runtime::is_shell)
             }) {
                 ArchiveSessionOperation::CloseTerminal
             } else {

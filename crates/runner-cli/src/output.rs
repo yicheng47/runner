@@ -139,7 +139,15 @@ fn render_role(value: &Value) -> Vec<String> {
         ("MODEL", value.get("model")),
         ("EFFORT", value.get("effort")),
     ];
-    if value.get("runtime").and_then(Value::as_str) == Some("codex") {
+    if value
+        .get("runtime")
+        .and_then(Value::as_str)
+        .is_some_and(|key| {
+            runner_backend::runtimes::for_key(key)
+                .capabilities()
+                .codex_speed
+        })
+    {
         fields.push(("SPEED", Some(&speed)));
     }
     fields.push(("ID", value.get("id")));
@@ -211,7 +219,10 @@ fn render_crew_show(value: &Value) -> Vec<String> {
                     } else {
                         effective_slot_value(slot, role, "effort_override", "effort")
                     };
-                    let speed = if runtime == "codex" {
+                    let speed = if runner_backend::runtimes::for_key(&runtime)
+                        .capabilities()
+                        .codex_speed
+                    {
                         match slot.get("codex_speed_override").and_then(Value::as_str) {
                             Some(speed) => format!("{speed} (slot)"),
                             None if !runtime_changed => {
@@ -576,7 +587,15 @@ fn render_session_show(value: &Value) -> Vec<String> {
         ("RUNTIME", value.get("agent_runtime")),
         ("ROLE", value.get("handle").or_else(|| value.get("role_id"))),
     ];
-    if value.get("agent_runtime").and_then(Value::as_str) == Some("codex") {
+    if value
+        .get("agent_runtime")
+        .and_then(Value::as_str)
+        .is_some_and(|key| {
+            runner_backend::runtimes::for_key(key)
+                .capabilities()
+                .codex_speed
+        })
+    {
         fields.push(("SPEED", Some(&speed)));
     }
     fields.extend([

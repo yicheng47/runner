@@ -166,7 +166,7 @@ impl Sidebar {
         let store = self.app_store.read(cx);
         let entries = members
             .iter()
-            .filter(|member| Runtime::parse(&member.agent_runtime) != Some(Runtime::Shell))
+            .filter(|member| !Runtime::parse(&member.agent_runtime).is_some_and(Runtime::is_shell))
             .map(|member| {
                 let mut status = store
                     .session_statuses

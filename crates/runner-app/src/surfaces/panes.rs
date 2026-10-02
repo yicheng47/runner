@@ -339,9 +339,9 @@ impl NativeRoot {
             .as_deref()
             .and_then(|session_id| self.session_entry(session_id, cx))
             .cloned();
-        let focused_shell = focused_entry
-            .as_ref()
-            .is_some_and(|entry| Runtime::parse(&entry.agent_runtime) == Some(Runtime::Shell));
+        let focused_shell = focused_entry.as_ref().is_some_and(|entry| {
+            Runtime::parse(&entry.agent_runtime).is_some_and(Runtime::is_shell)
+        });
         let terminal_tab = self.active_tab_is_terminal(cx);
         let focused_secondary = focused_session_id
             .as_deref()
@@ -351,7 +351,7 @@ impl NativeRoot {
             .iter()
             .filter(|session_id| {
                 self.session_entry(session_id, cx).is_some_and(|entry| {
-                    Runtime::parse(&entry.agent_runtime) != Some(Runtime::Shell)
+                    !Runtime::parse(&entry.agent_runtime).is_some_and(Runtime::is_shell)
                 })
             })
             .any(|session_id| self.session_lifecycle_disabled(session_id, cx));
@@ -744,7 +744,7 @@ impl NativeRoot {
             .iter()
             .filter(|session_id| {
                 self.session_entry(session_id, cx).is_some_and(|entry| {
-                    Runtime::parse(&entry.agent_runtime) != Some(Runtime::Shell)
+                    !Runtime::parse(&entry.agent_runtime).is_some_and(Runtime::is_shell)
                 })
             })
             .cloned()
@@ -796,7 +796,7 @@ impl NativeRoot {
                     session_id: session_id.clone(),
                     current,
                 });
-                if Runtime::parse(&entry.agent_runtime) != Some(Runtime::Shell) {
+                if !Runtime::parse(&entry.agent_runtime).is_some_and(Runtime::is_shell) {
                     let archive_all = !layout.drawer_shells().is_empty();
                     items.push(
                         UiMenuItem::new("Archive")
@@ -884,9 +884,9 @@ impl NativeRoot {
             let status = self
                 .session_entry(&session_id, cx)
                 .map(|entry| entry.status)?;
-            let shell = self
-                .session_entry(&session_id, cx)
-                .is_some_and(|entry| Runtime::parse(&entry.agent_runtime) == Some(Runtime::Shell));
+            let shell = self.session_entry(&session_id, cx).is_some_and(|entry| {
+                Runtime::parse(&entry.agent_runtime).is_some_and(Runtime::is_shell)
+            });
             if any_resuming {
                 Some(
                     SessionControl::new(
@@ -1173,9 +1173,11 @@ impl NativeRoot {
         let modal = self.chat_rename_modal.as_ref().expect("chat rename modal");
         let is_group = matches!(modal.target, ChatRenameTarget::Tab { .. });
         let is_shell = match &modal.target {
-            ChatRenameTarget::Session { session_id, .. } => self
-                .session_entry(session_id, cx)
-                .is_some_and(|entry| Runtime::parse(&entry.agent_runtime) == Some(Runtime::Shell)),
+            ChatRenameTarget::Session { session_id, .. } => {
+                self.session_entry(session_id, cx).is_some_and(|entry| {
+                    Runtime::parse(&entry.agent_runtime).is_some_and(Runtime::is_shell)
+                })
+            }
             ChatRenameTarget::Tab { .. } => false,
         };
         let submitting = modal.submitting;
@@ -1489,7 +1491,8 @@ impl NativeRoot {
                                     }
                                 }
                                 2 if this.session_entry(&session_id, cx).is_some_and(|entry| {
-                                    Runtime::parse(&entry.agent_runtime) != Some(Runtime::Shell)
+                                    !Runtime::parse(&entry.agent_runtime)
+                                        .is_some_and(Runtime::is_shell)
                                 }) =>
                                 {
                                     this.archive_chat_sessions(vec![session_id], window, cx)
@@ -2232,7 +2235,7 @@ impl NativeRoot {
                         .into_any_element(),
                     ),
                     PaneOverlayState::Resuming => Some(
-                        if Runtime::parse(&entry.agent_runtime) == Some(Runtime::Shell) {
+                        if Runtime::parse(&entry.agent_runtime).is_some_and(Runtime::is_shell) {
                             SessionOverlay::transition(
                                 format!("resuming-{session_id}"),
                                 SessionOverlayKind::Resuming,
@@ -2264,7 +2267,7 @@ impl NativeRoot {
                         resumable,
                         exit_code,
                     } => {
-                        if Runtime::parse(&entry.agent_runtime) == Some(Runtime::Shell) {
+                        if Runtime::parse(&entry.agent_runtime).is_some_and(Runtime::is_shell) {
                             let restart_root = cx.entity();
                             let close_root = restart_root.clone();
                             let restart_id = session_id.clone();
@@ -2707,11 +2710,11 @@ fn pane_identity_icon(runtime: Option<&str>) -> ChatIcon {
 }
 
 fn pane_identity_shows_status(runtime: &str) -> bool {
-    Runtime::parse(runtime) != Some(Runtime::Shell)
+    !Runtime::parse(runtime).is_some_and(Runtime::is_shell)
 }
 
 fn starting_overlay_label(runtime: &str, fork_materializing: bool) -> Option<&'static str> {
-    if Runtime::parse(runtime) == Some(Runtime::Shell) {
+    if Runtime::parse(runtime).is_some_and(Runtime::is_shell) {
         Some("Starting terminal…")
     } else if fork_materializing {
         Some("Forking chat…")
@@ -2735,8 +2738,8 @@ fn header_fork_state(
     focused: Option<&DirectSessionEntry>,
     focused_secondary: bool,
 ) -> HeaderForkState {
-    let Some(entry) =
-        focused.filter(|entry| Runtime::parse(&entry.agent_runtime) != Some(Runtime::Shell))
+    let Some(entry) = focused
+        .filter(|entry| !Runtime::parse(&entry.agent_runtime).is_some_and(Runtime::is_shell))
     else {
         return HeaderForkState::Hidden;
     };
@@ -2755,7 +2758,9 @@ fn header_fork_state(
 pub(crate) fn pane_close_behavior(runtime: Option<&str>) -> PaneCloseBehavior {
     match runtime {
         None => PaneCloseBehavior::LayoutOnly,
-        Some(runtime) if runtime == Runtime::Shell.key() => PaneCloseBehavior::CloseTerminal,
+        Some(runtime) if Runtime::parse(runtime).is_some_and(Runtime::is_shell) => {
+            PaneCloseBehavior::CloseTerminal
+        }
         Some(_) => PaneCloseBehavior::ArchiveChat,
     }
 }
@@ -2792,7 +2797,7 @@ fn pane_action_items_for(
     stop_shortcut: Option<String>,
     resume_shortcut: Option<String>,
 ) -> Vec<UiMenuItem> {
-    let shell = Runtime::parse(runtime) == Some(Runtime::Shell);
+    let shell = Runtime::parse(runtime).is_some_and(Runtime::is_shell);
     let (label, icon, shortcut) = if running {
         ("Stop", "square.svg", stop_shortcut)
     } else if shell {

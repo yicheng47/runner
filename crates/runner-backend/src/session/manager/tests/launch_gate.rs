@@ -63,16 +63,16 @@ fn enter_claude_launch_gate_records_timestamp_only_for_claude_code() {
     assert!(mgr.claude_launch_gate.lock().unwrap().is_none());
 
     // Shell / codex / empty string: state stays None.
-    mgr.enter_claude_launch_gate("s1", Some(Runtime::Shell));
-    mgr.enter_claude_launch_gate("s2", Some(Runtime::Codex));
-    mgr.enter_claude_launch_gate("s3", Runtime::parse(""));
+    mgr.enter_claude_launch_gate("s1", Runtime::Shell.key());
+    mgr.enter_claude_launch_gate("s2", Runtime::Codex.key());
+    mgr.enter_claude_launch_gate("s3", "");
     assert!(
         mgr.claude_launch_gate.lock().unwrap().is_none(),
         "non-claude runtimes must not advance the gate"
     );
 
     // claude-code stamps the field.
-    mgr.enter_claude_launch_gate("s4", Some(Runtime::ClaudeCode));
+    mgr.enter_claude_launch_gate("s4", Runtime::ClaudeCode.key());
     assert!(
         mgr.claude_launch_gate.lock().unwrap().is_some(),
         "claude-code spawn must advance the gate"
@@ -87,7 +87,7 @@ fn enter_claude_launch_gate_first_claude_does_not_sleep() {
     // cold start should take << 100ms here.
     let mgr = mgr_with_fake(None, fake_runtime());
     let started = Instant::now();
-    mgr.enter_claude_launch_gate("first", Some(Runtime::ClaudeCode));
+    mgr.enter_claude_launch_gate("first", Runtime::ClaudeCode.key());
     let elapsed = started.elapsed();
     assert!(
         elapsed < ci_scaled_budget(Duration::from_millis(100)),

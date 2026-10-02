@@ -377,7 +377,7 @@ pub struct DirectSessionEntry {
 impl DirectSessionEntry {
     pub fn preferred_title(&self, live: Option<&str>) -> Option<String> {
         self.title.clone().or_else(|| {
-            if self.agent_runtime == "shell" {
+            if Runtime::parse(&self.agent_runtime).is_some_and(Runtime::is_shell) {
                 return live
                     .filter(|title| !title.trim().is_empty())
                     .map(str::to_owned);
@@ -584,7 +584,10 @@ fn get_direct(conn: &rusqlite::Connection, session_id: &str) -> Result<Option<Di
 }
 
 fn ensure_archivable_session(conn: &rusqlite::Connection, session_id: &str) -> Result<()> {
-    if repo::session::effective_runtime(conn, session_id)?.as_deref() == Some(Runtime::Shell.key())
+    if repo::session::effective_runtime(conn, session_id)?
+        .as_deref()
+        .and_then(Runtime::parse)
+        .is_some_and(Runtime::is_shell)
     {
         return Err(Error::msg("terminal sessions cannot be archived"));
     }
@@ -698,7 +701,7 @@ pub(crate) fn delete_rows(tx: &rusqlite::Transaction<'_>, ids: &[String]) -> Res
 fn close_shell_row(conn: &mut rusqlite::Connection, session_id: &str) -> Result<()> {
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     match repo::session::effective_runtime(&tx, session_id)?.as_deref() {
-        Some(runtime) if Runtime::parse(runtime) == Some(Runtime::Shell) => {}
+        Some(runtime) if Runtime::parse(runtime).is_some_and(Runtime::is_shell) => {}
         Some(_) => {
             return Err(Error::msg(format!(
                 "session {session_id} is not a shell session"
@@ -722,7 +725,7 @@ pub fn session_close(state: &AppCore, session_id: &str) -> Result<()> {
     let status = {
         let conn = state.db.get()?;
         match repo::session::effective_runtime(&conn, session_id)?.as_deref() {
-            Some(runtime) if Runtime::parse(runtime) == Some(Runtime::Shell) => {}
+            Some(runtime) if Runtime::parse(runtime).is_some_and(Runtime::is_shell) => {}
             Some(_) => {
                 return Err(Error::msg(format!(
                     "session {session_id} is not a shell session"
@@ -755,7 +758,7 @@ pub fn session_close(state: &AppCore, session_id: &str) -> Result<()> {
 pub fn session_shell_has_foreground_process(state: &AppCore, session_id: &str) -> Result<bool> {
     let conn = state.db.get()?;
     match repo::session::effective_runtime(&conn, session_id)?.as_deref() {
-        Some(runtime) if Runtime::parse(runtime) == Some(Runtime::Shell) => {
+        Some(runtime) if Runtime::parse(runtime).is_some_and(Runtime::is_shell) => {
             state.sessions.has_foreground_process(session_id)
         }
         Some(_) => Err(Error::msg(format!(
@@ -1227,7 +1230,7 @@ pub fn session_start_runtime_with_speed(
         project::resolve_scope(&conn, &scope, cwd)?
     };
     let mut role = runtime_direct_role(runtime, None, model.as_deref(), effort.as_deref())?;
-    if runtime == Runtime::Codex.key() {
+    if crate::runtimes::for_key(runtime).capabilities().codex_speed {
         role.codex_speed = speed;
     }
     let emitter: Arc<dyn SessionEvents> = Arc::new(state.session_events());

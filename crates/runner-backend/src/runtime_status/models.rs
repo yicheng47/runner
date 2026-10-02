@@ -18,17 +18,18 @@ use crate::ops::runtime::RuntimeCatalogOption;
 use crate::session::process::{prepare_headless_fork, ProcessTree};
 use crate::shell_path::LoginShellEnv;
 
-mod antigravity;
-mod claude;
-mod codex;
-mod pi;
-
-pub(crate) const DISCOVERY_RUNTIMES: [Runtime; 4] = [
-    Runtime::Codex,
-    Runtime::ClaudeCode,
-    Runtime::Pi,
-    Runtime::Antigravity,
-];
+pub(crate) fn discovery_runtimes() -> Vec<Runtime> {
+    let mut runtimes: Vec<_> = Runtime::ALL
+        .into_iter()
+        .filter_map(|runtime| {
+            crate::runtimes::adapter(runtime)
+                .model_discovery()
+                .map(|source| (source.order, runtime))
+        })
+        .collect();
+    runtimes.sort_by_key(|(order, _)| *order);
+    runtimes.into_iter().map(|(_, runtime)| runtime).collect()
+}
 const REFRESH_SECONDS: i64 = 10 * 60;
 const MAX_OUTPUT_BYTES: u64 = 32 * 1024 * 1024;
 const CACHE_VERSION: u32 = 4;
@@ -47,7 +48,7 @@ struct Fingerprint {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct ModelCatalog {
+pub struct ModelCatalog {
     pub(crate) models: Vec<RuntimeCatalogOption>,
     pub(crate) default_model: Option<String>,
 }
@@ -61,7 +62,7 @@ struct CatalogRecord {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Reason {
+pub enum Reason {
     Timeout,
     QueryFailed,
     InvalidOutput,
@@ -104,10 +105,11 @@ impl ModelDiscovery {
     }
 
     pub(crate) fn queue_refresh(&mut self, runtimes: &[Runtime]) {
-        for &runtime in runtimes
-            .iter()
-            .filter(|runtime| DISCOVERY_RUNTIMES.contains(runtime))
-        {
+        for &runtime in runtimes.iter().filter(|runtime| {
+            crate::runtimes::adapter(**runtime)
+                .model_discovery()
+                .is_some()
+        }) {
             self.runtimes.entry(runtime).or_default().refresh_queued = true;
         }
     }
@@ -158,7 +160,7 @@ impl ModelDiscovery {
 
 pub(crate) fn load_cached(pool: &DbPool, discovery: &SharedDiscoveryState, events: &EventChannel) {
     let mut changed = false;
-    for runtime in DISCOVERY_RUNTIMES {
+    for runtime in discovery_runtimes() {
         if discovery.read().is_ok_and(|state| {
             state
                 .models
@@ -192,10 +194,11 @@ pub(crate) fn request(
     force: bool,
 ) {
     load_cached(pool, discovery, events);
-    for &runtime in runtimes
-        .iter()
-        .filter(|runtime| DISCOVERY_RUNTIMES.contains(runtime))
-    {
+    for &runtime in runtimes.iter().filter(|runtime| {
+        crate::runtimes::adapter(**runtime)
+            .model_discovery()
+            .is_some()
+    }) {
         let Some(source) = current_source(runtime, pool, shell_env, discovery) else {
             continue;
         };
@@ -212,13 +215,9 @@ pub(crate) fn request(
         std::thread::spawn(move || {
             let env = shell_env.read().map(|env| env.clone()).unwrap_or_default();
             let started = Instant::now();
-            let (method, result) = match runtime {
-                Runtime::Codex => ("debug models", codex::query(&source.command, &env)),
-                Runtime::ClaudeCode => ("list_models", claude::query(&source.command, &env)),
-                Runtime::Pi => ("--offline --list-models", pi::query(&source.command, &env)),
-                Runtime::Antigravity => ("models", antigravity::query(&source.command, &env)),
-                _ => unreachable!(),
-            };
+            let query = crate::runtimes::adapter(runtime).model_discovery().unwrap();
+            let method = query.method;
+            let result = (query.query)(&source.command, &env);
             let duration_ms = started.elapsed().as_millis();
             let current = current_source(runtime, &pool, &shell_env, &discovery);
             let applied = current.as_ref() == Some(&source);
@@ -281,27 +280,9 @@ pub(crate) fn source(runtime: Runtime, command: &str) -> ModelSource {
             .and_then(|elapsed| i64::try_from(elapsed.as_millis()).ok()),
         len: metadata.len(),
     });
-    let config_home = match runtime {
-        Runtime::Codex => std::env::var_os("CODEX_HOME")
-            .filter(|value| !value.is_empty())
-            .map(PathBuf::from)
-            .or_else(|| runner_core::app_paths::home_dir().map(|home| home.join(".codex"))),
-        Runtime::ClaudeCode => std::env::var_os("CLAUDE_CONFIG_DIR")
-            .filter(|value| !value.is_empty())
-            .map(PathBuf::from)
-            .or_else(|| runner_core::app_paths::home_dir().map(|home| home.join(".claude"))),
-        Runtime::Pi => runner_core::app_paths::home_dir().map(|home| home.join(".pi/agent")),
-        Runtime::Antigravity => {
-            runner_core::app_paths::home_dir().map(|home| home.join(".gemini/antigravity-cli"))
-        }
-        _ => {
-            return ModelSource {
-                command: command.into(),
-                executable,
-                config_home: None,
-            }
-        }
-    };
+    let config_home = crate::runtimes::adapter(runtime)
+        .model_discovery()
+        .and_then(|source| (source.config_home)());
     ModelSource {
         command: command.into(),
         executable,
@@ -341,12 +322,12 @@ fn now() -> i64 {
     chrono::Utc::now().timestamp()
 }
 
-struct Query<'a> {
-    executable: &'a str,
-    args: &'a [&'a str],
-    stdin: Option<&'a [u8]>,
-    env: &'a LoginShellEnv,
-    timeout: Duration,
+pub(crate) struct Query<'a> {
+    pub(crate) executable: &'a str,
+    pub(crate) args: &'a [&'a str],
+    pub(crate) stdin: Option<&'a [u8]>,
+    pub(crate) env: &'a LoginShellEnv,
+    pub(crate) timeout: Duration,
 }
 
 /// Stdout of one bounded, headless command, or `None` when it fails, times
@@ -369,7 +350,7 @@ pub(crate) fn command_output(
 
 /// Runs one bounded, headless query off the UI thread. Owned processes and
 /// their descendants are terminated on timeout and reaped on every path.
-fn run(query: Query<'_>) -> Result<Vec<u8>, Reason> {
+pub(crate) fn run(query: Query<'_>) -> Result<Vec<u8>, Reason> {
     match run_process(query) {
         Ok(output) => Ok(output),
         Err(error) if error.kind() == std::io::ErrorKind::TimedOut => Err(Reason::Timeout),
@@ -394,6 +375,10 @@ fn run_process(query: Query<'_>) -> std::io::Result<Vec<u8>> {
         .stderr(Stdio::null());
     if let Some(home) = runner_core::app_paths::home_dir() {
         command.current_dir(home);
+    }
+    #[cfg(test)]
+    if crate::golden::record_command(&command, query.stdin, query.timeout) {
+        return Err(std::io::Error::other("golden query recorded"));
     }
     prepare_headless_fork(&mut command);
     let mut child = command.spawn()?;
@@ -450,7 +435,11 @@ fn read_bounded(input: impl Read, limit: u64) -> std::io::Result<Vec<u8>> {
     Ok(bytes)
 }
 
-fn option(value: String, label: String, description: Option<String>) -> RuntimeCatalogOption {
+pub(crate) fn option(
+    value: String,
+    label: String,
+    description: Option<String>,
+) -> RuntimeCatalogOption {
     RuntimeCatalogOption {
         value,
         label,
@@ -459,7 +448,7 @@ fn option(value: String, label: String, description: Option<String>) -> RuntimeC
     }
 }
 
-fn trimmed(value: &str) -> Option<String> {
+pub(crate) fn trimmed(value: &str) -> Option<String> {
     let value = value.trim();
     (!value.is_empty()).then(|| value.to_owned())
 }

@@ -336,8 +336,8 @@ impl MissionWorkspace {
                             .text_size(theme::text_meta())
                             .text_color(theme::muted())
                             .when(
-                                runner_backend::model::Runtime::parse(&session.runtime)
-                                    != Some(runner_backend::model::Runtime::Shell),
+                                !runner_backend::model::Runtime::parse(&session.runtime)
+                                    .is_some_and(runner_backend::model::Runtime::is_shell),
                                 |card| card.child(subtitle),
                             ),
                     )

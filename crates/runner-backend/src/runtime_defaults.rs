@@ -1,5 +1,5 @@
 use crate::model::Runtime;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct RuntimeDefaults {
@@ -7,42 +7,18 @@ pub struct RuntimeDefaults {
     pub effort: Option<String>,
 }
 
-const CODEX_CONFIG_RELATIVE_PATH: &str = ".codex/config.toml";
-const CLAUDE_SETTINGS_RELATIVE_PATH: &str = ".claude/settings.json";
-const COPILOT_SETTINGS_RELATIVE_PATH: &str = ".copilot/settings.json";
-const PI_SETTINGS_RELATIVE_PATH: &str = ".pi/agent/settings.json";
-const TRAE_CONFIG_RELATIVE_PATH: &str = ".trae/traecli.toml";
+pub(crate) use crate::runtimes::copilot::settings_path as copilot_settings_path;
+#[cfg(test)]
+use crate::runtimes::{
+    claude_code::CLAUDE_SETTINGS_RELATIVE_PATH, codex::CODEX_CONFIG_RELATIVE_PATH,
+    copilot::COPILOT_SETTINGS_RELATIVE_PATH, trae::TRAE_CONFIG_RELATIVE_PATH,
+};
 
 pub fn runtime_defaults(runtime: Runtime, home: &Path) -> RuntimeDefaults {
-    match runtime {
-        Runtime::Codex => toml_defaults(&codex_config_path(home)),
-        Runtime::ClaudeCode => json_defaults(&claude_settings_path(home), false),
-        Runtime::Copilot => json_defaults(&copilot_settings_path(home), true),
-        Runtime::Pi => pi_defaults(&home.join(PI_SETTINGS_RELATIVE_PATH)),
-        Runtime::Trae => toml_defaults(&trae_config_path(home)),
-        // agy's settings.json stores `/model`'s pick as a display label such as
-        // "Gemini 3.8 Flash (High)", not an id `--model` accepts (spec 644).
-        Runtime::Antigravity | Runtime::Shell => RuntimeDefaults::default(),
-    }
+    crate::runtimes::adapter(runtime).native_defaults(home)
 }
 
-pub(crate) fn copilot_settings_path(home: &Path) -> PathBuf {
-    home.join(COPILOT_SETTINGS_RELATIVE_PATH)
-}
-
-pub(crate) fn codex_config_path(home: &Path) -> PathBuf {
-    home.join(CODEX_CONFIG_RELATIVE_PATH)
-}
-
-fn claude_settings_path(home: &Path) -> PathBuf {
-    home.join(CLAUDE_SETTINGS_RELATIVE_PATH)
-}
-
-pub(crate) fn trae_config_path(home: &Path) -> PathBuf {
-    home.join(TRAE_CONFIG_RELATIVE_PATH)
-}
-
-fn toml_defaults(path: &Path) -> RuntimeDefaults {
+pub(crate) fn toml_defaults(path: &Path) -> RuntimeDefaults {
     let Some(document) = std::fs::read_to_string(path)
         .ok()
         .and_then(|raw| raw.parse::<toml_edit::DocumentMut>().ok())
@@ -78,7 +54,7 @@ fn toml_string(
         .map(|value| value.trim().to_owned())
 }
 
-fn json_defaults(path: &Path, comments: bool) -> RuntimeDefaults {
+pub(crate) fn json_defaults(path: &Path, comments: bool) -> RuntimeDefaults {
     let Some(document) = std::fs::read_to_string(path).ok().and_then(|raw| {
         if comments {
             jsonc_document(&raw).ok()
@@ -91,24 +67,6 @@ fn json_defaults(path: &Path, comments: bool) -> RuntimeDefaults {
     RuntimeDefaults {
         model: json_string(&document, "model"),
         effort: json_string(&document, "effortLevel"),
-    }
-}
-
-fn pi_defaults(path: &Path) -> RuntimeDefaults {
-    let Some(document) = std::fs::read_to_string(path)
-        .ok()
-        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
-    else {
-        return RuntimeDefaults::default();
-    };
-    let model = json_string(&document, "defaultModel");
-    let provider = json_string(&document, "defaultProvider");
-    RuntimeDefaults {
-        model: model.map(|model| match provider {
-            Some(provider) if !provider.is_empty() => format!("{provider}/{model}"),
-            _ => model,
-        }),
-        effort: json_string(&document, "defaultThinkingLevel"),
     }
 }
 
@@ -134,7 +92,7 @@ pub(crate) fn jsonc_document(raw: &str) -> serde_json::Result<serde_json::Value>
     serde_json::from_slice(&bytes)
 }
 
-fn json_string(document: &serde_json::Value, key: &str) -> Option<String> {
+pub(crate) fn json_string(document: &serde_json::Value, key: &str) -> Option<String> {
     document
         .get(key)
         .and_then(|value| value.as_str())
@@ -249,7 +207,7 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         write(
             home.path(),
-            PI_SETTINGS_RELATIVE_PATH,
+            crate::runtimes::pi::PI_SETTINGS_RELATIVE_PATH,
             r#"{"defaultProvider":"deepseek","defaultModel":"deepseek-v4-pro","defaultThinkingLevel":" high "}"#,
         );
         assert_eq!(
@@ -262,7 +220,7 @@ mod tests {
 
         write(
             home.path(),
-            PI_SETTINGS_RELATIVE_PATH,
+            crate::runtimes::pi::PI_SETTINGS_RELATIVE_PATH,
             r#"{"defaultModel":"gpt-5.5"}"#,
         );
         assert_eq!(
@@ -339,4 +297,31 @@ mod tests {
             RuntimeDefaults::default()
         );
     }
+}
+
+#[test]
+fn native_defaults_catalog_golden() {
+    let home = tempfile::tempdir().unwrap();
+    let mut rows = Vec::new();
+    for seeded in [false, true] {
+        if seeded {
+            for (relative, contents) in [
+                (".codex/config.toml", "model = 'top'\nmodel_reasoning_effort = ' high '\nprofile = 'work'\n[profiles.work]\nmodel = ' profile-model '\n"),
+                (".trae/traecli.toml", "model = ' trae-model '\nmodel_reasoning_effort = 'max'\n"),
+                (".claude/settings.json", r#"{"model":" claude-model ","effortLevel":" high "}"#),
+                (".copilot/settings.json", "// comment\n{\"model\":\" copilot-model \",\"effortLevel\":\" medium \"}"),
+                (".pi/agent/settings.json", r#"{"defaultProvider":" provider ","defaultModel":" pi-model ","defaultThinkingLevel":" xhigh "}"#),
+                (".gemini/antigravity-cli/settings.json", r#"{"model":"Gemini 3.8 Flash (High)"}"#),
+            ] {
+                let path = home.path().join(relative);
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                std::fs::write(path, contents).unwrap();
+            }
+        }
+        for runtime in Runtime::ALL {
+            let defaults = runtime_defaults(runtime, home.path());
+            rows.push(serde_json::json!({"runtime":runtime,"seeded":seeded,"model":defaults.model,"effort":defaults.effort}));
+        }
+    }
+    crate::golden::assert_golden("catalog-native-defaults", serde_json::json!(rows));
 }

@@ -3,24 +3,24 @@ use crate::runtimes::test_support::*;
 
 #[test]
 fn shell_runtime_omits_flag() {
-    assert!(system_prompt_args(Some(Runtime::Shell), Some("ignored")).is_empty());
+    assert!(system_prompt_args(Runtime::Shell.key(), Some("ignored")).is_empty());
 }
 
 #[test]
 fn missing_or_blank_prompt_omits_flag() {
-    assert!(system_prompt_args(Some(Runtime::ClaudeCode), None).is_empty());
-    assert!(system_prompt_args(Some(Runtime::ClaudeCode), Some("")).is_empty());
-    assert!(system_prompt_args(Some(Runtime::ClaudeCode), Some("   ")).is_empty());
+    assert!(system_prompt_args(Runtime::ClaudeCode.key(), None).is_empty());
+    assert!(system_prompt_args(Runtime::ClaudeCode.key(), Some("")).is_empty());
+    assert!(system_prompt_args(Runtime::ClaudeCode.key(), Some("   ")).is_empty());
 }
 
 #[test]
 fn unknown_runtime_degrades_to_no_flag() {
-    assert!(system_prompt_args(Runtime::parse("aider-future"), Some("hi")).is_empty());
+    assert!(system_prompt_args("aider-future", Some("hi")).is_empty());
 }
 
 #[test]
 fn unknown_runtime_returns_empty_resume_plan() {
-    let plan = resume_plan(Runtime::parse("aider-future"), Some("anything"));
+    let plan = resume_plan("aider-future", Some("anything"));
     assert!(plan.args.is_empty());
     assert!(plan.assigned_key.is_none());
     assert!(!plan.resuming);
@@ -28,13 +28,13 @@ fn unknown_runtime_returns_empty_resume_plan() {
 
 #[test]
 fn native_fork_capability_comes_from_runtime_definition() {
-    assert!(supports_native_fork(Some(Runtime::ClaudeCode)));
-    assert!(supports_native_fork(Some(Runtime::Codex)));
-    assert!(supports_native_fork(Some(Runtime::Pi)));
-    assert!(!supports_native_fork(Some(Runtime::Trae)));
-    assert!(!supports_native_fork(Some(Runtime::Copilot)));
-    assert!(!supports_native_fork(Some(Runtime::Antigravity)));
-    assert!(!supports_native_fork(Runtime::parse("aider-future")));
+    assert!(supports_native_fork(Runtime::ClaudeCode.key()));
+    assert!(supports_native_fork(Runtime::Codex.key()));
+    assert!(supports_native_fork(Runtime::Pi.key()));
+    assert!(!supports_native_fork(Runtime::Trae.key()));
+    assert!(!supports_native_fork(Runtime::Copilot.key()));
+    assert!(!supports_native_fork(Runtime::Antigravity.key()));
+    assert!(!supports_native_fork("aider-future"));
 }
 
 #[test]
@@ -43,7 +43,7 @@ fn native_fork_capability_matches_available_fork_plans() {
     for definition in runtime_definitions() {
         assert_eq!(
             definition.native_fork,
-            fork_plan(Some(definition.name), source, "Source").is_some(),
+            fork_plan(definition.name.key(), source, "Source").is_some(),
             "runtime {}",
             definition.name,
         );
@@ -53,30 +53,30 @@ fn native_fork_capability_matches_available_fork_plans() {
 #[test]
 fn unsupported_or_invalid_fork_returns_none() {
     let source = "019fa1b9-a133-7841-b4dd-730d376ab1d1";
-    assert!(fork_plan(Some(Runtime::Trae), source, "note").is_none());
-    assert!(fork_plan(Runtime::parse("aider-future"), source, "note").is_none());
-    assert!(fork_plan(Some(Runtime::Codex), "not-a-uuid", "note").is_none());
+    assert!(fork_plan(Runtime::Trae.key(), source, "note").is_none());
+    assert!(fork_plan("aider-future", source, "note").is_none());
+    assert!(fork_plan(Runtime::Codex.key(), "not-a-uuid", "note").is_none());
 }
 
 #[test]
 fn permission_mode_args_per_runtime() {
     // Default → no flags for any runtime / any mode.
-    assert!(permission_mode_args(Some(Runtime::ClaudeCode), PermissionMode::Default).is_empty());
-    assert!(permission_mode_args(Some(Runtime::Codex), PermissionMode::Default).is_empty());
-    assert!(permission_mode_args(Some(Runtime::Trae), PermissionMode::Default).is_empty());
-    assert!(permission_mode_args(Some(Runtime::Pi), PermissionMode::Default).is_empty());
+    assert!(permission_mode_args(Runtime::ClaudeCode.key(), PermissionMode::Default).is_empty());
+    assert!(permission_mode_args(Runtime::Codex.key(), PermissionMode::Default).is_empty());
+    assert!(permission_mode_args(Runtime::Trae.key(), PermissionMode::Default).is_empty());
+    assert!(permission_mode_args(Runtime::Pi.key(), PermissionMode::Default).is_empty());
     // claude-code: AcceptEdits / Auto / Bypass each emit
     // `--permission-mode <value>` with a runtime-specific value.
     assert_eq!(
-        permission_mode_args(Some(Runtime::ClaudeCode), PermissionMode::AcceptEdits),
+        permission_mode_args(Runtime::ClaudeCode.key(), PermissionMode::AcceptEdits),
         vec!["--permission-mode".to_string(), "acceptEdits".to_string()],
     );
     assert_eq!(
-        permission_mode_args(Some(Runtime::ClaudeCode), PermissionMode::Auto),
+        permission_mode_args(Runtime::ClaudeCode.key(), PermissionMode::Auto),
         vec!["--permission-mode".to_string(), "auto".to_string()],
     );
     assert_eq!(
-        permission_mode_args(Some(Runtime::ClaudeCode), PermissionMode::Bypass),
+        permission_mode_args(Runtime::ClaudeCode.key(), PermissionMode::Bypass),
         vec![
             "--permission-mode".to_string(),
             "bypassPermissions".to_string(),
@@ -85,9 +85,9 @@ fn permission_mode_args_per_runtime() {
     // codex: AcceptEdits has no equivalent (returns empty);
     // Auto uses on-request (on-failure is deprecated per
     // `codex --help`); Bypass uses never.
-    assert!(permission_mode_args(Some(Runtime::Codex), PermissionMode::AcceptEdits).is_empty());
+    assert!(permission_mode_args(Runtime::Codex.key(), PermissionMode::AcceptEdits).is_empty());
     assert_eq!(
-        permission_mode_args(Some(Runtime::Codex), PermissionMode::Auto),
+        permission_mode_args(Runtime::Codex.key(), PermissionMode::Auto),
         vec![
             "--ask-for-approval".to_string(),
             "on-request".to_string(),
@@ -96,7 +96,7 @@ fn permission_mode_args_per_runtime() {
         ],
     );
     assert_eq!(
-        permission_mode_args(Some(Runtime::Codex), PermissionMode::Bypass),
+        permission_mode_args(Runtime::Codex.key(), PermissionMode::Bypass),
         vec![
             "--ask-for-approval".to_string(),
             "never".to_string(),
@@ -104,10 +104,10 @@ fn permission_mode_args_per_runtime() {
             "workspace-write".to_string(),
         ],
     );
-    assert!(permission_mode_args(Some(Runtime::Trae), PermissionMode::AcceptEdits).is_empty());
-    assert!(permission_mode_args(Some(Runtime::Trae), PermissionMode::Auto).is_empty());
+    assert!(permission_mode_args(Runtime::Trae.key(), PermissionMode::AcceptEdits).is_empty());
+    assert!(permission_mode_args(Runtime::Trae.key(), PermissionMode::Auto).is_empty());
     assert_eq!(
-        permission_mode_args(Some(Runtime::Trae), PermissionMode::Bypass),
+        permission_mode_args(Runtime::Trae.key(), PermissionMode::Bypass),
         vec![
             "--permission-mode".to_string(),
             "bypass_permissions".to_string(),
@@ -119,9 +119,9 @@ fn permission_mode_args_per_runtime() {
         PermissionMode::Auto,
         PermissionMode::Bypass,
     ] {
-        assert!(permission_mode_args(Some(Runtime::Pi), mode).is_empty());
+        assert!(permission_mode_args(Runtime::Pi.key(), mode).is_empty());
         assert_eq!(
-            infer_permission_mode(Some(Runtime::Pi), &["--whatever".into()]),
+            infer_permission_mode(Runtime::Pi.key(), &["--whatever".into()]),
             PermissionMode::Default
         );
     }
@@ -132,8 +132,8 @@ fn permission_mode_args_per_runtime() {
         PermissionMode::Auto,
         PermissionMode::Bypass,
     ] {
-        assert!(permission_mode_args(Some(Runtime::Shell), mode).is_empty());
-        assert!(permission_mode_args(Runtime::parse("aider-future"), mode).is_empty());
+        assert!(permission_mode_args(Runtime::Shell.key(), mode).is_empty());
+        assert!(permission_mode_args("aider-future", mode).is_empty());
     }
 }
 
@@ -147,7 +147,7 @@ fn apply_permission_mode_no_op_for_unsupported_runtime() {
         PermissionMode::Bypass,
     ] {
         assert_eq!(
-            apply_permission_mode(Some(Runtime::Shell), &user, mode),
+            apply_permission_mode(Runtime::Shell.key(), &user, mode),
             user,
             "shell must be a no-op (mode={mode:?})",
         );
@@ -158,21 +158,21 @@ fn apply_permission_mode_no_op_for_unsupported_runtime() {
 fn mission_permission_mode_args_per_runtime() {
     use MissionPermissionMode as M;
     assert_eq!(
-        mission_permission_mode_args(Some(Runtime::ClaudeCode), M::Bypass),
+        mission_permission_mode_args(Runtime::ClaudeCode.key(), M::Bypass),
         Some(vec![
             "--permission-mode".to_string(),
             "bypassPermissions".to_string(),
         ]),
     );
     assert_eq!(
-        mission_permission_mode_args(Some(Runtime::ClaudeCode), M::Auto),
+        mission_permission_mode_args(Runtime::ClaudeCode.key(), M::Auto),
         Some(vec!["--permission-mode".to_string(), "auto".to_string()]),
     );
     // codex Bypass leaves the sandbox: with `never` codex cannot
     // ask to escalate, so `workspace-write` would fail network
     // and out-of-tree writes silently in an unwatched slot.
     assert_eq!(
-        mission_permission_mode_args(Some(Runtime::Codex), M::Bypass),
+        mission_permission_mode_args(Runtime::Codex.key(), M::Bypass),
         Some(vec![
             "--ask-for-approval".to_string(),
             "never".to_string(),
@@ -181,7 +181,7 @@ fn mission_permission_mode_args_per_runtime() {
         ]),
     );
     assert_eq!(
-        mission_permission_mode_args(Some(Runtime::Codex), M::Auto),
+        mission_permission_mode_args(Runtime::Codex.key(), M::Auto),
         Some(vec![
             "--ask-for-approval".to_string(),
             "on-request".to_string(),
@@ -190,22 +190,22 @@ fn mission_permission_mode_args_per_runtime() {
         ]),
     );
     assert_eq!(
-        mission_permission_mode_args(Some(Runtime::Trae), M::Bypass),
+        mission_permission_mode_args(Runtime::Trae.key(), M::Bypass),
         Some(vec![
             "--permission-mode".to_string(),
             "bypass_permissions".to_string(),
         ]),
     );
     assert_eq!(
-        mission_permission_mode_args(Some(Runtime::Trae), M::Auto),
+        mission_permission_mode_args(Runtime::Trae.key(), M::Auto),
         Some(vec![]),
     );
     assert_eq!(
-        mission_permission_mode_args(Some(Runtime::Antigravity), M::Bypass),
+        mission_permission_mode_args(Runtime::Antigravity.key(), M::Bypass),
         Some(vec!["--dangerously-skip-permissions".to_string()]),
     );
     assert_eq!(
-        mission_permission_mode_args(Some(Runtime::Antigravity), M::Auto),
+        mission_permission_mode_args(Runtime::Antigravity.key(), M::Auto),
         Some(vec![]),
     );
     for runtime in [
@@ -219,22 +219,22 @@ fn mission_permission_mode_args_per_runtime() {
         "unknown",
     ] {
         assert_eq!(
-            mission_permission_mode_args(Runtime::parse(runtime), M::RoleDefault),
+            mission_permission_mode_args(runtime, M::RoleDefault),
             None,
             "{runtime}"
         );
     }
     assert_eq!(
-        mission_permission_mode_args(Some(Runtime::Shell), M::Bypass),
+        mission_permission_mode_args(Runtime::Shell.key(), M::Bypass),
         Some(vec![])
     );
     assert_eq!(
-        mission_permission_mode_args(Runtime::parse("unknown"), M::Auto),
+        mission_permission_mode_args("unknown", M::Auto),
         Some(vec![])
     );
     // The role-level codex Bypass mapping is untouched.
     assert_eq!(
-        permission_mode_args(Some(Runtime::Codex), PermissionMode::Bypass),
+        permission_mode_args(Runtime::Codex.key(), PermissionMode::Bypass),
         vec![
             "--ask-for-approval".to_string(),
             "never".to_string(),
@@ -250,7 +250,7 @@ fn apply_mission_permission_mode_leaves_shell_and_unknown_alone() {
     for runtime in ["pi", "shell", "aider-future"] {
         for mode in MissionPermissionMode::ALL {
             assert_eq!(
-                apply_mission_permission_mode(Runtime::parse(runtime), &row, mode),
+                apply_mission_permission_mode(runtime, &row, mode),
                 row,
                 "{runtime} {mode:?}"
             );
@@ -288,11 +288,11 @@ fn mission_permission_mode_serde_and_keys() {
 fn infer_permission_mode_unsupported_runtime_default() {
     let args = vec!["--whatever".to_string()];
     assert_eq!(
-        infer_permission_mode(Some(Runtime::Shell), &args),
+        infer_permission_mode(Runtime::Shell.key(), &args),
         PermissionMode::Default,
     );
     assert_eq!(
-        infer_permission_mode(Runtime::parse("aider-future"), &args),
+        infer_permission_mode("aider-future", &args),
         PermissionMode::Default,
     );
 }
@@ -303,7 +303,7 @@ fn strip_permission_flags_handles_dangling_value() {
     // — the user mid-typed), strip just the flag and don't panic
     // on the missing pair.
     let user = vec!["--debug".to_string(), "--ask-for-approval".to_string()];
-    let out = strip_permission_flags(Some(Runtime::Codex), &user);
+    let out = strip_permission_flags(Runtime::Codex.key(), &user);
     assert_eq!(out, vec!["--debug".to_string()]);
 }
 
@@ -319,7 +319,7 @@ fn first_turn_rides_trailing_argv_on_fresh_spawn_for_supported_runtimes() {
     ] {
         let body = "You are the architect. Goal: ship 0007.";
         let args = trailing_runtime_args(
-            Runtime::parse(runtime),
+            runtime,
             &[],
             Path::new("/tmp/runner-app-data"),
             "runner-session",
@@ -350,7 +350,7 @@ fn first_turn_suppressed_on_resume_for_supported_runtimes() {
     ] {
         let body = "You are the architect. Goal: ship 0007.";
         let args = trailing_runtime_args(
-            Runtime::parse(runtime),
+            runtime,
             &[],
             Path::new("/tmp/runner-app-data"),
             "runner-session",
@@ -370,8 +370,8 @@ fn first_turn_suppressed_on_resume_for_supported_runtimes() {
 
 #[test]
 fn first_turn_argv_empty_for_blank_or_unsupported_runtime() {
-    assert!(first_turn_argv(Some(Runtime::ClaudeCode), Some("   \n  ")).is_empty());
-    assert!(first_turn_argv(Some(Runtime::ClaudeCode), None).is_empty());
-    assert!(first_turn_argv(Some(Runtime::Shell), Some("body")).is_empty());
-    assert!(first_turn_argv(Runtime::parse("unknown"), Some("body")).is_empty());
+    assert!(first_turn_argv(Runtime::ClaudeCode.key(), Some("   \n  ")).is_empty());
+    assert!(first_turn_argv(Runtime::ClaudeCode.key(), None).is_empty());
+    assert!(first_turn_argv(Runtime::Shell.key(), Some("body")).is_empty());
+    assert!(first_turn_argv("unknown", Some("body")).is_empty());
 }

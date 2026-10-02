@@ -1,0 +1,106 @@
+[
+  {
+    "runtime": "codex",
+    "supported": true,
+    "commands": [
+      {
+        "command": "/golden/agent",
+        "args": [
+          "-c",
+          "approval_policy=never",
+          "-c",
+          "features.plugins=false",
+          "-s",
+          "read-only",
+          "-a",
+          "never",
+          "app-server"
+        ],
+        "env": {
+          "GOLDEN_ENV": "value",
+          "HTTPS_PROXY": "http://127.0.0.1:9999",
+          "PATH": "/golden/bin:<DIRECT_CHAT_PATH>"
+        },
+        "cwd": "<HOME>",
+        "stdin": null,
+        "timeout_ms": 10000
+      }
+    ]
+  },
+  {
+    "runtime": "claude-code",
+    "supported": true,
+    "commands": [
+      {
+        "command": "/usr/bin/security",
+        "args": [
+          "find-generic-password",
+          "-s",
+          "Claude Code-credentials",
+          "-a",
+          "<ACCOUNT>",
+          "-w"
+        ],
+        "env": {},
+        "cwd": null,
+        "stdin": null,
+        "timeout_ms": 120000
+      },
+      {
+        "url": "https://api.anthropic.com/api/oauth/usage",
+        "method": "GET",
+        "headers": {
+          "anthropic-beta": "oauth-2025-04-20",
+          "authorization": "Bearer golden-token"
+        },
+        "proxy_env": {
+          "GOLDEN_ENV": "value",
+          "HTTPS_PROXY": "http://127.0.0.1:9999"
+        }
+      }
+    ]
+  },
+  {
+    "runtime": "antigravity",
+    "supported": true,
+    "commands": [
+      {
+        "command": "/golden/agent",
+        "args": [
+          "-p",
+          "/usage",
+          "--output-format",
+          "json"
+        ],
+        "env": {
+          "GOLDEN_ENV": "value",
+          "HTTPS_PROXY": "http://127.0.0.1:9999",
+          "PATH": "/golden/bin:<DIRECT_CHAT_PATH>"
+        },
+        "cwd": "<HOME>",
+        "stdin": null,
+        "timeout_ms": 15000
+      }
+    ]
+  },
+  {
+    "runtime": "pi",
+    "supported": false,
+    "commands": []
+  },
+  {
+    "runtime": "copilot",
+    "supported": false,
+    "commands": []
+  },
+  {
+    "runtime": "trae",
+    "supported": false,
+    "commands": []
+  },
+  {
+    "runtime": "shell",
+    "supported": false,
+    "commands": []
+  }
+]

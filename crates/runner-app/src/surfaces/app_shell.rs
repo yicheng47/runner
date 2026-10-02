@@ -128,16 +128,14 @@ pub(crate) fn usage_installed(core: &AppCore) -> Vec<Runtime> {
             .runtimes
             .into_iter()
             .filter(|runtime| {
-                matches!(
-                    runtime.name,
-                    Runtime::ClaudeCode | Runtime::Codex | Runtime::Antigravity
-                ) && matches!(
-                    runtime.effective_source,
-                    Some(
-                        runner_backend::runtime_status::RuntimeCommandSource::Detected
-                            | runner_backend::runtime_status::RuntimeCommandSource::Override
+                crate::runtime_ui::catalog_capabilities(&[], runtime.name.key()).usage
+                    && matches!(
+                        runtime.effective_source,
+                        Some(
+                            runner_backend::runtime_status::RuntimeCommandSource::Detected
+                                | runner_backend::runtime_status::RuntimeCommandSource::Override
+                        )
                     )
-                )
             })
             .map(|runtime| runtime.name)
             .collect()
@@ -207,22 +205,15 @@ fn unavailable_line(reason: Option<UnavailableReason>, runtime: Runtime) -> &'st
         Some(UnavailableReason::ClaudeUnreachable) => "Couldn't reach Anthropic.",
         Some(UnavailableReason::CodexNoAnswer) => "Codex didn't answer.",
         Some(UnavailableReason::AntigravityNoAnswer) => "Antigravity CLI didn't answer.",
-        Some(UnavailableReason::InvalidResponse) if runtime == Runtime::Antigravity => {
-            "Antigravity CLI returned invalid usage data."
-        }
-        Some(UnavailableReason::InvalidResponse) if runtime == Runtime::Codex => {
-            "Codex didn't answer."
+        Some(UnavailableReason::InvalidResponse) => {
+            crate::runtime_ui::runtime_ui(runtime).usage_invalid
         }
         None => "Checking…",
-        _ => "Couldn't reach Anthropic.",
     }
 }
 
 fn weekly_usage_percent(runtime: Runtime, usage: Option<&AgentUsage>) -> Option<f64> {
-    let name = match runtime {
-        Runtime::Antigravity => "Gemini Models · Week used",
-        _ => "Week",
-    };
+    let name = crate::runtime_ui::runtime_ui(runtime).usage_week;
     usage?
         .windows
         .iter()
@@ -237,13 +228,17 @@ fn visible_usage_runtimes(installed: &[Runtime], enabled: &[Runtime]) -> Vec<Run
     Runtime::ALL
         .into_iter()
         .filter(|runtime| {
-            matches!(
-                runtime,
-                Runtime::ClaudeCode | Runtime::Codex | Runtime::Antigravity
-            ) && installed.contains(runtime)
+            crate::runtime_ui::catalog_capabilities(&[], runtime.key()).usage
+                && installed.contains(runtime)
                 && enabled.contains(runtime)
         })
         .collect()
+}
+
+fn usage_popover_runtimes(installed: &[Runtime], enabled: &[Runtime]) -> Vec<Runtime> {
+    let mut runtimes = visible_usage_runtimes(installed, enabled);
+    runtimes.sort_by_key(|runtime| crate::runtime_ui::runtime_ui(*runtime).usage_order);
+    runtimes
 }
 
 fn usage_pill_element(
@@ -255,12 +250,7 @@ fn usage_pill_element(
     let entries: Vec<_> = visible
         .iter()
         .map(|runtime| {
-            let usage = match runtime {
-                Runtime::ClaudeCode => snapshot.claude.as_ref(),
-                Runtime::Codex => snapshot.codex.as_ref(),
-                Runtime::Antigravity => snapshot.antigravity.as_ref(),
-                _ => None,
-            };
+            let usage = snapshot.get(*runtime);
             let percent = weekly_usage_percent(*runtime, usage);
             let value = percent.map_or_else(|| "—".to_owned(), |value| format!("{value:.0}%"));
             let color = percent.map_or(theme::muted(), |value| usage_color(usage_tone([value])));
@@ -394,22 +384,19 @@ fn usage_section(
     refreshing: bool,
     now: chrono::DateTime<chrono::Utc>,
 ) -> AnyElement {
-    let name = match runtime {
-        Runtime::ClaudeCode => "Claude Code",
-        Runtime::Antigravity => "Antigravity CLI",
-        _ => "Codex",
-    };
-    let refresh_spinner_id = match runtime {
-        Runtime::ClaudeCode => "usage-claude-refreshing",
-        Runtime::Antigravity => "usage-antigravity-refreshing",
-        _ => "usage-codex-refreshing",
-    };
+    let ui = crate::runtime_ui::runtime_ui(runtime);
+    let name = ui.usage_title;
+    let refresh_spinner_id = ui.usage_refresh_spinner;
+    #[cfg(test)]
+    crate::catalog_golden::record(
+        serde_json::json!({"runtime":runtime,"title":name,"refresh_spinner":refresh_spinner_id}),
+    );
     let icon = ChatIcon::for_runtime(runtime.key());
     let mut rows = Vec::new();
     let mut previous_group = None;
     if let Some(usage) = usage {
         for window in &usage.windows {
-            let (group, label) = if runtime == Runtime::Antigravity {
+            let (group, label) = if ui.usage_groups {
                 window
                     .name
                     .split_once(" · ")
@@ -419,6 +406,10 @@ fn usage_section(
             } else {
                 (None, window.name.as_str())
             };
+            #[cfg(test)]
+            crate::catalog_golden::record(
+                serde_json::json!({"window":window.name,"group":group,"label":label}),
+            );
             if let Some(group) = group.filter(|group| Some(*group) != previous_group) {
                 rows.push(
                     div()
@@ -463,10 +454,9 @@ fn usage_section(
         .children(rows)
         .children(
             (usage.is_none() && reason.is_none() && refreshing).then(|| {
-                let id = match runtime {
-                    Runtime::ClaudeCode => "usage-claude-checking",
-                    _ => "usage-codex-checking",
-                };
+                let id = ui.usage_checking_spinner;
+                #[cfg(test)]
+                crate::catalog_golden::record(serde_json::json!({"checking_spinner":id}));
                 div()
                     .flex()
                     .items_center()
@@ -541,10 +531,9 @@ impl NativeRoot {
         let snapshot = self.core(cx).usage.snapshot();
         let now = chrono::Utc::now();
         let updated = snapshot
-            .claude
-            .iter()
-            .chain(snapshot.codex.iter())
-            .chain(snapshot.antigravity.iter())
+            .runtimes
+            .values()
+            .filter_map(|entry| entry.value.as_ref())
             .map(|usage| usage.updated_at)
             .max();
         let age = if snapshot.refreshing {
@@ -625,35 +614,19 @@ impl NativeRoot {
                         .bg(theme::accent())
                 })),
         );
-        let visible =
-            visible_usage_runtimes(&self.usage_installed, &self.settings(cx).model_runtimes());
-        let sections: Vec<AnyElement> = [Runtime::ClaudeCode, Runtime::Codex, Runtime::Antigravity]
-            .into_iter()
-            .filter(|runtime| visible.contains(runtime))
-            .map(|runtime| match runtime {
-                Runtime::ClaudeCode => usage_section(
-                    runtime,
-                    snapshot.claude.as_ref(),
-                    snapshot.claude_error,
-                    snapshot.refreshing,
-                    now,
-                ),
-                Runtime::Antigravity => usage_section(
-                    runtime,
-                    snapshot.antigravity.as_ref(),
-                    snapshot.antigravity_error,
-                    snapshot.refreshing,
-                    now,
-                ),
-                _ => usage_section(
-                    runtime,
-                    snapshot.codex.as_ref(),
-                    snapshot.codex_error,
-                    snapshot.refreshing,
-                    now,
-                ),
-            })
-            .collect();
+        let sections: Vec<AnyElement> =
+            usage_popover_runtimes(&self.usage_installed, &self.settings(cx).model_runtimes())
+                .into_iter()
+                .map(|runtime| {
+                    usage_section(
+                        runtime,
+                        snapshot.get(runtime),
+                        snapshot.error(runtime),
+                        snapshot.refreshing,
+                        now,
+                    )
+                })
+                .collect();
         let header = div()
             .w_full()
             .flex()
@@ -1846,9 +1819,31 @@ mod tests {
                 updated_at: now,
             };
             let snapshot = UsageSnapshot {
-                claude: Some(usage("Week")),
-                codex: Some(usage("Week")),
-                antigravity: Some(usage("Gemini Models · Week used")),
+                runtimes: [
+                    (
+                        Runtime::ClaudeCode,
+                        runner_backend::usage::RuntimeUsage {
+                            value: Some(usage("Week")),
+                            ..Default::default()
+                        },
+                    ),
+                    (
+                        Runtime::Codex,
+                        runner_backend::usage::RuntimeUsage {
+                            value: Some(usage("Week")),
+                            ..Default::default()
+                        },
+                    ),
+                    (
+                        Runtime::Antigravity,
+                        runner_backend::usage::RuntimeUsage {
+                            value: Some(usage("Gemini Models · Week used")),
+                            ..Default::default()
+                        },
+                    ),
+                ]
+                .into_iter()
+                .collect(),
                 ..UsageSnapshot::default()
             };
             div()
@@ -2049,49 +2044,65 @@ mod tests {
     #[test]
     fn usage_pill_uses_weekly_windows_and_gemini_group() {
         let snapshot = UsageSnapshot {
-            claude: Some(AgentUsage {
-                windows: vec![
-                    UsageWindow {
-                        name: "5 hours".into(),
-                        used_percent: 91.,
-                        resets_at: None,
+            runtimes: [
+                (
+                    Runtime::ClaudeCode,
+                    runner_backend::usage::RuntimeUsage {
+                        value: Some(AgentUsage {
+                            windows: vec![
+                                UsageWindow {
+                                    name: "5 hours".into(),
+                                    used_percent: 91.,
+                                    resets_at: None,
+                                },
+                                UsageWindow {
+                                    name: "Week".into(),
+                                    used_percent: 26.,
+                                    resets_at: None,
+                                },
+                            ],
+                            updated_at: chrono::Utc::now(),
+                        }),
+                        ..Default::default()
                     },
-                    UsageWindow {
-                        name: "Week".into(),
-                        used_percent: 26.,
-                        resets_at: None,
+                ),
+                (
+                    Runtime::Antigravity,
+                    runner_backend::usage::RuntimeUsage {
+                        value: Some(AgentUsage {
+                            windows: vec![
+                                UsageWindow {
+                                    name: "Gemini Models · 5 hours used".into(),
+                                    used_percent: 90.,
+                                    resets_at: None,
+                                },
+                                UsageWindow {
+                                    name: "Gemini Models · Week used".into(),
+                                    used_percent: 1.,
+                                    resets_at: None,
+                                },
+                                UsageWindow {
+                                    name: "Claude and GPT models · Week used".into(),
+                                    used_percent: 70.,
+                                    resets_at: None,
+                                },
+                            ],
+                            updated_at: chrono::Utc::now(),
+                        }),
+                        ..Default::default()
                     },
-                ],
-                updated_at: chrono::Utc::now(),
-            }),
-            antigravity: Some(AgentUsage {
-                windows: vec![
-                    UsageWindow {
-                        name: "Gemini Models · 5 hours used".into(),
-                        used_percent: 90.,
-                        resets_at: None,
-                    },
-                    UsageWindow {
-                        name: "Gemini Models · Week used".into(),
-                        used_percent: 1.,
-                        resets_at: None,
-                    },
-                    UsageWindow {
-                        name: "Claude and GPT models · Week used".into(),
-                        used_percent: 70.,
-                        resets_at: None,
-                    },
-                ],
-                updated_at: chrono::Utc::now(),
-            }),
+                ),
+            ]
+            .into_iter()
+            .collect(),
             ..UsageSnapshot::default()
         };
         assert_eq!(
-            weekly_usage_percent(Runtime::ClaudeCode, snapshot.claude.as_ref()),
+            weekly_usage_percent(Runtime::ClaudeCode, snapshot.get(Runtime::ClaudeCode)),
             Some(26.)
         );
         assert_eq!(
-            weekly_usage_percent(Runtime::Antigravity, snapshot.antigravity.as_ref()),
+            weekly_usage_percent(Runtime::Antigravity, snapshot.get(Runtime::Antigravity)),
             Some(1.)
         );
         assert_eq!(weekly_usage_percent(Runtime::Codex, None), None);
@@ -2128,6 +2139,37 @@ mod tests {
         assert!(visible_usage_runtimes(&[], &all).is_empty());
         assert!(visible_usage_runtimes(&all, &[]).is_empty());
         assert!(visible_usage_runtimes(&[Runtime::Copilot], &[Runtime::Copilot]).is_empty());
+    }
+
+    #[test]
+    fn usage_popover_keeps_provider_order_for_installed_and_enabled_subsets() {
+        let order = [Runtime::ClaudeCode, Runtime::Codex, Runtime::Antigravity];
+        assert_eq!(usage_popover_runtimes(&Runtime::ALL, &Runtime::ALL), order);
+        for installed_mask in 0..8 {
+            for enabled_mask in 0..8 {
+                let subset = |mask| {
+                    order
+                        .into_iter()
+                        .enumerate()
+                        .filter_map(|(index, runtime)| {
+                            (mask & (1 << index) != 0).then_some(runtime)
+                        })
+                        .rev()
+                        .collect::<Vec<_>>()
+                };
+                let installed = subset(installed_mask);
+                let enabled = subset(enabled_mask);
+                let expected: Vec<_> = order
+                    .into_iter()
+                    .filter(|runtime| installed.contains(runtime) && enabled.contains(runtime))
+                    .collect();
+                assert_eq!(
+                    usage_popover_runtimes(&installed, &enabled),
+                    expected,
+                    "installed: {installed:?}, enabled: {enabled:?}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -2263,4 +2305,46 @@ mod tests {
             Some("0.6.1")
         );
     }
+}
+
+#[test]
+fn usage_ui_catalog_golden() {
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    let reasons = [
+        None,
+        Some(UnavailableReason::SignIn),
+        Some(UnavailableReason::KeychainDenied),
+        Some(UnavailableReason::KeychainUnavailable),
+        Some(UnavailableReason::ClaudeUnreachable),
+        Some(UnavailableReason::CodexNoAnswer),
+        Some(UnavailableReason::AntigravityNoAnswer),
+        Some(UnavailableReason::InvalidResponse),
+    ];
+    let now = chrono::DateTime::from_timestamp(1770000000, 0).unwrap();
+    let usage = AgentUsage {
+        updated_at: now,
+        windows: [
+            "Week",
+            "Gemini Models · Week used",
+            "Claude and GPT models · 5 hours used",
+        ]
+        .into_iter()
+        .map(|name| UsageWindow {
+            name: name.into(),
+            used_percent: 27.,
+            resets_at: None,
+        })
+        .collect(),
+    };
+    let rows: Vec<_> = Runtime::ALL.into_iter().map(|runtime| {
+        let sections = crate::catalog_golden::capture(|| {
+            let _ = usage_section(runtime,Some(&usage),None,true,now);
+            let _ = usage_section(runtime,None,None,true,now);
+        });
+        serde_json::json!({"runtime":runtime,"unavailable":reasons.map(|reason|unavailable_line(reason,runtime)),"sections":sections,"weekly_percent":weekly_usage_percent(runtime,Some(&usage))})
+    }).collect();
+    crate::catalog_golden::assert_golden(
+        "usage-ui",
+        serde_json::json!({"visible":visible_usage_runtimes(&Runtime::ALL,&Runtime::ALL),"runtimes":rows}),
+    );
 }

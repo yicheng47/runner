@@ -141,7 +141,7 @@ impl RunnerMcpHandler {
                     };
                 }
             };
-            if direct.agent_runtime == crate::model::Runtime::Shell.key() {
+            if crate::model::Runtime::parse(&direct.agent_runtime).is_some_and(crate::model::Runtime::is_shell) {
                 return Err(crate::error::Error::msg(format!(
                     "session {session_id} is a terminal; terminals close rather than archive"
                 )));

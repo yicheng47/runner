@@ -14,7 +14,7 @@ pub(super) fn tab_is_terminal(
     !sessions.is_empty()
         && sessions
             .iter()
-            .all(|session_id| runtime(session_id) == Some(Runtime::Shell))
+            .all(|session_id| runtime(session_id).is_some_and(Runtime::is_shell))
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -68,7 +68,7 @@ fn tab_close_behavior(runtime: Option<&str>, has_drawer_shells: bool) -> TabClos
 fn fork_confirmation(entry: Option<&DirectSessionEntry>) -> Option<ForkConfirm> {
     entry
         .filter(|entry| {
-            Runtime::parse(&entry.agent_runtime) != Some(Runtime::Shell) && entry.forkable
+            !Runtime::parse(&entry.agent_runtime).is_some_and(Runtime::is_shell) && entry.forkable
         })
         .map(|entry| ForkConfirm {
             session_id: entry.session_id.clone(),
@@ -758,7 +758,7 @@ impl NativeRoot {
         let placeholder = match &target {
             ChatRenameTarget::Session { session_id, .. }
                 if self.session_entry(session_id, cx).is_some_and(|entry| {
-                    Runtime::parse(&entry.agent_runtime) == Some(Runtime::Shell)
+                    Runtime::parse(&entry.agent_runtime).is_some_and(Runtime::is_shell)
                 }) =>
             {
                 "Terminal name"

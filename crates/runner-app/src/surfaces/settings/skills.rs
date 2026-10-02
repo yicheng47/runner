@@ -21,24 +21,8 @@ use crate::app_store::AppStore;
 use crate::surfaces::mission_markdown;
 use crate::theme;
 
-const CLAUDE_CAPTION: &str = "Toggles hide a skill from every new Claude Code session, inside Runner or not; the only write is the skillOverrides key in ~/.claude/settings.json. Click a row to read a skill, hover it to edit. Bundled skills (code-review, loop, …) and project skills always load and are not listed.";
-const CODEX_CAPTION: &str = "Toggles hide a skill from every new Codex session, inside Runner or not; the only write is a [[skills.config]] entry in ~/.codex/config.toml. Click a row to read a skill, hover it to edit. Codex's system skills (~/.codex/skills/.system) and plugin skills always load and are not listed.";
-const COPILOT_CAPTION: &str = "Toggles hide a skill from every new GitHub Copilot CLI session, inside Runner or not; the only write is the disabledSkills list in ~/.copilot/settings.json, the list `copilot plugins disable --skill` keeps. Click a row to read a skill, hover it to edit. Project skills (.github/skills, .agents/skills) and plugin skills always load and are not listed.";
-const PI_CAPTION: &str = "Every skill in ~/.pi/agent/skills and ~/.agents/skills loads in every new pi session; Runner does not toggle skills for pi. Click a row to read a skill, hover it to edit.";
-const ANTIGRAVITY_CAPTION: &str = "Every skill in ~/.gemini/antigravity-cli/skills and ~/.gemini/skills loads in every new Antigravity CLI session; Runner does not toggle skills for agy. Built-in and plugin skills are not listed. Click a row to read a skill, hover it to edit.";
-const TRAE_CAPTION: &str = "Every skill in ~/.trae/skills loads in every new TRAE CLI session; Runner does not toggle skills for TRAE. TRAE's per-skill switch is disable-model-invocation in the skill frontmatter. Click a row to read a skill, hover it to edit.";
-const READ_ONLY_CAPTION: &str = "Every skill in these roots loads in every new session; Runner does not toggle skills for this agent. Click a row to read a skill, hover it to edit.";
-
 fn catalog_caption(runtime: Runtime) -> &'static str {
-    match runtime {
-        Runtime::ClaudeCode => CLAUDE_CAPTION,
-        Runtime::Codex => CODEX_CAPTION,
-        Runtime::Copilot => COPILOT_CAPTION,
-        Runtime::Pi => PI_CAPTION,
-        Runtime::Trae => TRAE_CAPTION,
-        Runtime::Antigravity => ANTIGRAVITY_CAPTION,
-        _ => READ_ONLY_CAPTION,
-    }
+    crate::runtime_ui::runtime_ui(runtime).skills_caption
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -114,10 +98,7 @@ fn matches_search(entry: &SkillEntry, query: &str) -> bool {
 }
 
 fn supports_global_skill_toggle(runtime: Runtime) -> bool {
-    matches!(
-        runtime,
-        Runtime::ClaudeCode | Runtime::Codex | Runtime::Copilot
-    )
+    crate::runtime_ui::catalog_capabilities(&[], runtime.key()).global_skill_toggle
 }
 
 fn catalog_meta(catalog: &SkillCatalog) -> String {
@@ -213,7 +194,7 @@ impl SkillsPane {
             StyledSelect::new(
                 "skills-runtime",
                 cx.focus_handle(),
-                Runtime::ClaudeCode.key(),
+                "claude-code",
                 Vec::new(),
                 Rc::new(move |value, _, cx| {
                     let _ = weak.update(cx, |this, cx| {
@@ -250,7 +231,7 @@ impl SkillsPane {
         Self {
             app_store,
             catalogs: Vec::new(),
-            runtime: Runtime::ClaudeCode,
+            runtime: Runtime::parse("claude-code").unwrap(),
             runtime_select,
             search,
             loading: false,
@@ -376,7 +357,11 @@ impl SkillsPane {
                     Toggle::new(("skill-toggle", index), entry.global != GlobalState::Off)
                         .disabled(
                             pending
-                                || (self.runtime == Runtime::Codex
+                                || (crate::runtime_ui::catalog_capabilities(
+                                    &[],
+                                    self.runtime.key(),
+                                )
+                                .skill_toggle_requires_marker
                                     && !entry.files.contains(&entry.marker)),
                         )
                         .on_change(move |enabled, _, cx| {
@@ -894,49 +879,84 @@ impl SkillDetail {
                             .child(path_text),
                     )
                     .child(
-                        Button::new("skill-reveal", if cfg!(windows) { "Reveal in Explorer" } else { "Reveal in Finder" })
-                            .size(ButtonSize::Sm)
-                            .variant(ButtonVariant::Ghost)
-                            .on_press(move |_, cx| cx.reveal_path(&path)),
+                        Button::new(
+                            "skill-reveal",
+                            if cfg!(windows) {
+                                "Reveal in Explorer"
+                            } else {
+                                "Reveal in Finder"
+                            },
+                        )
+                        .size(ButtonSize::Sm)
+                        .variant(ButtonVariant::Ghost)
+                        .on_press(move |_, cx| cx.reveal_path(&path)),
                     ),
             )
             .child(
                 div().flex().flex_wrap().gap_1().children(
-                    skill.entry.files.iter().map(|file| Badge::new(file.clone(), Tone::Muted)),
+                    skill
+                        .entry
+                        .files
+                        .iter()
+                        .map(|file| Badge::new(file.clone(), Tone::Muted)),
                 ),
             )
             .when(supports_global_skill_toggle(skill.runtime), |overview| {
                 overview.child(
-                        div()
-                            .debug_selector(|| "SKILL_ENABLED_ROW".into())
-                            .flex()
-                            .items_center()
-                            .gap_4()
-                            .rounded(rems(6. / 16.))
-                            .bg(theme::raised())
-                            .px_3()
-                            .py_2()
-                            .child(
-                                div().flex_1().min_w_0().flex().flex_col().gap_1()
-                                    .child(div().text_size(theme::text_ui()).child(format!("Enabled in {}", runner_backend::runtimes::for_key(skill.runtime.key()).catalog().map(|catalog| catalog.display_name.to_string()).unwrap_or_else(|| skill.runtime.key().to_string()))))
-                                    .child(
-                                        div().text_size(theme::text_caption())
-                                            .line_height(rems(15. / 16.))
-                                            .text_color(theme::faint())
-                                            .child(match skill.runtime {
-                                                Runtime::Codex => "Applies to new Codex sessions. Writes only this skill’s [[skills.config]] entry in Codex config.toml; Claude Code is unchanged.",
-                                                Runtime::Copilot => "Applies to every new GitHub Copilot CLI session, inside Runner or not. Writes only the disabledSkills list in ~/.copilot/settings.json.",
-                                                _ => "Applies to every new Claude Code session, inside Runner or not. Writes only skillOverrides in ~/.claude/settings.json.",
-                                            }),
-                                    ),
+                    div()
+                        .debug_selector(|| "SKILL_ENABLED_ROW".into())
+                        .flex()
+                        .items_center()
+                        .gap_4()
+                        .rounded(rems(6. / 16.))
+                        .bg(theme::raised())
+                        .px_3()
+                        .py_2()
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .flex()
+                                .flex_col()
+                                .gap_1()
+                                .child(div().text_size(theme::text_ui()).child(format!(
+                                        "Enabled in {}",
+                                        runner_backend::runtimes::for_key(skill.runtime.key())
+                                            .catalog()
+                                            .map(|catalog| catalog.display_name.to_string())
+                                            .unwrap_or_else(|| skill.runtime.key().to_string())
+                                    )))
+                                .child(
+                                    div()
+                                        .text_size(theme::text_caption())
+                                        .line_height(rems(15. / 16.))
+                                        .text_color(theme::faint())
+                                        .child(
+                                            crate::runtime_ui::runtime_ui(skill.runtime)
+                                                .skill_toggle_hint,
+                                        ),
+                                ),
+                        )
+                        .child(
+                            Toggle::new(
+                                "skill-detail-toggle",
+                                skill.entry.global != GlobalState::Off,
                             )
-                            .child(
-                                Toggle::new("skill-detail-toggle", skill.entry.global != GlobalState::Off)
-                                    .disabled(self.busy || (skill.runtime == Runtime::Codex && !skill.entry.files.contains(&skill.entry.marker)))
-                                    .on_change(move |enabled, _, cx| {
-                                        toggle_owner.update(cx, |this, cx| this.set_enabled(runtime, toggle_path.clone(), enabled, cx));
-                                    }),
-                            ),
+                            .disabled(
+                                self.busy
+                                    || (crate::runtime_ui::catalog_capabilities(
+                                        &[],
+                                        skill.runtime.key(),
+                                    )
+                                    .skill_toggle_requires_marker
+                                        && !skill.entry.files.contains(&skill.entry.marker)),
+                            )
+                            .on_change(move |enabled, _, cx| {
+                                toggle_owner.update(cx, |this, cx| {
+                                    this.set_enabled(runtime, toggle_path.clone(), enabled, cx)
+                                });
+                            }),
+                        ),
                 )
             });
         let overview = div()
@@ -1787,4 +1807,9 @@ mod tests {
         assert!(dirty_buffer("same\r\n", "same\n"));
         assert!(!dirty_buffer("", ""));
     }
+}
+
+#[test]
+fn skills_ui_catalog_golden() {
+    crate::catalog_golden::assert_golden("skills-ui", serde_json::json!(Runtime::ALL.into_iter().map(|runtime| serde_json::json!({"runtime":runtime,"caption":catalog_caption(runtime),"global_toggle":supports_global_skill_toggle(runtime)})).collect::<Vec<_>>()));
 }

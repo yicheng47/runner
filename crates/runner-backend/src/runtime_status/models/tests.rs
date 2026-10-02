@@ -1,4 +1,6 @@
 use super::*;
+#[cfg(unix)]
+use crate::runtimes::claude_code::models as claude;
 
 fn catalog(model: &str) -> ModelCatalog {
     ModelCatalog {
@@ -440,4 +442,50 @@ printf '%s' '{"models":[{"slug":"old","visibility":"list"}]}'"#,
         assert_eq!(fixture.catalog(), Some(catalog("memory")));
         assert!(read_cached(&fixture.pool, Runtime::Codex).is_none());
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn discovery_catalog_golden() {
+    let home = tempfile::tempdir().unwrap();
+    let env = LoginShellEnv {
+        path: Some("/golden/bin".into()),
+        vars: std::collections::BTreeMap::from([("GOLDEN_ENV".into(), "value".into())]),
+    };
+    let mut rows = Vec::new();
+    crate::runtimes::with_conversation_home(home.path(), || {
+        for override_home in [false, true] {
+            let config_env = if override_home {
+                std::collections::BTreeMap::from([
+                    (
+                        "CODEX_HOME",
+                        home.path().join("custom-codex").into_os_string(),
+                    ),
+                    (
+                        "CLAUDE_CONFIG_DIR",
+                        home.path().join("custom-claude").into_os_string(),
+                    ),
+                ])
+            } else {
+                std::collections::BTreeMap::new()
+            };
+            crate::golden::with_config_env(config_env, || {
+                for runtime in Runtime::ALL {
+                    let commands = crate::golden::capture_commands(|| {
+                        if let Some(source) = crate::runtimes::adapter(runtime).model_discovery() {
+                            let _ = (source.query)("/golden/agent", &env);
+                        }
+                    });
+                    rows.push(serde_json::json!({"runtime":runtime,"override_home":override_home,"supported":discovery_runtimes().contains(&runtime),"source":source(runtime,"/golden/agent"),"commands":commands}));
+                }
+            });
+        }
+    });
+    crate::golden::assert_golden(
+        "catalog-discovery",
+        crate::golden::normalize(
+            serde_json::json!({"order":discovery_runtimes(),"runtimes":rows}),
+            home.path(),
+        ),
+    );
 }

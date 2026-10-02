@@ -25,7 +25,7 @@ const CAPTION: &str = "Toggles register or unregister a server in this runtime's
 const EDIT_FOOTER: &str = "Only the named entry changes in each file. Invalid JSON or TOML cannot be saved. To rename a server, remove and re-add it through the agent's CLI.";
 
 fn registered_clients(entry: &McpServerEntry) -> Vec<McpClientId> {
-    McpClientId::ALL
+    McpClientId::all()
         .into_iter()
         .filter(|client| entry.clients.get(client).is_some_and(|e| e.registered))
         .collect()
@@ -33,15 +33,9 @@ fn registered_clients(entry: &McpServerEntry) -> Vec<McpClientId> {
 
 fn source_client(entry: &McpServerEntry) -> Option<McpClientId> {
     // Copy fallback priority is independent of the runtime menu order.
-    [
-        McpClientId::ClaudeCode,
-        McpClientId::Codex,
-        McpClientId::Trae,
-        McpClientId::Copilot,
-        McpClientId::Antigravity,
-    ]
-    .into_iter()
-    .find(|client| {
+    let mut clients = McpClientId::all();
+    clients.sort();
+    clients.into_iter().find(|client| {
         entry
             .clients
             .get(client)
@@ -143,7 +137,7 @@ fn copy_hint(entry: &McpServerEntry, client: McpClientId) -> Option<String> {
     let copyable = match &entry.clients[&source].definition {
         None => false,
         // Antigravity CLI's HTTP entry shape is unprobed (#644); the backend refuses it.
-        Some(McpServerDefinition::Http { .. }) => client != McpClientId::Antigravity,
+        Some(McpServerDefinition::Http { .. }) => client.config().supports_http,
         Some(McpServerDefinition::Stdio { .. }) => true,
     };
     (!copyable).then(|| {
@@ -155,7 +149,7 @@ fn copy_hint(entry: &McpServerEntry, client: McpClientId) -> Option<String> {
 }
 
 fn available_clients(catalog: &[RuntimeCatalogEntry], settings: &AppSettings) -> Vec<McpClientId> {
-    McpClientId::ALL
+    McpClientId::all()
         .into_iter()
         .filter(|client| {
             catalog.iter().any(|r| {
@@ -1308,7 +1302,7 @@ mod tests {
     }
 
     fn entry(name: &str, conflict: bool) -> McpServerEntry {
-        let clients = McpClientId::ALL
+        let clients = McpClientId::all()
             .into_iter()
             .map(|client| {
                 let command = if client == McpClientId::Codex && conflict {
@@ -1362,6 +1356,11 @@ mod tests {
             .into_iter()
             .map(|r| RuntimeCatalogEntry {
                 name: r.name,
+                capabilities: runner_backend::ops::runtime::RuntimeCatalogEntry::for_runtime(
+                    r.name,
+                )
+                .map(|entry| entry.capabilities)
+                .unwrap_or_default(),
                 display_name: r.display_name,
                 command: r.command,
                 native_fork: r.native_fork,
@@ -1475,7 +1474,7 @@ mod tests {
         assert!(copy_hint(&unsupported, McpClientId::ClaudeCode).is_none());
 
         let mut http = entry("web", false);
-        for client in McpClientId::ALL {
+        for client in McpClientId::all() {
             let slot = http.clients.get_mut(&client).unwrap();
             slot.registered = client == McpClientId::ClaudeCode;
             slot.definition = Some(McpServerDefinition::Http {

@@ -44,7 +44,7 @@ impl NativeRoot {
                 .update(cx, |input, input_cx| input.reset(command, input_cx));
         }
         form.runtime = next_runtime.clone();
-        if next_runtime != "codex" {
+        if !crate::runtime_ui::catalog_capabilities(&form.runtimes, &next_runtime).codex_speed {
             form.speed = "inherit".into();
             form.speed_select.update(cx, |select, select_cx| {
                 select.set_value("inherit", select_cx)

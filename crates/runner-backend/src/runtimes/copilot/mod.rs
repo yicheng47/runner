@@ -1,14 +1,14 @@
 pub(crate) mod copilot_status;
 pub(crate) mod copilot_trust;
+pub(crate) mod skills;
 use super::catalog::*;
 use super::helpers::*;
 use super::*;
 
-pub(crate) fn copilot_status_args(runtime: Option<Runtime>, app_data_dir: &Path) -> Vec<String> {
-    if runtime != Some(Runtime::Copilot)
-        || !Copilot
-            .status_hooks()
-            .is_some_and(|hooks| hooks.supported(cfg!(windows)))
+pub(crate) fn copilot_status_args(app_data_dir: &Path) -> Vec<String> {
+    if !Copilot
+        .status_hooks()
+        .is_some_and(|hooks| hooks.supported(cfg!(windows)))
         || !crate::runtimes::copilot::copilot_status::plugin_available(app_data_dir)
     {
         return Vec::new();
@@ -94,6 +94,28 @@ fn mode_matches(args: &[String], mode: PermissionMode) -> bool {
 }
 pub struct Copilot;
 impl RuntimeAdapter for Copilot {
+    fn mcp(&self) -> Option<&'static McpConfig> {
+        Some(&MCP)
+    }
+    fn skills(&self) -> SkillSupport {
+        SkillSupport {
+            roots: SKILL_DIRS,
+            load: skills::load,
+            toggle: Some(skills::set_enabled),
+            ..Default::default()
+        }
+    }
+
+    fn capabilities(&self) -> RuntimeCapabilities {
+        RuntimeCapabilities {
+            global_skill_toggle: true,
+            ..Default::default()
+        }
+    }
+    fn native_defaults(&self, home: &Path) -> crate::runtime_defaults::RuntimeDefaults {
+        crate::runtime_defaults::json_defaults(&settings_path(home), true)
+    }
+
     fn status_hooks(&self) -> Option<&'static dyn StatusHooks> {
         Some(&Hooks)
     }
@@ -114,6 +136,7 @@ impl RuntimeAdapter for Copilot {
             name: Runtime::Copilot,
             display_name: Runtime::Copilot.display_name(),
             command: Runtime::Copilot.command().unwrap(),
+            capabilities: self.capabilities(),
             native_fork: false,
             description: "GitHub Copilot CLI (requires a Copilot subscription)",
             install_url: "https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/install-copilot-cli",
@@ -160,7 +183,7 @@ impl RuntimeAdapter for Copilot {
                         .map(|effort| plain_option(effort, effort)),
                 )
                 .collect(),
-            skills_dirs: &[".copilot/skills", ".agents/skills"],
+            skills_dirs: SKILL_DIRS,
     update_args: &["update"],
     npm_package: Some("@github/copilot"),
 })
@@ -207,10 +230,7 @@ impl RuntimeAdapter for Copilot {
         let mut out = Vec::new();
         out.extend(self.model_effort_args(ctx.model, ctx.effort));
         out.push("--no-auto-update".into());
-        out.extend(copilot_status_args(
-            Some(Runtime::Copilot),
-            ctx.app_data_dir,
-        ));
+        out.extend(copilot_status_args(ctx.app_data_dir));
         out.extend(self.first_turn_argv(if ctx.resuming { None } else { ctx.first_turn }));
         out
     }
@@ -278,3 +298,39 @@ impl StatusHooks for Hooks {
 
 #[cfg(test)]
 mod tests;
+
+pub(crate) const COPILOT_SETTINGS_RELATIVE_PATH: &str = ".copilot/settings.json";
+pub(crate) fn settings_path(home: &Path) -> PathBuf {
+    home.join(COPILOT_SETTINGS_RELATIVE_PATH)
+}
+
+const SKILL_DIRS: &[&str] = &[".copilot/skills", ".agents/skills"];
+
+static MCP: McpConfig = McpConfig {
+    wire_name: "copilot",
+    serialized_name: "Copilot",
+    order: 3,
+    config_file: "~/.copilot/mcp-config.json",
+    format: McpFormat::Json,
+    translate: translate_mcp,
+    preserve_disabled: false,
+    supports_http: true,
+};
+#[allow(non_upper_case_globals)]
+impl crate::ops::mcp::McpClientId {
+    pub const Copilot: Self = Self(Runtime::Copilot);
+}
+
+fn translate_mcp(
+    definition: &crate::ops::mcp::McpServerDefinition,
+) -> crate::error::Result<crate::ops::mcp::NativeEntry> {
+    let mut value = definition.to_claude();
+    if matches!(
+        definition,
+        crate::ops::mcp::McpServerDefinition::Stdio { .. }
+    ) {
+        value["type"] = serde_json::json!("local");
+        value["tools"] = serde_json::json!(["*"]);
+    }
+    Ok(crate::ops::mcp::NativeEntry::Claude(value))
+}

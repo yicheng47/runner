@@ -5,12 +5,15 @@ mod theme_snapshot;
 mod app_settings;
 mod app_store;
 mod assets;
+#[cfg(test)]
+mod catalog_golden;
 mod chat_icon;
 mod file_links;
 mod keymap;
 mod list_controls;
 mod mac_chrome;
 mod platform_ui;
+mod runtime_ui;
 mod surfaces;
 mod terminal;
 mod window_state;

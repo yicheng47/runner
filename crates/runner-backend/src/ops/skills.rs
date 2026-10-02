@@ -1,14 +1,9 @@
 use crate::model::Runtime;
-use std::io::Write;
-#[cfg(unix)]
-use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
 
-use crate::skills::{
-    codex_config_tables, codex_override_matches, skill_catalog, SkillCatalog, SkillEntry,
-};
+use crate::skills::{skill_catalog, SkillCatalog, SkillEntry};
 use crate::AppCore;
 
 fn home_dir() -> Result<PathBuf> {
@@ -60,12 +55,16 @@ pub fn save_skill(
     save_skill_at(&home_dir()?, codex_home().as_deref(), runtime, path, text)
 }
 
-fn catalog_at(home: &Path, codex_home: Option<&Path>, runtime: Runtime) -> Result<SkillCatalog> {
+pub(crate) fn catalog_at(
+    home: &Path,
+    codex_home: Option<&Path>,
+    runtime: Runtime,
+) -> Result<SkillCatalog> {
     skill_catalog(runtime, home, codex_home)
         .ok_or_else(|| Error::msg(format!("runtime {runtime} has no skills catalog")))
 }
 
-fn find_entry(catalog: &SkillCatalog, path: &Path) -> Result<SkillEntry> {
+pub(crate) fn find_entry(catalog: &SkillCatalog, path: &Path) -> Result<SkillEntry> {
     catalog
         .entries
         .iter()
@@ -81,201 +80,8 @@ fn set_global_enabled_at(
     skill_path: &Path,
     enabled: bool,
 ) -> Result<SkillCatalog> {
-    if runtime == Runtime::Codex {
-        return set_codex_enabled_at(home, codex_home, skill_path, enabled);
-    }
-    if runtime == Runtime::Copilot {
-        return set_copilot_enabled_at(home, skill_path, enabled);
-    }
-    if runtime != Runtime::ClaudeCode {
-        return Err(Error::msg(
-            "global skill on/off is only supported for Claude Code, Codex and GitHub Copilot CLI",
-        ));
-    }
-    let entry = find_entry(&catalog_at(home, None, runtime)?, skill_path)?;
-    let path = home.join(".claude/settings.json");
-    let mut settings: serde_json::Value = match std::fs::read_to_string(&path) {
-        Ok(text) => serde_json::from_str(&text)
-            .map_err(|error| Error::msg(format!("parse {}: {error}", path.display())))?,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => serde_json::json!({}),
-        Err(error) => return Err(error.into()),
-    };
-    let object = settings
-        .as_object_mut()
-        .ok_or_else(|| Error::msg("settings.json is not a JSON object"))?;
-    let overrides = object
-        .entry("skillOverrides")
-        .or_insert_with(|| serde_json::json!({}))
-        .as_object_mut()
-        .ok_or_else(|| Error::msg("skillOverrides is not a JSON object"))?;
-    if enabled {
-        overrides.shift_remove(&entry.name);
-        if overrides.is_empty() {
-            object.shift_remove("skillOverrides");
-        }
-    } else {
-        overrides.insert(entry.name, serde_json::json!("off"));
-    }
-    let text = format!("{}\n", serde_json::to_string_pretty(&settings)?);
-    std::fs::create_dir_all(home.join(".claude"))?;
-    std::fs::write(path, text)?;
-    catalog_at(home, None, runtime)
-}
-
-fn set_copilot_enabled_at(home: &Path, skill_path: &Path, enabled: bool) -> Result<SkillCatalog> {
-    let entry = find_entry(&catalog_at(home, None, Runtime::Copilot)?, skill_path)?;
-    let path = crate::runtime_defaults::copilot_settings_path(home);
-    let mut settings: serde_json::Value = match std::fs::read_to_string(&path) {
-        Ok(text) => serde_json::from_str(&text)
-            .map_err(|error| Error::msg(format!("parse {}: {error}", path.display())))?,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => serde_json::json!({}),
-        Err(error) => return Err(error.into()),
-    };
-    let object = settings
-        .as_object_mut()
-        .ok_or_else(|| Error::msg("settings.json is not a JSON object"))?;
-    let disabled = object
-        .entry("disabledSkills")
-        .or_insert_with(|| serde_json::json!([]))
-        .as_array_mut()
-        .ok_or_else(|| Error::msg("disabledSkills is not a JSON array"))?;
-    if enabled {
-        disabled.retain(|value| value.as_str() != Some(entry.name.as_str()));
-        if disabled.is_empty() {
-            object.shift_remove("disabledSkills");
-        }
-    } else if !disabled
-        .iter()
-        .any(|value| value.as_str() == Some(entry.name.as_str()))
-    {
-        disabled.push(serde_json::json!(entry.name));
-    }
-    let text = format!("{}\n", serde_json::to_string_pretty(&settings)?);
-    std::fs::create_dir_all(home.join(".copilot"))?;
-    std::fs::write(path, text)?;
-    catalog_at(home, None, Runtime::Copilot)
-}
-
-fn set_codex_enabled_at(
-    home: &Path,
-    codex_home: Option<&Path>,
-    skill_path: &Path,
-    enabled: bool,
-) -> Result<SkillCatalog> {
-    let catalog = catalog_at(home, codex_home, Runtime::Codex)?;
-    let entry = find_entry(&catalog, skill_path)?;
-    if !entry.files.contains(&entry.marker) {
-        return Err(Error::msg("skill has no marker file"));
-    }
-    let marker = entry.path.join(&entry.marker);
-    let marker_text = marker
-        .to_str()
-        .ok_or_else(|| Error::msg("skill marker path is not valid UTF-8"))?;
-    let config_dir = codex_home
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| home.join(".codex"));
-    let path = config_dir.join("config.toml");
-    let mut document = match std::fs::read_to_string(&path) {
-        Ok(text) => text
-            .parse::<toml_edit::DocumentMut>()
-            .map_err(|error| Error::msg(format!("parse {}: {error}", path.display())))?,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => toml_edit::DocumentMut::new(),
-        Err(error) => return Err(error.into()),
-    };
-    let mut matching = Vec::new();
-    let preserve_skills = document
-        .get("skills")
-        .is_some_and(|skills| skills.as_table().is_none_or(|table| !table.is_implicit()));
-    if let Some(skills) = document.get("skills") {
-        let skills = skills
-            .as_table_like()
-            .ok_or_else(|| Error::msg("skills is not a table"))?;
-        if let Some(config) = skills.get("config") {
-            let tables = codex_config_tables(config)
-                .ok_or_else(|| Error::msg("skills.config is not an array of tables"))?;
-            matching = tables
-                .iter()
-                .enumerate()
-                .filter(|(_, table)| codex_override_matches(**table, &marker))
-                .map(|(index, _)| index)
-                .collect();
-        }
-    }
-    if enabled && matching.is_empty() {
-        return Ok(catalog);
-    }
-    let mut new_skills = toml_edit::Table::new();
-    new_skills.set_implicit(true);
-    let skills = document
-        .entry("skills")
-        .or_insert(toml_edit::Item::Table(new_skills));
-    let inline = skills.is_inline_table();
-    let skills = skills
-        .as_table_like_mut()
-        .ok_or_else(|| Error::msg("skills is not a table"))?;
-    let config = skills.entry("config").or_insert(if inline {
-        toml_edit::value(toml_edit::Array::new())
-    } else {
-        toml_edit::Item::ArrayOfTables(toml_edit::ArrayOfTables::new())
-    });
-    let keep = if enabled {
-        None
-    } else {
-        matching.first().copied()
-    };
-    for index in matching
-        .into_iter()
-        .rev()
-        .filter(|index| Some(*index) != keep)
-    {
-        if let Some(tables) = config.as_array_of_tables_mut() {
-            tables.remove(index);
-        } else if let Some(array) = config.as_array_mut() {
-            array.remove(index);
-        }
-    }
-    if let Some(index) = keep {
-        let table = config
-            .get_mut(index)
-            .and_then(toml_edit::Item::as_table_like_mut)
-            .ok_or_else(|| Error::msg("invalid skills.config entry"))?;
-        let mut value = toml_edit::Value::from(false);
-        if let Some(previous) = table.get("enabled").and_then(toml_edit::Item::as_value) {
-            *value.decor_mut() = previous.decor().clone();
-        }
-        if let Some(previous) = table.get_mut("enabled") {
-            *previous = toml_edit::Item::Value(value);
-        } else {
-            table.insert("enabled", toml_edit::Item::Value(value));
-        }
-    } else if !enabled {
-        if let Some(tables) = config.as_array_of_tables_mut() {
-            let mut table = toml_edit::Table::new();
-            table["path"] = toml_edit::value(marker_text);
-            table["enabled"] = toml_edit::value(false);
-            tables.push(table);
-        } else if let Some(array) = config.as_array_mut() {
-            let mut table = toml_edit::InlineTable::new();
-            table.insert("path", marker_text.into());
-            table.insert("enabled", false.into());
-            array.push(table);
-        }
-    }
-    if enabled && codex_config_tables(config).is_some_and(|tables| tables.is_empty()) {
-        skills.remove("config");
-        if skills.is_empty() && !preserve_skills {
-            document.remove("skills");
-        }
-    }
-    std::fs::create_dir_all(&config_dir)?;
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    options.mode(0o600);
-    options
-        .open(&path)?
-        .write_all(document.to_string().as_bytes())?;
-    catalog_at(home, codex_home, Runtime::Codex)
+    let toggle = crate::runtimes::adapter(runtime).skills().toggle.ok_or_else(|| Error::msg("global skill on/off is only supported for Claude Code, Codex and GitHub Copilot CLI"))?;
+    toggle(home, codex_home, skill_path, enabled)
 }
 
 fn read_skill_at(
@@ -317,6 +123,9 @@ fn save_skill_at(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::runtimes::codex::skills::{
+        codex_config_tables, codex_override_matches, set_enabled as set_codex_enabled_at,
+    };
     use crate::skills::GlobalState;
     use serde_json::json;
 
@@ -1292,4 +1101,71 @@ mod tests {
         )
         .is_err());
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn skills_catalog_golden() {
+    let mut rows = Vec::new();
+    for runtime in Runtime::ALL {
+        let home = tempfile::tempdir().unwrap();
+        let Some(catalog) = skill_catalog(runtime, home.path(), None) else {
+            rows.push(serde_json::json!({"runtime":runtime,"roots":null}));
+            continue;
+        };
+        for root in &catalog.roots {
+            let skill = root.join("golden-skill");
+            std::fs::create_dir_all(skill.join("agents")).unwrap();
+            std::fs::write(skill.join("SKILL.md"), "---\nname: golden-skill\ndescription: Golden description.\ndisable-model-invocation: true\nuser-invocable: false\n---\n# Golden\n").unwrap();
+            std::fs::write(
+                skill.join("agents/openai.yaml"),
+                "policy:\n  allow_implicit_invocation: false\n",
+            )
+            .unwrap();
+        }
+        let skill = catalog.roots[0].join("golden-skill");
+        let mut writes = Vec::new();
+        for enabled in [false, false, true, true] {
+            let result = set_global_enabled_at(home.path(), None, runtime, &skill, enabled);
+            let config = [
+                ".claude/settings.json",
+                ".codex/config.toml",
+                ".copilot/settings.json",
+            ]
+            .into_iter()
+            .filter_map(|relative| {
+                std::fs::read_to_string(home.path().join(relative))
+                    .ok()
+                    .map(|text| (relative, text))
+            })
+            .collect::<std::collections::BTreeMap<_, _>>();
+            writes.push(serde_json::json!({"enabled":enabled,"error":result.err().map(|error| error.to_string()),"files":config}));
+        }
+        let catalog = skill_catalog(runtime, home.path(), None).unwrap();
+        rows.push(serde_json::json!({"runtime":runtime,"roots":catalog.roots,"entries":catalog.entries.iter().map(|entry| serde_json::json!({"name":entry.name,"manual":entry.manual,"hidden":entry.hidden,"global":format!("{:?}",entry.global),"marker":entry.marker,"problem":entry.problem})).collect::<Vec<_>>(),"writes":writes}));
+    }
+    // Each row has its own home; normalize during construction below as well.
+    let rows: Vec<_> = rows
+        .into_iter()
+        .map(|mut row| {
+            if let Some(roots) = row["roots"].as_array() {
+                if let Some(root) = roots.first().and_then(|root| root.as_str()) {
+                    let relative =
+                        crate::model::Runtime::parse(row["runtime"].as_str().unwrap()).unwrap();
+                    let root_suffix = crate::runtimes::adapter(relative)
+                        .catalog()
+                        .unwrap()
+                        .skills_dirs[0];
+                    let home = std::path::PathBuf::from(root)
+                        .ancestors()
+                        .nth(std::path::Path::new(root_suffix).components().count())
+                        .unwrap()
+                        .to_path_buf();
+                    row = crate::golden::normalize(row, &home);
+                }
+            }
+            row
+        })
+        .collect();
+    crate::golden::assert_golden("catalog-skills", serde_json::json!(rows));
 }

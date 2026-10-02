@@ -457,26 +457,11 @@ fn check_latest(
 /// default, or `stable`, which npm publishes as its own tag. The others
 /// follow `latest`.
 fn dist_tag(runtime: Runtime) -> &'static str {
-    if runtime != Runtime::ClaudeCode {
-        return "latest";
-    }
-    std::env::var_os("CLAUDE_CONFIG_DIR")
-        .filter(|dir| !dir.is_empty())
-        .map(std::path::PathBuf::from)
-        .or_else(|| runner_core::app_paths::home_dir().map(|home| home.join(".claude")))
-        .and_then(|dir| claude_channel(&dir.join("settings.json")))
-        .unwrap_or("latest")
+    crate::runtimes::adapter(runtime).npm_dist_tag()
 }
 
-fn claude_channel(settings: &std::path::Path) -> Option<&'static str> {
-    let settings: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(settings).ok()?).ok()?;
-    match settings.get("autoUpdatesChannel")?.as_str()? {
-        "stable" => Some("stable"),
-        "latest" => Some("latest"),
-        _ => None,
-    }
-}
+#[cfg(test)]
+use crate::runtimes::claude_code::claude_channel;
 
 fn fetch_latest(env: &LoginShellEnv, package: &str, tag: &str) -> Option<String> {
     let response = crate::usage::http_client(env)
@@ -1145,4 +1130,27 @@ mod tests {
         assert!(!updatable(Runtime::Trae));
         assert!(!updatable(Runtime::Antigravity));
     }
+}
+
+#[test]
+fn versions_catalog_golden() {
+    let home = tempfile::tempdir().unwrap();
+    let mut rows = Vec::new();
+    crate::runtimes::with_conversation_home(home.path(), || {
+        for channel in [None, Some("latest"), Some("stable"), Some("unknown")] {
+            if let Some(channel) = channel {
+                let path = home.path().join(".claude/settings.json");
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                std::fs::write(
+                    path,
+                    serde_json::json!({"autoUpdatesChannel":channel}).to_string(),
+                )
+                .unwrap();
+            }
+            for runtime in Runtime::ALL {
+                rows.push(serde_json::json!({"runtime":runtime,"channel":channel,"package":crate::runtimes::adapter(runtime).catalog().and_then(|catalog| catalog.npm_package),"dist_tag":dist_tag(runtime)}));
+            }
+        }
+    });
+    crate::golden::assert_golden("catalog-versions", serde_json::json!(rows));
 }

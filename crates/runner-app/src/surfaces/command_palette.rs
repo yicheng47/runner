@@ -111,7 +111,7 @@ fn chat_search_text(
 }
 
 fn session_palette_kind(runtime: &str) -> PaletteKind {
-    if Runtime::parse(runtime) == Some(Runtime::Shell) {
+    if Runtime::parse(runtime).is_some_and(Runtime::is_shell) {
         PaletteKind::Terminal
     } else {
         PaletteKind::Chat

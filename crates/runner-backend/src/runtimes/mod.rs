@@ -32,6 +32,7 @@ pub struct RuntimeCatalog {
     pub display_name: &'static str,
     pub command: &'static str,
     pub native_fork: bool,
+    pub capabilities: RuntimeCapabilities,
     pub skills_dirs: &'static [&'static str],
     pub update_args: &'static [&'static str],
     pub npm_package: Option<&'static str>,
@@ -49,6 +50,7 @@ impl RuntimeCatalog {
             display_name: self.display_name.into(),
             command: self.command.into(),
             native_fork: self.native_fork,
+            capabilities: self.capabilities,
             description: self.description.into(),
             install_url: self.install_url.into(),
             default_enabled: self.default_enabled,
@@ -163,8 +165,102 @@ pub trait StatusHooks: Send + Sync {
     fn start_watcher(&self, spec: &SpawnSpec) -> Option<Box<dyn HookWatcher>>;
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RuntimeCapabilities {
+    pub usage: bool,
+    pub global_skill_toggle: bool,
+    pub skill_toggle_requires_marker: bool,
+    pub codex_speed: bool,
+    pub effort_needs_launch_model: bool,
+}
+
+pub struct ModelDiscoverySource {
+    pub order: u8,
+    pub method: &'static str,
+    pub query: fn(
+        &str,
+        &crate::shell_path::LoginShellEnv,
+    ) -> Result<
+        crate::runtime_status::models::ModelCatalog,
+        crate::runtime_status::models::Reason,
+    >,
+    pub config_home: fn() -> Option<PathBuf>,
+}
+
+pub struct UsageSource {
+    pub fetch: fn(
+        &str,
+        &crate::shell_path::LoginShellEnv,
+        bool,
+    ) -> Result<Vec<crate::usage::UsageWindow>, crate::usage::UnavailableReason>,
+}
+
+pub type SkillState = Box<dyn Fn(&crate::skills::SkillEntry) -> crate::skills::GlobalState>;
+pub type SkillToggle =
+    fn(&Path, Option<&Path>, &Path, bool) -> crate::error::Result<crate::skills::SkillCatalog>;
+
+pub struct SkillSupport {
+    pub roots: &'static [&'static str],
+    pub load: fn(&Path, Option<&Path>) -> SkillState,
+    pub manual: fn(&Path, &crate::skills::SkillDocument) -> bool,
+    pub hidden: fn(&crate::skills::SkillDocument) -> bool,
+    pub toggle: Option<SkillToggle>,
+}
+
+impl Default for SkillSupport {
+    fn default() -> Self {
+        Self {
+            roots: &[],
+            load: |_, _| Box::new(|_| crate::skills::GlobalState::On),
+            manual: |_, document| document.value("disable-model-invocation") == Some("true"),
+            hidden: |_| false,
+            toggle: None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum McpFormat {
+    Json,
+    Toml,
+}
+
+pub struct McpConfig {
+    pub wire_name: &'static str,
+    pub serialized_name: &'static str,
+    pub order: u8,
+    pub config_file: &'static str,
+    pub format: McpFormat,
+    pub translate: fn(
+        &crate::ops::mcp::McpServerDefinition,
+    ) -> crate::error::Result<crate::ops::mcp::NativeEntry>,
+    pub preserve_disabled: bool,
+    pub supports_http: bool,
+}
+
 pub trait RuntimeAdapter: Send + Sync {
     fn catalog(&self) -> Option<RuntimeCatalog>;
+    fn capabilities(&self) -> RuntimeCapabilities {
+        RuntimeCapabilities::default()
+    }
+    fn native_defaults(&self, _home: &Path) -> crate::runtime_defaults::RuntimeDefaults {
+        crate::runtime_defaults::RuntimeDefaults::default()
+    }
+    fn model_discovery(&self) -> Option<&'static ModelDiscoverySource> {
+        None
+    }
+    fn npm_dist_tag(&self) -> &'static str {
+        "latest"
+    }
+    fn usage(&self) -> Option<&'static UsageSource> {
+        None
+    }
+    fn mcp(&self) -> Option<&'static McpConfig> {
+        None
+    }
+    fn skills(&self) -> SkillSupport {
+        SkillSupport::default()
+    }
     fn permissions(&self) -> &'static Permissions;
     fn first_turn_argv(&self, body: Option<&str>) -> Vec<String>;
     fn resume_plan(&self, prior_key: Option<&str>) -> ResumePlan;

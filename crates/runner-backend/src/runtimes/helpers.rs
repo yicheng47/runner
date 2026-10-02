@@ -1,8 +1,6 @@
 use super::*;
 use std::io::Write;
-use std::path::Path;
-#[cfg(test)]
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub struct Permissions {
     pub offered: &'static [PermissionMode],
@@ -340,4 +338,16 @@ pub(super) fn status_env(
         ),
         (generation_env.into(), uuid::Uuid::new_v4().to_string()),
     ])
+}
+
+pub(super) fn config_home(env_name: Option<&str>, relative: &str) -> Option<PathBuf> {
+    #[cfg(test)]
+    use crate::golden::{config_home as home_dir, config_var_os as var_os};
+    #[cfg(not(test))]
+    use {runner_core::app_paths::home_dir, std::env::var_os};
+    env_name
+        .and_then(var_os)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| home_dir().map(|home| home.join(relative)))
 }

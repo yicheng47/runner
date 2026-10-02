@@ -3,21 +3,21 @@ use crate::runtimes::test_support::*;
 
 #[test]
 fn antigravity_fresh_plan_waits_for_agy_and_resume_passes_the_conversation() {
-    let fresh = resume_plan(Some(Runtime::Antigravity), None);
+    let fresh = resume_plan(Runtime::Antigravity.key(), None);
     assert!(fresh.args.is_empty());
     assert!(fresh.assigned_key.is_none());
     assert!(!fresh.resuming);
-    assert!(resume_plan(Some(Runtime::Antigravity), Some("not-a-uuid"))
+    assert!(resume_plan(Runtime::Antigravity.key(), Some("not-a-uuid"))
         .args
         .is_empty());
 
     let prior = "019fa1b9-a133-7841-b4dd-730d376ab1d1";
-    let plan = resume_plan(Some(Runtime::Antigravity), Some(prior));
+    let plan = resume_plan(Runtime::Antigravity.key(), Some(prior));
     assert_eq!(plan.args, ["--conversation", prior]);
     assert!(!plan.prepend, "--conversation is a trailing flag");
     assert_eq!(plan.assigned_key.as_deref(), Some(prior));
     assert!(plan.resuming);
-    assert!(fork_plan(Some(Runtime::Antigravity), prior, "Source").is_none());
+    assert!(fork_plan(Runtime::Antigravity.key(), prior, "Source").is_none());
 }
 
 #[test]
@@ -27,7 +27,7 @@ fn antigravity_trailing_args_carry_the_session_log_and_first_turn_on_i() {
         .to_string_lossy()
         .into_owned();
     let fresh = trailing_runtime_args(
-        Some(Runtime::Antigravity),
+        Runtime::Antigravity.key(),
         &[],
         app_data,
         "runner-session",
@@ -52,7 +52,7 @@ fn antigravity_trailing_args_carry_the_session_log_and_first_turn_on_i() {
         ]
     );
     let resumed = trailing_runtime_args(
-        Some(Runtime::Antigravity),
+        Runtime::Antigravity.key(),
         &[],
         app_data,
         "runner-session",
@@ -64,9 +64,9 @@ fn antigravity_trailing_args_carry_the_session_log_and_first_turn_on_i() {
         Some("first turn"),
     );
     assert_eq!(resumed, ["--log-file", log.as_str()]);
-    assert!(system_prompt_args(Some(Runtime::Antigravity), Some("persona")).is_empty());
+    assert!(system_prompt_args(Runtime::Antigravity.key(), Some("persona")).is_empty());
     assert_eq!(
-        first_turn_argv(Some(Runtime::Antigravity), Some("body")),
+        first_turn_argv(Runtime::Antigravity.key(), Some("body")),
         ["-i", "body"]
     );
 }
@@ -74,9 +74,9 @@ fn antigravity_trailing_args_carry_the_session_log_and_first_turn_on_i() {
 #[test]
 fn antigravity_status_args_require_the_installed_hooks_folder() {
     let root = tempfile::tempdir().unwrap();
-    assert!(antigravity_status_args(Some(Runtime::Antigravity), root.path()).is_empty());
+    assert!(antigravity_status_args_for(Runtime::Antigravity.key(), root.path()).is_empty());
     crate::runtimes::antigravity::agy_status::install_hooks(root.path()).unwrap();
-    let args = antigravity_status_args(Some(Runtime::Antigravity), root.path());
+    let args = antigravity_status_args_for(Runtime::Antigravity.key(), root.path());
     if cfg!(windows) {
         assert!(args.is_empty(), "agy hook status is macOS-only");
     } else {
@@ -90,7 +90,7 @@ fn antigravity_status_args_require_the_installed_hooks_folder() {
             ]
         );
     }
-    assert!(antigravity_status_args(Some(Runtime::Copilot), root.path()).is_empty());
+    assert!(antigravity_status_args_for(Runtime::Copilot.key(), root.path()).is_empty());
 }
 
 #[test]
@@ -114,7 +114,7 @@ fn antigravity_conversation_probe_reads_the_global_store() {
 #[test]
 fn antigravity_model_and_effort_come_only_from_catalog_pairs() {
     let args = |model: Option<&str>, effort: Option<&str>| {
-        model_effort_args(Some(Runtime::Antigravity), model, effort)
+        model_effort_args(Runtime::Antigravity.key(), model, effort)
     };
     assert_eq!(
         args(Some("gemini-3.1-pro"), Some("high")),
@@ -157,14 +157,28 @@ fn antigravity_model_and_effort_come_only_from_catalog_pairs() {
 #[test]
 fn antigravity_permissions_roundtrip_and_strip_every_go_spelling() {
     let runtime = Some(Runtime::Antigravity);
-    assert!(permission_mode_args(runtime, PermissionMode::Default).is_empty());
-    assert!(permission_mode_args(runtime, PermissionMode::Auto).is_empty());
+    assert!(permission_mode_args(
+        runtime.map(Runtime::key).unwrap_or(""),
+        PermissionMode::Default
+    )
+    .is_empty());
+    assert!(permission_mode_args(
+        runtime.map(Runtime::key).unwrap_or(""),
+        PermissionMode::Auto
+    )
+    .is_empty());
     assert_eq!(
-        permission_mode_args(runtime, PermissionMode::AcceptEdits),
+        permission_mode_args(
+            runtime.map(Runtime::key).unwrap_or(""),
+            PermissionMode::AcceptEdits
+        ),
         ["--mode", "accept-edits"]
     );
     assert_eq!(
-        permission_mode_args(runtime, PermissionMode::Bypass),
+        permission_mode_args(
+            runtime.map(Runtime::key).unwrap_or(""),
+            PermissionMode::Bypass
+        ),
         ["--dangerously-skip-permissions"]
     );
     for mode in [
@@ -172,13 +186,24 @@ fn antigravity_permissions_roundtrip_and_strip_every_go_spelling() {
         PermissionMode::AcceptEdits,
         PermissionMode::Bypass,
     ] {
-        let args = apply_permission_mode(runtime, &["--debug".into()], mode);
-        assert_eq!(infer_permission_mode(runtime, &args), mode);
+        let args = apply_permission_mode(
+            runtime.map(Runtime::key).unwrap_or(""),
+            &["--debug".into()],
+            mode,
+        );
+        assert_eq!(
+            infer_permission_mode(runtime.map(Runtime::key).unwrap_or(""), &args),
+            mode
+        );
     }
     assert_eq!(
         infer_permission_mode(
-            runtime,
-            &apply_permission_mode(runtime, &[], PermissionMode::Auto)
+            runtime.map(Runtime::key).unwrap_or(""),
+            &apply_permission_mode(
+                runtime.map(Runtime::key).unwrap_or(""),
+                &[],
+                PermissionMode::Auto
+            )
         ),
         PermissionMode::Default
     );
@@ -202,7 +227,7 @@ fn antigravity_permissions_roundtrip_and_strip_every_go_spelling() {
     .map(String::from)
     .to_vec();
     assert_eq!(
-        strip_permission_flags(runtime, &noisy),
+        strip_permission_flags(runtime.map(Runtime::key).unwrap_or(""), &noisy),
         ["--keep", "--model", "gemini-3.8-flash", "--kept-too"]
     );
 
@@ -229,18 +254,33 @@ fn antigravity_permissions_roundtrip_and_strip_every_go_spelling() {
         ),
     ] {
         let args: Vec<String> = args.into_iter().map(String::from).collect();
-        assert_eq!(infer_permission_mode(runtime, &args), mode, "{args:?}");
+        assert_eq!(
+            infer_permission_mode(runtime.map(Runtime::key).unwrap_or(""), &args),
+            mode,
+            "{args:?}"
+        );
     }
 
     // The equals form on a boolean flag is Go-only; other runtimes keep it.
     let claude = vec!["--dangerously-skip-permissions=true".to_string()];
     assert_eq!(
-        strip_permission_flags(Some(Runtime::ClaudeCode), &claude),
+        strip_permission_flags(Runtime::ClaudeCode.key(), &claude),
         claude
     );
     assert_eq!(
-        mission_bus_sandbox_args(runtime, Some(Path::new("/tmp/mission"))),
+        mission_bus_sandbox_args(
+            runtime.map(Runtime::key).unwrap_or(""),
+            Some(Path::new("/tmp/mission"))
+        ),
         ["--add-dir", "/tmp/mission"]
     );
-    assert!(mission_bus_sandbox_args(runtime, None).is_empty());
+    assert!(mission_bus_sandbox_args(runtime.map(Runtime::key).unwrap_or(""), None).is_empty());
+}
+
+fn antigravity_status_args_for(key: &str, data: &Path) -> Vec<String> {
+    if key == Runtime::Antigravity.key() {
+        antigravity_status_args(data)
+    } else {
+        Vec::new()
+    }
 }

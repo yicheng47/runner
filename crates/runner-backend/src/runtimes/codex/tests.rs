@@ -16,13 +16,16 @@ fn codex_hook_overrides_and_opt_out_preserve_the_invocation() {
     ] {
         let args = args.into_iter().map(String::from).collect::<Vec<_>>();
         assert!(
-            !inject_codex_hooks(Some(Runtime::Codex), &args, false),
+            !inject_codex_hooks_for(Runtime::Codex.key(), &args, false),
             "{args:?}"
         );
-        assert!(
-            codex_status_args(Some(Runtime::Codex), &args, Path::new("/unused"), "session")
-                .is_empty()
-        );
+        assert!(codex_status_args_for(
+            Runtime::Codex.key(),
+            &args,
+            Path::new("/unused"),
+            "session"
+        )
+        .is_empty());
     }
     for args in [
         vec![],
@@ -32,11 +35,11 @@ fn codex_hook_overrides_and_opt_out_preserve_the_invocation() {
     ] {
         let args = args.into_iter().map(String::from).collect::<Vec<_>>();
         assert!(
-            inject_codex_hooks(Some(Runtime::Codex), &args, false),
+            inject_codex_hooks_for(Runtime::Codex.key(), &args, false),
             "{args:?}"
         );
     }
-    assert!(inject_codex_hooks(Some(Runtime::Codex), &[], true));
+    assert!(inject_codex_hooks_for(Runtime::Codex.key(), &[], true));
     for runtime in [
         None,
         Some(Runtime::ClaudeCode),
@@ -45,8 +48,16 @@ fn codex_hook_overrides_and_opt_out_preserve_the_invocation() {
         Some(Runtime::Pi),
         Some(Runtime::Shell),
     ] {
-        assert!(!inject_codex_hooks(runtime, &[], false));
-        assert!(!inject_codex_hooks(runtime, &[], true));
+        assert!(!inject_codex_hooks_for(
+            runtime.map(Runtime::key).unwrap_or(""),
+            &[],
+            false
+        ));
+        assert!(!inject_codex_hooks_for(
+            runtime.map(Runtime::key).unwrap_or(""),
+            &[],
+            true
+        ));
     }
 }
 
@@ -57,7 +68,7 @@ fn codex_injection_roundtrips_toml_and_shell_metacharacters() {
     let root = dir
         .path()
         .join("spaces \"double\" triple ''' dollar $ backtick `");
-    let args = codex_status_args(Some(Runtime::Codex), &[], &root, "session");
+    let args = codex_status_args_for(Runtime::Codex.key(), &[], &root, "session");
     assert_eq!(
         &args[..3],
         &["--enable", "hooks", "--dangerously-bypass-hook-trust"]
@@ -100,7 +111,7 @@ fn codex_injection_on_windows_calls_the_session_reporter_script() {
     use crate::session::hook_feed::{hook_path, powershell_script_path, status_path};
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("spaces triple ''' dollar $ backtick `");
-    let args = codex_status_args(Some(Runtime::Codex), &[], &root, "session");
+    let args = codex_status_args_for(Runtime::Codex.key(), &[], &root, "session");
     assert_eq!(
         &args[..3],
         &["--enable", "hooks", "--dangerously-bypass-hook-trust"]
@@ -160,8 +171,8 @@ fn codex_injection_on_windows_calls_the_session_reporter_script() {
     let app_data = std::path::Path::new(
         r"C:\Users\Jason Wang (Runner Windows Smoke)\AppData\Roaming\com.wycstudios.runner-dev",
     );
-    let args = codex_status_args(
-        Some(Runtime::Codex),
+    let args = codex_status_args_for(
+        Runtime::Codex.key(),
         &[],
         app_data,
         "01M2NCJRAFFVFJQBA0NGDWMDXR",
@@ -175,7 +186,7 @@ fn codex_runtime_returns_no_argv_for_system_prompt() {
     // Codex has no dedicated system-prompt flag. Persona/brief
     // delivery is handled through first-turn plumbing, not
     // `system_prompt_args`.
-    let args = system_prompt_args(Some(Runtime::Codex), Some("be helpful"));
+    let args = system_prompt_args(Runtime::Codex.key(), Some("be helpful"));
     assert!(
         args.is_empty(),
         "codex has no native system_prompt argv flag: {args:?}",
@@ -184,14 +195,14 @@ fn codex_runtime_returns_no_argv_for_system_prompt() {
 
 #[test]
 fn codex_runtime_omits_argv_when_prompt_is_blank() {
-    assert!(system_prompt_args(Some(Runtime::Codex), None).is_empty());
-    assert!(system_prompt_args(Some(Runtime::Codex), Some("")).is_empty());
-    assert!(system_prompt_args(Some(Runtime::Codex), Some("   ")).is_empty());
+    assert!(system_prompt_args(Runtime::Codex.key(), None).is_empty());
+    assert!(system_prompt_args(Runtime::Codex.key(), Some("")).is_empty());
+    assert!(system_prompt_args(Runtime::Codex.key(), Some("   ")).is_empty());
 }
 
 #[test]
 fn codex_fresh_returns_empty_plan() {
-    let plan = resume_plan(Some(Runtime::Codex), None);
+    let plan = resume_plan(Runtime::Codex.key(), None);
     assert!(plan.args.is_empty());
     assert!(plan.assigned_key.is_none());
     assert!(!plan.resuming);
@@ -200,7 +211,7 @@ fn codex_fresh_returns_empty_plan() {
 #[test]
 fn codex_resume_uses_subcommand_prefix() {
     let prior = uuid::Uuid::new_v4().to_string();
-    let plan = resume_plan(Some(Runtime::Codex), Some(&prior));
+    let plan = resume_plan(Runtime::Codex.key(), Some(&prior));
     assert!(plan.resuming);
     assert!(plan.prepend, "codex resume is a subcommand, must prepend");
     assert_eq!(plan.args, vec!["resume", &prior]);
@@ -209,7 +220,7 @@ fn codex_resume_uses_subcommand_prefix() {
 #[test]
 fn codex_fork_executes_headlessly_and_reads_thread_started() {
     let source = "019fa1b9-a133-7841-b4dd-730d376ab1d1";
-    let plan = fork_plan(Some(Runtime::Codex), source, "Source").unwrap();
+    let plan = fork_plan(Runtime::Codex.key(), source, "Source").unwrap();
     let ForkPlan::Headless { args, source_key } = plan else {
         panic!("codex must materialize its fork headlessly")
     };
@@ -233,7 +244,7 @@ fn codex_emits_model_and_reasoning_effort_override() {
     // dedicated reasoning-effort flag; the canonical wiring is via
     // its `-c key=value` config-override flag using the same
     // `model_reasoning_effort` key as `~/.codex/config.toml`.
-    let args = model_effort_args(Some(Runtime::Codex), Some("gpt-5-codex"), Some("high"));
+    let args = model_effort_args(Runtime::Codex.key(), Some("gpt-5-codex"), Some("high"));
     assert!(
         args.windows(2)
             .any(|w| w[0] == "--model" && w[1] == "gpt-5-codex"),
@@ -248,7 +259,7 @@ fn codex_emits_model_and_reasoning_effort_override() {
 
 #[test]
 fn codex_emits_only_model_when_effort_unset() {
-    let args = model_effort_args(Some(Runtime::Codex), Some("gpt-5-codex"), None);
+    let args = model_effort_args(Runtime::Codex.key(), Some("gpt-5-codex"), None);
     assert_eq!(args, vec!["--model".to_string(), "gpt-5-codex".to_string()]);
 }
 
@@ -259,7 +270,7 @@ fn codex_lowercases_effort_for_case_sensitive_toml_enum() {
     // expected one of 'none', 'minimal', 'low', 'medium', 'high',
     // 'xhigh'`. Rows often store the level title-cased ("High"),
     // so the codex branch normalises before forwarding.
-    let args = model_effort_args(Some(Runtime::Codex), Some("gpt-5-codex"), Some("High"));
+    let args = model_effort_args(Runtime::Codex.key(), Some("gpt-5-codex"), Some("High"));
     assert!(
         args.windows(2)
             .any(|w| w[0] == "-c" && w[1] == "model_reasoning_effort=high"),
@@ -269,7 +280,7 @@ fn codex_lowercases_effort_for_case_sensitive_toml_enum() {
 
 #[test]
 fn codex_lowercases_mixed_case_effort() {
-    let args = model_effort_args(Some(Runtime::Codex), None, Some("XHIGH"));
+    let args = model_effort_args(Runtime::Codex.key(), None, Some("XHIGH"));
     assert!(
         args.windows(2)
             .any(|w| w[0] == "-c" && w[1] == "model_reasoning_effort=xhigh"),
@@ -281,12 +292,12 @@ fn codex_lowercases_mixed_case_effort() {
 fn codex_mission_bus_sandbox_args_grants_only_mission_dir() {
     let dir = std::path::PathBuf::from("/tmp/runner/crews/c/missions/m");
     assert_eq!(
-        mission_bus_sandbox_args(Some(Runtime::Codex), Some(&dir)),
+        mission_bus_sandbox_args(Runtime::Codex.key(), Some(&dir)),
         vec!["--add-dir".to_string(), dir.to_string_lossy().to_string()],
     );
-    assert!(mission_bus_sandbox_args(Some(Runtime::Codex), None).is_empty());
-    assert!(mission_bus_sandbox_args(Some(Runtime::ClaudeCode), Some(&dir)).is_empty());
-    assert!(mission_bus_sandbox_args(Some(Runtime::Shell), Some(&dir)).is_empty());
+    assert!(mission_bus_sandbox_args(Runtime::Codex.key(), None).is_empty());
+    assert!(mission_bus_sandbox_args(Runtime::ClaudeCode.key(), Some(&dir)).is_empty());
+    assert!(mission_bus_sandbox_args(Runtime::Shell.key(), Some(&dir)).is_empty());
 }
 
 #[test]
@@ -296,7 +307,7 @@ fn codex_trailing_args_omit_positional_prompt() {
     // reach the spawned CLI.
     for plan_resuming in [false, true] {
         let args = trailing_runtime_args(
-            Some(Runtime::Codex),
+            Runtime::Codex.key(),
             &[],
             Path::new("/tmp/runner-app-data"),
             "runner-session",
@@ -329,7 +340,7 @@ fn codex_trailing_args_omit_positional_prompt() {
 #[test]
 fn apply_permission_mode_codex_appends_auto_pair() {
     let user = vec!["--debug".to_string(), "-v".to_string()];
-    let out = apply_permission_mode(Some(Runtime::Codex), &user, PermissionMode::Auto);
+    let out = apply_permission_mode(Runtime::Codex.key(), &user, PermissionMode::Auto);
     assert_eq!(
         out,
         vec![
@@ -347,7 +358,7 @@ fn apply_permission_mode_codex_appends_auto_pair() {
 #[test]
 fn apply_permission_mode_codex_appends_bypass_pair() {
     let user = vec!["--debug".to_string()];
-    let out = apply_permission_mode(Some(Runtime::Codex), &user, PermissionMode::Bypass);
+    let out = apply_permission_mode(Runtime::Codex.key(), &user, PermissionMode::Bypass);
     assert_eq!(
         out,
         vec![
@@ -372,7 +383,7 @@ fn apply_permission_mode_codex_accept_edits_is_no_op() {
         "--sandbox".to_string(),
         "workspace-write".to_string(),
     ];
-    let out = apply_permission_mode(Some(Runtime::Codex), &user, PermissionMode::AcceptEdits);
+    let out = apply_permission_mode(Runtime::Codex.key(), &user, PermissionMode::AcceptEdits);
     assert_eq!(
         out,
         vec!["--debug".to_string()],
@@ -393,7 +404,7 @@ fn apply_permission_mode_codex_dedupes_existing_flags() {
         "--debug".to_string(),
         "--sandbox=read-only".to_string(),
     ];
-    let out = apply_permission_mode(Some(Runtime::Codex), &user, PermissionMode::Bypass);
+    let out = apply_permission_mode(Runtime::Codex.key(), &user, PermissionMode::Bypass);
     assert_eq!(
         out,
         vec![
@@ -415,7 +426,7 @@ fn apply_permission_mode_codex_default_strips_all_flags() {
         "--sandbox".to_string(),
         "workspace-write".to_string(),
     ];
-    let out = apply_permission_mode(Some(Runtime::Codex), &user, PermissionMode::Default);
+    let out = apply_permission_mode(Runtime::Codex.key(), &user, PermissionMode::Default);
     assert_eq!(out, vec!["--debug".to_string()]);
 }
 
@@ -428,7 +439,7 @@ fn apply_mission_permission_mode_converges_a_codex_row() {
         "workspace-write".to_string(),
     ];
     assert_eq!(
-        apply_mission_permission_mode(Some(Runtime::Codex), &row, MissionPermissionMode::Bypass),
+        apply_mission_permission_mode(Runtime::Codex.key(), &row, MissionPermissionMode::Bypass),
         vec![
             "--ask-for-approval".to_string(),
             "never".to_string(),
@@ -438,7 +449,7 @@ fn apply_mission_permission_mode_converges_a_codex_row() {
     );
     assert_eq!(
         apply_mission_permission_mode(
-            Some(Runtime::Codex),
+            Runtime::Codex.key(),
             &row,
             MissionPermissionMode::RoleDefault
         ),
@@ -455,7 +466,7 @@ fn infer_permission_mode_codex_separated_form() {
         "workspace-write".to_string(),
     ];
     assert_eq!(
-        infer_permission_mode(Some(Runtime::Codex), &args),
+        infer_permission_mode(Runtime::Codex.key(), &args),
         PermissionMode::Bypass,
     );
 }
@@ -469,7 +480,7 @@ fn infer_permission_mode_codex_equals_form() {
         "--sandbox=workspace-write".to_string(),
     ];
     assert_eq!(
-        infer_permission_mode(Some(Runtime::Codex), &args),
+        infer_permission_mode(Runtime::Codex.key(), &args),
         PermissionMode::Bypass,
     );
 }
@@ -482,7 +493,7 @@ fn infer_permission_mode_codex_auto_pair() {
         "--sandbox=workspace-write".to_string(),
     ];
     assert_eq!(
-        infer_permission_mode(Some(Runtime::Codex), &args),
+        infer_permission_mode(Runtime::Codex.key(), &args),
         PermissionMode::Auto
     );
 }
@@ -493,7 +504,7 @@ fn infer_permission_mode_codex_partial_match_falls_back_to_default() {
     // pair fully matches → default.
     let args = vec!["--sandbox=workspace-write".to_string()];
     assert_eq!(
-        infer_permission_mode(Some(Runtime::Codex), &args),
+        infer_permission_mode(Runtime::Codex.key(), &args),
         PermissionMode::Default,
     );
 }
@@ -511,7 +522,22 @@ fn infer_permission_mode_codex_deprecated_value_falls_back_to_default() {
         "--sandbox=workspace-write".to_string(),
     ];
     assert_eq!(
-        infer_permission_mode(Some(Runtime::Codex), &args),
+        infer_permission_mode(Runtime::Codex.key(), &args),
         PermissionMode::Default,
     );
+}
+
+fn inject_codex_hooks_for(key: &str, args: &[String], windows: bool) -> bool {
+    for_key(key)
+        .status_hooks()
+        .is_some_and(|hooks| hooks.supported(windows))
+        && key == Runtime::Codex.key()
+        && inject_codex_hooks(args, windows)
+}
+fn codex_status_args_for(key: &str, args: &[String], data: &Path, session: &str) -> Vec<String> {
+    if key == Runtime::Codex.key() {
+        codex_status_args(args, data, session)
+    } else {
+        Vec::new()
+    }
 }

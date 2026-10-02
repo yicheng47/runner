@@ -42,7 +42,7 @@ pub(super) fn agent_env(
     shell_vars: BTreeMap<String, String>,
     role_env: &HashMap<String, String>,
     extra_env: BTreeMap<String, String>,
-    runtime: Option<Runtime>,
+    runtime_key: &str,
 ) -> BTreeMap<String, String> {
     let mut env = shell_vars;
     for (k, v) in role_env {
@@ -51,11 +51,7 @@ pub(super) fn agent_env(
     env.insert("TERM".into(), "xterm-256color".into());
     env.insert("COLORTERM".into(), "truecolor".into());
     env.extend(extra_env);
-    for &(name, value) in runtime
-        .map(crate::runtimes::adapter)
-        .unwrap_or(&crate::runtimes::NoAgent)
-        .launch_env()
-    {
+    for &(name, value) in crate::runtimes::for_key(runtime_key).launch_env() {
         env.insert(name.into(), value.into());
     }
     let process_has_locale = LOCALE_VARS
@@ -417,12 +413,8 @@ impl SessionManager {
     /// queue up correctly: B arrives mid-A-sleep → blocks on mutex
     /// → after A wakes and updates `last`, B observes A's
     /// just-recorded timestamp and waits its own full grace.
-    pub(super) fn enter_claude_launch_gate(&self, session_id: &str, runtime: Option<Runtime>) {
-        let Some(grace) = runtime
-            .map(crate::runtimes::adapter)
-            .unwrap_or(&crate::runtimes::NoAgent)
-            .launch_gate()
-        else {
+    pub(super) fn enter_claude_launch_gate(&self, session_id: &str, runtime_key: &str) {
+        let Some(grace) = crate::runtimes::for_key(runtime_key).launch_gate() else {
             return;
         };
         let mut last = self
@@ -443,17 +435,16 @@ impl SessionManager {
     fn seed_runtime_project_trust(
         &self,
         session_id: &str,
-        runtime: Option<Runtime>,
+        runtime_key: &str,
         cwd: Option<&Path>,
         copilot_home: Option<&str>,
     ) {
-        let result = runtime
-            .map(crate::runtimes::adapter)
-            .unwrap_or(&crate::runtimes::NoAgent)
-            .seed_trust(session_id, cwd, copilot_home);
+        let result =
+            crate::runtimes::for_key(runtime_key).seed_trust(session_id, cwd, copilot_home);
         if let (Err(e), Some(cwd)) = (result, cwd) {
             log::warn!(
-                "failed to seed {runtime:?} project trust: session={session_id} cwd={} error={e}",
+                "failed to seed {:?} project trust: session={session_id} cwd={} error={e}",
+                Runtime::parse(runtime_key),
                 cwd.display()
             );
         }
@@ -488,12 +479,7 @@ impl SessionManager {
             cwd: cwd.map(PathBuf::from),
             command: role.command.clone(),
             args: role.args.clone(),
-            env: agent_env(
-                shell_env.vars,
-                &role.env,
-                extra_env,
-                Runtime::parse(&role.runtime),
-            ),
+            env: agent_env(shell_env.vars, &role.env, extra_env, &role.runtime),
             mission,
             shim_dir,
             bundled_bin_dir,
@@ -525,7 +511,7 @@ impl SessionManager {
             cwd,
             command,
             args,
-            env: agent_env(shell_env.vars, &HashMap::new(), BTreeMap::new(), None),
+            env: agent_env(shell_env.vars, &HashMap::new(), BTreeMap::new(), ""),
             mission: false,
             shim_dir: None,
             bundled_bin_dir: None,
@@ -693,15 +679,12 @@ impl SessionManager {
     }
 
     pub(super) fn codex_capture_prompt_marker(
-        runtime: Option<Runtime>,
+        runtime_key: &str,
         session_id: &str,
         first_turn: Option<String>,
     ) -> (Option<String>, Option<String>) {
         if !matches!(
-            runtime
-                .map(crate::runtimes::adapter)
-                .unwrap_or(&crate::runtimes::NoAgent)
-                .key_capture(),
+            crate::runtimes::for_key(runtime_key).key_capture(),
             crate::runtimes::KeyCapture::RolloutScan { .. }
         ) {
             return (first_turn, None);
@@ -722,7 +705,7 @@ impl SessionManager {
     /// gets one, a resume included: agy may still start a new conversation.
     #[allow(clippy::too_many_arguments)]
     fn start_antigravity_capture(
-        runtime: Option<Runtime>,
+        runtime_key: &str,
         session_id: &str,
         mission_id: Option<String>,
         app_data_dir: &Path,
@@ -732,10 +715,7 @@ impl SessionManager {
         events: &Arc<dyn SessionEvents>,
     ) {
         if !matches!(
-            runtime
-                .map(crate::runtimes::adapter)
-                .unwrap_or(&crate::runtimes::NoAgent)
-                .key_capture(),
+            crate::runtimes::for_key(runtime_key).key_capture(),
             crate::runtimes::KeyCapture::LogTail
         ) {
             return;
@@ -803,7 +783,10 @@ impl SessionManager {
         // 527): converge the row's permission flags to the setting,
         // leaving every other arg alone. Direct chats never pass here.
         let mut role = resolution.effective.unwrap_or_else(|| role.clone());
-        if Runtime::parse(&role.runtime) == Some(Runtime::Codex) {
+        if crate::runtimes::for_key(&role.runtime)
+            .capabilities()
+            .codex_speed
+        {
             role.codex_speed = slot.codex_speed_override.or(role.codex_speed);
         }
         role.args = crate::runtimes::for_key(&role.runtime)
@@ -865,11 +848,8 @@ impl SessionManager {
             .as_deref()
             .map(|body| crate::session::system_prompt::write(app_data_dir, &session_id, body))
             .transpose()?;
-        let (first_turn, codex_prompt_marker) = Self::codex_capture_prompt_marker(
-            Runtime::parse(&role.runtime),
-            &session_id,
-            first_turn,
-        );
+        let (first_turn, codex_prompt_marker) =
+            Self::codex_capture_prompt_marker(&role.runtime, &session_id, first_turn);
         let mut spec = self.base_spawn_spec(
             session_id.clone(),
             &role,
@@ -922,7 +902,9 @@ impl SessionManager {
                 row.agent_model = role.model.clone();
                 row.agent_effort = role.effort.clone();
             }
-            row.agent_speed = (Runtime::parse(&role.runtime) == Some(Runtime::Codex))
+            row.agent_speed = (crate::runtimes::for_key(&role.runtime)
+                .capabilities()
+                .codex_speed)
                 .then_some(slot.codex_speed_override)
                 .flatten();
             crate::repo::session::insert(&conn, &row)?;
@@ -1017,7 +999,7 @@ impl SessionManager {
         // race the OAuth refresh-token rotation. No-op for other
         // runtimes; zero-wait for the first claude through. See
         // `enter_claude_launch_gate` + issue #171.
-        self.enter_claude_launch_gate(&session_id, Runtime::parse(&role.runtime));
+        self.enter_claude_launch_gate(&session_id, &role.runtime);
 
         // Post-gate cancellation: covers a Stop that fires while we
         // were asleep in the gate. The wake-up still races with the
@@ -1055,7 +1037,7 @@ impl SessionManager {
         let initial_size = spec.initial_size;
         self.seed_runtime_project_trust(
             &session_id,
-            Runtime::parse(&role.runtime),
+            &role.runtime,
             spec.cwd.as_deref(),
             role.env.get("COPILOT_HOME").map(String::as_str),
         );
@@ -1149,7 +1131,7 @@ impl SessionManager {
             });
         let stop = output.stop_flag();
         Self::start_antigravity_capture(
-            Runtime::parse(&role.runtime),
+            &role.runtime,
             &session_id,
             Some(mission.id.clone()),
             &app_data_dir,
@@ -1506,7 +1488,9 @@ impl SessionManager {
         let agent_options_overridden = resolution.effective.is_some();
         let mut role =
             self.resolve_role_executable(resolution.effective.as_ref().unwrap_or(role), &pool)?;
-        let speed_override = (Runtime::parse(&role.runtime) == Some(Runtime::Codex))
+        let speed_override = (crate::runtimes::for_key(&role.runtime)
+            .capabilities()
+            .codex_speed)
             .then_some(speed_override)
             .flatten();
         role.codex_speed = speed_override.or(role.codex_speed);
@@ -1552,11 +1536,8 @@ impl SessionManager {
             .as_deref()
             .map(|body| crate::session::system_prompt::write(app_data_dir, &session_id, body))
             .transpose()?;
-        let (first_turn, codex_prompt_marker) = Self::codex_capture_prompt_marker(
-            Runtime::parse(&role.runtime),
-            &session_id,
-            first_turn,
-        );
+        let (first_turn, codex_prompt_marker) =
+            Self::codex_capture_prompt_marker(&role.runtime, &session_id, first_turn);
         let started_at_dt = Utc::now();
         let started_at = started_at_dt.to_rfc3339();
 
@@ -1622,7 +1603,7 @@ impl SessionManager {
         // also fresh claude-code spawns and proactively refresh the
         // OAuth token, so a rapid burst of new chats can race. See
         // `enter_claude_launch_gate` + issue #171.
-        self.enter_claude_launch_gate(&session_id, Runtime::parse(&role.runtime));
+        self.enter_claude_launch_gate(&session_id, &role.runtime);
 
         // Post-gate row check: `role_delete` can remove the role's
         // sessions while we were asleep in the gate. The
@@ -1640,7 +1621,7 @@ impl SessionManager {
         let first_turn_deadline = Instant::now() + WINDOWS_FIRST_TURN_TIMEOUT;
         self.seed_runtime_project_trust(
             &session_id,
-            Runtime::parse(&role.runtime),
+            &role.runtime,
             spec.cwd.as_deref(),
             role.env.get("COPILOT_HOME").map(String::as_str),
         );
@@ -1705,7 +1686,7 @@ impl SessionManager {
         };
 
         Self::start_antigravity_capture(
-            Runtime::parse(&role.runtime),
+            &role.runtime,
             &session_id,
             None,
             app_data_dir,
@@ -2004,7 +1985,7 @@ impl SessionManager {
         // as a fresh chat. This is a no-op for Codex; its visible phase-2
         // process is an ordinary resume and remains deliberately ungated.
         let gate_started_at = Instant::now();
-        self.enter_claude_launch_gate(&session_id, Runtime::parse(&role.runtime));
+        self.enter_claude_launch_gate(&session_id, &role.runtime);
         let gate_elapsed = gate_started_at.elapsed();
         if !Self::session_row_exists(&pool, &session_id) {
             return Err(Error::msg(format!(
@@ -2162,7 +2143,7 @@ impl SessionManager {
             headless @ router::runtime::ForkPlan::Headless { .. } => {
                 self.seed_runtime_project_trust(
                     &session_id,
-                    Runtime::parse(&role.runtime),
+                    &role.runtime,
                     spec.cwd.as_deref(),
                     role.env.get("COPILOT_HOME").map(String::as_str),
                 );
@@ -2505,7 +2486,7 @@ impl SessionManager {
                 .permissions()
                 .strip(&role.args);
         }
-        let runtime = Runtime::parse(&role.runtime);
+        let shell = Runtime::parse(&role.runtime).is_some_and(Runtime::is_shell);
 
         // Resume plan: hand the prior agent_session_key back to the
         // runtime adapter so claude-code uses `--resume <uuid>` and
@@ -2547,7 +2528,7 @@ impl SessionManager {
         }
         if !allow_fresh_fallback
             && !plan.resuming
-            && !runtime.is_some_and(Runtime::is_shell)
+            && !shell
             && !(missing.resume_on_launch && conversation_missing)
         {
             return Err(Error::msg(format!(
@@ -2677,7 +2658,7 @@ impl SessionManager {
                     )?;
                     let log = open_mission_event_log(app_data_dir, &ctx.crew_id, &ctx.mission_id)
                         .ok_or_else(|| Error::msg("mission event log unavailable"))?;
-                    launch.prompt_channels(&log, runtime)
+                    launch.prompt_channels(&log, &role.runtime)
                 } else {
                     adapter.prompt_channels().split(
                         router::prompt::SessionPromptKind::Worker,
@@ -2710,7 +2691,7 @@ impl SessionManager {
         // A new marker prevents the reused row from capturing its previous rollout.
         let marker_id = ulid::Ulid::new().to_string();
         let (first_turn, codex_prompt_marker) =
-            Self::codex_capture_prompt_marker(runtime, &marker_id, first_turn);
+            Self::codex_capture_prompt_marker(&role.runtime, &marker_id, first_turn);
 
         if fresh && matches!(snap.status, crate::model::SessionStatus::Running) {
             self.kill(session_id)?;
@@ -2753,14 +2734,14 @@ impl SessionManager {
         }
 
         if !plan.resuming {
-            self.enter_claude_launch_gate(session_id, Runtime::parse(&role.runtime));
+            self.enter_claude_launch_gate(session_id, &role.runtime);
         }
         let spawn_started_at_dt = Utc::now();
         #[cfg(windows)]
         let first_turn_deadline = Instant::now() + WINDOWS_FIRST_TURN_TIMEOUT;
         self.seed_runtime_project_trust(
             session_id,
-            Runtime::parse(&role.runtime),
+            &role.runtime,
             spec.cwd.as_deref(),
             role.env.get("COPILOT_HOME").map(String::as_str),
         );
@@ -2842,7 +2823,7 @@ impl SessionManager {
             })
         });
         Self::start_antigravity_capture(
-            Runtime::parse(&role.runtime),
+            &role.runtime,
             session_id,
             snap.mission_id.clone(),
             app_data_dir,

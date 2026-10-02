@@ -35,7 +35,7 @@ use serde::Serialize;
 use crate::error::Result;
 use crate::event_bus::{AppendedEvent, BusEmitter, InboxUpdate, WatermarkUpdate};
 use crate::events::EventChannel;
-use crate::model::{Runtime, SlotWithRole};
+use crate::model::SlotWithRole;
 use crate::session::manager::SessionManager;
 
 /// What the router uses to push bytes into a child's PTY. The full
@@ -1416,7 +1416,7 @@ impl LaunchInputs {
     pub(crate) fn prompt_channels(
         &self,
         log: &EventLog,
-        runtime: Option<Runtime>,
+        runtime_key: &str,
     ) -> (Option<String>, Option<String>) {
         let goal = Self::latest_mission_goal_text(log);
         let roster: Vec<crate::router::prompt::RosterEntry> = self
@@ -1428,7 +1428,7 @@ impl LaunchInputs {
                 lead: slot.is_lead(),
             })
             .collect();
-        crate::runtimes::for_key(runtime.map(Runtime::key).unwrap_or(""))
+        crate::runtimes::for_key(runtime_key)
             .prompt_channels()
             .lead(&crate::router::prompt::LaunchPromptInput {
                 lead: crate::router::prompt::LeadView {

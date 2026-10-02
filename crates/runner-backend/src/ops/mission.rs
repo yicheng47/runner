@@ -1576,7 +1576,7 @@ pub async fn mission_list_summary_impl(
         };
         let session_statuses = repo::session::list_for_mission(&conn, &m.id)?
             .into_iter()
-            .filter(|session| Runtime::parse(&session.runtime) != Some(Runtime::Shell))
+            .filter(|session| !Runtime::parse(&session.runtime).is_some_and(Runtime::is_shell))
             .map(|session| {
                 let mut status = statuses
                     .get(&session.session.id)
@@ -2522,7 +2522,7 @@ mod tests {
             &out.mission.id,
         ))
         .unwrap();
-        let (system_prompt, first_turn) = launch.prompt_channels(&log, Some(Runtime::ClaudeCode));
+        let (system_prompt, first_turn) = launch.prompt_channels(&log, Runtime::ClaudeCode.key());
         let prompt = format!(
             "{}{}",
             system_prompt.unwrap_or_default(),
