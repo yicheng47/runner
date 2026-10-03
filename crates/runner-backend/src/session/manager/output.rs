@@ -116,7 +116,19 @@ impl SessionManager {
                     .take()
                     .map(Ok)
                     .unwrap_or_else(|| output.recv_timeout(Duration::from_millis(500)));
+                let terminal = match &next {
+                    Ok(RuntimeOutput::TerminalEvent(event)) => Some(*event),
+                    _ => None,
+                };
+                let next = next.map(|output| match output {
+                    RuntimeOutput::TerminalEvent(event) => RuntimeOutput::StatusTransition {
+                        state: event.state(),
+                        source: crate::session::state::StatusSource::Forwarder,
+                    },
+                    other => other,
+                });
                 match next {
+                    Ok(RuntimeOutput::TerminalEvent(_)) => unreachable!(),
                     Ok(RuntimeOutput::Stream(mut bytes)) => {
                         while bytes.len() < MAX_OUTPUT_BURST {
                             let next = output.try_recv();
@@ -145,10 +157,17 @@ impl SessionManager {
                                 manager_t.deliver_windows_batch_first_turn(&session_id, &bytes);
                         }
                     }
-                    Ok(RuntimeOutput::AgentObservation(observation)) => {
-                        manager_t.publish_observation(&session_id, observation, events.as_ref())
+                    Ok(RuntimeOutput::AgentEvent {
+                        event,
+                        feedback: reply,
+                    }) => {
+                        let feedback =
+                            manager_t.publish_agent_event(&session_id, event, events.as_ref());
+                        if let Some(reply) = reply {
+                            let _ = reply.send(feedback);
+                        }
                     }
-                    Ok(RuntimeOutput::CodexSessionStart(key)) => {
+                    Ok(RuntimeOutput::ConversationStart(key)) => {
                         let result = (|| -> Result<()> {
                             let mut mission = None;
                             let updated = manager_t.report_key(
@@ -189,7 +208,12 @@ impl SessionManager {
                     }
                     Ok(RuntimeOutput::StatusTransition { state, source }) => {
                         if let Some(ctx) = emit_ctx.as_ref() {
-                            if !manager_t.note_forwarder_transition(&session_id, state, source) {
+                            let changed = if let Some(event) = terminal {
+                                manager_t.note_terminal_event(&session_id, event)
+                            } else {
+                                manager_t.note_forwarder_transition(&session_id, state, source)
+                            };
+                            if !changed {
                                 continue;
                             }
                             events.status(&SessionActivityEvent {
@@ -227,12 +251,20 @@ impl SessionManager {
                                 }
                             }
                         } else {
-                            manager_t.publish_direct_activity(
-                                &session_id,
-                                state,
-                                source,
-                                events.as_ref(),
-                            );
+                            if let Some(event) = terminal {
+                                manager_t.publish_direct_terminal_event(
+                                    &session_id,
+                                    event,
+                                    events.as_ref(),
+                                );
+                            } else {
+                                manager_t.publish_direct_activity(
+                                    &session_id,
+                                    state,
+                                    source,
+                                    events.as_ref(),
+                                );
+                            }
                         }
                     }
                     Err(RecvTimeoutError::Timeout) => continue,

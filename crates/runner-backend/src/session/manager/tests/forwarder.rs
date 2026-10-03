@@ -40,8 +40,9 @@ fn forward_queued_output(items: Vec<RuntimeOutput>) -> Vec<ForwardedEvent> {
         match item {
             RuntimeOutput::Stream(bytes) => fake.push_output(0, &bytes),
             RuntimeOutput::StatusTransition { state, .. } => fake.push_status(0, state),
-            RuntimeOutput::AgentObservation(_)
-            | RuntimeOutput::CodexSessionStart(_)
+            RuntimeOutput::AgentEvent { .. }
+            | RuntimeOutput::ConversationStart(_)
+            | RuntimeOutput::TerminalEvent(_)
             | RuntimeOutput::StatusBridgeFailed => {
                 panic!("not a byte-batching fixture")
             }
@@ -101,9 +102,9 @@ fn codex_session_starts_rekey_current_running_row_for_direct_and_mission() {
             {
                 let spawns = fake.spawns.lock().unwrap();
                 let tx = spawns[0].tx.as_ref().unwrap();
-                tx.send(RuntimeOutput::CodexSessionStart(new.clone()))
+                tx.send(RuntimeOutput::ConversationStart(new.clone()))
                     .unwrap();
-                tx.send(RuntimeOutput::CodexSessionStart(new.clone()))
+                tx.send(RuntimeOutput::ConversationStart(new.clone()))
                     .unwrap();
             }
             fake.close_spawn(0);
@@ -190,7 +191,7 @@ fn codex_session_starts_cannot_rekey_older_or_stopped_rows() {
             .tx
             .as_ref()
             .unwrap()
-            .send(RuntimeOutput::CodexSessionStart(new))
+            .send(RuntimeOutput::ConversationStart(new))
             .unwrap();
         fake.close_spawn(0);
         let events = capture();

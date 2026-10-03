@@ -1,4 +1,3 @@
-use crate::session::state::StatusSource;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -17,12 +16,12 @@ use crate::model::Runtime;
 const STATUS_DIR: &str = "session-status";
 
 pub trait HookWatcher: Send {
-    fn interrupt_signal(&self) -> Option<Arc<std::sync::atomic::AtomicU8>> {
-        None
-    }
-    fn drain_observations(
+    fn drain_events(
         &mut self,
-        transition: &mut dyn FnMut(super::status::AgentObservation, StatusSource),
+        cancel: u8,
+        emit: &mut dyn FnMut(
+            super::state::agent::AgentEvent,
+        ) -> super::state::agent::AdapterFeedback,
         session_start: &mut dyn FnMut(String),
     ) -> Result<()>;
 }

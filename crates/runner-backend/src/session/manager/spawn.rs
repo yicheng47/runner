@@ -474,7 +474,7 @@ impl SessionManager {
             .clone();
         SpawnSpec {
             agent_runtime: Runtime::parse(&role.runtime),
-            codex_pending_turn: None,
+            pending_turn: None,
             session_id,
             cwd: cwd.map(PathBuf::from),
             command: role.command.clone(),
@@ -506,7 +506,7 @@ impl SessionManager {
             .clone();
         SpawnSpec {
             agent_runtime: None,
-            codex_pending_turn: None,
+            pending_turn: None,
             session_id: ulid::Ulid::new().to_string(),
             cwd,
             command,
@@ -612,7 +612,7 @@ impl SessionManager {
     ) -> bool {
         let adapter = crate::runtimes::for_key(&role.runtime);
         spec.agent_runtime = Runtime::parse(&role.runtime);
-        spec.codex_pending_turn = adapter
+        spec.pending_turn = adapter
             .status_hooks()
             .is_some_and(|hooks| hooks.tracks_pending_turn())
             .then_some(!plan.resuming && first_turn.is_some_and(|body| !body.trim().is_empty()));

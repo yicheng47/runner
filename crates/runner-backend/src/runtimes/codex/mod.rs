@@ -2,6 +2,7 @@ pub(crate) mod codex_status;
 pub(crate) mod codex_trust;
 pub(crate) mod models;
 pub(crate) mod skills;
+mod terminal;
 pub(crate) mod usage;
 use super::catalog::*;
 use super::helpers::*;
@@ -172,6 +173,11 @@ impl RuntimeAdapter for Codex {
         crate::runtime_defaults::toml_defaults(&config_path(home))
     }
 
+    fn terminal_adapter(&self, pending_turn: Option<bool>) -> Option<Box<dyn TerminalAdapter>> {
+        pending_turn.map(|pending| {
+            Box::new(terminal::CodexTerminal::new(pending)) as Box<dyn TerminalAdapter>
+        })
+    }
     fn status_hooks(&self) -> Option<&'static dyn StatusHooks> {
         Some(&Hooks)
     }

@@ -1,0 +1,19 @@
+runtime=claude-code name=late-permission-defers-record rules=[6,7,8] bugs=[] known_wrong=[]
+session_status_rows=published
+100 status=running/idle/hook activity="idle" completion_armed=false quiescent=true key=null delivery=["Respawned"]
+  busy@spawn [running/working/baseline]
+  idle@hook [running/idle/hook]
+200 status=running/working/hook activity="busy" completion_armed=true
+  busy@hook [running/working/hook]
+300 status=running/working/hook detail="using_tools" interactions=[{"id":"claude-1","reason":"answer","owners":["first"],"since":1767225600300}] quiescent=false
+  busy@hook [running/working/hook detail="using_tools" interactions=[{"id":"claude-1","reason":"answer","owners":["first"],"since":1767225600300}]]
+400 status=running/ready/hook outcome="interrupted" activity="idle" completion_armed=false quiescent=true delivery=["InputCleared"]
+  idle@hook [running/ready/hook outcome="interrupted"]
+500
+550
+600
+700 delivery=["InputCleared"]
+  busy@hook [running/working/hook detail="using_tools" interactions=[{"id":"claude-2","reason":"answer","owners":["second"],"since":1767225600700}]]
+  idle@hook [running/ready/hook outcome="interrupted"]
+800
+900

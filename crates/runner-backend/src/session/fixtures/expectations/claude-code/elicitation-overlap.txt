@@ -1,0 +1,32 @@
+runtime=claude-code name=elicitation-overlap rules=[6,8] bugs=[] known_wrong=[]
+session_status_rows=published
+100 status=running/idle/hook activity="idle" completion_armed=false quiescent=true key=null delivery=["Respawned"]
+  busy@spawn [running/working/baseline]
+  idle@hook [running/idle/hook]
+200 status=running/working/hook activity="busy" completion_armed=true
+  busy@hook [running/working/hook]
+300
+400 status=running/working/hook interactions=[{"id":"claude-2","reason":"answer","owners":["server:sample-server:1"],"since":1767225600400}] quiescent=false
+  busy@hook [running/working/hook interactions=[{"id":"claude-2","reason":"answer","owners":["server:sample-server:1"],"since":1767225600400}]]
+500 status=running/working/hook detail="using_tools" interactions=[{"id":"claude-2","reason":"answer","owners":["server:sample-server:1"],"since":1767225600400},{"id":"claude-3","reason":"answer","owners":["question"],"since":1767225600500}]
+  busy@hook [running/working/hook detail="using_tools" interactions=[{"id":"claude-2","reason":"answer","owners":["server:sample-server:1"],"since":1767225600400},{"id":"claude-3","reason":"answer","owners":["question"],"since":1767225600500}]]
+600 status=running/unavailable/hook outcome="interrupted" interactions=[{"id":"claude-2","reason":"answer","owners":["server:sample-server:1"],"since":1767225600400},{"id":"claude-3","reason":"answer","owners":["question"],"since":1767225600500}] completion_armed=false delivery=["InputQueueDrained"]
+  busy@hook [running/unavailable/hook outcome="interrupted" interactions=[{"id":"claude-2","reason":"answer","owners":["server:sample-server:1"],"since":1767225600400},{"id":"claude-3","reason":"answer","owners":["question"],"since":1767225600500}]]
+700 status=running/unavailable/hook outcome="interrupted" interactions=[{"id":"claude-2","reason":"answer","owners":["server:sample-server:1"],"since":1767225600400}]
+  busy@hook [running/unavailable/hook outcome="interrupted" interactions=[{"id":"claude-2","reason":"answer","owners":["server:sample-server:1"],"since":1767225600400}]]
+800
+900 status=running/unavailable/hook outcome="interrupted" activity="idle" delivery=["InputCleared"]
+  idle@hook [running/unavailable/hook outcome="interrupted"]
+1000 status=running/ready/hook outcome="interrupted"
+  idle@hook [running/ready/hook outcome="interrupted"]
+1100
+1200 result={"completion_consumed":false,"viewed":false}
+1300 status=running/working/hook activity="busy" completion_armed=true
+  busy@hook [running/working/hook]
+1400
+1500 status=running/working/hook interactions=[{"id":"claude-5","reason":"answer","owners":["server:sample-server:4"],"since":1767225601500}]
+  busy@hook [running/working/hook interactions=[{"id":"claude-5","reason":"answer","owners":["server:sample-server:4"],"since":1767225601500}]]
+1600 status=running/working/hook delivery=["InputCleared"]
+  busy@hook [running/working/hook]
+1700 status=running/ready/hook outcome="completed" activity="idle"
+  idle@hook [running/ready/hook outcome="completed"]

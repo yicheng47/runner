@@ -1,0 +1,26 @@
+runtime=pi name=manual-compaction-ui rules=[6,7,8] bugs=[] known_wrong=[]
+session_status_rows=published
+100 status=running/idle/hook activity="idle" completion_armed=false quiescent=true key=null delivery=["Respawned"]
+  busy@spawn [running/working/baseline]
+  idle@hook [running/idle/hook]
+200 status=running/working/hook detail="compacting_context" activity="busy"
+  busy@hook [running/working/hook detail="compacting_context"]
+300 status=running/idle/hook activity="idle"
+  idle@hook [running/idle/hook]
+400 status=running/working/hook activity="busy" completion_armed=true
+  busy@hook [running/working/hook]
+500
+600 status=running/ready/hook outcome="failed" failed_since=1767225600600 activity="idle" completion_armed=false
+  idle@hook [running/ready/hook outcome="failed" failed_since=1767225600600]
+700 status=running/ready/hook outcome="failed" interactions=[{"id":"pi-1","reason":"approval","owners":["sample"],"since":1767225600700}] failed_since=1767225600600 activity="busy" quiescent=false
+  busy@hook [running/ready/hook outcome="failed" interactions=[{"id":"pi-1","reason":"approval","owners":["sample"],"since":1767225600700}] failed_since=1767225600600]
+800
+900 status=running/working/hook detail="compacting_context" interactions=[{"id":"pi-1","reason":"approval","owners":["sample"],"since":1767225600700}]
+  busy@hook [running/working/hook detail="compacting_context" interactions=[{"id":"pi-1","reason":"approval","owners":["sample"],"since":1767225600700}]]
+1000 status=running/ready/hook outcome="failed" interactions=[{"id":"pi-1","reason":"approval","owners":["sample"],"since":1767225600700}] failed_since=1767225600600
+  busy@hook [running/ready/hook outcome="failed" interactions=[{"id":"pi-1","reason":"approval","owners":["sample"],"since":1767225600700}] failed_since=1767225600600]
+1100 status=running/ready/hook outcome="failed" interactions=[{"id":"pi-2","reason":"answer","owners":["replacement"],"since":1767225601100}] failed_since=1767225600600
+  busy@hook [running/ready/hook outcome="failed" interactions=[{"id":"pi-2","reason":"answer","owners":["replacement"],"since":1767225601100}] failed_since=1767225600600]
+1200 status=running/ready/hook outcome="failed" failed_since=1767225600600 activity="idle" quiescent=true delivery=["InputCleared"]
+  idle@hook [running/ready/hook outcome="failed" failed_since=1767225600600]
+1300

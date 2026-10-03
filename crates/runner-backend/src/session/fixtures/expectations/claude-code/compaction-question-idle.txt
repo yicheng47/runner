@@ -1,0 +1,17 @@
+runtime=claude-code name=compaction-question-idle rules=[6,7,8] bugs=[] known_wrong=[]
+session_status_rows=published
+100 status=running/idle/hook activity="idle" completion_armed=false quiescent=true key=null delivery=["Respawned"]
+  busy@spawn [running/working/baseline]
+  idle@hook [running/idle/hook]
+200 status=running/working/hook activity="busy" completion_armed=true
+  busy@hook [running/working/hook]
+300 status=running/working/hook detail="using_tools" interactions=[{"id":"claude-1","reason":"answer","owners":["question"],"since":1767225600300}] quiescent=false
+  busy@hook [running/working/hook detail="using_tools" interactions=[{"id":"claude-1","reason":"answer","owners":["question"],"since":1767225600300}]]
+400 status=running/working/hook detail="compacting_context" interactions=[{"id":"claude-1","reason":"answer","owners":["question"],"since":1767225600300}]
+  busy@hook [running/working/hook detail="compacting_context" interactions=[{"id":"claude-1","reason":"answer","owners":["question"],"since":1767225600300}]]
+500
+600
+700 status=running/working/hook detail="compacting_context" quiescent=true delivery=["InputCleared"]
+  busy@hook [running/working/hook detail="compacting_context"]
+800 status=running/ready/hook outcome="completed" activity="idle"
+  idle@hook [running/ready/hook outcome="completed"]

@@ -111,7 +111,7 @@ fn custom_claude_settings_do_not_prepare_a_status_watcher() {
         std::fs::write(&stale_rekey, "stale report").unwrap();
         let mut spec = SpawnSpec {
             agent_runtime: None,
-            codex_pending_turn: None,
+            pending_turn: None,
             session_id: "custom-settings".into(),
             cwd: None,
             command: role.command.clone(),
@@ -149,7 +149,7 @@ fn spawn_argv_injects_runtime_settings_for_fresh_and_resume() {
         role.runtime = runtime.into();
         let mut spec = SpawnSpec {
             agent_runtime: None,
-            codex_pending_turn: None,
+            pending_turn: None,
             session_id: "settings-argv".into(),
             cwd: None,
             command: role.command.clone(),

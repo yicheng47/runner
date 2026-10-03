@@ -1,0 +1,14 @@
+{"runtime":"copilot","name":"approval-completion-cancel","rules":[6,8],"bugs":[],"known_wrong":[],"pending_turn":false}
+{"ms":100,"event":"hook","report":{"hook_event_name":"SessionStart","session_id":"11111111-1111-4111-8111-111111111111","transcript_path":"<TRANSCRIPT>"}}
+{"ms":200,"event":"hook","report":{"hook_event_name":"UserPromptSubmit","session_id":"11111111-1111-4111-8111-111111111111","transcript_path":"<TRANSCRIPT>"}}
+{"ms":300,"event":"hook","report":{"hook_event_name":"PreToolUse","session_id":"11111111-1111-4111-8111-111111111111","tool_name":"Bash","tool_input":{"command":"echo sample","description":"Sample tool","initial_wait":1}}}
+{"ms":400,"event":"record","record":{"type":"tool.execution_start","data":{"toolCallId":"sample-call","toolName":"bash","arguments":{"command":"echo sample","description":"Sample tool","initial_wait":1}}}}
+{"ms":500,"event":"hook","report":{"hook_event_name":"PermissionRequest","session_id":"11111111-1111-4111-8111-111111111111","tool_name":"bash","tool_input":{"command":"echo sample"}}}
+{"ms":600,"event":"hook","report":{"hook_event_name":"Notification","session_id":"11111111-1111-4111-8111-111111111111","notification_type":"permission_prompt"}}
+{"ms":700,"event":"input","bytes":"\u001b"}
+{"ms":800,"event":"record","record":{"type":"permission.completed","data":{"toolCallId":"sample-call","result":{"kind":"approved"}}}}
+{"ms":900,"event":"completion"}
+{"ms":1000,"event":"hook","report":{"hook_event_name":"Notification","session_id":"11111111-1111-4111-8111-111111111111","notification_type":"permission_prompt"}}
+{"ms":1100,"event":"record","record":{"type":"tool.execution_complete","data":{"toolCallId":"sample-call","success":false}}}
+{"ms":1200,"event":"hook","report":{"hook_event_name":"PostToolUse","session_id":"11111111-1111-4111-8111-111111111111","tool_name":"Bash","tool_input":{"command":"echo sample","description":"Sample tool","initial_wait":1}}}
+{"ms":1300,"event":"hook","report":{"hook_event_name":"Stop","session_id":"11111111-1111-4111-8111-111111111111","stop_reason":"end_turn"}}

@@ -24,8 +24,8 @@ fn transition(
 
 fn observe(model: &mut SessionModel, observation: AgentObservation, at: Now) -> Effects {
     model.apply(
-        SessionEvent::Observation {
-            observation,
+        SessionEvent::Agent {
+            event: agent::AgentEvent::Published(observation),
             live: true,
         },
         at,
@@ -88,12 +88,8 @@ fn rule_3_bridge_failure_publishes_the_last_baseline() {
         StatusSource::Forwarder,
     );
     observe(&mut model, hook(Activity::Working), now());
-    let fallback = model
-        .apply(SessionEvent::BridgeFailed, now())
-        .fallback
-        .unwrap();
+    model.apply(SessionEvent::BridgeFailed { live: true }, now());
     assert!(!model.completion_armed);
-    observe(&mut model, fallback, now());
     assert_eq!(model.status().observation.activity, Activity::Idle);
     assert_eq!(
         model.status().observation.source,
@@ -341,8 +337,8 @@ fn rule_10_exit_retains_attention_and_rejects_in_flight_observations() {
     model.apply(SessionEvent::Detached { stopped: false }, now());
     let status = model.status().clone();
     let effects = model.apply(
-        SessionEvent::Observation {
-            observation: hook(Activity::Ready),
+        SessionEvent::Agent {
+            event: agent::AgentEvent::Published(hook(Activity::Ready)),
             live: false,
         },
         now(),

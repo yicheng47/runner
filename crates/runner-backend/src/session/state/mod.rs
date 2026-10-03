@@ -1,3 +1,4 @@
+pub mod agent;
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
@@ -135,11 +136,21 @@ pub(crate) enum SessionEvent {
         source: StatusSource,
         live: bool,
     },
-    Observation {
-        observation: AgentObservation,
+    Title {
+        state: SessionActivityState,
         live: bool,
     },
-    BridgeFailed,
+    Readiness {
+        state: SessionActivityState,
+        live: bool,
+    },
+    Agent {
+        event: agent::AgentEvent,
+        live: bool,
+    },
+    BridgeFailed {
+        live: bool,
+    },
     Input {
         class: Option<LocalInputClass>,
         submitted: bool,
@@ -170,10 +181,10 @@ pub(crate) enum SessionEvent {
 
 #[derive(Default)]
 pub(crate) struct Effects {
+    pub agent_feedback: agent::AdapterFeedback,
     pub publication: Option<(SessionActivityState, StatusSource)>,
     pub input_cleared: bool,
     pub completion_consumed: bool,
-    pub fallback: Option<AgentObservation>,
     pub persist_key: Option<PersistKey>,
 }
 
@@ -202,6 +213,7 @@ pub(crate) struct SessionModel {
     completion_armed: bool,
     compaction_failed_since: Option<Option<i64>>,
     key: Option<PersistKey>,
+    agent: agent::AgentModel,
 }
 
 impl SessionModel {
@@ -338,6 +350,7 @@ impl SessionModel {
                     ..Default::default()
                 };
                 self.compaction_failed_since = None;
+                self.agent = Default::default();
                 self.baseline_activity = None;
                 self.hook_status_armed = false;
                 self.provisional_idle = false;
@@ -367,78 +380,25 @@ impl SessionModel {
                     effects.publication = Some((state, source));
                 }
             }
-            SessionEvent::Observation {
-                mut observation,
-                live,
-            } => {
-                if observation.source != ObservationSource::Hook {
-                    observation.detail = None;
+            SessionEvent::Title { state, live } | SessionEvent::Readiness { state, live } => {
+                if self.transition(state, StatusSource::Forwarder, live) {
+                    effects.publication = Some((state, StatusSource::Forwarder));
                 }
-                if !live
-                    || (self.status.lifecycle == Lifecycle::Running
-                        && self.status.observation == observation)
-                {
+            }
+            SessionEvent::Agent { event, live } => {
+                if !live {
                     return effects;
                 }
-                let source = match observation.source {
-                    ObservationSource::Hook => StatusSource::Hook,
-                    ObservationSource::Baseline => StatusSource::Baseline,
-                    ObservationSource::Unavailable => StatusSource::Unavailable,
-                };
-                let released = self.status.observation.needs_you() && !observation.needs_you();
-                if matches!(
-                    observation.outcome,
-                    Some(TurnOutcome::Interrupted | TurnOutcome::Failed)
-                ) {
-                    self.completion_armed = false;
+                let (observation, feedback) =
+                    self.agent.reduce_with_feedback(event, now.wall_millis);
+                if let Some(observation) = observation {
+                    effects = self.publish_snapshot(observation, live, now);
                 }
-                if observation.activity == Activity::Working
-                    && observation.outcome.is_none()
-                    && observation.detail != Some(WorkDetail::CompactingContext)
-                {
-                    self.completion_armed = true;
-                }
-                self.hook_status_armed = observation.source == ObservationSource::Hook;
-                self.status.lifecycle = Lifecycle::Running;
-                let old_failed = self.status.observation.outcome == Some(TurnOutcome::Failed);
-                let new_failed = observation.outcome == Some(TurnOutcome::Failed);
-                let compacting = observation.detail == Some(WorkDetail::CompactingContext);
-                if old_failed && compacting && self.compaction_failed_since.is_none() {
-                    self.compaction_failed_since = Some(self.status.failed_since);
-                }
-                self.status.failed_since = if new_failed
-                    && self.status.observation.detail == Some(WorkDetail::CompactingContext)
-                {
-                    self.compaction_failed_since
-                        .take()
-                        .unwrap_or(Some(now.wall_millis))
-                } else {
-                    match (old_failed, new_failed) {
-                        (false, true) => Some(now.wall_millis),
-                        (true, true) => self.status.failed_since,
-                        (_, false) => None,
-                    }
-                };
-                if !compacting && !new_failed {
-                    self.compaction_failed_since = None;
-                }
-                self.status.observation = observation;
-                let state = if self.status.observation.activity == Activity::Working
-                    || self.status.observation.needs_you()
-                {
-                    SessionActivityState::Busy
-                } else {
-                    SessionActivityState::Idle
-                };
-                self.activity = Some(state);
-                self.activity_revision = self.activity_revision.wrapping_add(1);
-
-                effects.publication = Some((state, source));
-                effects.input_cleared = released;
+                effects.agent_feedback = feedback;
             }
-            SessionEvent::BridgeFailed => {
+            SessionEvent::BridgeFailed { live } => {
                 self.completion_armed = false;
-                effects.fallback = Some(AgentObservation {
+                let fallback = AgentObservation {
                     activity: match self.baseline_activity {
                         Some(SessionActivityState::Busy) => Activity::Working,
                         Some(SessionActivityState::Idle) => Activity::Idle,
@@ -450,7 +410,8 @@ impl SessionModel {
                         ObservationSource::Unavailable
                     },
                     ..Default::default()
-                });
+                };
+                effects = self.publish_snapshot(fallback, live, now);
             }
             SessionEvent::Input { class, submitted } => {
                 if self.activity.is_some() && submitted {
@@ -546,6 +507,80 @@ impl SessionModel {
                 self.key = Some(report);
             }
         }
+        effects
+    }
+
+    fn publish_snapshot(
+        &mut self,
+        mut observation: AgentObservation,
+        live: bool,
+        now: Now,
+    ) -> Effects {
+        let mut effects = Effects::default();
+        if observation.source != ObservationSource::Hook {
+            observation.detail = None;
+        }
+        if !live
+            || (self.status.lifecycle == Lifecycle::Running
+                && self.status.observation == observation)
+        {
+            return effects;
+        }
+        let source = match observation.source {
+            ObservationSource::Hook => StatusSource::Hook,
+            ObservationSource::Baseline => StatusSource::Baseline,
+            ObservationSource::Unavailable => StatusSource::Unavailable,
+        };
+        let released = self.status.observation.needs_you() && !observation.needs_you();
+        if matches!(
+            observation.outcome,
+            Some(TurnOutcome::Interrupted | TurnOutcome::Failed)
+        ) {
+            self.completion_armed = false;
+        }
+        if observation.activity == Activity::Working
+            && observation.outcome.is_none()
+            && observation.detail != Some(WorkDetail::CompactingContext)
+        {
+            self.completion_armed = true;
+        }
+        self.hook_status_armed = observation.source == ObservationSource::Hook;
+        self.status.lifecycle = Lifecycle::Running;
+        let old_failed = self.status.observation.outcome == Some(TurnOutcome::Failed);
+        let new_failed = observation.outcome == Some(TurnOutcome::Failed);
+        let compacting = observation.detail == Some(WorkDetail::CompactingContext);
+        if old_failed && compacting && self.compaction_failed_since.is_none() {
+            self.compaction_failed_since = Some(self.status.failed_since);
+        }
+        self.status.failed_since = if new_failed
+            && self.status.observation.detail == Some(WorkDetail::CompactingContext)
+        {
+            self.compaction_failed_since
+                .take()
+                .unwrap_or(Some(now.wall_millis))
+        } else {
+            match (old_failed, new_failed) {
+                (false, true) => Some(now.wall_millis),
+                (true, true) => self.status.failed_since,
+                (_, false) => None,
+            }
+        };
+        if !compacting && !new_failed {
+            self.compaction_failed_since = None;
+        }
+        self.status.observation = observation;
+        let state = if self.status.observation.activity == Activity::Working
+            || self.status.observation.needs_you()
+        {
+            SessionActivityState::Busy
+        } else {
+            SessionActivityState::Idle
+        };
+        self.activity = Some(state);
+        self.activity_revision = self.activity_revision.wrapping_add(1);
+
+        effects.publication = Some((state, source));
+        effects.input_cleared = released;
         effects
     }
 

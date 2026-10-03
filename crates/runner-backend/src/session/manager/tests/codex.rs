@@ -16,7 +16,7 @@ fn codex_speed_follows_role_args_for_direct_and_mission_spawns() {
                 role.codex_speed = speed;
                 let mut spec = SpawnSpec {
                     agent_runtime: None,
-                    codex_pending_turn: None,
+                    pending_turn: None,
                     session_id: "speed-spawn".into(),
                     cwd: None,
                     command: role.command.clone(),
@@ -76,7 +76,7 @@ fn codex_spawn_composes_hooks_without_changing_user_home_and_respects_overrides(
         for key in [None, Some("11111111-1111-4111-8111-111111111111")] {
             let mut spec = SpawnSpec {
                 agent_runtime: None,
-                codex_pending_turn: None,
+                pending_turn: None,
                 session_id: "codex-spawn".into(),
                 cwd: None,
                 command: role.command.clone(),
@@ -98,7 +98,7 @@ fn codex_spawn_composes_hooks_without_changing_user_home_and_respects_overrides(
                 None,
             );
             assert_eq!(spec.env["CODEX_HOME"], "user home");
-            assert_eq!(spec.codex_pending_turn, Some(key.is_none()));
+            assert_eq!(spec.pending_turn, Some(key.is_none()));
             let injected = args.is_empty();
             assert_eq!(spec.env.contains_key(PATH_ENV), injected);
             assert_eq!(spec.env.contains_key(GENERATION_ENV), injected);
@@ -165,32 +165,42 @@ fn codex_observations_preserve_delivery_and_drafts_and_interrupt_attention() {
     let events = core.session_events();
     let mut count = 0;
     watcher
-        .drain_observations(|value, _| {
-            count += 1;
-            core.sessions
-                .publish_observation("codex-status", value.clone(), &events);
-            let token = match core.sessions.reserve_delivery("codex-status").unwrap() {
-                router::DeliveryReservation::Ready(token) => token,
-                other => panic!("{other:?}"),
-            };
-            core.sessions.finish_delivery("codex-status", token);
-            let state = core.sessions.session_state("codex-status").unwrap();
-            state.lock().unwrap().model.apply(
-                SessionEvent::TestPending(true),
-                crate::session::clock::state_now(),
-            );
-            core.sessions
-                .publish_observation("codex-status", value, &events);
-            assert_eq!(
-                core.sessions.reserve_delivery("codex-status").unwrap(),
-                router::DeliveryReservation::LocalInputPending
-            );
-            assert!(state.lock().unwrap().model.local_input_pending());
-            state.lock().unwrap().model.apply(
-                SessionEvent::TestPending(false),
-                crate::session::clock::state_now(),
-            );
-        })
+        .drain_events(
+            0,
+            |event| {
+                let before = core.sessions.agent_status("codex-status");
+                let feedback =
+                    core.sessions
+                        .publish_agent_event("codex-status", event.clone(), &events);
+                if core.sessions.agent_status("codex-status") == before {
+                    return feedback;
+                }
+                count += 1;
+                let token = match core.sessions.reserve_delivery("codex-status").unwrap() {
+                    router::DeliveryReservation::Ready(token) => token,
+                    other => panic!("{other:?}"),
+                };
+                core.sessions.finish_delivery("codex-status", token);
+                let state = core.sessions.session_state("codex-status").unwrap();
+                state.lock().unwrap().model.apply(
+                    SessionEvent::TestPending(true),
+                    crate::session::clock::state_now(),
+                );
+                core.sessions
+                    .publish_agent_event("codex-status", event, &events);
+                assert_eq!(
+                    core.sessions.reserve_delivery("codex-status").unwrap(),
+                    router::DeliveryReservation::LocalInputPending
+                );
+                assert!(state.lock().unwrap().model.local_input_pending());
+                state.lock().unwrap().model.apply(
+                    SessionEvent::TestPending(false),
+                    crate::session::clock::state_now(),
+                );
+                feedback
+            },
+            |_| {},
+        )
         .unwrap();
     assert_eq!(count, 3);
     assert_eq!(
@@ -744,6 +754,6 @@ fn codex_windows_batch_pending_prompt_is_recorded_before_argv_suppression() {
         Some("automatic prompt"),
         None,
     );
-    assert_eq!(spec.codex_pending_turn, Some(true));
+    assert_eq!(spec.pending_turn, Some(true));
     assert!(!spec.args.iter().any(|arg| arg == "automatic prompt"));
 }

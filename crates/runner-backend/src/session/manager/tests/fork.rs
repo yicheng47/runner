@@ -409,7 +409,7 @@ fn headless_fork_rejects_nonzero_exit_and_kills_timed_out_process_group() {
     );
     let spec = SpawnSpec {
         agent_runtime: None,
-        codex_pending_turn: None,
+        pending_turn: None,
         session_id: ulid::Ulid::new().to_string(),
         cwd: Some(PathBuf::from("/tmp")),
         command,
@@ -434,7 +434,7 @@ fn headless_fork_rejects_nonzero_exit_and_kills_timed_out_process_group() {
     );
     let missing_rollout_spec = SpawnSpec {
         agent_runtime: None,
-        codex_pending_turn: None,
+        pending_turn: None,
         session_id: ulid::Ulid::new().to_string(),
         cwd: Some(PathBuf::from("/tmp")),
         command,
@@ -561,7 +561,7 @@ fn headless_fork_timeout_kills_batch_descendant_and_closes_pipes() {
     ).unwrap();
     let spec = SpawnSpec {
         agent_runtime: None,
-        codex_pending_turn: None,
+        pending_turn: None,
         session_id: ulid::Ulid::new().to_string(),
         command: command.to_string_lossy().into_owned(),
         args: Vec::new(),

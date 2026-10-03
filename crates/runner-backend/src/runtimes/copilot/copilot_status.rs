@@ -1,22 +1,20 @@
+use crate::model::Runtime;
+use crate::session::state::agent::{AdapterFeedback, AgentEvent};
+#[cfg(test)]
 use crate::session::state::StatusSource;
-use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU8, Ordering};
-use std::sync::Arc;
 
 use serde::Deserialize;
 use serde_json::Value;
 
 use crate::error::Result;
-use crate::session::hook_feed::{HookFeed, TranscriptTail};
-use crate::session::state::CTRL_C_INTERRUPT;
-use crate::session::status::{
-    Activity, AgentObservation, HumanInteraction, ObservationSource, TurnOutcome, WaitReason,
-    WorkDetail,
-};
+use crate::session::hook_feed::HookFeed;
+use crate::session::status::{TurnOutcome, WaitReason};
 
+#[cfg(test)]
+use crate::session::status::{Activity, AgentObservation, ObservationSource, WorkDetail};
 pub(crate) const PATH_ENV: &str = "RUNNER_COPILOT_STATUS_PATH";
 pub(crate) const GENERATION_ENV: &str = "RUNNER_COPILOT_STATUS_GENERATION";
 pub(crate) const EVENTS: &[&str] = &[
@@ -135,126 +133,156 @@ struct StatusReport {
     hook_event_name: String,
     source: Option<String>,
     #[serde(alias = "sessionId")]
-    session_id: Option<String>,
+    pub(crate) session_id: Option<String>,
     #[serde(alias = "notificationType")]
     notification_type: Option<String>,
     #[serde(alias = "toolName")]
     tool_name: Option<String>,
     #[serde(alias = "toolInput")]
     tool_input: Option<Value>,
-    transcript_path: Option<PathBuf>,
+    pub(crate) transcript_path: Option<PathBuf>,
     stop_reason: Option<String>,
     #[serde(alias = "agentId")]
     agent_id: Option<String>,
 }
 
+fn transcript_is_subagent(record: &Value, data: &Value) -> bool {
+    [record, data].into_iter().any(|value| {
+        value.get("agentId").is_some_and(|agent| !agent.is_null())
+            || value.get("agent_id").is_some_and(|agent| !agent.is_null())
+            || value.get("isSidechain").and_then(Value::as_bool) == Some(true)
+            || value.get("is_sidechain").and_then(Value::as_bool) == Some(true)
+    })
+}
+
+fn canonical_tool_name(name: &str) -> String {
+    let compact: String = name
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect();
+    match compact.as_str() {
+        "askuser" | "askuserquestion" => "ask_user".into(),
+        "applypatch" | "edit" => "edit".into(),
+        "bash" | "shell" => "bash".into(),
+        _ => compact,
+    }
+}
+
+fn inputs_match(left: Option<&Value>, right: Option<&Value>) -> bool {
+    match (left, right) {
+        (Some(left), Some(right)) => value_contains(left, right) || value_contains(right, left),
+        (None, None) => true,
+        _ => false,
+    }
+}
+
+fn value_contains(value: &Value, expected: &Value) -> bool {
+    match (value, expected) {
+        (Value::Object(value), Value::Object(expected)) => {
+            expected.iter().all(|(key, expected)| {
+                value
+                    .get(key)
+                    .is_some_and(|value| value_contains(value, expected))
+            })
+        }
+        (Value::Array(value), Value::Array(expected)) => value == expected,
+        _ => value == expected,
+    }
+}
+
+#[derive(Clone)]
 struct PendingTool {
     id: String,
     name: String,
     input: Option<Value>,
+    prompted: bool,
 }
-
-struct CompactionResume {
-    working: bool,
-    outcome: Option<TurnOutcome>,
-}
-
-#[derive(Default)]
-struct CopilotObservation {
-    value: AgentObservation,
+#[derive(Clone, Default)]
+struct CopilotParser {
     session_id: Option<String>,
     ended: bool,
     transcript_path: Option<PathBuf>,
+    seen: bool,
     tools: Vec<PendingTool>,
     completed_tools: Vec<PendingTool>,
     compacting: bool,
-    compaction_resume: Option<CompactionResume>,
     permission_owners: Vec<String>,
-    completed_permissions: BTreeSet<String>,
-    transcript_calls: BTreeMap<String, String>,
+    completed_permissions: std::collections::BTreeSet<String>,
+    transcript_calls: std::collections::BTreeMap<String, String>,
     next_tool: u64,
-    next_interaction: u64,
 }
-
-impl CopilotObservation {
-    fn observe(&mut self, report: StatusReport) -> Option<AgentObservation> {
+impl CopilotParser {
+    fn hook(&mut self, report: StatusReport) -> Option<Vec<AgentEvent>> {
         if report.agent_id.is_some() || report.hook_event_name.starts_with("Subagent") {
             return None;
         }
-        let session_id = report.session_id.filter(|id| !id.is_empty())?;
+        let session = report.session_id.filter(|id| !id.is_empty())?;
         if report.hook_event_name == "SessionStart" {
             if report.source.as_deref() == Some("compact")
                 && self.compacting
                 && self
                     .session_id
                     .as_ref()
-                    .is_none_or(|current| current == &session_id)
+                    .is_none_or(|current| current == &session)
             {
-                self.session_id = Some(session_id);
+                self.session_id = Some(session);
                 if let Some(path) = report.transcript_path {
                     self.transcript_path = Some(path);
                 }
                 return None;
             }
-            if self.session_id.as_ref() == Some(&session_id)
-                && self.value.source == ObservationSource::Hook
-            {
+            if self.session_id.as_ref() == Some(&session) && self.seen {
                 return None;
             }
-            self.session_id = Some(session_id);
+            self.session_id = Some(session);
             self.ended = false;
-            self.clear_turn();
-            self.value.activity = Activity::Idle;
-            self.value.source = ObservationSource::Hook;
-            self.value.outcome = None;
-            return Some(self.value.clone());
+            self.clear();
+            self.seen = true;
+            return Some(vec![AgentEvent::StartupReady]);
         }
         if self
             .session_id
             .as_ref()
-            .is_some_and(|current| *current != session_id)
+            .is_some_and(|current| *current != session)
         {
             return None;
         }
-        self.session_id.get_or_insert(session_id);
+        self.session_id.get_or_insert(session);
         if self.ended {
             return None;
         }
         if let Some(path) = report.transcript_path {
             self.transcript_path = Some(path);
         }
-        match report.hook_event_name.as_str() {
+        let event = match report.hook_event_name.as_str() {
             "SessionEnd" => {
                 self.ended = true;
-                self.clear_turn();
-                self.value.activity = Activity::Unavailable;
-                self.update_detail();
+                self.clear();
+                AgentEvent::SessionEnded
             }
             "UserPromptSubmit" => {
-                self.clear_turn();
-                self.work();
+                self.clear();
+                AgentEvent::TurnStarted
             }
             "PreToolUse" => {
                 let name = report.tool_name?;
-                self.finish_compaction();
-                self.work();
+                self.compacting = false;
                 self.next_tool += 1;
                 let owner = format!("copilot-tool-{}", self.next_tool);
-                let question = canonical_tool_name(&name) == "ask_user";
+                let question = (canonical_tool_name(&name) == "ask_user").then(|| owner.clone());
                 self.tools.push(PendingTool {
-                    id: owner.clone(),
+                    id: owner,
                     name,
                     input: report.tool_input,
+                    prompted: question.is_some(),
                 });
-                self.update_detail();
-                if question {
-                    self.wait(WaitReason::Answer, vec![owner]);
+                AgentEvent::ToolStarted {
+                    count: self.tools.len(),
+                    question,
                 }
             }
             "PermissionRequest" => {
-                if self.value.activity != Activity::Working || self.value.outcome.is_some() {
-                    return None;
-                }
                 let owner = self.matching_tool(
                     report.tool_name.as_deref()?,
                     report.tool_input.as_ref(),
@@ -264,27 +292,31 @@ impl CopilotObservation {
                     return None;
                 }
                 if !self.permission_owners.contains(&owner) {
-                    self.permission_owners.push(owner);
+                    self.permission_owners.push(owner.clone());
                 }
-                return None;
+                AgentEvent::PermissionRequested {
+                    reason: WaitReason::Approval,
+                    owners: vec![owner],
+                }
             }
             "Notification" => match report.notification_type.as_deref() {
                 Some("permission_prompt") => {
-                    if self.value.activity != Activity::Working {
+                    if !self
+                        .tools
+                        .iter()
+                        .any(|tool| self.permission_owners.contains(&tool.id))
+                    {
                         return None;
                     }
-                    let owners: Vec<_> = self
-                        .permission_owners
-                        .iter()
-                        .filter(|owner| {
-                            self.tools
-                                .iter()
-                                .any(|tool| tool.id.as_str() == owner.as_str())
-                        })
-                        .cloned()
-                        .collect();
-                    if owners.is_empty() || !self.wait(WaitReason::Approval, owners) {
-                        return None;
+                    for tool in &mut self.tools {
+                        tool.prompted |= self.permission_owners.contains(&tool.id);
+                    }
+                    AgentEvent::PermissionPrompt {
+                        candidates: self
+                            .tools
+                            .iter()
+                            .map(|tool| (tool.id.clone(), WaitReason::Approval))
+                            .collect(),
                     }
                 }
                 Some("elicitation_dialog") => {
@@ -294,14 +326,16 @@ impl CopilotObservation {
                         .filter(|tool| canonical_tool_name(&tool.name) == "ask_user")
                         .map(|tool| tool.id.clone())
                         .collect();
-                    if owners.is_empty() || !self.wait(WaitReason::Answer, owners) {
+                    if owners.is_empty() {
                         return None;
                     }
+                    AgentEvent::ElicitationPrompt { owners }
                 }
-                Some("agent_idle") if !self.value.needs_you() => {
-                    self.finish_compaction();
-                    self.value.activity = Activity::Ready;
-                    self.update_detail();
+                Some("agent_idle") => {
+                    if !self.tools.iter().any(|tool| tool.prompted) {
+                        self.compacting = false;
+                    }
+                    AgentEvent::IdlePrompt
                 }
                 _ => return None,
             },
@@ -316,102 +350,81 @@ impl CopilotObservation {
                 let owner = match owner {
                     Some(owner) => owner,
                     None if self.compacting => None,
-                    None => return None,
+                    _ => return None,
                 };
-                let compaction_was_working = self.finish_compaction();
-                if let Some(owner) = owner {
-                    self.resolve(&owner);
+                self.compacting = false;
+                AgentEvent::ToolEnded {
+                    owner,
+                    count: self.tools.len(),
+                    interrupted: false,
+                    transcript: false,
                 }
-                if self.value.outcome == Some(TurnOutcome::Interrupted) {
-                    if !self.value.needs_you() {
-                        self.value.activity = Activity::Ready;
-                    }
-                } else if compaction_was_working != Some(false) {
-                    self.work();
-                }
-                self.update_detail();
             }
             "PreCompact" => {
-                if !self.compacting {
-                    self.compaction_resume = Some(CompactionResume {
-                        working: self.value.activity == Activity::Working
-                            && self.value.outcome.is_none(),
-                        outcome: self.value.outcome,
-                    });
-                }
-                self.work();
                 self.compacting = true;
-                self.update_detail();
+                AgentEvent::CompactionStarted
             }
             "Stop" if report.stop_reason.as_deref() == Some("end_turn") => {
-                let manual_compaction_outcome = self
-                    .compaction_resume
-                    .as_ref()
-                    .filter(|resume| !resume.working)
-                    .map(|resume| resume.outcome);
-                self.clear_turn();
-                self.value.activity = Activity::Ready;
-                if let Some(outcome) = manual_compaction_outcome {
-                    self.value.outcome = outcome;
-                } else if self.value.outcome != Some(TurnOutcome::Interrupted) {
-                    self.value.outcome = Some(TurnOutcome::Completed);
+                self.clear();
+                AgentEvent::TurnEnded {
+                    outcome: TurnOutcome::Completed,
                 }
             }
-            "ErrorOccurred" => return None,
             _ => return None,
-        }
-        self.value.source = ObservationSource::Hook;
-        Some(self.value.clone())
+        };
+        self.seen = true;
+        Some(vec![event])
     }
-
-    fn observe_transcript(&mut self, record: &Value) -> Option<AgentObservation> {
+    fn clear(&mut self) {
+        self.tools.clear();
+        self.completed_tools.clear();
+        self.compacting = false;
+        self.permission_owners.clear();
+        self.completed_permissions.clear();
+        self.transcript_calls.clear();
+    }
+    fn record(&mut self, record: &Value) -> Option<Vec<AgentEvent>> {
         let data = record.get("data")?;
         if transcript_is_subagent(record, data) {
             return None;
         }
-        let before = self.value.clone();
-        match record.get("type").and_then(Value::as_str) {
-            Some("tool.execution_start") => {
-                let call_id = data.get("toolCallId")?.as_str()?;
-                let name = data.get("toolName")?.as_str()?;
-                let arguments = data.get("arguments");
-                let owner = self.matching_tool(name, arguments, false)?;
-                self.transcript_calls.insert(call_id.into(), owner);
+        let event = match record["type"].as_str()? {
+            "tool.execution_start" => {
+                let call = data["toolCallId"].as_str()?;
+                let name = data["toolName"].as_str()?;
+                let owner = self.matching_tool(name, data.get("arguments"), false)?;
+                self.transcript_calls.insert(call.into(), owner);
+                return None;
             }
-            Some("tool.execution_complete") => {
-                let call_id = data.get("toolCallId")?.as_str()?;
-                let owner = self.transcript_calls.remove(call_id)?;
+            "tool.execution_complete" => {
+                let call = data["toolCallId"].as_str()?;
+                let owner = self.transcript_calls.remove(call)?;
                 let tool = self.remove_tool_by_id(&owner)?;
                 self.completed_tools.push(tool);
-                self.resolve(&owner);
-                if self.value.outcome == Some(TurnOutcome::Interrupted) && !self.value.needs_you() {
-                    self.value.activity = Activity::Ready;
+                AgentEvent::ToolEnded {
+                    owner: Some(owner),
+                    count: self.tools.len(),
+                    interrupted: false,
+                    transcript: true,
                 }
-                self.update_detail();
             }
-            Some("permission.completed") => {
-                let call_id = data.get("toolCallId")?.as_str()?;
-                let owner = self.transcript_calls.get(call_id)?;
+            "permission.completed" => {
+                let call = data["toolCallId"].as_str()?;
+                let owner = self.transcript_calls.get(call)?.clone();
                 self.completed_permissions.insert(owner.clone());
-                self.permission_owners
-                    .retain(|candidate| candidate != owner);
-                self.value.interactions.retain_mut(|wait| {
-                    if wait.reason != WaitReason::Approval {
-                        return true;
-                    }
-                    wait.owners.retain(|candidate| candidate != owner);
-                    !wait.owners.is_empty()
-                });
-                if self.value.outcome == Some(TurnOutcome::Interrupted) && !self.value.needs_you() {
-                    self.value.activity = Activity::Ready;
+                self.permission_owners.retain(|id| *id != owner);
+                if let Some(tool) = self.tools.iter_mut().find(|tool| tool.id == owner) {
+                    tool.prompted = canonical_tool_name(&tool.name) == "ask_user";
                 }
-                self.update_detail();
+                AgentEvent::InteractionClosed {
+                    owner,
+                    reason: Some(WaitReason::Approval),
+                }
             }
             _ => return None,
-        }
-        (before != self.value).then(|| self.value.clone())
+        };
+        Some(vec![event])
     }
-
     fn matching_tool(
         &self,
         name: &str,
@@ -479,139 +492,14 @@ impl CopilotObservation {
             false
         }
     }
-
-    fn work(&mut self) {
-        self.value.activity = Activity::Working;
-        self.value.outcome = None;
-        self.update_detail();
-    }
-
-    fn clear_turn(&mut self) {
-        self.value.interactions.clear();
-        self.tools.clear();
-        self.completed_tools.clear();
-        self.compacting = false;
-        self.compaction_resume = None;
-        self.permission_owners.clear();
-        self.completed_permissions.clear();
-        self.transcript_calls.clear();
-        self.value.detail = None;
-    }
-
-    fn update_detail(&mut self) {
-        self.value.detail =
-            if self.value.activity != Activity::Working || self.value.outcome.is_some() {
-                None
-            } else if self.compacting {
-                Some(WorkDetail::CompactingContext)
-            } else if !self.tools.is_empty() {
-                Some(WorkDetail::UsingTools)
-            } else {
-                None
-            };
-    }
-
-    fn finish_compaction(&mut self) -> Option<bool> {
-        if !self.compacting {
-            return None;
-        }
-        self.compacting = false;
-        let resume = self.compaction_resume.take()?;
-        if resume.working {
-            self.value.activity = Activity::Working;
-            self.value.outcome = None;
-        } else {
-            self.value.activity = Activity::Ready;
-            self.value.outcome = resume.outcome;
-        }
-        self.update_detail();
-        Some(resume.working)
-    }
-
-    fn resolve(&mut self, owner: &str) {
-        self.value.interactions.retain_mut(|wait| {
-            wait.owners.retain(|candidate| candidate != owner);
-            !wait.owners.is_empty()
-        });
-    }
-
-    fn wait(&mut self, reason: WaitReason, owners: Vec<String>) -> bool {
-        if let Some(wait) = self.value.interactions.iter_mut().find(|wait| {
-            wait.reason == reason
-                && (wait.owners == owners || wait.owners.iter().any(|id| owners.contains(id)))
-        }) {
-            let before = wait.owners.len();
-            for owner in owners {
-                if !wait.owners.contains(&owner) {
-                    wait.owners.push(owner);
-                }
-            }
-            return wait.owners.len() != before;
-        }
-        self.next_interaction += 1;
-        self.value.interactions.push(HumanInteraction {
-            id: format!("copilot-{}", self.next_interaction),
-            reason,
-            owners,
-            since: crate::session::clock::timestamp_millis(),
-        });
-        true
-    }
-}
-
-fn transcript_is_subagent(record: &Value, data: &Value) -> bool {
-    [record, data].into_iter().any(|value| {
-        value.get("agentId").is_some_and(|agent| !agent.is_null())
-            || value.get("agent_id").is_some_and(|agent| !agent.is_null())
-            || value.get("isSidechain").and_then(Value::as_bool) == Some(true)
-            || value.get("is_sidechain").and_then(Value::as_bool) == Some(true)
-    })
-}
-
-fn canonical_tool_name(name: &str) -> String {
-    let compact: String = name
-        .chars()
-        .filter(|character| character.is_ascii_alphanumeric())
-        .flat_map(char::to_lowercase)
-        .collect();
-    match compact.as_str() {
-        "askuser" | "askuserquestion" => "ask_user".into(),
-        "applypatch" | "edit" => "edit".into(),
-        "bash" | "shell" => "bash".into(),
-        _ => compact,
-    }
-}
-
-fn inputs_match(left: Option<&Value>, right: Option<&Value>) -> bool {
-    match (left, right) {
-        (Some(left), Some(right)) => value_contains(left, right) || value_contains(right, left),
-        (None, None) => true,
-        _ => false,
-    }
-}
-
-fn value_contains(value: &Value, expected: &Value) -> bool {
-    match (value, expected) {
-        (Value::Object(value), Value::Object(expected)) => {
-            expected.iter().all(|(key, expected)| {
-                value
-                    .get(key)
-                    .is_some_and(|value| value_contains(value, expected))
-            })
-        }
-        (Value::Array(value), Value::Array(expected)) => value == expected,
-        _ => value == expected,
-    }
 }
 
 pub(crate) struct CopilotStatusWatcher {
     feed: HookFeed,
-    observation: CopilotObservation,
-    interrupt: Arc<AtomicU8>,
-    transcript: Option<TranscriptTail>,
+    parser: CopilotParser,
+    transcript: Option<crate::session::hook_feed::TranscriptTail>,
     copilot_home: PathBuf,
 }
-
 impl CopilotStatusWatcher {
     pub(crate) fn start(path: &Path, generation: String, copilot_home: PathBuf) -> Result<Self> {
         let app_data_dir = path
@@ -620,65 +508,50 @@ impl CopilotStatusWatcher {
             .expect("status file is under app data");
         Ok(Self {
             feed: HookFeed::start_external(path, generation, &reporter_path(app_data_dir))?,
-            observation: CopilotObservation::default(),
-            interrupt: Arc::new(AtomicU8::new(0)),
+            parser: Default::default(),
             transcript: None,
             copilot_home,
         })
     }
-
-    pub(crate) fn interrupt_signal(&self) -> Arc<AtomicU8> {
-        Arc::clone(&self.interrupt)
-    }
-
-    pub(crate) fn drain_observations(
+    pub(crate) fn drain_events(
         &mut self,
-        mut transition: impl FnMut(AgentObservation, StatusSource),
+        cancel: u8,
+        mut emit: impl FnMut(AgentEvent) -> AdapterFeedback,
+        _session_start: impl FnMut(String),
     ) -> Result<()> {
-        let interrupted = self.interrupt.swap(0, Ordering::AcqRel);
-        self.feed.drain(interrupted != 0, |report| {
-            if let Ok(report) = serde_json::from_value(report) {
-                if let Some(value) = self.observation.observe(report) {
-                    transition(value, StatusSource::Hook);
+        self.feed.drain(cancel != 0, |report| {
+            if let Ok(report) = serde_json::from_value::<StatusReport>(report) {
+                if let Some(events) = self.parser.hook(report) {
+                    emit(AgentEvent::Batch {
+                        runtime: Runtime::Copilot,
+                        events,
+                    });
                 }
             }
         })?;
-        if interrupted != 0
-            && self.observation.value.source == ObservationSource::Hook
-            && (self.observation.value.activity == Activity::Working
-                || self.observation.value.needs_you())
-        {
-            let source = if interrupted & CTRL_C_INTERRUPT != 0 {
-                StatusSource::InputInterrupt
-            } else {
-                StatusSource::InputEscape
-            };
-            self.observation.value.activity = if self.observation.value.needs_you() {
-                Activity::Unavailable
-            } else {
-                Activity::Ready
-            };
-            self.observation.value.outcome = Some(TurnOutcome::Interrupted);
-            self.observation.compacting = false;
-            self.observation.compaction_resume = None;
-            self.observation.update_detail();
-            transition(self.observation.value.clone(), source);
+        if cancel != 0 {
+            self.parser.compacting = false;
         }
-        self.drain_transcript(&mut transition);
+        if cancel != 0 {
+            emit(AgentEvent::Batch {
+                runtime: Runtime::Copilot,
+                events: vec![AgentEvent::LocalCancel { kind: cancel }],
+            });
+        }
+        self.drain_transcript(&mut emit);
         Ok(())
     }
-
-    fn drain_transcript(&mut self, transition: &mut impl FnMut(AgentObservation, StatusSource)) {
-        if !self.observation.value.needs_you() && self.observation.tools.is_empty() {
+    fn drain_transcript(&mut self, emit: &mut impl FnMut(AgentEvent) -> AdapterFeedback) {
+        if self.parser.tools.is_empty() {
             return;
         }
-        let Some(session_id) = self.observation.session_id.as_deref() else {
+        let Some(session) = self.parser.session_id.as_deref() else {
             return;
         };
-        let path = self.observation.transcript_path.clone().unwrap_or_else(|| {
+        let path = self.parser.transcript_path.clone().unwrap_or_else(|| {
             self.copilot_home
                 .join("session-state")
-                .join(session_id)
+                .join(session)
                 .join("events.jsonl")
         });
         if self
@@ -686,7 +559,7 @@ impl CopilotStatusWatcher {
             .as_ref()
             .is_none_or(|tail| tail.path != path)
         {
-            self.transcript = TranscriptTail::open(&path).ok();
+            self.transcript = crate::session::hook_feed::TranscriptTail::open(&path).ok();
         }
         let Some(tail) = self.transcript.as_mut() else {
             return;
@@ -696,28 +569,85 @@ impl CopilotStatusWatcher {
                 break;
             }
             if let Ok(record) = serde_json::from_slice(&tail.pending) {
-                if let Some(value) = self.observation.observe_transcript(&record) {
-                    transition(value, StatusSource::Hook);
+                if let Some(events) = self.parser.record(&record) {
+                    emit(AgentEvent::Transcript {
+                        runtime: Runtime::Copilot,
+                        events,
+                    });
                 }
             }
             tail.pending.clear();
         }
     }
 }
-
 impl crate::session::hook_feed::HookWatcher for CopilotStatusWatcher {
-    fn interrupt_signal(&self) -> Option<Arc<AtomicU8>> {
-        Some(self.interrupt_signal())
-    }
-    fn drain_observations(
+    fn drain_events(
         &mut self,
-        transition: &mut dyn FnMut(crate::session::status::AgentObservation, StatusSource),
-        _session_start: &mut dyn FnMut(String),
+        cancel: u8,
+        emit: &mut dyn FnMut(AgentEvent) -> AdapterFeedback,
+        session_start: &mut dyn FnMut(String),
     ) -> Result<()> {
-        self.drain_observations(transition)
+        self.drain_events(cancel, emit, session_start)
     }
 }
 
+#[cfg(test)]
+#[derive(Clone, Default)]
+struct CopilotObservation {
+    parser: CopilotParser,
+    model: crate::session::state::agent::AgentModel,
+    value: crate::session::state::agent::TurnState,
+}
+#[cfg(test)]
+impl std::ops::Deref for CopilotObservation {
+    type Target = CopilotParser;
+    fn deref(&self) -> &Self::Target {
+        &self.parser
+    }
+}
+#[cfg(test)]
+impl std::ops::DerefMut for CopilotObservation {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.parser
+    }
+}
+#[cfg(test)]
+impl CopilotObservation {
+    fn observe(&mut self, event: StatusReport, now: i64) -> Option<AgentObservation> {
+        let events = self.parser.hook(event)?;
+        let reduced = self.model.reduce(
+            AgentEvent::Batch {
+                runtime: Runtime::Copilot,
+                events,
+            },
+            now,
+        );
+        self.value = self.model.value.clone();
+        reduced
+    }
+    fn observe_transcript(&mut self, record: &serde_json::Value) -> Option<AgentObservation> {
+        let events = self.parser.record(record)?;
+        let reduced = self.model.reduce(
+            AgentEvent::Transcript {
+                runtime: Runtime::Copilot,
+                events,
+            },
+            crate::session::clock::timestamp_millis(),
+        );
+        self.value = self.model.value.clone();
+        reduced
+    }
+    fn wait(&mut self, now: i64, reason: WaitReason, owners: Vec<String>) {
+        self.model.reduce(
+            AgentEvent::Batch {
+                runtime: Runtime::Copilot,
+                events: vec![AgentEvent::InteractionOpened { reason, owners }],
+            },
+            now,
+        );
+        self.value = self.model.value.clone();
+    }
+}
 #[cfg(test)]
 mod tests {
     use std::fs::{self, OpenOptions};
@@ -730,6 +660,80 @@ mod tests {
 
     use super::*;
 
+    struct TestWatcher {
+        inner: CopilotStatusWatcher,
+        observation: CopilotObservation,
+        cancel: u8,
+    }
+    impl std::ops::Deref for TestWatcher {
+        type Target = CopilotStatusWatcher;
+        fn deref(&self) -> &Self::Target {
+            &self.inner
+        }
+    }
+    impl std::ops::DerefMut for TestWatcher {
+        fn deref_mut(&mut self) -> &mut Self::Target {
+            &mut self.inner
+        }
+    }
+    impl TestWatcher {
+        fn start(path: &Path, generation: String, copilot_home: PathBuf) -> Result<Self> {
+            Ok(Self {
+                inner: CopilotStatusWatcher::start(path, generation, copilot_home)?,
+                observation: Default::default(),
+                cancel: 0,
+            })
+        }
+        fn drain_with_session_starts(
+            &mut self,
+            mut publish: impl FnMut(AgentObservation, StatusSource),
+            starts: impl FnMut(String),
+        ) -> Result<()> {
+            self.inner.parser = self.observation.parser.clone();
+            let cancel = std::mem::take(&mut self.cancel);
+            let mut events = Vec::new();
+            let result = self.inner.drain_events(
+                cancel,
+                |event| {
+                    events.push(event);
+                    Default::default()
+                },
+                starts,
+            );
+            for event in events {
+                let source = if let AgentEvent::Batch { events, .. } = &event {
+                    match events.first() {
+                        Some(AgentEvent::LocalCancel { kind })
+                            if kind & crate::session::state::CTRL_C_INTERRUPT != 0 =>
+                        {
+                            StatusSource::InputInterrupt
+                        }
+                        Some(AgentEvent::LocalCancel { .. }) => StatusSource::InputEscape,
+                        _ => StatusSource::Hook,
+                    }
+                } else {
+                    StatusSource::Hook
+                };
+                if let Some(value) = self
+                    .observation
+                    .model
+                    .reduce(event, crate::session::clock::timestamp_millis())
+                {
+                    publish(value, source);
+                }
+            }
+            self.observation.value = self.observation.model.value.clone();
+            self.observation.parser = self.inner.parser.clone();
+            result
+        }
+        fn drain_status(
+            &mut self,
+            publish: impl FnMut(AgentObservation, StatusSource),
+        ) -> Result<()> {
+            self.drain_with_session_starts(publish, |_| {})
+        }
+    }
+
     fn report(event: &str) -> Value {
         json!({
             "hook_event_name": event,
@@ -738,7 +742,10 @@ mod tests {
     }
 
     fn observe(state: &mut CopilotObservation, value: Value) -> Option<AgentObservation> {
-        state.observe(serde_json::from_value(value).unwrap())
+        state.observe(
+            serde_json::from_value::<StatusReport>(value).unwrap(),
+            crate::session::clock::timestamp_millis(),
+        )
     }
 
     fn pre_tool(name: &str, input: Value) -> Value {
@@ -1154,8 +1161,13 @@ mod tests {
             },
         });
         assert!(state.observe_transcript(&start).is_none());
-        state.value.activity = Activity::Unavailable;
-        state.value.outcome = Some(TurnOutcome::Interrupted);
+        state.model.reduce(
+            AgentEvent::LocalCancel {
+                kind: crate::session::state::ESCAPE_INTERRUPT,
+            },
+            crate::session::clock::timestamp_millis(),
+        );
+        state.value = state.model.value.clone();
         let complete = json!({
             "type":"tool.execution_complete",
             "data":{
@@ -1303,7 +1315,7 @@ mod tests {
         )
         .unwrap();
         let path = crate::session::hook_feed::status_path(root.path(), "session");
-        let mut watcher = CopilotStatusWatcher::start(&path, "current".into(), home).unwrap();
+        let mut watcher = TestWatcher::start(&path, "current".into(), home).unwrap();
         let mut file = OpenOptions::new().append(true).open(&path).unwrap();
         for value in [
             report("UserPromptSubmit"),
@@ -1314,12 +1326,10 @@ mod tests {
             writeln!(file, "{value}").unwrap();
         }
         watcher.feed.dirty.store(true, Ordering::Release);
-        watcher.drain_observations(|_, _| {}).unwrap();
+        watcher.drain_status(|_, _| {}).unwrap();
         assert!(watcher.observation.value.needs_you());
-        watcher
-            .interrupt
-            .store(crate::session::state::ESCAPE_INTERRUPT, Ordering::Release);
-        watcher.drain_observations(|_, _| {}).unwrap();
+        watcher.cancel = crate::session::state::ESCAPE_INTERRUPT;
+        watcher.drain_status(|_, _| {}).unwrap();
         assert_eq!(watcher.observation.value.activity, Activity::Unavailable);
         assert!(watcher.observation.value.needs_you());
         assert_eq!(watcher.observation.value.detail, None);
@@ -1333,7 +1343,7 @@ mod tests {
             })
         )
         .unwrap();
-        watcher.drain_observations(|_, _| {}).unwrap();
+        watcher.drain_status(|_, _| {}).unwrap();
         assert_eq!(watcher.observation.value.activity, Activity::Ready);
         assert_eq!(
             watcher.observation.value.outcome,
@@ -1360,7 +1370,7 @@ mod tests {
                 "data":{"toolCallId":"wait-call","toolName":"bash","arguments":input,"turnId":"0"},
             }))).unwrap();
             let path = crate::session::hook_feed::status_path(root.path(), "session");
-            let mut watcher = CopilotStatusWatcher::start(&path, "current".into(), home).unwrap();
+            let mut watcher = TestWatcher::start(&path, "current".into(), home).unwrap();
             let mut feed = OpenOptions::new().append(true).open(&path).unwrap();
             let approval = [
                 json!({"hook_event_name":"PermissionRequest","session_id":"main","tool_name":"bash","tool_input":{"command":"sleep 60"}}),
@@ -1376,7 +1386,7 @@ mod tests {
                     writeln!(feed, "{value}").unwrap();
                 }
             }
-            watcher.drain_observations(|_, _| {}).unwrap();
+            watcher.drain_status(|_, _| {}).unwrap();
             assert_eq!(
                 watcher.observation.value.needs_you(),
                 !completion_before_hooks
@@ -1388,7 +1398,7 @@ mod tests {
             });
             if completion_before_escape {
                 writeln!(events, "{completion}").unwrap();
-                watcher.drain_observations(|_, _| {}).unwrap();
+                watcher.drain_status(|_, _| {}).unwrap();
                 assert_eq!(watcher.observation.value.activity, Activity::Working);
                 assert!(!watcher.observation.value.needs_you());
                 assert_eq!(
@@ -1402,17 +1412,14 @@ mod tests {
                     writeln!(feed, "{value}").unwrap();
                 }
                 watcher.feed.dirty.store(true, Ordering::Release);
-                watcher.drain_observations(|_, _| {}).unwrap();
+                watcher.drain_status(|_, _| {}).unwrap();
                 assert!(
                     !watcher.observation.value.needs_you(),
                     "late hooks reopened approval"
                 );
             }
-            watcher.interrupt.store(
-                crate::session::pty_runtime::interrupt_key(b"\x1b[27u").unwrap(),
-                Ordering::Release,
-            );
-            watcher.drain_observations(|_, _| {}).unwrap();
+            watcher.cancel = crate::session::pty_runtime::interrupt_key(b"\x1b[27u").unwrap();
+            watcher.drain_status(|_, _| {}).unwrap();
             assert_eq!(
                 watcher.observation.value.needs_you(),
                 !completion_before_escape
@@ -1433,7 +1440,7 @@ mod tests {
                 json!({"type":"abort","data":{"reason":"user_abort"}})
             )
             .unwrap();
-            watcher.drain_observations(|_, _| {}).unwrap();
+            watcher.drain_status(|_, _| {}).unwrap();
             assert_eq!(watcher.observation.value.activity, Activity::Ready);
             assert_eq!(
                 watcher.observation.value.outcome,
@@ -1451,7 +1458,7 @@ mod tests {
                 writeln!(feed, "{value}").unwrap();
             }
             watcher.feed.dirty.store(true, Ordering::Release);
-            watcher.drain_observations(|_, _| {}).unwrap();
+            watcher.drain_status(|_, _| {}).unwrap();
             assert_eq!(watcher.observation.value.activity, Activity::Ready);
             assert_eq!(
                 watcher.observation.value.outcome,
@@ -1480,6 +1487,7 @@ mod tests {
         );
         let second = state.transcript_calls["two"].clone();
         state.wait(
+            crate::session::clock::timestamp_millis(),
             WaitReason::Answer,
             vec![state.transcript_calls["one"].clone()],
         );
@@ -1504,7 +1512,7 @@ mod tests {
         assert_eq!(state.tools.len(), 2);
         assert!(observe(&mut state, json!({"hook_event_name":"PermissionRequest","session_id":"main","tool_name":"bash","tool_input":{"command":"sleep 60"}})).is_none());
         assert!(observe(&mut state, json!({"hook_event_name":"Notification","session_id":"main","notification_type":"permission_prompt"})).is_none());
-        assert_eq!(state.value, value);
+        assert_eq!(state.value.published(), value);
         assert!(state
             .observe_transcript(&json!({"type":"permission.completed","data":{"toolCallId":"one"}}))
             .is_none());
@@ -1528,7 +1536,7 @@ mod tests {
         install_plugin(root.path()).unwrap();
         let home = root.path().join("copilot-home");
         let path = crate::session::hook_feed::status_path(root.path(), "session");
-        let mut watcher = CopilotStatusWatcher::start(&path, "current".into(), home).unwrap();
+        let mut watcher = TestWatcher::start(&path, "current".into(), home).unwrap();
         fs::write(&path, "not json\n").unwrap();
         let mut file = OpenOptions::new().append(true).open(&path).unwrap();
         writeln!(
@@ -1552,7 +1560,7 @@ mod tests {
         file.write_all(&current.as_bytes()[..20]).unwrap();
         watcher.feed.dirty.store(true, Ordering::Release);
         watcher
-            .drain_observations(|_, _| panic!("partial report"))
+            .drain_status(|_, _| panic!("partial report"))
             .unwrap();
         file.write_all(&current.as_bytes()[20..]).unwrap();
         let foreign = json!({
@@ -1564,9 +1572,7 @@ mod tests {
         writeln!(file, "{foreign}").unwrap();
         watcher.feed.dirty.store(true, Ordering::Release);
         let mut values = Vec::new();
-        watcher
-            .drain_observations(|value, _| values.push(value))
-            .unwrap();
+        watcher.drain_status(|value, _| values.push(value)).unwrap();
         assert_eq!(values.len(), 1);
         assert_eq!(values[0].activity, Activity::Working);
     }
@@ -1606,8 +1612,7 @@ mod tests {
 
         let path = crate::session::hook_feed::status_path(&app_data, "session with spaces");
         let mut watcher =
-            CopilotStatusWatcher::start(&path, "current".into(), root.path().join("copilot-home"))
-                .unwrap();
+            TestWatcher::start(&path, "current".into(), root.path().join("copilot-home")).unwrap();
         let mut payload = report("UserPromptSubmit");
         payload["prompt"] = json!("x\n".repeat(128 * 1024));
         let output = run_reporter(
@@ -1620,14 +1625,12 @@ mod tests {
         assert!(output.stdout.is_empty());
         assert!(output.stderr.is_empty());
         let mut values = Vec::new();
-        watcher
-            .drain_observations(|value, _| values.push(value))
-            .unwrap();
+        watcher.drain_status(|value, _| values.push(value)).unwrap();
         assert_eq!(values.last().unwrap().activity, Activity::Working);
 
         fs::remove_file(&reporter).unwrap();
         watcher.feed.dirty.store(true, Ordering::Release);
-        assert!(watcher.drain_observations(|_, _| {}).is_err());
+        assert!(watcher.drain_status(|_, _| {}).is_err());
         drop(watcher);
         assert_eq!(fs::read_dir(path.parent().unwrap()).unwrap().count(), 0);
     }
@@ -1638,10 +1641,9 @@ mod tests {
         install_plugin(root.path()).unwrap();
         let path = crate::session::hook_feed::status_path(root.path(), "disabled");
         let mut watcher =
-            CopilotStatusWatcher::start(&path, "current".into(), root.path().join("copilot-home"))
-                .unwrap();
+            TestWatcher::start(&path, "current".into(), root.path().join("copilot-home")).unwrap();
         let mut transitions = 0;
-        watcher.drain_observations(|_, _| transitions += 1).unwrap();
+        watcher.drain_status(|_, _| transitions += 1).unwrap();
         assert_eq!(transitions, 0);
         assert_eq!(
             watcher.observation.value.source,
@@ -1678,12 +1680,9 @@ mod tests {
 
             let path = crate::session::hook_feed::status_path(&app_data, "session with spaces");
             let path = PathBuf::from(hook_path(&path));
-            let mut watcher = CopilotStatusWatcher::start(
-                &path,
-                "current".into(),
-                root.path().join("copilot-home"),
-            )
-            .unwrap();
+            let mut watcher =
+                TestWatcher::start(&path, "current".into(), root.path().join("copilot-home"))
+                    .unwrap();
             let mut payload = report("UserPromptSubmit");
             payload["prompt"] = json!(format!("你好 {}", "x\n".repeat(128 * 1024)));
             let env = [
@@ -1704,14 +1703,12 @@ mod tests {
             assert!(output.status.success(), "{shell}: {output:?}");
             assert!(output.stdout.is_empty() && output.stderr.is_empty());
             let mut values = Vec::new();
-            watcher
-                .drain_observations(|value, _| values.push(value))
-                .unwrap();
+            watcher.drain_status(|value, _| values.push(value)).unwrap();
             assert_eq!(values.last().unwrap().activity, Activity::Working);
 
             fs::remove_file(reporter_path(&app_data)).unwrap();
             watcher.feed.dirty.store(true, Ordering::Release);
-            assert!(watcher.drain_observations(|_, _| {}).is_err());
+            assert!(watcher.drain_status(|_, _| {}).is_err());
             drop(watcher);
             assert_eq!(fs::read_dir(path.parent().unwrap()).unwrap().count(), 0);
             let late = run_powershell(shell, &command("Stop"), &env, b"{}").unwrap();

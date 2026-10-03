@@ -1,5 +1,7 @@
+use crate::model::Runtime;
+use crate::session::state::agent::{AdapterFeedback, AgentEvent};
+#[cfg(test)]
 use crate::session::state::StatusSource;
-use std::collections::BTreeSet;
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
 
@@ -7,11 +9,11 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::error::Result;
-use crate::session::hook_feed::{self, HookFeed, TranscriptTail};
-use crate::session::status::{
-    Activity, AgentObservation, ObservationSource, TurnOutcome, WorkDetail,
-};
+use crate::session::hook_feed::{self, HookFeed};
+use crate::session::status::TurnOutcome;
 
+#[cfg(test)]
+use crate::session::status::{Activity, AgentObservation, ObservationSource, WorkDetail};
 pub(crate) const PATH_ENV: &str = "RUNNER_CODEX_STATUS_PATH";
 pub(crate) const GENERATION_ENV: &str = "RUNNER_CODEX_STATUS_GENERATION";
 pub(crate) const EVENTS: &[&str] = &[
@@ -63,54 +65,51 @@ struct StatusReport {
     #[serde(default)]
     hook_event_name: String,
     source: Option<String>,
-    session_id: Option<String>,
+    pub(crate) session_id: Option<String>,
     turn_id: Option<String>,
-    transcript_path: Option<PathBuf>,
+    pub(crate) transcript_path: Option<PathBuf>,
     agent_id: Option<String>,
 }
 
-#[derive(Default)]
-struct CodexObservation {
-    value: AgentObservation,
+#[derive(Clone, Default)]
+struct CodexParser {
     session_id: Option<String>,
     turn_id: Option<String>,
-    retired_turns: BTreeSet<String>,
+    retired_turns: std::collections::BTreeSet<String>,
     pending_tools: usize,
     compacting: bool,
-    compaction_resume: Option<CompactionResume>,
     ended: bool,
     transcript_path: Option<PathBuf>,
+    abort_reported: bool,
+    seen: bool,
+    abort_settled: bool,
 }
-
-struct CompactionResume {
-    working: bool,
-    outcome: Option<TurnOutcome>,
-}
-
-impl CodexObservation {
-    fn observe(&mut self, report: StatusReport) -> Option<AgentObservation> {
+impl CodexParser {
+    fn hook(&mut self, report: StatusReport) -> Option<Vec<AgentEvent>> {
         if report.agent_id.is_some() || !EVENTS.contains(&report.hook_event_name.as_str()) {
             return None;
         }
-        let session_id = report.session_id.filter(|id| !id.is_empty())?;
-        let new_session = self.session_id.as_ref().is_some_and(|id| *id != session_id);
+        let session = report.session_id.filter(|id| !id.is_empty())?;
+        let new_session = self.session_id.as_ref().is_some_and(|id| *id != session);
         if new_session && report.hook_event_name != "SessionStart" {
             return None;
         }
         if report.hook_event_name == "SessionStart" && (new_session || self.ended) {
             if new_session {
                 self.retired_turns.clear();
-            } else if let Some(turn_id) = self.turn_id.take() {
-                self.retired_turns.insert(turn_id);
+            } else if let Some(turn) = self.turn_id.take() {
+                self.retired_turns.insert(turn);
             }
             self.turn_id = None;
             self.pending_tools = 0;
             self.compacting = false;
-            self.compaction_resume = None;
             self.ended = false;
             self.transcript_path = None;
+            self.abort_reported = false;
+
+            self.abort_settled = false;
         }
-        self.session_id = Some(session_id);
+        self.session_id = Some(session);
         if report.hook_event_name == "SessionStart" {
             if report.source.as_deref() == Some("compact") && self.compacting {
                 if let Some(path) = report.transcript_path {
@@ -118,16 +117,12 @@ impl CodexObservation {
                 }
                 return None;
             }
-            // Delayed startup/resume and compaction hooks cannot reset a running turn.
             if self.turn_id.is_some() || self.ended {
                 return None;
             }
             self.transcript_path = report.transcript_path;
-            self.value.activity = Activity::Idle;
-            self.value.source = ObservationSource::Hook;
-            self.value.outcome = None;
-            self.value.detail = None;
-            return Some(self.value.clone());
+            self.seen = true;
+            return Some(vec![AgentEvent::StartupReady]);
         }
         if self.ended {
             return None;
@@ -136,163 +131,105 @@ impl CodexObservation {
             self.ended = true;
             self.pending_tools = 0;
             self.compacting = false;
-            self.compaction_resume = None;
-            self.value.activity = if self.value.outcome.is_some() {
-                Activity::Ready
-            } else {
-                Activity::Unavailable
-            };
-            self.value.detail = None;
-            return (self.value.source == ObservationSource::Hook).then(|| self.value.clone());
+            return self.seen.then(|| vec![AgentEvent::SessionEnded]);
         }
-        let turn_id = report.turn_id.filter(|id| !id.is_empty())?;
-        if self.retired_turns.contains(&turn_id) {
+        let turn = report.turn_id.filter(|id| !id.is_empty())?;
+        if self.retired_turns.contains(&turn) {
             return None;
         }
-        if report.hook_event_name == "UserPromptSubmit" {
-            if self.turn_id.as_ref() == Some(&turn_id) {
+        let event = if report.hook_event_name == "UserPromptSubmit" {
+            if self.turn_id.as_ref() == Some(&turn) {
                 return None;
             }
-            if let Some(previous) = self.turn_id.replace(turn_id) {
+            if let Some(previous) = self.turn_id.replace(turn) {
                 self.retired_turns.insert(previous);
             }
             self.pending_tools = 0;
             self.compacting = false;
-            self.compaction_resume = None;
-            self.value.outcome = None;
-            self.value.activity = Activity::Working;
-            self.value.detail = None;
+            self.abort_reported = false;
+
+            self.abort_settled = false;
+            AgentEvent::TurnStarted
         } else {
-            // Esc can abort startup before UserPromptSubmit runs.
             if self.turn_id.is_none() && report.hook_event_name == "Interrupt" {
-                self.turn_id = Some(turn_id.clone());
+                self.turn_id = Some(turn.clone());
             }
-            if self.turn_id.as_ref() != Some(&turn_id) {
+            if self.turn_id.as_ref() != Some(&turn) {
                 return None;
             }
             match report.hook_event_name.as_str() {
                 "Interrupt" => {
-                    if self.value.outcome == Some(TurnOutcome::Interrupted) {
-                        return None;
-                    }
+                    self.abort_reported = true;
+
                     self.pending_tools = 0;
                     self.compacting = false;
-                    self.compaction_resume = None;
-                    self.value.activity = Activity::Unavailable;
-                    self.value.outcome = Some(TurnOutcome::Interrupted);
-                    self.value.detail = None;
+                    AgentEvent::TurnEnded {
+                        outcome: TurnOutcome::Interrupted,
+                    }
                 }
                 "Stop" => {
-                    if self.value.outcome == Some(TurnOutcome::Interrupted) {
-                        return None;
-                    }
                     self.pending_tools = 0;
                     self.compacting = false;
-                    self.compaction_resume = None;
-                    self.value.activity = Activity::Ready;
-                    self.value.outcome = Some(TurnOutcome::Completed);
-                    self.value.detail = None;
+                    AgentEvent::TurnEnded {
+                        outcome: TurnOutcome::Completed,
+                    }
                 }
                 "PreToolUse" => {
-                    if self.value.outcome == Some(TurnOutcome::Interrupted) {
-                        return None;
-                    }
                     self.pending_tools += 1;
-                    self.value.activity = Activity::Working;
-                    self.value.outcome = None;
-                    self.update_detail();
+                    AgentEvent::ToolStarted {
+                        count: self.pending_tools,
+                        question: None,
+                    }
                 }
                 "PostToolUse" => {
-                    if self.value.outcome.is_some() {
-                        return None;
-                    }
                     self.pending_tools = self.pending_tools.saturating_sub(1);
-                    self.value.activity = Activity::Working;
-                    self.update_detail();
+                    AgentEvent::ToolEnded {
+                        owner: None,
+                        count: self.pending_tools,
+                        interrupted: false,
+                        transcript: false,
+                    }
                 }
                 "PreCompact" => {
-                    if self.value.outcome == Some(TurnOutcome::Interrupted) {
-                        return None;
-                    }
-                    if !self.compacting {
-                        self.compaction_resume = Some(CompactionResume {
-                            working: self.value.activity == Activity::Working
-                                && self.value.outcome.is_none(),
-                            outcome: self.value.outcome,
-                        });
-                    }
                     self.compacting = true;
-                    self.value.activity = Activity::Working;
-                    self.value.outcome = None;
-                    self.update_detail();
+                    AgentEvent::CompactionStarted
                 }
                 "PostCompact" => {
-                    if self.value.outcome.is_some() {
-                        return None;
-                    }
                     self.compacting = false;
-                    match self.compaction_resume.take() {
-                        Some(resume) if !resume.working => {
-                            self.value.activity = Activity::Ready;
-                            self.value.outcome = resume.outcome;
-                            self.update_detail();
-                        }
-                        _ => {
-                            self.value.activity = Activity::Working;
-                            self.update_detail();
-                        }
-                    }
+                    AgentEvent::CompactionEnded
                 }
                 _ => return None,
             }
-        }
+        };
         if let Some(path) = report.transcript_path {
             self.transcript_path = Some(path);
         }
-        self.value.source = ObservationSource::Hook;
-        Some(self.value.clone())
+        self.seen = true;
+        Some(vec![event])
     }
-
-    fn update_detail(&mut self) {
-        self.value.detail =
-            if self.value.activity != Activity::Working || self.value.outcome.is_some() {
-                None
-            } else if self.compacting {
-                Some(WorkDetail::CompactingContext)
-            } else if self.pending_tools > 0 {
-                Some(WorkDetail::UsingTools)
-            } else {
-                None
-            };
-    }
-
-    fn awaiting_abort(&self) -> bool {
-        !self.ended
-            && self.value.outcome == Some(TurnOutcome::Interrupted)
-            && self.value.activity == Activity::Unavailable
-    }
-
-    fn observe_transcript(&mut self, record: &Value) {
+    fn record(&mut self, record: &Value) -> Option<Vec<AgentEvent>> {
         let payload = &record["payload"];
-        // Interrupt hooks run before Codex publishes the native abort boundary.
-        if self.awaiting_abort()
+        if !self.ended
+            && self.abort_reported
+            && !self.abort_settled
             && record["type"] == "event_msg"
             && payload["type"] == "turn_aborted"
             && payload["reason"] == "interrupted"
             && payload["turn_id"].as_str().is_some()
             && payload["turn_id"].as_str() == self.turn_id.as_deref()
         {
-            self.value.activity = Activity::Ready;
+            self.abort_settled = true;
+            return Some(vec![AgentEvent::AbortSettled]);
         }
+        None
     }
 }
 
 pub(crate) struct CodexStatusWatcher {
     feed: HookFeed,
-    observation: CodexObservation,
-    transcript: Option<TranscriptTail>,
+    parser: CodexParser,
+    transcript: Option<crate::session::hook_feed::TranscriptTail>,
 }
-
 impl CodexStatusWatcher {
     pub(crate) fn start(path: &Path, generation: String) -> Result<Self> {
         Ok(Self {
@@ -301,25 +238,17 @@ impl CodexStatusWatcher {
             } else {
                 HookFeed::start(path, generation, APPEND_SCRIPT)?
             },
-            observation: CodexObservation::default(),
+            parser: Default::default(),
             transcript: None,
         })
     }
-
-    #[cfg(test)]
-    pub(crate) fn drain_observations(
+    pub(crate) fn drain_events(
         &mut self,
-        mut transition: impl FnMut(AgentObservation, StatusSource),
-    ) -> Result<()> {
-        self.drain_with_session_starts(&mut transition, |_| {})
-    }
-
-    pub(crate) fn drain_with_session_starts(
-        &mut self,
-        mut transition: impl FnMut(AgentObservation, StatusSource),
+        cancel: u8,
+        mut emit: impl FnMut(AgentEvent) -> AdapterFeedback,
         mut session_start: impl FnMut(String),
     ) -> Result<()> {
-        self.feed.drain(false, |report| {
+        self.feed.drain(cancel != 0, |report| {
             if let Ok(report) = serde_json::from_value::<StatusReport>(report) {
                 if report.hook_event_name == "SessionStart" && report.agent_id.is_none() {
                     if let Some(id) = report.session_id.as_deref() {
@@ -328,57 +257,190 @@ impl CodexStatusWatcher {
                         }
                     }
                 }
-                if let Some(value) = self.observation.observe(report) {
-                    transition(value, StatusSource::Hook);
+                if let Some(events) = self.parser.hook(report) {
+                    emit(AgentEvent::Batch {
+                        runtime: Runtime::Codex,
+                        events,
+                    });
                 }
             }
         })?;
-        if !self.observation.awaiting_abort() {
-            return Ok(());
+        self.drain_transcript(&mut emit);
+        Ok(())
+    }
+    fn drain_transcript(&mut self, emit: &mut impl FnMut(AgentEvent) -> AdapterFeedback) {
+        if !self.parser.abort_reported || self.parser.abort_settled || self.parser.ended {
+            return;
         }
-        let Some(path) = self.observation.transcript_path.as_ref() else {
-            return Ok(());
+        let Some(path) = self.parser.transcript_path.clone() else {
+            return;
         };
         if self
             .transcript
             .as_ref()
-            .is_none_or(|tail| tail.path != *path)
+            .is_none_or(|tail| tail.path != path)
         {
-            self.transcript = TranscriptTail::open(path).ok();
+            self.transcript = crate::session::hook_feed::TranscriptTail::open(&path).ok();
         }
         let Some(tail) = self.transcript.as_mut() else {
-            return Ok(());
+            return;
         };
-        let before = self.observation.value.clone();
+        let mut events = Vec::new();
         while let Ok(count) = tail.reader.read_until(b'\n', &mut tail.pending) {
             if count == 0 || tail.pending.last() != Some(&b'\n') {
                 break;
             }
             if let Ok(record) = serde_json::from_slice(&tail.pending) {
-                self.observation.observe_transcript(&record);
+                if let Some(record_events) = self.parser.record(&record) {
+                    events.extend(record_events);
+                }
             }
             tail.pending.clear();
         }
-        if before != self.observation.value {
-            transition(self.observation.value.clone(), StatusSource::Hook);
+        if !events.is_empty() {
+            emit(AgentEvent::Transcript {
+                runtime: Runtime::Codex,
+                events,
+            });
         }
-        Ok(())
     }
 }
-
 impl crate::session::hook_feed::HookWatcher for CodexStatusWatcher {
-    fn drain_observations(
+    fn drain_events(
         &mut self,
-        transition: &mut dyn FnMut(crate::session::status::AgentObservation, StatusSource),
+        cancel: u8,
+        emit: &mut dyn FnMut(AgentEvent) -> AdapterFeedback,
         session_start: &mut dyn FnMut(String),
     ) -> Result<()> {
-        self.drain_with_session_starts(transition, session_start)
+        self.drain_events(cancel, emit, session_start)
     }
 }
 
 #[cfg(test)]
+#[derive(Clone, Default)]
+struct CodexObservation {
+    parser: CodexParser,
+    model: crate::session::state::agent::AgentModel,
+    value: crate::session::state::agent::TurnState,
+}
+#[cfg(test)]
+impl std::ops::Deref for CodexObservation {
+    type Target = CodexParser;
+    fn deref(&self) -> &Self::Target {
+        &self.parser
+    }
+}
+#[cfg(test)]
+impl std::ops::DerefMut for CodexObservation {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.parser
+    }
+}
+#[cfg(test)]
+impl CodexObservation {
+    fn observe(&mut self, event: StatusReport, now: i64) -> Option<AgentObservation> {
+        let events = self.parser.hook(event)?;
+        let reduced = self.model.reduce(
+            AgentEvent::Batch {
+                runtime: Runtime::Codex,
+                events,
+            },
+            now,
+        );
+        self.value = self.model.value.clone();
+        reduced
+    }
+    fn observe_transcript(&mut self, record: &serde_json::Value) -> Option<AgentObservation> {
+        let events = self.parser.record(record)?;
+        let reduced = self.model.reduce(
+            AgentEvent::Transcript {
+                runtime: Runtime::Codex,
+                events,
+            },
+            crate::session::clock::timestamp_millis(),
+        );
+        self.value = self.model.value.clone();
+        reduced
+    }
+}
+#[cfg(test)]
 mod tests {
     use super::*;
+
+    struct TestWatcher {
+        inner: CodexStatusWatcher,
+        observation: CodexObservation,
+        cancel: u8,
+    }
+    impl std::ops::Deref for TestWatcher {
+        type Target = CodexStatusWatcher;
+        fn deref(&self) -> &Self::Target {
+            &self.inner
+        }
+    }
+    impl std::ops::DerefMut for TestWatcher {
+        fn deref_mut(&mut self) -> &mut Self::Target {
+            &mut self.inner
+        }
+    }
+    impl TestWatcher {
+        fn start(path: &Path, generation: String) -> Result<Self> {
+            Ok(Self {
+                inner: CodexStatusWatcher::start(path, generation)?,
+                observation: Default::default(),
+                cancel: 0,
+            })
+        }
+        fn drain_with_session_starts(
+            &mut self,
+            mut publish: impl FnMut(AgentObservation, StatusSource),
+            starts: impl FnMut(String),
+        ) -> Result<()> {
+            self.inner.parser = self.observation.parser.clone();
+            let cancel = std::mem::take(&mut self.cancel);
+            let mut events = Vec::new();
+            let result = self.inner.drain_events(
+                cancel,
+                |event| {
+                    events.push(event);
+                    Default::default()
+                },
+                starts,
+            );
+            for event in events {
+                let source = if let AgentEvent::Batch { events, .. } = &event {
+                    match events.first() {
+                        Some(AgentEvent::LocalCancel { kind })
+                            if kind & crate::session::state::CTRL_C_INTERRUPT != 0 =>
+                        {
+                            StatusSource::InputInterrupt
+                        }
+                        Some(AgentEvent::LocalCancel { .. }) => StatusSource::InputEscape,
+                        _ => StatusSource::Hook,
+                    }
+                } else {
+                    StatusSource::Hook
+                };
+                if let Some(value) = self
+                    .observation
+                    .model
+                    .reduce(event, crate::session::clock::timestamp_millis())
+                {
+                    publish(value, source);
+                }
+            }
+            self.observation.value = self.observation.model.value.clone();
+            self.observation.parser = self.inner.parser.clone();
+            result
+        }
+        fn drain_status(
+            &mut self,
+            publish: impl FnMut(AgentObservation, StatusSource),
+        ) -> Result<()> {
+            self.drain_with_session_starts(publish, |_| {})
+        }
+    }
+
     use serde_json::json;
     use std::fs::{self, OpenOptions};
     use std::io::Write;
@@ -389,7 +451,10 @@ mod tests {
     }
 
     fn observe(state: &mut CodexObservation, value: Value) -> Option<AgentObservation> {
-        state.observe(serde_json::from_value(value).unwrap())
+        state.observe(
+            serde_json::from_value::<StatusReport>(value).unwrap(),
+            crate::session::clock::timestamp_millis(),
+        )
     }
 
     fn abort(turn: &str) -> Value {
@@ -400,7 +465,7 @@ mod tests {
     fn only_current_generation_root_session_starts_report_keys() {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("codex.ndjson");
-        let mut watcher = CodexStatusWatcher::start(&path, "current".into()).unwrap();
+        let mut watcher = TestWatcher::start(&path, "current".into()).unwrap();
         let old = uuid::Uuid::new_v4().to_string();
         let new = uuid::Uuid::new_v4().to_string();
         let reports = [
@@ -650,7 +715,7 @@ mod tests {
             assert!(state.retired_turns.contains("old"));
             assert_eq!(state.pending_tools, 0);
             assert!(!state.compacting);
-            assert!(state.compaction_resume.is_none());
+            assert!(state.model.compaction_resume.is_none());
             assert!(!state.ended);
             assert_eq!(state.transcript_path, None);
 
@@ -676,7 +741,7 @@ mod tests {
             let tool = observe(&mut state, report("PreToolUse", "fresh")).unwrap();
             assert_eq!(tool.detail, Some(WorkDetail::UsingTools));
             assert!(observe(&mut state, report("SessionStart", "")).is_none());
-            assert_eq!(state.value, tool);
+            assert_eq!(state.value.published(), tool);
             assert!(observe(&mut state, report("Stop", "old")).is_none());
             let stopped = observe(&mut state, report("Stop", "fresh")).unwrap();
             assert_eq!(stopped.activity, Activity::Ready);
@@ -871,27 +936,23 @@ mod tests {
         let path = dir.path().join("status.ndjson");
         let transcript = dir.path().join("rollout.jsonl");
         fs::write(&transcript, format!("{}\n", abort("old"))).unwrap();
-        let mut watcher = CodexStatusWatcher::start(&path, "current".into()).unwrap();
+        let mut watcher = TestWatcher::start(&path, "current".into()).unwrap();
         for event in ["UserPromptSubmit", "Interrupt"] {
             let mut value = report(event, "one");
             value["transcript_path"] = json!(transcript);
             append(&path, &value);
         }
         let mut values = Vec::new();
-        watcher
-            .drain_observations(|value, _| values.push(value))
-            .unwrap();
+        watcher.drain_status(|value, _| values.push(value)).unwrap();
         assert_eq!(values.last().unwrap().activity, Activity::Unavailable);
         let line = format!("{}\n", abort("one"));
         let mut file = OpenOptions::new().append(true).open(&transcript).unwrap();
         file.write_all(&line.as_bytes()[..20]).unwrap();
         watcher
-            .drain_observations(|_, _| panic!("partial abort"))
+            .drain_status(|_, _| panic!("partial abort"))
             .unwrap();
         file.write_all(&line.as_bytes()[20..]).unwrap();
-        watcher
-            .drain_observations(|value, _| values.push(value))
-            .unwrap();
+        watcher.drain_status(|value, _| values.push(value)).unwrap();
         assert_eq!(values.last().unwrap().activity, Activity::Ready);
         assert_eq!(
             values.last().unwrap().outcome,
@@ -903,13 +964,13 @@ mod tests {
     fn missing_transcript_preserves_interrupted_unavailable_until_new_work() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("status.ndjson");
-        let mut watcher = CodexStatusWatcher::start(&path, "current".into()).unwrap();
+        let mut watcher = TestWatcher::start(&path, "current".into()).unwrap();
         for event in ["UserPromptSubmit", "Interrupt"] {
             let mut value = report(event, "one");
             value["transcript_path"] = json!(dir.path().join("missing"));
             append(&path, &value);
         }
-        watcher.drain_observations(|_, _| {}).unwrap();
+        watcher.drain_status(|_, _| {}).unwrap();
         assert_eq!(watcher.observation.value.activity, Activity::Unavailable);
         assert_eq!(
             watcher.observation.value.outcome,
@@ -917,7 +978,7 @@ mod tests {
         );
         append(&path, &report("UserPromptSubmit", "two"));
         watcher.feed.dirty.store(true, Ordering::Release);
-        watcher.drain_observations(|_, _| {}).unwrap();
+        watcher.drain_status(|_, _| {}).unwrap();
         assert_eq!(watcher.observation.value.activity, Activity::Working);
     }
 
@@ -946,7 +1007,7 @@ mod tests {
         let path = dir
             .path()
             .join("quote ' triple ''' dollar $ backtick ` space.ndjson");
-        let mut watcher = CodexStatusWatcher::start(&path, "current".into()).unwrap();
+        let mut watcher = TestWatcher::start(&path, "current".into()).unwrap();
         let mut large = report("UserPromptSubmit", "one");
         large["prompt"] = json!("x\n".repeat(128 * 1024));
         run_hook(
@@ -968,20 +1029,16 @@ mod tests {
         let mut file = OpenOptions::new().append(true).open(&path).unwrap();
         file.write_all(&stop.as_bytes()[..20]).unwrap();
         let mut values = Vec::new();
-        watcher
-            .drain_observations(|value, _| values.push(value))
-            .unwrap();
+        watcher.drain_status(|value, _| values.push(value)).unwrap();
         assert_eq!(values.len(), 1);
         assert_eq!(values[0].activity, Activity::Working);
         file.write_all(&stop.as_bytes()[20..]).unwrap();
         watcher.feed.dirty.store(true, Ordering::Release);
-        watcher
-            .drain_observations(|value, _| values.push(value))
-            .unwrap();
+        watcher.drain_status(|value, _| values.push(value)).unwrap();
         assert_eq!(values.last().unwrap().activity, Activity::Ready);
         fs::remove_file(hook_feed::script_path(&path)).unwrap();
         watcher.feed.dirty.store(true, Ordering::Release);
-        assert!(watcher.drain_observations(|_, _| {}).is_err());
+        assert!(watcher.drain_status(|_, _| {}).is_err());
         drop(watcher);
         assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0);
         run_hook(&path, "Stop", &vec![b'x'; 256 * 1024]);
@@ -1013,7 +1070,7 @@ mod tests {
                 .path()
                 .join("quote ' triple ''' dollar $ backtick ` space 你好.ndjson");
             let path = PathBuf::from(hook_feed::hook_path(&path));
-            let mut watcher = CodexStatusWatcher::start(&path, "current".into()).unwrap();
+            let mut watcher = TestWatcher::start(&path, "current".into()).unwrap();
             let mut large = report("UserPromptSubmit", "one");
             large["prompt"] = json!(format!("你好 {}", "x\n".repeat(128 * 1024)));
             if !run_powershell_hook(
@@ -1039,21 +1096,17 @@ mod tests {
             let mut file = OpenOptions::new().append(true).open(&path).unwrap();
             file.write_all(&stop.as_bytes()[..20]).unwrap();
             let mut values = Vec::new();
-            watcher
-                .drain_observations(|value, _| values.push(value))
-                .unwrap();
+            watcher.drain_status(|value, _| values.push(value)).unwrap();
             assert_eq!(values.len(), 1, "{shell}");
             assert_eq!(values[0].activity, Activity::Working);
             file.write_all(&stop.as_bytes()[20..]).unwrap();
             drop(file);
             watcher.feed.dirty.store(true, Ordering::Release);
-            watcher
-                .drain_observations(|value, _| values.push(value))
-                .unwrap();
+            watcher.drain_status(|value, _| values.push(value)).unwrap();
             assert_eq!(values.last().unwrap().activity, Activity::Ready);
             fs::remove_file(&path).unwrap();
             watcher.feed.dirty.store(true, Ordering::Release);
-            assert!(watcher.drain_observations(|_, _| {}).is_err());
+            assert!(watcher.drain_status(|_, _| {}).is_err());
             drop(watcher);
             assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0);
             run_powershell_hook(shell, &path, "Stop", &vec![b'x'; 256 * 1024]);

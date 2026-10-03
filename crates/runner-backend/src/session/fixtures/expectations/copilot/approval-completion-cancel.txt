@@ -1,0 +1,22 @@
+runtime=copilot name=approval-completion-cancel rules=[6,8] bugs=[] known_wrong=[]
+session_status_rows=published
+100 status=running/idle/hook activity="idle" completion_armed=false quiescent=true key=null delivery=["Respawned"]
+  busy@spawn [running/working/baseline]
+  idle@hook [running/idle/hook]
+200 status=running/working/hook activity="busy" completion_armed=true
+  busy@hook [running/working/hook]
+300 status=running/working/hook detail="using_tools"
+  busy@hook [running/working/hook detail="using_tools"]
+400
+500
+600 status=running/working/hook detail="using_tools" interactions=[{"id":"copilot-1","reason":"approval","owners":["copilot-tool-1"],"since":1767225600600}] quiescent=false
+  busy@hook [running/working/hook detail="using_tools" interactions=[{"id":"copilot-1","reason":"approval","owners":["copilot-tool-1"],"since":1767225600600}]]
+700 status=running/unavailable/hook outcome="interrupted" interactions=[{"id":"copilot-1","reason":"approval","owners":["copilot-tool-1"],"since":1767225600600}] completion_armed=false delivery=["InputQueueDrained"]
+  busy@hook [running/unavailable/hook outcome="interrupted" interactions=[{"id":"copilot-1","reason":"approval","owners":["copilot-tool-1"],"since":1767225600600}]]
+800 status=running/ready/hook outcome="interrupted" activity="idle" delivery=["InputCleared"]
+  idle@hook [running/ready/hook outcome="interrupted"]
+900 result={"completion_consumed":false,"viewed":false}
+1000
+1100
+1200
+1300

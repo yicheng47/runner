@@ -1,5 +1,7 @@
+use crate::model::Runtime;
+use crate::session::state::agent::{AdapterFeedback, AgentEvent};
+#[cfg(test)]
 use crate::session::state::StatusSource;
-use std::collections::BTreeSet;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -8,11 +10,10 @@ use serde::Deserialize;
 
 use crate::error::Result;
 use crate::session::hook_feed::HookFeed;
-use crate::session::status::{
-    Activity, AgentObservation, HumanInteraction, ObservationSource, TurnOutcome, WaitReason,
-    WorkDetail,
-};
+use crate::session::status::{TurnOutcome, WaitReason};
 
+#[cfg(test)]
+use crate::session::status::{Activity, AgentObservation, ObservationSource, WorkDetail};
 pub(crate) const PATH_ENV: &str = "RUNNER_PI_STATUS_PATH";
 pub(crate) const GENERATION_ENV: &str = "RUNNER_PI_STATUS_GENERATION";
 pub(crate) const SESSION_KEY_ENV: &str = "RUNNER_PI_SESSION_KEY";
@@ -171,7 +172,7 @@ struct StatusReport {
     #[serde(default)]
     hook_event_name: String,
     reason: Option<String>,
-    session_id: Option<String>,
+    pub(crate) session_id: Option<String>,
     #[serde(rename = "toolCallId")]
     tool_call_id: Option<String>,
     #[serde(rename = "toolName")]
@@ -182,156 +183,95 @@ struct StatusReport {
     title: Option<String>,
 }
 
-struct CompactionResume {
-    activity: Activity,
-    outcome: Option<TurnOutcome>,
-}
-
-#[derive(Default)]
-struct PiObservation {
-    value: AgentObservation,
-    open_tools: BTreeSet<String>,
+#[derive(Clone, Default)]
+struct PiParser {
+    open_tools: std::collections::BTreeSet<String>,
     compacting: bool,
-    compaction_resume: Option<CompactionResume>,
-    pending_outcome: Option<TurnOutcome>,
-    next_interaction: u64,
 }
-
-impl PiObservation {
-    fn observe(&mut self, report: StatusReport) -> Option<AgentObservation> {
-        match report.hook_event_name.as_str() {
+impl PiParser {
+    fn hook(&mut self, report: StatusReport) -> Option<Vec<AgentEvent>> {
+        let event = match report.hook_event_name.as_str() {
             "session_start" => {
                 if report.reason.as_deref() == Some("reload") {
                     return None;
                 }
-                let _ = report.session_id.filter(|id| !id.is_empty())?;
+                report.session_id.filter(|id| !id.is_empty())?;
                 self.open_tools.clear();
                 self.compacting = false;
-                self.compaction_resume = None;
-                self.pending_outcome = None;
-                self.value.activity = Activity::Idle;
-                self.value.outcome = None;
-                self.value.interactions.clear();
-                self.value.detail = None;
-                self.value.source = ObservationSource::Hook;
+                AgentEvent::StartupReady
             }
             "agent_start" => {
                 self.open_tools.clear();
                 self.compacting = false;
-                self.compaction_resume = None;
-                self.pending_outcome = None;
-                self.value.activity = Activity::Working;
-                self.value.outcome = None;
-                self.update_detail();
+                AgentEvent::TurnStarted
             }
             "tool_execution_start" => {
                 let id = report.tool_call_id.filter(|id| !id.is_empty())?;
-                let _ = report.tool_name.filter(|name| !name.is_empty())?;
+                report.tool_name.filter(|name| !name.is_empty())?;
                 if !self.open_tools.insert(id) {
                     return None;
                 }
-                self.value.activity = Activity::Working;
-                self.value.outcome = None;
-                self.update_detail();
+                AgentEvent::ToolStarted {
+                    count: self.open_tools.len(),
+                    question: None,
+                }
             }
             "tool_execution_end" => {
                 let id = report.tool_call_id.filter(|id| !id.is_empty())?;
-                let _ = report.tool_name.filter(|name| !name.is_empty())?;
+                report.tool_name.filter(|name| !name.is_empty())?;
                 if !self.open_tools.remove(&id) {
                     return None;
                 }
-                self.value.activity = Activity::Working;
-                self.update_detail();
+                AgentEvent::ToolEnded {
+                    owner: None,
+                    count: self.open_tools.len(),
+                    interrupted: false,
+                    transcript: false,
+                }
             }
             "session_before_compact" => {
-                if !self.compacting {
-                    self.compaction_resume = Some(CompactionResume {
-                        activity: self.value.activity,
-                        outcome: self.value.outcome,
-                    });
-                }
                 self.compacting = true;
-                self.value.activity = Activity::Working;
-                self.value.outcome = None;
-                self.update_detail();
+                AgentEvent::CompactionStarted
             }
             "session_compact" | "session_compact_failed" => {
                 if !self.compacting {
                     return None;
                 }
                 self.compacting = false;
-                if let Some(resume) = self.compaction_resume.take() {
-                    self.value.activity = resume.activity;
-                    self.value.outcome = resume.outcome;
-                }
-                self.update_detail();
+                AgentEvent::CompactionEnded
             }
-            "message_end" => {
-                self.pending_outcome = Some(match report.stop_reason.as_deref() {
+            "message_end" => AgentEvent::Outcome {
+                outcome: match report.stop_reason.as_deref() {
                     Some("error") => TurnOutcome::Failed,
                     Some("aborted") => TurnOutcome::Interrupted,
                     _ => TurnOutcome::Completed,
-                });
-                return None;
-            }
+                },
+            },
             "agent_settled" => {
                 self.open_tools.clear();
                 self.compacting = false;
-                self.compaction_resume = None;
-                self.value.activity = Activity::Ready;
-                self.value.outcome = self.pending_outcome.take();
-                self.value.detail = None;
+                AgentEvent::Settled
             }
-            "ui_prompt_start" => {
-                let reason = match report.kind.as_deref()? {
+            "ui_prompt_start" => AgentEvent::ReplaceInteraction {
+                reason: match report.kind.as_deref()? {
                     "confirm" => WaitReason::Approval,
                     "select" | "input" | "editor" => WaitReason::Answer,
                     "custom" => WaitReason::Unknown,
                     _ => return None,
-                };
-                if self.value.interactions.len() == 1 && self.value.interactions[0].reason == reason
-                {
-                    return None;
-                }
-                self.next_interaction += 1;
-                self.value.interactions.clear();
-                self.value.interactions.push(HumanInteraction {
-                    id: format!("pi-{}", self.next_interaction),
-                    reason,
-                    owners: vec![report.title.unwrap_or_else(|| "pi-ui".into())],
-                    since: crate::session::clock::timestamp_millis(),
-                });
-            }
-            "ui_prompt_end" | "session_shutdown" => {
-                if self.value.interactions.is_empty() {
-                    return None;
-                }
-                self.value.interactions.clear();
-            }
+                },
+                owner: report.title.unwrap_or_else(|| "pi-ui".into()),
+            },
+            "ui_prompt_end" | "session_shutdown" => AgentEvent::ClearInteractions,
             _ => return None,
-        }
-        self.value.source = ObservationSource::Hook;
-        Some(self.value.clone())
-    }
-
-    fn update_detail(&mut self) {
-        self.value.detail = if self.value.activity != Activity::Working {
-            None
-        } else if self.compacting {
-            Some(WorkDetail::CompactingContext)
-        } else if !self.open_tools.is_empty() {
-            Some(WorkDetail::UsingTools)
-        } else {
-            None
         };
+        Some(vec![event])
     }
 }
 
 pub(crate) struct PiStatusWatcher {
     feed: HookFeed,
-    observation: PiObservation,
+    parser: PiParser,
 }
-
 impl PiStatusWatcher {
     pub(crate) fn start(path: &Path, generation: String) -> Result<Self> {
         let app_data_dir = path
@@ -340,34 +280,74 @@ impl PiStatusWatcher {
             .expect("status file is under app data");
         Ok(Self {
             feed: HookFeed::start_external(path, generation, &extension_path(app_data_dir))?,
-            observation: PiObservation::default(),
+            parser: Default::default(),
         })
     }
-
-    pub(crate) fn drain_observations(
+    pub(crate) fn drain_events(
         &mut self,
-        mut transition: impl FnMut(AgentObservation, StatusSource),
+        cancel: u8,
+        mut emit: impl FnMut(AgentEvent) -> AdapterFeedback,
+        _session_start: impl FnMut(String),
     ) -> Result<()> {
-        self.feed.drain(false, |report| {
-            if let Ok(report) = serde_json::from_value(report) {
-                if let Some(value) = self.observation.observe(report) {
-                    transition(value, StatusSource::Hook);
+        self.feed.drain(cancel != 0, |report| {
+            if let Ok(report) = serde_json::from_value::<StatusReport>(report) {
+                if let Some(events) = self.parser.hook(report) {
+                    emit(AgentEvent::Batch {
+                        runtime: Runtime::Pi,
+                        events,
+                    });
                 }
             }
-        })
+        })?;
+        Ok(())
     }
 }
-
 impl crate::session::hook_feed::HookWatcher for PiStatusWatcher {
-    fn drain_observations(
+    fn drain_events(
         &mut self,
-        transition: &mut dyn FnMut(crate::session::status::AgentObservation, StatusSource),
-        _session_start: &mut dyn FnMut(String),
+        cancel: u8,
+        emit: &mut dyn FnMut(AgentEvent) -> AdapterFeedback,
+        session_start: &mut dyn FnMut(String),
     ) -> Result<()> {
-        self.drain_observations(transition)
+        self.drain_events(cancel, emit, session_start)
     }
 }
 
+#[cfg(test)]
+#[derive(Clone, Default)]
+struct PiObservation {
+    parser: PiParser,
+    model: crate::session::state::agent::AgentModel,
+    value: crate::session::state::agent::TurnState,
+}
+#[cfg(test)]
+impl std::ops::Deref for PiObservation {
+    type Target = PiParser;
+    fn deref(&self) -> &Self::Target {
+        &self.parser
+    }
+}
+#[cfg(test)]
+impl std::ops::DerefMut for PiObservation {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.parser
+    }
+}
+#[cfg(test)]
+impl PiObservation {
+    fn observe(&mut self, event: StatusReport, now: i64) -> Option<AgentObservation> {
+        let events = self.parser.hook(event)?;
+        let reduced = self.model.reduce(
+            AgentEvent::Batch {
+                runtime: Runtime::Pi,
+                events,
+            },
+            now,
+        );
+        self.value = self.model.value.clone();
+        reduced
+    }
+}
 #[cfg(test)]
 mod tests {
     use std::fs::{self, OpenOptions};
@@ -379,12 +359,89 @@ mod tests {
 
     use super::*;
 
+    struct TestWatcher {
+        inner: PiStatusWatcher,
+        observation: PiObservation,
+        cancel: u8,
+    }
+    impl std::ops::Deref for TestWatcher {
+        type Target = PiStatusWatcher;
+        fn deref(&self) -> &Self::Target {
+            &self.inner
+        }
+    }
+    impl std::ops::DerefMut for TestWatcher {
+        fn deref_mut(&mut self) -> &mut Self::Target {
+            &mut self.inner
+        }
+    }
+    impl TestWatcher {
+        fn start(path: &Path, generation: String) -> Result<Self> {
+            Ok(Self {
+                inner: PiStatusWatcher::start(path, generation)?,
+                observation: Default::default(),
+                cancel: 0,
+            })
+        }
+        fn drain_with_session_starts(
+            &mut self,
+            mut publish: impl FnMut(AgentObservation, StatusSource),
+            starts: impl FnMut(String),
+        ) -> Result<()> {
+            self.inner.parser = self.observation.parser.clone();
+            let cancel = std::mem::take(&mut self.cancel);
+            let mut events = Vec::new();
+            let result = self.inner.drain_events(
+                cancel,
+                |event| {
+                    events.push(event);
+                    Default::default()
+                },
+                starts,
+            );
+            for event in events {
+                let source = if let AgentEvent::Batch { events, .. } = &event {
+                    match events.first() {
+                        Some(AgentEvent::LocalCancel { kind })
+                            if kind & crate::session::state::CTRL_C_INTERRUPT != 0 =>
+                        {
+                            StatusSource::InputInterrupt
+                        }
+                        Some(AgentEvent::LocalCancel { .. }) => StatusSource::InputEscape,
+                        _ => StatusSource::Hook,
+                    }
+                } else {
+                    StatusSource::Hook
+                };
+                if let Some(value) = self
+                    .observation
+                    .model
+                    .reduce(event, crate::session::clock::timestamp_millis())
+                {
+                    publish(value, source);
+                }
+            }
+            self.observation.value = self.observation.model.value.clone();
+            self.observation.parser = self.inner.parser.clone();
+            result
+        }
+        fn drain_status(
+            &mut self,
+            publish: impl FnMut(AgentObservation, StatusSource),
+        ) -> Result<()> {
+            self.drain_with_session_starts(publish, |_| {})
+        }
+    }
+
     fn report(event: &str) -> Value {
         json!({"hook_event_name": event})
     }
 
     fn observe(state: &mut PiObservation, value: Value) -> Option<AgentObservation> {
-        state.observe(serde_json::from_value(value).unwrap())
+        state.observe(
+            serde_json::from_value::<StatusReport>(value).unwrap(),
+            crate::session::clock::timestamp_millis(),
+        )
     }
 
     #[test]
@@ -590,7 +647,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         install_extension(root.path()).unwrap();
         let path = crate::session::hook_feed::status_path(root.path(), "pi-status");
-        let mut watcher = PiStatusWatcher::start(&path, "current".into()).unwrap();
+        let mut watcher = TestWatcher::start(&path, "current".into()).unwrap();
         let mut file = OpenOptions::new().append(true).open(&path).unwrap();
         writeln!(file, "not json").unwrap();
         writeln!(
@@ -622,9 +679,7 @@ mod tests {
         }
         watcher.feed.dirty.store(true, Ordering::Release);
         let mut values = Vec::new();
-        watcher
-            .drain_observations(|value, _| values.push(value))
-            .unwrap();
+        watcher.drain_status(|value, _| values.push(value)).unwrap();
         assert_eq!(values.len(), 3);
         assert_eq!(values[0].activity, Activity::Idle);
         assert_eq!(values[0].source, ObservationSource::Hook);
@@ -632,7 +687,7 @@ mod tests {
         assert_eq!(values[2].outcome, Some(TurnOutcome::Failed));
         fs::remove_file(extension_path(root.path())).unwrap();
         watcher.feed.dirty.store(true, Ordering::Release);
-        assert!(watcher.drain_observations(|_, _| {}).is_err());
+        assert!(watcher.drain_status(|_, _| {}).is_err());
         drop(watcher);
         assert_eq!(fs::read_dir(path.parent().unwrap()).unwrap().count(), 0);
     }
@@ -711,7 +766,7 @@ if (process.env.RETURN_SESSION_ID) {
         let new_key = "22222222-2222-4222-8222-222222222222";
         let drop_path = crate::session::claude_rekey::drop_path(&app_data, "runner-session");
         let feed_path = crate::session::hook_feed::status_path(&app_data, "extension-e2e");
-        let mut watcher = PiStatusWatcher::start(&feed_path, "current".into()).unwrap();
+        let mut watcher = TestWatcher::start(&feed_path, "current".into()).unwrap();
         let output = Command::new("node")
             .arg(&driver)
             .env(PATH_ENV, &feed_path)
@@ -746,9 +801,7 @@ if (process.env.RETURN_SESSION_ID) {
         );
         watcher.feed.dirty.store(true, Ordering::Release);
         let mut values = Vec::new();
-        watcher
-            .drain_observations(|value, _| values.push(value))
-            .unwrap();
+        watcher.drain_status(|value, _| values.push(value)).unwrap();
         assert_eq!(values.first().unwrap().activity, Activity::Idle);
         assert_eq!(values.first().unwrap().source, ObservationSource::Hook);
         assert_eq!(values[1].activity, Activity::Working);
@@ -760,7 +813,7 @@ if (process.env.RETURN_SESSION_ID) {
 
         fs::remove_file(&drop_path).unwrap();
         let matching_feed = crate::session::hook_feed::status_path(&app_data, "matching-key");
-        let _matching_watcher = PiStatusWatcher::start(&matching_feed, "matching".into()).unwrap();
+        let _matching_watcher = TestWatcher::start(&matching_feed, "matching".into()).unwrap();
         let output = Command::new("node")
             .arg(&driver)
             .env(PATH_ENV, &matching_feed)

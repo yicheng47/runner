@@ -1,6 +1,6 @@
-use crate::session::status::{
-    Activity, AgentObservation, AgentStatus, ObservationSource, TurnOutcome,
-};
+#[cfg(test)]
+use super::status::AgentObservation;
+use crate::session::status::{Activity, AgentStatus, ObservationSource, TurnOutcome};
 // Per-role session manager.
 //
 // One `Session` = one child process attached to an in-process PTY via
@@ -1240,6 +1240,77 @@ impl SessionManager {
             .is_some()
     }
 
+    fn note_terminal_event(&self, session_id: &str, event: crate::runtimes::TerminalEvent) -> bool {
+        use crate::runtimes::TerminalEvent;
+        let session = self.session_state_or_insert(session_id);
+        let mut session = session.lock().unwrap();
+        let live = session.handle.is_some() && !session.killed;
+        let event = match event {
+            TerminalEvent::Activity(state) => SessionEvent::Transition {
+                state,
+                source: StatusSource::Forwarder,
+                live,
+            },
+            TerminalEvent::Title(state) => SessionEvent::Title { state, live },
+            TerminalEvent::Ready(state) => SessionEvent::Readiness { state, live },
+        };
+        session
+            .model
+            .apply(event, super::clock::state_now())
+            .publication
+            .is_some()
+    }
+
+    fn publish_direct_terminal_event(
+        &self,
+        session_id: &str,
+        event: crate::runtimes::TerminalEvent,
+        events: &dyn SessionEvents,
+    ) {
+        if !self.note_terminal_event(session_id, event) {
+            return;
+        }
+        events.status(&SessionActivityEvent {
+            session_id: session_id.to_owned(),
+            state: event.state(),
+            source: StatusSource::Forwarder,
+            status: self.agent_status(session_id),
+        });
+    }
+
+    #[cfg(test)]
+    pub(crate) fn publish_mission_terminal_event(
+        &self,
+        session_id: &str,
+        event: crate::runtimes::TerminalEvent,
+        events: &dyn SessionEvents,
+    ) {
+        if !self.note_terminal_event(session_id, event) {
+            return;
+        }
+        let (status, sink) = {
+            let session = self.session_state(session_id).unwrap();
+            let session = session.lock().unwrap();
+            (
+                session.model.status().clone(),
+                session.mission_status_sink.clone(),
+            )
+        };
+        events.status(&SessionActivityEvent {
+            session_id: session_id.to_owned(),
+            state: event.state(),
+            source: StatusSource::Forwarder,
+            status: status.clone(),
+        });
+        if let Some(sink) = sink {
+            if let Err(error) =
+                sink.append_session_status(event.state(), StatusSource::Forwarder, &status)
+            {
+                log::warn!("append spawn session_status failed for {session_id}: {error}");
+            }
+        }
+    }
+
     pub(crate) fn synthesize_wake_busy(&self, session_id: &str, draft: EventDraft) -> Result<()> {
         let session = self
             .session_state(session_id)
@@ -1400,63 +1471,85 @@ impl SessionManager {
             .collect()
     }
 
+    fn publish_agent_event(
+        &self,
+        session_id: &str,
+        event: super::state::agent::AgentEvent,
+        events: &dyn SessionEvents,
+    ) -> super::state::agent::AdapterFeedback {
+        self.publish_model_event(
+            session_id,
+            SessionEvent::Agent { event, live: true },
+            events,
+        )
+    }
+
+    fn publish_model_event(
+        &self,
+        session_id: &str,
+        mut event: SessionEvent,
+        events: &dyn SessionEvents,
+    ) -> super::state::agent::AdapterFeedback {
+        let Some(session) = self.session_state(session_id) else {
+            return Default::default();
+        };
+        let (status, sink, effects) = {
+            let mut session = session.lock().unwrap();
+            let is_live = session.handle.is_some() && !session.killed;
+            match &mut event {
+                SessionEvent::Agent { live, .. } | SessionEvent::BridgeFailed { live } => {
+                    *live = is_live
+                }
+                _ => {}
+            }
+            let effects = session.model.apply(event, super::clock::state_now());
+            (
+                session.model.status().clone(),
+                session.mission_status_sink.clone(),
+                effects,
+            )
+        };
+        if let Some((state, source)) = effects.publication {
+            events.status(&SessionActivityEvent {
+                session_id: session_id.to_owned(),
+                state,
+                source,
+                status,
+            });
+            let status = self.agent_status(session_id);
+            if let Some(sink) = sink {
+                let draft = sink.session_status_draft(state, source, &status);
+                if let Err(error) = sink.try_append_with_retry(draft) {
+                    log::warn!("publish hook observation: {error:?}");
+                }
+            }
+            if effects.input_cleared {
+                self.notify_delivery_event(session_id, router::SessionDeliveryEvent::InputCleared);
+            }
+        }
+        effects.agent_feedback
+    }
+
+    #[cfg(test)]
     fn publish_observation(
         &self,
         session_id: &str,
         observation: AgentObservation,
         events: &dyn SessionEvents,
     ) {
-        let Some(session) = self.session_state(session_id) else {
-            return;
-        };
-        let (status, sink, released, state, source) = {
-            let mut session = session.lock().unwrap();
-            let live = session.handle.is_some() && !session.killed;
-            let effects = session.model.apply(
-                SessionEvent::Observation { observation, live },
-                super::clock::state_now(),
-            );
-            let Some((state, source)) = effects.publication else {
-                return;
-            };
-            (
-                session.model.status().clone(),
-                session.mission_status_sink.clone(),
-                effects.input_cleared,
-                state,
-                source,
-            )
-        };
-        events.status(&SessionActivityEvent {
-            session_id: session_id.to_owned(),
-            state,
-            source,
-            status,
-        });
-        let status = self.agent_status(session_id);
-        if let Some(sink) = sink {
-            let draft = sink.session_status_draft(state, source, &status);
-            if let Err(error) = sink.try_append_with_retry(draft) {
-                log::warn!("publish hook observation: {error:?}");
-            }
-        }
-        if released {
-            self.notify_delivery_event(session_id, router::SessionDeliveryEvent::InputCleared);
-        }
+        self.publish_agent_event(
+            session_id,
+            super::state::agent::AgentEvent::Published(observation),
+            events,
+        );
     }
 
     fn status_bridge_failed(&self, session_id: &str, events: &dyn SessionEvents) {
-        let Some(session) = self.session_state(session_id) else {
-            return;
-        };
-        let observation = session
-            .lock()
-            .unwrap()
-            .model
-            .apply(SessionEvent::BridgeFailed, super::clock::state_now())
-            .fallback
-            .unwrap();
-        self.publish_observation(session_id, observation, events);
+        self.publish_model_event(
+            session_id,
+            SessionEvent::BridgeFailed { live: true },
+            events,
+        );
     }
 
     pub fn activity_snapshot(&self) -> BTreeMap<String, SessionActivityState> {

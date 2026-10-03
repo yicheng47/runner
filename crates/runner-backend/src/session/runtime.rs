@@ -19,10 +19,9 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Default)]
 pub struct SpawnSpec {
     pub agent_runtime: Option<crate::model::Runtime>,
-    /// Codex starts without a hook handshake. Some(true) includes an automatic
-    /// first turn (also when Windows will paste it); Some(false) awaits input.
-    /// None keeps the output-based fallback used by other runtimes.
-    pub codex_pending_turn: Option<bool>,
+    /// Whether the adapter expects an automatic first turn, including a
+    /// first turn delivered by paste. None uses the generic output fallback.
+    pub pending_turn: Option<bool>,
     /// ULID of the `sessions` row that will own this runtime session.
     /// The runtime uses this for deterministic naming
     /// (`runner-<session_id>`), and persists nothing else about the
@@ -140,8 +139,12 @@ pub enum RuntimeOutput {
     /// Live PTY bytes the agent wrote since the last `Stream` chunk. The
     /// frontend terminal **appends** them.
     Stream(Vec<u8>),
-    AgentObservation(super::status::AgentObservation),
-    CodexSessionStart(String),
+    AgentEvent {
+        event: super::state::agent::AgentEvent,
+        feedback: Option<std::sync::mpsc::Sender<super::state::agent::AdapterFeedback>>,
+    },
+    ConversationStart(String),
+    TerminalEvent(crate::runtimes::TerminalEvent),
     StatusBridgeFailed,
     /// Forwarder-inferred busy/idle transition. `source` is
     /// `StatusSource::Forwarder` for these synthetic events.
@@ -164,6 +167,8 @@ pub enum RuntimeOutput {
 /// which leaks one OS thread per detach. The wrapper trades the
 /// `Receiver` API for explicit `recv_timeout` and `try_recv`.
 pub struct OutputStream {
+    #[cfg(test)]
+    test_agent: std::sync::Mutex<super::state::agent::AgentModel>,
     inner: std::sync::mpsc::Receiver<RuntimeOutput>,
     /// Set to true when this `OutputStream` is dropped. The
     /// runtime's reader thread polls this flag every tick and exits
@@ -181,7 +186,12 @@ impl OutputStream {
         inner: std::sync::mpsc::Receiver<RuntimeOutput>,
         stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
     ) -> Self {
-        Self { inner, stop }
+        Self {
+            inner,
+            stop,
+            #[cfg(test)]
+            test_agent: Default::default(),
+        }
     }
 
     /// Mirrors `Receiver::recv_timeout`. Used by the integration
@@ -328,5 +338,63 @@ mod tests {
         assert!(!stop.load(Ordering::SeqCst));
         drop(output);
         assert!(stop.load(Ordering::SeqCst));
+    }
+}
+
+#[cfg(test)]
+#[derive(Debug)]
+pub(crate) enum TestOutput {
+    Stream(Vec<u8>),
+    AgentObservation(super::status::AgentObservation),
+    ConversationStart,
+    StatusBridgeFailed,
+    StatusTransition {
+        state: SessionActivityState,
+        source: StatusSource,
+    },
+}
+
+#[cfg(test)]
+impl OutputStream {
+    pub(crate) fn recv_status_timeout(
+        &self,
+        timeout: std::time::Duration,
+    ) -> Result<TestOutput, std::sync::mpsc::RecvTimeoutError> {
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            let output = self
+                .inner
+                .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))?;
+            match output {
+                RuntimeOutput::AgentEvent {
+                    event,
+                    feedback: reply,
+                } => {
+                    let (reduced, feedback) = self
+                        .test_agent
+                        .lock()
+                        .unwrap()
+                        .reduce_with_feedback(event, super::clock::timestamp_millis());
+                    if let Some(reply) = reply {
+                        let _ = reply.send(feedback);
+                    }
+                    if let Some(observation) = reduced {
+                        return Ok(TestOutput::AgentObservation(observation));
+                    }
+                }
+                RuntimeOutput::TerminalEvent(event) => {
+                    return Ok(TestOutput::StatusTransition {
+                        state: event.state(),
+                        source: StatusSource::Forwarder,
+                    })
+                }
+                RuntimeOutput::Stream(bytes) => return Ok(TestOutput::Stream(bytes)),
+                RuntimeOutput::ConversationStart(_) => return Ok(TestOutput::ConversationStart),
+                RuntimeOutput::StatusBridgeFailed => return Ok(TestOutput::StatusBridgeFailed),
+                RuntimeOutput::StatusTransition { state, source } => {
+                    return Ok(TestOutput::StatusTransition { state, source })
+                }
+            }
+        }
     }
 }

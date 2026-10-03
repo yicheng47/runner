@@ -333,11 +333,13 @@ fn replay(path: &Path) -> Value {
     );
     crate::repo::session::insert(&conn, &row).unwrap();
     let start = Instant::now();
-    let mut detector = IdleDetector::with_startup_at(
+    let mut detector = IdleDetector::with_adapter_at(
         Duration::from_secs(2),
-        (header.runtime == "codex").then_some(header.pending_turn),
+        crate::runtimes::for_key(&header.runtime)
+            .terminal_adapter((header.runtime == "codex").then_some(header.pending_turn)),
         start,
     );
+    let mut cancel = 0;
     let mut timeline = Vec::new();
     let mut token = None;
     with_conversation_home(&home, || {
@@ -357,9 +359,9 @@ fn replay(path: &Path) -> Value {
                 let mut transition = None;
                 match step.event {
                     Event::Output { bytes, quiet } => {
-                        transition = detector.on_output_at(bytes.as_bytes(), quiet, now)
+                        transition = detector.on_output_event_at(bytes.as_bytes(), quiet, now)
                     }
-                    Event::Tick => transition = detector.tick_at(now),
+                    Event::Tick => transition = detector.tick_event_at(now),
                     Event::Input { bytes } => {
                         manager
                             .inject_direct_stdin(ID, bytes.as_bytes(), events.as_ref())
@@ -368,12 +370,7 @@ fn replay(path: &Path) -> Value {
                         if let Some(interrupt) =
                             crate::session::pty_runtime::interrupt_key(bytes.as_bytes())
                         {
-                            if let Some(signal) = watcher
-                                .as_ref()
-                                .and_then(|watcher| watcher.interrupt_signal())
-                            {
-                                signal.fetch_or(interrupt, Ordering::AcqRel);
-                            }
+                            cancel |= interrupt;
                         }
                     }
                     Event::Composer { state, visible } => manager.report_input_state(
@@ -496,9 +493,10 @@ fn replay(path: &Path) -> Value {
                         .unwrap();
                         watcher = Some(self::watcher(&header.runtime, &feed, &home, &generation));
                         install_replay_handle(&manager, &conn, events.as_ref(), &log);
-                        detector = IdleDetector::with_startup_at(
+                        detector = IdleDetector::with_adapter_at(
                             Duration::from_secs(2),
-                            (header.runtime == "codex").then_some(false),
+                            crate::runtimes::for_key(&header.runtime)
+                                .terminal_adapter((header.runtime == "codex").then_some(false)),
                             now,
                         );
                         manager.publish_mission_activity(
@@ -567,27 +565,22 @@ fn replay(path: &Path) -> Value {
                     }
                 }
                 if let Some(state) = transition {
-                    manager.publish_mission_activity(
-                        ID,
-                        state,
-                        crate::session::state::StatusSource::Forwarder,
-                        events.as_ref(),
-                    );
+                    manager.publish_mission_terminal_event(ID, state, events.as_ref());
                 }
-                let mut observations = Vec::new();
                 let mut starts = Vec::new();
                 if let Some(active_watcher) = watcher.as_mut() {
-                    match active_watcher.drain_observations(
-                        &mut |observation, _| observations.push(observation),
+                    match active_watcher.drain_events(
+                        std::mem::take(&mut cancel),
+                        &mut |event| {
+                            if detector.accept_event(&event) {
+                                manager.publish_agent_event(ID, event, events.as_ref())
+                            } else {
+                                Default::default()
+                            }
+                        },
                         &mut |key| starts.push(key),
                     ) {
-                        Ok(()) => {
-                            for observation in observations {
-                                if detector.accept_hook(&observation) {
-                                    manager.publish_observation(ID, observation, events.as_ref());
-                                }
-                            }
-                        }
+                        Ok(()) => {}
                         Err(_) => {
                             detector.hooks_unavailable();
                             manager.status_bridge_failed(ID, events.as_ref());

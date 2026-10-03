@@ -134,14 +134,19 @@ impl Normalizer {
         let interrupt = adapter
             .status_hooks()
             .and_then(|hooks| hooks.start_watcher(&spec))
-            .map(|watcher| watcher.interrupt_signal().is_some());
+            .map(|_| {
+                matches!(
+                    spec.agent_runtime.unwrap(),
+                    Runtime::ClaudeCode | Runtime::Copilot | Runtime::Antigravity
+                )
+            });
         let rollout = mgr.codex_capture_context(&spec.session_id).map(|ctx| {
             json!({
                 "sessions_root": self.text(&ctx.sessions_root.to_string_lossy(), root).replace("<TMP>", "<HOME>"),
                 "prompt_marker": ctx.prompt_marker.map(|marker| self.text(&marker, root))
             })
         });
-        json!({"env": env, "codex_pending_turn": spec.codex_pending_turn,
+        json!({"env": env, "codex_pending_turn": spec.pending_turn,
             "watcher": watcher, "interrupt": interrupt, "key_capture": capture, "rollout": rollout})
     }
 }

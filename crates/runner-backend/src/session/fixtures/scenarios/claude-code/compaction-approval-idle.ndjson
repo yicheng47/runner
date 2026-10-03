@@ -1,0 +1,11 @@
+{"runtime":"claude-code","name":"compaction-approval-idle","rules":[6,7,8],"bugs":[],"known_wrong":[],"pending_turn":false}
+{"ms":100,"event":"hook","report":{"hook_event_name":"SessionStart","session_id":"11111111-1111-4111-8111-111111111111","transcript_path":"<TRANSCRIPT>"}}
+{"ms":200,"event":"hook","report":{"hook_event_name":"UserPromptSubmit","session_id":"11111111-1111-4111-8111-111111111111","transcript_path":"<TRANSCRIPT>"}}
+{"ms":300,"event":"hook","report":{"hook_event_name":"PreToolUse","session_id":"11111111-1111-4111-8111-111111111111","tool_use_id":"command","tool_name":"Bash","tool_input":{"command":"echo sample"}}}
+{"ms":400,"event":"hook","report":{"hook_event_name":"PermissionRequest","session_id":"11111111-1111-4111-8111-111111111111","tool_use_id":"command","tool_name":"Bash","tool_input":{"command":"echo sample"}}}
+{"ms":500,"event":"hook","report":{"hook_event_name":"Notification","session_id":"11111111-1111-4111-8111-111111111111","notification_type":"permission_prompt"}}
+{"ms":600,"event":"hook","report":{"hook_event_name":"PreCompact","session_id":"11111111-1111-4111-8111-111111111111"}}
+{"ms":700,"event":"hook","report":{"hook_event_name":"Notification","session_id":"11111111-1111-4111-8111-111111111111","notification_type":"idle_prompt"}}
+{"ms":800,"event":"hook","report":{"hook_event_name":"SessionStart","session_id":"11111111-1111-4111-8111-111111111111","source":"compact","transcript_path":"<TRANSCRIPT>"}}
+{"ms":900,"event":"hook","report":{"hook_event_name":"PostToolUse","session_id":"11111111-1111-4111-8111-111111111111","tool_use_id":"command","tool_name":"Bash","tool_input":{"command":"echo sample"}}}
+{"ms":1000,"event":"hook","report":{"hook_event_name":"Stop","session_id":"11111111-1111-4111-8111-111111111111","stop_reason":"end_turn"}}

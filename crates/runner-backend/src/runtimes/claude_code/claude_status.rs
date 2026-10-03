@@ -1,4 +1,8 @@
+use crate::model::Runtime;
+use crate::session::state::agent::{AdapterFeedback, AgentEvent};
+#[cfg(test)]
 use crate::session::state::StatusSource;
+#[cfg(test)]
 use crate::session::state::CTRL_C_INTERRUPT;
 #[cfg(test)]
 use crate::session::state::ESCAPE_INTERRUPT;
@@ -6,8 +10,8 @@ use crate::session::state::ESCAPE_INTERRUPT;
 use std::fs::{self, File, OpenOptions};
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU8, Ordering};
-use std::sync::Arc;
+#[cfg(test)]
+use std::sync::atomic::Ordering;
 
 use serde::Deserialize;
 
@@ -15,16 +19,14 @@ use crate::error::Result;
 
 #[cfg(test)]
 use crate::session::hook_feed::script_path;
+use crate::session::hook_feed::HookFeed;
 pub(crate) use crate::session::hook_feed::{clear_leftovers, hook_command, status_path};
-use crate::session::hook_feed::{HookFeed, TranscriptTail};
 #[cfg(test)]
 use crate::session::runtime::SessionActivityState;
-use crate::session::status::{
-    Activity, AgentObservation, HumanInteraction, ObservationSource, TurnOutcome, WaitReason,
-    WorkDetail,
-};
-use std::collections::BTreeMap;
+use crate::session::status::{TurnOutcome, WaitReason};
 
+#[cfg(test)]
+use crate::session::status::{Activity, AgentObservation, ObservationSource, WorkDetail};
 pub(crate) const PATH_ENV: &str = "RUNNER_CLAUDE_STATUS_PATH";
 pub(crate) const GENERATION_ENV: &str = "RUNNER_CLAUDE_STATUS_GENERATION";
 pub(crate) const HOOK_TIMEOUT_SECS: u64 = 2;
@@ -44,9 +46,9 @@ struct StatusReport {
     hook_event_name: String,
     notification_type: Option<String>,
     source: Option<String>,
-    session_id: Option<String>,
-    transcript_path: Option<PathBuf>,
-    prompt_id: Option<String>,
+    pub(crate) session_id: Option<String>,
+    pub(crate) transcript_path: Option<PathBuf>,
+    pub(crate) prompt_id: Option<String>,
     agent_id: Option<String>,
     tool_use_id: Option<String>,
     tool_name: Option<String>,
@@ -57,33 +59,49 @@ struct StatusReport {
     mcp_server_name: Option<String>,
 }
 
+#[cfg(test)]
+fn parse_transition(line: &[u8], generation: &str) -> Option<SessionActivityState> {
+    let report: serde_json::Value = serde_json::from_slice(line).ok()?;
+    if report.get("generation")?.as_str()? != generation {
+        return None;
+    }
+    let value = ClaudeObservation::default().observe(
+        serde_json::from_value::<StatusReport>(report).ok()?,
+        crate::session::clock::timestamp_millis(),
+    )?;
+    if value.needs_you() {
+        return None;
+    }
+    Some(if value.activity == Activity::Working {
+        SessionActivityState::Busy
+    } else {
+        SessionActivityState::Idle
+    })
+}
+
+#[derive(Clone)]
 struct PendingTool {
     name: String,
     input: Option<serde_json::Value>,
+    prompted: bool,
 }
-
-struct CompactionResume {
-    working: bool,
-    outcome: Option<TurnOutcome>,
+#[derive(Clone)]
+struct PendingElicitation {
+    id: Option<String>,
+    server: String,
+    prompted: bool,
 }
-
-#[derive(Default)]
-struct ClaudeObservation {
-    value: AgentObservation,
+#[derive(Clone, Default)]
+struct ClaudeParser {
     session_id: Option<String>,
     prompt_id: Option<String>,
     transcript_path: Option<PathBuf>,
-    cancelled_tool_result: bool,
-    tools: BTreeMap<String, PendingTool>,
+    tools: std::collections::BTreeMap<String, PendingTool>,
     compacting: bool,
-    compaction_resume: Option<CompactionResume>,
-    permission_tools: Vec<String>,
-    elicitations: BTreeMap<String, String>,
-    next_interaction: u64,
+    elicitations: Vec<PendingElicitation>,
 }
-
-impl ClaudeObservation {
-    fn observe(&mut self, report: StatusReport) -> Option<AgentObservation> {
+impl ClaudeParser {
+    fn hook(&mut self, report: StatusReport) -> Option<Vec<AgentEvent>> {
         if report.agent_id.is_some() || report.hook_event_name.starts_with("Subagent") {
             return None;
         }
@@ -95,8 +113,8 @@ impl ClaudeObservation {
                     .as_ref()
                     .is_none_or(|id| self.session_id.as_ref().is_none_or(|current| current == id))
             {
-                if let Some(session_id) = report.session_id {
-                    self.session_id = Some(session_id);
+                if let Some(id) = report.session_id {
+                    self.session_id = Some(id);
                 }
                 if let Some(path) = report.transcript_path {
                     self.transcript_path = Some(path);
@@ -106,11 +124,8 @@ impl ClaudeObservation {
             self.session_id = report.session_id;
             self.transcript_path = report.transcript_path;
             self.prompt_id = None;
-            self.clear_turn();
-            self.value.activity = Activity::Idle;
-            self.value.source = ObservationSource::Hook;
-            self.value.outcome = None;
-            return Some(self.value.clone());
+            self.clear();
+            return Some(vec![AgentEvent::StartupReady]);
         }
         if self.session_id.is_some()
             && report.session_id.is_some()
@@ -129,423 +144,312 @@ impl ClaudeObservation {
         if let Some(path) = report.transcript_path {
             self.transcript_path = Some(path);
         }
-        match report.hook_event_name.as_str() {
+        let event = match report.hook_event_name.as_str() {
             "UserPromptSubmit" => {
-                self.clear_turn();
-                self.work();
+                self.clear();
+                AgentEvent::TurnStarted
             }
             "PreToolUse" => {
-                self.work();
-                if let (Some(id), Some(name)) = (report.tool_use_id, report.tool_name) {
-                    match name.as_str() {
-                        "AskUserQuestion" => self.wait(WaitReason::Answer, vec![id.clone()]),
-                        "ExitPlanMode" => self.wait(WaitReason::Approval, vec![id.clone()]),
-                        _ => {}
-                    }
-                    self.tools.insert(
-                        id,
-                        PendingTool {
-                            name,
-                            input: report.tool_input,
-                        },
-                    );
-                    self.update_detail();
+                let question =
+                    if let (Some(id), Some(name)) = (report.tool_use_id, report.tool_name) {
+                        let wait = match name.as_str() {
+                            "AskUserQuestion" => Some(WaitReason::Answer),
+                            "ExitPlanMode" => Some(WaitReason::Approval),
+                            _ => None,
+                        };
+                        let prompted =
+                            wait.is_some() || self.tools.get(&id).is_some_and(|tool| tool.prompted);
+                        self.tools.insert(
+                            id.clone(),
+                            PendingTool {
+                                name,
+                                input: report.tool_input,
+                                prompted,
+                            },
+                        );
+                        wait.map(|reason| AgentEvent::InteractionOpened {
+                            reason,
+                            owners: vec![id],
+                        })
+                    } else {
+                        None
+                    };
+                let mut events = vec![AgentEvent::ToolStarted {
+                    count: self.tools.len(),
+                    question: None,
+                }];
+                if let Some(question) = question {
+                    events.push(question);
                 }
+                return Some(events);
             }
-            "PreCompact" => {
-                if !self.compacting {
-                    self.compaction_resume = Some(CompactionResume {
-                        working: self.value.activity == Activity::Working
-                            && self.value.outcome.is_none(),
-                        outcome: self.value.outcome,
-                    });
-                }
-                self.work();
-                self.compacting = true;
-                self.update_detail();
-            }
-            "PostCompact" => {
-                self.compacting = false;
-                match self.compaction_resume.take() {
-                    Some(resume) if !resume.working => {
-                        self.value.activity = Activity::Ready;
-                        self.value.outcome = resume.outcome;
-                        self.update_detail();
-                    }
-                    _ if self.value.outcome.is_none() => self.work(),
-                    _ => self.update_detail(),
-                }
-            }
+            "PreCompact" => AgentEvent::CompactionStarted,
+            "PostCompact" => AgentEvent::CompactionEnded,
             "PermissionRequest" => {
-                if self.value.activity != Activity::Working || self.value.outcome.is_some() {
-                    return None;
-                }
                 let name = report.tool_name?;
                 let owners: Vec<_> = self
                     .tools
                     .iter()
                     .filter_map(|(id, tool)| {
-                        let matches = if let Some(request_id) = report.tool_use_id.as_ref() {
-                            id == request_id
+                        let matches = if let Some(request) = report.tool_use_id.as_ref() {
+                            id == request
                         } else {
                             tool.name == name && tool.input == report.tool_input
                         };
                         matches.then(|| id.clone())
                     })
                     .collect();
-                if owners.is_empty() {
-                    return None;
-                }
-                for id in &owners {
-                    if !self.permission_tools.contains(id) {
-                        self.permission_tools.push(id.clone());
-                    }
-                }
-                self.wait(
-                    if name == "AskUserQuestion" {
+                AgentEvent::PermissionRequested {
+                    reason: if name == "AskUserQuestion" {
                         WaitReason::Answer
                     } else {
                         WaitReason::Approval
                     },
                     owners,
-                );
+                }
             }
             "Elicitation" => {
-                if let Some(server) = report.mcp_server_name {
-                    let id = report.elicitation_id.unwrap_or_else(|| {
-                        self.next_interaction += 1;
-                        format!("server:{server}:{}", self.next_interaction)
-                    });
-                    self.elicitations.insert(id, server);
+                let server = report.mcp_server_name?;
+                let prompted = report.elicitation_id.as_ref().is_some_and(|id| {
+                    self.elicitations
+                        .iter()
+                        .any(|pending| pending.id.as_ref() == Some(id) && pending.prompted)
+                });
+                if let Some(id) = report.elicitation_id.as_ref() {
+                    self.elicitations
+                        .retain(|current| current.id.as_ref() != Some(id));
                 }
-                return None;
-            }
-            "PostToolUse" | "PostToolUseFailure" | "PermissionDenied" => {
-                if let Some(id) = report.tool_use_id {
-                    self.tools.remove(&id);
-                    self.permission_tools.retain(|owner| *owner != id);
-                    self.resolve(&id);
+                self.elicitations.push(PendingElicitation {
+                    id: report.elicitation_id.clone(),
+                    server: server.clone(),
+                    prompted,
+                });
+                AgentEvent::ElicitationRequested {
+                    id: report.elicitation_id,
+                    server,
                 }
-                if report.is_interrupt {
-                    self.value.activity = if self.value.needs_you() {
-                        Activity::Unavailable
-                    } else {
-                        Activity::Ready
-                    };
-                    self.value.outcome = Some(TurnOutcome::Interrupted);
-                } else if self.value.outcome.is_none() {
-                    self.work();
-                }
-                self.update_detail();
             }
             "ElicitationResult" => {
-                let id = report.elicitation_id.or_else(|| {
-                    let server = report.mcp_server_name?;
-                    let mut candidates = self
-                        .elicitations
-                        .iter()
-                        .filter(|(_, owner)| **owner == server);
-                    let (id, _) = candidates.next()?;
-                    candidates.next().is_none().then(|| id.clone())
-                });
-                let id = id?;
-                self.elicitations.remove(&id)?;
-                self.resolve(&id);
-                if self.value.outcome.is_none() {
-                    self.work();
+                let matches: Vec<_> = self
+                    .elicitations
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, pending)| {
+                        if let Some(request) = report.elicitation_id.as_ref() {
+                            pending.id.as_ref() == Some(request)
+                        } else {
+                            report.mcp_server_name.as_ref() == Some(&pending.server)
+                        }
+                    })
+                    .map(|(index, _)| index)
+                    .collect();
+                if matches.len() == 1 {
+                    self.elicitations.remove(matches[0]);
+                }
+                AgentEvent::ElicitationClosed {
+                    id: report.elicitation_id,
+                    server: report.mcp_server_name,
+                }
+            }
+            "PostToolUse" | "PostToolUseFailure" | "PermissionDenied" => {
+                if let Some(id) = report.tool_use_id.as_ref() {
+                    self.tools.remove(id);
+                }
+                AgentEvent::ToolEnded {
+                    owner: report.tool_use_id,
+                    count: self.tools.len(),
+                    interrupted: report.is_interrupt,
+                    transcript: false,
                 }
             }
             "Notification" => match report.notification_type.as_deref() {
-                Some("permission_prompt") => {
-                    if self.value.activity != Activity::Working {
-                        return None;
-                    }
-                    let mut owners = self.permission_tools.clone();
-                    for (id, tool) in &self.tools {
-                        if matches!(
-                            tool.name.as_str(),
-                            "AskUserQuestion" | "ExitPlanMode" | "EnterPlanMode"
-                        ) && !owners.contains(id)
-                        {
-                            owners.push(id.clone());
-                        }
-                    }
-                    let reason = if !owners.is_empty()
-                        && owners.iter().all(|id| {
-                            self.tools
-                                .get(id)
-                                .is_some_and(|tool| tool.name == "AskUserQuestion")
-                        }) {
-                        WaitReason::Answer
-                    } else {
-                        WaitReason::Approval
-                    };
-                    if owners.is_empty()
-                        || owners.iter().any(|owner| {
-                            !self
-                                .value
-                                .interactions
-                                .iter()
-                                .any(|wait| wait.owners.contains(owner))
+                Some("permission_prompt") => AgentEvent::PermissionPrompt {
+                    candidates: self
+                        .tools
+                        .iter()
+                        .map(|(id, tool)| {
+                            (
+                                id.clone(),
+                                match tool.name.as_str() {
+                                    "AskUserQuestion" => WaitReason::Answer,
+                                    "ExitPlanMode" | "EnterPlanMode" => WaitReason::Approval,
+                                    _ => WaitReason::Unknown,
+                                },
+                            )
                         })
-                    {
-                        self.wait(reason, owners);
-                    }
-                }
-                Some("elicitation_dialog") => {
-                    if self.value.activity != Activity::Working || self.elicitations.is_empty() {
-                        return None;
-                    }
-                    self.wait(
-                        WaitReason::Answer,
-                        self.elicitations.keys().cloned().collect(),
-                    );
-                }
-                Some("idle_prompt") if !self.value.needs_you() => {
-                    self.value.activity = Activity::Ready;
-                    self.compacting = false;
-                    self.compaction_resume = None;
-                    self.update_detail();
-                }
+                        .collect(),
+                },
+                Some("elicitation_dialog") => AgentEvent::ElicitationPrompt { owners: Vec::new() },
+                Some("idle_prompt") => AgentEvent::IdlePrompt,
                 _ => return None,
             },
             "Stop" | "StopFailure" => {
-                self.clear_turn();
-                self.value.activity = Activity::Ready;
-                if self.value.outcome != Some(TurnOutcome::Interrupted) {
-                    self.value.outcome = Some(if report.hook_event_name == "Stop" {
+                self.clear();
+                AgentEvent::TurnEnded {
+                    outcome: if report.hook_event_name == "Stop" {
                         TurnOutcome::Completed
                     } else {
                         TurnOutcome::Failed
-                    });
+                    },
                 }
             }
             _ => return None,
-        }
-        self.value.source = ObservationSource::Hook;
-        Some(self.value.clone())
+        };
+        Some(vec![event])
     }
-
-    fn work(&mut self) {
-        self.value.activity = Activity::Working;
-        self.value.outcome = None;
-        self.cancelled_tool_result = false;
-        self.update_detail();
-    }
-
-    fn clear_turn(&mut self) {
-        self.cancelled_tool_result = false;
-        self.value.interactions.clear();
+    fn clear(&mut self) {
         self.tools.clear();
         self.compacting = false;
-        self.compaction_resume = None;
-        self.permission_tools.clear();
         self.elicitations.clear();
-        self.value.detail = None;
     }
-
-    fn update_detail(&mut self) {
-        self.value.detail =
-            if self.value.activity != Activity::Working || self.value.outcome.is_some() {
-                None
-            } else if self.compacting {
-                Some(WorkDetail::CompactingContext)
-            } else if !self.tools.is_empty() {
-                Some(WorkDetail::UsingTools)
-            } else {
-                None
-            };
+    fn accept(&mut self, events: &[AgentEvent], feedback: AdapterFeedback) {
+        self.compacting = feedback.compacting;
+        if !feedback.accepted {
+            return;
+        }
+        for event in events {
+            match event {
+                AgentEvent::PermissionRequested { owners, .. } => {
+                    for owner in owners {
+                        if let Some(tool) = self.tools.get_mut(owner) {
+                            tool.prompted = true;
+                        }
+                    }
+                }
+                AgentEvent::PermissionPrompt { .. } => {
+                    for tool in self.tools.values_mut() {
+                        tool.prompted |= matches!(
+                            tool.name.as_str(),
+                            "AskUserQuestion" | "ExitPlanMode" | "EnterPlanMode"
+                        );
+                    }
+                }
+                AgentEvent::ElicitationPrompt { .. } => {
+                    for pending in &mut self.elicitations {
+                        pending.prompted = true;
+                    }
+                }
+                AgentEvent::ToolEnded {
+                    owner: Some(owner), ..
+                } => {
+                    for pending in &mut self.elicitations {
+                        if pending.id.as_ref() == Some(owner) {
+                            pending.prompted = false;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
     }
-
-    fn observe_transcript(&mut self, entry: &serde_json::Value) -> Option<AgentObservation> {
-        let session_id = self.session_id.as_deref()?;
-        if entry.get("sessionId").and_then(|value| value.as_str()) != Some(session_id)
-            || entry.get("isSidechain").and_then(|value| value.as_bool()) == Some(true)
-            || entry
-                .get("promptId")
-                .and_then(|value| value.as_str())
-                .is_some_and(|id| {
-                    self.prompt_id
-                        .as_deref()
-                        .is_some_and(|current| current != id)
-                })
+    fn record(&mut self, entry: &serde_json::Value) -> Option<Vec<AgentEvent>> {
+        let session = self.session_id.as_deref()?;
+        if entry["sessionId"].as_str() != Some(session)
+            || entry["isSidechain"].as_bool() == Some(true)
+            || entry["promptId"].as_str().is_some_and(|id| {
+                self.prompt_id
+                    .as_deref()
+                    .is_some_and(|current| current != id)
+            })
         {
             return None;
         }
-        let before = self.value.clone();
-        if entry.get("type").and_then(|value| value.as_str()) == Some("user") {
+        let mut events = Vec::new();
+        if entry["type"] == "user" {
             if let Some(blocks) = entry
                 .pointer("/message/content")
-                .and_then(|value| value.as_array())
+                .and_then(serde_json::Value::as_array)
             {
                 for block in blocks {
-                    if block.get("type").and_then(|value| value.as_str()) != Some("tool_result") {
+                    if block["type"] != "tool_result" {
                         continue;
                     }
-                    let Some(id) = block.get("tool_use_id").and_then(|value| value.as_str()) else {
+                    let Some(id) = block["tool_use_id"].as_str() else {
                         continue;
                     };
-                    if !self.tools.contains_key(id)
-                        && !self
-                            .value
-                            .interactions
-                            .iter()
-                            .any(|wait| wait.owners.iter().any(|owner| owner == id))
-                    {
+                    let tool = self.tools.remove(id);
+                    let mut prompted = false;
+                    for pending in &mut self.elicitations {
+                        if pending.id.as_deref() == Some(id) {
+                            prompted |= pending.prompted;
+                            pending.prompted = false;
+                        }
+                    }
+                    if tool.is_none() && !prompted {
                         continue;
                     }
-                    self.tools.remove(id);
-                    self.permission_tools.retain(|owner| owner != id);
-                    self.resolve(id);
-                    if entry.get("toolDenialKind").and_then(|value| value.as_str())
-                        == Some("user-rejected")
-                    {
-                        self.cancelled_tool_result = true;
-                        self.value.activity = if self.value.needs_you() {
-                            Activity::Unavailable
-                        } else {
-                            Activity::Ready
-                        };
-                        self.value.outcome = Some(TurnOutcome::Interrupted);
-                    }
-                    self.update_detail();
+                    let rejected = entry["toolDenialKind"] == "user-rejected";
+                    events.push(AgentEvent::RejectedToolResult {
+                        owner: id.into(),
+                        count: self.tools.len(),
+                        rejected,
+                    });
                 }
             }
-        } else if entry.get("type").and_then(|value| value.as_str()) == Some("system")
-            && entry.get("subtype").and_then(|value| value.as_str()) == Some("turn_duration")
-            && self.cancelled_tool_result
-            && !self.value.needs_you()
-        {
-            self.value.activity = Activity::Ready;
-            self.cancelled_tool_result = false;
+        } else if entry["type"] == "system" && entry["subtype"] == "turn_duration" {
+            events.push(AgentEvent::RejectionSettled);
         }
-        (before != self.value).then(|| self.value.clone())
+        (!events.is_empty()).then_some(events)
     }
-
-    fn resolve(&mut self, id: &str) {
-        self.value.interactions.retain_mut(|wait| {
-            if !wait.owners.iter().any(|owner| owner == id) {
-                return true;
-            }
-            wait.owners.retain(|owner| owner != id);
-            !wait.owners.is_empty()
-        });
-    }
-
-    fn wait(&mut self, reason: WaitReason, owners: Vec<String>) {
-        if let Some(wait) = self.value.interactions.iter_mut().find(|wait| {
-            wait.reason == reason
-                && (wait.owners == owners || wait.owners.iter().any(|owner| owners.contains(owner)))
-        }) {
-            for owner in owners {
-                if !wait.owners.contains(&owner) {
-                    wait.owners.push(owner);
-                }
-            }
-            return;
-        }
-        self.next_interaction += 1;
-        self.value.interactions.push(HumanInteraction {
-            id: format!("claude-{}", self.next_interaction),
-            reason,
-            owners,
-            since: crate::session::clock::timestamp_millis(),
-        });
-    }
-}
-
-#[cfg(test)]
-fn parse_transition(line: &[u8], generation: &str) -> Option<SessionActivityState> {
-    let report: serde_json::Value = serde_json::from_slice(line).ok()?;
-    if report.get("generation")?.as_str()? != generation {
-        return None;
-    }
-    let value = ClaudeObservation::default().observe(serde_json::from_value(report).ok()?)?;
-    if value.needs_you() {
-        return None;
-    }
-    Some(if value.activity == Activity::Working {
-        SessionActivityState::Busy
-    } else {
-        SessionActivityState::Idle
-    })
 }
 
 pub(crate) struct ClaudeStatusWatcher {
     feed: HookFeed,
-    observation: ClaudeObservation,
-    interrupt: Arc<AtomicU8>,
-    transcript: Option<TranscriptTail>,
+    parser: ClaudeParser,
+    transcript: Option<crate::session::hook_feed::TranscriptTail>,
+    read_transcript: bool,
 }
-
 impl ClaudeStatusWatcher {
     pub(crate) fn start(path: &Path, generation: String) -> Result<Self> {
         Ok(Self {
             feed: HookFeed::start(path, generation, APPEND_SCRIPT)?,
-            observation: ClaudeObservation::default(),
-            interrupt: Arc::new(AtomicU8::new(0)),
+            parser: Default::default(),
             transcript: None,
+            read_transcript: false,
         })
     }
-
-    pub(crate) fn interrupt_signal(&self) -> Arc<AtomicU8> {
-        Arc::clone(&self.interrupt)
-    }
-
-    pub(crate) fn drain_observations(
+    pub(crate) fn drain_events(
         &mut self,
-        mut transition: impl FnMut(AgentObservation, StatusSource),
+        cancel: u8,
+        mut emit: impl FnMut(AgentEvent) -> AdapterFeedback,
+        _session_start: impl FnMut(String),
     ) -> Result<()> {
-        let interrupted = self.interrupt.swap(0, Ordering::AcqRel);
-        self.feed.drain(interrupted != 0, |report| {
-            if let Ok(report) = serde_json::from_value(report) {
-                if let Some(value) = self.observation.observe(report) {
-                    transition(value, StatusSource::Hook);
+        self.feed.drain(cancel != 0, |report| {
+            if let Ok(report) = serde_json::from_value::<StatusReport>(report) {
+                if let Some(events) = self.parser.hook(report) {
+                    let feedback = emit(AgentEvent::Batch {
+                        runtime: Runtime::ClaudeCode,
+                        events: events.clone(),
+                    });
+                    self.parser.accept(&events, feedback);
+                    self.read_transcript = feedback.read_transcript;
                 }
             }
         })?;
-        // Keep buffered tool hooks ahead of the interrupt on the same output channel.
-        if interrupted != 0
-            && self.observation.value.source == ObservationSource::Hook
-            && (self.observation.value.activity == Activity::Working
-                || self.observation.value.needs_you())
-        {
-            let source = if interrupted & CTRL_C_INTERRUPT != 0 {
-                StatusSource::InputInterrupt
-            } else {
-                StatusSource::InputEscape
-            };
-            self.observation.value.activity = if self.observation.value.needs_you() {
-                Activity::Unavailable
-            } else {
-                Activity::Ready
-            };
-            self.observation.value.outcome = Some(TurnOutcome::Interrupted);
-            self.observation.compacting = false;
-            self.observation.compaction_resume = None;
-            self.observation.update_detail();
-            transition(self.observation.value.clone(), source);
+        if cancel != 0 {
+            let feedback = emit(AgentEvent::Batch {
+                runtime: Runtime::ClaudeCode,
+                events: vec![AgentEvent::LocalCancel { kind: cancel }],
+            });
+            self.parser.compacting = feedback.compacting;
+            self.read_transcript = feedback.read_transcript;
         }
-        self.drain_transcript(&mut transition);
+        self.drain_transcript(&mut emit);
         Ok(())
     }
-
-    fn drain_transcript(&mut self, transition: &mut impl FnMut(AgentObservation, StatusSource)) {
-        if !self.observation.value.needs_you()
-            && !self.observation.cancelled_tool_result
-            && self.observation.tools.is_empty()
-        {
+    fn drain_transcript(&mut self, emit: &mut impl FnMut(AgentEvent) -> AdapterFeedback) {
+        if !self.read_transcript {
             return;
         }
-        let Some(path) = self.observation.transcript_path.as_ref() else {
+        let Some(path) = self.parser.transcript_path.clone() else {
             return;
         };
         if self
             .transcript
             .as_ref()
-            .is_none_or(|tail| tail.path != *path)
+            .is_none_or(|tail| tail.path != path)
         {
-            self.transcript = TranscriptTail::open(path).ok();
+            self.transcript = crate::session::hook_feed::TranscriptTail::open(&path).ok();
         }
         let Some(tail) = self.transcript.as_mut() else {
             return;
@@ -554,45 +458,80 @@ impl ClaudeStatusWatcher {
             if count == 0 || tail.pending.last() != Some(&b'\n') {
                 break;
             }
-            if let Ok(entry) = serde_json::from_slice(&tail.pending) {
-                if let Some(value) = self.observation.observe_transcript(&entry) {
-                    transition(value, StatusSource::Hook);
+            if let Ok(record) = serde_json::from_slice(&tail.pending) {
+                if let Some(events) = self.parser.record(&record) {
+                    let feedback = emit(AgentEvent::Transcript {
+                        runtime: Runtime::ClaudeCode,
+                        events: events.clone(),
+                    });
+                    self.parser.accept(&events, feedback);
+                    self.read_transcript = feedback.read_transcript;
                 }
             }
             tail.pending.clear();
         }
     }
-    #[cfg(test)]
-    fn drain(
-        &mut self,
-        mut transition: impl FnMut(SessionActivityState, StatusSource),
-    ) -> Result<()> {
-        self.drain_observations(|value, source| {
-            transition(
-                if value.activity == Activity::Working {
-                    SessionActivityState::Busy
-                } else {
-                    SessionActivityState::Idle
-                },
-                source,
-            )
-        })
-    }
 }
-
 impl crate::session::hook_feed::HookWatcher for ClaudeStatusWatcher {
-    fn interrupt_signal(&self) -> Option<Arc<AtomicU8>> {
-        Some(self.interrupt_signal())
-    }
-    fn drain_observations(
+    fn drain_events(
         &mut self,
-        transition: &mut dyn FnMut(crate::session::status::AgentObservation, StatusSource),
-        _session_start: &mut dyn FnMut(String),
+        cancel: u8,
+        emit: &mut dyn FnMut(AgentEvent) -> AdapterFeedback,
+        session_start: &mut dyn FnMut(String),
     ) -> Result<()> {
-        self.drain_observations(transition)
+        self.drain_events(cancel, emit, session_start)
     }
 }
 
+#[cfg(test)]
+#[derive(Clone, Default)]
+struct ClaudeObservation {
+    parser: ClaudeParser,
+    model: crate::session::state::agent::AgentModel,
+    value: crate::session::state::agent::TurnState,
+}
+#[cfg(test)]
+impl std::ops::Deref for ClaudeObservation {
+    type Target = ClaudeParser;
+    fn deref(&self) -> &Self::Target {
+        &self.parser
+    }
+}
+#[cfg(test)]
+impl std::ops::DerefMut for ClaudeObservation {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.parser
+    }
+}
+#[cfg(test)]
+impl ClaudeObservation {
+    fn observe(&mut self, event: StatusReport, now: i64) -> Option<AgentObservation> {
+        let events = self.parser.hook(event)?;
+        let (reduced, feedback) = self.model.reduce_with_feedback(
+            AgentEvent::Batch {
+                runtime: Runtime::ClaudeCode,
+                events: events.clone(),
+            },
+            now,
+        );
+        self.parser.accept(&events, feedback);
+        self.value = self.model.value.clone();
+        reduced
+    }
+    fn observe_transcript(&mut self, record: &serde_json::Value) -> Option<AgentObservation> {
+        let events = self.parser.record(record)?;
+        let (reduced, feedback) = self.model.reduce_with_feedback(
+            AgentEvent::Transcript {
+                runtime: Runtime::ClaudeCode,
+                events: events.clone(),
+            },
+            crate::session::clock::timestamp_millis(),
+        );
+        self.parser.accept(&events, feedback);
+        self.value = self.model.value.clone();
+        reduced
+    }
+}
 #[cfg(test)]
 mod tests {
     use std::io::Write;
@@ -600,6 +539,91 @@ mod tests {
     use std::process::{Command, Stdio};
 
     use super::*;
+
+    struct TestWatcher {
+        inner: ClaudeStatusWatcher,
+        observation: ClaudeObservation,
+        cancel: u8,
+    }
+    impl std::ops::Deref for TestWatcher {
+        type Target = ClaudeStatusWatcher;
+        fn deref(&self) -> &Self::Target {
+            &self.inner
+        }
+    }
+    impl std::ops::DerefMut for TestWatcher {
+        fn deref_mut(&mut self) -> &mut Self::Target {
+            &mut self.inner
+        }
+    }
+    impl TestWatcher {
+        fn start(path: &Path, generation: String) -> Result<Self> {
+            Ok(Self {
+                inner: ClaudeStatusWatcher::start(path, generation)?,
+                observation: Default::default(),
+                cancel: 0,
+            })
+        }
+        fn drain_with_session_starts(
+            &mut self,
+            mut publish: impl FnMut(AgentObservation, StatusSource),
+            starts: impl FnMut(String),
+        ) -> Result<()> {
+            self.inner.parser = self.observation.parser.clone();
+            let cancel = std::mem::take(&mut self.cancel);
+            let result = self.inner.drain_events(
+                cancel,
+                |event| {
+                    let source = if let AgentEvent::Batch { events, .. } = &event {
+                        match events.first() {
+                            Some(AgentEvent::LocalCancel { kind })
+                                if kind & crate::session::state::CTRL_C_INTERRUPT != 0 =>
+                            {
+                                StatusSource::InputInterrupt
+                            }
+                            Some(AgentEvent::LocalCancel { .. }) => StatusSource::InputEscape,
+                            _ => StatusSource::Hook,
+                        }
+                    } else {
+                        StatusSource::Hook
+                    };
+                    let (value, feedback) = self
+                        .observation
+                        .model
+                        .reduce_with_feedback(event, crate::session::clock::timestamp_millis());
+                    if let Some(value) = value {
+                        publish(value, source);
+                    }
+                    feedback
+                },
+                starts,
+            );
+            self.observation.value = self.observation.model.value.clone();
+            self.observation.parser = self.inner.parser.clone();
+            result
+        }
+        fn drain_status(
+            &mut self,
+            publish: impl FnMut(AgentObservation, StatusSource),
+        ) -> Result<()> {
+            self.drain_with_session_starts(publish, |_| {})
+        }
+        fn drain(
+            &mut self,
+            mut publish: impl FnMut(SessionActivityState, StatusSource),
+        ) -> Result<()> {
+            self.drain_status(|value, source| {
+                publish(
+                    if value.activity == Activity::Working {
+                        SessionActivityState::Busy
+                    } else {
+                        SessionActivityState::Idle
+                    },
+                    source,
+                )
+            })
+        }
+    }
 
     fn report(event: &str, notification: Option<&str>, generation: &str) -> String {
         serde_json::json!({
@@ -634,7 +658,10 @@ mod tests {
     ) -> Option<AgentObservation> {
         let mut fields = fields;
         fields["hook_event_name"] = event.into();
-        model.observe(serde_json::from_value(fields).unwrap())
+        model.observe(
+            serde_json::from_value::<StatusReport>(fields).unwrap(),
+            crate::session::clock::timestamp_millis(),
+        )
     }
 
     #[test]
@@ -752,7 +779,7 @@ mod tests {
         let mut transcript_file = File::create(&transcript).unwrap();
         writeln!(transcript_file, "{}", "x".repeat(1024 * 1024 + 10)).unwrap();
         let path = status_path(root.path(), "question");
-        let mut watcher = ClaudeStatusWatcher::start(&path, "current".into()).unwrap();
+        let mut watcher = TestWatcher::start(&path, "current".into()).unwrap();
         let mut file = OpenOptions::new().append(true).open(&path).unwrap();
         for payload in [
             serde_json::json!({"hook_event_name":"SessionStart","session_id":"main","transcript_path":transcript}),
@@ -765,14 +792,12 @@ mod tests {
         }
         let mut observations = Vec::new();
         watcher
-            .drain_observations(|value, _| observations.push(value))
+            .drain_status(|value, _| observations.push(value))
             .unwrap();
         assert!(observations.last().unwrap().needs_you());
+        watcher.cancel = ESCAPE_INTERRUPT;
         watcher
-            .interrupt_signal()
-            .store(ESCAPE_INTERRUPT, Ordering::Release);
-        watcher
-            .drain_observations(|value, _| observations.push(value))
+            .drain_status(|value, _| observations.push(value))
             .unwrap();
         assert!(observations.last().unwrap().needs_you());
         assert_eq!(observations.last().unwrap().detail, None);
@@ -781,12 +806,12 @@ mod tests {
         write!(transcript_file, "{}", &result[..20]).unwrap();
         watcher.feed.dirty.store(false, Ordering::Release);
         watcher
-            .drain_observations(|value, _| observations.push(value))
+            .drain_status(|value, _| observations.push(value))
             .unwrap();
         assert!(observations.last().unwrap().needs_you());
         writeln!(transcript_file, "{}", &result[20..]).unwrap();
         watcher
-            .drain_observations(|value, _| observations.push(value))
+            .drain_status(|value, _| observations.push(value))
             .unwrap();
         assert!(!observations.last().unwrap().needs_you());
         assert_eq!(observations.last().unwrap().activity, Activity::Ready);
@@ -797,20 +822,18 @@ mod tests {
         )
         .unwrap();
         watcher
-            .drain_observations(|value, _| observations.push(value))
+            .drain_status(|value, _| observations.push(value))
             .unwrap();
         assert_eq!(observations.last().unwrap().activity, Activity::Ready);
         assert_eq!(
             observations.last().unwrap().outcome,
             Some(TurnOutcome::Interrupted)
         );
-        assert!(!watcher.observation.cancelled_tool_result);
+        assert!(!watcher.observation.model.cancelled_tool_result());
         for interrupt in [ESCAPE_INTERRUPT, CTRL_C_INTERRUPT] {
+            watcher.cancel = interrupt;
             watcher
-                .interrupt_signal()
-                .store(interrupt, Ordering::Release);
-            watcher
-                .drain_observations(|value, _| observations.push(value))
+                .drain_status(|value, _| observations.push(value))
                 .unwrap();
             assert_eq!(observations.last().unwrap().activity, Activity::Ready);
             assert_eq!(
@@ -826,7 +849,7 @@ mod tests {
         .unwrap();
         watcher.feed.dirty.store(true, Ordering::Release);
         watcher
-            .drain_observations(|value, _| observations.push(value))
+            .drain_status(|value, _| observations.push(value))
             .unwrap();
         assert!(!observations.last().unwrap().needs_you());
         assert!(!observations
@@ -918,7 +941,7 @@ mod tests {
 
         let root = tempfile::tempdir().unwrap();
         let path = status_path(root.path(), "missing-transcript");
-        let mut watcher = ClaudeStatusWatcher::start(&path, "current".into()).unwrap();
+        let mut watcher = TestWatcher::start(&path, "current".into()).unwrap();
         watcher.observation = model;
         watcher.observation.transcript_path = Some(root.path().join("missing.jsonl"));
         observe(
@@ -926,12 +949,12 @@ mod tests {
             "PreToolUse",
             serde_json::json!({"tool_name":"AskUserQuestion","tool_use_id":"next"}),
         );
-        watcher.drain_observations(|_, _| {}).unwrap();
+        watcher.drain_status(|_, _| {}).unwrap();
         assert!(watcher.observation.value.needs_you());
         let mut file = OpenOptions::new().append(true).open(&path).unwrap();
         writeln!(file, "{}", serde_json::json!({"generation":"current","hook_event_name":"PostToolUse","tool_use_id":"next"})).unwrap();
         watcher.feed.dirty.store(true, Ordering::Release);
-        watcher.drain_observations(|_, _| {}).unwrap();
+        watcher.drain_status(|_, _| {}).unwrap();
         assert!(!watcher.observation.value.needs_you());
         assert_eq!(watcher.observation.value.source, ObservationSource::Hook);
     }
@@ -1315,13 +1338,11 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn approval_hook_is_immediate_and_escape_uses_the_question_resolution_path() {
-        use std::sync::atomic::Ordering;
-
         let root = tempfile::tempdir().unwrap();
         let path = status_path(root.path(), "approval");
         let transcript = root.path().join("claude.jsonl");
         let mut file = File::create(&transcript).unwrap();
-        let mut watcher = ClaudeStatusWatcher::start(&path, "current".into()).unwrap();
+        let mut watcher = TestWatcher::start(&path, "current".into()).unwrap();
         for (event, fields) in [
             (
                 "SessionStart",
@@ -1342,7 +1363,7 @@ mod tests {
         ] {
             run_hook(&path, event, fields.to_string().as_bytes());
         }
-        watcher.drain_observations(|_, _| {}).unwrap();
+        watcher.drain_status(|_, _| {}).unwrap();
         assert_eq!(
             watcher.observation.value.interactions[0].reason,
             WaitReason::Approval
@@ -1351,25 +1372,21 @@ mod tests {
             watcher.observation.value.interactions[0].owners,
             ["command"]
         );
-        watcher
-            .interrupt_signal()
-            .store(ESCAPE_INTERRUPT, Ordering::Release);
-        watcher.drain_observations(|_, _| {}).unwrap();
+        watcher.cancel = ESCAPE_INTERRUPT;
+        watcher.drain_status(|_, _| {}).unwrap();
         assert!(watcher.observation.value.needs_you());
 
         writeln!(file, "{}", serde_json::json!({"type":"user","sessionId":"main","promptId":"turn","toolDenialKind":"user-rejected","message":{"content":[{"type":"tool_result","tool_use_id":"command"}]}})).unwrap();
         writeln!(file, "{}", serde_json::json!({"type":"system","subtype":"turn_duration","sessionId":"main","promptId":"turn"})).unwrap();
-        watcher.drain_observations(|_, _| {}).unwrap();
+        watcher.drain_status(|_, _| {}).unwrap();
         assert!(!watcher.observation.value.needs_you());
         assert_eq!(watcher.observation.value.activity, Activity::Ready);
         assert_eq!(
             watcher.observation.value.outcome,
             Some(TurnOutcome::Interrupted)
         );
-        watcher
-            .interrupt_signal()
-            .store(ESCAPE_INTERRUPT, Ordering::Release);
-        watcher.drain_observations(|_, _| {}).unwrap();
+        watcher.cancel = ESCAPE_INTERRUPT;
+        watcher.drain_status(|_, _| {}).unwrap();
         assert_eq!(watcher.observation.value.activity, Activity::Ready);
     }
 
@@ -1377,14 +1394,14 @@ mod tests {
     fn unreadable_payload_is_skipped_without_losing_the_next_record_or_bridge() {
         let root = tempfile::tempdir().unwrap();
         let path = status_path(root.path(), "session");
-        let mut watcher = ClaudeStatusWatcher::start(&path, "current".into()).unwrap();
+        let mut watcher = TestWatcher::start(&path, "current".into()).unwrap();
         let mut file = OpenOptions::new().append(true).open(&path).unwrap();
         writeln!(file, "{}", serde_json::json!({"generation":"current","hook_event_name":"Stop","payload_file":"session.ndjson.missing"})).unwrap();
         writeln!(file, "{}", report("UserPromptSubmit", None, "current")).unwrap();
         writeln!(file, "{}", report("Stop", None, "current")).unwrap();
         let mut observations = Vec::new();
         watcher
-            .drain_observations(|value, _| observations.push(value))
+            .drain_status(|value, _| observations.push(value))
             .unwrap();
         assert_eq!(observations.len(), 2);
         assert_eq!(observations[0].activity, Activity::Working);
@@ -1392,7 +1409,7 @@ mod tests {
         assert!(watcher.feed.pending.is_empty());
         fs::remove_file(&path).unwrap();
         watcher.feed.dirty.store(true, Ordering::Release);
-        assert!(watcher.drain_observations(|_, _| {}).is_err());
+        assert!(watcher.drain_status(|_, _| {}).is_err());
     }
 
     #[test]
@@ -1623,7 +1640,7 @@ mod tests {
     fn interrupt_preserves_dialog_until_correlated_resolution_and_never_completes() {
         let root = tempfile::tempdir().unwrap();
         let path = status_path(root.path(), "dialog");
-        let mut watcher = ClaudeStatusWatcher::start(&path, "current".into()).unwrap();
+        let mut watcher = TestWatcher::start(&path, "current".into()).unwrap();
         let mut file = OpenOptions::new().append(true).open(&path).unwrap();
         writeln!(file, r#"{{"generation":"current","hook_event_name":"PreToolUse","tool_name":"AskUserQuestion","tool_use_id":"question"}}"#).unwrap();
         writeln!(
@@ -1632,12 +1649,10 @@ mod tests {
             report("Notification", Some("permission_prompt"), "current")
         )
         .unwrap();
-        watcher
-            .interrupt_signal()
-            .store(ESCAPE_INTERRUPT, Ordering::Release);
+        watcher.cancel = ESCAPE_INTERRUPT;
         let mut observations = Vec::new();
         watcher
-            .drain_observations(|value, _| observations.push(value))
+            .drain_status(|value, _| observations.push(value))
             .unwrap();
         let interrupted = observations.last().unwrap();
         assert!(interrupted.needs_you());
@@ -1646,7 +1661,7 @@ mod tests {
         writeln!(file, "{}", report("Stop", None, "current")).unwrap();
         watcher.feed.dirty.store(true, Ordering::Release);
         watcher
-            .drain_observations(|value, _| observations.push(value))
+            .drain_status(|value, _| observations.push(value))
             .unwrap();
         assert_eq!(
             observations.last().unwrap().outcome,
@@ -1704,7 +1719,7 @@ mod tests {
             ),
         )
         .unwrap();
-        let mut watcher = ClaudeStatusWatcher::start(&path, "current".into()).unwrap();
+        let mut watcher = TestWatcher::start(&path, "current".into()).unwrap();
         let mut file = OpenOptions::new().append(true).open(&path).unwrap();
         let prompt = report("UserPromptSubmit", None, "current");
         write!(file, "{}", &prompt[..10]).unwrap();
@@ -1751,13 +1766,13 @@ mod tests {
         for kind in [ESCAPE_INTERRUPT, CTRL_C_INTERRUPT] {
             let root = tempfile::tempdir().unwrap();
             let path = status_path(root.path(), "early-interrupt");
-            let mut watcher = ClaudeStatusWatcher::start(&path, "current".into()).unwrap();
+            let mut watcher = TestWatcher::start(&path, "current".into()).unwrap();
             let mut file = OpenOptions::new().append(true).open(&path).unwrap();
             writeln!(file, "{}", serde_json::json!({"generation":"current","hook_event_name":"UserPromptSubmit","prompt_id":"turn"})).unwrap();
-            watcher.interrupt_signal().store(kind, Ordering::Release);
+            watcher.cancel = kind;
             let mut observations = Vec::new();
             watcher
-                .drain_observations(|value, _| observations.push(value))
+                .drain_status(|value, _| observations.push(value))
                 .unwrap();
             assert_eq!(observations.len(), 2);
             assert_eq!(observations[0].activity, Activity::Working);
@@ -1766,15 +1781,15 @@ mod tests {
             assert_eq!(interrupted.outcome, Some(TurnOutcome::Interrupted));
             assert!(!interrupted.needs_you());
 
-            watcher.interrupt_signal().store(kind, Ordering::Release);
+            watcher.cancel = kind;
             watcher
-                .drain_observations(|_, _| panic!("repeated interrupt must preserve Idle"))
+                .drain_status(|_, _| panic!("repeated interrupt must preserve Idle"))
                 .unwrap();
             for event in ["PostToolUse", "PostToolUseFailure", "Notification", "Stop"] {
                 writeln!(file, "{}", serde_json::json!({"generation":"current","hook_event_name":event,"prompt_id":"turn","tool_use_id":"late","is_interrupt":event == "PostToolUseFailure","notification_type":"permission_prompt"})).unwrap();
                 watcher.feed.dirty.store(true, Ordering::Release);
                 watcher
-                    .drain_observations(|value, _| {
+                    .drain_status(|value, _| {
                         assert_eq!(value.activity, Activity::Ready);
                         assert_eq!(value.outcome, Some(TurnOutcome::Interrupted));
                         assert!(!value.needs_you());
@@ -1784,7 +1799,7 @@ mod tests {
             writeln!(file, "{}", serde_json::json!({"generation":"current","hook_event_name":"UserPromptSubmit","prompt_id":"next"})).unwrap();
             watcher.feed.dirty.store(true, Ordering::Release);
             watcher
-                .drain_observations(|value, _| observations.push(value))
+                .drain_status(|value, _| observations.push(value))
                 .unwrap();
             assert_eq!(observations.last().unwrap().activity, Activity::Working);
             assert_eq!(observations.last().unwrap().outcome, None);
@@ -1803,12 +1818,12 @@ mod tests {
         ] {
             let root = tempfile::tempdir().unwrap();
             let path = status_path(root.path(), "interrupt");
-            let mut watcher = ClaudeStatusWatcher::start(&path, "current".into()).unwrap();
+            let mut watcher = TestWatcher::start(&path, "current".into()).unwrap();
             watcher.drain(|_, _| panic!("no records yet")).unwrap();
             let mut file = OpenOptions::new().append(true).open(&path).unwrap();
             writeln!(file, "{}", report("PreToolUse", None, "current")).unwrap();
             watcher.feed.dirty.store(false, Ordering::Release);
-            watcher.interrupt_signal().store(kind, Ordering::Release);
+            watcher.cancel = kind;
             let mut transitions = Vec::new();
             watcher
                 .drain(|state, source| transitions.push((state, source)))
@@ -1838,7 +1853,7 @@ mod tests {
     fn notification_script_uses_payload_type_even_when_matcher_is_bypassed() {
         let root = tempfile::tempdir().unwrap();
         let path = status_path(root.path(), "notifications");
-        let mut watcher = ClaudeStatusWatcher::start(&path, "current".into()).unwrap();
+        let mut watcher = TestWatcher::start(&path, "current".into()).unwrap();
         for kind in [
             None,
             Some(""),
@@ -1861,7 +1876,7 @@ mod tests {
                 let mut observations = Vec::new();
                 watcher.feed.dirty.store(true, Ordering::Release);
                 watcher
-                    .drain_observations(|value, _| observations.push(value))
+                    .drain_status(|value, _| observations.push(value))
                     .unwrap();
                 assert_eq!(observations.len(), usize::from(kind == Some("idle_prompt")));
                 if let Some(value) = observations.first() {
@@ -1876,7 +1891,7 @@ mod tests {
     fn stop_followed_by_pre_tool_use_ends_busy() {
         let root = tempfile::tempdir().unwrap();
         let path = status_path(root.path(), "continuation");
-        let mut watcher = ClaudeStatusWatcher::start(&path, "current".into()).unwrap();
+        let mut watcher = TestWatcher::start(&path, "current".into()).unwrap();
         for event in ["Stop", "PreToolUse"] {
             run_hook(&path, event, b"{}");
         }
@@ -1893,7 +1908,7 @@ mod tests {
     fn tool_hooks_drain_payloads_larger_than_the_pipe_buffer() {
         let root = tempfile::tempdir().unwrap();
         let path = status_path(root.path(), "large-payload");
-        let mut watcher = ClaudeStatusWatcher::start(&path, "current".into()).unwrap();
+        let mut watcher = TestWatcher::start(&path, "current".into()).unwrap();
         let payload = serde_json::json!({"tool_response": "x".repeat(2 * 1024 * 1024)}).to_string();
         for event in [
             "UserPromptSubmit",
@@ -1907,7 +1922,7 @@ mod tests {
         assert_eq!(fs::read_to_string(&path).unwrap().lines().count(), 5);
         let mut observations = Vec::new();
         watcher
-            .drain_observations(|value, _| observations.push(value))
+            .drain_status(|value, _| observations.push(value))
             .unwrap();
         assert_eq!(observations.len(), 5);
         // A failed bridge setup leaves no helper; the command must still consume stdin.
@@ -1941,7 +1956,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let path = status_path(root.path(), "bad-file");
         fs::create_dir_all(&path).unwrap();
-        assert!(ClaudeStatusWatcher::start(&path, "current".into()).is_err());
+        assert!(TestWatcher::start(&path, "current".into()).is_err());
         assert!(!script_path(&path).exists());
         assert!(!path.with_extension("sh.tmp").exists());
     }
@@ -1951,7 +1966,7 @@ mod tests {
     fn injected_commands_append_silently_and_fail_open() {
         let root = tempfile::tempdir().unwrap();
         let path = status_path(&root.path().join("Jason's status $dir"), "session");
-        let mut watcher = ClaudeStatusWatcher::start(&path, "current".into()).unwrap();
+        let mut watcher = TestWatcher::start(&path, "current".into()).unwrap();
         for event in [
             "UserPromptSubmit",
             "PreToolUse",
@@ -2019,7 +2034,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let path = status_path(&root.path().join("Jason's status $dir"), "session");
         let path = PathBuf::from(crate::session::hook_feed::hook_path(&path));
-        let mut watcher = ClaudeStatusWatcher::start(&path, "current".into()).unwrap();
+        let mut watcher = TestWatcher::start(&path, "current".into()).unwrap();
         let run = |path: &Path, event: &str, payload: &[u8]| {
             let mut child = std::process::Command::new(&sh)
                 .args(["-c", &hook_command(path, event)])

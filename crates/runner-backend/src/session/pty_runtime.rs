@@ -1,4 +1,3 @@
-use crate::session::state::StatusSource;
 // In-process `SessionRuntime` implementation over `portable-pty`.
 //
 // One PtyRuntime instance owns a HashMap of session_id → SessionHandle.
@@ -13,7 +12,7 @@ use crate::session::state::StatusSource;
 use std::collections::HashMap;
 use std::io::{ErrorKind, Read, Write};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -116,7 +115,6 @@ struct SessionHandle {
     /// `IdleDetector`), so resizing an idle session doesn't read as Busy.
     last_resize: Mutex<Option<Instant>>,
     idle_detector: Arc<Mutex<IdleDetector>>,
-    hook_interrupt: Option<Arc<AtomicU8>>,
     pid: Option<i32>,
     process_tree: Option<ProcessTree>,
     command: String,
@@ -253,7 +251,11 @@ impl SessionRuntime for PtyRuntime {
         let child_slot: Arc<Mutex<Option<Box<dyn Child + Send + Sync>>>> =
             Arc::new(Mutex::new(Some(child)));
 
-        let mut idle_detector = IdleDetector::new(DEFAULT_IDLE_THRESHOLD, spec.codex_pending_turn);
+        let terminal_adapter = spec.agent_runtime.and_then(|runtime| {
+            crate::runtimes::adapter(runtime).terminal_adapter(spec.pending_turn)
+        });
+        let mut idle_detector =
+            IdleDetector::with_adapter_at(DEFAULT_IDLE_THRESHOLD, terminal_adapter, Instant::now());
         if hook_status.is_none() {
             idle_detector.hooks_unavailable();
         }
@@ -270,9 +272,6 @@ impl SessionRuntime for PtyRuntime {
             alive: AtomicBool::new(true),
             last_resize: Mutex::new(None),
             idle_detector: Arc::new(Mutex::new(idle_detector)),
-            hook_interrupt: hook_status
-                .as_ref()
-                .and_then(|watcher| watcher.interrupt_signal()),
             pid,
             process_tree,
             command: format_command_summary(&spec.command, &spec.args),
@@ -691,371 +690,122 @@ pub(crate) struct IdleDetector {
     last_byte: Instant,
     current: SessionActivityState,
     threshold: Duration,
-    codex_startup: Option<CodexStartup>,
-    codex_title: Option<CodexTitleHint>,
-    hook_owned: bool,
+    adapter: Option<Box<dyn crate::runtimes::TerminalAdapter>>,
     input_transition: bool,
-}
-
-struct CodexStartup {
-    pending_turn: bool,
-    input_pending: bool,
-    submitted_input: bool,
-    hooks_available: bool,
-    ready: bool,
-    readiness: super::runtime::TuiReadiness,
-}
-
-const CODEX_TITLE_SPINNER_FRAMES: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-
-#[derive(Default)]
-struct CodexTitleHint {
-    parser: vte::Parser,
-    classifier: CodexTitleClassifier,
-}
-
-#[derive(Default)]
-struct CodexTitleClassifier {
-    confirmed: bool,
-    candidate: Option<(char, String)>,
-    activity: Option<SessionActivityState>,
-    working_payload: Option<String>,
-    idle_title: Option<String>,
-    rename_suffix: Option<String>,
-    rename_completed: bool,
-}
-
-enum TitleEvent {
-    Set(String),
-    Reset,
-}
-
-#[derive(Default)]
-struct TitleEvents(Vec<TitleEvent>);
-
-impl vte::Perform for TitleEvents {
-    fn osc_dispatch(&mut self, params: &[&[u8]], _bell_terminated: bool) {
-        if !matches!(params.first(), Some(selector) if *selector == b"0" || *selector == b"2") {
-            return;
-        }
-        let mut raw = Vec::new();
-        for (index, part) in params.iter().skip(1).enumerate() {
-            if index > 0 {
-                raw.push(b';');
-            }
-            raw.extend_from_slice(part);
-        }
-        match String::from_utf8(raw) {
-            Ok(title) if !title.is_empty() => self.0.push(TitleEvent::Set(title)),
-            _ => self.0.push(TitleEvent::Reset),
-        }
-    }
-
-    fn esc_dispatch(&mut self, intermediates: &[u8], ignore: bool, byte: u8) {
-        if !ignore && intermediates.is_empty() && byte == b'c' {
-            self.0.push(TitleEvent::Reset);
-        }
-    }
-}
-
-impl CodexTitleHint {
-    fn observe(&mut self, bytes: &[u8]) -> Option<SessionActivityState> {
-        let mut events = TitleEvents::default();
-        self.parser.advance(&mut events, bytes);
-        for event in events.0 {
-            match event {
-                TitleEvent::Set(title) => self.classifier.observe(&title),
-                TitleEvent::Reset => self.classifier.clear_authority(),
-            }
-        }
-        self.classifier.activity
-    }
-
-    fn reset(&mut self) {
-        *self = Self::default();
-    }
-}
-
-impl CodexTitleClassifier {
-    fn observe(&mut self, title: &str) {
-        if let Some((frame, payload)) = codex_working_title(title) {
-            let confirmed = self.confirmed
-                || self
-                    .candidate
-                    .as_ref()
-                    .is_some_and(|(previous_frame, previous_payload)| {
-                        *previous_frame != frame
-                            && same_codex_spinner_shape(previous_payload, payload)
-                    });
-            self.candidate = Some((frame, payload.to_owned()));
-            self.idle_title = None;
-            self.rename_suffix = None;
-            self.rename_completed = false;
-            if confirmed {
-                self.confirmed = true;
-                self.activity = Some(SessionActivityState::Busy);
-                self.working_payload = Some(payload.to_owned());
-            } else {
-                self.activity = None;
-                self.working_payload = None;
-            }
-            return;
-        }
-
-        if self.confirmed
-            && self.activity == Some(SessionActivityState::Busy)
-            && self
-                .working_payload
-                .as_deref()
-                .is_some_and(|payload| same_codex_spinner_shape(payload, title))
-        {
-            self.activity = Some(SessionActivityState::Idle);
-            self.idle_title = Some(title.to_owned());
-            self.rename_suffix = codex_rename_suffix(title).map(str::to_owned);
-            self.rename_completed = false;
-            self.candidate = None;
-            return;
-        }
-
-        if self.activity == Some(SessionActivityState::Idle)
-            && self
-                .idle_title
-                .as_deref()
-                .is_some_and(|previous| same_codex_spinner_shape(previous, title))
-        {
-            self.idle_title = Some(title.to_owned());
-            return;
-        }
-
-        if self.activity == Some(SessionActivityState::Idle)
-            && self.rename_suffix.as_deref() == Some(title)
-        {
-            self.rename_completed = true;
-            self.idle_title = Some(title.to_owned());
-            return;
-        }
-
-        if self.activity == Some(SessionActivityState::Idle)
-            && self.rename_completed
-            && self.rename_suffix.as_deref().is_some_and(|suffix| {
-                title
-                    .strip_suffix(suffix)
-                    .is_some_and(|prefix| !prefix.is_empty() && prefix.ends_with(" | "))
-            })
-        {
-            self.idle_title = Some(title.to_owned());
-            return;
-        }
-
-        self.clear_authority();
-    }
-
-    fn clear_authority(&mut self) {
-        self.candidate = None;
-        self.activity = None;
-        self.working_payload = None;
-        self.idle_title = None;
-        self.rename_suffix = None;
-        self.rename_completed = false;
-    }
-}
-
-fn codex_working_title(title: &str) -> Option<(char, &str)> {
-    let mut chars = title.chars();
-    let frame = chars.next()?;
-    if !CODEX_TITLE_SPINNER_FRAMES.contains(&frame) || chars.next() != Some(' ') {
-        return None;
-    }
-    let payload = chars.as_str();
-    (!payload.is_empty()).then_some((frame, payload))
-}
-
-fn same_codex_spinner_shape(left: &str, right: &str) -> bool {
-    let mut left = left.chars();
-    let mut right = right.chars();
-    loop {
-        match (left.next(), right.next()) {
-            (None, None) => return true,
-            (Some(left), Some(right))
-                if left == right
-                    || (CODEX_TITLE_SPINNER_FRAMES.contains(&left)
-                        && CODEX_TITLE_SPINNER_FRAMES.contains(&right)) => {}
-            _ => return false,
-        }
-    }
-}
-
-fn codex_rename_suffix(title: &str) -> Option<&str> {
-    let mut rest = title.strip_prefix("renaming... ")?.chars();
-    let frame = rest.next()?;
-    if !CODEX_TITLE_SPINNER_FRAMES.contains(&frame) {
-        return None;
-    }
-    let suffix = rest.as_str().strip_prefix(" | ")?;
-    (!suffix.is_empty()).then_some(suffix)
+    pending_cancel: u8,
 }
 
 impl IdleDetector {
-    fn new(threshold: Duration, codex_pending_turn: Option<bool>) -> Self {
-        Self::with_startup_at(threshold, codex_pending_turn, Instant::now())
-    }
-
-    pub(crate) fn with_startup_at(
+    pub(crate) fn with_adapter_at(
         threshold: Duration,
-        codex_pending_turn: Option<bool>,
+        adapter: Option<Box<dyn crate::runtimes::TerminalAdapter>>,
         now: Instant,
     ) -> Self {
-        let mut detector = Self::new_at(threshold, now);
-        detector.codex_title = codex_pending_turn.map(|_| CodexTitleHint::default());
-        detector.codex_startup = codex_pending_turn.map(|pending_turn| CodexStartup {
-            pending_turn,
-            input_pending: false,
-            submitted_input: false,
-            hooks_available: true,
-            ready: false,
-            readiness: Default::default(),
-        });
-        detector.input_transition = codex_pending_turn == Some(true);
-        detector
-    }
-
-    pub(crate) fn new_at(threshold: Duration, now: Instant) -> Self {
+        let input_transition = adapter
+            .as_ref()
+            .is_some_and(|adapter| adapter.held_activity() == Some(SessionActivityState::Busy));
         Self {
             last_byte: now,
             current: SessionActivityState::Busy,
             threshold,
-            codex_startup: None,
-            codex_title: None,
-            hook_owned: false,
-            input_transition: false,
+            adapter,
+            input_transition,
+            pending_cancel: 0,
         }
     }
-
-    fn on_output(&mut self, bytes: &[u8], in_resize_grace: bool) -> Option<SessionActivityState> {
-        self.on_output_at(bytes, in_resize_grace, Instant::now())
+    #[cfg(test)]
+    pub(crate) fn new_at(threshold: Duration, now: Instant) -> Self {
+        Self::with_adapter_at(threshold, None, now)
     }
-
-    pub(crate) fn on_output_at(
+    fn on_output(&mut self, bytes: &[u8], quiet: bool) -> Option<crate::runtimes::TerminalEvent> {
+        self.on_output_event_at(bytes, quiet, Instant::now())
+    }
+    pub(crate) fn on_output_event_at(
         &mut self,
         bytes: &[u8],
-        in_resize_grace: bool,
+        quiet: bool,
         now: Instant,
-    ) -> Option<SessionActivityState> {
-        let title_activity = (!self.hook_owned)
-            .then(|| self.codex_title.as_mut()?.observe(bytes))
-            .flatten();
-        if let Some(startup) = self.codex_startup.as_mut() {
-            startup.ready |= startup.readiness.observe(bytes)[0];
-            if !startup.submitted_input && (startup.pending_turn || startup.ready) {
+    ) -> Option<crate::runtimes::TerminalEvent> {
+        use crate::runtimes::TerminalEvent;
+        if let Some(event) = self
+            .adapter
+            .as_mut()
+            .and_then(|adapter| adapter.on_output(bytes))
+        {
+            if matches!(event, TerminalEvent::Ready(_)) {
                 self.last_byte = now;
-                if let Some(title) = self.codex_title.as_mut() {
-                    title.reset();
-                }
-                return self.tick_at(now);
+                return self.tick_event_at(now);
             }
-        }
-        if let Some(state) = title_activity {
+            let state = event.state();
             if !bytes.is_empty() {
                 self.last_byte = now;
             }
             if self.current != state {
                 self.current = state;
-                return Some(state);
+                return Some(event);
             }
             return None;
         }
-        if in_resize_grace {
+        if quiet {
             self.on_bytes_quiet_at(bytes.len(), now);
             None
         } else {
             self.on_bytes_at(bytes.len(), now)
+                .map(TerminalEvent::Activity)
         }
     }
-
+    #[cfg(test)]
+    fn on_output_state(&mut self, bytes: &[u8], quiet: bool) -> Option<SessionActivityState> {
+        self.on_output(bytes, quiet).map(|event| event.state())
+    }
+    #[cfg(test)]
+    fn tick_state(&mut self) -> Option<SessionActivityState> {
+        self.tick().map(|event| event.state())
+    }
+    #[cfg(test)]
+    fn on_output_at(
+        &mut self,
+        bytes: &[u8],
+        quiet: bool,
+        now: Instant,
+    ) -> Option<SessionActivityState> {
+        self.on_output_event_at(bytes, quiet, now)
+            .map(|event| event.state())
+    }
     fn on_input(&mut self, bytes: &[u8]) {
         self.on_input_at(bytes, Instant::now());
     }
-
     pub(crate) fn on_input_at(&mut self, bytes: &[u8], now: Instant) {
-        if bytes == b"\r" {
-            let title_was_idle = self
-                .codex_title
-                .as_ref()
-                .is_some_and(|title| title.classifier.activity == Some(SessionActivityState::Idle));
-            if let Some(title) = self.codex_title.as_mut() {
-                title.reset();
+        if let Some(kind) = interrupt_key(bytes) {
+            self.pending_cancel |= kind;
+        }
+        if let Some(adapter) = self.adapter.as_mut() {
+            let input = adapter.on_input(bytes);
+            if let Some(state) = input.state {
+                self.current = state;
             }
-            if title_was_idle {
-                self.current = SessionActivityState::Busy;
+            if input.refresh {
                 self.last_byte = now;
-                self.input_transition = true;
             }
-        }
-        if let Some(startup) = self.codex_startup.as_mut() {
-            if bytes == b"\r" {
-                // A local submission can be a native command, not a model turn.
-                if startup.input_pending && !startup.pending_turn {
-                    startup.submitted_input = true;
-                    self.current = SessionActivityState::Busy;
-                    self.last_byte = now;
-                }
-                startup.input_pending = false;
-                self.input_transition = true;
-                if (startup.pending_turn || startup.submitted_input) && !startup.hooks_available {
-                    self.codex_startup = None;
-                    self.current = SessionActivityState::Busy;
-                    self.last_byte = now;
-                }
-            } else {
-                use super::manager::{classify_local_input, LocalInputClass};
-                let input = if matches!(bytes, b"\x1b[A" | b"\x1b[B" | b"\x1bOA" | b"\x1bOB") {
-                    Some(LocalInputClass::SetPending)
-                } else {
-                    classify_local_input(bytes)
-                };
-                match input {
-                    Some(LocalInputClass::SetPending) => startup.input_pending = true,
-                    Some(LocalInputClass::ClearPending) => startup.input_pending = false,
-                    _ => {}
-                }
-            }
+            self.input_transition |= input.announce;
         }
     }
-
     pub(crate) fn hooks_unavailable(&mut self) {
-        self.hook_owned = false;
-        if let Some(title) = self.codex_title.as_mut() {
-            title.reset();
-        }
-        if let Some(startup) = self.codex_startup.as_mut() {
-            startup.hooks_available = false;
-            if startup.pending_turn || startup.submitted_input {
-                self.codex_startup = None;
-            }
+        if let Some(adapter) = self.adapter.as_mut() {
+            adapter.hooks_unavailable();
         }
     }
-
-    pub(crate) fn accept_hook(&mut self, observation: &super::status::AgentObservation) -> bool {
-        // SessionStart can arrive during the first turn. It cannot cancel an
-        // argv/paste prompt already queued for execution.
+    pub(crate) fn accept_event(&mut self, event: &super::state::agent::AgentEvent) -> bool {
         if self
-            .codex_startup
-            .as_ref()
-            .is_some_and(|startup| startup.pending_turn || startup.submitted_input)
-            && observation.activity == super::status::Activity::Idle
-            && observation.outcome.is_none()
+            .adapter
+            .as_mut()
+            .is_some_and(|adapter| !adapter.accept_event(event))
         {
             return false;
         }
-        self.hook_owned = true;
-        if let Some(title) = self.codex_title.as_mut() {
-            title.reset();
-        }
-        self.codex_startup = None;
         self.input_transition = false;
         true
     }
-
     fn on_bytes_at(&mut self, n: usize, now: Instant) -> Option<SessionActivityState> {
         if n == 0 {
             return None;
@@ -1080,39 +830,38 @@ impl IdleDetector {
         self.last_byte = now;
     }
 
-    fn tick(&mut self) -> Option<SessionActivityState> {
-        self.tick_at(Instant::now())
+    fn tick(&mut self) -> Option<crate::runtimes::TerminalEvent> {
+        self.tick_event_at(Instant::now())
     }
-
-    pub(crate) fn tick_at(&mut self, now: Instant) -> Option<SessionActivityState> {
-        if let Some(startup) = self
-            .codex_startup
+    pub(crate) fn tick_event_at(&mut self, now: Instant) -> Option<crate::runtimes::TerminalEvent> {
+        use crate::runtimes::TerminalEvent;
+        if let Some(state) = self
+            .adapter
             .as_ref()
-            .filter(|startup| !startup.submitted_input && (startup.pending_turn || startup.ready))
+            .and_then(|adapter| adapter.held_activity())
         {
-            let state = if startup.pending_turn {
-                SessionActivityState::Busy
-            } else {
-                SessionActivityState::Idle
-            };
             let input_transition = std::mem::take(&mut self.input_transition);
             if self.current != state || input_transition {
                 self.current = state;
-                return Some(state);
+                return Some(TerminalEvent::Ready(state));
             }
             return None;
         }
         if std::mem::take(&mut self.input_transition) {
-            return Some(self.current);
+            return Some(TerminalEvent::Activity(self.current));
         }
         if self.current == SessionActivityState::Busy
             && now.duration_since(self.last_byte) >= self.threshold
         {
             self.current = SessionActivityState::Idle;
-            Some(SessionActivityState::Idle)
+            Some(TerminalEvent::Activity(SessionActivityState::Idle))
         } else {
             None
         }
+    }
+    #[cfg(test)]
+    fn tick_at(&mut self, now: Instant) -> Option<SessionActivityState> {
+        self.tick_event_at(now).map(|event| event.state())
     }
 }
 
@@ -1140,15 +889,54 @@ fn idle_monitor_thread(
             break;
         }
         if let Some(watcher) = hook_status.as_mut() {
-            if let Err(error) = watcher.drain_observations(
-                &mut |observation, _source| {
+            if let Err(error) = watcher.drain_events(
+                {
                     let mut detector = detector.lock().expect("idle detector poisoned");
-                    if detector.accept_hook(&observation) {
-                        let _ = tx.send(RuntimeOutput::AgentObservation(observation));
+                    std::mem::take(&mut detector.pending_cancel)
+                },
+                &mut |event| {
+                    if !detector
+                        .lock()
+                        .expect("idle detector poisoned")
+                        .accept_event(&event)
+                    {
+                        return Default::default();
                     }
+                    // The manager can write input while publishing; release the detector before waiting.
+                    if event.needs_feedback() {
+                        let (reply, receipt) = mpsc::channel();
+                        if tx
+                            .send(RuntimeOutput::AgentEvent {
+                                event,
+                                feedback: Some(reply),
+                            })
+                            .is_err()
+                        {
+                            return Default::default();
+                        }
+                        loop {
+                            match receipt.recv_timeout(IDLE_MONITOR_POLL) {
+                                Ok(feedback) => return feedback,
+                                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                                    return Default::default()
+                                }
+                                Err(mpsc::RecvTimeoutError::Timeout) => {
+                                    if stop.load(Ordering::Acquire) || done.load(Ordering::Acquire)
+                                    {
+                                        return Default::default();
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    let _ = tx.send(RuntimeOutput::AgentEvent {
+                        event,
+                        feedback: None,
+                    });
+                    Default::default()
                 },
                 &mut |id| {
-                    let _ = tx.send(RuntimeOutput::CodexSessionStart(id));
+                    let _ = tx.send(RuntimeOutput::ConversationStart(id));
                 },
             ) {
                 log::warn!("read agent status: {error}");
@@ -1165,13 +953,7 @@ fn idle_monitor_thread(
             detector.tick()
         };
         if let Some(state) = transition {
-            if tx
-                .send(RuntimeOutput::StatusTransition {
-                    state,
-                    source: StatusSource::Forwarder,
-                })
-                .is_err()
-            {
+            if tx.send(RuntimeOutput::TerminalEvent(state)).is_err() {
                 break;
             }
         }
@@ -1236,13 +1018,7 @@ fn reader_thread(
                     detector.on_output(&buf[..n], in_resize_grace)
                 };
                 if let Some(state) = transition {
-                    if tx
-                        .send(RuntimeOutput::StatusTransition {
-                            state,
-                            source: StatusSource::Forwarder,
-                        })
-                        .is_err()
-                    {
+                    if tx.send(RuntimeOutput::TerminalEvent(state)).is_err() {
                         break;
                     }
                 }
@@ -1305,11 +1081,6 @@ fn write_to(runtime: &PtyRuntime, session_id: &str, bytes: &[u8]) -> RuntimeResu
         .lock()
         .expect("idle detector poisoned")
         .on_input(bytes);
-    if let Some(kind) = interrupt_key(bytes) {
-        if let Some(interrupt) = &handle.hook_interrupt {
-            interrupt.fetch_or(kind, Ordering::Release);
-        }
-    }
     Ok(())
 }
 
@@ -1535,6 +1306,71 @@ mod tests {
     use crate::runtimes::{codex::codex_status, copilot::copilot_status};
     use std::collections::BTreeMap;
 
+    #[test]
+    #[cfg(unix)]
+    fn claude_feedback_wait_releases_detector_and_ends_on_detach() {
+        struct Watcher(mpsc::Sender<()>);
+        impl HookWatcher for Watcher {
+            fn drain_events(
+                &mut self,
+                _cancel: u8,
+                emit: &mut dyn FnMut(
+                    crate::session::state::agent::AgentEvent,
+                )
+                    -> crate::session::state::agent::AdapterFeedback,
+                _session_start: &mut dyn FnMut(String),
+            ) -> crate::error::Result<()> {
+                emit(crate::session::state::agent::AgentEvent::Batch {
+                    runtime: crate::model::Runtime::ClaudeCode,
+                    events: vec![crate::session::state::agent::AgentEvent::TurnStarted],
+                });
+                self.0.send(()).unwrap();
+                Ok(())
+            }
+        }
+        let detector = Arc::new(Mutex::new(IdleDetector::new_at(
+            DEFAULT_IDLE_THRESHOLD,
+            Instant::now(),
+        )));
+        let stop = Arc::new(AtomicBool::new(false));
+        let (tx, rx) = mpsc::channel();
+        let (ended_tx, ended_rx) = mpsc::channel();
+        let (returned_tx, returned_rx) = mpsc::channel();
+        let monitor = thread::spawn({
+            let detector = Arc::clone(&detector);
+            let stop = Arc::clone(&stop);
+            move || {
+                idle_monitor_thread(
+                    detector,
+                    tx,
+                    stop,
+                    Arc::new(AtomicBool::new(false)),
+                    Some(Box::new(Watcher(returned_tx))),
+                );
+                ended_tx.send(()).unwrap();
+            }
+        });
+        let event = rx.recv_timeout(Duration::from_secs(2));
+        let has_feedback = matches!(
+            &event,
+            Ok(RuntimeOutput::AgentEvent {
+                feedback: Some(_),
+                ..
+            })
+        );
+        let unlocked = detector.try_lock().is_ok();
+        let waiting = returned_rx.try_recv() == Err(mpsc::TryRecvError::Empty);
+        stop.store(true, Ordering::Release);
+        let ended = ended_rx.recv_timeout(Duration::from_secs(2));
+        drop(event);
+        monitor.join().unwrap();
+        assert!(has_feedback);
+        assert!(unlocked);
+        assert!(waiting);
+        ended.unwrap();
+        returned_rx.try_recv().unwrap();
+    }
+
     #[cfg(unix)]
     #[test]
     fn foreground_confirmation_only_applies_beyond_the_shell_process_group() {
@@ -1547,7 +1383,7 @@ mod tests {
         let env: BTreeMap<String, String> = BTreeMap::new();
         SpawnSpec {
             agent_runtime: None,
-            codex_pending_turn: None,
+            pending_turn: None,
             session_id: session_id.to_string(),
             command: command.to_string(),
             args: args.iter().map(|s| s.to_string()).collect(),
@@ -1715,121 +1551,37 @@ mod tests {
         format!("\x1b]0;{title}\x07").into_bytes()
     }
 
-    #[test]
-    fn codex_title_hint_requires_recorded_activity_frames_and_matching_rest() {
-        let mut title = CodexTitleHint::default();
-        assert_eq!(title.observe(&osc_title("⠙ project")), None);
-        assert_eq!(
-            title.observe(&osc_title("⠹ project")),
-            Some(SessionActivityState::Busy)
-        );
-        assert_eq!(
-            title.observe(&osc_title("project")),
-            Some(SessionActivityState::Idle)
-        );
-
-        let mut rename = CodexTitleHint::default();
-        assert_eq!(
-            rename.observe(&osc_title("⠙ renaming... ⠙ | project")),
-            None
-        );
-        assert_eq!(
-            rename.observe(&osc_title("⠹ renaming... ⠹ | project")),
-            Some(SessionActivityState::Busy)
-        );
-        assert_eq!(
-            rename.observe(&osc_title("renaming... ⠹ | project")),
-            Some(SessionActivityState::Idle)
-        );
-
-        let mut next_frame = CodexTitleHint::default();
-        assert_eq!(
-            next_frame.observe(&osc_title("⠹ renaming... ⠹ | project")),
-            None
-        );
-        assert_eq!(
-            next_frame.observe(&osc_title("⠸ renaming... ⠸ | project")),
-            Some(SessionActivityState::Busy)
-        );
-        assert_eq!(
-            next_frame.observe(&osc_title("renaming... ⠼ | project")),
-            Some(SessionActivityState::Idle)
-        );
-        assert_eq!(
-            rename.observe(&osc_title("renaming... ⠸ | project")),
-            Some(SessionActivityState::Idle)
-        );
-        assert_eq!(
-            rename.observe(&osc_title("project")),
-            Some(SessionActivityState::Idle)
-        );
-        assert_eq!(
-            rename.observe(&osc_title("Generated topic | project")),
-            Some(SessionActivityState::Idle)
-        );
+    fn codex_detector(threshold: Duration, pending_turn: bool) -> IdleDetector {
+        IdleDetector::with_adapter_at(
+            threshold,
+            crate::runtimes::adapter(crate::model::Runtime::Codex)
+                .terminal_adapter(Some(pending_turn)),
+            Instant::now(),
+        )
     }
 
-    #[test]
-    fn codex_title_hint_rejects_missing_reset_custom_and_embedded_signals() {
-        for title in [
-            "project",
-            "",
-            "Ready | project",
-            "Working | project",
-            "topic ⠙ | project",
-            "renaming... ⠙ | project",
-            "user@host:~/⠙-project",
-            "✳ Claude Code",
-            "⠂ Claude Code",
-        ] {
-            let mut hint = CodexTitleHint::default();
-            assert_eq!(hint.observe(&osc_title(title)), None, "{title:?}");
-        }
-
-        let mut hint = CodexTitleHint::default();
-        assert_eq!(hint.observe(&osc_title("⠙ project")), None);
-        assert_eq!(
-            hint.observe(&osc_title("⠹ project")),
-            Some(SessionActivityState::Busy)
-        );
-        assert_eq!(hint.observe(b"\x1b]0;\x07"), None);
-        assert_eq!(hint.observe(&osc_title("project")), None);
-        assert_eq!(
-            hint.observe(&osc_title("⠙ project")),
-            Some(SessionActivityState::Busy)
-        );
-        assert_eq!(hint.observe(b"\x1bc"), None);
-        assert_eq!(hint.observe(&osc_title("project")), None);
-    }
-
-    #[test]
-    fn codex_title_hint_parses_split_osc_and_preserves_semicolons() {
-        let mut hint = CodexTitleHint::default();
-        let first = osc_title("⠙ project; branch");
-        let second = osc_title("⠹ project; branch");
-        for split in 1..first.len() {
-            let mut hint = CodexTitleHint::default();
-            assert_eq!(hint.observe(&first[..split]), None);
-            assert_eq!(hint.observe(&first[split..]), None);
-            assert_eq!(
-                hint.observe(&second),
-                Some(SessionActivityState::Busy),
-                "split {split}"
-            );
-        }
-        assert_eq!(hint.observe(&first), None);
-        assert_eq!(hint.observe(&second), Some(SessionActivityState::Busy));
-        assert_eq!(
-            hint.observe(&osc_title("project; branch")),
-            Some(SessionActivityState::Idle)
-        );
+    fn accept_hook(
+        detector: &mut IdleDetector,
+        observation: &crate::session::status::AgentObservation,
+    ) -> bool {
+        let event = if observation.activity == crate::session::status::Activity::Idle
+            && observation.outcome.is_none()
+        {
+            crate::session::state::agent::AgentEvent::StartupReady
+        } else {
+            crate::session::state::agent::AgentEvent::Working { detail: None }
+        };
+        detector.accept_event(&crate::session::state::agent::AgentEvent::Batch {
+            runtime: crate::model::Runtime::Codex,
+            events: vec![event],
+        })
     }
 
     #[test]
     fn codex_title_idle_is_invalidated_by_submission_until_fresh_title_evidence() {
         let threshold = Duration::from_secs(2);
         let start = Instant::now();
-        let mut detector = IdleDetector::new(threshold, Some(false));
+        let mut detector = codex_detector(threshold, false);
         detector.hooks_unavailable();
         detector.last_byte = start;
         assert_eq!(
@@ -1864,7 +1616,7 @@ mod tests {
             None
         );
         detector.on_input(b"\r");
-        assert_eq!(detector.tick(), Some(SessionActivityState::Busy));
+        assert_eq!(detector.tick_state(), Some(SessionActivityState::Busy));
         assert_eq!(
             detector.on_output_at(
                 &stale_working[stale_end..],
@@ -1909,27 +1661,10 @@ mod tests {
     }
 
     #[test]
-    fn codex_title_authority_does_not_survive_a_new_runtime() {
-        let mut first = CodexTitleHint::default();
-        assert_eq!(first.observe(&osc_title("⠙ project")), None);
-        assert_eq!(
-            first.observe(&osc_title("⠹ project")),
-            Some(SessionActivityState::Busy)
-        );
-        assert_eq!(
-            first.observe(&osc_title("project")),
-            Some(SessionActivityState::Idle)
-        );
-
-        let mut resumed = CodexTitleHint::default();
-        assert_eq!(resumed.observe(&osc_title("project")), None);
-    }
-
-    #[test]
     fn hook_takeover_drops_title_authority_until_bridge_failure() {
         use super::super::status::{Activity, AgentObservation, ObservationSource};
 
-        let mut detector = IdleDetector::new(DEFAULT_IDLE_THRESHOLD, Some(true));
+        let mut detector = codex_detector(DEFAULT_IDLE_THRESHOLD, true);
         detector.hooks_unavailable();
         let start = detector.last_byte;
         assert_eq!(
@@ -1944,18 +1679,17 @@ mod tests {
             ),
             None
         );
-        assert!(detector.accept_hook(&AgentObservation {
-            activity: Activity::Working,
-            source: ObservationSource::Hook,
-            ..Default::default()
-        }));
+        assert!(accept_hook(
+            &mut detector,
+            &AgentObservation {
+                activity: Activity::Working,
+                source: ObservationSource::Hook,
+                ..Default::default()
+            }
+        ));
         for title in ["⠙ project", "⠹ project", "project"] {
             assert_eq!(
                 detector.on_output_at(&osc_title(title), false, start + Duration::from_millis(200)),
-                None
-            );
-            assert_eq!(
-                detector.codex_title.as_ref().unwrap().classifier.activity,
                 None
             );
         }
@@ -1967,10 +1701,6 @@ mod tests {
                 false,
                 start + Duration::from_millis(200)
             ),
-            None
-        );
-        assert_eq!(
-            detector.codex_title.as_ref().unwrap().classifier.activity,
             None
         );
 
@@ -2011,9 +1741,9 @@ mod tests {
 
     #[test]
     fn codex_startup_without_readiness_retains_output_fallback() {
-        let mut detector = IdleDetector::new(DEFAULT_IDLE_THRESHOLD, Some(false));
+        let mut detector = codex_detector(DEFAULT_IDLE_THRESHOLD, false);
         assert_eq!(
-            detector.on_output(b"startup without terminal modes", false),
+            detector.on_output_state(b"startup without terminal modes", false),
             None
         );
         assert_eq!(
@@ -2021,42 +1751,42 @@ mod tests {
             Some(SessionActivityState::Idle)
         );
         assert_eq!(
-            detector.on_output(b"more output", false),
+            detector.on_output_state(b"more output", false),
             Some(SessionActivityState::Busy)
         );
         assert_eq!(
-            detector.on_output(b"\x1b[?2004h", false),
+            detector.on_output_state(b"\x1b[?2004h", false),
             Some(SessionActivityState::Idle)
         );
-        assert_eq!(detector.on_output(b"idle redraw", false), None);
+        assert_eq!(detector.on_output_state(b"idle redraw", false), None);
     }
 
     #[test]
     fn codex_startup_history_recall_submits_with_or_without_hooks() {
         for hooks_available in [false, true] {
             for arrow in [b"\x1b[A", b"\x1b[B", b"\x1bOA", b"\x1bOB"] {
-                let mut detector = IdleDetector::new(DEFAULT_IDLE_THRESHOLD, Some(false));
+                let mut detector = codex_detector(DEFAULT_IDLE_THRESHOLD, false);
                 if !hooks_available {
                     detector.hooks_unavailable();
                 }
                 assert_eq!(
-                    detector.on_output(b"\x1b[?2004h", false),
+                    detector.on_output_state(b"\x1b[?2004h", false),
                     Some(SessionActivityState::Idle)
                 );
                 detector.on_input(arrow);
-                assert_eq!(detector.on_output(b"recalled draft", false), None);
+                assert_eq!(detector.on_output_state(b"recalled draft", false), None);
                 detector.on_input(b"\r");
-                assert_eq!(detector.tick(), Some(SessionActivityState::Busy));
+                assert_eq!(detector.tick_state(), Some(SessionActivityState::Busy));
                 assert_eq!(
                     detector.tick_at(Instant::now() + DEFAULT_IDLE_THRESHOLD),
                     Some(SessionActivityState::Idle)
                 );
                 assert_eq!(
-                    detector.on_output(b"working output", false),
+                    detector.on_output_state(b"working output", false),
                     Some(SessionActivityState::Busy)
                 );
                 if !hooks_available {
-                    assert!(detector.codex_startup.is_none());
+                    assert_eq!(detector.adapter.as_ref().unwrap().held_activity(), None);
                 }
             }
         }
@@ -2069,52 +1799,54 @@ mod tests {
         let ready = frame["readiness"].as_str().unwrap().as_bytes();
         let redraw = frame["redraw"].as_str().unwrap().as_bytes();
         for split in 1..b"\x1b[?2004h".len() {
-            let mut detector = IdleDetector::new(DEFAULT_IDLE_THRESHOLD, Some(false));
-            assert_eq!(detector.on_output(&ready[..split], false), None);
+            let mut detector = codex_detector(DEFAULT_IDLE_THRESHOLD, false);
+            assert_eq!(detector.on_output_state(&ready[..split], false), None);
             assert_eq!(
-                detector.on_output(&ready[split..], true),
+                detector.on_output_state(&ready[split..], true),
                 Some(SessionActivityState::Idle)
             );
             for _ in 0..100 {
-                assert_eq!(detector.on_output(redraw, false), None);
+                assert_eq!(detector.on_output_state(redraw, false), None);
             }
             detector.on_input(b"\r");
-            assert_eq!(detector.tick(), Some(SessionActivityState::Idle));
+            assert_eq!(detector.tick_state(), Some(SessionActivityState::Idle));
             detector.on_input(b"draft");
-            assert_eq!(detector.on_output(redraw, false), None);
+            assert_eq!(detector.on_output_state(redraw, false), None);
             detector.on_input(b"\r");
-            assert_eq!(detector.tick(), Some(SessionActivityState::Busy));
+            assert_eq!(detector.tick_state(), Some(SessionActivityState::Busy));
             assert_eq!(
                 detector.tick_at(Instant::now() + Duration::from_secs(60)),
                 Some(SessionActivityState::Idle)
             );
             detector.hooks_unavailable();
-            assert!(detector.codex_startup.is_none());
+            assert_eq!(detector.adapter.as_ref().unwrap().held_activity(), None);
         }
-        let mut detector = IdleDetector::new(DEFAULT_IDLE_THRESHOLD, Some(false));
+        let mut detector = codex_detector(DEFAULT_IDLE_THRESHOLD, false);
         detector.on_input(b"early submission");
         detector.on_input(b"\r");
-        assert_eq!(detector.tick(), Some(SessionActivityState::Busy));
-        assert_eq!(detector.on_output(ready, false), None);
+        assert_eq!(detector.tick_state(), Some(SessionActivityState::Busy));
+        assert_eq!(detector.on_output_state(ready, false), None);
         assert_eq!(detector.current, SessionActivityState::Busy);
-        assert!(
-            !detector.accept_hook(&super::super::status::AgentObservation {
+        assert!(!accept_hook(
+            &mut detector,
+            &super::super::status::AgentObservation {
                 activity: super::super::status::Activity::Idle,
                 source: super::super::status::ObservationSource::Hook,
                 ..Default::default()
-            })
-        );
-        assert!(
-            detector.accept_hook(&super::super::status::AgentObservation {
+            }
+        ));
+        assert!(accept_hook(
+            &mut detector,
+            &super::super::status::AgentObservation {
                 activity: super::super::status::Activity::Working,
                 source: super::super::status::ObservationSource::Hook,
                 ..Default::default()
-            })
-        );
-        assert!(detector.codex_startup.is_none());
-        let mut detector = IdleDetector::new(DEFAULT_IDLE_THRESHOLD, Some(true));
-        assert_eq!(detector.tick(), Some(SessionActivityState::Busy));
-        assert_eq!(detector.on_output(ready, false), None);
+            }
+        ));
+        assert_eq!(detector.adapter.as_ref().unwrap().held_activity(), None);
+        let mut detector = codex_detector(DEFAULT_IDLE_THRESHOLD, true);
+        assert_eq!(detector.tick_state(), Some(SessionActivityState::Busy));
+        assert_eq!(detector.on_output_state(ready, false), None);
     }
 
     #[test]
@@ -2219,16 +1951,17 @@ mod tests {
             .filter(|event: &RecordedOutput| !event.data.is_empty())
             .collect();
         let start = Instant::now();
-        let mut detector = IdleDetector::new(DEFAULT_IDLE_THRESHOLD, Some(true));
+        let mut detector = codex_detector(DEFAULT_IDLE_THRESHOLD, true);
         detector.last_byte = start;
         if bridge_failure {
-            assert!(
-                detector.accept_hook(&super::super::status::AgentObservation {
+            assert!(accept_hook(
+                &mut detector,
+                &super::super::status::AgentObservation {
                     activity: super::super::status::Activity::Working,
                     source: super::super::status::ObservationSource::Hook,
                     ..Default::default()
-                })
-            );
+                }
+            ));
         }
         detector.hooks_unavailable();
         let mut transitions = Vec::new();
@@ -2284,15 +2017,16 @@ mod tests {
                     "printf '\\033]0;⠙ project\\007\\033]0;⠹ project\\007\\033]0;project\\007'; sleep 1",
                 ],
             );
-            spawn.codex_pending_turn = Some(false);
+            spawn.pending_turn = Some(false);
+            spawn.agent_runtime = Some(crate::model::Runtime::Codex);
             spawn.mission = mission;
             let (session, stream) = rt.spawn(spawn).unwrap();
 
             let deadline = Instant::now() + Duration::from_secs(2);
             let mut state = None;
             while Instant::now() < deadline {
-                match stream.recv_timeout(Duration::from_millis(50)) {
-                    Ok(RuntimeOutput::StatusTransition {
+                match stream.recv_status_timeout(Duration::from_millis(50)) {
+                    Ok(super::super::runtime::TestOutput::StatusTransition {
                         state: next,
                         source,
                     }) => {
@@ -2303,10 +2037,10 @@ mod tests {
                         }
                     }
                     Ok(
-                        RuntimeOutput::Stream(_)
-                        | RuntimeOutput::AgentObservation(_)
-                        | RuntimeOutput::CodexSessionStart(_)
-                        | RuntimeOutput::StatusBridgeFailed,
+                        super::super::runtime::TestOutput::Stream(_)
+                        | super::super::runtime::TestOutput::AgentObservation(_)
+                        | super::super::runtime::TestOutput::ConversationStart
+                        | super::super::runtime::TestOutput::StatusBridgeFailed,
                     ) => {}
                     Err(mpsc::RecvTimeoutError::Timeout) => continue,
                     Err(mpsc::RecvTimeoutError::Disconnected) => break,
@@ -2344,10 +2078,6 @@ mod tests {
             .env
             .insert(codex_status::GENERATION_ENV.into(), "current".into());
         let (session, stream) = rt.spawn(spawn).unwrap();
-        assert!(lookup(&rt, &session.session_id)
-            .unwrap()
-            .hook_interrupt
-            .is_none());
         for event in ["UserPromptSubmit", "Stop", "PreToolUse", "Interrupt"] {
             let command = codex_status::hook_command(&path, event);
             let mut child = std::process::Command::new("sh")
@@ -2368,8 +2098,8 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(3);
         let mut values = Vec::new();
         while values.len() < 4 && Instant::now() < deadline {
-            if let Ok(RuntimeOutput::AgentObservation(value)) =
-                stream.recv_timeout(Duration::from_millis(50))
+            if let Ok(super::super::runtime::TestOutput::AgentObservation(value)) =
+                stream.recv_status_timeout(Duration::from_millis(50))
             {
                 values.push(value);
             }
@@ -2379,8 +2109,8 @@ mod tests {
         let mut failed = false;
         while !failed && Instant::now() < deadline {
             failed = matches!(
-                stream.recv_timeout(Duration::from_millis(50)),
-                Ok(RuntimeOutput::StatusBridgeFailed)
+                stream.recv_status_timeout(Duration::from_millis(50)),
+                Ok(super::super::runtime::TestOutput::StatusBridgeFailed)
             );
         }
         rt.stop(&session).unwrap();
@@ -2388,7 +2118,7 @@ mod tests {
         let mut closed = false;
         while !closed && Instant::now() < deadline {
             closed = matches!(
-                stream.recv_timeout(Duration::from_millis(50)),
+                stream.recv_status_timeout(Duration::from_millis(50)),
                 Err(mpsc::RecvTimeoutError::Disconnected)
             );
         }
@@ -2441,10 +2171,6 @@ mod tests {
                 .into_owned(),
         );
         let (session, stream) = rt.spawn(spawn).unwrap();
-        assert!(lookup(&rt, &session.session_id)
-            .unwrap()
-            .hook_interrupt
-            .is_some());
         for (event, payload) in [
             ("UserPromptSubmit", serde_json::json!({"session_id":"main"})),
             (
@@ -2481,8 +2207,8 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(3);
         let mut values = Vec::new();
         while values.len() < 4 && Instant::now() < deadline {
-            if let Ok(RuntimeOutput::AgentObservation(value)) =
-                stream.recv_timeout(Duration::from_millis(50))
+            if let Ok(super::super::runtime::TestOutput::AgentObservation(value)) =
+                stream.recv_status_timeout(Duration::from_millis(50))
             {
                 values.push(value);
             }
@@ -2492,8 +2218,8 @@ mod tests {
         let mut failed = false;
         while !failed && Instant::now() < deadline {
             failed = matches!(
-                stream.recv_timeout(Duration::from_millis(50)),
-                Ok(RuntimeOutput::StatusBridgeFailed)
+                stream.recv_status_timeout(Duration::from_millis(50)),
+                Ok(super::super::runtime::TestOutput::StatusBridgeFailed)
             );
         }
         rt.stop(&session).unwrap();
@@ -2501,7 +2227,7 @@ mod tests {
         let mut closed = false;
         while !closed && Instant::now() < deadline {
             closed = matches!(
-                stream.recv_timeout(Duration::from_millis(50)),
+                stream.recv_status_timeout(Duration::from_millis(50)),
                 Err(mpsc::RecvTimeoutError::Disconnected)
             );
         }
@@ -2545,10 +2271,6 @@ mod tests {
             .env
             .insert(agy_status::GENERATION_ENV.into(), "current".into());
         let (session, stream) = rt.spawn(spawn).unwrap();
-        assert!(lookup(&rt, &session.session_id)
-            .unwrap()
-            .hook_interrupt
-            .is_some());
 
         let mut feed = std::fs::OpenOptions::new()
             .append(true)
@@ -2562,8 +2284,8 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(3);
         loop {
             assert!(Instant::now() < deadline, "missing agy Working hook");
-            if let Ok(RuntimeOutput::AgentObservation(value)) =
-                stream.recv_timeout(Duration::from_millis(50))
+            if let Ok(super::super::runtime::TestOutput::AgentObservation(value)) =
+                stream.recv_status_timeout(Duration::from_millis(50))
             {
                 assert_eq!(value.activity, Activity::Working);
                 break;
@@ -2577,8 +2299,8 @@ mod tests {
                 Instant::now() < deadline,
                 "agy remained Working after Escape"
             );
-            if let Ok(RuntimeOutput::AgentObservation(value)) =
-                stream.recv_timeout(Duration::from_millis(50))
+            if let Ok(super::super::runtime::TestOutput::AgentObservation(value)) =
+                stream.recv_status_timeout(Duration::from_millis(50))
             {
                 assert_eq!(value.activity, Activity::Ready);
                 assert_eq!(value.outcome, Some(TurnOutcome::Interrupted));
@@ -2609,10 +2331,6 @@ mod tests {
             .env
             .insert(pi_status::GENERATION_ENV.into(), "current".into());
         let (session, stream) = rt.spawn(spawn).unwrap();
-        assert!(lookup(&rt, &session.session_id)
-            .unwrap()
-            .hook_interrupt
-            .is_none());
         let mut file = std::fs::OpenOptions::new()
             .append(true)
             .open(&path)
@@ -2643,8 +2361,8 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(3);
         let mut values = Vec::new();
         while values.len() < 3 && Instant::now() < deadline {
-            if let Ok(RuntimeOutput::AgentObservation(value)) =
-                stream.recv_timeout(Duration::from_millis(50))
+            if let Ok(super::super::runtime::TestOutput::AgentObservation(value)) =
+                stream.recv_status_timeout(Duration::from_millis(50))
             {
                 values.push(value);
             }
@@ -2654,8 +2372,8 @@ mod tests {
         let mut failed = false;
         while !failed && Instant::now() < deadline {
             failed = matches!(
-                stream.recv_timeout(Duration::from_millis(50)),
-                Ok(RuntimeOutput::StatusBridgeFailed)
+                stream.recv_status_timeout(Duration::from_millis(50)),
+                Ok(super::super::runtime::TestOutput::StatusBridgeFailed)
             );
         }
         rt.stop(&session).unwrap();
@@ -2663,7 +2381,7 @@ mod tests {
         let mut closed = false;
         while !closed && Instant::now() < deadline {
             closed = matches!(
-                stream.recv_timeout(Duration::from_millis(50)),
+                stream.recv_status_timeout(Duration::from_millis(50)),
                 Err(mpsc::RecvTimeoutError::Disconnected)
             );
         }
@@ -2725,8 +2443,8 @@ mod tests {
                 Instant::now() < deadline,
                 "missing hook transitions: {statuses:?}"
             );
-            if let Ok(RuntimeOutput::AgentObservation(observation)) =
-                stream.recv_timeout(Duration::from_millis(50))
+            if let Ok(super::super::runtime::TestOutput::AgentObservation(observation)) =
+                stream.recv_status_timeout(Duration::from_millis(50))
             {
                 statuses.push(
                     if observation.activity == super::super::status::Activity::Working {
@@ -2755,7 +2473,7 @@ mod tests {
                 "hook watcher kept output channel alive"
             );
             if let Err(mpsc::RecvTimeoutError::Disconnected) =
-                stream.recv_timeout(Duration::from_millis(50))
+                stream.recv_status_timeout(Duration::from_millis(50))
             {
                 break;
             }
@@ -2787,7 +2505,9 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(3);
         while !ready.windows(5).any(|bytes| bytes == b"ready") {
             assert!(Instant::now() < deadline, "test child did not become ready");
-            if let Ok(RuntimeOutput::Stream(bytes)) = stream.recv_timeout(IDLE_MONITOR_POLL) {
+            if let Ok(super::super::runtime::TestOutput::Stream(bytes)) =
+                stream.recv_status_timeout(IDLE_MONITOR_POLL)
+            {
                 ready.extend(bytes);
             }
         }
@@ -2798,8 +2518,8 @@ mod tests {
                     Instant::now() < deadline,
                     "missing {expected_source} {expected:?}"
                 );
-                if let Ok(RuntimeOutput::AgentObservation(observation)) =
-                    stream.recv_timeout(IDLE_MONITOR_POLL)
+                if let Ok(super::super::runtime::TestOutput::AgentObservation(observation)) =
+                    stream.recv_status_timeout(IDLE_MONITOR_POLL)
                 {
                     let state = if observation.activity == super::super::status::Activity::Working {
                         SessionActivityState::Busy
@@ -2849,8 +2569,8 @@ mod tests {
             let deadline = Instant::now() + IDLE_MONITOR_POLL * 3;
             while Instant::now() < deadline {
                 assert!(!matches!(
-                    stream.recv_timeout(IDLE_MONITOR_POLL),
-                    Ok(RuntimeOutput::AgentObservation(
+                    stream.recv_status_timeout(IDLE_MONITOR_POLL),
+                    Ok(super::super::runtime::TestOutput::AgentObservation(
                         super::super::status::AgentObservation {
                             outcome: Some(super::super::status::TurnOutcome::Interrupted),
                             ..
@@ -2895,8 +2615,8 @@ mod tests {
             let deadline = Instant::now() + Duration::from_secs(3);
             let mut values = Vec::new();
             while values.len() < 2 && Instant::now() < deadline {
-                if let Ok(RuntimeOutput::AgentObservation(value)) =
-                    stream.recv_timeout(IDLE_MONITOR_POLL)
+                if let Ok(super::super::runtime::TestOutput::AgentObservation(value)) =
+                    stream.recv_status_timeout(IDLE_MONITOR_POLL)
                 {
                     values.push(value);
                 }
@@ -2935,13 +2655,15 @@ mod tests {
         let mut collected = Vec::new();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
         while std::time::Instant::now() < deadline {
-            match stream.recv_timeout(std::time::Duration::from_millis(200)) {
-                Ok(RuntimeOutput::Stream(bytes)) => collected.extend_from_slice(&bytes),
+            match stream.recv_status_timeout(std::time::Duration::from_millis(200)) {
+                Ok(super::super::runtime::TestOutput::Stream(bytes)) => {
+                    collected.extend_from_slice(&bytes)
+                }
                 Ok(
-                    RuntimeOutput::StatusTransition { .. }
-                    | RuntimeOutput::AgentObservation(_)
-                    | RuntimeOutput::CodexSessionStart(_)
-                    | RuntimeOutput::StatusBridgeFailed,
+                    super::super::runtime::TestOutput::StatusTransition { .. }
+                    | super::super::runtime::TestOutput::AgentObservation(_)
+                    | super::super::runtime::TestOutput::ConversationStart
+                    | super::super::runtime::TestOutput::StatusBridgeFailed,
                 ) => {}
                 Err(_) => {}
             }
@@ -2972,8 +2694,8 @@ mod tests {
         let mut statuses = Vec::new();
         let deadline = Instant::now() + Duration::from_secs(6);
         while Instant::now() < deadline {
-            match stream.recv_timeout(Duration::from_millis(100)) {
-                Ok(RuntimeOutput::StatusTransition { state, source }) => {
+            match stream.recv_status_timeout(Duration::from_millis(100)) {
+                Ok(super::super::runtime::TestOutput::StatusTransition { state, source }) => {
                     assert_eq!(source.as_str(), "forwarder");
                     statuses.push(state);
                     if statuses
@@ -2984,10 +2706,10 @@ mod tests {
                     }
                 }
                 Ok(
-                    RuntimeOutput::Stream(_)
-                    | RuntimeOutput::AgentObservation(_)
-                    | RuntimeOutput::CodexSessionStart(_)
-                    | RuntimeOutput::StatusBridgeFailed,
+                    super::super::runtime::TestOutput::Stream(_)
+                    | super::super::runtime::TestOutput::AgentObservation(_)
+                    | super::super::runtime::TestOutput::ConversationStart
+                    | super::super::runtime::TestOutput::StatusBridgeFailed,
                 ) => {}
                 Err(mpsc::RecvTimeoutError::Timeout) => continue,
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
@@ -3015,7 +2737,7 @@ mod tests {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
         let mut disconnected = false;
         while std::time::Instant::now() < deadline {
-            match stream.recv_timeout(std::time::Duration::from_millis(100)) {
+            match stream.recv_status_timeout(std::time::Duration::from_millis(100)) {
                 Ok(_) => continue,
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
                     disconnected = true;
@@ -3130,13 +2852,15 @@ mod tests {
                 Instant::now() < deadline,
                 "child never reported its orphan pid"
             );
-            match stream.recv_timeout(Duration::from_millis(50)) {
-                Ok(RuntimeOutput::Stream(bytes)) => output.extend_from_slice(&bytes),
+            match stream.recv_status_timeout(Duration::from_millis(50)) {
+                Ok(super::super::runtime::TestOutput::Stream(bytes)) => {
+                    output.extend_from_slice(&bytes)
+                }
                 Ok(
-                    RuntimeOutput::StatusTransition { .. }
-                    | RuntimeOutput::AgentObservation(_)
-                    | RuntimeOutput::CodexSessionStart(_)
-                    | RuntimeOutput::StatusBridgeFailed,
+                    super::super::runtime::TestOutput::StatusTransition { .. }
+                    | super::super::runtime::TestOutput::AgentObservation(_)
+                    | super::super::runtime::TestOutput::ConversationStart
+                    | super::super::runtime::TestOutput::StatusBridgeFailed,
                 )
                 | Err(_) => {}
             }
@@ -3177,13 +2901,15 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(2);
         let mut output = Vec::new();
         while Instant::now() < deadline && !output.windows(5).any(|bytes| bytes == b"ready") {
-            match stream.recv_timeout(Duration::from_millis(50)) {
-                Ok(RuntimeOutput::Stream(bytes)) => output.extend_from_slice(&bytes),
+            match stream.recv_status_timeout(Duration::from_millis(50)) {
+                Ok(super::super::runtime::TestOutput::Stream(bytes)) => {
+                    output.extend_from_slice(&bytes)
+                }
                 Ok(
-                    RuntimeOutput::StatusTransition { .. }
-                    | RuntimeOutput::AgentObservation(_)
-                    | RuntimeOutput::CodexSessionStart(_)
-                    | RuntimeOutput::StatusBridgeFailed,
+                    super::super::runtime::TestOutput::StatusTransition { .. }
+                    | super::super::runtime::TestOutput::AgentObservation(_)
+                    | super::super::runtime::TestOutput::ConversationStart
+                    | super::super::runtime::TestOutput::StatusBridgeFailed,
                 ) => {}
                 Err(_) => {}
             }
@@ -3388,8 +3114,10 @@ mod tests {
         let mut handshake = HostHandshake::default();
         let deadline = Instant::now() + Duration::from_secs(5);
         while Instant::now() < deadline {
-            match stream.recv_timeout(Duration::from_millis(100)) {
-                Ok(RuntimeOutput::Stream(bytes)) => handshake.observe(&rt, &session, &bytes),
+            match stream.recv_status_timeout(Duration::from_millis(100)) {
+                Ok(super::super::runtime::TestOutput::Stream(bytes)) => {
+                    handshake.observe(&rt, &session, &bytes)
+                }
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
                 _ => {}
             }
@@ -3436,8 +3164,8 @@ mod tests {
         let mut output = Vec::new();
         let deadline = Instant::now() + Duration::from_secs(15);
         while Instant::now() < deadline {
-            match stream.recv_timeout(Duration::from_millis(100)) {
-                Ok(RuntimeOutput::Stream(bytes)) => {
+            match stream.recv_status_timeout(Duration::from_millis(100)) {
+                Ok(super::super::runtime::TestOutput::Stream(bytes)) => {
                     handshake.observe(&rt, &session, &bytes);
                     output.extend(bytes);
                 }
@@ -3496,8 +3224,8 @@ mod tests {
         let mut statuses = Vec::new();
         let deadline = Instant::now() + Duration::from_secs(12);
         while Instant::now() < deadline {
-            match stream.recv_timeout(Duration::from_millis(100)) {
-                Ok(RuntimeOutput::StatusTransition { state, source }) => {
+            match stream.recv_status_timeout(Duration::from_millis(100)) {
+                Ok(super::super::runtime::TestOutput::StatusTransition { state, source }) => {
                     assert_eq!(source.as_str(), "forwarder");
                     statuses.push(state);
                     if statuses
@@ -3507,11 +3235,13 @@ mod tests {
                         break;
                     }
                 }
-                Ok(RuntimeOutput::Stream(bytes)) => handshake.observe(&rt, &session, &bytes),
+                Ok(super::super::runtime::TestOutput::Stream(bytes)) => {
+                    handshake.observe(&rt, &session, &bytes)
+                }
                 Ok(
-                    RuntimeOutput::AgentObservation(_)
-                    | RuntimeOutput::CodexSessionStart(_)
-                    | RuntimeOutput::StatusBridgeFailed,
+                    super::super::runtime::TestOutput::AgentObservation(_)
+                    | super::super::runtime::TestOutput::ConversationStart
+                    | super::super::runtime::TestOutput::StatusBridgeFailed,
                 ) => {}
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
@@ -3535,8 +3265,8 @@ mod tests {
         let mut handshake = HostHandshake::default();
         let deadline = Instant::now() + Duration::from_secs(5);
         while !handshake.answered && Instant::now() < deadline {
-            if let Ok(RuntimeOutput::Stream(bytes)) =
-                stream.recv_timeout(Duration::from_millis(100))
+            if let Ok(super::super::runtime::TestOutput::Stream(bytes)) =
+                stream.recv_status_timeout(Duration::from_millis(100))
             {
                 handshake.observe(&rt, &session, &bytes);
             }
@@ -3623,8 +3353,8 @@ mod tests {
         }
         let (session, stream) = rt.spawn(spawn).unwrap();
         let mut handshake = HostHandshake::default();
-        let mut recv = |timeout| match stream.recv_timeout(timeout) {
-            Ok(RuntimeOutput::Stream(bytes)) => {
+        let mut recv = |timeout| match stream.recv_status_timeout(timeout) {
+            Ok(super::super::runtime::TestOutput::Stream(bytes)) => {
                 handshake.observe(&rt, &session, &bytes);
                 None
             }
@@ -3634,7 +3364,7 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(5);
         let mut values = Vec::new();
         while values.len() < expected && Instant::now() < deadline {
-            if let Some(Ok(RuntimeOutput::AgentObservation(value))) =
+            if let Some(Ok(super::super::runtime::TestOutput::AgentObservation(value))) =
                 recv(Duration::from_millis(50))
             {
                 values.push(value);
@@ -3646,7 +3376,7 @@ mod tests {
         while !failed && Instant::now() < deadline {
             failed = matches!(
                 recv(Duration::from_millis(50)),
-                Some(Ok(RuntimeOutput::StatusBridgeFailed))
+                Some(Ok(super::super::runtime::TestOutput::StatusBridgeFailed))
             );
         }
         rt.stop(&session).unwrap();
@@ -3865,8 +3595,8 @@ mod tests {
             let mut handshake = HostHandshake::default();
             let deadline = Instant::now() + Duration::from_secs(15);
             while Instant::now() < deadline && !out.exists() {
-                if let Ok(RuntimeOutput::Stream(bytes)) =
-                    stream.recv_timeout(Duration::from_millis(100))
+                if let Ok(super::super::runtime::TestOutput::Stream(bytes)) =
+                    stream.recv_status_timeout(Duration::from_millis(100))
                 {
                     handshake.observe(&rt, &session, &bytes);
                 }

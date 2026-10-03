@@ -148,6 +148,33 @@ pub enum KeyCapture {
     RekeyDrop,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TerminalEvent {
+    Activity(crate::session::runtime::SessionActivityState),
+    Title(crate::session::runtime::SessionActivityState),
+    Ready(crate::session::runtime::SessionActivityState),
+}
+impl TerminalEvent {
+    pub(crate) fn state(self) -> crate::session::runtime::SessionActivityState {
+        match self {
+            Self::Activity(state) | Self::Title(state) | Self::Ready(state) => state,
+        }
+    }
+}
+#[derive(Default)]
+pub struct TerminalInput {
+    pub(crate) state: Option<crate::session::runtime::SessionActivityState>,
+    pub(crate) refresh: bool,
+    pub(crate) announce: bool,
+}
+pub trait TerminalAdapter: Send {
+    fn on_output(&mut self, bytes: &[u8]) -> Option<TerminalEvent>;
+    fn on_input(&mut self, bytes: &[u8]) -> TerminalInput;
+    fn held_activity(&self) -> Option<crate::session::runtime::SessionActivityState>;
+    fn hooks_unavailable(&mut self);
+    fn accept_event(&mut self, event: &crate::session::state::agent::AgentEvent) -> bool;
+}
+
 pub trait StatusHooks: Send + Sync {
     fn supported(&self, windows: bool) -> bool;
     fn install(&self, _app_data_dir: &Path) {}
@@ -289,6 +316,9 @@ pub trait RuntimeAdapter: Send + Sync {
     }
     fn key_capture(&self) -> KeyCapture {
         KeyCapture::None
+    }
+    fn terminal_adapter(&self, _pending_turn: Option<bool>) -> Option<Box<dyn TerminalAdapter>> {
+        None
     }
     fn status_hooks(&self) -> Option<&'static dyn StatusHooks> {
         None

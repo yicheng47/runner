@@ -1,3 +1,6 @@
+use crate::model::Runtime;
+use crate::session::state::agent::{AdapterFeedback, AgentEvent};
+#[cfg(test)]
 use crate::session::state::StatusSource;
 // Hook status for Antigravity CLI on macOS (spec 644 decision 5).
 //
@@ -16,16 +19,17 @@ use crate::session::state::StatusSource;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU8, Ordering};
-use std::sync::Arc;
 
 use serde::Deserialize;
 
 use crate::error::Result;
 use crate::session::hook_feed::HookFeed;
+#[cfg(test)]
 use crate::session::state::CTRL_C_INTERRUPT;
-use crate::session::status::{Activity, AgentObservation, ObservationSource, TurnOutcome};
+use crate::session::status::TurnOutcome;
 
+#[cfg(test)]
+use crate::session::status::{Activity, AgentObservation, ObservationSource};
 pub(crate) const PATH_ENV: &str = "RUNNER_ANTIGRAVITY_STATUS_PATH";
 pub(crate) const GENERATION_ENV: &str = "RUNNER_ANTIGRAVITY_STATUS_GENERATION";
 pub(crate) const EVENTS: &[&str] = &["PreInvocation", "PostToolUse", "PostInvocation", "Stop"];
@@ -111,54 +115,35 @@ struct StatusReport {
     error: Option<String>,
 }
 
-#[derive(Default)]
-struct AgyObservation {
-    value: AgentObservation,
-    interrupted: bool,
-}
-
-impl AgyObservation {
-    fn observe(&mut self, report: StatusReport) -> Option<AgentObservation> {
-        if self.interrupted && report.hook_event_name != "PreInvocation" {
-            return None;
-        }
-        match report.hook_event_name.as_str() {
-            "PreInvocation" => {
-                self.interrupted = false;
-                self.value.activity = Activity::Working;
-                self.value.outcome = None;
-            }
-            "PostToolUse" | "PostInvocation" => {
-                self.value.activity = Activity::Working;
-                self.value.outcome = None;
-            }
+#[derive(Clone, Default)]
+struct AgyParser;
+impl AgyParser {
+    fn hook(&mut self, report: StatusReport) -> Option<Vec<AgentEvent>> {
+        Some(vec![match report.hook_event_name.as_str() {
+            "PreInvocation" => AgentEvent::TurnStarted,
+            "PostToolUse" | "PostInvocation" => AgentEvent::Working { detail: None },
             "Stop"
                 if report
                     .error
                     .as_deref()
                     .is_some_and(|error| !error.is_empty()) =>
             {
-                self.value.activity = Activity::Ready;
-                self.value.outcome = Some(TurnOutcome::Failed);
+                AgentEvent::TurnEnded {
+                    outcome: TurnOutcome::Failed,
+                }
             }
-            // With background work still running, agy is not idle yet.
-            "Stop" if report.fully_idle == Some(true) => {
-                self.value.activity = Activity::Ready;
-                self.value.outcome = Some(TurnOutcome::Completed);
-            }
+            "Stop" if report.fully_idle == Some(true) => AgentEvent::TurnEnded {
+                outcome: TurnOutcome::Completed,
+            },
             _ => return None,
-        }
-        self.value.source = ObservationSource::Hook;
-        Some(self.value.clone())
+        }])
     }
 }
 
 pub(crate) struct AgyStatusWatcher {
     feed: HookFeed,
-    observation: AgyObservation,
-    interrupt: Arc<AtomicU8>,
+    parser: AgyParser,
 }
-
 impl AgyStatusWatcher {
     pub(crate) fn start(path: &Path, generation: String) -> Result<Self> {
         let app_data_dir = path
@@ -167,66 +152,165 @@ impl AgyStatusWatcher {
             .expect("status file is under app data");
         Ok(Self {
             feed: HookFeed::start_external(path, generation, &reporter_path(app_data_dir))?,
-            observation: AgyObservation::default(),
-            interrupt: Arc::new(AtomicU8::new(0)),
+            parser: Default::default(),
         })
     }
-
-    pub(crate) fn interrupt_signal(&self) -> Arc<AtomicU8> {
-        Arc::clone(&self.interrupt)
-    }
-
-    pub(crate) fn drain_observations(
+    pub(crate) fn drain_events(
         &mut self,
-        mut transition: impl FnMut(AgentObservation, StatusSource),
+        cancel: u8,
+        mut emit: impl FnMut(AgentEvent) -> AdapterFeedback,
+        _session_start: impl FnMut(String),
     ) -> Result<()> {
-        let interrupted = self.interrupt.swap(0, Ordering::AcqRel);
-        self.feed.drain(interrupted != 0, |report| {
-            if let Ok(report) = serde_json::from_value(report) {
-                if let Some(value) = self.observation.observe(report) {
-                    transition(value, StatusSource::Hook);
+        self.feed.drain(cancel != 0, |report| {
+            if let Ok(report) = serde_json::from_value::<StatusReport>(report) {
+                if let Some(events) = self.parser.hook(report) {
+                    emit(AgentEvent::Batch {
+                        runtime: Runtime::Antigravity,
+                        events,
+                    });
                 }
             }
         })?;
-        if interrupted != 0
-            && self.observation.value.source == ObservationSource::Hook
-            && self.observation.value.activity == Activity::Working
-        {
-            self.observation.interrupted = true;
-            self.observation.value.activity = Activity::Ready;
-            self.observation.value.outcome = Some(TurnOutcome::Interrupted);
-            let source = if interrupted & CTRL_C_INTERRUPT != 0 {
-                StatusSource::InputInterrupt
-            } else {
-                StatusSource::InputEscape
-            };
-            transition(self.observation.value.clone(), source);
+        if cancel != 0 {
+            emit(AgentEvent::Batch {
+                runtime: Runtime::Antigravity,
+                events: vec![AgentEvent::LocalCancel { kind: cancel }],
+            });
         }
         Ok(())
     }
 }
-
 impl crate::session::hook_feed::HookWatcher for AgyStatusWatcher {
-    fn interrupt_signal(&self) -> Option<Arc<AtomicU8>> {
-        Some(self.interrupt_signal())
-    }
-    fn drain_observations(
+    fn drain_events(
         &mut self,
-        transition: &mut dyn FnMut(crate::session::status::AgentObservation, StatusSource),
-        _session_start: &mut dyn FnMut(String),
+        cancel: u8,
+        emit: &mut dyn FnMut(AgentEvent) -> AdapterFeedback,
+        session_start: &mut dyn FnMut(String),
     ) -> Result<()> {
-        self.drain_observations(transition)
+        self.drain_events(cancel, emit, session_start)
     }
 }
 
+#[cfg(test)]
+#[derive(Clone, Default)]
+struct AgyObservation {
+    parser: AgyParser,
+    model: crate::session::state::agent::AgentModel,
+    value: crate::session::state::agent::TurnState,
+}
+#[cfg(test)]
+impl std::ops::Deref for AgyObservation {
+    type Target = AgyParser;
+    fn deref(&self) -> &Self::Target {
+        &self.parser
+    }
+}
+#[cfg(test)]
+impl std::ops::DerefMut for AgyObservation {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.parser
+    }
+}
+#[cfg(test)]
+impl AgyObservation {
+    fn observe(&mut self, event: StatusReport, now: i64) -> Option<AgentObservation> {
+        let events = self.parser.hook(event)?;
+        let reduced = self.model.reduce(
+            AgentEvent::Batch {
+                runtime: Runtime::Antigravity,
+                events,
+            },
+            now,
+        );
+        self.value = self.model.value.clone();
+        reduced
+    }
+}
 #[cfg(test)]
 mod tests {
     use serde_json::{json, Value};
 
     use super::*;
 
+    struct TestWatcher {
+        inner: AgyStatusWatcher,
+        observation: AgyObservation,
+        cancel: u8,
+    }
+    impl std::ops::Deref for TestWatcher {
+        type Target = AgyStatusWatcher;
+        fn deref(&self) -> &Self::Target {
+            &self.inner
+        }
+    }
+    impl std::ops::DerefMut for TestWatcher {
+        fn deref_mut(&mut self) -> &mut Self::Target {
+            &mut self.inner
+        }
+    }
+    impl TestWatcher {
+        fn start(path: &Path, generation: String) -> Result<Self> {
+            Ok(Self {
+                inner: AgyStatusWatcher::start(path, generation)?,
+                observation: Default::default(),
+                cancel: 0,
+            })
+        }
+        fn drain_with_session_starts(
+            &mut self,
+            mut publish: impl FnMut(AgentObservation, StatusSource),
+            starts: impl FnMut(String),
+        ) -> Result<()> {
+            self.inner.parser = self.observation.parser.clone();
+            let cancel = std::mem::take(&mut self.cancel);
+            let mut events = Vec::new();
+            let result = self.inner.drain_events(
+                cancel,
+                |event| {
+                    events.push(event);
+                    Default::default()
+                },
+                starts,
+            );
+            for event in events {
+                let source = if let AgentEvent::Batch { events, .. } = &event {
+                    match events.first() {
+                        Some(AgentEvent::LocalCancel { kind })
+                            if kind & crate::session::state::CTRL_C_INTERRUPT != 0 =>
+                        {
+                            StatusSource::InputInterrupt
+                        }
+                        Some(AgentEvent::LocalCancel { .. }) => StatusSource::InputEscape,
+                        _ => StatusSource::Hook,
+                    }
+                } else {
+                    StatusSource::Hook
+                };
+                if let Some(value) = self
+                    .observation
+                    .model
+                    .reduce(event, crate::session::clock::timestamp_millis())
+                {
+                    publish(value, source);
+                }
+            }
+            self.observation.value = self.observation.model.value.clone();
+            self.observation.parser = self.inner.parser.clone();
+            result
+        }
+        fn drain_status(
+            &mut self,
+            publish: impl FnMut(AgentObservation, StatusSource),
+        ) -> Result<()> {
+            self.drain_with_session_starts(publish, |_| {})
+        }
+    }
+
     fn observe(state: &mut AgyObservation, value: Value) -> Option<AgentObservation> {
-        state.observe(serde_json::from_value(value).unwrap())
+        state.observe(
+            serde_json::from_value::<StatusReport>(value).unwrap(),
+            crate::session::clock::timestamp_millis(),
+        )
     }
 
     #[test]
@@ -319,15 +403,15 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         install_hooks(root.path()).unwrap();
         let path = crate::session::hook_feed::status_path(root.path(), "agy");
-        let mut watcher = AgyStatusWatcher::start(&path, "current".into()).unwrap();
+        let mut watcher = TestWatcher::start(&path, "current".into()).unwrap();
         let mut feed = fs::OpenOptions::new().append(true).open(&path).unwrap();
         let mut transitions = Vec::new();
         fn drain(
-            watcher: &mut AgyStatusWatcher,
+            watcher: &mut TestWatcher,
             transitions: &mut Vec<(Activity, Option<TurnOutcome>, StatusSource)>,
         ) {
             watcher
-                .drain_observations(|value, source| {
+                .drain_status(|value, source| {
                     transitions.push((value.activity, value.outcome, source));
                 })
                 .unwrap();
@@ -339,9 +423,7 @@ mod tests {
         )
         .unwrap();
         drain(&mut watcher, &mut transitions);
-        watcher
-            .interrupt_signal()
-            .store(ESCAPE_INTERRUPT, Ordering::Release);
+        watcher.cancel = ESCAPE_INTERRUPT;
         drain(&mut watcher, &mut transitions);
         assert_eq!(
             transitions,
@@ -374,9 +456,7 @@ mod tests {
         )
         .unwrap();
         drain(&mut watcher, &mut transitions);
-        watcher
-            .interrupt_signal()
-            .store(CTRL_C_INTERRUPT, Ordering::Release);
+        watcher.cancel = CTRL_C_INTERRUPT;
         drain(&mut watcher, &mut transitions);
         assert_eq!(
             transitions[2],
@@ -419,9 +499,7 @@ mod tests {
             r#"{{"generation":"current","hook_event_name":"Stop","fullyIdle":true}}"#
         )
         .unwrap();
-        watcher
-            .interrupt_signal()
-            .store(ESCAPE_INTERRUPT, Ordering::Release);
+        watcher.cancel = ESCAPE_INTERRUPT;
         drain(&mut watcher, &mut transitions);
         assert_eq!(
             transitions[4],
