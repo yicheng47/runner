@@ -38,7 +38,7 @@ All five runtimes have first turn, tool use, approval approved/denied, question 
 | #753, #766 | `crew-idle`, `draft-delivery`, recorded `input-*` traces |
 | #783 | `escape-reply`, `escape-tool`, `ctrl-c` |
 | #781 (known wrong) | Codex `custom-home`: the real capture-root selector ignores CODEX_HOME, and scanning that root leaves the key NULL |
-| #784 (known wrong) | pi `escape-reply`, `ctrl-c`: a cancel with the error-shaped message boundary publishes Failed |
+| #784 | pi `escape-reply`, `ctrl-c`: the live error-shaped abort message settles Interrupted; other API errors remain Failed |
 | #785 (known wrong) | Claude `alias-resume`: history stored under the physical cwd is missed through the alias spelling |
 | #786 (known wrong) | Copilot `clear-resume`: SessionStart changes the watcher's conversation while the persisted key stays old |
 
@@ -46,7 +46,7 @@ All five runtimes have first turn, tool use, approval approved/denied, question 
 
 `crash-reattach` retains unread attention across a crash while reattachment clears error/draft state, rejects old-generation reports and resumes publishing mission rows.
 
-`key-guards` additionally pins capture-on-NULL, replacement by rekey, stale-start rejection and stopped-row rejection. Codex SessionStart keys run through the rekey guard. Coverage tests require all ten rule rows and every Motivation bug, including all four known-wrong markers.
+`key-guards` additionally pins capture-on-NULL, replacement by rekey, stale-start rejection and stopped-row rejection. Codex SessionStart keys run through the rekey guard. Coverage tests require all ten rule rows and every Motivation bug, including the remaining known-wrong markers.
 
 ## Running
 
@@ -55,7 +55,7 @@ cargo test --locked -p runner-backend --profile ci session_scenario_goldens
 cargo test --locked -p runner-terminal --profile ci
 ```
 
-Golden content and scenarios remain frozen after the reviewed checkpoint: a changed timeline is a refactor defect. Never use `RUNNER_UPDATE_SESSION_GOLDEN=1` to accept reducer drift. Jason authorized the JSON-to-text format change on 2026-10-03; all 124 full timelines and their compact renderings were compared with the phase 0 checkpoint before removing the JSON files. The compact corpus is 2,148 lines / 114,768 bytes, replacing 57,650 lines / 1,378,031 bytes.
+PR 3 changes only the five bug goldens listed above, with pi's errorMessage supplied from QA's live abort feed. Every other golden remains byte-identical to `e264ed5d`. During the reducer refactors, a changed timeline remains a refactor defect. Never use `RUNNER_UPDATE_SESSION_GOLDEN=1` to accept reducer drift. Jason authorized the JSON-to-text format change on 2026-10-03; all 124 full timelines and their compact renderings were compared with the phase 0 checkpoint before removing the JSON files. The compact corpus is 2,148 lines / 114,768 bytes, replacing 57,650 lines / 1,378,031 bytes.
 
 ## Reading the compact goldens
 

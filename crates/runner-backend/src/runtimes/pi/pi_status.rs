@@ -179,6 +179,8 @@ struct StatusReport {
     tool_name: Option<String>,
     #[serde(rename = "stopReason")]
     stop_reason: Option<String>,
+    #[serde(rename = "errorMessage")]
+    error_message: Option<String>,
     kind: Option<String>,
     title: Option<String>,
 }
@@ -242,6 +244,12 @@ impl PiParser {
             }
             "message_end" => AgentEvent::Outcome {
                 outcome: match report.stop_reason.as_deref() {
+                    Some("error")
+                        if report.error_message.as_deref()
+                            == Some("This operation was aborted") =>
+                    {
+                        TurnOutcome::Interrupted
+                    }
                     Some("error") => TurnOutcome::Failed,
                     Some("aborted") => TurnOutcome::Interrupted,
                     _ => TurnOutcome::Completed,
@@ -594,6 +602,43 @@ mod tests {
         )
         .is_none());
         assert_eq!(state.value, before);
+    }
+
+    #[test]
+    fn aborted_error_settles_interrupted_while_provider_errors_remain_failed() {
+        for (message, expected) in [
+            (Some("This operation was aborted"), TurnOutcome::Interrupted),
+            (Some("Provider unavailable"), TurnOutcome::Failed),
+            (
+                Some("Request failed: This operation was aborted"),
+                TurnOutcome::Failed,
+            ),
+            (None, TurnOutcome::Failed),
+        ] {
+            let mut state = PiObservation::default();
+            observe(&mut state, report("agent_start"));
+            assert!(observe(
+                &mut state,
+                json!({"hook_event_name":"message_end","stopReason":"error","errorMessage":message}),
+            ).is_none());
+            let settled = observe(&mut state, report("agent_settled")).unwrap();
+            assert_eq!(settled.activity, Activity::Ready);
+            assert_eq!(settled.outcome, Some(expected));
+            assert_eq!(
+                observe(&mut state, report("agent_start")).unwrap().outcome,
+                None
+            );
+            observe(
+                &mut state,
+                json!({"hook_event_name":"message_end","stopReason":"stop"}),
+            );
+            assert_eq!(
+                observe(&mut state, report("agent_settled"))
+                    .unwrap()
+                    .outcome,
+                Some(TurnOutcome::Completed)
+            );
+        }
     }
 
     #[test]

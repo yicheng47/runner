@@ -1,4 +1,4 @@
-runtime=pi name=ctrl-c rules=[8] bugs=[784] known_wrong=[784]
+runtime=pi name=ctrl-c rules=[8] bugs=[784] known_wrong=[]
 session_status_rows=published
 100 status=running/idle/hook activity="idle" completion_armed=false quiescent=true key=null delivery=["Respawned"]
   busy@spawn [running/working/baseline]
@@ -10,6 +10,6 @@ session_status_rows=published
   busy@hook [running/working/hook]
 500 delivery=["InputCleared"]
 600
-700 status=running/ready/hook outcome="failed" failed_since=1767225600700 activity="idle" completion_armed=false
-  idle@hook [running/ready/hook outcome="failed" failed_since=1767225600700]
+700 status=running/ready/hook outcome="interrupted" activity="idle" completion_armed=false
+  idle@hook [running/ready/hook outcome="interrupted"]
 800 result={"completion_consumed":false,"viewed":false}
